@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "empty": {
+    "tokens": {},
+    "breakpoints": {},
+    "reset": "none"
+  },
+  "zero-mapping": {
+    "tokens": {},
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {
+      "--spacing-0": "0px"
+    }
+  },
+  "semantic": {
+    "tokens": {
+      "spacing": {
+        "hsp-sm": "17px",
+        "vsp-md": "29px"
+      },
+      "colors": {
+        "surface": "#123456"
+      }
+    },
+    "breakpoints": {},
+    "reset": "none"
+  },
+  "semantic-changed": {
+    "tokens": {
+      "spacing": {
+        "hsp-sm": "23px",
+        "vsp-md": "31px"
+      },
+      "colors": {
+        "surface": "#654321"
+      }
+    },
+    "breakpoints": {},
+    "reset": "none"
+  },
+  "numeric-opt-in": {
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "reset": "none"
+  },
+  "numeric-removed": {
+    "tokens": {},
+    "breakpoints": {},
+    "reset": "none"
+  },
+  "palette-opt-in": {
+    "tokens": {
+      "colors": {
+        "gray-500": "#37628a"
+      }
+    },
+    "breakpoints": {},
+    "reset": "none"
+  },
+  "breakpoint": {
+    "tokens": {},
+    "breakpoints": {
+      "sm": 640
+    },
+    "reset": "none",
+    "referenceTheme": {
+      "--breakpoint-sm": "640px"
+    }
+  }
+}

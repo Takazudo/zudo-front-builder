@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wind empty-token geometry</title>
+<style>
+@layer fixture-baseline {
+  /* Lower-priority authored baselines intentionally give each utility a measurable effect. */
+  .fixture { margin: 12px; border: 1px solid #999; padding: 8px; }
+  .fixture > p { margin: 0 0 4px; font: 12px/1.2 sans-serif; }
+  .sample { box-sizing: content-box; background: #cde; }
+  .block-pair .sample { width: 42px; height: 20px; }
+  .hidden-pair .sample { width: 42px; height: 20px; }
+  .inline-flex-pair .sample { width: 42px; height: 20px; }
+  .auto-container { width: 300px; height: 180px; border: 1px dotted #333; }
+  .auto-container .sample { width: 80px; height: 40px; }
+  .vertical { writing-mode: vertical-rl; }
+  .rtl { direction: rtl; }
+  .grid-box { display: grid; width: 200px; gap: 0; }
+  .grid-box > span { width: 100%; height: 20px; background: #ace; }
+  .pad-box { width: 80px; height: 24px; padding: 24px; }
+  .color-box { width: 80px; height: 24px; }
+  .hover-box { width: 42px; height: 20px; }
+  .breakpoint-box { width: 42px; height: 20px; }
+  .flex-box { display: flex; width: 200px; height: 35px; }
+  .flex-box > span { width: 20px; height: 20px; }
+  .intrinsic-box { width: 200px; border: 1px dotted #333; }
+  .intrinsic-box > span { display: block; white-space: nowrap; }
+}
+</style>
+</head>
+<body>
+<section class="fixture block-pair" data-case-id="block">
+  <p>Block versus inline control; the following mark wraps only for the target.</p>
+  <span id="block-target" data-role="target" class="sample block">A</span><span>after target</span><br>
+  <span id="block-control" data-role="control" class="sample">A</span><span>after control</span>
+</section>
+<section class="fixture hidden-pair" data-case-id="hidden">
+  <p>Hidden target should have no rendered box.</p>
+  <span id="hidden-target" data-role="target" class="sample hidden">A</span>
+  <span id="hidden-control" data-role="control" class="sample">A</span>
+</section>
+<section class="fixture inline-flex-pair" data-case-id="inline-flex">
+  <p>Inline flex target remains in the line and has flex display.</p>
+  <span>before</span><span id="inline-flex-target" data-role="target" class="sample inline-flex"><b>A</b><b>B</b></span><span>after</span><br>
+  <span>before</span><span id="inline-flex-control" data-role="control" class="sample"><b>A</b><b>B</b></span><span>after</span>
+</section>
+<section class="fixture" data-case-id="mx-auto">
+  <p>300px horizontal container, 80px fixed-width boxes.</p>
+  <div class="auto-container"><div id="mx-auto-target" data-role="target" class="sample mx-auto"></div></div>
+  <div class="auto-container"><div id="mx-auto-control" data-role="control" class="sample"></div></div>
+  <p>Vertical writing mode requires separate physical/logical axis measurement.</p>
+  <div class="auto-container vertical"><div id="mx-auto-vertical-ltr-target" class="sample mx-auto"></div></div>
+  <div class="auto-container vertical"><div id="mx-auto-vertical-ltr-control" class="sample"></div></div>
+  <div class="auto-container vertical rtl"><div id="mx-auto-vertical-rtl-target" class="sample mx-auto"></div></div>
+  <div class="auto-container vertical rtl"><div id="mx-auto-vertical-rtl-control" class="sample"></div></div>
+</section>
+<section class="fixture" data-case-id="grid-cols-2">
+  <p>Two explicit columns in a 200px grid, versus auto placement.</p>
+  <div id="grid-target" data-role="target" class="grid-box grid-cols-2"><span>A</span><span>B</span></div>
+  <div id="grid-control" data-role="control" class="grid-box"><span>A</span><span>B</span></div>
+</section>
+<section class="fixture" data-case-id="p-0-empty">
+  <p>Target zero padding versus 24px authored control.</p>
+  <div id="p-zero-target" data-role="target" class="sample pad-box p-0">A</div>
+  <div id="p-zero-control" data-role="control" class="sample pad-box">A</div>
+</section>
+<section class="fixture" data-case-id="named-spacing">
+  <div id="named-spacing-target" data-role="target" class="sample pad-box p-hsp-sm">A</div>
+  <div id="named-spacing-control" data-role="control" class="sample pad-box">A</div>
+</section>
+<section class="fixture" data-case-id="named-color">
+  <div id="named-color-target" data-role="target" class="color-box bg-surface">A</div>
+  <div id="named-color-control" data-role="control" class="color-box">A</div>
+</section>
+<section class="fixture" data-case-id="configured-p-4">
+  <div id="numeric-target" data-role="target" class="sample pad-box p-4">A</div>
+  <div id="numeric-control" data-role="control" class="sample pad-box">A</div>
+</section>
+<section class="fixture" data-case-id="hover-block">
+  <p>Hover must be observed in active and inactive states on a hover-capable device.</p>
+  <span id="hover-target" data-role="target" class="sample hover-box hover:block">A</span>
+  <span id="hover-control" data-role="control" class="sample hover-box">A</span>
+</section>
+<section class="fixture" data-case-id="breakpoint-block">
+  <p>Observe below, at, and above 640px viewport width.</p>
+  <span id="breakpoint-target" data-role="target" class="sample breakpoint-box sm:block">A</span>
+  <span id="breakpoint-control" data-role="control" class="sample breakpoint-box">A</span>
+</section>
+<section class="fixture" data-case-id="native-flex-1">
+  <div class="flex-box"><span id="flex-target" class="sample flex-1">A</span><span>B</span></div>
+  <div class="flex-box"><span id="flex-control" class="sample">A</span><span>B</span></div>
+</section>
+<section class="fixture" data-case-id="native-w-min">
+  <div class="intrinsic-box"><span id="intrinsic-target" class="sample w-min">intrinsic size</span></div>
+  <div class="intrinsic-box"><span id="intrinsic-control" class="sample">intrinsic size</span></div>
+</section>
+<section class="fixture" data-case-id="p-0-mapped">
+  <p>Use zero-mapping reference theme in an isolated document.</p>
+  <div id="p-zero-mapped-target" data-role="target" class="sample pad-box p-0">A</div>
+  <div id="p-zero-mapped-control" data-role="control" class="sample pad-box">A</div>
+</section>
+<section class="fixture" data-case-id="unconfigured-p-4">
+  <p>No spacingUnit: class remains without generated utility CSS.</p>
+  <div id="unconfigured-p-target" data-role="target" class="sample pad-box p-4">A</div>
+  <div id="unconfigured-p-control" data-role="control" class="sample pad-box">A</div>
+</section>
+<section class="fixture" data-case-id="undeclared-palette">
+  <div id="undeclared-palette-target" data-role="target" class="color-box bg-gray-500">A</div>
+  <div id="undeclared-palette-control" data-role="control" class="color-box">A</div>
+</section>
+<section class="fixture" data-case-id="contents-gap">
+  <div id="contents-target" data-role="target" class="contents sample">A</div>
+  <div id="contents-control" data-role="control" class="sample">A</div>
+</section>
+<section class="fixture" data-case-id="undeclared-named-defaults">
+  <div id="undeclared-font-target" class="font-sans">font-sans</div>
+  <div id="undeclared-radius-target" class="rounded-lg">rounded-lg</div>
+  <div id="undeclared-shadow-target" class="shadow-md">shadow-md</div>
+</section>
+</body>
+</html>
