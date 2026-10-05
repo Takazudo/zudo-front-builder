@@ -5,9 +5,267 @@ sidebar_position: 29
 generated: true
 ---
 
-Set physical inner spacing on every side, an axis, or an individual edge.
+Use padding to create room between an element’s content and its border. Choose all sides, a physical axis, or a single edge.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `p-4` | `padding-top: 1rem; padding-right: 1rem; padding-bottom: 1rem; padding-left: 1rem;` |
+| `px-8` | `padding-left: 2rem; padding-right: 2rem;` |
+| `py-2` | `padding-top: 0.5rem; padding-bottom: 0.5rem;` |
+| `pt-2` | `padding-top: 0.5rem;` |
+| `pr-4` | `padding-right: 1rem;` |
+| `pb-6` | `padding-bottom: 1.5rem;` |
+| `pl-8` | `padding-left: 2rem;` |
+
+<Details title={"Example setup"}>
+
+These examples explicitly use spacingUnit: "0.25rem", reset: "none", strict mode and no breakpoints. p-4 emits 1rem on each side; px-8 emits 2rem on the left and right. No Tailwind spacing scale or theme is inherited. The colored area and dashed content guide use authored wind-demo scaffold CSS, shown with each preview.
+
+</Details>
+
+## Examples in use
+
+### Add room on every side
+
+p-4 leaves 1rem between the content guide and each border.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell p-4\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ep-4 · 1rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n"} title={"Add room on every side"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### Set horizontal and vertical padding
+
+px-8 adds 2rem on the left and right; py-2 adds 0.5rem on the top and bottom.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell px-8 py-2\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003epx-8 py-2 · 2rem / 0.5rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.px-8 {\n  padding-left: 2rem;\n  padding-right: 2rem;\n}\n.py-2 {\n  padding-top: 0.5rem;\n  padding-bottom: 0.5rem;\n}\n"} title={"Set horizontal and vertical padding"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "px-8",
+        "py-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### Set individual edges
+
+Use pt, pr, pb and pl to control the four physical sides independently.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell pt-2 pr-4 pb-6 pl-8\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ept-2 pr-4 pb-6 pl-8 · 0.5 / 1 / 1.5 / 2rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.pb-6 {\n  padding-bottom: 1.5rem;\n}\n.pl-8 {\n  padding-left: 2rem;\n}\n.pr-4 {\n  padding-right: 1rem;\n}\n.pt-2 {\n  padding-top: 0.5rem;\n}\n"} title={"Set individual edges"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "pt-2",
+        "pr-4",
+        "pb-6",
+        "pl-8"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### Name reusable inner spacing
+
+The example explicitly configures tokens.spacing.card to 1.5rem.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell p-card\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ep-card · 1.5rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-card: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.p-card {\n  padding-top: var(--zw-spacing-card);\n  padding-right: var(--zw-spacing-card);\n  padding-bottom: var(--zw-spacing-card);\n  padding-left: var(--zw-spacing-card);\n}\n"} title={"Name reusable inner spacing"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "card": "1.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-card"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### Use a one-off length
+
+p-[18px] emits 18px on all four sides.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell p-[18px]\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ep-[18px] · 18px\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.p-\\[18px\\] {\n  padding-top: 18px;\n  padding-right: 18px;\n  padding-bottom: 18px;\n  padding-left: 18px;\n}\n"} title={"Use a one-off length"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-[18px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+## Custom and named values
+
+p-0 removes padding and p-px uses 1px without a spacing token. Other numeric suffixes need tokens.spacingUnit. Named values such as p-card need tokens.spacing; arbitrary values such as p-[18px] do not need that scale. The same value forms work for each axis and edge. Padding uses physical sides, not logical start/end directions, and never accepts negative values or auto. Use underscore encoding for spaces in arbitrary calc values.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## p
 
@@ -258,3 +516,5 @@ Set physical inner spacing on every side, an axis, or an individual edge.
 | Example class | Expected declarations |
 | --- | --- |
 | `pt-0` | `padding-top: 0` |
+
+</Details>

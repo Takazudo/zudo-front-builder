@@ -5,9 +5,267 @@ sidebar_position: 29
 generated: true
 ---
 
-全辺、軸、個別の辺に物理的な内側の余白を設定します。
+padding は内容と境界線の間に余白を作ります。全方向、物理的な軸、または個別の辺を指定できます。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `p-4` | `padding-top: 1rem; padding-right: 1rem; padding-bottom: 1rem; padding-left: 1rem;` |
+| `px-8` | `padding-left: 2rem; padding-right: 2rem;` |
+| `py-2` | `padding-top: 0.5rem; padding-bottom: 0.5rem;` |
+| `pt-2` | `padding-top: 0.5rem;` |
+| `pr-4` | `padding-right: 1rem;` |
+| `pb-6` | `padding-bottom: 1.5rem;` |
+| `pl-8` | `padding-left: 2rem;` |
+
+<Details title={"例の設定"}>
+
+この例では spacingUnit: "0.25rem"、reset: "none"、strict モード、空のブレークポイントを明示しています。p-4 は各辺に 1rem、px-8 は左右に 2rem を出力します。Tailwind のスケールやテーマは継承しません。色付きの余白と破線の内容ガイドは wind-demo の自作 CSS で、各プレビューから確認できます。
+
+</Details>
+
+## 使い方の例
+
+### 全方向に余白を作る
+
+p-4 は内容ガイドと各境界線の間に 1rem を作ります。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell p-4\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ep-4 · 1rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n"} title={"全方向に余白を作る"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-4"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### 水平と垂直の余白を変える
+
+px-8 は左右に 2rem、py-2 は上下に 0.5rem を追加します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell px-8 py-2\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003epx-8 py-2 · 2rem / 0.5rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.px-8 {\n  padding-left: 2rem;\n  padding-right: 2rem;\n}\n.py-2 {\n  padding-top: 0.5rem;\n  padding-bottom: 0.5rem;\n}\n"} title={"水平と垂直の余白を変える"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "px-8",
+        "py-2"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### 辺ごとに指定する
+
+pt、pr、pb、pl で四つの物理的な辺を個別に制御します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell pt-2 pr-4 pb-6 pl-8\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ept-2 pr-4 pb-6 pl-8 · 0.5 / 1 / 1.5 / 2rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.pb-6 {\n  padding-bottom: 1.5rem;\n}\n.pl-8 {\n  padding-left: 2rem;\n}\n.pr-4 {\n  padding-right: 1rem;\n}\n.pt-2 {\n  padding-top: 0.5rem;\n}\n"} title={"辺ごとに指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "pt-2",
+        "pr-4",
+        "pb-6",
+        "pl-8"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### 内側の余白に名前を付ける
+
+tokens.spacing.card に 1.5rem を明示的に設定しています。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell p-card\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ep-card · 1.5rem\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-card: 1.5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.p-card {\n  padding-top: var(--zw-spacing-card);\n  padding-right: var(--zw-spacing-card);\n  padding-bottom: var(--zw-spacing-card);\n  padding-left: var(--zw-spacing-card);\n}\n"} title={"内側の余白に名前を付ける"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem",
+      "spacing": {
+        "card": "1.5rem"
+      }
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-card"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+### 個別の長さを指定する
+
+p-[18px] は四辺すべてに 18px を出力します。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo wind-demo-cell p-[18px]\"\u003e\n  \u003cdiv class=\"wind-demo-content\"\u003ep-[18px] · 18px\u003c/div\u003e\n\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-cell {\n  background: #dce8f2;\n  border: 1px solid #849bb3;\n  min-width: 3rem;\n  text-align: center;\n}\n\n.wind-demo-content {\n  background: #fff;\n  border: 1px dashed #849bb3;\n}\n.p-\\[18px\\] {\n  padding-top: 18px;\n  padding-right: 18px;\n  padding-bottom: 18px;\n  padding-left: 18px;\n}\n"} title={"個別の長さを指定する"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo": true,
+      "wind-demo-cell": true,
+      "wind-demo-content": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "p-[18px]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo { font: 14px/1.5 system-ui, sans-serif; color: #203046; }
+.wind-demo-cell { background: #dce8f2; border: 1px solid #849bb3; min-width: 3rem; text-align: center; }
+.wind-demo-content { background: #fff; border: 1px dashed #849bb3; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+p-0 は余白をなくし、p-px はトークンなしで 1px を指定します。それ以外の数値には tokens.spacingUnit が必要です。p-card のような名前付きの値は tokens.spacing で設定します。p-[18px] などの任意値はスケール不要です。同じ値の形式を各軸と各辺で使えます。padding は論理的な始端・終端ではなく物理的な辺に作用し、負の値や auto は使えません。任意値の calc 内の空白はアンダースコアで表します。
 
 **関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
 
 ## p
 
@@ -258,3 +516,5 @@ generated: true
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `pt-0` | `padding-top: 0` |
+
+</Details>

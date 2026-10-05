@@ -94,6 +94,45 @@
       "cssSha256": "97fe8319b48b6ac29660636d3e54d71d782035176f6e1c81836fc18304008477"
     },
     {
+      "family": "gap",
+      "id": "axis-gap",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "42d13e46367da2debaad2c7f2b238074977c49e22284b853e0acc1d37360fe32",
+      "inputSha256": "5869404aa8cf83ca496c0f60464c854ada8f731455fde4e6e9f4fdb86770f5cc",
+      "configSha256": "15166f11091da776d8ee104c876ff375688355f2f76370868f795dee0146cb25",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/gap/axis-gap.css",
+      "htmlPath": "wind-examples/gap/axis-gap.html",
+      "cssSha256": "99c70f4a374ac8c4da74f6a664bf403467a01c6b7931a75d7a85234bd15b7f1b"
+    },
+    {
+      "family": "gap",
+      "id": "custom-gap",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "c3ec0cddfb0b25b6e1780c42a76c6186e9a8d5eaa9cd6e19a6595145f5360e19",
+      "inputSha256": "5869404aa8cf83ca496c0f60464c854ada8f731455fde4e6e9f4fdb86770f5cc",
+      "configSha256": "894c868fd33ea347d19a8ba8593a6cd25f3cc949a74369a99b90225df6744cc1",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/gap/custom-gap.css",
+      "htmlPath": "wind-examples/gap/custom-gap.html",
+      "cssSha256": "50c5924ba1dcfe980de8d607e6a4cd7e38bac688e633a7ef4c4781f4c1b9fd3b"
+    },
+    {
+      "family": "gap",
+      "id": "arbitrary-gap",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "7d938da32a4fc80b86f3e9d780a869149c55fd0b7d762314cfa3966aaa78e15a",
+      "inputSha256": "5869404aa8cf83ca496c0f60464c854ada8f731455fde4e6e9f4fdb86770f5cc",
+      "configSha256": "265a98bc3b0b04701da13a5b4fecf8d6feeac186c934170f66cacea3864ce1cd",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/gap/arbitrary-gap.css",
+      "htmlPath": "wind-examples/gap/arbitrary-gap.html",
+      "cssSha256": "5fa0c122693c734dddb614d9f810f6d438f2945bdbddbda0304b369eb844b147"
+    },
+    {
       "family": "padding",
       "id": "all-sides",
       "kind": "positive",
@@ -105,6 +144,58 @@
       "cssPath": "wind-examples/padding/all-sides.css",
       "htmlPath": "wind-examples/padding/all-sides.html",
       "cssSha256": "a553d4183ca2980b533d386857d52ae682ddb1ece731014c2e7e5ed73ffca96c"
+    },
+    {
+      "family": "padding",
+      "id": "axis-padding",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "8de3eb2b12502bb121534b04bd12288d56b635bce333e2de37918e93ce8f855f",
+      "inputSha256": "4b1fb7acc3817b975ccdecc5505ec5e87c5721e505ba2275bee15776bad863dd",
+      "configSha256": "3dd9ac1485c99c9acf712ecd8cb54b1e9494c2e599ca243a925bbeba3b7b3f8d",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/padding/axis-padding.css",
+      "htmlPath": "wind-examples/padding/axis-padding.html",
+      "cssSha256": "01779415c751f107fcea24aea51c70a4a4202181b99038734e942749afddfe1a"
+    },
+    {
+      "family": "padding",
+      "id": "edge-padding",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "4019b32d1c72073e3be6442aff27cd9f136d0c0dd4e9302a2804f3cd11f6f0e4",
+      "inputSha256": "4b1fb7acc3817b975ccdecc5505ec5e87c5721e505ba2275bee15776bad863dd",
+      "configSha256": "cdcddb3a74a7dc52b14546c7fc937629798b9e87754fbd0699d5d0c7b038766a",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/padding/edge-padding.css",
+      "htmlPath": "wind-examples/padding/edge-padding.html",
+      "cssSha256": "a59c7bb469e83b6d824357297891007995704812f15059e13a48631f9b504221"
+    },
+    {
+      "family": "padding",
+      "id": "custom-padding",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "7adefefd3096f3bc67a8cc0203b7ffd0be56e8717a3c7c41f9180ff5f4d78ab3",
+      "inputSha256": "4b1fb7acc3817b975ccdecc5505ec5e87c5721e505ba2275bee15776bad863dd",
+      "configSha256": "6eef332717cb6eacb14427b1bdbdc73d5bf7365dccc353db3aef2084b87f69a3",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/padding/custom-padding.css",
+      "htmlPath": "wind-examples/padding/custom-padding.html",
+      "cssSha256": "e632d18e61f8d4c9cb4b2cd3f4e83f9060972490ea48f474f835c7c0c4f5207e"
+    },
+    {
+      "family": "padding",
+      "id": "arbitrary-padding",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "c4432c5278e4b1e892f9e8e8d5398b2f96dca1f425afe9a7b767cdaec7cf8c4c",
+      "inputSha256": "4b1fb7acc3817b975ccdecc5505ec5e87c5721e505ba2275bee15776bad863dd",
+      "configSha256": "9c7cf742706bdba6d0f4510bbb5a767d1b74585b89a6bccbed96ba9e7f05056d",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/padding/arbitrary-padding.css",
+      "htmlPath": "wind-examples/padding/arbitrary-padding.html",
+      "cssSha256": "1dfa16fca7e583622ec78cfba213d201e7f4714e96bf82eee349bdfbe5315028"
     }
   ]
 }
