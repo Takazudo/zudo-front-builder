@@ -581,6 +581,31 @@ pub(crate) fn declared_package_root_watch_paths(
         .collect()
 }
 
+/// Resolved project roots for the direct CSS walk and dev's recursive watch.
+/// The source plan performs authoritative validation; this snapshot is only
+/// used to arm watches and collect module import sources ahead of indexing.
+pub(crate) fn declared_project_root_paths(project_root: &Path, config: &Config) -> Vec<PathBuf> {
+    let Some(WindSetting::Enabled(wind)) = &config.wind else {
+        return Vec::new();
+    };
+    let project_root = zfb_types::normalize_path_lexical(project_root);
+    let mut roots = BTreeSet::new();
+    for declaration in wind.source_declarations() {
+        let Ok(dir) = resolve_source_declaring_dir(
+            wind.declaring_dir(&project_root),
+            declaration.source_package.as_deref(),
+        ) else {
+            continue;
+        };
+        for root in &declaration.sources.roots {
+            if let Ok(path) = resolve_declared_project_root(&dir, root) {
+                roots.insert(path);
+            }
+        }
+    }
+    roots.into_iter().collect()
+}
+
 /// Read workspace claims and declared manifests. The caller supplies already computed routes and mirrors.
 pub(crate) fn gather_css_source_plan_inputs(
     project_root: &Path,

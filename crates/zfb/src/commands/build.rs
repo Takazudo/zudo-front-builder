@@ -1402,8 +1402,14 @@ fn build_css_payload_with_index(
     on_source_plan(&sibling_mirror_roots);
 
     let framework_css = resolve_framework_css(config);
-    let sources =
-        discover_css_source_files(project_root, plugin_alias_entries, &discovered_graph_files);
+    let project_source_roots =
+        crate::commands::css_source_plan::declared_project_root_paths(project_root, config);
+    let sources = discover_css_source_files(
+        project_root,
+        plugin_alias_entries,
+        &discovered_graph_files,
+        &project_source_roots,
+    );
     let authored_started = Instant::now();
     let authored = if let Some(path) = resolve_input_global_css(project_root) {
         let raw = std::fs::read_to_string(&path)
@@ -1780,6 +1786,7 @@ fn discover_css_source_files(
     // a project with no registered virtual modules — byte-identical to
     // before.
     discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
+    declared_project_roots: &[PathBuf],
 ) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     // page-extension-drift-guard: allow — the CSS/wind source discovery
@@ -1799,6 +1806,32 @@ fn discover_css_source_files(
                 continue;
             }
             push_if_matching_extension(entry.into_path(), &extensions, &mut out);
+        }
+    }
+
+    // Project roots use ordinary gitignore/infra rules, unlike packageRoots.
+    // Avoid a second walk for roots already covered by the conventional set.
+    for root in declared_project_roots {
+        if zfb_css::engine::DEFAULT_CONTENT_ROOTS
+            .iter()
+            .any(|default| root.starts_with(project_root.join(default)))
+        {
+            continue;
+        }
+        let walker = ignore::WalkBuilder::new(root)
+            .standard_filters(true)
+            .require_git(false)
+            .filter_entry(|entry| {
+                !entry.file_type().is_some_and(|ft| ft.is_dir())
+                    || !CSS_SIBLING_MIRROR_SKIP_DIRS
+                        .iter()
+                        .any(|skip| entry.file_name() == std::ffi::OsStr::new(skip))
+            })
+            .build();
+        for entry in walker.flatten() {
+            if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                push_if_matching_extension(entry.into_path(), &extensions, &mut out);
+            }
         }
     }
 
@@ -1963,8 +1996,12 @@ pub(crate) fn compute_css_module_class_maps(
     // not short-circuited by the `sources.is_empty()` gate below.
     let direct_css_modules = discovered_direct_css_modules(discovered_graph_files);
 
-    let sources =
-        discover_css_source_files(project_root, plugin_alias_entries, discovered_graph_files);
+    let sources = discover_css_source_files(
+        project_root,
+        plugin_alias_entries,
+        discovered_graph_files,
+        &[],
+    );
     if sources.is_empty() && direct_css_modules.is_empty() {
         return Ok(HashMap::new());
     }
@@ -8410,13 +8447,36 @@ mod tests {
     }
 
     #[test]
+    fn declared_css_root_walks_ordinary_sources_but_skips_declarations_and_ignored_files() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path();
+        let widgets = project.join("widgets");
+        std::fs::create_dir_all(&widgets).unwrap();
+        std::fs::write(widgets.join("card.tsx"), "export const card = 'p-1';").unwrap();
+        std::fs::write(widgets.join("card.test.ts"), "export const test = 'p-2';").unwrap();
+        std::fs::write(
+            widgets.join("card.d.ts"),
+            "export declare const card: string;",
+        )
+        .unwrap();
+        std::fs::write(widgets.join("ignored.tsx"), "export const ignored = 'p-3';").unwrap();
+        std::fs::write(project.join(".gitignore"), "widgets/ignored.tsx\n").unwrap();
+
+        let sources = discover_css_source_files(project, &[], &BTreeSet::new(), &[widgets.clone()]);
+        assert!(sources.contains(&widgets.join("card.tsx")));
+        assert!(sources.contains(&widgets.join("card.test.ts")));
+        assert!(!sources.contains(&widgets.join("card.d.ts")));
+        assert!(!sources.contains(&widgets.join("ignored.tsx")));
+    }
+
+    #[test]
     fn css_root_package_channel_is_inert_without_dot_workspace_claim() {
         let tmp = tempdir().unwrap();
         let project = write_css_root_claim_workspace(tmp.path(), "  - 'styleguide'\n");
         let root_source = tmp.path().join("root-only.tsx");
         std::fs::write(&root_source, "export const rootOnly = true;\n").unwrap();
 
-        let sources = discover_css_source_files(&project, &[], &BTreeSet::new());
+        let sources = discover_css_source_files(&project, &[], &BTreeSet::new(), &[]);
 
         assert!(!sources.contains(&root_source));
     }
@@ -8440,7 +8500,7 @@ mod tests {
         let sibling_source = sibling.join("sibling.tsx");
         std::fs::write(&sibling_source, "export const sibling = true;\n").unwrap();
 
-        let sources = discover_css_source_files(&project, &[], &BTreeSet::new());
+        let sources = discover_css_source_files(&project, &[], &BTreeSet::new(), &[]);
 
         assert!(sources.contains(&root_source));
         assert!(!sources.contains(&sibling_source));
@@ -8457,7 +8517,7 @@ mod tests {
         let dependency_source = dependency.join("leak.tsx");
         std::fs::write(&dependency_source, "export const leak = true;\n").unwrap();
 
-        let sources = discover_css_source_files(&project, &[], &BTreeSet::new());
+        let sources = discover_css_source_files(&project, &[], &BTreeSet::new(), &[]);
 
         assert!(sources.contains(&root_source));
         assert!(!sources.contains(&dependency_source));
