@@ -5,9 +5,175 @@ sidebar_position: 55
 generated: true
 ---
 
-Choose the property set used by a transition and its built-in timing defaults.
+Choose which CSS properties change smoothly when a state or value changes. Pair a transition utility with state variants such as hover or focus-visible on a real control.
+
+## Quick reference
+
+| Example class | Expected declarations |
+| --- | --- |
+| `transition-colors` | `transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke; transition-duration: 150ms; transition-timing-function: ease;` |
+
+<Details title={"Example setup"}>
+
+Every preview uses spec: 1, reset: "none", strict mode, an explicit spacingUnit of "0.25rem", no breakpoints, and defaultTransitionTimingFunction: "ease". Transition utilities other than transition-none set 150ms and use that configured timing function. Buttons respond to both pointer hover and keyboard focus. The authored demo CSS removes transition time when prefers-reduced-motion is reduce; the utility examples use only short, user-triggered changes.
+
+</Details>
+
+## Examples in use
+
+<WindPreviewEnhancer />
+
+### Respond to hover and keyboard focus
+
+transition-colors uses the built-in 150ms and ease defaults while the button background changes on hover or focus-visible.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-colors hover:bg-[#dbeafe] focus-visible:bg-[#dbeafe]\"\u003eSave changes\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-colors {\n  transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke;\n  transition-duration: 150ms;\n  transition-timing-function: ease;\n}\n@media (hover: hover) {\n  .hover\\:bg-\\[\\#dbeafe\\]:hover {\n    background-color: #dbeafe;\n  }\n}\n.focus-visible\\:bg-\\[\\#dbeafe\\]:focus-visible {\n  background-color: #dbeafe;\n}\n"} title={"Respond to hover and keyboard focus"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-colors",
+        "hover:bg-[#dbeafe]",
+        "focus-visible:bg-[#dbeafe]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+### Transition one chosen property
+
+transition-[border-color] narrows the animated property set; the same focus and hover state changes the border color.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-[border-color] hover:border-[#1d4ed8] focus-visible:border-[#1d4ed8]\"\u003eShow the outline change\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-\\[border-color\\] {\n  transition-property: border-color;\n  transition-duration: 150ms;\n  transition-timing-function: ease;\n}\n@media (hover: hover) {\n  .hover\\:border-\\[\\#1d4ed8\\]:hover {\n    border-top-color: #1d4ed8;\n    border-right-color: #1d4ed8;\n    border-bottom-color: #1d4ed8;\n    border-left-color: #1d4ed8;\n  }\n}\n.focus-visible\\:border-\\[\\#1d4ed8\\]:focus-visible {\n  border-top-color: #1d4ed8;\n  border-right-color: #1d4ed8;\n  border-bottom-color: #1d4ed8;\n  border-left-color: #1d4ed8;\n}\n"} title={"Transition one chosen property"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-[border-color]",
+        "hover:border-[#1d4ed8]",
+        "focus-visible:border-[#1d4ed8]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+### Skip interpolation
+
+transition-none makes the same state change immediate. It emits no duration or timing-function declarations.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-motion\"\u003e\u003cbutton type=\"button\" class=\"wind-demo-trigger transition-none hover:bg-[#dbeafe] focus-visible:bg-[#dbeafe]\"\u003eChange without interpolation\u003c/button\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-motion {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 1rem;\n  max-width: 38rem;\n  color: #24364b;\n  font: 15px / 1.5 system-ui, sans-serif;\n}\n\n.wind-demo-motion button {\n  min-width: 9rem;\n  border: 1px solid #526477;\n  border-radius: .35rem;\n  background: #eef3f8;\n  color: inherit;\n  padding: .65rem .9rem;\n  font: inherit;\n  text-align: left;\n}\n\n.wind-demo-motion button:focus-visible {\n  outline: 3px solid #1670b8;\n  outline-offset: 3px;\n}\n\n.wind-demo-motion .wind-demo-trigger {\n  cursor: pointer;\n}\n\n@media (prefers-reduced-motion: reduce) {\n  .wind-demo-motion .wind-demo-trigger {\n    transition-duration: 0s !important;\n  }\n}\n.transition-none {\n  transition-property: none;\n}\n@media (hover: hover) {\n  .hover\\:bg-\\[\\#dbeafe\\]:hover {\n    background-color: #dbeafe;\n  }\n}\n.focus-visible\\:bg-\\[\\#dbeafe\\]:focus-visible {\n  background-color: #dbeafe;\n}\n"} title={"Skip interpolation"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-motion": true,
+      "wind-demo-trigger": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "transition-none",
+        "hover:bg-[#dbeafe]",
+        "focus-visible:bg-[#dbeafe]"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-motion { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; max-width: 38rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }
+.wind-demo-motion button { min-width: 9rem; border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; color: inherit; padding: 0.65rem 0.9rem; font: inherit; text-align: left; }
+.wind-demo-motion button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+.wind-demo-motion .wind-demo-trigger { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .wind-demo-motion .wind-demo-trigger { transition-duration: 0s !important; } }
+```
+
+</Details>
+
+## Custom and named values
+
+transition, transition-all, transition-colors, transition-opacity, transition-shadow, transition-transform, and transition-none are the supported keywords. A one-off property list can use an arbitrary form such as transition-[border-color]. No named transition-property tokens are built in. transition-none emits only transition-property: none, so it does not set the default duration or easing.
 
 **Related guides:** [Utility grammar](../utility-grammar.mdx) · [Variants](../variants.mdx)
+
+<Details title={"Catalog details"}>
 
 ## transition
 
@@ -50,3 +216,5 @@ Choose the property set used by a transition and its built-in timing defaults.
 | Example class | Expected declarations |
 | --- | --- |
 | `transition-colors` | `transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke`; `transition-duration: 150ms`; `transition-timing-function: ease` |
+
+</Details>
