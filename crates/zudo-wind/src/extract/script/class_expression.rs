@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::Collector;
-use super::emit;
+use super::{emit, JsxSpans};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Kind {
@@ -30,11 +30,15 @@ const PUNCTS: &[&str] = &[
     ">>",
 ];
 
-fn tokenize(text: &str, from: usize, to: usize) -> Vec<Token> {
+fn tokenize(text: &str, from: usize, to: usize, jsx: &JsxSpans) -> Vec<Token> {
     let bytes = text.as_bytes();
     let mut tokens: Vec<Token> = Vec::new();
     let mut i = from;
     while i < to {
+        if let Some(end) = jsx.text_end(i) {
+            i = end.min(to);
+            continue;
+        }
         let byte = bytes[i];
         if byte.is_ascii_whitespace() {
             i += 1;
@@ -50,9 +54,14 @@ fn tokenize(text: &str, from: usize, to: usize) -> Vec<Token> {
         }
         let start = i;
         if byte == b'"' || byte == b'\'' {
+            let direct_jsx = jsx.quotes.contains(&i);
             i += 1;
-            while i < to && bytes[i] != byte && bytes[i] != b'\n' {
-                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            while i < to && bytes[i] != byte && (direct_jsx || bytes[i] != b'\n') {
+                i += if !direct_jsx && bytes[i] == b'\\' {
+                    2
+                } else {
+                    1
+                };
             }
             i = (i + 1).min(to);
             tokens.push(Token {
@@ -432,11 +441,17 @@ pub(super) struct Module<'a> {
     tokens: Vec<Token>,
     bindings: Bindings,
     class_helpers: BTreeSet<String>,
+    jsx: &'a JsxSpans,
 }
 
 impl<'a> Module<'a> {
-    pub(super) fn new(text: &'a str, base: usize, class_helpers: BTreeSet<String>) -> Self {
-        let tokens = tokenize(text, 0, text.len());
+    pub(super) fn new(
+        text: &'a str,
+        base: usize,
+        class_helpers: BTreeSet<String>,
+        jsx: &'a JsxSpans,
+    ) -> Self {
+        let tokens = tokenize(text, 0, text.len(), jsx);
         let bindings = Bindings::collect(text, &tokens);
         Self {
             text,
@@ -444,6 +459,7 @@ impl<'a> Module<'a> {
             tokens,
             bindings,
             class_helpers,
+            jsx,
         }
     }
 
@@ -738,6 +754,7 @@ impl<'a> Module<'a> {
             false,
             false,
             false,
+            true,
         );
     }
 
@@ -767,6 +784,7 @@ impl<'a> Module<'a> {
                         false,
                         false,
                         left,
+                        true,
                     );
                     return;
                 }
@@ -783,6 +801,7 @@ impl<'a> Module<'a> {
                         false,
                         true,
                         left,
+                        true,
                     );
                     let end = interpolation_end(self.text, i + 2, token.end);
                     let body_end = if self.text[..end].ends_with('}') {
@@ -790,7 +809,7 @@ impl<'a> Module<'a> {
                     } else {
                         end
                     };
-                    let inner = tokenize(self.text, i + 2, body_end.max(i + 2));
+                    let inner = tokenize(self.text, i + 2, body_end.max(i + 2), self.jsx);
                     self.expression(&inner, out, visiting);
                     segment = end;
                     left = true;

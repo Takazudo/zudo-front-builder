@@ -44,6 +44,179 @@ fn assert_literal(result: &ExtractionResult, text: &str) {
 }
 
 #[test]
+fn multiline_direct_jsx_quotes_keep_complete_class_spans_and_raw_positions() {
+    let source = concat!(
+        "// 😀 prefix\n",
+        "const View = () => <>\n",
+        "  <div title=\"ordinary\" className=\" \r\n",
+        "    border-t-[8px]  min-w-[30%]\r\n",
+        "\r\n",
+        "    -mt-[1px] missing- \r\n",
+        "  \" data-x=\"other\" />\n",
+        "  <span class='\n    flex\n    gap-2\n  '>text <b class=\"\n    block\n  \" /></span>\n",
+        "  {active && <i class='\n    p-2\n  ' />}\n",
+        "  <button {...props} class=\"\n    gap-3\n  \" />\n",
+        "</>;\n",
+    );
+    let result = extract(source);
+    for text in [
+        "border-t-[8px]",
+        "min-w-[30%]",
+        "-mt-[1px]",
+        "flex",
+        "gap-2",
+        "block",
+        "p-2",
+        "gap-3",
+    ] {
+        assert_class(&result, text);
+        let occurrences = &result
+            .candidates
+            .iter()
+            .find(|candidate| candidate.text == text)
+            .unwrap()
+            .occurrences;
+        assert_eq!(occurrences.len(), 1, "{text}: {occurrences:?}");
+        let found = &occurrences[0];
+        assert_eq!(found.byte_offset, source.find(text).unwrap(), "{text}");
+        assert_eq!(found.byte_length, text.len(), "{text}");
+        assert_eq!(
+            &source[found.byte_offset..found.byte_offset + found.byte_length],
+            text
+        );
+        let literal = &source
+            [found.literal_byte_offset..found.literal_byte_offset + found.literal_byte_length];
+        assert!(
+            (literal.starts_with('\'') && literal.ends_with('\''))
+                || (literal.starts_with('"') && literal.ends_with('"'))
+        );
+        assert!(literal.contains(text), "{text}: {literal:?}");
+    }
+    let missing = result
+        .notes
+        .iter()
+        .find(|note| note.kind == NoteKind::MalformedClassCandidate && note.text == "missing-")
+        .expect("malformed class note");
+    assert_eq!(missing.byte_offset, source.find("missing-").unwrap());
+    let before = &source[..missing.byte_offset];
+    assert_eq!(missing.line, before.matches('\n').count() + 1);
+    assert_eq!(
+        missing.byte_column,
+        before
+            .rfind('\n')
+            .map_or(before.len() + 1, |at| before.len() - at)
+    );
+}
+
+#[test]
+fn preceding_quoted_attributes_and_unicode_tags_keep_jsx_context() {
+    let mut options = ExtractionOptions::default();
+    options.ignore_attributes.insert("data-preview".into());
+    let source = concat!(
+        "const View = () => <>\n",
+        "  <日本 title=\"path\\\" data-preview=\"\n    hidden\n  \" class=\"\n    block\n  \" />\n",
+        "  <div title=\"path\\\" className='\n    flex\n  ' />\n",
+        "</>;\n",
+    );
+    let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Tsx, &options);
+    for text in ["block", "flex"] {
+        assert_class(&result, text);
+        let found = &result
+            .candidates
+            .iter()
+            .find(|c| c.text == text)
+            .unwrap()
+            .occurrences;
+        assert_eq!(found.len(), 1, "{text}: {found:?}");
+        assert_eq!(found[0].byte_offset, source.find(text).unwrap());
+    }
+    assert!(kinds(&result, "hidden").is_empty(), "{result:?}");
+}
+
+#[test]
+fn nested_jsx_expression_and_raw_text_do_not_leak_tag_context() {
+    let source = concat!(
+        "const v = <div>{ok && <span><b class=\"\n block\n\" /></span>}</div>;\n",
+        "const n = left < Widget class=\"bad\n min-w-[30%]\";\n",
+    );
+    let result = extract(source);
+    assert_class(&result, "block");
+    assert!(
+        kinds(&result, "min-w-[30%]")
+            .iter()
+            .all(|kind| *kind != PositionKind::Class),
+        "{result:?}"
+    );
+    let text = "const v = <p>don't / https://x /* words */ <b class=\"\n flex\n\" /></p>;";
+    let result = extract(text);
+    assert_class(&result, "flex");
+    let nested_attribute = "const v = <Widget child={<div>don't https://x <b class=\"\n block\n\" /></div>} class=\"\n flex\n\" />;";
+    let result = extract(nested_attribute);
+    assert_class(&result, "block");
+    assert_class(&result, "flex");
+}
+
+#[test]
+fn multiline_jsx_span_does_not_reclassify_javascript_or_other_attributes() {
+    let mut options = ExtractionOptions::default();
+    options.ignore_attributes.insert("data-preview".into());
+    for (source, text) in [
+        (
+            "const ordinary = \"first\n  border-t-[8px]\";",
+            "border-t-[8px]",
+        ),
+        (
+            "const comparison = lhs < Widget class=\"bad\n  min-w-[30%]\";",
+            "min-w-[30%]",
+        ),
+        (
+            "const generic = make<Widget class=\"bad\n  -mt-[1px]\">();",
+            "-mt-[1px]",
+        ),
+        ("const re = /<Widget class=\"bad\"/;", "bad"),
+        (
+            "const text = '<Widget class=\"bad\">'; const ordinary = \"first\n  grid\";",
+            "grid",
+        ),
+        (
+            "const quoted = '<Widget>'; const compare = lhs > rhs < Widget class=\"bad\n  gap-7\";",
+            "gap-7",
+        ),
+        (
+            "const View = () => <div class={\"first\n    animate-spin\"} />;",
+            "animate-spin",
+        ),
+    ] {
+        let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Tsx, &options);
+        assert!(
+            kinds(&result, text)
+                .iter()
+                .all(|kind| *kind != PositionKind::Class),
+            "{source}: {result:?}"
+        );
+    }
+    let source = concat!(
+        "const View = () => <>\n",
+        "  <Widget data-preview=\"\n    hidden\n  \" title=\"\n    grid\n  \" />\n",
+        "  <div className=\"\n    flex\n  \" />\n",
+        "</>;\n",
+    );
+    let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Tsx, &options);
+    assert_class(&result, "flex");
+    for text in ["hidden", "grid"] {
+        assert!(
+            kinds(&result, text)
+                .iter()
+                .all(|kind| *kind != PositionKind::Class),
+            "{text}: {result:?}"
+        );
+    }
+    let escaped_js = extract("const View = () => <div class={\"p-2\\\n m-2\"} />;");
+    assert_class(&escaped_js, "p-2");
+    assert_class(&escaped_js, "m-2");
+}
+
+#[test]
 fn conditional_branches_inside_a_class_template_are_class_positions() {
     let result = extract(
         r#"export const B = ({ isActive }) => (
