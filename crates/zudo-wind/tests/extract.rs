@@ -15,6 +15,7 @@ fn configured_ignored_attributes_skip_preview_literals_and_embedded_markup() {
             "data-preview",
             "preview:html",
             "étiquette",
+            "e\u{301}tiquette",
         ]
         .map(str::to_owned),
     );
@@ -54,13 +55,14 @@ fn configured_ignored_attributes_skip_preview_literals_and_embedded_markup() {
             .any(|o| o.position_kind == PositionKind::Class));
     }
     let ordinary = extract_candidates_with_options(
-        b"const html = 'flex'; const title = 'grid'; widget.html = 'block';",
+        b"const html = 'flex'; const title = 'grid'; widget.html = 'block'; { let html; html = 'p-2'; }",
         SourceKind::Ts,
         &options,
     );
     assert!(ordinary.candidates.iter().any(|c| c.text == "flex"));
     assert!(ordinary.candidates.iter().any(|c| c.text == "grid"));
     assert!(ordinary.candidates.iter().any(|c| c.text == "block"));
+    assert!(ordinary.candidates.iter().any(|c| c.text == "p-2"));
     let named = extract_candidates_with_options(
         br#"const node = <Preview data-preview="hidden" preview:html="block" displayJs="grid" />;"#,
         SourceKind::Tsx,
@@ -73,6 +75,45 @@ fn configured_ignored_attributes_skip_preview_literals_and_embedded_markup() {
         &options,
     );
     assert!(unicode.candidates.is_empty(), "{unicode:?}");
+    let decomposed = extract_candidates_with_options(
+        "<Preview e\u{301}tiquette=\"hidden\" />".as_bytes(),
+        SourceKind::Tsx,
+        &options,
+    );
+    assert!(decomposed.candidates.is_empty(), "{decomposed:?}");
+}
+
+#[test]
+fn ignored_jsx_expression_excludes_nested_literals_and_class_helpers() {
+    let mut options = ExtractionOptions::default();
+    options.ignore_attributes.insert("html".into());
+    options.class_helpers.insert("ctl".into());
+    let source = r#"const s = '<Preview';
+let html; html = 'p-2';
+let html2; html2 = 'm-2';
+const View = () => <>
+  <Preview title=">" html={renderPreview('<div class="hidden">')} />
+  <Preview html={condition ? '<div class="hidden">' : '<div class="grid">'} />
+  <Preview html={renderPreview('<div class="bg-red-500">')} />
+  <Preview html={`<i class="bg-blue-500">${ctl('text-xl')}</i>`} />
+  <Preview html={ctl('border-2')} />
+  <div className="flex missing-real" />
+</>;"#;
+    let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Tsx, &options);
+    let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+    for kept in ["p-2", "m-2", "flex", "missing-real"] {
+        assert!(found.contains(&kept), "{kept}: {found:?}");
+    }
+    for ignored in [
+        "hidden",
+        "grid",
+        "bg-red-500",
+        "bg-blue-500",
+        "text-xl",
+        "border-2",
+    ] {
+        assert!(!found.contains(&ignored), "{ignored}: {found:?}");
+    }
 }
 
 fn names(bytes: &[u8], kind: SourceKind) -> Vec<String> {

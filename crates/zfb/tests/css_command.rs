@@ -1690,10 +1690,25 @@ fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
     );
 
     fs::write(temp.path().join("entry.css"), "").unwrap();
+    let rejected = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
+    assert_failure(&rejected, "real invalid MDX class");
+    let rejection = combined_output(&rejected);
+    assert!(
+        rejection.contains("ZW006") && rejection.contains("bg-missing-real"),
+        "{rejection}"
+    );
+    fs::write(
+        temp.path().join("src/demo.mdx"),
+        r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
+<div class="flex p-2">Real content</div>
+"#,
+    )
+    .unwrap();
     let css = run_css(temp.path(), "entry.css", "out.css", Some("."), &[], &[]);
     assert_success(&css, "mixed MDX CSS");
     let emitted = fs::read_to_string(temp.path().join("out.css")).unwrap();
     assert!(emitted.contains(".flex"), "{emitted}");
+    assert!(emitted.contains(".p-2"), "{emitted}");
     assert!(!emitted.contains("bg-missing-preview"), "{emitted}");
 }
 

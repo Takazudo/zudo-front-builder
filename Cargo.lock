@@ -6262,4 +6262,5 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-id-start",
 ]

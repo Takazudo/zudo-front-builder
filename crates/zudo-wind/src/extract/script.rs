@@ -5,8 +5,63 @@ use super::{Collector, NoteKind, PositionKind};
 /// Scans every literal, then upgrades the complete strings whose value
 /// provably reaches a class attribute to class positions.
 pub(super) fn scan(source: &str, base: usize, out: &mut Collector<'_>) {
+    let masked = mask_ignored_attribute_expressions(source, &out.options.ignore_attributes);
+    let source = masked.as_deref().unwrap_or(source);
     scan_literals(source, base, out);
     class_expression::Module::new(source, base, out.options.class_helpers.clone()).scan(out);
+}
+
+/// Hide the complete expression of a known non-class JSX prop from both
+/// scanners. Literal context checks alone cannot see through a conditional or
+/// helper call nested inside `html={...}`.
+fn mask_ignored_attribute_expressions(
+    source: &str,
+    ignore_attributes: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut changed = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"//") {
+            i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i = source[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + n + 4);
+            continue;
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'{' && known_non_class_context(&source[..=i], ignore_attributes) {
+            let end = expression_end(source, i + 1);
+            for byte in &mut masked[i..end] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+            changed = true;
+            i = end;
+            continue;
+        }
+        i += source[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    changed.then(|| String::from_utf8(masked).expect("mask preserves UTF-8"))
 }
 
 fn scan_literals(source: &str, base: usize, out: &mut Collector<'_>) {
@@ -188,7 +243,8 @@ pub(super) fn known_non_class_context(
     let before = before.trim_end();
     let name = before
         .rsplit(|c: char| {
-            !(c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '\u{200c}' | '\u{200d}'))
+            !(unicode_id_start::is_id_continue(c)
+                || matches!(c, '_' | '-' | ':' | '\u{200c}' | '\u{200d}'))
         })
         .next()
         .unwrap_or("");
@@ -201,7 +257,56 @@ pub(super) fn known_non_class_context(
         return false;
     }
     let preceding = word(before_name);
-    !matches!(preceding.as_str(), "const" | "let" | "var")
+    if matches!(preceding.as_str(), "const" | "let" | "var") {
+        return false;
+    }
+    jsx_tag_attribute_context(before_name)
+}
+
+fn jsx_tag_attribute_context(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    let mut i = 0;
+    let mut in_tag = false;
+    let mut braces = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"//") {
+            i = prefix[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i = prefix[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + n + 4);
+            continue;
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if !in_tag && bytes[i] == b'<' && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+            in_tag = true;
+        } else if in_tag {
+            match bytes[i] {
+                b'{' => braces += 1,
+                b'}' => braces = braces.saturating_sub(1),
+                b'>' if braces == 0 => in_tag = false,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    in_tag
 }
 
 /// CSS text of a `<style>` element: `<style>{`…`}</style>` or the

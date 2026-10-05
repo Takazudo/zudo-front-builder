@@ -4031,6 +4031,7 @@ mod tests {
         assert!(is_wind_ignore_attribute_name("data-preview"));
         assert!(is_wind_ignore_attribute_name("preview:html"));
         assert!(is_wind_ignore_attribute_name("étiquette"));
+        assert!(is_wind_ignore_attribute_name("e\u{301}tiquette"));
         for invalid in ["", "class", "className", "a.b", "1name", "name space"] {
             let wind = WindConfig {
                 sources: WindSources {
