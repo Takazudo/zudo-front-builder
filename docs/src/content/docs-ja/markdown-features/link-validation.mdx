@@ -33,11 +33,11 @@ linkValidation: { failOnBroken: true },
 
 ## 検証される対象
 
-- **素のアンカーフラグメント** — `#section-id` は、現在のファイル内の見出し ID に一致しなければなりません。
+- **素のアンカーフラグメント** — `#section-id` は、現在のファイル内の既知のアンカーに一致しなければなりません。
 - **アンカーなしのファイルリンク** — `./other.md` は、プロジェクトルート以下に存在するファイルへ解決されなければなりません。
-- **アンカー付きのファイルリンク** — `./other.md#section-id` は、解決可能なファイルと、そのファイル内の一致する見出し ID の両方を必要とします。
+- **アンカー付きのファイルリンク** — `./other.md#section-id` は、解決可能なファイルと、そのファイル内の一致するアンカーの両方を必要とします。
 
-見出し ID は [`HeadingLinksPlugin`](./heading-links.mdx) に由来します。これは同じ hast フェーズ内でより早く実行されます。ファイル横断の見出し ID レジストリはビルド中に構築されるため、アンカー検証はファイルをまたいで機能します。[トランスクルージョン](./transclude.mdx)経由で取り込まれた見出しもレジストリに含まれるため、`./target.mdx#transcluded-heading` も正しく検証されます。
+既知のアンカーには [`HeadingLinksPlugin`](./heading-links.mdx) が生成する見出し ID、`<span id="note" />` などの組み込み JSX 要素のリテラル `id` 属性、`<a>` のリテラル `name` 属性が含まれます。下記の `anchorComponents` で、DOM ID を出力するコンポーネントの prop も宣言できます。ファイル横断のレジストリはビルド中に構築され、[トランスクルージョン](./transclude.mdx)経由の見出しとアンカーも含みます。
 
 ## スキップされる対象
 
@@ -48,6 +48,15 @@ linkValidation: { failOnBroken: true },
 ## オプション
 
 - `failOnBroken` — `true` のとき、壊れたリンクは `Error` 診断を出力します（ビルドが失敗します）。デフォルト: `false`（警告のみ）。このブロックの外から有効にすることもできます — [strict モード](#strict-モード)を参照してください。
+- `anchorComponents` — MDX JSX コンポーネントの正確な名前から、DOM ID として出力される prop への任意のマップです。例:
+
+```ts
+linkValidation: {
+  anchorComponents: { EvidenceAnchor: "id", "UI.Anchor": "anchorId" },
+}
+```
+
+これにより `<EvidenceAnchor id="part-a" />` と `<UI.Anchor anchorId="part-b" />` は、ネストした JSX や表の中でも `#part-a` と `#part-b` を登録します。名前は大文字と小文字を区別し、MDX JSX パーサーが解釈する表記と完全に一致する必要があります。対応する Unicode 名も使えます。この宣言は、コンポーネントがその prop を DOM の `id` として出力するというプロジェクト側の保証です。登録されるのは空でない文字列リテラルだけです。式（`id={value}`）、スプレッド（`{...props}`）、空の値、未宣言のコンポーネントの prop は対象外です。プリセット間では最初の宣言が優先され、プロジェクト設定はプリセットの宣言を上書きします。存在しないフラグメントは従来どおり診断され、`failOnBroken` と strict モードが適用されます。
 
 ## strict モード
 

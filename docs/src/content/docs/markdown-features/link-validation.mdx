@@ -33,11 +33,11 @@ linkValidation: { failOnBroken: true },
 
 ## What is validated
 
-- **Bare anchor fragments** — `#section-id` must match a heading ID in the current file.
+- **Bare anchor fragments** — `#section-id` must match a known anchor in the current file.
 - **File links without anchor** — `./other.md` must resolve to an existing file under the project root.
-- **File links with anchor** — `./other.md#section-id` requires both a resolvable file and a matching heading ID in that file.
+- **File links with anchor** — `./other.md#section-id` requires both a resolvable file and a matching anchor in that file.
 
-Heading IDs come from [`HeadingLinksPlugin`](./heading-links.mdx), which runs earlier in the same hast phase. The cross-file heading-ID registry is populated during the build so anchor validation works across files. Headings that arrive via [`transclusion`](./transclude.mdx) are included in the registry, so `./target.mdx#transcluded-heading` validates correctly.
+Known anchors include heading IDs from [`HeadingLinksPlugin`](./heading-links.mdx), literal `id` attributes on intrinsic JSX elements such as `<span id="note" />`, and literal `name` attributes on `<a>`. You can also declare a component prop that emits a DOM ID with `anchorComponents` below. The cross-file registry is populated during the build, including headings and anchors arriving through [`transclusion`](./transclude.mdx).
 
 ## What is skipped
 
@@ -48,6 +48,15 @@ Heading IDs come from [`HeadingLinksPlugin`](./heading-links.mdx), which runs ea
 ## Options
 
 - `failOnBroken` — when `true`, broken links emit `Error` diagnostics (build fails). Default: `false` (warnings only). It can also be turned on from outside this block — see [Strict mode](#strict-mode).
+- `anchorComponents` — an optional map from an exact MDX JSX component name to the prop it emits as a DOM ID. For example:
+
+```ts
+linkValidation: {
+  anchorComponents: { EvidenceAnchor: "id", "UI.Anchor": "anchorId" },
+}
+```
+
+`<EvidenceAnchor id="part-a" />` and `<UI.Anchor anchorId="part-b" />` then register `#part-a` and `#part-b`, including inside nested JSX and tables. Names are case-sensitive and must match the parsed MDX JSX spelling; supported Unicode names also work. A declaration is your assertion that the component emits that prop as a DOM `id`. Only nonempty string literals are registered. Expressions (`id={value}`), spreads (`{...props}`), empty values, and props on undeclared components remain unknown. Across presets, the first declaration for a name wins; project config overrides preset entries. Missing fragments still produce normal diagnostics and respect `failOnBroken` and strict mode.
 
 ## Strict mode
 
