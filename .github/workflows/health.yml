@@ -758,6 +758,15 @@ jobs:
             --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
             --contract research/v3-island-size/decision-linux-x64.json
 
+      - name: Upload temporary bounded fixes Linux size evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bounded-fixes-linux-island-size-evidence
+          path: target/island-size/
+          if-no-files-found: warn
+          retention-days: 7
+
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
   # Without this job the cfg(feature = "embed_v8") gates can rot
