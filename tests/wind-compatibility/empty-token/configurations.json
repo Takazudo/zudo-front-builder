@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "empty": {
+    "tokens": {},
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {}
+  },
+  "zero-mapping": {
+    "tokens": {},
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {
+      "--spacing-0": "0px"
+    }
+  },
+  "semantic": {
+    "tokens": {
+      "spacing": {
+        "hsp-sm": "17px",
+        "vsp-md": "29px"
+      },
+      "colors": {
+        "surface": "#123456"
+      }
+    },
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {
+      "--spacing-hsp-sm": "17px",
+      "--spacing-vsp-md": "29px",
+      "--color-surface": "#123456"
+    }
+  },
+  "semantic-changed": {
+    "tokens": {
+      "spacing": {
+        "hsp-sm": "23px",
+        "vsp-md": "31px"
+      },
+      "colors": {
+        "surface": "#654321"
+      }
+    },
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {
+      "--spacing-hsp-sm": "23px",
+      "--spacing-vsp-md": "31px",
+      "--color-surface": "#654321"
+    }
+  },
+  "numeric-opt-in": {
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {
+      "--spacing": "0.25rem"
+    }
+  },
+  "numeric-removed": {
+    "tokens": {},
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {}
+  },
+  "palette-opt-in": {
+    "tokens": {
+      "colors": {
+        "gray-500": "#37628a"
+      }
+    },
+    "breakpoints": {},
+    "reset": "none",
+    "referenceTheme": {
+      "--color-gray-500": "#37628a"
+    }
+  },
+  "breakpoint": {
+    "tokens": {},
+    "breakpoints": {
+      "sm": 640
+    },
+    "reset": "none",
+    "referenceTheme": {
+      "--breakpoint-sm": "640px"
+    }
+  }
+}
