@@ -566,6 +566,7 @@ Keep the existing base and component layers; wind's prelude establishes their or
 ## What is not supported, and what to do instead
 
 - No implicit palette or spacing scale: declare project values under `wind.tokens`.
+- No shadow-color composition: `shadow-<color>` and valid `shadow-<color>/<opacity>` forms (`/0`–`/100`) do not apply `colors` tokens to a shadow. Fold the tint into a `shadows` token or author the complete `box-shadow` in CSS and reserve the class. A bare `shadow-<name>` with matching `colors` and `shadows` tokens resolves as the shadow token; slash modifiers remain unsupported. `shadow-none` and complete arbitrary values such as `shadow-[0_1px_2px_#000]` remain supported.
 - No ring, animation, scale, transform-string, or arbitrary-property utility: write the declarations in authored CSS or a CSS Module.
 - No attribute or arbitrary-selector variant and no named group or peer: use an authored selector.
 - No plugin-defined classes or `@apply` expansion: use catalog candidates for supported utilities and keep custom declarations in CSS.

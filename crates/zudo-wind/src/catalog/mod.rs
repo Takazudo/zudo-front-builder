@@ -348,6 +348,112 @@ mod tests {
     }
 
     #[test]
+    fn declared_shadow_colors_get_a_targeted_hint_without_changing_shadow_matches() {
+        let tokens = TokenConfig {
+            colors: BTreeMap::from([
+                ("zd-white".to_owned(), "#fff".to_owned()),
+                ("shared".to_owned(), "#123456".to_owned()),
+            ]),
+            shadows: BTreeMap::from([
+                ("lg".to_owned(), "0 1px 2px #000".to_owned()),
+                ("shared".to_owned(), "0 2px 4px #111".to_owned()),
+            ]),
+            ..TokenConfig::default()
+        }
+        .validate()
+        .expect("test tokens are valid");
+
+        for text in [
+            "shadow-zd-white",
+            "shadow-zd-white/5",
+            "hover:shadow-zd-white/5",
+        ] {
+            let diagnostic = match resolve_with(text, &tokens) {
+                Resolution::Diagnostic(diagnostic) => diagnostic,
+                other => panic!("{text}: {other:?}"),
+            };
+            assert_eq!(diagnostic.code, DiagnosticCode::Zw004, "{text}");
+            assert_eq!(diagnostic.rejection_id, Some("R20"), "{text}");
+            assert!(diagnostic.message.contains("zd-white is a colors token"));
+            assert!(diagnostic.message.contains("does not compose colors"));
+            assert!(diagnostic.message.contains("arbitrary box-shadow values"));
+            assert!(diagnostic.message.contains("shadows tokens"));
+            assert!(diagnostic.message.contains("box-shadow in CSS"));
+            assert!(diagnostic.message.contains("wind.authoredClasses"));
+        }
+
+        let missing_color = match resolve_with("shadow-missing", &tokens) {
+            Resolution::Diagnostic(diagnostic) => diagnostic,
+            other => panic!("shadow-missing: {other:?}"),
+        };
+        assert_eq!(missing_color.code, DiagnosticCode::Zw006);
+        assert!(missing_color
+            .message
+            .contains("unknown value or token missing"));
+        assert!(!missing_color.message.contains("does not compose colors"));
+
+        for text in [
+            "shadow-missing/5",
+            "shadow-shared/5",
+            "shadow-zd-white/101",
+            "-shadow-zd-white",
+        ] {
+            let diagnostic = match resolve_with(text, &tokens) {
+                Resolution::Diagnostic(diagnostic) => diagnostic,
+                other => panic!("{text}: {other:?}"),
+            };
+            assert_eq!(diagnostic.code, DiagnosticCode::Zw005, "{text}");
+            assert!(!diagnostic.message.contains("does not compose colors"));
+            if text.starts_with('-') {
+                assert!(diagnostic
+                    .message
+                    .contains("negative value is not supported"));
+            } else {
+                assert!(diagnostic
+                    .message
+                    .contains("slash modifier is not supported"));
+            }
+        }
+
+        let strict_candidate =
+            parse_candidate("shadow-zd-white/5", &VariantVocabulary::default()).unwrap();
+        assert!(matches!(
+            Catalog::v1().resolve(
+                &strict_candidate,
+                &tokens,
+                &Origin::Safelist {
+                    owner: "catalog-test".to_owned(),
+                    index: 0,
+                },
+                &BTreeSet::new(),
+            ),
+            Resolution::Failure(diagnostic)
+                if diagnostic.code == DiagnosticCode::Zw004
+                    && diagnostic.rejection_id == Some("R20")
+        ));
+
+        assert_eq!(
+            rule_with("shadow-lg", &tokens).declarations[0],
+            Declaration {
+                property: "box-shadow".to_owned(),
+                value: "var(--zw-shadow-lg)".to_owned(),
+            }
+        );
+        assert_eq!(
+            rule_with("shadow-shared", &tokens).declarations[0].value,
+            "var(--zw-shadow-shared)"
+        );
+        assert_eq!(
+            rule_with("shadow-none", &tokens).declarations[0].value,
+            "none"
+        );
+        assert_eq!(
+            rule_with("shadow-[0_1px_2px_#000]", &tokens).declarations[0].value,
+            "0 1px 2px #000"
+        );
+    }
+
+    #[test]
     fn inset_fractions_are_enabled_on_all_seven_inset_roots() {
         let catalog = Catalog::v1();
         let expected_roots = [

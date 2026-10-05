@@ -216,6 +216,8 @@ ZW013 は同じバリアント区分でカタログが暗黙のデフォルト�
 
 未宣言の色名に有効な `/0`～`/100` を付けた `text-*`、`border-*`、`border-x-*`、`outline-*`、`placeholder:text-*` は、トークン不足の ZW006/R17 を報告します。不正な不透明度、負の形、未対応のスラッシュは ZW005 のままです。
 
+宣言済みの色を slash なしの `shadow-<name>` または有効な `shadow-<name>/<opacity>`（`/0`～`/100`）に使うと、v1 は色を shadow に合成しないことを示す専用ヒント付きの ZW004/R20 が出ます。shadow 基部は完全な値、つまり `none`、任意の `box-shadow` 値、または `shadows` トークンを受け付けます。色を `shadows` トークンに含めるか、完全な `box-shadow` を CSS に記述して `wind.authoredClasses` にクラスを登録してください。同名の `shadows` トークンは slash なしなら解決しますが、slash 修飾子は未対応です。
+
 正しい括弧構文の `has-[…]:`、`not-[…]:`、`nth-[…]:`、`nth-last-[…]:`、`supports-[…]:` は ZW004/R09、`min-[…]:` と `max-[…]:` は ZW004/R24（`wind.breakpoints` を設定）、`group-aria-[…]:`、`group-data-[…]:`、`peer-aria-[…]:`、`peer-data-[…]:` は ZW004/R08 です。空・余分な接尾辞・連続・不均衡・未知の括弧付きの形式は ZW001 のままです。`min-[56rem]:table-cell` や `has-[:focus-visible]:filter-[blur(2px)]` のように、拒否されたバリアントが ZW014 のユーティリティを包む場合は、同一候補とソース範囲に ZW004 と ZW014 の両方を explain と audit が表示し、CSS は出力しません。explain は invalid のままです。strict モードはクラス位置の ZW014 をエラーにし、確信度の低いリテラルは監査情報のまま、完全一致の authored class は両診断を抑止します。
 
 `wind explain --json` の `tokenResolutions[*].hostOverride` は、変更されたプリセットの結合に限り `presetIndex`、`previousValue`、`finalValue` を含みます。`wind audit --json` は ZW015 を標準診断オブジェクトとして出力し、`severity: "auditInfo"`、カテゴリと名前の候補、設定キーの出所、変更前後の値をメッセージに含みます。両 CLI の `schemaVersion: 1` は変わりません。
