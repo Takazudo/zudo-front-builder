@@ -22,6 +22,8 @@ pub enum DiagnosticCode {
     Zw013,
     /// A migration-vocabulary foreign utility: reported, never generated.
     Zw014,
+    /// A host token entry replaced an effective preset token value.
+    Zw015,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -90,6 +90,16 @@ fn run_wind_audit(project_root: &Path, flags: &[&str]) -> Output {
         .expect("spawn `zfb wind audit`")
 }
 
+fn run_wind_explain(project_root: &Path, candidate: &str, flags: &[&str]) -> Output {
+    Command::new(zfb_binary!())
+        .args(["wind", "explain", candidate, "--project-root"])
+        .arg(project_root)
+        .args(flags)
+        .current_dir(project_root)
+        .output()
+        .expect("spawn `zfb wind explain`")
+}
+
 fn process_stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -1257,6 +1267,158 @@ fn wind_audit_info_does_not_fail_warning_threshold() {
     assert!(
         stderr.is_empty(),
         "auditInfo should not write a threshold summary:\n{stderr}"
+    );
+}
+
+#[test]
+fn wind_token_override_is_explainable_and_audit_info_only() {
+    let override_project = wind_audit_fixture(
+        r##"{"presets":[{"wind":{"tokens":{"colors":{"bg":"#ffffff"}}}}],"wind":{"tokens":{"colors":{"bg":"#ff00ff","panel":"#eeeeee"}}}}"##,
+        "export default () => <div class=\"bg-bg\" />;\n",
+    );
+
+    let explain = run_wind_explain(override_project.path(), "bg-bg", &[]);
+    let explain_text = process_stdout(&explain);
+    assert!(
+        explain.status.success(),
+        "{explain_text}\n{}",
+        process_stderr(&explain)
+    );
+    assert!(
+        explain_text.contains("token: bg (colors) -> --zw-color-bg = #ff00ff"),
+        "{explain_text}"
+    );
+    assert!(
+        explain_text.contains("origin: host override of preset[0]: \"#ffffff\" -> \"#ff00ff\""),
+        "{explain_text}"
+    );
+
+    let explain_json = run_wind_explain(override_project.path(), "bg-bg", &["--json"]);
+    assert!(
+        explain_json.status.success(),
+        "{}",
+        process_stderr(&explain_json)
+    );
+    let explain_document: serde_json::Value =
+        serde_json::from_slice(&explain_json.stdout).expect("parse explain JSON");
+    assert_eq!(
+        explain_document["explanations"][0]["tokenResolutions"][0]["hostOverride"],
+        serde_json::json!({
+            "presetIndex": 0,
+            "previousValue": "#ffffff",
+            "finalValue": "#ff00ff"
+        })
+    );
+    assert!(explain_document.get("sourcePath").is_none());
+
+    let audit = run_wind_audit(override_project.path(), &[]);
+    let audit_text = process_stdout(&audit);
+    assert!(
+        audit.status.success(),
+        "{audit_text}\n{}",
+        process_stderr(&audit)
+    );
+    assert!(
+        audit_text.contains("ZW015 auditInfo at wind.tokens.colors.bg: colors.bg:"),
+        "{audit_text}"
+    );
+    assert!(
+        audit_text.contains("host value overrides preset[0]: \"#ffffff\" -> \"#ff00ff\""),
+        "{audit_text}"
+    );
+
+    let audit_json = run_wind_audit(override_project.path(), &["--json"]);
+    assert!(
+        audit_json.status.success(),
+        "{}",
+        process_stderr(&audit_json)
+    );
+    let audit_document: serde_json::Value =
+        serde_json::from_slice(&audit_json.stdout).expect("parse audit JSON");
+    let token_diagnostic = audit_document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "ZW015")
+        .expect("host token override audit diagnostic");
+    assert_eq!(token_diagnostic["severity"], "auditInfo");
+    assert_eq!(token_diagnostic["candidate"], "colors.bg");
+    assert_eq!(
+        token_diagnostic["origin"]["keyPath"],
+        "wind.tokens.colors.bg"
+    );
+    assert_eq!(
+        token_diagnostic["message"],
+        "host value overrides preset[0]: \"#ffffff\" -> \"#ff00ff\""
+    );
+
+    for threshold in ["error", "warning"] {
+        let strict = run_wind_audit(override_project.path(), &["--fail-on", threshold, "--json"]);
+        assert!(
+            strict.status.success(),
+            "auditInfo must not fail --fail-on {threshold}\nstdout:\n{}\nstderr:\n{}",
+            process_stdout(&strict),
+            process_stderr(&strict)
+        );
+    }
+
+    let quiet_project = wind_audit_fixture(
+        r##"{"presets":[{"wind":{"tokens":{"colors":{"bg":"#ffffff"}}}}],"wind":{"tokens":{"colors":{"bg":"#ffffff","panel":"#eeeeee"}}}}"##,
+        "export default () => <div class=\"bg-bg\" />;\n",
+    );
+    let quiet_audit = run_wind_audit(quiet_project.path(), &["--json"]);
+    assert!(
+        quiet_audit.status.success(),
+        "{}",
+        process_stderr(&quiet_audit)
+    );
+    let quiet_document: serde_json::Value =
+        serde_json::from_slice(&quiet_audit.stdout).expect("parse quiet audit JSON");
+    assert!(!quiet_document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "ZW015"));
+}
+
+#[test]
+fn wind_token_override_does_not_warn_or_fail_a_real_build() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[wind_token_override_build] no esbuild binary available; skipping");
+        return;
+    };
+    let temp = copied_fixture("css-build-parity");
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r##"{"presets":[{"wind":{"tokens":{"colors":{"brand":"#123456"}}}}],"wind":{"tokens":{"colors":{"brand":"#654321"}}}}"##,
+    )
+    .expect("write token override config");
+    fs::write(
+        temp.path().join("pages/index.tsx"),
+        "export default function Home() { return <main class=\"bg-brand\">quiet</main>; }\n",
+    )
+    .expect("write token override page");
+
+    let build = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(temp.path())
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn zfb build for token override fixture");
+    let stdout = process_stdout(&build);
+    let stderr = process_stderr(&build);
+    assert!(
+        build.status.success(),
+        "build failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "token override should not warn during build:\n{stderr}"
+    );
+    let built_css = fs::read_to_string(find_build_css(temp.path())).expect("read built CSS");
+    assert!(
+        built_css.contains("#654321"),
+        "host token value missing from build CSS:\n{built_css}"
     );
 }
 

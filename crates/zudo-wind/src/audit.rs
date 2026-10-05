@@ -6,9 +6,9 @@ use serde::Serialize;
 
 use crate::explain::{diagnostic_view, origin_view, DiagnosticView, OriginView};
 use crate::{
-    compile_validated, structural_split, Catalog, DiagnosticCode, ExtractionResult, NoteKind,
-    Origin, OriginCandidate, PositionKind, RuleMetadata, SortKey, SourcePositionKind, WindConfig,
-    SPEC_REVISION, SPEC_VERSION,
+    compile_validated, structural_split, Catalog, Diagnostic, DiagnosticCode, ExtractionResult,
+    NoteKind, Origin, OriginCandidate, PositionKind, RuleMetadata, Severity, SortKey,
+    SourcePositionKind, TokenOverride, WindConfig, SPEC_REVISION, SPEC_VERSION,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -138,6 +138,16 @@ pub struct AuditNote {
 /// Audits extracted occurrences while retaining their stable source identity.
 /// The function is pure: it does not read source files or write output.
 pub fn audit(input: &AuditInput, config: &WindConfig) -> AuditReport {
+    audit_with_token_overrides(input, config, &[])
+}
+
+/// Audits source candidates and reports host-over-preset token entries retained
+/// by the project config loader.
+pub fn audit_with_token_overrides(
+    input: &AuditInput,
+    config: &WindConfig,
+    token_overrides: &[TokenOverride],
+) -> AuditReport {
     let mut report = empty_report(
         AuditOutcome::Complete,
         if input.generation_enabled {
@@ -159,6 +169,7 @@ pub fn audit(input: &AuditInput, config: &WindConfig) -> AuditReport {
             return report;
         }
     };
+    append_token_override_diagnostics(&mut report, token_overrides);
 
     let mut candidates = Vec::new();
     for source in &input.sources {
@@ -253,6 +264,30 @@ pub fn audit(input: &AuditInput, config: &WindConfig) -> AuditReport {
         }));
     sort_report_results(&mut report);
     report
+}
+
+fn append_token_override_diagnostics(report: &mut AuditReport, token_overrides: &[TokenOverride]) {
+    for token_override in token_overrides {
+        let category = token_override.category.config_name();
+        let key_path = format!("wind.tokens.{category}.{}", token_override.name);
+        let diagnostic = Diagnostic {
+            severity: Severity::AuditInfo,
+            code: DiagnosticCode::Zw015,
+            candidate: Some(format!("{category}.{}", token_override.name)),
+            origin: Some(Box::new(Origin::Config {
+                key_path: key_path.clone(),
+            })),
+            message: format!(
+                "host value overrides preset[{}]: {} -> {}",
+                token_override.preset_index,
+                token_override.previous_value,
+                token_override.final_value
+            ),
+            suggested_spelling: None,
+            rejection_id: None,
+        };
+        report.diagnostics.push(diagnostic_view(&diagnostic));
+    }
 }
 
 pub fn render_audit(report: &AuditReport) -> String {
@@ -935,6 +970,71 @@ mod tests {
         );
         assert_eq!(disabled.outcome, AuditOutcome::GenerationDisabled);
         assert!(disabled.unrecognized_classes.is_empty());
+    }
+
+    #[test]
+    fn audit_snapshots_host_token_overrides_as_deterministic_audit_info() {
+        let overrides = [
+            TokenOverride {
+                category: crate::TokenCategory::Spacing,
+                name: "gutter".to_owned(),
+                preset_index: 1,
+                previous_value: serde_json::json!("1rem"),
+                final_value: serde_json::json!("2rem"),
+            },
+            TokenOverride {
+                category: crate::TokenCategory::Color,
+                name: "bg".to_owned(),
+                preset_index: 0,
+                previous_value: serde_json::json!("#fff"),
+                final_value: serde_json::json!("#f0f"),
+            },
+        ];
+        let report =
+            audit_with_token_overrides(&AuditInput::default(), &WindConfig::default(), &overrides);
+        assert_eq!(report.outcome, AuditOutcome::Complete);
+        assert_eq!(report.diagnostics.len(), 2);
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.candidate.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["colors.bg", "spacing.gutter"]
+        );
+        assert!(report.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code == "ZW015" && diagnostic.severity == "auditInfo"
+        }));
+
+        let rendered = render_audit(&report);
+        assert!(rendered.contains(
+            "ZW015 auditInfo at wind.tokens.colors.bg: colors.bg: host value overrides preset[0]: \"#fff\" -> \"#f0f\"\n"
+        ), "{rendered}");
+        let json: serde_json::Value = serde_json::from_str(&audit_json(&report).unwrap()).unwrap();
+        assert_eq!(json["diagnostics"][0]["code"], "ZW015");
+        assert_eq!(json["diagnostics"][0]["severity"], "auditInfo");
+        assert_eq!(json["diagnostics"][0]["candidate"], "colors.bg");
+        assert_eq!(
+            json["diagnostics"][0]["origin"]["keyPath"],
+            "wind.tokens.colors.bg"
+        );
+        assert_eq!(
+            json["diagnostics"][0]["message"],
+            "host value overrides preset[0]: \"#fff\" -> \"#f0f\""
+        );
+        assert!(json["diagnostics"][0].get("sourceId").is_none());
+
+        let reversed = audit_with_token_overrides(
+            &AuditInput::default(),
+            &WindConfig::default(),
+            &[overrides[1].clone(), overrides[0].clone()],
+        );
+        assert_eq!(audit_json(&report).unwrap(), audit_json(&reversed).unwrap());
+        let no_overrides = audit(&AuditInput::default(), &WindConfig::default());
+        assert!(no_overrides
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "ZW015"));
     }
 
     #[test]

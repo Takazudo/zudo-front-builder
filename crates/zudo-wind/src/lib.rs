@@ -26,9 +26,9 @@ mod variant;
 mod walk;
 
 pub use audit::{
-    audit, audit_json, render_audit, AuditConflict, AuditInput, AuditNote, AuditOutcome,
-    AuditReport, AuditSource, DeadClass, DynamicConstruction, InterpolatedCandidate,
-    UnrecognizedClass,
+    audit, audit_json, audit_with_token_overrides, render_audit, AuditConflict, AuditInput,
+    AuditNote, AuditOutcome, AuditReport, AuditSource, DeadClass, DynamicConstruction,
+    InterpolatedCandidate, UnrecognizedClass,
 };
 pub use breakpoints::{BreakpointConfig, RankedBreakpoint, ValidatedBreakpoints};
 pub use candidate::{parse_candidate, Candidate, UtilityPart};
@@ -45,9 +45,10 @@ pub use decimal::{Decimal, DecimalDimension, DecimalError};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Origin, Severity, SourcePositionKind};
 pub use escape::escape_class_name;
 pub use explain::{
-    explain, explain_disabled, explain_with_generation, explanation_json, render_explanation,
-    DeclarationView, DiagnosticView, Explanation, ExplanationOutcome, OriginView, ParsedCandidate,
-    SortTuple, TokenResolution,
+    explain, explain_disabled, explain_with_generation,
+    explain_with_generation_and_token_overrides, explanation_json, render_explanation,
+    DeclarationView, DiagnosticView, Explanation, ExplanationOutcome, HostTokenOverride,
+    OriginView, ParsedCandidate, SortTuple, TokenResolution,
 };
 pub use index::CandidateIndex;
 pub use layers::LAYER_ORDER;
@@ -61,7 +62,7 @@ pub use source_plan::{
 };
 pub use token_vars::{emit_token_variables, TokenVariable};
 pub use tokenizer::{structural_split, StructuralSplit};
-pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, ValidatedTokens};
+pub use tokens::{FontSizeToken, TokenCategory, TokenConfig, TokenOverride, ValidatedTokens};
 pub use value_check::ValueStatus;
 pub use variant::{Variant, VariantChain, VariantKind, VariantVocabulary};
 pub use walk::{

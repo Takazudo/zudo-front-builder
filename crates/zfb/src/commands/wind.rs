@@ -41,11 +41,17 @@ async fn explain(args: &WindExplainArgs) -> Result<()> {
     let config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind explain")?;
+    let token_overrides = configured_token_overrides(&config);
     let (generation_enabled, wind_config) = configured_wind(&config);
     let explanations: Vec<_> = candidates
         .iter()
         .map(|candidate| {
-            zfb_css::explain_with_generation(candidate, &wind_config, generation_enabled)
+            zfb_css::explain_with_generation_and_token_overrides(
+                candidate,
+                &wind_config,
+                generation_enabled,
+                token_overrides,
+            )
         })
         .collect();
     if args.json {
@@ -77,6 +83,13 @@ fn stdin_candidates(input: &str) -> Vec<String> {
         .collect()
 }
 
+fn configured_token_overrides(config: &crate::config::Config) -> &[zfb_css::TokenOverride] {
+    match config.wind.as_ref() {
+        Some(crate::config::WindSetting::Enabled(wind)) => wind.token_overrides(),
+        _ => &[],
+    }
+}
+
 async fn audit(args: &WindAuditArgs) -> Result<()> {
     let fail_on = args.fail_on;
     let plan_mode = args.plan;
@@ -90,14 +103,16 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
     let project_config = load_command_config(&cwd, &project_root, args.config.as_deref())
         .await
         .context("failed to load project configuration for wind audit")?;
+    let token_overrides = configured_token_overrides(&project_config);
     let (generation_enabled, mut wind_config) = configured_wind(&project_config);
     if !generation_enabled {
-        let report = zfb_css::audit(
+        let report = zfb_css::audit_with_token_overrides(
             &zfb_css::AuditInput {
                 generation_enabled: false,
                 ..Default::default()
             },
             &wind_config,
+            token_overrides,
         );
         return print_audit_and_apply_exit_policy(&report, None, output, fail_on);
     }
@@ -128,7 +143,11 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
         &mut audit_sources,
     );
     append_role_class_audit_source(&plan, &mut audit_sources);
-    let report = zfb_css::audit(&zfb_css::AuditInput::new(audit_sources), &wind_config);
+    let report = zfb_css::audit_with_token_overrides(
+        &zfb_css::AuditInput::new(audit_sources),
+        &wind_config,
+        token_overrides,
+    );
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
     print_audit_and_apply_exit_policy(&report, Some(&coverage), output, fail_on)
 }

@@ -311,6 +311,7 @@ fn diagnostic_code_rank(code: DiagnosticCode) -> u8 {
         DiagnosticCode::Zw012 => 12,
         DiagnosticCode::Zw013 => 13,
         DiagnosticCode::Zw014 => 14,
+        DiagnosticCode::Zw015 => 15,
     }
 }
 
@@ -318,7 +319,37 @@ fn diagnostic_code_rank(code: DiagnosticCode) -> u8 {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::{BreakpointConfig, DarkModeConfig, Origin, TokenConfig, WindConfig};
+    use crate::{
+        BreakpointConfig, DarkModeConfig, DiagnosticCode, Origin, TokenConfig, WindConfig,
+    };
+
+    #[test]
+    fn diagnostic_code_order_registry_is_unique_and_contiguous() {
+        let codes = [
+            DiagnosticCode::Zw001,
+            DiagnosticCode::Zw002,
+            DiagnosticCode::Zw003,
+            DiagnosticCode::Zw004,
+            DiagnosticCode::Zw005,
+            DiagnosticCode::Zw006,
+            DiagnosticCode::Zw007,
+            DiagnosticCode::Zw008,
+            DiagnosticCode::Zw009,
+            DiagnosticCode::Zw010,
+            DiagnosticCode::Zw011,
+            DiagnosticCode::Zw012,
+            DiagnosticCode::Zw013,
+            DiagnosticCode::Zw014,
+            DiagnosticCode::Zw015,
+        ];
+        let ranks = codes.map(super::diagnostic_code_rank);
+        let unique = ranks
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), ranks.len());
+        assert_eq!(ranks, std::array::from_fn(|index| index as u8 + 1));
+    }
 
     #[test]
     fn configured_breakpoint_safelist_entry_validates_and_removal_fails() {
