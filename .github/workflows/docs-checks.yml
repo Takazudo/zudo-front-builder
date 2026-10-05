@@ -91,6 +91,10 @@ jobs:
             docs:
               - 'docs/**'
               - 'tests/docs-wind-preview/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
               - 'package.json'
