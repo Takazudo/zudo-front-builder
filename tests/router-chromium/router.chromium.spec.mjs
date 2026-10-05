@@ -73,6 +73,14 @@ const HARNESS_INIT = () => {
       : String(Math.random());
   // @ts-expect-error
   window.__docId = uuid;
+  // Browser-level rejection record: pageerror also catches these in Playwright,
+  // but this identifies the rejected promise's reason without parsing messages.
+  // @ts-expect-error - test-only global
+  window.__vtUnhandled = [];
+  window.addEventListener("unhandledrejection", (event) => {
+    // @ts-expect-error - test-only global
+    window.__vtUnhandled.push(event.reason?.name ?? String(event.reason));
+  });
 
   // Lifecycle-event recorder. Attached to `document` BEFORE the router loads.
   const NAMES = [
@@ -140,6 +148,14 @@ const HARNESS_INIT = () => {
           vt.finished++;
         },
       );
+      // The test arms this for one call after initial load. Skip in a microtask
+      // so the router receives and observes the native ViewTransition first.
+      // @ts-expect-error - test-only global
+      if (window.__vtForceSkipNext) {
+        // @ts-expect-error - test-only global
+        window.__vtForceSkipNext = false;
+        queueMicrotask(() => t.skipTransition());
+      }
       return t;
     };
   }
@@ -331,6 +347,35 @@ test("real document.startViewTransition drives the SPA navigation", async ({ pag
   // And the real transition actually ran to completion (its finished promise
   // settled) — condition-keyed on the browser's own transition, not a timer.
   await page.waitForFunction(() => /** @type {any} */ (window).__vt.finished >= 1);
+});
+
+test("skipped native transition completes navigation without an unhandled ready rejection", async ({
+  page,
+}) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/index.html");
+  await waitForInitialLoad(page);
+  expect(await page.evaluate(() => /** @type {any} */ (window).__vt.supported)).toBe(true);
+
+  const documentId = await page.evaluate(() => /** @type {any} */ (window).__docId);
+  await page.evaluate(() => {
+    /** @type {any} */ (window).__vtForceSkipNext = true;
+  });
+  const s = await seqNow(page);
+  await page.click("#to-page-a");
+  await waitForNavDone(page, s);
+  await page.waitForFunction(() => /** @type {any} */ (window).__vt.finished >= 1);
+  await expect(page.locator("h1")).toHaveText("Page A");
+  expect(new URL(page.url()).pathname).toBe("/page-a.html");
+  expect(await page.evaluate(() => /** @type {any} */ (window).__docId)).toBe(documentId);
+  expect(await page.evaluate(() => history.state.index)).toBe(1);
+
+  // An unhandledrejection is dispatched on the next task after rejection.
+  // Give that task a turn after the transition has fully settled.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  expect(await page.evaluate(() => /** @type {any} */ (window).__vtUnhandled)).toEqual([]);
+  expect(pageErrors).toEqual([]);
 });
 
 // ===========================================================================

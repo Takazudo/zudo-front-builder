@@ -135,6 +135,120 @@ describe("VT-path precondition", () => {
   });
 });
 
+describe("native ViewTransition.ready cancellation", () => {
+  it.each(["AbortError", "InvalidStateError"])(
+    "observes a %s ready rejection while completing the DOM and history update",
+    async (name) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => htmlResponse(pageHtml("B", "page b"))),
+      );
+      (document as unknown as { startViewTransition: unknown }).startViewTransition = (
+        callback: VTCallback,
+      ): FakeViewTransition => {
+        const updateCallbackDone = Promise.resolve().then(callback) as Promise<void>;
+        return {
+          updateCallbackDone,
+          ready: Promise.reject(new DOMException("Transition was skipped", name)),
+          finished: updateCallbackDone,
+          skipTransition: () => {},
+          types: new Set<string>(),
+        };
+      };
+
+      await navigate("/ready-skipped");
+
+      expect(location.pathname).toBe("/ready-skipped");
+      expect(Number.isInteger(history.state.index)).toBe(true);
+      expect(document.querySelector("main")?.textContent).toBe("page b");
+      // Vitest also fails this test if the independent ready promise rejects
+      // without a rejection handler during the following event-loop turn.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+  );
+
+  it("observes ready when a newer navigation skips the previous transition", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+
+    let rejectFirstReady!: (reason: Error) => void;
+    let finishFirst!: () => void;
+    let skips = 0;
+    let calls = 0;
+    (document as unknown as { startViewTransition: unknown }).startViewTransition = (
+      callback: VTCallback,
+    ): FakeViewTransition => {
+      calls++;
+      const updateCallbackDone = Promise.resolve().then(callback) as Promise<void>;
+      if (calls > 1) {
+        return {
+          updateCallbackDone,
+          ready: updateCallbackDone,
+          finished: updateCallbackDone,
+          skipTransition: () => {},
+          types: new Set<string>(),
+        };
+      }
+      const ready = new Promise<void>((_resolve, reject) => {
+        rejectFirstReady = reject;
+      });
+      const finished = new Promise<void>((resolve) => {
+        finishFirst = resolve;
+      });
+      return {
+        updateCallbackDone,
+        ready,
+        finished,
+        skipTransition: () => {
+          skips++;
+          rejectFirstReady(new DOMException("Transition was skipped", "AbortError"));
+          finishFirst();
+        },
+        types: new Set<string>(),
+      };
+    };
+
+    await navigate("/rapid-a");
+    const firstIndex = history.state.index;
+    await navigate("/rapid-b");
+
+    expect(skips).toBe(1);
+    expect(location.pathname).toBe("/rapid-b");
+    expect(history.state.index).toBe(firstIndex + 1);
+    expect(document.querySelector("main")?.textContent).toBe("content for /rapid-b");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("still reports a real update callback error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("B", "page b"))),
+    );
+    const error = new Error("update failed");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    (document as unknown as { startViewTransition: unknown }).startViewTransition =
+      (): FakeViewTransition => {
+        const updateCallbackDone = Promise.reject(error);
+        return {
+          updateCallbackDone,
+          ready: updateCallbackDone,
+          finished: updateCallbackDone,
+          skipTransition: () => {},
+          types: new Set<string>(),
+        };
+      };
+
+    await navigate("/update-failed");
+
+    expect(log).toHaveBeenCalledWith("[zfb]", "Error", "update failed", error.stack);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+});
+
 describe("history entry is committed outside the startViewTransition callback (zzmod#662)", () => {
   it("forward push: pushState runs BEFORE the startViewTransition callback", async () => {
     vi.stubGlobal(
