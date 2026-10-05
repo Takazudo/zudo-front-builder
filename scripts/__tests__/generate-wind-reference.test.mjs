@@ -377,6 +377,17 @@ describe("reader-first wind pages", () => {
       "positive declared candidate",
     );
   });
+  it("passes verified fragment metadata to the native Head source panel", () => {
+    const context = structuredClone(preview);
+    context.examples.get("gap").examples[0].head = '<base href="about:srcdoc">';
+    context.assets.get("gap/grid-gap").head = '<base href="about:srcdoc">';
+    const page = renderReferencePages(realCatalog, en, WIND_REFERENCE_FAMILIES, {
+      ...options,
+      preview: context,
+    }).get("gap.mdx");
+    expect(page).toContain('head={"\\u003cbase href=\\"about:srcdoc\\"\\u003e"}');
+    expect(page.match(/ head=/g)).toHaveLength(1);
+  });
 
   it("binds exact roots and shared roots to their actual catalog properties", () => {
     function validate(entry, candidate, css) {
@@ -511,6 +522,10 @@ describe("reader-first wind pages", () => {
       expect(() => loadPreviewContext(temporary, configChanged)).toThrow(
         "Stale preview source/CSS",
       );
+      const headChanged = structuredClone(records);
+      headChanged.find((record) => record.family === "gap").examples[0].head =
+        '<base href="about:srcdoc">';
+      expect(() => loadPreviewContext(temporary, headChanged)).toThrow("Stale preview source/CSS");
       const htmlPath = join(temporary, "docs/public/wind-examples/gap/grid-gap.html");
       const originalHtml = readFileSync(htmlPath, "utf8");
       writeFileSync(htmlPath, originalHtml + "<!-- stale -->");

@@ -113,6 +113,22 @@ test("static source and candidate-source configuration cannot bypass validation"
   record.examples[0].html += "<style>.p-4 {padding:0}</style>";
   assert.throws(() => validateRecord(record), /no embedded styles/);
 });
+test("fragment metadata is restricted to the native no-script preview base", () => {
+  const record = seed();
+  record.examples[0].head = '<base href="about:srcdoc">';
+  assert.doesNotThrow(() => validateRecord(record));
+  for (const head of [
+    "<script>alert(1)</script>",
+    "<style>body{margin:0}</style>",
+    '<base href="/">',
+  ]) {
+    record.examples[0].head = head;
+    assert.throws(() => validateRecord(record), /about:srcdoc fragment base/);
+  }
+  const diagnostic = diagnosticSeed();
+  diagnostic.examples[0].head = '<base href="about:srcdoc">';
+  assert.throws(() => validateRecord(diagnostic), /only positive examples/);
+});
 test("only negative fixtures may select source origin and non-strict warning behavior", () => {
   const record = seed();
   record.examples[0].candidateOrigin = "source";
@@ -226,6 +242,27 @@ function fixture() {
   };
   return { root, run, calls };
 }
+test("fragment metadata changes freshness even when compiled CSS is unchanged", () => {
+  const { root, run } = fixture();
+  try {
+    const options = { root, compiler: "/workspace/target/debug/zfb", run };
+    const first = generateAssets(options);
+    const recordPath = join(root, "docs/wind-examples/padding.json");
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    record.examples[0].head = '<base href="about:srcdoc">';
+    writeFileSync(recordPath, JSON.stringify(record));
+    assert.throws(() => generateAssets({ ...options, check: true }), /manifest.json/);
+    const second = generateAssets(options);
+    const before = first.examples.find((entry) => entry.family === "padding");
+    const after = second.examples.find((entry) => entry.family === "padding");
+    assert.equal(before.cssSha256, after.cssSha256);
+    assert.equal(before.htmlSha256, after.htmlSha256);
+    assert.notEqual(before.headSha256, after.headSha256);
+    assert.doesNotThrow(() => generateAssets({ ...options, check: true }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test("mock compiler pins flags and deterministic provenance; stale CSS fails without rewriting", () => {
   const { root, run, calls } = fixture();
   try {
