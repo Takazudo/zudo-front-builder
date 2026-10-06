@@ -24,6 +24,23 @@
     "hover-block",
     "breakpoint-block"
   ],
+  "targetedExecutionKeys": {
+    "p-0-mapped": ["pilot/p-0-mapped"],
+    "named-spacing": ["pilot/named-spacing"],
+    "named-color": ["pilot/named-color"],
+    "hover-block": ["pilot/hover-block"],
+    "breakpoint-block": ["pilot/breakpoint-block"],
+    "grid-cols-2": ["pilot/grid-cols-2"],
+    "inline-flex": ["pilot/inline-flex"],
+    "mx-auto": ["pilot/mx-auto"],
+    "nested-token-scope": ["control/nested-token-scope"],
+    "specificity-and-authored-cascade": ["control/specificity-and-authored-cascade"],
+    "native-reset-controls": ["control/native-reset-controls"],
+    "wrong-value-or-missing-rule-detection": [
+      "control/wrong-value-detection",
+      "control/missing-rule-detection"
+    ]
+  },
   "supplementalCaseIds": [
     "semantic-initial-composed",
     "semantic-changed-composed",

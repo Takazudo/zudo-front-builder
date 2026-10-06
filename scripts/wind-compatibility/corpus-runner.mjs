@@ -59,8 +59,8 @@ function options(argv) {
     if (!result[name]) throw Error(`Missing --${name}`);
   if (!["chromium", "firefox", "webkit"].includes(result.engine))
     throw Error("Unknown browser engine");
-  if (result.engine === "chromium" && !result["pilot-report"])
-    throw Error("Chromium corpus requires --pilot-report from the same Wind build");
+  if (!result["pilot-report"])
+    throw Error("Every corpus engine requires --pilot-report from the same Wind build and browser");
   return result;
 }
 
@@ -233,12 +233,17 @@ async function pilotResults(
     reference,
     scanner,
   );
-  const result = {};
+  const results = {};
+  const engine = browserEnvironment.name;
   for (const row of report.cases) {
     if (manifest.pilotCaseIds.includes(row.caseId))
-      result[`pilot/${row.caseId}/chromium`] = { outcome: row.outcome, reportId: report.reportId };
+      results[`pilot/${row.caseId}/${engine}`] = {
+        outcome: row.outcome,
+        reportId: report.reportId,
+      };
   }
-  return result;
+  const controls = Object.fromEntries(report.controls.map((row) => [row.controlId, row]));
+  return { results, controls, reportId: report.reportId, reportPath: resolve(path) };
 }
 
 async function nativeResults(binary, manifest, empty, output) {
@@ -949,7 +954,7 @@ async function main(argv) {
   const source = await provenance(manifest, args.cache);
   const windBuild = await verifyWindBuild(args["wind-binary"], args["wind-build-manifest"]);
   const reference = await loadReference(args.cache, bootstrap);
-  const scanner = args.engine === "chromium" ? await loadIndependentScanner(args.cache) : null;
+  const scanner = await loadIndependentScanner(args.cache);
   const { browser, executablePath } = await browserFor(args.engine);
   let report;
   try {
@@ -961,22 +966,20 @@ async function main(argv) {
       throw Error(`Browser outside required matrix: ${args.engine}`);
     browserEnvironment.requiredMatrixMember = true;
     const executed = {};
+    const pilotEvidence = await pilotResults(
+      args["pilot-report"],
+      manifest,
+      profile,
+      pilot,
+      pilotObservations,
+      extractionManifest,
+      windBuild,
+      reference,
+      scanner,
+      browserEnvironment,
+    );
+    Object.assign(executed, pilotEvidence.results);
     if (args.engine === "chromium") {
-      Object.assign(
-        executed,
-        await pilotResults(
-          args["pilot-report"],
-          manifest,
-          profile,
-          pilot,
-          pilotObservations,
-          extractionManifest,
-          windBuild,
-          reference,
-          scanner,
-          browserEnvironment,
-        ),
-      );
       Object.assign(executed, await nativeResults(args["wind-binary"], manifest, empty, output));
       Object.assign(
         executed,
@@ -1003,13 +1006,21 @@ async function main(argv) {
       output,
     );
     Object.assign(executed, results);
-    const controls =
-      args.engine === "chromium"
-        ? {
-            mutations: await mutations(browser, cssById),
-            seeded: await seededControls(args["wind-binary"], reference, browser, scanner, output),
-          }
-        : { targetedEngine: "not-required" };
+    const controls = {
+      pilot: pilotEvidence.controls,
+      pilotReportId: pilotEvidence.reportId,
+      pilotReportPath: pilotEvidence.reportPath,
+    };
+    if (args.engine === "chromium") {
+      controls.mutations = await mutations(browser, cssById);
+      controls.seeded = await seededControls(
+        args["wind-binary"],
+        reference,
+        browser,
+        scanner,
+        output,
+      );
+    }
     const expected = allExpected.filter((id) => id.endsWith(`/${args.engine}`));
     const accounting = completeCorpus(expected, executed, expectedOutcomes(manifest, profile));
     const differenceSummary = manifest.reviewedDifferences.map((difference) => {
@@ -1082,7 +1093,12 @@ async function main(argv) {
           executed[`upstream/${row.id}/${args.engine}`]?.configDigest ?? null,
         ]),
       ),
-      assertionDigest: digest([contracts, pilotObservations, manifest.compositionObligations]),
+      assertionDigest: digest([
+        contracts,
+        pilotObservations,
+        manifest.compositionObligations,
+        manifest.targetedExecutionKeys,
+      ]),
       adapterFiles,
       adapterDigest: digest(adapterFiles),
       lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
@@ -1103,6 +1119,11 @@ async function main(argv) {
       complete:
         accounting.complete &&
         differencesPass &&
+        digest(Object.keys(controls.pilot)) === digest(profile.requiredControls) &&
+        Object.values(controls.pilot).every((item) => item.outcome === "matched") &&
+        controls.pilot["wrong-value-detection"]?.mutations?.wrongValueDetected === true &&
+        controls.pilot["missing-rule-detection"]?.mutations?.removedStylesheetDetected === true &&
+        controls.pilot["missing-rule-detection"]?.mutations?.wrongSelectorDetected === true &&
         (args.engine !== "chromium" ||
           (controls.mutations.outcome === "matched" && controls.seeded.outcome === "matched")),
     };
