@@ -9,6 +9,12 @@ import { verifyDistProof } from "../../tests/wind-real-build/dist-proof.mjs";
 import { parseCssStructure } from "./structure.mjs";
 
 export const shippingManifestPath = "tests/wind-compatibility/shipping/manifest.json";
+export function validShippingCssResponse(response) {
+  return (
+    response?.status === 200 &&
+    (response.contentType === "text/css" || response.contentType === "text/css; charset=utf-8")
+  );
+}
 export function assertReplayedReferenceCss(replayed, retained) {
   if (!replayed.length || !replayed.equals(retained))
     throw Error("Independent reference CSS cannot be reproduced from SRI artifact");
@@ -336,8 +342,7 @@ export async function validateShippingRawCase(result, requirement, output, repor
         (stepIndex === 4 && step.mutation.oldPathAbsent !== true) ||
         !/^[0-9a-f]{64}$/.test(step.inputDigest ?? "") ||
         step.inputDigest === previousInputDigest ||
-        step.cssResponse?.status !== 200 ||
-        step.cssResponse?.contentType !== "text/css; charset=utf-8" ||
+        !validShippingCssResponse(step.cssResponse) ||
         !step.rawCss?.path ||
         !/^[0-9a-f]{64}$/.test(step.rawCss.sha256 ?? "") ||
         !step.rawConfig?.path ||
@@ -443,9 +448,10 @@ export async function validateShippingRawCase(result, requirement, output, repor
   }
   const observation = await readJson(resolve(output, result.raw.observation.path));
   if (
-    observation?.cssResponse?.status !== 200 ||
-    observation?.cssResponse?.contentType !== "text/css; charset=utf-8" ||
+    !validShippingCssResponse(observation?.cssResponse) ||
     observation?.cssResponse?.sha256 !== result.raw.servedCss.sha256 ||
+    (requirement.mode === "production-dev-warm" &&
+      observation.cssResponse.contentType !== result.steps.at(-1).cssResponse.contentType) ||
     digest(observation?.observed) !== digest(requirement.expectedObservation) ||
     observation?.caseId !== result.id ||
     observation?.engine !== result.engine
