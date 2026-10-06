@@ -1,0 +1,133 @@
+name: Temporary residual diagnostics and integration evidence
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: residual-integration-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Retain independent public CLI probe
+        run: |
+          mkdir -p /tmp/residual-integration-evidence
+          cp .github/ci-fixtures/residual-public-cli-check.mjs /tmp/residual-integration-evidence/public-cli-check.mjs
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: cb983180adc156cafabe486c830d6e953cb2eb9e
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          prefix-key: v2-zfb
+          shared-key: workspace-all-targets
+          cache-on-failure: true
+      - name: Record exact integration source and compiler
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = cb983180adc156cafabe486c830d6e953cb2eb9e
+          test -z "$(git status --porcelain)"
+          {
+            git rev-parse HEAD
+            rustc -Vv
+            cargo -V
+            node --version
+            pnpm --version
+          } > /tmp/residual-integration-evidence/environment.txt
+          cp crates/zudo-wind/catalog/zudo-wind-catalog.v1.json /tmp/residual-integration-evidence/prior-catalog.json
+      - name: Export actual native catalog and prove unchanged membership
+        run: |
+          set -euo pipefail
+          cargo run --locked -p zudo-wind --example export_catalog 2>&1 | tee /tmp/residual-integration-evidence/catalog-export.log
+          cp crates/zudo-wind/catalog/zudo-wind-catalog.v1.json /tmp/residual-integration-evidence/catalog-export.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const before=JSON.parse(fs.readFileSync('/tmp/residual-integration-evidence/prior-catalog.json'));
+          const after=JSON.parse(fs.readFileSync('/tmp/residual-integration-evidence/catalog-export.json'));
+          assert.deepEqual(after,before);
+          assert.equal(after.entries.length,219);
+          console.log('Actual generated catalog is semantically unchanged:219 entries');
+          NODE
+      - name: Execute Wind contracts and Clippy on actual integration source
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p zudo-wind --no-fail-fast 2>&1 | tee /tmp/residual-integration-evidence/wind-rust.log
+          cargo clippy --locked -p zudo-wind --all-targets -- -D warnings 2>&1 | tee /tmp/residual-integration-evidence/wind-clippy.log
+      - name: Verify public JSON transport and boundary controls
+        working-directory: packages/zfb
+        run: |
+          set -euo pipefail
+          ../../node_modules/.bin/vp test run src/__tests__/zudo-react/raw-html-reserved.test.ts 2>&1 | tee /tmp/residual-integration-evidence/json-public-api.log
+      - name: Restore checked catalog formatting before production identity
+        run: |
+          set -euo pipefail
+          git restore --source=HEAD -- crates/zudo-wind/catalog/zudo-wind-catalog.v1.json
+          test -z "$(git status --porcelain)"
+      - name: Build actual default-feature production CLI after all Cargo test work
+        run: node scripts/wind-compatibility/build-production.mjs /tmp/residual-integration-evidence/production
+      - name: Exercise diagnostic, strictness, reservation and pseudo-content public CLI controls
+        run: |
+          set -euo pipefail
+          production_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/residual-integration-evidence/production/production-build.json")).binaryPath')
+          node /tmp/residual-integration-evidence/public-cli-check.mjs "$production_binary" /tmp/residual-integration-evidence/public-cli
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const build=JSON.parse(fs.readFileSync('/tmp/residual-integration-evidence/production/production-build.json'));
+          const result=JSON.parse(fs.readFileSync('/tmp/residual-integration-evidence/public-cli/summary.json'));
+          assert.equal(result.binarySha256,build.binarySha256);
+          assert.equal(result.results.length,15);
+          assert.equal(result.passed,true);
+          NODE
+      - name: Generate actual compiler previews for review and check self-consistency
+        run: |
+          set -euo pipefail
+          production_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/residual-integration-evidence/production/production-build.json")).binaryPath')
+          cp -R docs/public/wind-examples /tmp/residual-integration-evidence/prior-previews
+          set +e
+          node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary" --check > /tmp/residual-integration-evidence/prior-preview-check.log 2>&1
+          prior_check=$?
+          set -e
+          printf '%s\n' "$prior_check" > /tmp/residual-integration-evidence/prior-preview-check.status
+          node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary"
+          node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary" --check
+          mkdir -p /tmp/residual-integration-evidence/generated-docs
+          cp -R docs/public/wind-examples /tmp/residual-integration-evidence/generated-docs/
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const manifest=JSON.parse(fs.readFileSync('docs/public/wind-examples/manifest.json'));
+          assert.equal(manifest.examples.length,173);
+          console.log('Generated output self-consistency checked for173 examples; prior checkout freshness is recorded separately');
+          NODE
+          set +e
+          diff -ruN /tmp/residual-integration-evidence/prior-previews docs/public/wind-examples > /tmp/residual-integration-evidence/preview-update.diff
+          diff_status=$?
+          set -e
+          test "$diff_status" -le 1
+      - name: Preserve original evidence and generated assets
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: residual-integration-evidence
+          path: /tmp/residual-integration-evidence/
+          if-no-files-found: error
+          retention-days: 7
