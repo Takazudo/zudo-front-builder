@@ -6,6 +6,7 @@
 
 #![cfg(unix)]
 
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -101,6 +102,8 @@ fn run_build_output(root: &Path, esbuild: &Path) -> std::process::Output {
         .arg("build")
         .current_dir(root)
         .env("ZFB_ESBUILD_BIN", esbuild)
+        .env("PATH", "")
+        .env_remove("NODE_PATH")
         .output()
         .expect("spawn `zfb build`")
 }
@@ -440,13 +443,45 @@ fn remove_assembled_class_probe(root: &Path) {
         .expect("remove unrelated dynamic-class probe for W-A06");
 }
 
-fn copy_first_build_dist_for_browser(dist: &Path) {
+fn copy_first_build_dist_for_browser(dist: &Path, esbuild: &Path) {
     if let Some(destination) = std::env::var_os("ZFB_WIND_REAL_BUILD_DIST") {
         let destination = PathBuf::from(destination);
         if destination.exists() {
             fs::remove_dir_all(&destination).expect("clear requested browser dist output");
         }
         copy_source_tree(dist, &destination).expect("copy first-build dist for browser suite");
+        if let Some(execution_path) = std::env::var_os("ZFB_WIND_REAL_BUILD_EXECUTION") {
+            let binary = zfb_binary!()
+                .canonicalize()
+                .expect("canonicalize Cargo zfb binary");
+            let binary_bytes = fs::read(&binary).expect("read Cargo zfb binary");
+            let index_bytes =
+                fs::read(destination.join("index.html")).expect("read exported build index");
+            let (stylesheet, css) = read_stylesheet(&destination);
+            let stylesheet = stylesheet
+                .strip_prefix(&destination)
+                .expect("exported CSS path under dist");
+            let execution = serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "zfb-rust-build-export",
+                "binaryPath": binary,
+                "binarySha256": format!("{:x}", Sha256::digest(binary_bytes)),
+                "indexSha256": format!("{:x}", Sha256::digest(index_bytes)),
+                "stylesheet": stylesheet,
+                "stylesheetSha256": format!("{:x}", Sha256::digest(css.as_bytes())),
+                "buildEnvironment": {
+                    "PATH": "",
+                    "NODE_PATH": null,
+                    "ZFB_ESBUILD_BIN": esbuild,
+                    "esbuildSha256": format!("{:x}", Sha256::digest(fs::read(esbuild).expect("read native esbuild"))),
+                },
+            });
+            fs::write(
+                execution_path,
+                serde_json::to_vec_pretty(&execution).expect("serialize build export proof"),
+            )
+            .expect("write build export proof");
+        }
         eprintln!(
             "[W-A06] copied first-build dist for the browser check to {}",
             destination.display()
@@ -529,7 +564,7 @@ fn w_a06_real_build_preserves_package_assets_and_css_modules() {
     };
 
     let dist = root.join("dist");
-    copy_first_build_dist_for_browser(&dist);
+    copy_first_build_dist_for_browser(&dist, &esbuild);
     let (stylesheet, css) = read_stylesheet(&dist);
     assert_modules_and_global_css(&dist, &css);
     assert_authored_and_package_assets(&stylesheet, &css);

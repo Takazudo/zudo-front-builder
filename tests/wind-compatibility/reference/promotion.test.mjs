@@ -131,7 +131,7 @@ test("reviewed rejection advances only reviewed-through; acceptance requires shi
       state,
       finalSha: "b".repeat(40),
     }),
-    /shipping manifest missing/,
+    /Shipping evidence identity, build, or membership invalid/,
   );
 });
 
