@@ -92,6 +92,47 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             "1",
         ));
     }
+    entries.push(entry(
+        "basis",
+        "flex-item",
+        5,
+        1,
+        &["flex-basis"],
+        &[ValueKind::Keyword, ValueKind::Fraction],
+        &[
+            ("auto", "auto"),
+            ("full", "100%"),
+            ("px", "1px"),
+            ("0", "0"),
+            ("min", "min-content"),
+            ("max", "max-content"),
+            ("fit", "fit-content"),
+            ("content", "content"),
+        ],
+        &[],
+        None,
+        true,
+        false,
+        OWN,
+        Some("auto"),
+        "auto",
+    ));
+    entries.push(entry(
+        "order",
+        "flex-item",
+        5,
+        2,
+        &["order"],
+        &[ValueKind::Keyword, ValueKind::Integer],
+        &[("first", "-9999"), ("last", "9999"), ("none", "0")],
+        &[],
+        None,
+        false,
+        true,
+        OWN,
+        Some("first"),
+        "-9999",
+    ));
     for (root, property) in [
         ("grid-cols", "grid-template-columns"),
         ("grid-rows", "grid-template-rows"),
