@@ -313,12 +313,11 @@ const tracking = (name) =>
         : null;
 const partialNative = Object.freeze({
   order: {
-    supported:
-      "first, last, none, and ASCII integer 0..2147483647 with optional negative numeric form",
+    supported: "first, last, none, and ASCII integer 0..2147483647",
     retained: "arbitrary values, custom properties, named tokens, and noninteger suffixes",
     alternative: "Author order in CSS for retained forms.",
     catalogIds: ["v1.order"],
-    windSyntax: "order-first | order-last | order-none | order-N | -order-N (N: 0..2147483647)",
+    windSyntax: "order-first | order-last | order-none | order-N (N: 0..2147483647)",
   },
   "-order": {
     supported: "negative ASCII integer 0..2147483647 only",
