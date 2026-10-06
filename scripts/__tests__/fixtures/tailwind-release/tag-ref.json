@@ -1,0 +1,10 @@
+{
+  "ref": "refs/tags/v4.3.3",
+  "node_id": "MDM6UmVmMTA2MDE3MzQzOnJlZnMvdGFncy92NC4zLjM=",
+  "url": "https://api.github.com/repos/tailwindlabs/tailwindcss/git/refs/tags/v4.3.3",
+  "object": {
+    "sha": "c2b24dd15fed1c59dd521bd86082f520c9f5ad0d",
+    "type": "commit",
+    "url": "https://api.github.com/repos/tailwindlabs/tailwindcss/git/commits/c2b24dd15fed1c59dd521bd86082f520c9f5ad0d"
+  }
+}

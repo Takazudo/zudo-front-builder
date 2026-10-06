@@ -6,6 +6,51 @@ target identity are in [`manual-following.md`](./manual-following.md) and
 round keeps the admitted 4.3.2 state authoritative while it records complete
 4.3.3 assessment and three-way comparison evidence.
 
+## Release detection (optional, dispatch-only)
+
+The optional [Tailwind release watch](../../../.github/workflows/tailwind-release-watch.yml)
+compares the newest published `tailwindcss` version on the accepted channel
+with [`accepted.json`](./accepted.json) and
+[`reviewed-through.json`](./reviewed-through.json). It reads the current
+profile ID and both reference records, then reads the npm registry's abbreviated
+packument. A GitHub tag observation is requested only when a newer on-track
+release needs manual review; an observed tag does not prove the npm artifact
+came from that source commit. New releases on another channel are reported as
+off-track information.
+
+The detector always emits a deterministic JSON report. Its statuses and
+process exit codes are:
+
+| Status | Exit | Meaning |
+| --- | ---: | --- |
+| `no-change` | 0 | No version above accepted is published. |
+| `already-reviewed` | 0 | The newest on-track version is at or below reviewed-through. |
+| `prerelease-only` | 0 | There is a newer off-track version and no newer on-track version. |
+| `REVIEW_NEEDED` | 10 | A newer on-track version is above reviewed-through and needs a human assessment. |
+| `operational-failure` | 1 | Records, registry metadata, or a required tag lookup failed validation. |
+
+Local detector and filer runs are dry-run: `file-wind-release-review.mjs`
+prints a plan and makes no GitHub calls. The workflow is the supported issue
+mutation path; only its `file-review-issue` job passes `--apply yes` under
+GitHub Actions. Dispatch with `dry_run: true` to capture and retain a report
+without filing an issue or notifying. The workflow has no schedule. Any future
+schedule for #3822 requires a repository-reviewed decision.
+
+Issue deduplication is eventual. Workflow concurrency serializes runs; the
+filer checks issue identity markers, creates or refreshes the matching review
+issue, then lists again and closes any higher-numbered open duplicates. Repeated
+runs with the same report are quiet. The detector and filer never write
+`profile.json`, `accepted.json`, `reviewed-through.json`, or any other record.
+The `profile.json` deferred entry for #3822 stays stale until its next revision;
+do not edit it here because `accepted.json` pins the profile digest.
+
+The detector and filer use only the built-in `GITHUB_TOKEN`. The optional
+notification job uses the repository's existing `IFTTT_PROD_NOTIFY` webhook in
+the same way as sibling watch lanes; it has no consumer identifiers or other
+production secrets. The manual `reference-cli.mjs review` and `promote` flow
+remains responsible for classification and any separately authorized record
+apply after a human assessment.
+
 ## Live state and history
 
 The current admission state is recorded in [`accepted.json`](./accepted.json)

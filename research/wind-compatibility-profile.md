@@ -286,10 +286,11 @@ integration proceeds. Artifacts remain local/ignored or normal CI artifacts; no 
 
 Preserve #3372 composed ring/animation and #3386 cascade redesign as deferred,
 with no automatic adoption. #3833 reconciles existing owners before any adoption.
-Optional #3822 watcher remains inactive. Existing #3696 docs ownership and
+Optional #3822 detector is implemented as dispatch-only in
+`tailwind-release-watch.yml`; no schedule is active. Existing #3696 docs ownership and
 #3328/#3329 docs-host migration stay outside this work; #3836 owns this epic's new
 bilingual guidance. This policy installs no compiler/runtime dependency, implements
-no utility or harness, activates no watcher, and changes no release/ruleset policy.
+no utility or harness, activates no scheduled lane, and changes no release/ruleset policy.
 
 ## History
 
