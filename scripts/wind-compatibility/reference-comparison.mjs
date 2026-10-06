@@ -5,7 +5,8 @@ import { completeCorpus, expectedObligations, expectedOutcomes } from "./corpus-
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { testedInputIdentity } from "./reference-identity.mjs";
 import { matchesExpected } from "./browser-adapter.mjs";
-import { currentPilotIdentity, validatePilotArtifacts, validatePilotEnvelope } from "./corpus-pilot.mjs";
+import { currentPilotIdentity, validatePilotArtifacts, validatePilotEnvelope,
+  validatePilotAssessmentArtifacts, validatePilotAssessmentEnvelope } from "./corpus-pilot.mjs";
 import { loadReference } from "./differential-runner.mjs";
 import { loadIndependentScanner } from "./oxide-scanner.mjs";
 import { candidateInventory } from "./reference-inventory.mjs";
@@ -191,9 +192,9 @@ export async function validateRun(output, expectedReference, input, profile, man
   const passing = engines.every((engine) => pilots[engine].complete === true &&
     pilots[engine].exitCode === 0) &&
     engines.every((engine) => reports[engine].complete === true && reports[engine].exitCode === 0);
-  if (strictArtifacts) {
-    if (!passing || !cache) throw Error("Passing complete report and cache required for raw replay");
-    const referenceCompiler = await loadReference(cache, expectedReference);
+  let referenceCompiler = null;
+  if (cache) {
+    referenceCompiler = await loadReference(cache, expectedReference);
     const scanner = await loadIndependentScanner(cache);
     const pilotManifest = await readJson(fromRoot("tests/wind-compatibility/pilot/manifest.json"));
     const observations = await readJson(fromRoot("tests/wind-compatibility/pilot/observations.json"));
@@ -203,9 +204,17 @@ export async function validateRun(output, expectedReference, input, profile, man
       const expectedIdentity = await currentPilotIdentity({ profile, manifest: pilotManifest,
         windBuild, reference: referenceCompiler, scanner,
         browserEnvironment: pilot.identity.browserEnvironment });
-      validatePilotEnvelope(pilot, profile, pilotManifest, observations, extraction, expectedIdentity);
-      await validatePilotArtifacts(pilot, resolve(output, `pilot-${engine}/report.json`), profile,
-        pilotManifest, observations, extraction, referenceCompiler, scanner);
+      validatePilotAssessmentEnvelope(pilot, profile, pilotManifest, observations,
+        extraction, expectedIdentity);
+      await validatePilotAssessmentArtifacts(pilot,
+        resolve(output, `pilot-${engine}/report.json`), profile, observations,
+        referenceCompiler, scanner);
+      if (strictArtifacts) {
+        if (!passing) throw Error("Passing complete report required for acceptance replay");
+        validatePilotEnvelope(pilot, profile, pilotManifest, observations, extraction, expectedIdentity);
+        await validatePilotArtifacts(pilot, resolve(output, `pilot-${engine}/report.json`),
+          profile, pilotManifest, observations, extraction, referenceCompiler, scanner);
+      }
     }
     for (const engine of engines)
       for (const [id, row] of Object.entries(reports[engine].executed))
@@ -213,16 +222,26 @@ export async function validateRun(output, expectedReference, input, profile, man
           [pair.wind, pair.reference].some((side) =>
             !side.pass || !matchesExpected(side.observation, side.expected))))
           throw Error(`${engine} browser expectation failed: ${id}`);
-  }
+  } else if (strictArtifacts) throw Error("Reference cache required for acceptance replay");
   for (const engine of engines) {
     const corpusDir = resolve(output, `corpus-${engine}`);
     const originalCorpusDir = resolve(originalOutput, `corpus-${engine}`);
     for (const [id, row] of Object.entries(reports[engine].executed)) {
       if (!id.startsWith("upstream/")) continue;
+      const raw = {};
       for (const [pathKey, hashKey] of [["windCssPath", "windCssSha256"],
         ["referenceCssPath", "referenceCssSha256"],
         ["referenceInputPath", "referenceInputSha256"]])
-        await readRecordedArtifact(row[pathKey], row[hashKey], corpusDir, originalCorpusDir);
+        raw[pathKey] = await readRecordedArtifact(row[pathKey], row[hashKey],
+          corpusDir, originalCorpusDir);
+      if (cache) {
+        const fixture = manifest.upstreamCases.find((item) =>
+          id === `upstream/${item.id}/${engine}`);
+        if (!fixture) throw Error(`${engine} upstream fixture absent for ${id}`);
+        const compiler = await referenceCompiler.compile(raw.referenceInputPath.toString("utf8"));
+        if (compiler.build(fixture.candidates) !== raw.referenceCssPath.toString("utf8"))
+          throw Error(`${engine} raw upstream compiler output changed: ${id}`);
+      }
       if (!Array.isArray(row.probes) || !row.probes.length ||
           row.probes.some((pair) => [pair.wind, pair.reference].some((side) =>
             !side?.verified || side.stylesheetSha256 !== side.servedSha256 ||
@@ -265,7 +284,7 @@ export async function executeReferenceRun({ output, referenceFile, binary, build
   }
 }
 
-function observationRows(run) {
+export function observationRows(run) {
   const rows = [];
   const add = (id, pairs, engine, configDigest, fixtureDigest) => {
     for (let index = 0; index < (pairs ?? []).length; index++) {
@@ -284,9 +303,21 @@ function observationRows(run) {
   for (const engine of engines) {
     for (const row of run.reports.pilots[engine].cases)
       add(`pilot/${row.caseId}`, row.observations, engine, row.configDigest, row.fixtureTreeDigest);
-    for (const row of run.reports.pilots[engine].controls)
-      if (row.observations) add(`control/${row.controlId}`, row.observations, engine, null,
-        row.fixtureTreeDigest ?? null);
+    for (const row of run.reports.pilots[engine].controls) {
+      if (!row.observations) continue;
+      let pairs = row.observations;
+      if (row.controlId === "native-reset-controls") {
+        if (pairs.length % 2 !== 0) throw Error(`${engine} native observations truncated`);
+        pairs = Array.from({ length: pairs.length / 2 }, (_, index) => {
+          const wind = row.observations[2 * index], reference = row.observations[2 * index + 1];
+          if (wind.engine !== "wind" || reference.engine !== "reference" ||
+              wind.probe !== reference.probe)
+            throw Error(`${engine} native observation side order changed`);
+          return { wind, reference };
+        });
+      }
+      add(`control/${row.controlId}`, pairs, engine, null, row.fixtureTreeDigest ?? null);
+    }
   }
   for (const engine of engines)
     for (const [key, row] of Object.entries(run.reports[engine].executed))
@@ -351,6 +382,15 @@ export async function compareOutputs({ plan, assessment, output, candidate, acce
       candidateCssSha256: row.referenceCssSha256,
       changed: old ? digest(old.reference) !== digest(row.reference) : null };
   });
+  const controlDelta = engines.flatMap((engine) =>
+    candidateRun.reports.pilots[engine].controls.map((row) => {
+      const old = acceptedRun?.reports.pilots[engine].controls.find((item) =>
+        item.controlId === row.controlId);
+      return { id: row.controlId, engine, acceptedDigest: old ? `sha256:${digest(old)}` : null,
+        candidateDigest: `sha256:${digest(row)}`,
+        acceptedOutcome: old?.outcome ?? null, candidateOutcome: row.outcome,
+        changed: old ? digest(old) !== digest(row) : null };
+    }));
   const body = {
     schemaVersion: 1, kind: "wind-three-way-comparison", planId: plan.planId,
     artifactOrigin,
@@ -371,6 +411,7 @@ export async function compareOutputs({ plan, assessment, output, candidate, acce
       files: acceptedRun.files },
     upstreamDelta,
     browserDelta,
+    controlDelta,
     candidateInventory: plan.previousAccepted
       ? await candidateInventory({ candidate, accepted, assessment, cache }) : null,
     inventoryMembership: plan.previousAccepted

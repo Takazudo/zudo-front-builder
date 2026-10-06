@@ -30,6 +30,8 @@ import {
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
 import {
   currentPilotIdentity,
+  validatePilotAssessmentArtifacts,
+  validatePilotAssessmentEnvelope,
   validatePilotArtifacts,
   validatePilotEnvelope,
 } from "./corpus-pilot.mjs";
@@ -61,6 +63,8 @@ function options(argv) {
     throw Error("Unknown browser engine");
   if (!result["pilot-report"])
     throw Error("Every corpus engine requires --pilot-report from the same Wind build and browser");
+  if (result["assessment-mode"] !== undefined && result["assessment-mode"] !== "yes")
+    throw Error("--assessment-mode must be yes when supplied");
   return result;
 }
 
@@ -205,6 +209,7 @@ async function pilotResults(
   reference,
   scanner,
   browserEnvironment,
+  assessmentMode = false,
 ) {
   const report = await readJson(path);
   const expectedIdentity = await currentPilotIdentity({
@@ -215,24 +220,17 @@ async function pilotResults(
     scanner,
     browserEnvironment,
   });
-  validatePilotEnvelope(
-    report,
-    profile,
-    pilotManifest,
-    pilotObservations,
-    extractionManifest,
-    expectedIdentity,
-  );
-  await validatePilotArtifacts(
-    report,
-    path,
-    profile,
-    pilotManifest,
-    pilotObservations,
-    extractionManifest,
-    reference,
-    scanner,
-  );
+  if (assessmentMode) {
+    validatePilotAssessmentEnvelope(report, profile, pilotManifest, pilotObservations,
+      extractionManifest, expectedIdentity);
+    await validatePilotAssessmentArtifacts(report, path, profile, pilotObservations,
+      reference, scanner);
+  } else {
+    validatePilotEnvelope(report, profile, pilotManifest, pilotObservations,
+      extractionManifest, expectedIdentity);
+    await validatePilotArtifacts(report, path, profile, pilotManifest, pilotObservations,
+      extractionManifest, reference, scanner);
+  }
   const results = {};
   const engine = browserEnvironment.name;
   for (const row of report.cases) {
@@ -977,6 +975,7 @@ async function main(argv) {
       reference,
       scanner,
       browserEnvironment,
+      args["assessment-mode"] === "yes",
     );
     Object.assign(executed, pilotEvidence.results);
     if (args.engine === "chromium") {

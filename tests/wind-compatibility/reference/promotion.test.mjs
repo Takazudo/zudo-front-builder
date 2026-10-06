@@ -7,8 +7,11 @@ import { testedPaths, sameTestedInputs } from "../../../scripts/wind-compatibili
 import { validateClassification, transition, writeTransitionAtomically, withTransitionLock } from "../../../scripts/wind-compatibility/reference-promotion.mjs";
 import { digest } from "../../../scripts/wind-compatibility/reference.mjs";
 import { validateShippingManifest } from "../../../scripts/wind-compatibility/reference-shipping.mjs";
-import { readRecordedArtifact, requirePassingCurrent, validateRun } from "../../../scripts/wind-compatibility/reference-comparison.mjs";
+import { observationRows, readRecordedArtifact, requirePassingCurrent, validateRun } from "../../../scripts/wind-compatibility/reference-comparison.mjs";
 import { sha256 } from "../../../scripts/wind-compatibility/reference.mjs";
+import { validatePilotAssessmentCases } from "../../../scripts/wind-compatibility/corpus-pilot.mjs";
+import { treeDigest } from "../../../scripts/wind-compatibility/differential-runner.mjs";
+import { fromRoot } from "../../../scripts/wind-compatibility/reference.mjs";
 
 const plan = { planId: "plan", channel: "stable", candidate: {
   package: "tailwindcss", version: "4.3.2", integrity: "sha512-test", source: { status: "unknown" },
@@ -17,7 +20,7 @@ const comparison = { reportId: "comparison", testedSourceSha: "a".repeat(40),
   testedInputs: { digest: "input" }, profile: { id: "wind-preset-free", version: 1,
     revision: 2, digest: "profile" }, candidate: { passing: true,
     reference: { integrity: "sha512-test", artifactSha256: "artifact" } },
-  accepted: null, upstreamDelta: [], browserDelta: [] };
+  accepted: null, upstreamDelta: [], browserDelta: [], controlDelta: [] };
 const state = { accepted: { schemaVersion: 1, acceptedReference: null },
   reviewed: { schemaVersion: 1, reviewedThrough: null } };
 
@@ -36,7 +39,7 @@ test("tested closure includes MDX fixtures and excludes only transition records"
 test("reviewed rejection advances only reviewed-through; acceptance requires shipping evidence", async () => {
   const classification = { schemaVersion: 1, kind: "wind-reference-classification",
     planId: "plan", comparisonReportId: "comparison", disposition: "review-only",
-    upstreamChanges: [], browserChanges: [], inventoryChanges: [] };
+    upstreamChanges: [], browserChanges: [], controlChanges: [], inventoryChanges: [] };
   const next = await transition({ plan, assessment: { captureIdentity: "assessment" },
     comparison, classification, shipping: null, state, finalSha: "b".repeat(40) });
   assert.deepEqual(next.accepted, state.accepted);
@@ -53,7 +56,7 @@ test("classification rejects omitted or unexplained exact three-way differences"
       candidateObservation: { value: "2px" }, changed: true,
     }] };
   const base = { schemaVersion: 1, kind: "wind-reference-classification", planId: "plan",
-    comparisonReportId: "comparison", disposition: "accept", upstreamChanges: [], browserChanges: [], inventoryChanges: [] };
+    comparisonReportId: "comparison", disposition: "accept", upstreamChanges: [], browserChanges: [], controlChanges: [], inventoryChanges: [] };
   assert.throws(() => validateClassification(base, changed, plan), /upstream change membership/);
   const classified = { ...base, upstreamChanges: [{ path: "pilot/x/reference.css",
     acceptedSha256: "old", candidateSha256: "new", category: "upstream-semantic",
@@ -143,4 +146,61 @@ test("retained artifact remapping verifies bytes and rejects traversal or symlin
     await assert.rejects(readRecordedArtifact(recorded,
       sha256(".block{display:block}"), output, original), /escapes declared bundle/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("assessment raw replay detects changed CSS and a falsely passed browser observation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wind-assessment-raw-"));
+  const output = join(root, "pilot");
+  const profile = JSON.parse(await readFile(fromRoot("tests/wind-compatibility/profile.json")));
+  const observations = JSON.parse(await readFile(fromRoot("tests/wind-compatibility/pilot/observations.json")));
+  const fixtureDir = fromRoot("tests/wind-compatibility/pilot/block");
+  const fixture = await readFile(join(fixtureDir, "case.json"));
+  const html = await readFile(join(fixtureDir, "index.html"));
+  const windCss = ".block{display:block}", referenceCss = ".block { display: block; }";
+  const windReport = { inputMode: "compiler", specCaseId: "block" };
+  const observe = (side, css) => ({ engine: side, probe: "display", verified: true,
+    stylesheetSha256: sha256(css), servedSha256: sha256(css),
+    settings: { documentSha256: sha256(html), authoredCssSha256: sha256("") },
+    expected: "block", observation: { value: "block" }, pass: true });
+  const row = { caseId: "block", wind: { cssSha256: sha256(windCss),
+    reportSha256: sha256(JSON.stringify(windReport)) },
+    reference: { cssSha256: sha256(referenceCss) },
+    fixtureDigest: sha256(fixture), fixtureTreeDigest: await treeDigest(fixtureDir),
+    configDigest: digest(profile.configurations.empty),
+    observations: [{ wind: observe("wind", windCss),
+      reference: observe("reference", referenceCss) }] };
+  const report = { cases: [row], controls: [], extraction: [] };
+  try {
+    await import("node:fs/promises").then((fs) => Promise.all([
+      fs.mkdir(join(output, "wind-compiler", "block"), { recursive: true }),
+      fs.mkdir(join(output, "reference-compiler", "block"), { recursive: true }),
+    ]));
+    await writeFile(join(output, "wind-compiler", "block", "wind.css"), windCss);
+    await writeFile(join(output, "wind-compiler", "block", "report.json"), JSON.stringify(windReport));
+    await writeFile(join(output, "reference-compiler", "block", "reference.css"), referenceCss);
+    const reference = { compile: async () => ({ build: () => referenceCss }) };
+    assert.equal(await validatePilotAssessmentCases(report, join(output, "report.json"),
+      profile, observations, reference), true);
+    row.observations[0].reference.observation.value = "none";
+    await assert.rejects(validatePilotAssessmentCases(report, join(output, "report.json"),
+      profile, observations, reference), /browser evidence invalid/);
+    row.observations[0].reference.observation.value = "block";
+    await writeFile(join(output, "reference-compiler", "block", "reference.css"), "tampered");
+    await assert.rejects(validatePilotAssessmentCases(report, join(output, "report.json"),
+      profile, observations, reference), /raw case changed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("three-way observation accounting pairs actual flat native control sides", async () => {
+  const shape = JSON.parse(await readFile(fromRoot(
+    "tests/wind-compatibility/reference/native-observation-shape.v1.json")));
+  const actual = { cases: [], controls: [{ controlId: "native-reset-controls",
+    observations: shape.observations }] };
+  const run = { reports: { pilots: Object.fromEntries(
+    ["chromium", "firefox", "webkit"].map((engine) => [engine, actual])),
+    chromium: { executed: {} }, firefox: { executed: {} }, webkit: { executed: {} } } };
+  const rows = observationRows(run);
+  for (const engine of ["chromium", "firefox", "webkit"])
+    assert.equal(rows.filter((row) => row.id === "control/native-reset-controls" &&
+      row.engine === engine).length, 6);
 });

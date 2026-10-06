@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import {
   completeCorpus,
   expectedObligations,
@@ -28,6 +29,7 @@ import {
 import { supplementalProbePlan } from "../../../scripts/wind-compatibility/corpus-supplemental.mjs";
 import {
   signedPilotReportId,
+  validatePilotAssessmentEnvelope,
   validatePilotEnvelope,
   validatePilotCorruptionControls,
   validatePilotControlPairs,
@@ -369,6 +371,26 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
     report.reportId = signedPilotReportId(report);
     return report;
   };
+  const observedMismatch = changed((report) => {
+    report.cases[0].outcome = "unexpected-mismatch";
+    report.cases[0].checks.structure = false;
+    report.complete = false;
+    report.exitCode = 1;
+  });
+  assert.equal(validatePilotAssessmentEnvelope(observedMismatch, profile, pilot,
+    observations, extraction, identity), true);
+  assert.throws(() => validatePilotEnvelope(observedMismatch, profile, pilot,
+    observations, extraction, identity), /incomplete or invalid admission/);
+  assert.throws(() => validatePilotAssessmentEnvelope(changed((report) => {
+    report.cases.pop();
+    report.complete = false;
+    report.exitCode = 1;
+  }), profile, pilot, observations, extraction, identity), /assessment case rows/);
+  assert.throws(() => validatePilotAssessmentEnvelope(changed((report) => {
+    report.cases[0].outcome = "infrastructure-failure";
+    report.complete = false;
+    report.exitCode = 1;
+  }), profile, pilot, observations, extraction, identity), /truncated or inconsistent/);
   assert.throws(
     () =>
       validatePilotEnvelope(
@@ -451,6 +473,15 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
       ),
     /reportId/,
   );
+});
+
+test("assessment mode is explicit and cannot be mislabeled", () => {
+  const runner = new URL("../../../scripts/wind-compatibility/corpus-runner.mjs", import.meta.url);
+  const result = spawnSync(process.execPath, [runner.pathname, "--wind-binary", "missing",
+    "--wind-build-manifest", "missing", "--output", "/tmp/wind-invalid-assessment-mode",
+    "--pilot-report", "missing", "--assessment-mode", "no"], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--assessment-mode must be yes/);
 });
 
 test("pilot corruption controls require both observed failures and served CSS hashes", async () => {

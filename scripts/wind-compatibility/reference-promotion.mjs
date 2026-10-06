@@ -84,6 +84,7 @@ export function validateClassification(record, comparison, plan) {
       record.planId !== plan.planId || record.comparisonReportId !== comparison.reportId ||
       !["accept", "review-only"].includes(record.disposition) ||
       !Array.isArray(record.upstreamChanges) || !Array.isArray(record.browserChanges) ||
+      !Array.isArray(record.controlChanges) ||
       !Array.isArray(record.inventoryChanges))
     throw Error("Missing actual reviewed classification record");
   const expected = comparison.upstreamDelta.filter((row) => row.changed);
@@ -109,8 +110,16 @@ export function validateClassification(record, comparison, plan) {
         digest(row.candidateObservation) !== digest(observed.candidateObservation))
       throw Error(`Unclassified browser change ${observed.id}/${observed.index}`);
   }
+  const expectedControls = comparison.controlDelta.filter((row) => row.changed);
+  same(record.controlChanges.map(({ id, engine, acceptedDigest, candidateDigest }) =>
+    ({ id, engine, acceptedDigest, candidateDigest })),
+    expectedControls.map(({ id, engine, acceptedDigest, candidateDigest }) =>
+      ({ id, engine, acceptedDigest, candidateDigest })), "control change membership");
+  for (const row of record.controlChanges)
+    if (!categories.has(row.category) || !row.rationale?.trim())
+      throw Error("Unclassified control change");
   if (record.disposition === "accept" &&
-      [...record.upstreamChanges, ...record.browserChanges]
+      [...record.upstreamChanges, ...record.browserChanges, ...record.controlChanges]
         .some((row) => row.category === "unexplained-drift"))
     throw Error("Unexplained drift cannot be accepted");
   if (plan.previousAccepted && comparison.inventoryMembership !== "candidate-inventory-refreshed")
