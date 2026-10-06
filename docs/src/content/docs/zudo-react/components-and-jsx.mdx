@@ -129,6 +129,25 @@ For a `pre` whose rendered children begin with a newline, the renderer adds a co
 
 Inside `script` and `style`, children are rejected. Inline raw text requires a static string in `rawHtml`; a childless external script may instead use `src`. Reactive payloads and internal comment markers are not supported. A case-insensitive closing script or style sequence for the current element is rejected. Script payloads are also rejected when HTML parsing would consume the renderer's closing `</script>` tag, such as `<!--<script>`. Harmless forms including `<!--`, `<!-- <script> -->`, and ordinary `<script>` text remain accepted. This check follows the HTML script tokenizer, including its escaped and double-escaped states; `style` uses RAWTEXT rules. Rejected payloads report `ZR_RAW_HTML` in server and client rendering. The runtime does not escape arbitrary JavaScript or CSS. Island props travel in attributes, not executable script blocks.
 
+For JSON data transport in a direct `<script type="application/json">` host, serialize a JSON-compatible object first, then escape `<` and the reserved marker substrings in the serialized JSON. Escaping each marker's first character as a JSON Unicode escape preserves its original case and the parsed value, including literal backslash-u text. This is for data transport, not a sanitizer or a serializer for executable JavaScript:
+
+~~~tsx
+function jsonForRawHtml(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new TypeError("Expected a JSON-compatible object");
+  return json
+    .replace(/</g, "\\u003c")
+    .replace(/data-zfb-island|zr:1:/gi, (marker) =>
+      `\\u${marker.charCodeAt(0).toString(16).padStart(4, "0")}${marker.slice(1)}`,
+    );
+}
+
+const data = { label: 'DATA-zfb-IsLaNd', text: '</script>' };
+return <script type="application/json" rawHtml={jsonForRawHtml(data)} />;
+~~~
+
+The script's text remains JSON: `JSON.parse(script.textContent)` recovers `data` exactly. A `<script type="application/json">` nested inside another element's `rawHtml` is a different case: the outer payload uses a conservative, case-insensitive substring fallback for marker-bearing JSON. Encode it with the same recipe before embedding it. Actual reserved attributes, protocol comments, and payloads that consume renderer boundaries remain rejected.
+
 Move text children from an inline style element into `rawHtml`:
 
 ~~~tsx
