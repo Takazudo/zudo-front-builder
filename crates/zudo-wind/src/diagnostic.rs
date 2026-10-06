@@ -24,6 +24,8 @@ pub enum DiagnosticCode {
     Zw014,
     /// A host token entry replaced an effective preset token value.
     Zw015,
+    /// A fallback-less reference to an undeclared Tailwind default theme variable.
+    Zw016,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

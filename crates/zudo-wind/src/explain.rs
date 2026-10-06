@@ -755,6 +755,7 @@ fn diagnostic_code_name(code: DiagnosticCode) -> &'static str {
         DiagnosticCode::Zw013 => "ZW013",
         DiagnosticCode::Zw014 => "ZW014",
         DiagnosticCode::Zw015 => "ZW015",
+        DiagnosticCode::Zw016 => "ZW016",
     }
 }
 
@@ -784,6 +785,7 @@ mod tests {
             DiagnosticCode::Zw013,
             DiagnosticCode::Zw014,
             DiagnosticCode::Zw015,
+            DiagnosticCode::Zw016,
         ];
         let names = codes.map(diagnostic_code_name);
         let unique = names
@@ -792,6 +794,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), names.len());
         assert_eq!(names[14], "ZW015");
+        assert_eq!(names[15], "ZW016");
     }
 
     fn configured() -> WindConfig {
