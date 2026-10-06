@@ -55,6 +55,67 @@ const plan = makePlan({
   toolchain: { node: "test", lockfileSha256: "e" },
 });
 
+test("accepted reference can be verified at the same version without reopening promotion", () => {
+  const pinned = { ...candidate, artifactSha256: "a".repeat(64) };
+  const accepted = {
+    ...state,
+    accepted: {
+      schemaVersion: 1,
+      acceptedReference: {
+        ...pinned,
+        channel: "stable",
+        lockfileSha256: "b",
+        toolchain: {},
+        profileId: "wind-preset-free",
+        profileVersion: 1,
+        profileRevision: 5,
+        profileDigest: "c",
+        evidenceReportId: "d",
+        evidenceReportDigest: "e",
+      },
+    },
+  };
+  const options = { candidate: pinned, state: accepted, hashes, channel: "stable", toolchain: {} };
+  assert.throws(() => makePlan(options), /advance accepted/);
+  const current = makePlan({ ...options, verificationOnly: true });
+  assert.equal(validatePlan(current, hashes, accepted, pinned, {}).verificationOnly, true);
+  assert.throws(
+    () =>
+      makePlan({
+        ...options,
+        candidate: { ...pinned, integrity: "sha512-WRONG" },
+        verificationOnly: true,
+      }),
+    /differs/,
+  );
+  assert.throws(
+    () =>
+      makePlan({
+        ...options,
+        candidate: { ...pinned, artifactSha256: "b".repeat(64) },
+        verificationOnly: true,
+      }),
+    /differs/,
+  );
+  assert.throws(
+    () =>
+      makePlan({
+        ...options,
+        candidate: {
+          ...pinned,
+          version: "4.3.1",
+          tarball: "https://registry.npmjs.org/tailwindcss/-/tailwindcss-4.3.1.tgz",
+        },
+        verificationOnly: true,
+      }),
+    /advance accepted/,
+  );
+  assert.throws(
+    () => validatePlan({ ...current, verificationOnly: false }, hashes, accepted, pinned, {}),
+    /modified/,
+  );
+});
+
 test("exact resolution, channels, major transition, duplicates and pagination", () => {
   assert.equal(compareVersion("4.3.2", "4.3.1"), 1);
   assert.equal(compareVersion("5.0.0-next.2", "5.0.0-next.10"), -1);

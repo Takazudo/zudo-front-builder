@@ -6,14 +6,20 @@ The checked manifest describes the mandatory cases. `run.mjs` repeats `zfb css` 
 
 The utility reference is the exact SRI-verified Tailwind tarball already used by the comparison. It receives explicit equivalent tokens and is rendered on a separate origin. Its utility screenshot must match the Wind utility screenshot byte for byte. Full page authored CSS and reset/cascade expectations are asserted separately through the production composition case; the isolated utility check does not claim historical page pixel identity.
 
-All paths below are examples; choose an **outside-checkout** evidence directory and current comparison/plan files. Run the Cargo build and Rust dist export through the repository heavy guard in the manager lane, after all shipping source changes are integrated:
+All paths below are examples; choose an **outside-checkout** evidence directory and current comparison/plan files. Compile the Rust dist fixture before the authenticated production build. A later `cargo test` may relink `target/debug/zfb` and invalidate the authenticated binary hash. The CI runner extracts exactly one `wind_real_build_confirm_build` test executable from Cargo JSON, then builds production `zfb` and runs the retained test executable directly from `crates/zfb`. No Cargo command follows the production build. Use the repository heavy guard for each local compilation in the manager lane:
 
 ```sh
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- \
+  cargo test --locked -p zfb --test wind_real_build_confirm_build --no-run --message-format=json > "$EVIDENCE_DIR/fixture-test-cargo.jsonl"
+# Extract the unique test executable as scripts/wind-compatibility/ci-run.sh does.
+bash "$HOME/.codex/scripts/heavy-guard.sh" -- \
   node scripts/wind-compatibility/build-production.mjs "$EVIDENCE_DIR"
-ZFB_WIND_REAL_BUILD_DIST="$EVIDENCE_DIR/dist" \
-  ZFB_WIND_REAL_BUILD_EXECUTION="$EVIDENCE_DIR/build-execution.json" \
-  bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo test -p zfb --test wind_real_build_confirm_build -- --nocapture
+(
+  cd crates/zfb
+  ZFB_WIND_REAL_BUILD_DIST="$EVIDENCE_DIR/dist" \
+    ZFB_WIND_REAL_BUILD_EXECUTION="$EVIDENCE_DIR/build-execution.json" \
+    "$FIXTURE_TEST_BINARY" --nocapture
+)
 node tests/wind-real-build/dist-proof.mjs "$EVIDENCE_DIR/production-build.json" "$EVIDENCE_DIR/dist" "$EVIDENCE_DIR/build-execution.json" "$EVIDENCE_DIR/dist-proof.json"
 node tests/wind-compatibility/shipping/run.mjs \
   --production-build "$EVIDENCE_DIR/production-build.json" \

@@ -217,7 +217,32 @@ export async function assessUpstream(plan, cacheDir, fetcher = fetch) {
       previousSource = null,
       releases = [release],
       intervening = [plan.candidate.version];
-    if (plan.previousAccepted) {
+    if (plan.verificationOnly) {
+      if (
+        !plan.previousAccepted ||
+        plan.previousAccepted.version !== candidate.meta.version ||
+        plan.previousAccepted.integrity !== candidate.meta.integrity ||
+        plan.previousAccepted.artifactSha256 !== candidate.acquired.sha256 ||
+        plan.previousAccepted.source?.observedTagCommit !== source.tagCommit
+      )
+        throw Error("Current accepted reference changed during assessment");
+      previous = candidate;
+      previousSource = source;
+      const packument = (await json(npm)).value;
+      const listed = validateMetadata(
+        packument.versions?.[candidate.meta.version],
+        candidate.meta.version,
+      );
+      if (
+        listed.integrity !== candidate.meta.integrity ||
+        listed.tarball !== candidate.meta.tarball
+      )
+        throw Error("Current npm catalog/reference mismatch");
+      // Current verification proves this exact release again. It does not
+      // invent an upgrade interval or claim that accepted advanced.
+      releases = [release];
+      intervening = [candidate.meta.version];
+    } else if (plan.previousAccepted) {
       previous = await packageSnapshot(plan.previousAccepted.version);
       if (
         previous.meta.integrity !== plan.previousAccepted.integrity ||
@@ -301,6 +326,7 @@ export async function assessUpstream(plan, cacheDir, fetcher = fetch) {
     const report = {
       schemaVersion: 1,
       kind: "wind-reference-assessment",
+      ...(plan.verificationOnly ? { verificationOnly: true } : {}),
       planId: plan.planId,
       candidate: plan.candidate,
       status: "ready-for-comparison",
@@ -349,6 +375,7 @@ export async function assessUpstream(plan, cacheDir, fetcher = fetch) {
     return {
       schemaVersion: 1,
       kind: "wind-reference-assessment",
+      ...(plan.verificationOnly ? { verificationOnly: true } : {}),
       planId: plan.planId,
       candidate: plan.candidate,
       status: "incomplete",

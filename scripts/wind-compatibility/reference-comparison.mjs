@@ -313,11 +313,24 @@ export async function validateRun(
   input,
   profile,
   manifest,
-  { cache = null, strictArtifacts = false, originalOutput = output } = {},
+  {
+    cache = null,
+    strictArtifacts = false,
+    originalOutput = output,
+    selectedEngines = engines,
+  } = {},
 ) {
+  if (
+    !Array.isArray(selectedEngines) ||
+    !selectedEngines.length ||
+    selectedEngines[0] !== "chromium" ||
+    selectedEngines.some((engine) => !engines.includes(engine)) ||
+    new Set(selectedEngines).size !== selectedEngines.length
+  )
+    throw Error("Unsupported verification engine selection");
   output = await outsideCheckout(output);
   const pilots = {};
-  for (const engine of engines) {
+  for (const engine of selectedEngines) {
     const pilot = await readJson(resolve(output, `pilot-${engine}/report.json`));
     if (
       pilot.reportId !== shaReport(pilot) ||
@@ -360,7 +373,7 @@ export async function validateRun(
     pilots[engine] = pilot;
   }
   const reports = { pilots };
-  for (const engine of engines) {
+  for (const engine of selectedEngines) {
     for (const row of pilots[engine].cases) {
       const pilotDir = resolve(output, `pilot-${engine}`);
       const originalPilotDir = resolve(originalOutput, `pilot-${engine}`);
@@ -392,7 +405,7 @@ export async function validateRun(
         throw Error(`${engine} pilot raw observation/transport invalid: ${row.caseId}`);
     }
   }
-  for (const engine of engines) {
+  for (const engine of selectedEngines) {
     const report = await readJson(resolve(output, `corpus-${engine}/report.json`));
     if (
       report.reportId !== shaReport(report) ||
@@ -449,7 +462,7 @@ export async function validateRun(
     reference.integrity !== expectedReference.integrity ||
     reference.artifactSha256 !== expectedReference.artifactSha256 ||
     !reference.moduleGraphSha256 ||
-    engines.some(
+    selectedEngines.some(
       (engine) =>
         digest(reports[engine].identity.reference) !== digest(reference) ||
         digest(pilots[engine].identity.reference) !== digest(reference),
@@ -459,7 +472,7 @@ export async function validateRun(
   const windBuild = pilots.chromium.identity.windBuild;
   if (
     !/^[0-9a-f]{40}$/.test(windBuild.gitSha) ||
-    engines.some(
+    selectedEngines.some(
       (engine) =>
         digest(reports[engine].identity.windBuild) !== digest(windBuild) ||
         digest(pilots[engine].identity.windBuild) !== digest(windBuild),
@@ -467,14 +480,14 @@ export async function validateRun(
   )
     throw Error("Wind build identity differs across executed runs");
   if (
-    engines.some(
+    selectedEngines.some(
       (engine) =>
         pilots[engine].identity.profileDigest !== input.profile ||
         reports[engine].identity.profileDigest !== input.profile,
     )
   )
     throw Error("Profile identity differs from current input");
-  for (const engine of engines) {
+  for (const engine of selectedEngines) {
     if (
       reports[engine].identity.browserEnvironment?.requiredMatrixMember !== true ||
       pilots[engine].identity.browserEnvironment?.requiredMatrixMember !== true
@@ -495,11 +508,15 @@ export async function validateRun(
     )
       throw Error(`${engine} browser identity differs from profile matrix`);
   }
-  for (const engine of engines.filter((name) => name !== "chromium"))
+  for (const engine of selectedEngines.filter((name) => name !== "chromium"))
     assertTargetedExecution(profile, manifest, reports[engine], engine);
   const passing =
-    engines.every((engine) => pilots[engine].complete === true && pilots[engine].exitCode === 0) &&
-    engines.every((engine) => reports[engine].complete === true && reports[engine].exitCode === 0);
+    selectedEngines.every(
+      (engine) => pilots[engine].complete === true && pilots[engine].exitCode === 0,
+    ) &&
+    selectedEngines.every(
+      (engine) => reports[engine].complete === true && reports[engine].exitCode === 0,
+    );
   let referenceCompiler = null,
     scanner = null;
   if (cache) {
@@ -512,7 +529,7 @@ export async function validateRun(
     const extraction = await readJson(
       fromRoot("tests/wind-compatibility/extraction/manifest.json"),
     );
-    for (const engine of engines) {
+    for (const engine of selectedEngines) {
       const pilot = pilots[engine];
       const expectedIdentity = await currentPilotIdentity({
         profile,
@@ -561,7 +578,7 @@ export async function validateRun(
       }
     }
   } else if (strictArtifacts) throw Error("Reference cache required for acceptance replay");
-  for (const engine of engines) {
+  for (const engine of selectedEngines) {
     const corpusDir = resolve(output, `corpus-${engine}`);
     const originalCorpusDir = resolve(originalOutput, `corpus-${engine}`);
     if (engine === "chromium") {

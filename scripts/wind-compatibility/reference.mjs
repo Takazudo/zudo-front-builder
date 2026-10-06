@@ -166,7 +166,14 @@ export async function identity() {
   });
   return result;
 }
-export function makePlan({ candidate, state, hashes, channel, toolchain }) {
+export function makePlan({
+  candidate,
+  state,
+  hashes,
+  channel,
+  toolchain,
+  verificationOnly = false,
+}) {
   if (
     candidate?.package !== "tailwindcss" ||
     !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(candidate.integrity ?? "") ||
@@ -235,11 +242,23 @@ export function makePlan({ candidate, state, hashes, channel, toolchain }) {
   const parsed = exactVersion(candidate.version);
   requireChannel(candidate.version, channel);
   const prior = state.accepted.acceptedReference;
-  if (prior && compareVersion(candidate.version, prior.version) <= 0)
+  if (
+    prior &&
+    (compareVersion(candidate.version, prior.version) < 0 ||
+      (compareVersion(candidate.version, prior.version) === 0 && !verificationOnly))
+  )
     throw Error("Candidate must advance accepted reference");
+  if (verificationOnly && (!prior || compareVersion(candidate.version, prior.version) !== 0))
+    throw Error("Current verification must match the accepted reference exactly");
+  if (
+    verificationOnly &&
+    (candidate.integrity !== prior.integrity || candidate.artifactSha256 !== prior.artifactSha256)
+  )
+    throw Error("Current verification artifact differs from accepted reference");
   const plan = {
     schemaVersion: 1,
     kind: "wind-reference-plan",
+    ...(verificationOnly ? { verificationOnly: true } : {}),
     channel,
     candidate,
     previousAccepted: prior,
@@ -286,6 +305,7 @@ export function validatePlan(plan, hashes, state, expectedCandidate, expectedToo
     hashes,
     channel: plan.channel,
     toolchain: expectedToolchain,
+    verificationOnly: plan.verificationOnly === true,
   });
   if (digest(plan) !== digest(expected)) throw Error("Plan semantics do not match current state");
   return plan;

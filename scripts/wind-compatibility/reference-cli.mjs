@@ -118,11 +118,17 @@ async function main() {
   )
     throw Error("Bootstrap/profile identity mismatch");
   if (command === "plan") {
-    const version = opts.candidate ?? bootstrap.version;
+    const accepted = await readJson(fromRoot(paths.accepted));
+    const verificationOnly = opts.current === "yes";
+    if (opts.current !== undefined && !verificationOnly) throw Error("--current must be yes");
+    const version =
+      opts.candidate ??
+      (verificationOnly ? accepted.acceptedReference?.version : bootstrap.version);
+    if (!version) throw Error("No accepted reference for current verification");
     const candidate = await pinSource(await metadata(version, opts, bootstrap), bootstrap);
     const state = {
       profile,
-      accepted: await readJson(fromRoot(paths.accepted)),
+      accepted,
       reviewed: await readJson(fromRoot(paths.reviewed)),
     };
     const hashes = await identity();
@@ -132,6 +138,7 @@ async function main() {
       hashes,
       channel: opts.channel ?? "stable",
       toolchain: { node: process.version, lockfile: paths.lock, lockfileSha256: hashes.lock },
+      verificationOnly,
     });
     process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
   } else if (command === "assess") {
@@ -208,6 +215,8 @@ async function main() {
         lockfile: paths.lock,
         lockfileSha256: hashes.lock,
       });
+      if (plan.verificationOnly && ["promote", "review"].includes(command))
+        throw Error("Current verification cannot advance reference state");
       const assessment = await readJson(resolve(opts.assessment));
       const artifactSha256 = await validateAssessment(assessment, plan, opts.cache);
       const candidate = { ...plan.candidate, artifactSha256 };
