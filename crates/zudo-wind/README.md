@@ -16,6 +16,14 @@ attributes.
 The language contract is the workspace
 [zudo-wind v1 specification](../../research/3242-zudo-wind-v1-spec.md).
 
+The current implementation is language spec version 1, revision 13, with
+migration vocabulary 5 and 212 generated catalog entries. Revision 13 adds
+exact token-free display statics for contents, flow-root, list-item, and table
+formatting roles, plus appearance-auto and appearance-none. These spellings
+emit one declaration each; suffix, negative, slash, and arbitrary forms remain
+outside this adoption. The implementation addendum records this revision
+without rewriting the historical revision 2 ratification.
+
 ## Catalog export
 
 The committed

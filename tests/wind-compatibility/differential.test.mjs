@@ -33,14 +33,45 @@ test("pilot is a complete, reviewed profile manifest", () => {
   assert.throws(() =>
     validatePilot(profile, { caseIds: [...manifest.caseIds, "invented"] }, observations),
   );
+  for (const mutate of [
+    (value) => value.caseIds.pop(),
+    (value) => (value.caseIds[1] = value.caseIds[0]),
+    (value) => (value.caseIds[1] = "invented"),
+  ]) {
+    const changed = structuredClone(manifest);
+    mutate(changed);
+    assert.throws(() => validatePilot(profile, changed, observations), /reviewed 15-case set/);
+  }
+  for (const mutate of [
+    (value) => value.requiredCases.pop(),
+    (value) => (value.requiredCases[1].id = value.requiredCases[0].id),
+    (value) => (value.requiredCases[1].id = "invented"),
+  ]) {
+    const changed = structuredClone(profile);
+    mutate(changed);
+    assert.throws(() => validatePilot(changed, manifest, observations), /reviewed 15-case set/);
+  }
   const altered = structuredClone(observations);
   delete altered.block;
   assert.throws(() => validatePilot(profile, manifest, altered));
+  const unknownObservation = structuredClone(observations);
+  unknownObservation.invented = structuredClone(unknownObservation.block);
+  assert.throws(() => validatePilot(profile, manifest, unknownObservation));
+  const staleContents = structuredClone(profile);
+  staleContents.requiredCases.find((row) => row.id === "contents-gap").disposition =
+    "implementation-gap";
+  assert.throws(() => validatePilot(staleContents, manifest, observations), /contents-gap/);
   const expanded = structuredClone(profile);
   expanded.requiredCases
     .find((row) => row.id === "block")
     .reviewedDifferenceIds.push("physical-logical-margin");
   assert.throws(() => validatePilot(expanded, manifest, observations));
+  const staleProfile = structuredClone(profile);
+  staleProfile.profileRevision = 2;
+  assert.throws(() => validatePilot(staleProfile, manifest, observations));
+  const staleSpec = structuredClone(profile);
+  staleSpec.sourceBaseline.languageSpecRevision = 12;
+  assert.throws(() => validatePilot(staleSpec, manifest, observations));
 });
 
 test("prelude is exact and counted once per expected stylesheet", () => {
@@ -55,6 +86,19 @@ test("prelude is exact and counted once per expected stylesheet", () => {
     false,
   );
   assert.equal(preludeCheck(`${statement}\n`, false, statement), false);
+  const contents = expectedStructure("contents-gap");
+  assert.equal(contents.wind.length, 2);
+  assert.equal(contents.wind[0].text, statement.slice(0, -1));
+  assert.deepEqual(
+    compareStructure(
+      "contents-gap",
+      `${statement}\n.contents { display: contents; }`,
+      ".contents { display: contents; }",
+      ["wind-layer-order-prelude"],
+      true,
+    ).pass,
+    true,
+  );
 });
 
 test("failed observations cannot become reviewed matches", () => {
@@ -143,7 +187,7 @@ test("semantic cases count exactly two configured Wind tokens and one used refer
   const policy = profile.reviewedDifferences.find(
     (item) => item.id === "named-token-representation",
   );
-  assert.equal(profile.profileRevision, 2);
+  assert.equal(profile.profileRevision, 3);
   for (const [id, utility, reference, unusedToken] of cases) {
     const wind = `${prelude}${tokenRule}${utility}`;
     const row = profile.requiredCases.find((item) => item.id === id);

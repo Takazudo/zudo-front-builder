@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import {
   completeCorpus,
   expectedObligations,
@@ -28,6 +29,7 @@ import {
 import { supplementalProbePlan } from "../../../scripts/wind-compatibility/corpus-supplemental.mjs";
 import {
   signedPilotReportId,
+  validatePilotAssessmentEnvelope,
   validatePilotEnvelope,
   validatePilotCorruptionControls,
   validatePilotControlPairs,
@@ -72,11 +74,50 @@ const validate = (
 
 test("exact corpus membership, source adaptations and composition probes are accounted", () => {
   const expected = validate();
-  assert.equal(expected.length, 104);
-  assert.equal(expected.filter((id) => id.endsWith("/chromium")).length, 54);
+  assert.equal(manifest.pilotCaseIds.length, 15);
+  assert.equal(new Set(manifest.pilotCaseIds).size, 15);
+  assert.equal(manifest.pilotCaseIds.filter((id) => id === "contents-gap").length, 1);
+  assert.deepEqual(
+    manifest.pilotPolicies.find((row) => row.id === "contents-gap"),
+    {
+      id: "contents-gap",
+      disposition: "equivalent-shared",
+      reviewedDifferenceIds: ["wind-layer-order-prelude"],
+    },
+  );
+  assert.equal(expected.length, 106);
+  assert.equal(expected.filter((id) => id.endsWith("/chromium")).length, 56);
   assert.equal(expected.filter((id) => id.endsWith("/firefox")).length, 25);
   assert.equal(expected.filter((id) => id.endsWith("/webkit")).length, 25);
-  assert.equal(manifest.counts.upstreamProbes, 40);
+  assert.equal(manifest.counts.upstreamProbes, 55);
+});
+
+test("native display and appearance fixtures use the adapter target and separate exact probes", async () => {
+  for (const id of ["native-display", "native-appearance"]) {
+    const row = manifest.upstreamCases.find((item) => item.id === id);
+    const html = await readFile(new URL("upstream/" + id + "/index.html", root), "utf8");
+    const target = /<[^>]*id="target"[^>]*class="([^"]+)"[^>]*>/.exec(html)?.[1];
+    assert.ok(html.includes('id="box"'), id);
+    assert.deepEqual(target?.split(/\s+/), row.candidates, id);
+    for (const probe of probes[id])
+      assert.ok(html.includes('id="' + probe.selector.slice(1) + '"'));
+  }
+  const displayHtml = await readFile(
+    new URL("upstream/native-display/index.html", root),
+    "utf8",
+  );
+  for (const tag of [
+    '<table id="table"',
+    '<caption id="table-caption"',
+    '<colgroup id="table-column-group"',
+    '<col id="table-column"',
+    '<thead id="table-header-group"',
+    '<tbody id="table-row-group"',
+    '<tr id="table-row"',
+    '<td id="table-cell"',
+    '<tfoot id="table-footer-group"',
+  ])
+    assert.ok(displayHtml.includes(tag), tag);
 });
 
 test("targeted execution map binds every policy obligation to current pilot/control evidence", () => {
@@ -133,6 +174,26 @@ test("missing fixtures, duplicate IDs, empty candidate lists and missing executi
   assert.deepEqual(completeCorpus(obligations, missingFirefoxPilot, allowed).missing, [
     "pilot/mx-auto/firefox",
   ]);
+  const coordinatedPilotDeletion = copy(profile);
+  const coordinatedManifestDeletion = copy(manifest);
+  const coordinatedPilotFixtureDeletion = copy(pilot);
+  const coordinatedObservationDeletion = copy(observations);
+  coordinatedPilotDeletion.requiredCases.pop();
+  coordinatedManifestDeletion.pilotCaseIds.pop();
+  coordinatedPilotFixtureDeletion.caseIds.pop();
+  delete coordinatedObservationDeletion["breakpoint-block"];
+  assert.throws(
+    () =>
+      validate(
+        coordinatedManifestDeletion,
+        coordinatedPilotDeletion,
+        empty,
+        coordinatedPilotFixtureDeletion,
+        upstream,
+        coordinatedObservationDeletion,
+      ),
+    /reviewed 15-case set/,
+  );
 });
 
 test("downgrades and recategorized reviewed differences fail policy validation", () => {
@@ -142,6 +203,13 @@ test("downgrades and recategorized reviewed differences fail policy validation",
   const difference = copy(profile);
   difference.requiredCases[0].reviewedDifferenceIds = [];
   assert.throws(() => validate(manifest, difference), /policy changed/);
+  const staleContents = copy(profile);
+  staleContents.requiredCases.find((row) => row.id === "contents-gap").disposition =
+    "implementation-gap";
+  const staleContentsManifest = copy(manifest);
+  staleContentsManifest.pilotPolicies.find((row) => row.id === "contents-gap").disposition =
+    "implementation-gap";
+  assert.throws(() => validate(staleContentsManifest, staleContents), /contents-gap/);
   const reclassified = copy(manifest);
   reclassified.upstreamCases.find((x) => x.id === "padding-axis").reviewedDifferenceIds = [];
   assert.throws(() => validate(reclassified), /Unreviewed difference/);
@@ -230,6 +298,26 @@ test("exact structure detects extra declarations, layers, selector, media and or
     ).windPass,
     false,
   );
+  const nativeDisplay = contracts.cases["native-display"];
+  const nativeDisplayWind = emit(expectedWindTree(nativeDisplay));
+  const nativeDisplayReference =
+    ".contents{display:contents;}.flow-root{display:flow-root;}.inline-table{display:inline-table;}.list-item{display:list-item;}.table{display:table;}.table-caption{display:table-caption;}.table-cell{display:table-cell;}.table-column{display:table-column;}.table-column-group{display:table-column-group;}.table-footer-group{display:table-footer-group;}.table-header-group{display:table-header-group;}.table-row{display:table-row;}.table-row-group{display:table-row-group;}";
+  const nativeDisplayResult = compareCorpusStructure(
+    nativeDisplay,
+    nativeDisplayWind,
+    nativeDisplayReference,
+  );
+  assert.equal(nativeDisplayResult.pass, true);
+  assert.equal(nativeDisplay.rules.length, 13);
+  const nativeAppearance = contracts.cases["native-appearance"];
+  const nativeAppearanceWind = emit(expectedWindTree(nativeAppearance));
+  const nativeAppearanceReference =
+    ".appearance-auto{appearance:auto;}.appearance-none{appearance:none;}";
+  assert.equal(
+    compareCorpusStructure(nativeAppearance, nativeAppearanceWind, nativeAppearanceReference).pass,
+    true,
+  );
+  assert.equal(nativeAppearance.rules.length, 2);
   const quoted = (css) => parseCssStructure(css).map(canonical);
   assert.notDeepEqual(quoted(".x{content:'a  b';}"), quoted(".x{content:'a b';}"));
   assert.notDeepEqual(quoted(".x{content:'.5';}"), quoted(".x{content:'0.5';}"));
@@ -369,6 +457,60 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
     report.reportId = signedPilotReportId(report);
     return report;
   };
+  const observedMismatch = changed((report) => {
+    report.cases[0].outcome = "unexpected-mismatch";
+    report.cases[0].checks.structure = false;
+    report.complete = false;
+    report.exitCode = 1;
+  });
+  assert.equal(
+    validatePilotAssessmentEnvelope(
+      observedMismatch,
+      profile,
+      pilot,
+      observations,
+      extraction,
+      identity,
+    ),
+    true,
+  );
+  assert.throws(
+    () =>
+      validatePilotEnvelope(observedMismatch, profile, pilot, observations, extraction, identity),
+    /incomplete or invalid admission/,
+  );
+  assert.throws(
+    () =>
+      validatePilotAssessmentEnvelope(
+        changed((report) => {
+          report.cases.pop();
+          report.complete = false;
+          report.exitCode = 1;
+        }),
+        profile,
+        pilot,
+        observations,
+        extraction,
+        identity,
+      ),
+    /assessment case rows/,
+  );
+  assert.throws(
+    () =>
+      validatePilotAssessmentEnvelope(
+        changed((report) => {
+          report.cases[0].outcome = "infrastructure-failure";
+          report.complete = false;
+          report.exitCode = 1;
+        }),
+        profile,
+        pilot,
+        observations,
+        extraction,
+        identity,
+      ),
+    /truncated or inconsistent/,
+  );
   assert.throws(
     () =>
       validatePilotEnvelope(
@@ -451,6 +593,29 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
       ),
     /reportId/,
   );
+});
+
+test("assessment mode is explicit and cannot be mislabeled", () => {
+  const runner = new URL("../../../scripts/wind-compatibility/corpus-runner.mjs", import.meta.url);
+  const result = spawnSync(
+    process.execPath,
+    [
+      runner.pathname,
+      "--wind-binary",
+      "missing",
+      "--wind-build-manifest",
+      "missing",
+      "--output",
+      "/tmp/wind-invalid-assessment-mode",
+      "--pilot-report",
+      "missing",
+      "--assessment-mode",
+      "no",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--assessment-mode must be yes/);
 });
 
 test("pilot corruption controls require both observed failures and served CSS hashes", async () => {

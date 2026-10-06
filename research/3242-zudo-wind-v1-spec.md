@@ -761,3 +761,25 @@ The separate [Wind preset-free compatibility profile](wind-compatibility-profile
 preserves this document's historical revision and owned-language boundary while
 allowing reviewed native utility adoptions. Its version is independent of language
 spec/catalog revisions; it does not certify this spec's historical verification.
+
+## Current implementation addendum: spec 1 revision 13 (2026-10-06)
+
+This implementation addendum records the exact display and appearance statics
+adopted after the historical revision 2 ratification. It does not revise that
+historical ratification or imply that its original verification covered these
+additions.
+
+The display family adds contents, flow-root, list-item, table, inline-table,
+table-caption, table-cell, table-column, table-column-group,
+table-footer-group, table-header-group, table-row, and table-row-group. Each
+exact candidate emits only display with the same value. The appearance family
+adds appearance-auto and appearance-none, each emitting only appearance with
+the matching auto or none value. These are exact statics: suffixes, negative
+forms, slash forms, arbitrary values, and new tokens are not admitted.
+
+The existing ten-field sort tuple remains authoritative. Display entries use
+the display conflict group at rank 1/order 0; appearance entries use the
+interaction group at rank 40/order 0. Authored-class suppression remains exact
+candidate matching before parsing and diagnostics. The migration vocabulary is
+revision 5: implemented names leave migration diagnostics, while table-auto
+and table-fixed remain deferred migration forms.

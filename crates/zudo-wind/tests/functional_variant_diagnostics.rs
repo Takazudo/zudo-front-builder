@@ -73,13 +73,13 @@ fn rejected_variants_keep_wrapped_migration_and_original_origin() {
     let mut with_safelist = config();
     with_safelist
         .safelist
-        .insert("app".to_owned(), vec!["table-cell".to_owned()]);
-    let explanation = explain("min-[56rem]:table-cell", &with_safelist);
+        .insert("app".to_owned(), vec!["table-auto".to_owned()]);
+    let explanation = explain("min-[56rem]:table-auto", &with_safelist);
     assert_eq!(explanation.diagnostics.len(), 2);
     assert!(explanation
         .diagnostics
         .iter()
-        .all(|diagnostic| diagnostic.candidate.as_deref() == Some("min-[56rem]:table-cell")));
+        .all(|diagnostic| diagnostic.candidate.as_deref() == Some("min-[56rem]:table-auto")));
 }
 
 #[test]

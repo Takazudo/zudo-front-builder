@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile, readdir, stat, unlink, realpath } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  readdir,
+  stat,
+  unlink,
+  realpath,
+  lstat,
+} from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { registerHooks } from "node:module";
 import { homedir } from "node:os";
 import { gunzipSync } from "node:zlib";
 import {
@@ -21,10 +31,16 @@ import {
   validatePilot,
 } from "./differential-core.mjs";
 import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
-import { verifyPinnedReferenceModuleGraph } from "./reference-module-graph.mjs";
+import {
+  archivedReferenceModules,
+  verifiedReferenceImport,
+  verifyExtractedReferenceModules,
+  verifyPinnedReferenceModuleGraph,
+} from "./reference-module-graph.mjs";
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
 import {
   digest,
+  exactVersion,
   fromRoot,
   outsideCheckout,
   readJson,
@@ -155,35 +171,82 @@ function tarMember(bytes, filename) {
   throw Error(`Reference archive member absent: ${filename}`);
 }
 
-export async function loadReference(cache, bootstrap) {
-  const archive = await outsideCheckout(resolve(cache, `response-${referenceSha}`));
+export async function loadReference(cache, candidate) {
+  if (candidate?.package !== "tailwindcss") throw Error("Reference package must be tailwindcss");
+  exactVersion(candidate.version);
+  const expectedSha =
+    candidate.artifactSha256 ?? candidate.sha256 ?? candidate.verifiedAcquisition?.tarballSha256;
+  if (!/^[0-9a-f]{64}$/.test(expectedSha ?? "")) throw Error("Reference artifact SHA-256 required");
+  const pinned = candidate.version === "4.3.2";
+  if (pinned && expectedSha !== referenceSha) throw Error("Bootstrap artifact digest changed");
+  const archive = await outsideCheckout(resolve(cache, `response-${expectedSha}`));
   const bytes = await readFile(archive);
   if (
-    sha256(bytes) !== referenceSha ||
-    "sha512-" + createHash("sha512").update(bytes).digest("base64") !== bootstrap.integrity ||
+    sha256(bytes) !== expectedSha ||
+    "sha512-" + createHash("sha512").update(bytes).digest("base64") !== candidate.integrity ||
     JSON.stringify(tarPackageIdentity(bytes)) !==
-      JSON.stringify({ name: "tailwindcss", version: "4.3.2" })
+      JSON.stringify({ name: "tailwindcss", version: candidate.version })
   )
-    throw Error("Pinned Tailwind tarball identity mismatch");
+    throw Error("Tailwind tarball identity mismatch");
   const preflightBytes = tarMember(bytes, "package/preflight.css");
-  const modulePath = resolve(cache, `tailwindcss-4.3.2-${referenceSha}/dist/lib.mjs`);
+  const modulePath = resolve(cache, `tailwindcss-${candidate.version}-${expectedSha}/dist/lib.mjs`);
   await outsideCheckout(modulePath);
-  const graph = await verifyPinnedReferenceModuleGraph(cache, modulePath, bytes, referenceSha);
-  const { compile } = await import(pathToFileURL(modulePath).href);
+  if (!pinned) {
+    const modules = archivedReferenceModules(bytes);
+    await mkdir(dirname(modulePath), { recursive: true });
+    const physicalCache = await realpath(cache);
+    const physicalDist = await realpath(dirname(modulePath));
+    if (
+      !physicalDist.startsWith(`${physicalCache}/`) ||
+      !(await lstat(dirname(modulePath))).isDirectory() ||
+      !(await lstat(dirname(dirname(modulePath)))).isDirectory()
+    )
+      throw Error("Reference extraction directory escapes or aliases cache");
+    for (const [name, content] of modules) {
+      const path = await outsideCheckout(resolve(dirname(modulePath), name));
+      await writeFile(path, content, { flag: "wx" }).catch(async (error) => {
+        if (error.code !== "EEXIST" || sha256(await readFile(path)) !== sha256(content))
+          throw error;
+      });
+    }
+  }
+  const graph = pinned
+    ? await verifyPinnedReferenceModuleGraph(cache, modulePath, bytes, expectedSha)
+    : await verifyExtractedReferenceModules(cache, modulePath, archivedReferenceModules(bytes));
+  if (!pinned) {
+    const verified = new Set(Object.keys(graph.moduleDigests));
+    const moduleDirectoryUrl = pathToFileURL((await realpath(dirname(modulePath))) + "/").href;
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (verifiedReferenceImport(specifier, context.parentURL, moduleDirectoryUrl, verified)) {
+          const resolved = nextResolve(specifier, context);
+          if (
+            !resolved.url.startsWith(moduleDirectoryUrl) ||
+            !verified.has(resolved.url.slice(moduleDirectoryUrl.length))
+          )
+            throw Error(`Reference import escapes verified module graph: ${specifier}`);
+          return resolved;
+        }
+        return nextResolve(specifier, context);
+      },
+    });
+  }
+  const { compile, __unstable__loadDesignSystem } = await import(pathToFileURL(modulePath).href);
   if (typeof compile !== "function") throw Error("Reference compile API absent");
   return {
     compile,
+    loadDesignSystem: __unstable__loadDesignSystem,
     preflightCss: preflightBytes.toString("utf8"),
     identity: {
       package: "tailwindcss",
-      version: "4.3.2",
-      integrity: bootstrap.integrity,
-      artifactSha256: referenceSha,
+      version: candidate.version,
+      integrity: candidate.integrity,
+      artifactSha256: expectedSha,
       moduleSha256: graph.moduleDigests["lib.mjs"],
       moduleGraphSha256: graph.moduleGraphSha256,
       moduleDigests: graph.moduleDigests,
       preflightSha256: sha256(preflightBytes),
-      source: bootstrap.source,
+      source: candidate.source,
     },
   };
 }
@@ -270,11 +333,6 @@ export function diagnosticCheck(row, report) {
       rejectionId: "R17",
       message: "unknown value or token gray-500",
     },
-    "contents-gap": {
-      code: "ZW014",
-      rejectionId: null,
-      messagePrefix: "unsupported foreign utility (migration vocabulary",
-    },
   }[row.id];
   if (!expected) return diagnostics.length === 0;
   if (diagnostics.length !== 1) return false;
@@ -289,10 +347,7 @@ export function diagnosticCheck(row, report) {
     diagnostic.origin.producer === "wind-fixture-css" &&
     diagnostic.origin.path === `${row.id}/case.json` &&
     diagnostic.origin.index === 0 &&
-    (expected.message
-      ? diagnostic.message === expected.message
-      : diagnostic.message.startsWith(expected.messagePrefix) &&
-        diagnostic.message.includes("Tailwind `contents`"))
+    diagnostic.message === expected.message
   );
 }
 
@@ -399,7 +454,7 @@ async function main() {
   const windLib = await readFile(fromRoot("crates/zudo-wind/src/lib.rs"), "utf8");
   if (
     !windLib.includes("pub const SPEC_VERSION: u32 = 1;") ||
-    !windLib.includes("pub const SPEC_REVISION: u32 = 12;")
+    !windLib.includes("pub const SPEC_REVISION: u32 = 13;")
   )
     throw Error("Wind spec identity differs from pilot adapter");
   const manifest = await readJson(resolve(options.fixture, "manifest.json"));
@@ -412,8 +467,10 @@ async function main() {
   if (digest(fixtureDirs) !== digest([...manifest.caseIds].sort()))
     throw Error("Pilot fixture manifest incomplete");
   const windBuild = await verifyWindBuild(options["wind-binary"], options["wind-build-manifest"]);
-  const bootstrap = await readJson(fromRoot("tests/wind-compatibility/reference/bootstrap.json"));
-  const reference = await loadReference(options.cache, bootstrap);
+  const referenceSelection = options.reference
+    ? await readJson(resolve(options.reference))
+    : await readJson(fromRoot("tests/wind-compatibility/reference/bootstrap.json"));
+  const reference = await loadReference(options.cache, referenceSelection);
   const scanner = await loadIndependentScanner(options.cache);
   const windOutput = resolve(options.output, "wind-compiler");
   const processResult = await runWind(
@@ -771,7 +828,7 @@ async function main() {
   const identity = {
     windBuild,
     windSpecVersion: 1,
-    windSpecRevision: 12,
+    windSpecRevision: 13,
     catalogDigest: await treeDigest(fromRoot("crates/zudo-wind/src/catalog")),
     reference: reference.identity,
     scanner: scanner.identity,

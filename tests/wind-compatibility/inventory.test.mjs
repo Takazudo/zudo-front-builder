@@ -37,8 +37,8 @@ test("pinned membership, evidence and profile cases validate", () => {
     runtime,
   );
   assert.equal(result.rows, 1288);
-  assert.equal(inventory.wind.specRevision, 12);
-  assert.equal(inventory.wind.catalogEntryCount, 197);
+  assert.equal(inventory.wind.specRevision, 13);
+  assert.equal(inventory.wind.catalogEntryCount, 212);
   assert.equal(inventory.profileCases.length, profile.requiredCases.length);
   assert.equal(
     inventory.profileCases.find((row) => row.id === "profile:mx-auto").disposition,
@@ -47,6 +47,14 @@ test("pinned membership, evidence and profile cases validate", () => {
   assert.equal(
     inventory.profileCases.find((row) => row.id === "profile:p-0-empty").disposition,
     "intentional-difference",
+  );
+  assert.equal(
+    inventory.profileCases.find((row) => row.id === "profile:contents-gap").gapKind,
+    null,
+  );
+  assert.deepEqual(
+    inventory.nativeCssReview.map((row) => row.family),
+    ["flex order/basis", "SVG fill/stroke presentation", "accessibility screen-reader helpers"],
   );
   assert(inventory.rows.some((row) => row.disposition === "excluded-deferred"));
   assert(inventory.rows.some((row) => row.disposition === "native-css-review-candidate"));
@@ -157,7 +165,7 @@ test("duplicate IDs, missing mappings, stale catalog and stale profile case fail
 });
 
 test("reverse Wind membership and content pins catch same-count changes", () => {
-  assert.equal(inventory.windEntries.length, 197);
+  assert.equal(inventory.windEntries.length, 212);
   const removed = copy();
   removed.windEntries.pop();
   assert.throws(
@@ -277,7 +285,8 @@ test("forged evidence, semantic differences, mappings and pattern claims fail ca
     row.evidence.browserEnvironment = "fabricated";
   });
   mutate((value) => {
-    value.profileCases.find((item) => item.id === "profile:contents-gap").gapKind = null;
+    value.profileCases.find((item) => item.id === "profile:contents-gap").gapKind =
+      "missing-utility-mechanism";
   });
   mutate((value) => {
     value.rows.find((item) => item.id === "utility-static:mx-auto").semanticDifference = null;

@@ -13,7 +13,7 @@ export const PIN = Object.freeze({
   archiveSha256: "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   sourcePrefix: "tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/packages/tailwindcss/src/",
 });
-export const WIND_SOURCE_SHA = "8d4f5ff8c87914af64964c92f3a5d1a5c5bb946b";
+export const WIND_SOURCE_SHA = "6ad10cfcb1eeeca0288d577b88f8a9312828cc83";
 export const digest = (data) => createHash("sha256").update(data).digest("hex");
 
 export function archiveSources(bytes) {
@@ -641,15 +641,11 @@ export function makeInventory(
       semanticDifference: c.expectedContract,
       gapKind: ["unconfigured-p-4", "undeclared-palette"].includes(c.id)
         ? "missing-default-token"
-        : c.id === "contents-gap"
-          ? "missing-utility-mechanism"
-          : null,
+        : null,
       reviewedDifferenceIds: c.reviewedDifferenceIds,
       evidence: { ...sourceEvidence(windSha, catalog, profile, upstream), caseIds: [c.id] },
     })),
     nativeCssReview: [
-      "display/table modes",
-      "appearance",
       "flex order/basis",
       "SVG fill/stroke presentation",
       "accessibility screen-reader helpers",
@@ -773,7 +769,7 @@ export function validateInventory(
   }
   if (
     !Array.isArray(inventory.nativeCssReview) ||
-    inventory.nativeCssReview.length !== 5 ||
+    inventory.nativeCssReview.length !== 3 ||
     inventory.nativeCssReview.some(
       (r) => r.approval !== null || r.disposition !== "review-candidate",
     )

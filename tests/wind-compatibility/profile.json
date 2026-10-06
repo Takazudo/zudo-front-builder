@@ -2,20 +2,23 @@
   "schemaVersion": 1,
   "profileId": "wind-preset-free",
   "profileVersion": 1,
-  "profileRevision": 2,
+  "profileRevision": 3,
   "policyDocument": "research/wind-compatibility-profile.md",
   "ratifiedOn": "2026-10-06",
   "decisionIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3826",
   "state": "policy-ratified-evidence-pending",
   "sourceBaseline": {
-    "gitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f",
+    "gitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83",
     "languageSpecVersion": 1,
-    "languageSpecRevision": 12,
+    "languageSpecRevision": 13,
     "catalogIdentity": "Catalog::v1",
     "evidence": "source-inspected",
     "paths": [
       "crates/zudo-wind/src/lib.rs",
       "crates/zudo-wind/src/catalog/families/layout.rs",
+      "crates/zudo-wind/src/catalog/families/interaction.rs",
+      "crates/zudo-wind/src/catalog/migration.rs",
+      "crates/zudo-wind/tests/native_display_appearance.rs",
       "crates/zudo-wind/src/catalog/families/spacing.rs",
       "crates/zudo-wind/src/catalog/families/flex_grid.rs",
       "crates/zudo-wind/src/catalog/resolve.rs",
@@ -151,7 +154,7 @@
       "expectedContract": "display:block",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -169,7 +172,7 @@
       "expectedContract": "display:none; none is not a display utility spelling",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -187,7 +190,7 @@
       "expectedContract": "display:inline-flex",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -205,7 +208,7 @@
       "expectedContract": "Wind margin-left/right:auto; reference margin-inline:auto",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -223,7 +226,7 @@
       "expectedContract": "repeat(2,minmax(0,1fr)); use a grid container in geometry cases",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -241,7 +244,7 @@
       "expectedContract": "Wind emits zero padding; empty-theme reference omits candidate",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -263,7 +266,7 @@
       "expectedContract": "Explicit reference --spacing-0:0px; Wind remains token-free",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -285,7 +288,7 @@
       "expectedContract": "Semantic config declares colors.surface=#123456 and spacing.hsp-sm=17px. Wind emits both --zw tokens once in color-then-spacing order; reference emits only used --spacing-hsp-sm:17px for this candidate.",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -303,7 +306,7 @@
       "expectedContract": "Semantic config declares colors.surface=#123456 and spacing.hsp-sm=17px. Wind emits both --zw tokens once in color-then-spacing order; reference emits only used --color-surface:#123456 for this candidate.",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -321,7 +324,7 @@
       "expectedContract": "No spacingUnit or spacing token: no utility CSS on either side; diagnostics are independently asserted",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -339,7 +342,7 @@
       "expectedContract": "No palette: no utility CSS on either side; missing token is not a missing family",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -361,7 +364,7 @@
       "expectedContract": "Wind spacingUnit=0.25rem; reference --spacing:0.25rem; computed padding 1rem",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -372,20 +375,19 @@
       "id": "contents-gap",
       "candidate": "contents",
       "configuration": "empty",
-      "disposition": "implementation-gap",
-      "implementation": "not-implemented",
-      "windTokenFreeGuarantee": false,
-      "reviewedDifferenceIds": [],
-      "expectedContract": "Token-free reference utility; Wind adoption deferred to #3833; absence remains counted",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
+      "expectedContract": "Token-free Wind and reference display:contents; exact one-rule utility output",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
       },
-      "configurationRequirements": "none; missing implementation is independent of theme configuration",
-      "decisionOwnerIssue": 3833
+      "configurationRequirements": "exact configuration empty"
     },
     {
       "id": "hover-block",
@@ -398,7 +400,7 @@
       "expectedContract": "Test hover active/inactive and hover capability; preserve media and specificity",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -416,7 +418,7 @@
       "expectedContract": "Wind breakpoints.sm=640; reference --breakpoint-sm:640px; test below/at/above boundary",
       "evidence": {
         "sourceInspected": {
-          "windGitSha": "a2642d02270aa4fc74fa5de049d4482da087af1f"
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
         },
         "contractTested": null,
         "independentlyDifferentialTested": null
@@ -511,6 +513,7 @@
         "named-spacing",
         "named-color",
         "configured-p-4",
+        "contents-gap",
         "hover-block",
         "breakpoint-block"
       ],
@@ -522,7 +525,7 @@
         "wind": 1,
         "reference": 0
       },
-      "standaloneAbsentCaseIds": ["unconfigured-p-4", "undeclared-palette", "contents-gap"],
+      "standaloneAbsentCaseIds": ["unconfigured-p-4", "undeclared-palette"],
       "emptyStylesheetExpectedOccurrences": {
         "wind": 0,
         "reference": 0
@@ -652,6 +655,13 @@
       "date": "2026-10-06",
       "issue": 3829,
       "change": "Pilot contract refinement after Linux Chromium execution: exact resolved mx-auto margin observations and exact two-token Wind versus used-token-only reference emission for each semantic case. No compatibility baseline or reference acceptance is advanced."
+    },
+    {
+      "version": 1,
+      "revision": 3,
+      "date": "2026-10-06",
+      "issue": 3834,
+      "change": "Adopt exact token-free display and appearance statics, and transition contents-gap from the profile 1.2 implementation gap to equivalent-shared while retaining its case ID and original run 37391761485 as historical evidence. Added display and appearance browser corpus cases; no compatibility baseline or reference acceptance is advanced."
     }
   ]
 }
