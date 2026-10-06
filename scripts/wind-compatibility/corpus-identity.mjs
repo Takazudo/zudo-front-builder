@@ -61,6 +61,8 @@ export async function currentCorpusIdentity({
     sourceInputDigest: digest(
       manifest.upstreamCases.map((row) => [
         row.id,
+        row.upstreamPath,
+        row.upstreamTest,
         row.originalInput,
         row.provenanceAnchors ?? [],
         row.candidates,
