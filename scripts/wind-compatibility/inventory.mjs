@@ -13,7 +13,7 @@ export const PIN = Object.freeze({
   archiveSha256: "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   sourcePrefix: "tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/packages/tailwindcss/src/",
 });
-export const WIND_SOURCE_SHA = "6ad10cfcb1eeeca0288d577b88f8a9312828cc83";
+export const WIND_SOURCE_SHA = "8d2c45114db33d9444e0abb592e80a8ec3d92074";
 export const digest = (data) => createHash("sha256").update(data).digest("hex");
 
 export function archiveSources(bytes) {
@@ -487,7 +487,13 @@ export function makeInventory(
         ? { kind: "exact-catalog", catalogId: exact.id, wind: name }
         : family
           ? { kind: "root-only-unverified", catalogId: family.id, wind: `${name}-<value>` }
-          : null);
+          : partial && ["fill", "stroke"].includes(name)
+            ? {
+                kind: "bounded-subset",
+                catalogIds: [`v1.${name}-current`, `v1.${name}-none`],
+                wind: `${name}-current | ${name}-none`,
+              }
+            : null);
     return {
       id,
       upstream: {
@@ -545,11 +551,13 @@ export function makeInventory(
       semanticDifference: partial
         ? `Wind supports ${partial.supported}; retained exclusions: ${partial.retained}. Source/catalog support alone does not establish browser parity.`
         : axisDifference,
-      alternative: partial
-        ? partial.alternative
-        : candidate
-          ? "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses."
-          : null,
+      alternative: exact
+        ? null
+        : partial
+          ? partial.alternative
+          : candidate
+            ? "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses."
+            : null,
       trackingIssue: exact ? null : tracking(name),
       evidence: sourceEvidence(windSha, catalog, profile, upstream),
     };
@@ -659,7 +667,11 @@ export function makeInventory(
     ],
     windEntries: catalog.entries.map((entry) => {
       const upstreamRowIds = rows
-        .filter((row) => row.windMapping?.catalogId === entry.id)
+        .filter(
+          (row) =>
+            row.windMapping?.catalogId === entry.id ||
+            row.windMapping?.catalogIds?.includes(entry.id),
+        )
         .map((row) => row.id);
       return {
         id: `wind:${entry.id}`,
@@ -825,10 +837,14 @@ export function validateInventory(
     !Array.isArray(inventory.nativeCssReview) ||
     inventory.nativeCssReview.length !== 3 ||
     inventory.nativeCssReview.some(
-      (r) => r.approval !== null || r.disposition !== "review-candidate",
+      (r) =>
+        r.approval !== "#3835" ||
+        r.disposition !== "bounded-native-adoption" ||
+        !r.scope ||
+        !r.alternative,
     )
   )
-    fail("Native CSS candidates not explicitly pending");
+    fail("Native CSS adopted scope is incomplete");
   if (
     inventory.configuredPatterns?.length !== 6 ||
     new Set(inventory.configuredPatterns.map((row) => row.id)).size !== 6 ||
@@ -845,7 +861,11 @@ export function validateInventory(
   for (const entry of catalog.entries) {
     const row = inventory.windEntries.find((item) => item.catalogId === entry.id);
     const mapped = inventory.rows
-      .filter((item) => item.windMapping?.catalogId === entry.id)
+      .filter(
+        (item) =>
+          item.windMapping?.catalogId === entry.id ||
+          item.windMapping?.catalogIds?.includes(entry.id),
+      )
       .map((item) => item.id);
     if (
       !row ||
@@ -897,6 +917,15 @@ export function validateInventory(
     )
       fail(`Incorrect root mapping ${row.id}`);
     if (
+      row.windMapping?.kind === "bounded-subset" &&
+      (!partialNative[row.upstream.name] ||
+        !["fill", "stroke"].includes(row.upstream.name) ||
+        JSON.stringify(row.windMapping.catalogIds) !==
+          JSON.stringify([`v1.${row.upstream.name}-current`, `v1.${row.upstream.name}-none`]) ||
+        row.windMapping.catalogIds.some((id) => !catalogIds.has(id)))
+    )
+      fail(`Incorrect bounded subset mapping ${row.id}`);
+    if (
       row.upstream.kind === "utility-pattern" &&
       JSON.stringify(row.upstream.constraints) !==
         JSON.stringify(
@@ -916,6 +945,9 @@ export function validateInventory(
     if (
       row.evidence.status !== "source-inspected" ||
       row.evidence.windGitSha !== inventory.wind.gitSha ||
+      row.evidence.sourceInspected?.windGitSha !== inventory.wind.gitSha ||
+      row.evidence.contractTested !== null ||
+      row.evidence.independentlyDifferentialTested !== null ||
       row.evidence.referenceVersion !== upstream.pin.version ||
       row.evidence.reportId !== null ||
       row.evidence.browserEnvironment !== null

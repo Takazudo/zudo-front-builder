@@ -37,8 +37,8 @@ test("pinned membership, evidence and profile cases validate", () => {
     runtime,
   );
   assert.equal(result.rows, 1288);
-  assert.equal(inventory.wind.specRevision, 13);
-  assert.equal(inventory.wind.catalogEntryCount, 212);
+  assert.equal(inventory.wind.specRevision, 14);
+  assert.equal(inventory.wind.catalogEntryCount, 219);
   assert.equal(inventory.profileCases.length, profile.requiredCases.length);
   assert.equal(
     inventory.profileCases.find((row) => row.id === "profile:mx-auto").disposition,
@@ -165,7 +165,7 @@ test("duplicate IDs, missing mappings, stale catalog and stale profile case fail
 });
 
 test("reverse Wind membership and content pins catch same-count changes", () => {
-  assert.equal(inventory.windEntries.length, 212);
+  assert.equal(inventory.windEntries.length, 219);
   const removed = copy();
   removed.windEntries.pop();
   assert.throws(
@@ -238,7 +238,7 @@ test("every runtime static keyword intersection has its exact Wind catalog mappi
           assert.equal(row.windMapping?.catalogId, entry.id, row.id);
           assert.equal(row.implementation, "source-inspected-exact-registration", row.id);
         }
-  assert.equal(intersections, 238);
+  assert.equal(intersections, 242);
   for (const name of ["mx-auto", "my-auto", "m-auto", "cursor-pointer", "h-full", "-m-px"])
     assert.equal(
       inventory.rows.find((row) => row.id === `utility-static:${name}`).windMapping?.kind,
