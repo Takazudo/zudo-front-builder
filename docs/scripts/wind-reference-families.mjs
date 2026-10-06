@@ -308,5 +308,13 @@ export const WIND_REFERENCE_FAMILIES = Object.freeze([
   }),
   Object.freeze({ id: "text-underline-offset", entries: Object.freeze(["v1.underline-offset"]) }),
   Object.freeze({ id: "visibility", entries: Object.freeze(["v1.invisible", "v1.visible"]) }),
-  Object.freeze({ id: "svg", entries: Object.freeze(["v1.fill-current", "v1.fill-none", "v1.stroke-current", "v1.stroke-none"]) }),
+  Object.freeze({
+    id: "svg",
+    entries: Object.freeze([
+      "v1.fill-current",
+      "v1.fill-none",
+      "v1.stroke-current",
+      "v1.stroke-none",
+    ]),
+  }),
 ]);
