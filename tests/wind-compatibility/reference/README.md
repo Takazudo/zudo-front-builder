@@ -49,10 +49,10 @@ and six candidate engine reports:
 | Corpus Firefox | `sha256:3a77646bd5f36546aa169f162c9a4f7a0e7fb5d9db1452faddfeae35aa1b95e6` | `sha256:3c175038402fa3f84d6591c8baea680a12c051d022c96673d33fe5aecc1f186a` |
 | Corpus WebKit | `sha256:6e9b7ea88a7b34c635ff437bf7f10c405a7d222d5defc82f7e0b7d9feaade031` | `sha256:1bfc9c02f312622a02a1b0d5749e4bc37ba588e782a213667974162ed1a94af3` |
 
-Assessment captured GitHub release 355054384 and its 14 fixes, a 34-file npm
-artifact with 14 changed paths, a source archive with 541 files / 652 tree
-items and 77 changed paths, and 23 changed test files. The candidate artifact
-is pinned by SRI
+Assessment captured GitHub release 355054384 and its 15 listed fixes, a
+34-file npm artifact with 14 changed paths, a source archive with 541 files /
+652 tree items and 77 changed paths, and 23 changed test files. The candidate
+artifact is pinned by SRI
 `sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==`
 and tarball SHA-256
 `f1493c5bcb29a80310da63d19282d233ba259479f36561a27146cd4747d1faef`.
