@@ -1,4 +1,4 @@
-# Preparation only. Replace 63c4f183a791d3b62a5e004000055736a87501ad and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
+# Preparation only. Replace 7efc92f047ec1642553883f59c507755dd1fd11d and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
 name: Temporary Wind comparison and production shipping
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: 63c4f183a791d3b62a5e004000055736a87501ad
+          ref: 7efc92f047ec1642553883f59c507755dd1fd11d
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = 63c4f183a791d3b62a5e004000055736a87501ad
+          test "$(git rev-parse HEAD)" = 7efc92f047ec1642553883f59c507755dd1fd11d
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
