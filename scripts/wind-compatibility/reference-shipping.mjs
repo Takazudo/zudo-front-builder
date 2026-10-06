@@ -1,8 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { treeDigest } from "./differential-runner.mjs";
 import { testedPaths } from "./reference-identity.mjs";
+import { verifyProductionBuild } from "./production-build.mjs";
+import { requiredMatrixMember } from "./browser-adapter.mjs";
+import { verifyDistProof } from "../../tests/wind-real-build/dist-proof.mjs";
 
 export const shippingManifestPath = "tests/wind-compatibility/shipping/manifest.json";
 const requiredMechanisms = [
@@ -97,10 +100,66 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     !report.windBuild?.sourceDigest ||
     !report.windBuild?.lockDigest ||
     report.windBuild.gitSha !== comparison.testedSourceSha ||
+    digest(report.reference) !== digest(comparison.candidate.reference) ||
+    !report.referenceCss ||
+    !report.referenceScreenshot ||
+    !report.sourcePlan ||
+    !report.productionBuild ||
+    !report.distProof ||
     !Array.isArray(report.results) ||
     report.results.length !== manifest.required.length
   )
     throw Error("Shipping evidence identity, build, or membership invalid");
+  await verifyProductionBuild(report.productionBuild, comparison);
+  await verifyDistProof(report.distProof, report.distProof.distPath);
+  if (digest(report.distProof.productionBuild) !== digest(report.productionBuild))
+    throw Error("Shipping dist proof does not match production executable");
+  const { chromium } = await import("@playwright/test");
+  const profile = await readJson(fromRoot("tests/wind-compatibility/profile.json"));
+  if (
+    report.browserEnvironment?.name !== "chromium" ||
+    report.browserEnvironment.launchExecutableKind !== "chromium-full-explicit" ||
+    report.browserEnvironment.styleDelivery !== "real zfb or fixture HTTP response" ||
+    report.browserEnvironment.requiredMatrixMember !== true ||
+    !requiredMatrixMember(profile, report.browserEnvironment) ||
+    !report.browserEnvironment.executable ||
+    (await realpath(report.browserEnvironment.executable)) !==
+      (await realpath(chromium.executablePath())) ||
+    sha256(await readFile(report.browserEnvironment.executable)) !==
+      report.browserEnvironment.executableSha256
+  )
+    throw Error("Shipping browser executable or profile membership invalid");
+  output = await outsideCheckout(output);
+  const referenceCssPath = await outsideCheckout(resolve(output, report.referenceCss.path));
+  if (
+    !referenceCssPath.startsWith(`${output}/`) ||
+    !/^[0-9a-f]{64}$/.test(report.referenceCss.sha256 ?? "") ||
+    !(await readFile(referenceCssPath)).length ||
+    sha256(await readFile(referenceCssPath)) !== report.referenceCss.sha256
+  )
+    throw Error("Independent reference CSS missing or changed");
+  const referenceScreenshotPath = await outsideCheckout(
+    resolve(output, report.referenceScreenshot.path),
+  );
+  const referenceScreenshot = await readFile(referenceScreenshotPath);
+  if (
+    !referenceScreenshotPath.startsWith(`${output}/`) ||
+    !/^[0-9a-f]{64}$/.test(report.referenceScreenshot.sha256 ?? "") ||
+    sha256(referenceScreenshot) !== report.referenceScreenshot.sha256 ||
+    !referenceScreenshot.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  )
+    throw Error("Independent reference screenshot missing or changed");
+  const sourcePlanPath = await outsideCheckout(resolve(output, report.sourcePlan.path));
+  const sourcePlan = await readFile(sourcePlanPath);
+  if (
+    !sourcePlanPath.startsWith(`${output}/`) ||
+    !/^[0-9a-f]{64}$/.test(report.sourcePlan.sha256 ?? "") ||
+    sha256(sourcePlan) !== report.sourcePlan.sha256 ||
+    !sourcePlan.toString().includes("src") ||
+    !sourcePlan.toString().includes("@fixture/shipping-ui") ||
+    !sourcePlan.toString().includes("wind.json")
+  )
+    throw Error("Shipping source/package plan missing or changed");
   const expected = manifest.required.map(
     ({ id, mode, engine, configuration, fixture, mechanism }) => ({
       id,
@@ -121,7 +180,6 @@ export async function validateShippingEvidence(report, comparison, output, toolc
   }));
   if (digest(actual) !== digest(expected))
     throw Error("Shipping case/mode/engine membership mismatch");
-  output = await outsideCheckout(output);
   for (let index = 0; index < report.results.length; index++) {
     const result = report.results[index],
       requirement = manifest.required[index];
@@ -137,6 +195,36 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     }
     if (result.raw.generatedCss.sha256 !== result.raw.servedCss.sha256)
       throw Error(`Shipping generated/served CSS differs: ${result.id}`);
+    const css = await readFile(resolve(output, result.raw.generatedCss.path), "utf8");
+    if (!css.length) throw Error(`Shipping CSS empty: ${result.id}`);
+    if (Array.isArray(requirement.expectedObservation.present)) {
+      if (
+        requirement.expectedObservation.present.some((needle) => !css.includes(needle)) ||
+        requirement.expectedObservation.absent.some((needle) => css.includes(needle))
+      )
+        throw Error(`Shipping CSS selector/token facts changed: ${result.id}`);
+    }
+    if (requirement.screenshotRequired) {
+      const expectedViewport =
+        result.id === "build-composition"
+          ? { width: 1120, height: 800 }
+          : { width: 1280, height: 720 };
+      if (
+        digest(result.browserSettings) !==
+        digest({
+          viewport: expectedViewport,
+          colorScheme: "light",
+          reducedMotion: "no-preference",
+          deviceScaleFactor: 1,
+        })
+      )
+        throw Error(`Shipping screenshot settings changed: ${result.id}`);
+      const screenshot = await readFile(resolve(output, result.raw.screenshot.path));
+      if (!screenshot.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+        throw Error(`Shipping screenshot is not PNG: ${result.id}`);
+      if (result.id === "css-initial" && sha256(screenshot) !== report.referenceScreenshot.sha256)
+        throw Error("Independent reference utility pixels differ");
+    }
     const observation = await readJson(resolve(output, result.raw.observation.path));
     if (
       observation?.cssResponse?.status !== 200 ||

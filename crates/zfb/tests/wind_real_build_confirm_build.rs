@@ -6,6 +6,7 @@
 
 #![cfg(unix)]
 
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -447,6 +448,32 @@ fn copy_first_build_dist_for_browser(dist: &Path) {
             fs::remove_dir_all(&destination).expect("clear requested browser dist output");
         }
         copy_source_tree(dist, &destination).expect("copy first-build dist for browser suite");
+        if let Some(execution_path) = std::env::var_os("ZFB_WIND_REAL_BUILD_EXECUTION") {
+            let binary = zfb_binary!()
+                .canonicalize()
+                .expect("canonicalize Cargo zfb binary");
+            let binary_bytes = fs::read(&binary).expect("read Cargo zfb binary");
+            let index_bytes =
+                fs::read(destination.join("index.html")).expect("read exported build index");
+            let (stylesheet, css) = read_stylesheet(&destination);
+            let stylesheet = stylesheet
+                .strip_prefix(&destination)
+                .expect("exported CSS path under dist");
+            let execution = serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "zfb-rust-build-export",
+                "binaryPath": binary,
+                "binarySha256": format!("{:x}", Sha256::digest(binary_bytes)),
+                "indexSha256": format!("{:x}", Sha256::digest(index_bytes)),
+                "stylesheet": stylesheet,
+                "stylesheetSha256": format!("{:x}", Sha256::digest(css.as_bytes())),
+            });
+            fs::write(
+                execution_path,
+                serde_json::to_vec_pretty(&execution).expect("serialize build export proof"),
+            )
+            .expect("write build export proof");
+        }
         eprintln!(
             "[W-A06] copied first-build dist for the browser check to {}",
             destination.display()

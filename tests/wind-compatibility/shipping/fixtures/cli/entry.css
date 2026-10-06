@@ -1,0 +1,2 @@
+/* The authored rule must survive each isolated public CLI CSS pass. */
+.authored-shell { border-width: 2px; border-style: solid; }
