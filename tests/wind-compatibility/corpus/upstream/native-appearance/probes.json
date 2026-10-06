@@ -1,4 +1,16 @@
 [
-  {"name": "appearance-none", "selector": "#appearance-none", "property": "appearance", "wind": "none", "reference": "none"},
-  {"name": "appearance-auto", "selector": "#appearance-auto", "property": "appearance", "wind": "auto", "reference": "auto"}
+  {
+    "name": "appearance-none",
+    "selector": "#appearance-none",
+    "property": "appearance",
+    "wind": "none",
+    "reference": "none"
+  },
+  {
+    "name": "appearance-auto",
+    "selector": "#appearance-auto",
+    "property": "appearance",
+    "wind": "auto",
+    "reference": "auto"
+  }
 ]

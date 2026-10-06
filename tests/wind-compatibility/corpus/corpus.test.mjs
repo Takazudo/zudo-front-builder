@@ -102,10 +102,7 @@ test("native display and appearance fixtures use the adapter target and separate
     for (const probe of probes[id])
       assert.ok(html.includes('id="' + probe.selector.slice(1) + '"'));
   }
-  const displayHtml = await readFile(
-    new URL("upstream/native-display/index.html", root),
-    "utf8",
-  );
+  const displayHtml = await readFile(new URL("upstream/native-display/index.html", root), "utf8");
   for (const tag of [
     '<table id="table"',
     '<caption id="table-caption"',

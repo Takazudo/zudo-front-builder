@@ -1,5 +1,19 @@
 {
   "caseId": "native-display",
   "reset": "none",
-  "explicitCandidates": ["contents", "flow-root", "list-item", "table", "inline-table", "table-caption", "table-cell", "table-column", "table-column-group", "table-footer-group", "table-header-group", "table-row", "table-row-group"]
+  "explicitCandidates": [
+    "contents",
+    "flow-root",
+    "list-item",
+    "table",
+    "inline-table",
+    "table-caption",
+    "table-cell",
+    "table-column",
+    "table-column-group",
+    "table-footer-group",
+    "table-header-group",
+    "table-row",
+    "table-row-group"
+  ]
 }

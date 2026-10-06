@@ -783,3 +783,24 @@ interaction group at rank 40/order 0. Authored-class suppression remains exact
 candidate matching before parsing and diagnostics. The migration vocabulary is
 revision 5: implemented names leave migration diagnostics, while table-auto
 and table-fixed remain deferred migration forms.
+
+## Current implementation addendum: spec 1 revision 14 (2026-10-06)
+
+The #3835 native batch adds `order` (first/last/none and unsigned ASCII integers
+0 through 2147483647, with optional negative numeric form), `basis`
+(auto/full/px/0/min/max/fit/content and bounded positive integer fractions),
+`fill-current`, `fill-none`, `stroke-current`, `stroke-none`, and the exact
+`not-sr-only` reversal. The complete grammar, rejection IDs, declaration
+order, and retained gaps are recorded in
+[`wind-native-adoption-decision.md`](wind-native-adoption-decision.md).
+No token category, implicit scale, arbitrary value, broad SVG color family, or
+new variant is introduced.
+
+`basis` uses flex-item rank 5/order 1 and `order` uses rank 5/order 2, so
+source class order cannot change their relative cascade placement. The SVG
+statics use rank 48, with fill order 0 and stroke order 1. The reversal uses
+miscellaneous rank 44/order 4 after `sr-only`, whose clipping model remains
+unchanged. Order numeric magnitude does not decide its cascade winner: the
+existing raw-candidate UTF-8 tie-break does. Migration vocabulary revision 6
+removes only implemented forms; order arbitrary, basis scale/token/arbitrary,
+SVG numeric/arbitrary and table-layout forms remain diagnostic gaps.

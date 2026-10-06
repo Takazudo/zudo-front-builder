@@ -6,7 +6,7 @@ use crate::{Candidate, TokenCategory, ValidatedTokens};
 
 /// Bump when an entry is added or removed; diagnostics name the version so a
 /// report stays interpretable after the vocabulary changes.
-pub const MIGRATION_VOCABULARY_VERSION: u32 = 5;
+pub const MIGRATION_VOCABULARY_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForeignValue {
@@ -381,24 +381,13 @@ const FAMILIES: &[ForeignFamily] = &[
         alternative: "width and max-width declarations per breakpoint",
     },
     ForeignFamily {
-        root: "not-sr-only",
-        values: &[Bare],
-        alternative: "declarations that undo the sr-only clipping",
-    },
-    ForeignFamily {
         root: "line-clamp",
         values: &[Any],
         alternative: "overflow, display: -webkit-box and -webkit-line-clamp declarations",
     },
     ForeignFamily {
         root: "order",
-        values: &[
-            Integer,
-            Keyword("first"),
-            Keyword("last"),
-            Keyword("none"),
-            Arbitrary,
-        ],
+        values: &[Arbitrary],
         alternative: "an order declaration",
     },
     ForeignFamily {
@@ -408,12 +397,12 @@ const FAMILIES: &[ForeignFamily] = &[
     },
     ForeignFamily {
         root: "fill",
-        values: &[Keyword("current"), Keyword("none"), Arbitrary],
+        values: &[Arbitrary],
         alternative: "a fill declaration",
     },
     ForeignFamily {
         root: "stroke",
-        values: &[Keyword("current"), Keyword("none"), Integer, Arbitrary],
+        values: &[Integer, Arbitrary],
         alternative: "a stroke or stroke-width declaration",
     },
     ForeignFamily {
@@ -501,13 +490,12 @@ mod tests {
             ("table-auto", "table"),
             ("table-fixed", "table"),
             ("line-clamp-2", "line-clamp"),
-            ("order-1", "order"),
-            ("basis-1/2", "basis"),
-            ("fill-current", "fill"),
-            ("stroke-current", "stroke"),
+            ("order-[2]", "order"),
+            ("basis-[20px]", "basis"),
+            ("fill-[red]", "fill"),
+            ("stroke-2", "stroke"),
             ("backdrop-blur-sm", "backdrop-blur"),
             ("will-change-transform", "will-change"),
-            ("not-sr-only", "not-sr-only"),
             ("content-[\"\"]", "content"),
             ("before:content-none", "content"),
             ("container", "container"),
