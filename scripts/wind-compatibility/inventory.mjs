@@ -308,7 +308,7 @@ const tracking = (name) =>
     ? issue(3372)
     : /^(?:space-|divide-)/.test(name)
       ? issue(3386)
-      : /^(?:table-auto$|table-fixed$|order$|basis$|fill$|stroke$|fill-|stroke-)/.test(name)
+      : /^(?:table-auto$|table-fixed$|-?order$|basis$|fill$|stroke$|fill-|stroke-)/.test(name)
         ? issue(3812)
         : null;
 const partialNative = Object.freeze({
@@ -319,6 +319,14 @@ const partialNative = Object.freeze({
     alternative: "Author order in CSS for retained forms.",
     catalogIds: ["v1.order"],
     windSyntax: "order-first | order-last | order-none | order-N | -order-N (N: 0..2147483647)",
+  },
+  "-order": {
+    supported: "negative ASCII integer 0..2147483647 only",
+    retained:
+      "negative keywords, arbitrary values, custom properties, named tokens, and noninteger suffixes",
+    alternative: "Author order in CSS for retained forms.",
+    catalogIds: ["v1.order"],
+    windSyntax: "-order-N (N: 0..2147483647)",
   },
   basis: {
     supported:

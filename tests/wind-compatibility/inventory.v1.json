@@ -37743,16 +37743,16 @@
         }
       },
       "windMapping": {
-        "kind": "root-only-unverified",
-        "catalogId": "v1.order",
-        "wind": "-order-<value>"
+        "kind": "bounded-subset",
+        "catalogIds": ["v1.order"],
+        "wind": "-order-N (N: 0..2147483647)"
       },
-      "configurationRequirement": "Pattern domain requires case-specific source review; no default token guarantee.",
-      "implementation": "root-collision-unverified",
-      "disposition": "requires-review",
-      "semanticDifference": null,
-      "alternative": null,
-      "trackingIssue": null,
+      "configurationRequirement": "Wind supported subset: negative ASCII integer 0..2147483647 only. Retained exclusions: negative keywords, arbitrary values, custom properties, named tokens, and noninteger suffixes. No token configuration expands this native subset.",
+      "implementation": "bounded-native-subset-source-inspected",
+      "disposition": "partial-native-adoption-unverified",
+      "semanticDifference": "Wind supports negative ASCII integer 0..2147483647 only; retained exclusions: negative keywords, arbitrary values, custom properties, named tokens, and noninteger suffixes. Source/catalog support alone does not establish browser parity.",
+      "alternative": "Author order in CSS for retained forms.",
+      "trackingIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3812",
       "evidence": {
         "status": "source-inspected",
         "sourceInspected": {

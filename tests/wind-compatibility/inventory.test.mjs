@@ -249,6 +249,7 @@ test("every runtime static keyword intersection has its exact Wind catalog mappi
 test("partial native patterns and retained table layout stay bounded", () => {
   for (const [name, ids] of Object.entries({
     order: ["v1.order"],
+    "-order": ["v1.order"],
     basis: ["v1.basis"],
     fill: ["v1.fill-current", "v1.fill-none"],
     stroke: ["v1.stroke-current", "v1.stroke-none"],
