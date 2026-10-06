@@ -5,6 +5,9 @@ import { checkMutations, completeCorpus, expectedObligations, expectedOutcomes }
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { canonical } from "./corpus-structure.mjs";
 import { parseCssStructure } from "./structure.mjs";
+import { supplementalProbePlan } from "./corpus-supplemental.mjs";
+import { documentFor } from "./browser-adapter.mjs";
+import { generatedCandidateLists, generatedWidths, generatedSourceStrings, seed } from "./corpus-seeds.mjs";
 import { testedInputIdentity } from "./reference-identity.mjs";
 import { matchesExpected } from "./browser-adapter.mjs";
 import { currentPilotIdentity, validatePilotArtifacts, validatePilotEnvelope,
@@ -38,6 +41,11 @@ const shaReport = (report) => {
 const same = (a, b, label) => {
   if (digest(a) !== digest(b)) throw Error(`${label} differs from reviewed membership`);
 };
+
+export function assertSameBrowserEnvironment(corpus, pilot, engine) {
+  same(corpus, pilot, `${engine} corpus/pilot browser executable environment`);
+  return true;
+}
 
 export async function rawTree(directory) {
   const files = [];
@@ -101,7 +109,7 @@ export async function validateNativeRawRow(row, guarantee, output, originalOutpu
 }
 
 export async function validateSupplementalRawRow(claim, definition, output,
-  originalOutput, referenceCompiler = null) {
+  originalOutput, referenceCompiler = null, probePlan = null) {
   if (!claim) throw Error(`Supplemental claim missing: ${definition.caseId}`);
   const wind = await readRecordedArtifact(claim.windCssPath, claim.windCssSha256,
     output, originalOutput);
@@ -114,15 +122,38 @@ export async function validateSupplementalRawRow(claim, definition, output,
     if (compiler.build(definition.explicitCandidates) !== referenceCss.toString("utf8"))
       throw Error(`Supplemental reference compiler output changed: ${definition.caseId}`);
   }
-  const pairs = claim.observations?.flat();
-  if (!Array.isArray(pairs) || pairs.length !== claim.observationCount ||
-      pairs.some((pair) => [pair.wind, pair.reference].some((side) =>
-        !side?.verified || side.stylesheetSha256 !== side.servedSha256 ||
-        side.stylesheetSha256 !== (side === pair.wind
-          ? sha256(wind) : sha256(referenceCss)) ||
-        side.pass !== matchesExpected(side.observation, side.expected))))
-    throw Error(`Supplemental raw browser observation changed: ${definition.caseId}`);
+  validateSupplementalObservationPairs(claim, probePlan, sha256(wind), sha256(referenceCss),
+    definition.caseId);
   return { wind, referenceCss, referenceInput };
+}
+
+export function validateSupplementalObservationPairs(claim, plan, windHash, referenceHash, caseId) {
+  const pairs = claim.observations?.flat();
+  if (!Array.isArray(plan) || !Array.isArray(pairs) ||
+      pairs.length !== plan.length || claim.observationCount !== plan.length)
+    throw Error("Supplemental probe membership incomplete");
+  for (let index = 0; index < plan.length; index++) {
+    const { candidate, key, property, role, value } = plan[index];
+    const documentHtml = `<!doctype html><html><head></head><body><div id="box"><span id="target" class="${candidate}">x</span><span id="control">x</span></div></body></html>`;
+    const probe = { name: `${caseId}/${candidate}/${key}`, property,
+      selector: role === "control" ? "#control" : "#target", wind: value,
+      reference: value, documentHtml,
+      authoredCss: ":where(#target,#control){padding:24px;margin:0;color:#222;background-color:transparent;}",
+    };
+    for (const sideName of ["wind", "reference"]) {
+      const item = pairs[index]?.[sideName], cssHash = sideName === "wind" ? windHash : referenceHash;
+      if (!item || item.engine !== sideName || item.probe !== probe.name ||
+          item.verified !== true || item.stylesheetSha256 !== cssHash ||
+          item.servedSha256 !== cssHash || item.expected !== value ||
+          item.settings?.documentSha256 !== sha256(documentHtml) ||
+          item.settings?.servedDocumentSha256 !== sha256(documentFor(candidate, probe)) ||
+          item.settings?.authoredCssSha256 !== sha256(probe.authoredCss) ||
+          item.settings?.selector !== probe.selector ||
+          item.pass !== matchesExpected(item.observation, value))
+        throw Error(`Supplemental checked probe changed: ${probe.name}/${sideName}`);
+    }
+  }
+  return true;
 }
 
 export function validateSeededArtifactHashes(artifact) {
@@ -133,6 +164,37 @@ export function validateSeededArtifactHashes(artifact) {
     if (!/^[0-9a-f]{64}$/.test(artifact[hashKey] ?? ""))
       throw Error(`Seeded raw artifact hash missing: ${artifact.kind}/${artifact.id}/${key}`);
   }
+  return true;
+}
+
+export function validateSeededMembership(seeded, policy, scannerIdentity) {
+  const specimens = [...policy.permanentSpecimens, ...generatedCandidateLists()];
+  const widths = generatedWidths(), sources = generatedSourceStrings();
+  const expected = [
+    ...specimens.map((_, index) => ({ kind: "candidate-permutation", id: `specimen-${index}` })),
+    ...widths.map((_, index) => ({ kind: "arbitrary-width", id: `generated-${index}` })),
+    ...sources.map((_, index) => ({ kind: "source-string", id: `source-${index}` })),
+  ];
+  if (seeded?.outcome !== "matched" || seeded.seed !== `0x${seed.toString(16)}` ||
+      policy.seed !== seeded.seed || policy.generatedCount !== generatedCandidateLists().length ||
+      policy.generatedWidthCount !== widths.length ||
+      policy.generatedSourceCount !== sources.length ||
+      seeded.permanentSpecimens !== policy.permanentSpecimens.length ||
+      seeded.generatedSpecimens !== policy.generatedCount ||
+      digest(seeded.generatedArbitraryWidths) !== digest(widths) ||
+      seeded.generatedSourceStrings !== policy.generatedSourceCount ||
+      digest(seeded.scannerIdentity) !== digest(scannerIdentity) ||
+      digest(seeded.artifacts?.map(({ kind, id }) => ({ kind, id }))) !== digest(expected))
+    throw Error("Seeded corpus control membership stale, skipped or duplicate");
+  for (let index = 0; index < specimens.length; index++) {
+    const artifact = seeded.artifacts[index];
+    if (digest(artifact.candidates) !== digest(specimens[index]) ||
+        digest(artifact.canonical) !== digest([...new Set(specimens[index])].sort()))
+      throw Error(`Seeded specimen input changed: ${artifact.id}`);
+  }
+  for (let index = 0; index < widths.length; index++)
+    if (seeded.artifacts[specimens.length + index].candidate !== `w-[${widths[index]}px]`)
+      throw Error(`Seeded width input changed: ${index}`);
   return true;
 }
 
@@ -236,6 +298,8 @@ export async function validateRun(output, expectedReference, input, profile, man
     if (reports[engine].identity.browserEnvironment?.requiredMatrixMember !== true ||
         pilots[engine].identity.browserEnvironment?.requiredMatrixMember !== true)
       throw Error(`${engine} browser environment outside required matrix`);
+    assertSameBrowserEnvironment(reports[engine].identity.browserEnvironment,
+      pilots[engine].identity.browserEnvironment, engine);
     const member = profile.browserPolicy?.requiredMatrix?.find((row) => row.browser === engine);
     const environment = reports[engine].identity.browserEnvironment;
     if (!member || environment.hostPlatform !== member.hostPlatform ||
@@ -299,16 +363,19 @@ export async function validateRun(output, expectedReference, input, profile, man
       for (const row of empty.cases.filter((item) => manifest.supplementalCaseIds.includes(item.caseId))) {
         const id = `supplemental/${row.caseId}/chromium`;
         const claim = reports[engine].executed[id];
+        const sourceHtml = await readFile(fromRoot(
+          "tests/wind-compatibility/empty-token/index.html"), "utf8");
+        const plan = supplementalProbePlan(row, sourceHtml);
         await validateSupplementalRawRow(claim, row, corpusDir, originalCorpusDir,
-          referenceCompiler);
+          referenceCompiler, plan);
       }
       const controls = reports[engine].controls;
       same(controls.mutations, checkMutations(controls.mutations?.validControls,
         controls.mutations?.mutations), "corpus mutation controls");
       const seeded = controls.seeded;
-      if (!Array.isArray(seeded?.artifacts) || !seeded.artifacts.length ||
-          seeded.outcome !== "matched")
-        throw Error("Seeded corpus controls missing or failed");
+      const seedPolicy = await readJson(fromRoot(
+        "tests/wind-compatibility/corpus/seed-regressions.json"));
+      validateSeededMembership(seeded, seedPolicy, scanner?.identity);
       for (const artifact of seeded.artifacts) {
         validateSeededArtifactHashes(artifact);
         for (const [key, value] of Object.entries(artifact))

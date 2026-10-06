@@ -9,9 +9,9 @@ import { assertStableTransition, monotonicReviewed, upstreamReviewTransition, va
   withTransitionLock } from "../../../scripts/wind-compatibility/reference-promotion.mjs";
 import { digest } from "../../../scripts/wind-compatibility/reference.mjs";
 import { validateShippingManifest } from "../../../scripts/wind-compatibility/reference-shipping.mjs";
-import { observationRows, readRecordedArtifact, requirePassingCurrent,
+import { assertSameBrowserEnvironment, observationRows, readRecordedArtifact, requirePassingCurrent,
   validateCorpusProbeOutcomes, validateNativeRawRow, validateSupplementalRawRow,
-  validateSeededArtifactHashes, validateRun } from "../../../scripts/wind-compatibility/reference-comparison.mjs";
+  validateSeededArtifactHashes, validateSeededMembership, validateRun } from "../../../scripts/wind-compatibility/reference-comparison.mjs";
 import { sha256 } from "../../../scripts/wind-compatibility/reference.mjs";
 import { validatePilotAssessmentCases } from "../../../scripts/wind-compatibility/corpus-pilot.mjs";
 import { treeDigest } from "../../../scripts/wind-compatibility/differential-runner.mjs";
@@ -19,6 +19,8 @@ import { fromRoot } from "../../../scripts/wind-compatibility/reference.mjs";
 import { assertCurrentCorpusIdentity, currentCorpusIdentity } from "../../../scripts/wind-compatibility/corpus-identity.mjs";
 import { parseCssStructure } from "../../../scripts/wind-compatibility/structure.mjs";
 import { canonical } from "../../../scripts/wind-compatibility/corpus-structure.mjs";
+import { documentFor } from "../../../scripts/wind-compatibility/browser-adapter.mjs";
+import { generatedCandidateLists, generatedWidths, generatedSourceStrings } from "../../../scripts/wind-compatibility/corpus-seeds.mjs";
 
 const plan = { planId: "plan", channel: "stable", candidate: {
   package: "tailwindcss", version: "4.3.2", integrity: "sha512-test", source: { status: "unknown" },
@@ -299,8 +301,17 @@ test("native and supplemental raw rows reject missing or altered retained CSS", 
         actual: digest(parseCssStructure(nativeCss).map(canonical)) } };
     const guarantee = { id: "block", writes: { display: "block" } };
     assert.equal((await validateNativeRawRow(native, guarantee, output, original)).toString(), nativeCss);
-    const pair = (engine) => ({ engine, verified: true, stylesheetSha256: sha256(supplementalCss),
-      servedSha256: sha256(supplementalCss), expected: "block",
+    const probePlan = [{ candidate: "p", key: "padding", property: "padding-top",
+      role: "target", value: "block" }];
+    const documentHtml = '<!doctype html><html><head></head><body><div id="box"><span id="target" class="p">x</span><span id="control">x</span></div></body></html>';
+    const probe = { name: "s/p/padding", property: "padding-top", selector: "#target",
+      wind: "block", reference: "block", documentHtml,
+      authoredCss: ":where(#target,#control){padding:24px;margin:0;color:#222;background-color:transparent;}" };
+    const pair = (engine) => ({ engine, probe: probe.name, verified: true,
+      stylesheetSha256: sha256(supplementalCss), servedSha256: sha256(supplementalCss),
+      settings: { documentSha256: sha256(documentHtml),
+        servedDocumentSha256: sha256(documentFor("p", probe)),
+        authoredCssSha256: sha256(probe.authoredCss), selector: "#target" }, expected: "block",
       observation: { value: "block" }, pass: true });
     const supplemental = { windCssPath: `${original}/wind.css`,
       windCssSha256: sha256(supplementalCss), referenceCssPath: `${original}/reference.css`,
@@ -309,13 +320,22 @@ test("native and supplemental raw rows reject missing or altered retained CSS", 
       observationCount: 1, observations: [[{ wind: pair("wind"), reference: pair("reference") }]] };
     const reference = { compile: async () => ({ build: () => supplementalCss }) };
     assert.equal((await validateSupplementalRawRow(supplemental,
-      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference)).wind.toString(),
+      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference,
+      probePlan)).wind.toString(),
     supplementalCss);
+    supplemental.observations[0][0].reference.expected = "none";
+    supplemental.observations[0][0].reference.observation.value = "none";
+    await assert.rejects(validateSupplementalRawRow(supplemental,
+      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference, probePlan),
+    /checked probe changed/);
+    supplemental.observations[0][0].reference.expected = "block";
+    supplemental.observations[0][0].reference.observation.value = "block";
     await rm(nativeFile);
     await assert.rejects(validateNativeRawRow(native, guarantee, output, original), /ENOENT/);
     await writeFile(referenceFile, "changed");
     await assert.rejects(validateSupplementalRawRow(supplemental,
-      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference), /hash changed/);
+      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference,
+      probePlan), /hash changed/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -344,6 +364,43 @@ test("old seeded artifact shape without every raw hash is stale", () => {
   const complete = { ...old, windActualSha256: hash, windCanonicalSha256: hash,
     referenceInputSha256: hash };
   assert.equal(validateSeededArtifactHashes(complete), true);
+});
+
+test("seeded control requires exact ordered 10/6/6 corpus membership", async () => {
+  const policy = JSON.parse(await readFile(fromRoot(
+    "tests/wind-compatibility/corpus/seed-regressions.json")));
+  const specimens = [...policy.permanentSpecimens, ...generatedCandidateLists()];
+  const widths = generatedWidths(), sources = generatedSourceStrings();
+  const scannerIdentity = { package: "oxide-test" };
+  const seeded = { outcome: "matched", seed: policy.seed,
+    permanentSpecimens: policy.permanentSpecimens.length,
+    generatedSpecimens: policy.generatedCount,
+    generatedArbitraryWidths: widths,
+    generatedSourceStrings: policy.generatedSourceCount,
+    scannerIdentity,
+    artifacts: [
+      ...specimens.map((candidates, index) => ({ kind: "candidate-permutation",
+        id: `specimen-${index}`, candidates, canonical: [...new Set(candidates)].sort() })),
+      ...widths.map((width, index) => ({ kind: "arbitrary-width",
+        id: `generated-${index}`, candidate: `w-[${width}px]` })),
+      ...sources.map((_, index) => ({ kind: "source-string", id: `source-${index}` })),
+    ] };
+  assert.equal(validateSeededMembership(seeded, policy, scannerIdentity), true);
+  assert.throws(() => validateSeededMembership({ ...seeded,
+    artifacts: seeded.artifacts.slice(1) }, policy, scannerIdentity), /membership/);
+  assert.throws(() => validateSeededMembership({ ...seeded,
+    artifacts: [seeded.artifacts[0], ...seeded.artifacts.slice(0, -1)] },
+  policy, scannerIdentity), /membership/);
+});
+
+test("corpus and pilot must identify the same browser executable", () => {
+  const pilot = { name: "chromium", executable: "/tmp/browser",
+    executableSha256: "a".repeat(64), revision: "1228" };
+  assert.equal(assertSameBrowserEnvironment(pilot, pilot, "chromium"), true);
+  assert.throws(() => assertSameBrowserEnvironment({ ...pilot,
+    executableSha256: "b".repeat(64) }, pilot, "chromium"), /browser executable/);
+  assert.throws(() => assertSameBrowserEnvironment({ ...pilot,
+    executable: "/tmp/other" }, pilot, "chromium"), /browser executable/);
 });
 
 test("upstream-only review requires exact assessed change membership and cannot claim acceptance", () => {
