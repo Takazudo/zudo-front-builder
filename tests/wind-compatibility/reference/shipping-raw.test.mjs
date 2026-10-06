@@ -149,3 +149,54 @@ test("reference replay rejects a caller-hashed Wind substitute", () => {
     /cannot be reproduced/,
   );
 });
+
+test("token-change replay rejects stale CSS even with rehashed raw files and forged RGB observation", async () => {
+  await withOutput(async (output, save) => {
+    const requirement = {
+      mode: "cli-css-warm",
+      screenshotRequired: false,
+      expectedObservation: {
+        present: [".bg-brand"],
+        absent: [],
+        backgroundColor: "rgb(34, 68, 102)",
+      },
+    };
+    const result = {
+      id: "token-change",
+      engine: "chromium",
+      outcome: "passed",
+      raw: {
+        config: await save(
+          "config.json",
+          JSON.stringify({ wind: { tokens: { colors: { brand: "#224466" } } } }),
+        ),
+        screenshot: null,
+      },
+    };
+    const retain = async (color) => {
+      const css = `@layer zw-tokens { :root { --zw-color-brand: ${color}; } } .bg-brand { background-color: var(--zw-color-brand); }`;
+      result.raw.generatedCss = await save("generated.css", css);
+      result.raw.servedCss = await save("served.css", css);
+      result.raw.observation = await save(
+        "observation.json",
+        JSON.stringify({
+          caseId: "token-change",
+          engine: "chromium",
+          observed: requirement.expectedObservation,
+          cssResponse: {
+            status: 200,
+            contentType: "text/css; charset=utf-8",
+            sha256: result.raw.servedCss.sha256,
+          },
+        }),
+      );
+    };
+    await retain("#369");
+    await assert.rejects(
+      validateShippingRawCase(result, requirement, output, {}),
+      /Shipping token color differs from contract/,
+    );
+    await retain("#246");
+    await validateShippingRawCase(result, requirement, output, {});
+  });
+});

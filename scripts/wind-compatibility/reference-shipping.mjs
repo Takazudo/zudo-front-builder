@@ -6,11 +6,38 @@ import { testedPaths } from "./reference-identity.mjs";
 import { verifyProductionBuild } from "./production-build.mjs";
 import { requiredMatrixMember } from "./browser-adapter.mjs";
 import { verifyDistProof } from "../../tests/wind-real-build/dist-proof.mjs";
+import { parseCssStructure } from "./structure.mjs";
 
 export const shippingManifestPath = "tests/wind-compatibility/shipping/manifest.json";
 export function assertReplayedReferenceCss(replayed, retained) {
   if (!replayed.length || !replayed.equals(retained))
     throw Error("Independent reference CSS cannot be reproduced from SRI artifact");
+}
+
+function hexColorToRgb(value) {
+  if (!/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(value ?? ""))
+    throw Error(`Shipping token is not a hex RGB color: ${value}`);
+  const hex = value.slice(1);
+  const pairs = hex.length === 3 ? [...hex].map((digit) => digit + digit) : hex.match(/../g);
+  return `rgb(${pairs.map((pair) => Number.parseInt(pair, 16)).join(", ")})`;
+}
+
+export function assertShippingTokenColor(css, token, expectedColor) {
+  const layers = parseCssStructure(css).filter(
+    (node) => node.kind === "rule" && node.head === "@layer zw-tokens",
+  );
+  const roots = layers.flatMap((layer) =>
+    layer.children.filter((node) => node.kind === "rule" && node.head === ":root"),
+  );
+  const declarations = roots.flatMap((root) =>
+    root.children.filter(
+      (node) => node.kind === "declaration" && node.name === `--zw-color-${token}`,
+    ),
+  );
+  if (layers.length !== 1 || roots.length !== 1 || declarations.length !== 1)
+    throw Error(`Shipping token declaration missing or duplicate: ${token}`);
+  if (hexColorToRgb(declarations[0].value) !== expectedColor)
+    throw Error(`Shipping token color differs from contract: ${token}`);
 }
 const requiredMechanisms = [
   "source-add",
@@ -285,8 +312,12 @@ export async function validateShippingRawCase(result, requirement, output, repor
       const step = result.steps[stepIndex],
         expectedStep = contract[stepIndex];
       if (
-        digest({ id: step.id, present: step.present, absent: step.absent }) !==
-          digest(expectedStep) ||
+        digest({
+          id: step.id,
+          present: step.present,
+          absent: step.absent,
+          ...(expectedStep.backgroundColor ? { backgroundColor: step.backgroundColor } : {}),
+        }) !== digest(expectedStep) ||
         step.mutation?.path !== mutationPaths[stepIndex] ||
         (stepIndex === 3
           ? step.mutation.sha256 !== null
@@ -331,6 +362,14 @@ export async function validateShippingRawCase(result, requirement, output, repor
         expectedStep.absent.some((needle) => stepCss.toString().includes(needle))
       )
         throw Error(`Dev transition CSS changed: ${step.id}`);
+      if (expectedStep.backgroundColor) {
+        if (
+          hexColorToRgb((await readJson(configPath)).wind?.tokens?.colors?.shipping) !==
+          expectedStep.backgroundColor
+        )
+          throw Error(`Dev token config differs from contract: ${step.id}`);
+        assertShippingTokenColor(stepCss.toString(), "shipping", expectedStep.backgroundColor);
+      }
       previousInputDigest = step.inputDigest;
     }
     if (result.steps.at(-1).rawCss.sha256 !== result.raw.servedCss.sha256)
@@ -347,6 +386,20 @@ export async function validateShippingRawCase(result, requirement, output, repor
       requirement.expectedObservation.absent.some((needle) => css.includes(needle))
     )
       throw Error(`Shipping CSS selector/token facts changed: ${result.id}`);
+  }
+  if (result.id === "token-change") {
+    const rawConfig = result.raw.config;
+    if (!rawConfig?.path || !/^[0-9a-f]{64}$/.test(rawConfig.sha256 ?? ""))
+      throw Error("Shipping token-change config evidence missing");
+    const configPath = await outsideCheckout(resolve(output, rawConfig.path));
+    if (
+      !configPath.startsWith(`${output}/`) ||
+      sha256(await readFile(configPath)) !== rawConfig.sha256 ||
+      hexColorToRgb((await readJson(configPath)).wind?.tokens?.colors?.brand) !==
+        requirement.expectedObservation.backgroundColor
+    )
+      throw Error("Shipping token-change config differs from contract");
+    assertShippingTokenColor(css, "brand", requirement.expectedObservation.backgroundColor);
   }
   if (requirement.screenshotRequired) {
     const expectedViewport =
