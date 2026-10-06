@@ -301,8 +301,8 @@
       "configuration": "empty",
       "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
       "upstreamTest": "order",
-      "originalInput": "['order-0', 'order-1', '-order-1', 'order-first', 'order-last', 'order-none']",
-      "adaptation": "Select bounded integers and keywords from the upstream order test; isolate six targets and compare computed order.",
+      "originalInput": "['order-4', '-order-4', 'order-[123]', '-order-[var(--value)]', 'order-first', 'order-last', 'order-none',]",
+      "adaptation": "The pinned order test covers numeric, negative, arbitrary, and keyword forms. This corpus selects bounded zero/one/negative-one samples and its three original keywords, with six isolated computed-order targets; selected integers are adapted inputs, not a quoted upstream test array.",
       "candidates": ["order-0", "order-1", "-order-1", "order-first", "order-last", "order-none"],
       "engines": ["chromium"],
       "reviewedDifferenceIds": ["exact-tree-contract"]
@@ -311,9 +311,9 @@
       "id": "native-basis",
       "configuration": "empty",
       "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
-      "upstreamTest": "flex basis",
-      "originalInput": "['basis-auto', 'basis-full', 'basis-px', 'basis-1/2']",
-      "adaptation": "Select empty-theme keyword and bounded fraction forms; give each flex item its own target.",
+      "upstreamTest": "flex-basis",
+      "originalInput": "['basis-auto', 'basis-full', 'basis-xl', 'basis-11/12', 'basis-[123px]']",
+      "adaptation": "The pinned flex-basis test covers auto/full, a configured container token, a fraction, and an arbitrary value. This corpus retains auto/full and adapts px and 1/2 as empty-theme bounded samples in separate flex items; the adapted list is not a quoted upstream test array.",
       "candidates": ["basis-auto", "basis-full", "basis-px", "basis-1/2"],
       "engines": ["chromium"],
       "reviewedDifferenceIds": ["exact-tree-contract"]
@@ -322,20 +322,39 @@
       "id": "native-svg",
       "configuration": "empty",
       "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
-      "upstreamTest": "fill and stroke",
-      "originalInput": "['fill-current', 'fill-none', 'stroke-current', 'stroke-none']",
-      "adaptation": "Select only four exact SVG presentation forms and observe separate SVG elements under authored current color.",
+      "upstreamTest": "fill",
+      "originalInput": "'fill-current',",
+      "adaptation": "Combine fill-current from the pinned fill test, stroke-current/stroke-none from the separate stroke test, and fill-none from its exact source registration. Four isolated SVG targets under authored current color are the corpus adaptation, not a quoted contiguous upstream test array.",
       "candidates": ["fill-current", "fill-none", "stroke-current", "stroke-none"],
       "engines": ["chromium"],
-      "reviewedDifferenceIds": ["exact-tree-contract"]
+      "reviewedDifferenceIds": ["exact-tree-contract"],
+      "provenanceAnchors": [
+        {
+          "kind": "test",
+          "path": "packages/tailwindcss/src/utilities.test.ts",
+          "test": "stroke",
+          "input": "'stroke-current',"
+        },
+        {
+          "kind": "test",
+          "path": "packages/tailwindcss/src/utilities.test.ts",
+          "test": "stroke",
+          "input": "'stroke-none',"
+        },
+        {
+          "kind": "source",
+          "path": "packages/tailwindcss/src/utilities.ts",
+          "input": "staticUtility('fill-none', [['fill', 'none']])"
+        }
+      ]
     },
     {
       "id": "native-not-sr-only",
       "configuration": "empty",
       "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
-      "upstreamTest": "screen reader only",
-      "originalInput": "'not-sr-only'",
-      "adaptation": "Select standalone reversal and compare exact declarations and four computed properties.",
+      "upstreamTest": "not-sr-only",
+      "originalInput": "await run(['not-sr-only'])",
+      "adaptation": "Retain the exact not-sr-only test input and adapt it to a standalone DOM target with four computed-property probes and complete side-specific declaration trees.",
       "candidates": ["not-sr-only"],
       "engines": ["chromium", "firefox", "webkit"],
       "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"]
@@ -344,12 +363,20 @@
       "id": "native-sr-reversal",
       "configuration": "empty",
       "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
-      "upstreamTest": "screen reader only",
-      "originalInput": "['sr-only', 'focus:not-sr-only']",
-      "adaptation": "Compose current Wind clipping with keyboard focus reversal; compare inactive and active computed properties separately.",
+      "upstreamTest": "not-sr-only",
+      "originalInput": "await run(['not-sr-only'])",
+      "adaptation": "Compose the separately tested sr-only and not-sr-only forms with the existing focus variant for an inactive/active keyboard target; the composed class list is an adapted input, not a quoted upstream test array.",
       "candidates": ["sr-only", "focus:not-sr-only"],
       "engines": ["chromium", "firefox", "webkit"],
-      "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"]
+      "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+      "provenanceAnchors": [
+        {
+          "kind": "test",
+          "path": "packages/tailwindcss/src/utilities.test.ts",
+          "test": "sr-only",
+          "input": "await run(['sr-only'])"
+        }
+      ]
     }
   ],
   "counts": {
