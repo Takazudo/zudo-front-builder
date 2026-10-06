@@ -270,11 +270,6 @@ export function diagnosticCheck(row, report) {
       rejectionId: "R17",
       message: "unknown value or token gray-500",
     },
-    "contents-gap": {
-      code: "ZW014",
-      rejectionId: null,
-      messagePrefix: "unsupported foreign utility (migration vocabulary",
-    },
   }[row.id];
   if (!expected) return diagnostics.length === 0;
   if (diagnostics.length !== 1) return false;
@@ -289,10 +284,7 @@ export function diagnosticCheck(row, report) {
     diagnostic.origin.producer === "wind-fixture-css" &&
     diagnostic.origin.path === `${row.id}/case.json` &&
     diagnostic.origin.index === 0 &&
-    (expected.message
-      ? diagnostic.message === expected.message
-      : diagnostic.message.startsWith(expected.messagePrefix) &&
-        diagnostic.message.includes("Tailwind `contents`"))
+    diagnostic.message === expected.message
   );
 }
 
@@ -399,7 +391,7 @@ async function main() {
   const windLib = await readFile(fromRoot("crates/zudo-wind/src/lib.rs"), "utf8");
   if (
     !windLib.includes("pub const SPEC_VERSION: u32 = 1;") ||
-    !windLib.includes("pub const SPEC_REVISION: u32 = 12;")
+    !windLib.includes("pub const SPEC_REVISION: u32 = 13;")
   )
     throw Error("Wind spec identity differs from pilot adapter");
   const manifest = await readJson(resolve(options.fixture, "manifest.json"));
@@ -771,7 +763,7 @@ async function main() {
   const identity = {
     windBuild,
     windSpecVersion: 1,
-    windSpecRevision: 12,
+    windSpecRevision: 13,
     catalogDigest: await treeDigest(fromRoot("crates/zudo-wind/src/catalog")),
     reference: reference.identity,
     scanner: scanner.identity,

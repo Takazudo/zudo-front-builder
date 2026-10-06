@@ -1,0 +1,15 @@
+[
+  {"name": "contents", "selector": "#contents", "property": "display", "wind": "contents", "reference": "contents"},
+  {"name": "flow-root", "selector": "#flow-root", "property": "display", "wind": "flow-root", "reference": "flow-root"},
+  {"name": "list-item", "selector": "#list-item", "property": "display", "wind": "list-item", "reference": "list-item"},
+  {"name": "table", "selector": "#table", "property": "display", "wind": "table", "reference": "table"},
+  {"name": "inline-table", "selector": "#inline-table", "property": "display", "wind": "inline-table", "reference": "inline-table"},
+  {"name": "table-caption", "selector": "#table-caption", "property": "display", "wind": "table-caption", "reference": "table-caption"},
+  {"name": "table-cell", "selector": "#table-cell", "property": "display", "wind": "table-cell", "reference": "table-cell"},
+  {"name": "table-column", "selector": "#table-column", "property": "display", "wind": "table-column", "reference": "table-column"},
+  {"name": "table-column-group", "selector": "#table-column-group", "property": "display", "wind": "table-column-group", "reference": "table-column-group"},
+  {"name": "table-footer-group", "selector": "#table-footer-group", "property": "display", "wind": "table-footer-group", "reference": "table-footer-group"},
+  {"name": "table-header-group", "selector": "#table-header-group", "property": "display", "wind": "table-header-group", "reference": "table-header-group"},
+  {"name": "table-row", "selector": "#table-row", "property": "display", "wind": "table-row", "reference": "table-row"},
+  {"name": "table-row-group", "selector": "#table-row-group", "property": "display", "wind": "table-row-group", "reference": "table-row-group"}
+]

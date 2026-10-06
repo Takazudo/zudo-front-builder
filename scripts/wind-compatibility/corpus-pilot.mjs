@@ -227,7 +227,7 @@ export async function currentPilotIdentity({
   return {
     windBuild,
     windSpecVersion: 1,
-    windSpecRevision: 12,
+    windSpecRevision: 13,
     catalogDigest: await treeDigest(fromRoot("crates/zudo-wind/src/catalog")),
     reference: reference.identity,
     scanner: scanner.identity,

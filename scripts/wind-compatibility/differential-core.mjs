@@ -10,14 +10,62 @@ export const outcomes = Object.freeze({
   missing: "not-executed",
 });
 
+const REVIEWED_PILOT_IDS = Object.freeze([
+  "block",
+  "hidden",
+  "inline-flex",
+  "mx-auto",
+  "grid-cols-2",
+  "p-0-empty",
+  "p-0-mapped",
+  "named-spacing",
+  "named-color",
+  "unconfigured-p-4",
+  "undeclared-palette",
+  "configured-p-4",
+  "contents-gap",
+  "hover-block",
+  "breakpoint-block",
+]);
+
 export function validatePilot(profile, manifest, observations) {
-  if (profile.profileId !== "wind-preset-free" || profile.profileVersion !== 1)
+  if (
+    profile.profileId !== "wind-preset-free" ||
+    profile.profileVersion !== 1 ||
+    profile.profileRevision !== 3 ||
+    profile.sourceBaseline?.languageSpecVersion !== 1 ||
+    profile.sourceBaseline?.languageSpecRevision !== 13
+  )
     throw Error("Unexpected compatibility profile");
+  if (
+    !Array.isArray(profile.requiredCases) ||
+    !Array.isArray(manifest.caseIds) ||
+    !observations ||
+    typeof observations !== "object" ||
+    Array.isArray(observations)
+  )
+    throw Error("Invalid pilot membership input");
+  const profileIds = profile.requiredCases.map((row) => row.id);
+  if (
+    digest(profileIds) !== digest(REVIEWED_PILOT_IDS) ||
+    digest(manifest.caseIds) !== digest(REVIEWED_PILOT_IDS) ||
+    digest(Object.keys(observations)) !== digest(REVIEWED_PILOT_IDS)
+  )
+    throw Error("Pilot membership differs from reviewed 15-case set");
   const required = new Map(profile.requiredCases.map((row) => [row.id, row]));
   const differences = new Map(profile.reviewedDifferences.map((row) => [row.id, row]));
   const ids = manifest.caseIds;
   if (!Array.isArray(ids) || new Set(ids).size !== ids.length || ids.length === 0)
     throw Error("Invalid pilot manifest");
+  const contents = required.get("contents-gap");
+  if (
+    contents?.candidate !== "contents" ||
+    contents.disposition !== "equivalent-shared" ||
+    contents.implementation !== "implemented" ||
+    contents.windTokenFreeGuarantee !== true ||
+    digest(contents.reviewedDifferenceIds) !== digest(["wind-layer-order-prelude"])
+  )
+    throw Error("contents-gap must retain its implemented shared classification");
   for (const id of ids) {
     if (!required.has(id)) throw Error(`Unreviewed pilot case ${id}`);
     for (const differenceId of required.get(id).reviewedDifferenceIds) {
@@ -71,7 +119,7 @@ export function preludeCheck(css, expectedNonempty, statement) {
 }
 
 export function requiredNonempty(row) {
-  return !["unconfigured-p-4", "undeclared-palette", "contents-gap"].includes(row.id);
+  return !["unconfigured-p-4", "undeclared-palette"].includes(row.id);
 }
 
 export function classify(row, checks) {

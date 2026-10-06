@@ -2,7 +2,7 @@
 
 Ratified by [#3826](https://github.com/Takazudo/zudo-front-builder/issues/3826),
 2026-10-06. Canonical identity: [`tests/wind-compatibility/profile.json`](../tests/wind-compatibility/profile.json),
-`wind-preset-free`, **version 1, revision 1**. This is a policy commitment with
+`wind-preset-free`, **version 1, revision 3**. This is a policy commitment with
 pending evidence, not an admitted compatibility baseline.
 
 ## Product boundary and authority
@@ -32,11 +32,12 @@ promises separately. Adopting a utility still requires a bounded language decisi
 collision/diagnostic review, implementation, and evidence; upstream availability
 alone does not authorize it.
 
-Execution baseline is `a2642d02270aa4fc74fa5de049d4482da087af1f`, after the manager's
-#3710/#3736, #3843 and #3847 integrations. Current `crates/zudo-wind/src/lib.rs`
-declares language spec **1**, revision **12**. The historical document's revision 2
-is not the current implementation revision. Inventory must separately pin the
-actual Wind source SHA, exported catalog digest, and language identity.
+The current implementation source pin for this adoption is
+`6ad10cfcb1eeeca0288d577b88f8a9312828cc83`. Current
+`crates/zudo-wind/src/lib.rs` declares language spec **1**, revision **13**. The
+historical document revision 2 is not the current implementation revision.
+Inventory separately pins the Wind source SHA, exported catalog digest, and
+language identity.
 
 ## Versions, dispositions, and evidence
 
@@ -110,7 +111,7 @@ All assertions remain pending independent execution.
 | `unconfigured-p-4` / `p-4` | intentional-difference | Supported numeric spacing family lacks its explicit unit. No utility rule on either side; probe and assert diagnostics separately by origin/strictness. |
 | `undeclared-palette` / `bg-gray-500` | intentional-difference | Supported color family lacks a declared token. No utility rule on either side; no implicit gray palette or presumption of a Tailwind error. |
 | `configured-p-4` / `p-4` | equivalent-mapped | Opt-in only: Wind `spacingUnit:0.25rem`, reference `--spacing:0.25rem`; padding computes to `1rem`. |
-| `contents-gap` / `contents` | implementation-gap | Token-free reference utility absent from this Wind catalog. Adoption decision #3833 owns it; no missing-token explanation or silent exclusion. |
+| `contents-gap` / `contents` | equivalent-shared | Empty config: `display:contents` on both sides, with only the Wind prelude difference. Retains the original case ID and historical profile 1.2/run evidence. |
 | `hover-block` / `hover:block` | equivalent-shared | Empty tokens; hover state and `(hover:hover)` capability both control activation. |
 | `breakpoint-block` / `sm:block` | equivalent-mapped | Wind breakpoint `sm:640`, reference `--breakpoint-sm:640px`; below, at, above threshold. |
 
@@ -120,6 +121,24 @@ categories. Arbitrary values are bounded owned grammar, not an implicit theme.
 Variants have their own activation/specificity contracts and must not inherit a
 base utility's evidence automatically. Composed systems (ring/animation), engine
 directives and plugins are separate decisions, not unexplored token namespaces.
+
+## Display and appearance adoption (#3834)
+
+The language catalog now includes the exact token-free statics `contents`,
+`flow-root`, `list-item`, `table`, `inline-table`, `table-caption`, `table-cell`,
+`table-column`, `table-column-group`, `table-footer-group`, `table-header-group`,
+`table-row`, `table-row-group`, `appearance-none`, and `appearance-auto`.
+Each spelling emits one matching `display` or `appearance` declaration. Suffix,
+negative, slash and arbitrary forms remain outside this exact-static adoption;
+`table-auto` and `table-fixed` retain their migration diagnostics. The language
+spec stays version 1 and advances to revision 13; migration vocabulary advances
+to 5.
+
+The 15 canonical pilot IDs remain unchanged. Upstream browser corpus cases
+`native-display` and `native-appearance` exercise all 13 display statics and both
+appearance values in Chromium. The table targets use valid table formatting
+contexts. These additions are not extra pilot cases or native-guarantee rows;
+they are separately counted upstream obligations.
 
 ## Structural and behavioral comparison rules
 
@@ -132,8 +151,8 @@ Do not normalize away custom properties, layers, resets, specificity or source o
 `wind-layer-order-prelude` accounts for the exact first statement
 `@layer zw-reset, zw-tokens, zfb-hi, base, components;` once per nonempty Wind
 generated stylesheet, with no corresponding Wind statement on the reference side.
-Its JSON membership includes the twelve required cases that expect Wind output;
-`unconfigured-p-4`, `undeclared-palette` and `contents-gap` expect no prelude when
+Its JSON membership includes the thirteen required cases that expect Wind output;
+only `unconfigured-p-4` and `undeclared-palette` expect no prelude when
 run alone with their empty configuration. Derive expected nonemptiness from the
 fixture's reset, configured-token or resolved-utility contract, never from actual
 output. Composed cases and reset/token-only controls count one prelude for the

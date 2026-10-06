@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "fixtureId": "wind-empty-token-contracts-v1",
   "issue": 3830,
-  "profile": "wind-preset-free@1.2",
+  "profile": "wind-preset-free@1.3",
   "source": "tests/wind-compatibility/empty-token/index.html",
   "profileCaseIds": [
     "block",
@@ -441,8 +441,7 @@
   "referenceNotes": {
     "p-0-empty": "Wind-owned guarantee; Tailwind 4.3.2 empty-theme compiler omits p-0",
     "p-0-mapped": "Reference declares --spacing-0:0px; Wind remains empty-token",
-    "mx-auto": "Wind physical margins; reference margin-inline; no vertical-mode parity claim",
-    "contents-gap": "Profile implementation gap; adoption decision belongs to #3833"
+    "mx-auto": "Wind physical margins; reference margin-inline; no vertical-mode parity claim"
   },
   "stylesheetContract": {
     "nonemptyPrelude": "@layer zw-reset, zw-tokens, zfb-hi, base, components;",
@@ -540,7 +539,7 @@
       "caseId": "contents-gap",
       "explicitCandidates": ["contents"],
       "configuration": "empty",
-      "expectedOutcome": "wind-implementation-gap",
+      "expectedOutcome": "generated-reviewed-difference",
       "sourceFile": "index.html"
     },
     {

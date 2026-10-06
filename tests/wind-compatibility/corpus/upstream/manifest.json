@@ -16,6 +16,8 @@
     "duplicate-reordered",
     "arbitrary-width-zero",
     "arbitrary-width-one",
-    "arbitrary-width-seventeen"
+    "arbitrary-width-seventeen",
+    "native-display",
+    "native-appearance"
   ]
 }

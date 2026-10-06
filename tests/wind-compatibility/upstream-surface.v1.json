@@ -1091,7 +1091,13 @@
     "nth-of-type",
     "supports"
   ],
-  "compoundVariants": ["group", "has", "in", "not", "peer"],
+  "compoundVariants": [
+    "group",
+    "has",
+    "in",
+    "not",
+    "peer"
+  ],
   "finiteLoopSites": [
     {
       "line": 632,
@@ -1110,22 +1116,51 @@
         "bottom",
         "left"
       ],
-      "templates": ["${name}-auto", "${name}-full", "-${name}-full"],
+      "templates": [
+        "${name}-auto",
+        "${name}-full",
+        "-${name}-full"
+      ],
       "functional": true
     },
     {
       "line": 896,
       "endLine": 913,
       "variable": "namespace",
-      "values": ["m", "mx", "my", "ms", "me", "mbs", "mbe", "mt", "mr", "mb", "ml"],
-      "templates": ["${namespace}-auto"],
+      "values": [
+        "m",
+        "mx",
+        "my",
+        "ms",
+        "me",
+        "mbs",
+        "mbe",
+        "mt",
+        "mr",
+        "mb",
+        "ml"
+      ],
+      "templates": [
+        "${namespace}-auto"
+      ],
       "functional": true
     },
     {
       "line": 1012,
       "endLine": 1035,
       "variable": "key",
-      "values": ["full", "svw", "lvw", "dvw", "svh", "lvh", "dvh", "min", "max", "fit"],
+      "values": [
+        "full",
+        "svw",
+        "lvw",
+        "dvw",
+        "svh",
+        "lvh",
+        "dvh",
+        "min",
+        "max",
+        "fit"
+      ],
       "templates": [
         "size-${key}",
         "w-${key}",
@@ -1162,7 +1197,12 @@
       "line": 1091,
       "endLine": 1103,
       "variable": "key",
-      "values": ["full", "min", "max", "fit"],
+      "values": [
+        "full",
+        "min",
+        "max",
+        "fit"
+      ],
       "templates": [
         "inline-${key}",
         "block-${key}",
@@ -1177,16 +1217,32 @@
       "line": 1106,
       "endLine": 1114,
       "variable": "key",
-      "values": ["svw", "lvw", "dvw"],
-      "templates": ["inline-${key}", "min-inline-${key}", "max-inline-${key}"],
+      "values": [
+        "svw",
+        "lvw",
+        "dvw"
+      ],
+      "templates": [
+        "inline-${key}",
+        "min-inline-${key}",
+        "max-inline-${key}"
+      ],
       "functional": false
     },
     {
       "line": 1117,
       "endLine": 1125,
       "variable": "key",
-      "values": ["svh", "lvh", "dvh"],
-      "templates": ["block-${key}", "min-block-${key}", "max-block-${key}"],
+      "values": [
+        "svh",
+        "lvh",
+        "dvh"
+      ],
+      "templates": [
+        "block-${key}",
+        "min-block-${key}",
+        "max-block-${key}"
+      ],
       "functional": false
     },
     {
@@ -1281,7 +1337,19 @@
       "line": 3934,
       "endLine": 3949,
       "variable": "name",
-      "values": ["p", "px", "py", "ps", "pe", "pbs", "pbe", "pt", "pr", "pb", "pl"],
+      "values": [
+        "p",
+        "px",
+        "py",
+        "ps",
+        "pe",
+        "pbs",
+        "pbe",
+        "pt",
+        "pr",
+        "pb",
+        "pl"
+      ],
       "templates": [],
       "functional": true
     },
@@ -1289,41 +1357,81 @@
       "line": 6835,
       "endLine": 6850,
       "variable": "value",
-      "values": ["t", "tr", "r", "br", "b", "bl", "l", "tl"],
-      "templates": ["bg-gradient-to-${value}"],
+      "values": [
+        "t",
+        "tr",
+        "r",
+        "br",
+        "b",
+        "bl",
+        "l",
+        "tl"
+      ],
+      "templates": [
+        "bg-gradient-to-${value}"
+      ],
       "functional": false
     },
     {
       "line": 6945,
       "endLine": 7001,
       "variable": "name",
-      "values": ["start", "end"],
-      "templates": ["${name}-auto", "${name}-full", "-${name}-full", "${name}-px", "-${name}-px"],
+      "values": [
+        "start",
+        "end"
+      ],
+      "templates": [
+        "${name}-auto",
+        "${name}-full",
+        "-${name}-full",
+        "${name}-px",
+        "-${name}-px"
+      ],
       "functional": false
     },
     {
       "line": 1387,
       "endLine": 1412,
       "variable": "axis",
-      "values": ["x", "y"],
-      "templates": ["-translate-${axis}-full", "translate-${axis}-full"],
-      "functionalTemplates": ["translate-${axis}"]
+      "values": [
+        "x",
+        "y"
+      ],
+      "templates": [
+        "-translate-${axis}-full",
+        "translate-${axis}-full"
+      ],
+      "functionalTemplates": [
+        "translate-${axis}"
+      ]
     },
     {
       "line": 1479,
       "endLine": 1508,
       "variable": "axis",
-      "values": ["x", "y", "z"],
+      "values": [
+        "x",
+        "y",
+        "z"
+      ],
       "templates": [],
-      "functionalTemplates": ["scale-${axis}"]
+      "functionalTemplates": [
+        "scale-${axis}"
+      ]
     },
     {
       "line": 1579,
       "endLine": 1602,
       "variable": "axis",
-      "values": ["x", "y", "z"],
+      "values": [
+        "x",
+        "y",
+        "z"
+      ],
       "templates": [],
-      "functionalTemplates": ["rotate-${axis}"]
+      "functionalTemplates": [
+        "rotate-${axis}"
+      ]
     },
     {
       "line": 1750,
@@ -1367,95 +1475,183 @@
         "zoom-in",
         "zoom-out"
       ],
-      "templates": ["cursor-${value}"],
+      "templates": [
+        "cursor-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1799,
       "endLine": 1801,
       "variable": "value",
-      "values": ["auto", "none", "manipulation"],
-      "templates": ["touch-${value}"],
+      "values": [
+        "auto",
+        "none",
+        "manipulation"
+      ],
+      "templates": [
+        "touch-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1805,
       "endLine": 1812,
       "variable": "value",
-      "values": ["x", "left", "right"],
-      "templates": ["touch-pan-${value}"],
+      "values": [
+        "x",
+        "left",
+        "right"
+      ],
+      "templates": [
+        "touch-pan-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1813,
       "endLine": 1820,
       "variable": "value",
-      "values": ["y", "up", "down"],
-      "templates": ["touch-pan-${value}"],
+      "values": [
+        "y",
+        "up",
+        "down"
+      ],
+      "templates": [
+        "touch-pan-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1831,
       "endLine": 1836,
       "variable": "value",
-      "values": ["none", "text", "all", "auto"],
-      "templates": ["select-${value}"],
+      "values": [
+        "none",
+        "text",
+        "all",
+        "auto"
+      ],
+      "templates": [
+        "select-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1852,
       "endLine": 1858,
       "variable": "value",
-      "values": ["x", "y", "both"],
-      "templates": ["snap-${value}"],
+      "values": [
+        "x",
+        "y",
+        "both"
+      ],
+      "templates": [
+        "snap-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1968,
       "endLine": 1971,
       "variable": "value",
-      "values": ["auto", "avoid", "all", "avoid-page", "page", "left", "right", "column"],
-      "templates": ["break-before-${value}"],
+      "values": [
+        "auto",
+        "avoid",
+        "all",
+        "avoid-page",
+        "page",
+        "left",
+        "right",
+        "column"
+      ],
+      "templates": [
+        "break-before-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1972,
       "endLine": 1975,
       "variable": "value",
-      "values": ["auto", "avoid", "avoid-page", "avoid-column"],
-      "templates": ["break-inside-${value}"],
+      "values": [
+        "auto",
+        "avoid",
+        "avoid-page",
+        "avoid-column"
+      ],
+      "templates": [
+        "break-inside-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 1976,
       "endLine": 1979,
       "variable": "value",
-      "values": ["auto", "avoid", "all", "avoid-page", "page", "left", "right", "column"],
-      "templates": ["break-after-${value}"],
+      "values": [
+        "auto",
+        "avoid",
+        "all",
+        "avoid-page",
+        "page",
+        "left",
+        "right",
+        "column"
+      ],
+      "templates": [
+        "break-after-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 2261,
       "endLine": 2266,
       "variable": "value",
-      "values": ["auto", "hidden", "clip", "visible", "scroll"],
-      "templates": ["overflow-${value}", "overflow-x-${value}", "overflow-y-${value}"],
+      "values": [
+        "auto",
+        "hidden",
+        "clip",
+        "visible",
+        "scroll"
+      ],
+      "templates": [
+        "overflow-${value}",
+        "overflow-x-${value}",
+        "overflow-y-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 2267,
       "endLine": 2272,
       "variable": "value",
-      "values": ["auto", "contain", "none"],
-      "templates": ["overscroll-${value}", "overscroll-x-${value}", "overscroll-y-${value}"],
+      "values": [
+        "auto",
+        "contain",
+        "none"
+      ],
+      "templates": [
+        "overscroll-${value}",
+        "overscroll-x-${value}",
+        "overscroll-y-${value}"
+      ],
       "functionalTemplates": []
     },
     {
       "line": 2661,
       "endLine": 2671,
       "variable": "value",
-      "values": ["solid", "dashed", "dotted", "double", "none"],
-      "templates": ["divide-${value}"],
+      "values": [
+        "solid",
+        "dashed",
+        "dotted",
+        "double",
+        "none"
+      ],
+      "templates": [
+        "divide-${value}"
+      ],
       "functionalTemplates": []
     },
     {
@@ -1480,7 +1676,10 @@
         "color",
         "luminosity"
       ],
-      "templates": ["bg-blend-${value}", "mix-blend-${value}"],
+      "templates": [
+        "bg-blend-${value}",
+        "mix-blend-${value}"
+      ],
       "functionalTemplates": []
     }
   ],
@@ -1591,39 +1790,67 @@
     },
     "animate": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--animate"],
+      "themeKeys": [
+        "--animate"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "aspect": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--aspect"],
+      "themeKeys": [
+        "--aspect"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["auto", "square"]
+      "staticValueKeys": [
+        "auto",
+        "square"
+      ]
     },
     "auto-cols": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-auto-columns", "--spacing"],
+      "themeKeys": [
+        "--grid-auto-columns",
+        "--spacing"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["auto", "min", "max", "fr"]
+      "staticValueKeys": [
+        "auto",
+        "min",
+        "max",
+        "fr"
+      ]
     },
     "auto-rows": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-auto-rows", "--spacing"],
+      "themeKeys": [
+        "--grid-auto-rows",
+        "--spacing"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["auto", "min", "max", "fr"]
+      "staticValueKeys": [
+        "auto",
+        "min",
+        "max",
+        "fr"
+      ]
     },
     "backdrop-blur": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-blur", "--blur"],
+      "themeKeys": [
+        "--backdrop-blur",
+        "--blur"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
@@ -1631,7 +1858,10 @@
     },
     "backdrop-brightness": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-brightness", "--brightness"],
+      "themeKeys": [
+        "--backdrop-brightness",
+        "--brightness"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1639,7 +1869,10 @@
     },
     "backdrop-contrast": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-contrast", "--contrast"],
+      "themeKeys": [
+        "--backdrop-contrast",
+        "--contrast"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1655,7 +1888,10 @@
     },
     "backdrop-grayscale": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-grayscale", "--grayscale"],
+      "themeKeys": [
+        "--backdrop-grayscale",
+        "--grayscale"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1663,7 +1899,10 @@
     },
     "backdrop-hue-rotate": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-hue-rotate", "--hue-rotate"],
+      "themeKeys": [
+        "--backdrop-hue-rotate",
+        "--hue-rotate"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
@@ -1671,7 +1910,10 @@
     },
     "backdrop-invert": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-invert", "--invert"],
+      "themeKeys": [
+        "--backdrop-invert",
+        "--invert"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1679,7 +1921,10 @@
     },
     "backdrop-opacity": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-opacity", "--opacity"],
+      "themeKeys": [
+        "--backdrop-opacity",
+        "--opacity"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1687,7 +1932,10 @@
     },
     "backdrop-saturate": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-saturate", "--saturate"],
+      "themeKeys": [
+        "--backdrop-saturate",
+        "--saturate"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1695,7 +1943,10 @@
     },
     "backdrop-sepia": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--backdrop-sepia", "--sepia"],
+      "themeKeys": [
+        "--backdrop-sepia",
+        "--sepia"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1703,7 +1954,11 @@
     },
     "basis": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--flex-basis", "--spacing", "--container"],
+      "themeKeys": [
+        "--flex-basis",
+        "--spacing",
+        "--container"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": true,
@@ -1767,11 +2022,16 @@
     },
     "blur": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--blur", "--backdrop-blur"],
+      "themeKeys": [
+        "--blur",
+        "--backdrop-blur"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "border-bottom-right-radius": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -1794,7 +2054,13 @@
       "bareValueHandler": false,
       "negative": true,
       "fractions": true,
-      "staticValueKeys": ["center", "top", "right", "bottom", "left"]
+      "staticValueKeys": [
+        "center",
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ]
     },
     "border-spacing-x": {
       "domain": "source-inspected-functional-registration",
@@ -1809,7 +2075,13 @@
       "bareValueHandler": false,
       "negative": true,
       "fractions": true,
-      "staticValueKeys": ["center", "top", "right", "bottom", "left"]
+      "staticValueKeys": [
+        "center",
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ]
     },
     "border-spacing-y": {
       "domain": "source-inspected-functional-registration",
@@ -1824,7 +2096,13 @@
       "bareValueHandler": false,
       "negative": true,
       "fractions": true,
-      "staticValueKeys": ["center", "top", "right", "bottom", "left"]
+      "staticValueKeys": [
+        "center",
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ]
     },
     "border-start-end-radius": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -1868,7 +2146,10 @@
     },
     "brightness": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--brightness", "--backdrop-brightness"],
+      "themeKeys": [
+        "--brightness",
+        "--backdrop-brightness"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1876,19 +2157,27 @@
     },
     "col": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-column"],
+      "themeKeys": [
+        "--grid-column"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "col-end": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-column-end"],
+      "themeKeys": [
+        "--grid-column-end"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "col-span": {
       "domain": "source-inspected-functional-registration",
@@ -1896,35 +2185,54 @@
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["full"]
+      "staticValueKeys": [
+        "full"
+      ]
     },
     "col-start": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-column-start"],
+      "themeKeys": [
+        "--grid-column-start"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "columns": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--columns", "--container"],
+      "themeKeys": [
+        "--columns",
+        "--container"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "contain": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--leading", "--spacing", "--tracking"],
+      "themeKeys": [
+        "--leading",
+        "--spacing",
+        "--tracking"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "content": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--content"],
+      "themeKeys": [
+        "--content"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
@@ -1932,7 +2240,10 @@
     },
     "contrast": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--contrast", "--backdrop-contrast"],
+      "themeKeys": [
+        "--contrast",
+        "--backdrop-contrast"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1940,7 +2251,9 @@
     },
     "cursor": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--cursor"],
+      "themeKeys": [
+        "--cursor"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
@@ -1956,15 +2269,26 @@
     },
     "delay": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--transition-delay", "--transition-duration", "--ease"],
+      "themeKeys": [
+        "--transition-delay",
+        "--transition-duration",
+        "--ease"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["initial", "linear"]
+      "staticValueKeys": [
+        "initial",
+        "linear"
+      ]
     },
     "divide-x": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--default-border-width", "--divide-width", "--border-width"],
+      "themeKeys": [
+        "--default-border-width",
+        "--divide-width",
+        "--border-width"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1972,7 +2296,11 @@
     },
     "divide-y": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--default-border-width", "--divide-width", "--border-width"],
+      "themeKeys": [
+        "--default-border-width",
+        "--divide-width",
+        "--border-width"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -1996,11 +2324,16 @@
     },
     "ease": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--ease"],
+      "themeKeys": [
+        "--ease"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["initial", "linear"]
+      "staticValueKeys": [
+        "initial",
+        "linear"
+      ]
     },
     "fill": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -2068,7 +2401,11 @@
     },
     "gap": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--gap", "--spacing", "--space"],
+      "themeKeys": [
+        "--gap",
+        "--spacing",
+        "--space"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -2076,7 +2413,11 @@
     },
     "gap-x": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--gap", "--spacing", "--space"],
+      "themeKeys": [
+        "--gap",
+        "--spacing",
+        "--space"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -2084,7 +2425,11 @@
     },
     "gap-y": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--gap", "--spacing", "--space"],
+      "themeKeys": [
+        "--gap",
+        "--spacing",
+        "--space"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -2092,7 +2437,10 @@
     },
     "grayscale": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grayscale", "--backdrop-grayscale"],
+      "themeKeys": [
+        "--grayscale",
+        "--backdrop-grayscale"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -2100,19 +2448,29 @@
     },
     "grid-cols": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-template-columns"],
+      "themeKeys": [
+        "--grid-template-columns"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none", "subgrid"]
+      "staticValueKeys": [
+        "none",
+        "subgrid"
+      ]
     },
     "grid-rows": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-template-rows"],
+      "themeKeys": [
+        "--grid-template-rows"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none", "subgrid"]
+      "staticValueKeys": [
+        "none",
+        "subgrid"
+      ]
     },
     "grow": {
       "domain": "source-inspected-functional-registration",
@@ -2132,7 +2490,9 @@
     },
     "hue-rotate": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--hue-rotate"],
+      "themeKeys": [
+        "--hue-rotate"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
@@ -2140,7 +2500,10 @@
     },
     "indent": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--text-indent", "--spacing"],
+      "themeKeys": [
+        "--text-indent",
+        "--spacing"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -2228,7 +2591,10 @@
     },
     "invert": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--invert", "--backdrop-invert"],
+      "themeKeys": [
+        "--invert",
+        "--backdrop-invert"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -2236,11 +2602,16 @@
     },
     "leading": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--leading", "--spacing"],
+      "themeKeys": [
+        "--leading",
+        "--spacing"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "left": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -2252,27 +2623,41 @@
     },
     "line-clamp": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--line-clamp"],
+      "themeKeys": [
+        "--line-clamp"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "list": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--list-style-type"],
+      "themeKeys": [
+        "--list-style-type"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none", "disc", "decimal"]
+      "staticValueKeys": [
+        "none",
+        "disc",
+        "decimal"
+      ]
     },
     "list-image": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--list-style-image"],
+      "themeKeys": [
+        "--list-style-image"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "m": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -2492,15 +2877,25 @@
     },
     "object": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--object-position"],
+      "themeKeys": [
+        "--object-position"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["top", "bottom", "left", "right", "center"]
+      "staticValueKeys": [
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "center"
+      ]
     },
     "opacity": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--opacity"],
+      "themeKeys": [
+        "--opacity"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -2508,19 +2903,32 @@
     },
     "order": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--order"],
+      "themeKeys": [
+        "--order"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["first", "last"]
+      "staticValueKeys": [
+        "first",
+        "last"
+      ]
     },
     "origin": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--transform-origin"],
+      "themeKeys": [
+        "--transform-origin"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["center", "top", "right", "bottom", "left"]
+      "staticValueKeys": [
+        "center",
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ]
     },
     "outline": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -2532,7 +2940,10 @@
     },
     "outline-offset": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--outline-offset", "--opacity"],
+      "themeKeys": [
+        "--outline-offset",
+        "--opacity"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
@@ -2580,19 +2991,31 @@
     },
     "perspective": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--perspective"],
+      "themeKeys": [
+        "--perspective"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["none"]
+      "staticValueKeys": [
+        "none"
+      ]
     },
     "perspective-origin": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--perspective-origin"],
+      "themeKeys": [
+        "--perspective-origin"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["center", "top", "right", "bottom", "left"]
+      "staticValueKeys": [
+        "center",
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ]
     },
     "pl": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -2820,19 +3243,27 @@
     },
     "row": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-row"],
+      "themeKeys": [
+        "--grid-row"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "row-end": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-row-end"],
+      "themeKeys": [
+        "--grid-row-end"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "row-span": {
       "domain": "source-inspected-functional-registration",
@@ -2840,19 +3271,28 @@
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
-      "staticValueKeys": ["full"]
+      "staticValueKeys": [
+        "full"
+      ]
     },
     "row-start": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--grid-row-start"],
+      "themeKeys": [
+        "--grid-row-start"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "saturate": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--saturate", "--backdrop-saturate"],
+      "themeKeys": [
+        "--saturate",
+        "--backdrop-saturate"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -3068,7 +3508,10 @@
     },
     "sepia": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--sepia", "--backdrop-sepia"],
+      "themeKeys": [
+        "--sepia",
+        "--backdrop-sepia"
+      ],
       "bareValueHandler": true,
       "negative": false,
       "fractions": false,
@@ -3092,7 +3535,10 @@
     },
     "size": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--size", "--spacing"],
+      "themeKeys": [
+        "--size",
+        "--spacing"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": true,
@@ -3100,7 +3546,9 @@
     },
     "skew": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--skew"],
+      "themeKeys": [
+        "--skew"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
@@ -3108,7 +3556,9 @@
     },
     "skew-x": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--skew"],
+      "themeKeys": [
+        "--skew"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
@@ -3116,7 +3566,9 @@
     },
     "skew-y": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--skew"],
+      "themeKeys": [
+        "--skew"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
@@ -3124,7 +3576,10 @@
     },
     "space-x": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--space", "--spacing"],
+      "themeKeys": [
+        "--space",
+        "--spacing"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -3132,7 +3587,10 @@
     },
     "space-y": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--space", "--spacing"],
+      "themeKeys": [
+        "--space",
+        "--spacing"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -3180,7 +3638,9 @@
     },
     "tracking": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--tracking"],
+      "themeKeys": [
+        "--tracking"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": false,
@@ -3196,7 +3656,9 @@
     },
     "transition": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--transition-property"],
+      "themeKeys": [
+        "--transition-property"
+      ],
       "bareValueHandler": false,
       "negative": false,
       "fractions": false,
@@ -3204,7 +3666,10 @@
     },
     "translate": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--translate", "--spacing"],
+      "themeKeys": [
+        "--translate",
+        "--spacing"
+      ],
       "bareValueHandler": false,
       "negative": true,
       "fractions": true,
@@ -3228,11 +3693,15 @@
     },
     "underline-offset": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--text-underline-offset"],
+      "themeKeys": [
+        "--text-underline-offset"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "w": {
       "domain": "finite-loop-helper-registration-requires-review",
@@ -3252,11 +3721,15 @@
     },
     "z": {
       "domain": "source-inspected-functional-registration",
-      "themeKeys": ["--z-index"],
+      "themeKeys": [
+        "--z-index"
+      ],
       "bareValueHandler": true,
       "negative": true,
       "fractions": false,
-      "staticValueKeys": ["auto"]
+      "staticValueKeys": [
+        "auto"
+      ]
     },
     "zoom": {
       "domain": "source-inspected-functional-registration",
@@ -3751,7 +4224,11 @@
   ],
   "testExamples": {
     "mx-auto": {
-      "utilities.test.ts": [2054, 2117, 2129],
+      "utilities.test.ts": [
+        2054,
+        2117,
+        2129
+      ],
       "variants.test.ts": [],
       "compat/legacy-utilities.test.ts": []
     },
@@ -3761,22 +4238,49 @@
       "compat/legacy-utilities.test.ts": []
     },
     "table": {
-      "utilities.test.ts": [3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107],
+      "utilities.test.ts": [
+        3100,
+        3101,
+        3102,
+        3103,
+        3104,
+        3105,
+        3106,
+        3107
+      ],
       "variants.test.ts": [],
       "compat/legacy-utilities.test.ts": []
     },
     "appearance-none": {
-      "utilities.test.ts": [8663, 8669, 8677, 8679],
+      "utilities.test.ts": [
+        8663,
+        8669,
+        8677,
+        8679
+      ],
       "variants.test.ts": [],
       "compat/legacy-utilities.test.ts": []
     },
     "order-first": {
-      "utilities.test.ts": [1305, 1327, 1344, 1353, 1361, 1364, 1372, 1375],
+      "utilities.test.ts": [
+        1305,
+        1327,
+        1344,
+        1353,
+        1361,
+        1364,
+        1372,
+        1375
+      ],
       "variants.test.ts": [],
       "compat/legacy-utilities.test.ts": []
     },
     "basis-auto": {
-      "utilities.test.ts": [4906, 4928, 4950],
+      "utilities.test.ts": [
+        4906,
+        4928,
+        4950
+      ],
       "variants.test.ts": [],
       "compat/legacy-utilities.test.ts": []
     },
@@ -3786,7 +4290,16 @@
       "compat/legacy-utilities.test.ts": []
     },
     "sr-only": {
-      "utilities.test.ts": [8, 9, 11, 24, 27, 28, 30, 42],
+      "utilities.test.ts": [
+        8,
+        9,
+        11,
+        24,
+        27,
+        28,
+        30,
+        42
+      ],
       "variants.test.ts": [],
       "compat/legacy-utilities.test.ts": []
     },
@@ -3800,5 +4313,9 @@
     "utilities": 102,
     "variants": 11
   },
-  "testsInspected": ["utilities.test.ts", "variants.test.ts", "compat/legacy-utilities.test.ts"]
+  "testsInspected": [
+    "utilities.test.ts",
+    "variants.test.ts",
+    "compat/legacy-utilities.test.ts"
+  ]
 }

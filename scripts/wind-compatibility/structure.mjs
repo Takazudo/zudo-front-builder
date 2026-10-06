@@ -31,7 +31,7 @@ const contracts = {
     `@layer zw-tokens{:root{--zw-spacing-unit:.25rem;}}.p-4{${padding("1rem")}}`,
     ":root, :host{--spacing:0.25rem;}.p-4{padding:calc(var(--spacing) * 4);}",
   ],
-  "contents-gap": ["", ".contents{display:contents;}"],
+  "contents-gap": [".contents{display:contents;}", ".contents{display:contents;}"],
   "hover-block": [
     "@media (hover: hover){.hover\\:block:hover{display:block;}}",
     ".hover\\:block{&:hover{@media (hover: hover){display:block;}}}",

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "issue": 3831,
-  "profile": "wind-preset-free@1.2",
+  "profile": "wind-preset-free@1.3",
   "sourceArchiveSha256": "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   "sourceTagCommit": "056a1550721d4bf79ff732d5ab9414fa83f7064f",
   "sourceTag": "v4.3.2",
@@ -254,21 +254,43 @@
       "candidates": ["w-[17px]"],
       "engines": ["chromium"],
       "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-display",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "display",
+      "originalInput": "['block', 'inline-block', 'inline', 'flex', 'inline-flex', 'table', 'inline-table', 'table-caption', 'table-cell', 'table-column', 'table-column-group', 'table-footer-group', 'table-header-group', 'table-row-group', 'table-row', 'flow-root', 'grid', 'inline-grid', 'contents', 'list-item', 'hidden',]",
+      "adaptation": "Retain all 13 approved display statics from the upstream display test. Give each candidate a separate element and preserve valid table formatting contexts for table display roles so browser blockification cannot change computed values.",
+      "candidates": ["contents", "flow-root", "list-item", "table", "inline-table", "table-caption", "table-cell", "table-column", "table-column-group", "table-footer-group", "table-header-group", "table-row", "table-row-group"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-appearance",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "appearance",
+      "originalInput": "['appearance-none', 'appearance-auto']",
+      "adaptation": "Retain both approved appearance statics from the upstream appearance test. Use separate native input controls and assert each computed appearance value.",
+      "candidates": ["appearance-none", "appearance-auto"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
     }
   ],
   "counts": {
     "pilot": 15,
     "supplemental": 4,
     "nativeGuarantees": 18,
-    "upstreamCases": 17,
-    "upstreamProbes": 40,
+    "upstreamCases": 19,
+    "upstreamProbes": 55,
     "seededSpecimens": 10,
     "mutationControls": 5,
     "seededArbitraryValues": 6,
     "seededSourceStrings": 6
   },
   "sampling": {
-    "finiteStaticKeyword": "Covered members are enumerated in inventory.v1.json; this executable set is selected, not exhaustive over all 197 Wind entries.",
+    "finiteStaticKeyword": "Covered members are enumerated in inventory.v1.json; this executable set is selected, not exhaustive over all 212 Wind entries.",
     "openDomains": "Arbitrary values and source strings are sampled; no exhaustive claim.",
     "variantCombinations": "Selected single and relationship states are sampled; all possible chains are not covered."
   },
@@ -347,8 +369,8 @@
     },
     {
       "id": "contents-gap",
-      "disposition": "implementation-gap",
-      "reviewedDifferenceIds": []
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
     },
     {
       "id": "hover-block",
@@ -451,9 +473,11 @@
         "duplicate-reordered",
         "arbitrary-width-zero",
         "arbitrary-width-one",
-        "arbitrary-width-seventeen"
+        "arbitrary-width-seventeen",
+        "native-display",
+        "native-appearance"
       ],
-      "reviewedCount": 17,
+      "reviewedCount": 19,
       "reason": "Each side has a separately reviewed complete ordered CSS tree: Wind from catalog/selector/emit source, reference from pinned upstream compiler and original test adaptation. Every node, declaration, selector, condition and layer is fixed; any unlisted mutation fails."
     },
     {
