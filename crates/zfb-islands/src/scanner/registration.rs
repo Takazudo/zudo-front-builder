@@ -493,6 +493,13 @@ impl Visit for NestedBindings {
         }
         node.visit_children_with(self);
     }
+
+    fn visit_prop(&mut self, node: &Prop) {
+        if let Prop::Shorthand(ident) = node {
+            self.record_reference(ident);
+        }
+        node.visit_children_with(self);
+    }
 }
 
 type FunctionReturn = (Expr, Vec<Pat>);
@@ -1006,10 +1013,14 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         format!("{}:{line}:{column}", path.display())
     }
 
-    fn factory_failure(target: &str, reason: String) -> Value {
-        Value::Unsupported(format!(
+    fn factory_failure_reason(target: &str, reason: String) -> String {
+        format!(
             "target {target} has unsupported initializer: {reason}; see concepts/islands#boundary-discovery-and-migration"
-        ))
+        )
+    }
+
+    fn factory_failure(target: &str, reason: String) -> Value {
+        Value::Unsupported(Self::factory_failure_reason(target, reason))
     }
 
     fn resolve_factory_member(
@@ -1880,6 +1891,27 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                                         Prop::Shorthand(ident) => {
                                             let value = self.resolve_local(path, ident)?;
                                             if self.is_boundary_value(&value)? {
+                                                let factory = ident.to_id();
+                                                let target = self
+                                                    .nested_bindings(path)?
+                                                    .factory_members
+                                                    .iter()
+                                                    .filter(|(_, member)| member.factory == factory)
+                                                    .map(|(id, _)| id.0.to_string())
+                                                    .min();
+                                                if let Some(target) = target {
+                                                    let reason = Self::factory_failure_reason(
+                                                        &target,
+                                                        format!(
+                                                            "factory {} escapes as a value at {}",
+                                                            ident.sym,
+                                                            self.site_location(path, ident.span)
+                                                        ),
+                                                    );
+                                                    return Err(
+                                                        self.diagnostic(path, ident.span, reason)
+                                                    );
+                                                }
                                                 return Err(self.diagnostic(path, form.span(), "boundary wrapper escapes into an opaque object"));
                                             }
                                         }
@@ -3378,6 +3410,24 @@ mod tests {
         ).unwrap_err().to_string();
         assert!(
             error.contains("factory Create escapes as a value"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn ordinary_boundary_wrapper_shorthand_keeps_opaque_object_diagnostic() {
+        let error = scan(&[
+            ("pages/home.tsx", "import '../factory';"),
+            (
+                "factory.tsx",
+                "import { Island } from '@takazudo/zfb'; import { Counter } from './counter'; function Wrap() { return <Island><Counter /></Island>; } const stored = { Wrap };",
+            ),
+            ("counter.tsx", "'use client'; export function Counter() { return null; }"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("boundary wrapper escapes into an opaque object"),
             "{error}"
         );
     }
