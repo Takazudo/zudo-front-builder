@@ -1,5 +1,5 @@
-# Preparation only. Replace aa74db46b7cebcd379cebcc4585f80da1f13ab1c and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
-name: Temporary preset-free Wind harness probe
+# Preparation only. Replace 63c4f183a791d3b62a5e004000055736a87501ad and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
+name: Temporary Wind comparison and production shipping
 on:
   pull_request:
 permissions:
@@ -10,7 +10,7 @@ concurrency:
 jobs:
   harness:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: 1.99.0
       WIND_PINNED_SOURCE_ARCHIVE: /tmp/zfb-wind-reference-cache/response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: aa74db46b7cebcd379cebcc4585f80da1f13ab1c
+          ref: 63c4f183a791d3b62a5e004000055736a87501ad
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -31,13 +31,15 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          shared-key: wind-harness-pilot
+          prefix-key: v2-zfb
+          shared-key: workspace-all-targets
+          cache-on-failure: true
       - run: pnpm install --frozen-lockfile
       - name: Record exact source and environment
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = aa74db46b7cebcd379cebcc4585f80da1f13ab1c
+          test "$(git rev-parse HEAD)" = 63c4f183a791d3b62a5e004000055736a87501ad
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
@@ -63,6 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs 2>&1 | tee /tmp/wind-harness-evidence/node-contracts.log
+          cargo fmt --all -- --check
           cargo test --locked -p zudo-wind --test empty_token_contracts 2>&1 | tee /tmp/wind-harness-evidence/rust-empty-token.log
       - name: Build exact Wind adapter artifact
         id: wind_build
@@ -75,13 +78,47 @@ jobs:
           wind_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-harness-evidence/wind-build.json")).binaryPath')
           node scripts/wind-compatibility/reference-cli.mjs compare --plan /tmp/wind-harness-evidence/plan.json --assessment /tmp/wind-harness-evidence/assessment.json --cache /tmp/zfb-wind-reference-cache --wind-binary "$wind_binary" --wind-build-manifest /tmp/wind-harness-evidence/wind-build.json --output /tmp/wind-harness-evidence/comparison 2>&1 | tee /tmp/wind-harness-evidence/comparison.log
           node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("/tmp/wind-harness-evidence/comparison/comparison.json")); if(r.candidate.passing!==true || (r.accepted!==null && r.accepted.passing!==true)) throw Error("Comparison retained a failing required outcome; no admission"); if(r.admission!=="pending-independent-review-and-shipping-evidence") throw Error("Unexpected admission state")'
+      - name: Build authenticated current-source production CLI
+        id: production_build
+        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
+        run: node scripts/wind-compatibility/build-production.mjs /tmp/wind-shipping-evidence
+      - name: Execute actual production build fixture and retain its sidecar
+        env:
+          ZFB_WIND_REAL_BUILD_DIST: /tmp/wind-shipping-evidence/dist
+          ZFB_WIND_REAL_BUILD_EXECUTION: /tmp/wind-shipping-evidence/build-execution.json
+        run: |
+          set -euo pipefail
+          test -x crates/zfb/binaries/esbuild/esbuild
+          crates/zfb/binaries/esbuild/esbuild --version
+          cargo test --locked -p zfb --test wind_real_build_confirm_build -- --nocapture 2>&1 | tee /tmp/wind-shipping-evidence/rust-build-fixture.log
+          node tests/wind-real-build/dist-proof.mjs /tmp/wind-shipping-evidence/production-build.json /tmp/wind-shipping-evidence/dist /tmp/wind-shipping-evidence/build-execution.json /tmp/wind-shipping-evidence/dist-proof.json
+      - name: Exercise shipping CLI, live dev, request-time SSR and browser composition
+        run: |
+          set -euo pipefail
+          node tests/wind-compatibility/shipping/run.mjs --production-build /tmp/wind-shipping-evidence/production-build.json --comparison /tmp/wind-harness-evidence/comparison/comparison.json --plan /tmp/wind-harness-evidence/plan.json --dist /tmp/wind-shipping-evidence/dist --dist-proof /tmp/wind-shipping-evidence/dist-proof.json --reference-cache /tmp/zfb-wind-reference-cache --output /tmp/wind-shipping-evidence/shipping 2>&1 | tee /tmp/wind-shipping-evidence/shipping.log
+      - name: Verify existing real-build asset and composition browser contracts
+        env:
+          ZFB_WIND_REAL_BUILD_DIST: /tmp/wind-shipping-evidence/dist
+          ZFB_WIND_REAL_BUILD_PROOF: /tmp/wind-shipping-evidence/dist-proof.json
+        run: pnpm exec playwright test --config tests/wind-real-build/playwright.config.mjs
+      - name: Generate fresh docs previews from the same actual production binary
+        if: ${{ !cancelled() && steps.production_build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          production_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-shipping-evidence/production-build.json")).binaryPath')
+          node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary"
+          node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary" --check
+          mkdir -p /tmp/wind-shipping-evidence/generated-docs
+          cp -R docs/public/wind-examples /tmp/wind-shipping-evidence/generated-docs/
       - name: Preserve original evidence even on failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: preset-free-wind-harness-evidence
+          name: wind-comparison-shipping-evidence
           path: |
             /tmp/wind-harness-evidence/
             /tmp/zfb-wind-reference-cache/
+            /tmp/wind-shipping-evidence/
+            test-results/
           if-no-files-found: error
           retention-days: 7
