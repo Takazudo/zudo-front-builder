@@ -1,4 +1,4 @@
-# Preparation only. Pin e22d5f866943becfbb12a0c9bcfb0d4ffe16e368 to reviewed child source commit before use.
+# Preparation only. Pin 836bf52d53bd2b8a64d39e5d123de5b302c9b648 to reviewed child source commit before use.
 name: Temporary Wind native catalog export
 on:
   pull_request:
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: e22d5f866943becfbb12a0c9bcfb0d4ffe16e368
+          ref: 836bf52d53bd2b8a64d39e5d123de5b302c9b648
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: 1.99.0
@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-catalog-export
-          test "$(git rev-parse HEAD)" = e22d5f866943becfbb12a0c9bcfb0d4ffe16e368
+          test "$(git rev-parse HEAD)" = 836bf52d53bd2b8a64d39e5d123de5b302c9b648
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
