@@ -62,6 +62,7 @@
 
 pub mod authored_engine;
 pub mod css_imports;
+pub mod default_theme_vars;
 pub mod emitter;
 pub mod engine;
 pub mod engine_output;
@@ -77,6 +78,11 @@ pub mod wind_engine;
 pub use authored_engine::AuthoredCssEngine;
 pub use css_imports::{
     bundle_authored_css, bundle_authored_css_with_assets, resolve_css_imports, AuthoredCssBundle,
+};
+pub use default_theme_vars::{
+    scan_custom_property_declarations, scan_default_theme_var_references,
+    undeclared_default_theme_var_references, DefaultThemeVarReference,
+    TAILWIND_DEFAULT_THEME_VOCABULARY_VERSION,
 };
 pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::CssEngine;
