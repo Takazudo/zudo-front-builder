@@ -1,0 +1,219 @@
+# Tailwind release watch — explicitly invoked review-issue detector.
+#
+# This lane is dispatch-only. A schedule is a later repository-reviewed
+# decision tracked by #3822. If one is ever added, avoid the existing sibling
+# crons: Sat 04:17 / Wed 03:43 / Mon 07:17 / Thu 05:29 / Sun 05:37 UTC.
+#
+# Outcome matrix (main branch, dry_run=false):
+#   detector job success + rc 0            -> no review issue; green the operational tracker; stay silent
+#   detector rc 10 + review issue filed   -> green the operational tracker; notify that review is needed and filed
+#   detector rc 10 + filer failed         -> red the operational tracker; notify that filing failed
+#   detector rc 1                         -> file operational failure; notify operational failure
+#   detector died before writing rc       -> file operational failure; notify operational failure
+#   dry_run=true                          -> detector and report artifact only; skip filing, tracker, and notify
+#   off-main dispatch                     -> skip issue filing/tracker; notify only for rc 10 or a detector failure
+#
+# Detector/filer use only the built-in GITHUB_TOKEN (as GITHUB_TOKEN / GH_TOKEN).
+# The optional notify job uses the existing IFTTT_PROD_NOTIFY webhook exactly
+# like sibling lanes; it carries no consumer identifiers or other production
+# secrets. No step mutates Wind records or adopts a release.
+#
+# Pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA with the release in its trailing comment. To bump: resolve the new
+# tag's SHA via `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha`.
+
+name: Tailwind release watch
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Detect and retain the report without filing issues or notifying
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: tailwind-release-watch
+  # A cancelled create could leave a half-filed issue for the next run to repair.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  detector:
+    name: Detect Tailwind releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    outputs:
+      rc: ${{ steps.run_detector.outputs.rc }}
+      status: ${{ steps.run_detector.outputs.status }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Detect Tailwind release
+        id: run_detector
+        shell: bash
+        run: |
+          # Keep the detector's exit code separate from report rendering.
+          # The report lives in runner temp, outside the checkout.
+          set +e
+          node scripts/detect-tailwind-release.mjs detect --json > "$RUNNER_TEMP/report.json"
+          rc=$?
+          set -e
+          # Publish rc immediately so summary/rendering errors cannot erase it.
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          status=$(node -e 'try { process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).status ?? "unknown"); } catch { process.stdout.write("unknown"); }' "$RUNNER_TEMP/report.json")
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Tailwind release watch"
+            echo '```text'
+            node scripts/detect-tailwind-release.mjs --render "$RUNNER_TEMP/report.json" || echo "(report could not be rendered; see JSON below)"
+            echo '```'
+            echo "<details><summary>JSON report</summary>"
+            echo
+            echo '```json'
+            cat "$RUNNER_TEMP/report.json"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      # Keep artifact upload ahead of the fail-closed step: a deliberate rc 10
+      # must still retain the exact report consumed by the filing job.
+      - name: Upload detector report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tailwind-release-report
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: error
+
+      - name: Mark a non-clean detector outcome as failed
+        if: ${{ !cancelled() && (failure() || steps.run_detector.outputs.rc != '0') }}
+        env:
+          DETECTOR_RC: ${{ steps.run_detector.outputs.rc }}
+        run: |
+          if [ -n "$DETECTOR_RC" ] && [ "$DETECTOR_RC" != "0" ]; then
+            echo "::error::Tailwind release watch exited ${DETECTOR_RC}."
+          elif [ "$DETECTOR_RC" = "0" ]; then
+            echo "::error::Tailwind release watch failed after reporting exit code 0."
+          else
+            echo "::error::Tailwind release watch did not produce an exit code."
+          fi
+          exit 1
+
+  file-review-issue:
+    name: File Tailwind review issue
+    needs: [detector]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.detector.outputs.rc == '10' && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Download detector report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tailwind-release-report
+          path: ${{ runner.temp }}
+
+      - name: File or refresh the review issue
+        run: node scripts/file-wind-release-review.mjs --report "$RUNNER_TEMP/report.json" --apply yes
+
+  track-operational-failure:
+    name: Track operational failures
+    needs: [detector, file-review-issue]
+    # Partition on both result and rc: detector.result confirms the rc step ran
+    # because an unwritten output is absent, while rc distinguishes review
+    # filing (10) from detector/runner failures. Exit 10 intentionally makes
+    # detector red, so only a successful filer can green the tracker.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && inputs.dry_run != true && ((needs.detector.result != 'success' && needs.detector.outputs.rc != '10') || needs.file-review-issue.result == 'failure' || (needs.detector.result == 'success' && needs.detector.outputs.rc == '0') || (needs.detector.outputs.rc == '10' && needs.file-review-issue.result == 'success')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: File operational failure
+        if: ${{ (needs.detector.result != 'success' && needs.detector.outputs.rc != '10') || needs.file-review-issue.result == 'failure' }}
+        env:
+          LEG: >-
+            operational failure; the Tailwind release detector or review-issue
+            filing did not complete. See the run summary for the report and details.
+        run: bash scripts/file-exam-issue.sh "Tailwind release watch"
+
+      - name: Close operational tracker after a clean outcome
+        if: ${{ (needs.detector.result == 'success' && needs.detector.outputs.rc == '0') || (needs.detector.outputs.rc == '10' && needs.file-review-issue.result == 'success') }}
+        run: bash scripts/file-exam-issue.sh "Tailwind release watch" --green
+
+  notify:
+    name: Notify via IFTTT when review or failure needs attention
+    needs: [detector, file-review-issue]
+    if: ${{ !cancelled() && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          DETECTOR_RC: ${{ needs.detector.outputs.rc }}
+          DETECTOR_RESULT: ${{ needs.detector.result }}
+          FILER_RESULT: ${{ needs.file-review-issue.result }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          MESSAGE=""
+          if [ "$DETECTOR_RC" = "10" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              MESSAGE="review needed; issue filing is gated to main"
+            elif [ "$FILER_RESULT" = "success" ]; then
+              MESSAGE="review needed and filed"
+            else
+              MESSAGE="review needed but filing failed"
+            fi
+          elif [ "$DETECTOR_RESULT" != "success" ] || [ "$DETECTOR_RC" != "0" ]; then
+            MESSAGE="operational failure"
+          fi
+
+          if [ -z "$MESSAGE" ]; then
+            echo "No review or detector failure — skipping notification."
+            exit 0
+          fi
+
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{\"value1\": \"Tailwind release watch: ${MESSAGE}\", \"value2\": \"optional dispatch-only release detector\", \"value3\": \"${RUN_URL}\"}" \
+            || echo "::warning::IFTTT notification failed"
