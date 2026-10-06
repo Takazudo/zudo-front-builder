@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import {
   browserIdentity,
@@ -28,6 +28,7 @@ import {
   sha256,
 } from "../../../scripts/wind-compatibility/reference.mjs";
 import { verifyDistProof } from "../../wind-real-build/dist-proof.mjs";
+import { fixtureCopyFilter } from "./fixture-copy.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((pairs, value, index, all) => {
@@ -199,7 +200,7 @@ async function stopped(child) {
 
 async function cssPass(project, id) {
   const outputCss = join(project, "generated.css");
-  runBinary(project, [
+  const warmArgs = [
     "css",
     "--input",
     "entry.css",
@@ -207,16 +208,15 @@ async function cssPass(project, id) {
     outputCss,
     "--project-root",
     project,
-  ]);
+  ];
+  const warmStdout = runBinary(project, warmArgs);
   const css = await readFile(outputCss);
   const fresh = join(temp, `clean-${id}`);
   await cp(project, fresh, {
     recursive: true,
-    filter: (path) =>
-      !["generated.css", "node-free.css", "dist", ".zfb", ".zfb-build"].includes(basename(path)) &&
-      !basename(path).startsWith(".zfb-dev-"),
+    filter: fixtureCopyFilter(project, { excludeCssOutputs: true }),
   });
-  runBinary(fresh, [
+  const cleanArgs = [
     "css",
     "--input",
     "entry.css",
@@ -224,9 +224,56 @@ async function cssPass(project, id) {
     "generated.css",
     "--project-root",
     fresh,
-  ]);
-  if (!css.equals(await readFile(join(fresh, "generated.css"))))
-    throw Error(`Warm CLI CSS differs from clean same-mode output: ${id}`);
+  ];
+  const cleanStdout = runBinary(fresh, cleanArgs);
+  const cleanCss = await readFile(join(fresh, "generated.css"));
+  if (!css.equals(cleanCss)) {
+    const diagnosticDir = join(output, `failure-${id}`);
+    await mkdir(diagnosticDir, { recursive: true });
+    await cp(project, join(diagnosticDir, "warm-project"), { recursive: true });
+    await cp(fresh, join(diagnosticDir, "clean-project"), { recursive: true });
+    const auditPlan = (root) => {
+      try {
+        return runBinary(root, ["wind", "audit", "--plan", "standalone", "--project-root", root]);
+      } catch (error) {
+        return `Diagnostic audit failed: ${error}\n`;
+      }
+    };
+    const warmPlan = auditPlan(project);
+    const cleanPlan = auditPlan(fresh);
+    await writeFile(join(diagnosticDir, "warm-plan.txt"), warmPlan);
+    await writeFile(join(diagnosticDir, "clean-plan.txt"), cleanPlan);
+    const firstDifference = css.findIndex((byte, index) => byte !== cleanCss[index]);
+    const diagnostic = {
+      caseId: id,
+      warm: {
+        command: warmArgs.map((arg) => (arg === project ? "<warm-project>" : arg)),
+        stdout: warmStdout,
+        cssSha256: hash(css),
+        cssBytes: css.length,
+      },
+      clean: {
+        command: cleanArgs.map((arg) => (arg === fresh ? "<clean-project>" : arg)),
+        stdout: cleanStdout,
+        cssSha256: hash(cleanCss),
+        cssBytes: cleanCss.length,
+      },
+      firstDifference:
+        firstDifference < 0 ? Math.min(css.length, cleanCss.length) : firstDifference,
+      warmInputDigest: await treeDigest(join(diagnosticDir, "warm-project")),
+      cleanInputDigest: await treeDigest(join(diagnosticDir, "clean-project")),
+    };
+    await writeFile(
+      join(diagnosticDir, "comparison.json"),
+      JSON.stringify(diagnostic, null, 2) + "\n",
+    );
+    throw Error(
+      `Warm CLI CSS differs from clean same-mode output: ${id}; ` +
+        `diagnostic=${diagnosticDir}/comparison.json ` +
+        `warm=${diagnostic.warm.cssSha256} clean=${diagnostic.clean.cssSha256} ` +
+        `firstDifference=${diagnostic.firstDifference}`,
+    );
+  }
   const requirement = manifest.required.find((row) => row.id === id);
   const text = css.toString("utf8");
   const observed = {
@@ -608,9 +655,7 @@ async function devCases() {
   const project = join(temp, "request-time");
   await cp(fromRoot("crates/zfb/tests/fixtures/embedded-host-request-time"), project, {
     recursive: true,
-    filter: (path) =>
-      !["dist", ".zfb", ".zfb-build"].includes(basename(path)) &&
-      !basename(path).startsWith(".zfb-dev-"),
+    filter: fixtureCopyFilter(fromRoot("crates/zfb/tests/fixtures/embedded-host-request-time")),
   });
   const pagePath = join(project, "pages/wind-raw.tsx");
   const original = await readFile(pagePath, "utf8");
@@ -705,9 +750,7 @@ async function devCases() {
     const cleanProject = join(temp, "request-time-clean");
     await cp(project, cleanProject, {
       recursive: true,
-      filter: (path) =>
-        !["dist", ".zfb", ".zfb-build"].includes(basename(path)) &&
-        !basename(path).startsWith(".zfb-dev-"),
+      filter: fixtureCopyFilter(project),
     });
     const clean = await startDev(cleanProject);
     let cleanFinalCss;
