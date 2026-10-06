@@ -32747,7 +32747,7 @@
       "implementation": "not-established",
       "disposition": "native-css-review-candidate",
       "semanticDifference": null,
-      "alternative": "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses.",
+      "alternative": "Author table-layout: auto in CSS and reserve the complete class with wind.authoredClasses.",
       "trackingIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3812",
       "evidence": {
         "status": "source-inspected",
@@ -32953,7 +32953,7 @@
       "implementation": "not-established",
       "disposition": "native-css-review-candidate",
       "semanticDifference": null,
-      "alternative": "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses.",
+      "alternative": "Author table-layout: fixed in CSS and reserve the complete class with wind.authoredClasses.",
       "trackingIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3812",
       "evidence": {
         "status": "source-inspected",
@@ -40343,9 +40343,9 @@
         }
       },
       "windMapping": {
-        "kind": "root-only-unverified",
-        "catalogId": "v1.basis",
-        "wind": "basis-<value>"
+        "kind": "bounded-subset",
+        "catalogIds": ["v1.basis"],
+        "wind": "basis-auto | basis-full | basis-px | basis-0 | basis-min | basis-max | basis-fit | basis-content | basis-N/D (N,D: 1..1000000)"
       },
       "configurationRequirement": "Wind supported subset: auto, full, px, 0, min, max, fit, content, and positive integer fractions with parts 1..1000000. Retained exclusions: nonzero numeric scale, named tokens, arbitrary values, and invalid fraction parts. No token configuration expands this native subset.",
       "implementation": "bounded-native-subset-source-inspected",
@@ -46230,9 +46230,9 @@
         }
       },
       "windMapping": {
-        "kind": "root-only-unverified",
-        "catalogId": "v1.order",
-        "wind": "order-<value>"
+        "kind": "bounded-subset",
+        "catalogIds": ["v1.order"],
+        "wind": "order-first | order-last | order-none | order-N | -order-N (N: 0..2147483647)"
       },
       "configurationRequirement": "Wind supported subset: first, last, none, and ASCII integer 0..2147483647 with optional negative numeric form. Retained exclusions: arbitrary values, custom properties, named tokens, and noninteger suffixes. No token configuration expands this native subset.",
       "implementation": "bounded-native-subset-source-inspected",

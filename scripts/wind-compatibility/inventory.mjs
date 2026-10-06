@@ -317,6 +317,8 @@ const partialNative = Object.freeze({
       "first, last, none, and ASCII integer 0..2147483647 with optional negative numeric form",
     retained: "arbitrary values, custom properties, named tokens, and noninteger suffixes",
     alternative: "Author order in CSS for retained forms.",
+    catalogIds: ["v1.order"],
+    windSyntax: "order-first | order-last | order-none | order-N | -order-N (N: 0..2147483647)",
   },
   basis: {
     supported:
@@ -324,17 +326,24 @@ const partialNative = Object.freeze({
     retained: "nonzero numeric scale, named tokens, arbitrary values, and invalid fraction parts",
     alternative:
       "Author flex-basis in CSS for retained forms, optionally using configured --zw-spacing-* or --zw-size-* variables.",
+    catalogIds: ["v1.basis"],
+    windSyntax:
+      "basis-auto | basis-full | basis-px | basis-0 | basis-min | basis-max | basis-fit | basis-content | basis-N/D (N,D: 1..1000000)",
   },
   fill: {
     supported: "exact fill-current and fill-none",
     retained: "named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs",
     alternative: "Author fill in CSS for retained forms.",
+    catalogIds: ["v1.fill-current", "v1.fill-none"],
+    windSyntax: "fill-current | fill-none",
   },
   stroke: {
     supported: "exact stroke-current and stroke-none",
     retained:
       "named/transparent/inherit colors, opacity modifiers, arbitrary values, URLs and stroke-width",
     alternative: "Author stroke or stroke-width in CSS for retained forms.",
+    catalogIds: ["v1.stroke-current", "v1.stroke-none"],
+    windSyntax: "stroke-current | stroke-none",
   },
 });
 function windExact(name, catalog) {
@@ -485,14 +494,10 @@ export function makeInventory(
       variant ??
       (exact
         ? { kind: "exact-catalog", catalogId: exact.id, wind: name }
-        : family
-          ? { kind: "root-only-unverified", catalogId: family.id, wind: `${name}-<value>` }
-          : partial && ["fill", "stroke"].includes(name)
-            ? {
-                kind: "bounded-subset",
-                catalogIds: [`v1.${name}-current`, `v1.${name}-none`],
-                wind: `${name}-current | ${name}-none`,
-              }
+        : partial
+          ? { kind: "bounded-subset", catalogIds: partial.catalogIds, wind: partial.windSyntax }
+          : family
+            ? { kind: "root-only-unverified", catalogId: family.id, wind: `${name}-<value>` }
             : null);
     return {
       id,
@@ -553,11 +558,15 @@ export function makeInventory(
         : axisDifference,
       alternative: exact
         ? null
-        : partial
-          ? partial.alternative
-          : candidate
-            ? "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses."
-            : null,
+        : name === "table-auto"
+          ? "Author table-layout: auto in CSS and reserve the complete class with wind.authoredClasses."
+          : name === "table-fixed"
+            ? "Author table-layout: fixed in CSS and reserve the complete class with wind.authoredClasses."
+            : partial
+              ? partial.alternative
+              : candidate
+                ? "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses."
+                : null,
       trackingIssue: exact ? null : tracking(name),
       evidence: sourceEvidence(windSha, catalog, profile, upstream),
     };
@@ -919,9 +928,9 @@ export function validateInventory(
     if (
       row.windMapping?.kind === "bounded-subset" &&
       (!partialNative[row.upstream.name] ||
-        !["fill", "stroke"].includes(row.upstream.name) ||
         JSON.stringify(row.windMapping.catalogIds) !==
-          JSON.stringify([`v1.${row.upstream.name}-current`, `v1.${row.upstream.name}-none`]) ||
+          JSON.stringify(partialNative[row.upstream.name].catalogIds) ||
+        row.windMapping.wind !== partialNative[row.upstream.name].windSyntax ||
         row.windMapping.catalogIds.some((id) => !catalogIds.has(id)))
     )
       fail(`Incorrect bounded subset mapping ${row.id}`);

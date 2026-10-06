@@ -246,6 +246,47 @@ test("every runtime static keyword intersection has its exact Wind catalog mappi
     );
 });
 
+test("partial native patterns and retained table layout stay bounded", () => {
+  for (const [name, ids] of Object.entries({
+    order: ["v1.order"],
+    basis: ["v1.basis"],
+    fill: ["v1.fill-current", "v1.fill-none"],
+    stroke: ["v1.stroke-current", "v1.stroke-none"],
+  })) {
+    const row = inventory.rows.find((item) => item.id === `utility-pattern:${name}`);
+    assert.equal(row.windMapping.kind, "bounded-subset", name);
+    assert.deepEqual(row.windMapping.catalogIds, ids, name);
+    assert.equal(row.disposition, "partial-native-adoption-unverified", name);
+    assert.match(row.configurationRequirement, /Retained exclusions:/, name);
+    assert.match(row.trackingIssue, /\/issues\/3812$/, name);
+    const mutated = copy();
+    mutated.rows.find((item) => item.id === row.id).windMapping.wind = `${name}-<value>`;
+    assert.throws(
+      () =>
+        validateInventory(
+          mutated,
+          upstream,
+          catalog,
+          profile,
+          variantSource,
+          docsEvidence,
+          runtime,
+        ),
+      /Incorrect bounded subset mapping/,
+      name,
+    );
+  }
+  for (const [name, value] of [
+    ["table-auto", "auto"],
+    ["table-fixed", "fixed"],
+  ]) {
+    const row = inventory.rows.find((item) => item.id === `utility-static:${name}`);
+    assert.match(row.alternative, new RegExp(`table-layout: ${value}`));
+    assert.match(row.alternative, /wind\.authoredClasses/);
+    assert.match(row.trackingIssue, /\/issues\/3812$/);
+  }
+});
+
 test("related logical and physical axis cases remain explicit reviewed differences", () => {
   for (const name of [
     "mx-auto",
