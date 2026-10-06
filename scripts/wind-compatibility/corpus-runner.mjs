@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -46,10 +46,9 @@ import { loadReference, treeDigest, verifyWindBuild } from "./differential-runne
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { parseCssStructure } from "./structure.mjs";
 import { currentCorpusIdentity } from "./corpus-identity.mjs";
+import { verifyUpstreamProvenance } from "./corpus-provenance.mjs";
 
 const corpusRoot = fromRoot("tests/wind-compatibility/corpus");
-const archiveName = "response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3";
-const sourcePrefix = "tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/";
 
 function options(argv) {
   const result = { cache: "/tmp/zfb-wind-reference-cache", engine: "chromium" };
@@ -67,36 +66,6 @@ function options(argv) {
   if (result["assessment-mode"] !== undefined && result["assessment-mode"] !== "yes")
     throw Error("--assessment-mode must be yes when supplied");
   return result;
-}
-
-async function provenance(manifest, cache) {
-  const archive = resolve(cache, archiveName);
-  const bytes = await readFile(archive);
-  if (sha256(bytes) !== manifest.sourceArchiveSha256)
-    throw Error("Upstream source archive changed");
-  for (const row of manifest.upstreamCases) {
-    const member = sourcePrefix + row.upstreamPath;
-    const source = execFileSync("tar", ["-xOzf", archive, member], {
-      encoding: "utf8",
-      maxBuffer: 12 * 1024 * 1024,
-    });
-    const anchor = `test('${row.upstreamTest}'`;
-    const start = source.indexOf(anchor);
-    if (start < 0) throw Error(`Upstream test absent: ${row.id}`);
-    const next = source.indexOf("\ntest('", start + anchor.length);
-    const block = source.slice(start, next < 0 ? undefined : next);
-    const compact = (value) => value.replace(/\s+/g, "");
-    if (!compact(block).includes(compact(row.originalInput)))
-      throw Error(`Upstream original input drift: ${row.id}`);
-  }
-  const license = execFileSync("tar", ["-xOzf", archive, sourcePrefix + "LICENSE"]);
-  if (sha256(license) !== sha256(await readFile(resolve(corpusRoot, "LICENSE.tailwindcss"))))
-    throw Error("Upstream license copy changed");
-  return {
-    sourceArchiveSha256: sha256(bytes),
-    sourceTagCommit: manifest.sourceTagCommit,
-    packageLink: manifest.sourceToPackageLink,
-  };
 }
 
 function theme(configuration, row) {
@@ -1043,7 +1012,7 @@ async function main(argv) {
     .sort();
   if (digest(actualDirs) !== digest(upstream.caseIds.toSorted()))
     throw Error("Upstream fixture import skipped or unlisted");
-  const source = await provenance(manifest, args.cache);
+  const source = await verifyUpstreamProvenance(manifest, args.cache);
   const windBuild = await verifyWindBuild(args["wind-binary"], args["wind-build-manifest"]);
   const reference = await loadReference(args.cache, referenceSelection);
   await assertNativeReferenceBoundaries(reference);

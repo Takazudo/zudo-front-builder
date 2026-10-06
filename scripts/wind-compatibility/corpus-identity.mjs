@@ -10,10 +10,12 @@ const adapterPaths = [
   "corpus-structure.mjs",
   "corpus-supplemental.mjs",
   "corpus-pilot.mjs",
+  "corpus-provenance.mjs",
   "corpus-identity.mjs",
   "browser-adapter.mjs",
   "differential-runner.mjs",
   "differential-core.mjs",
+  "spec-identity.mjs",
   "structure.mjs",
   "reference.mjs",
   "reference-module-graph.mjs",
@@ -57,7 +59,12 @@ export async function currentCorpusIdentity({
     inventoryDigest: sha256(await readFile(at("tests/wind-compatibility/inventory.v1.json"))),
     catalogDigest: sha256(await readFile(at("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json"))),
     sourceInputDigest: digest(
-      manifest.upstreamCases.map((row) => [row.id, row.originalInput, row.candidates]),
+      manifest.upstreamCases.map((row) => [
+        row.id,
+        row.originalInput,
+        row.provenanceAnchors ?? [],
+        row.candidates,
+      ]),
     ),
     configurationDigest: digest(
       manifest.upstreamCases.map((row) => [
