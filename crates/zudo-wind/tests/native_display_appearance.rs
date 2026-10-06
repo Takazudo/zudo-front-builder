@@ -234,11 +234,10 @@ fn valid_project_tokens_do_not_change_the_new_static_values() {
         source("contents", SourcePositionKind::Class),
     );
     let mut configured = WindConfig::default();
-    configured.tokens.colors = BTreeMap::from(
-        ["first", "last", "content", "min", "max", "fit"]
-            .into_iter()
-            .map(|name| (name.into(), "#123456".into())),
-    );
+    configured.tokens.colors = ["first", "last", "content", "min", "max", "fit"]
+        .into_iter()
+        .map(|name| (name.into(), "#123456".into()))
+        .collect();
     configured.tokens.spacing = BTreeMap::from([
         ("first".into(), "17px".into()),
         ("last".into(), "19px".into()),
