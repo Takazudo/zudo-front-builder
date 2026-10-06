@@ -344,10 +344,9 @@ async function cssPass(project, id) {
       }
       const response = await page.request.get(`${origin}/style.css`);
       const served = await response.body();
-      const configRaw =
-        id === "token-change"
-          ? await save(id, "config.json", await readFile(join(project, "zfb.config.json")))
-          : null;
+      const configRaw = ["token-change", "token-removal"].includes(id)
+        ? await save(id, "config.json", await readFile(join(project, "zfb.config.json")))
+        : null;
       await record(
         id,
         css,

@@ -39,6 +39,17 @@ export function assertShippingTokenColor(css, token, expectedColor) {
   if (hexColorToRgb(declarations[0].value) !== expectedColor)
     throw Error(`Shipping token color differs from contract: ${token}`);
 }
+
+function assertShippingTokenRemovedFromConfig(config, token) {
+  const colors = config?.wind?.tokens?.colors;
+  if (
+    !colors ||
+    typeof colors !== "object" ||
+    Array.isArray(colors) ||
+    Object.hasOwn(colors, token)
+  )
+    throw Error(`Shipping removed token still present or config invalid: ${token}`);
+}
 const requiredMechanisms = [
   "source-add",
   "source-edit",
@@ -370,6 +381,8 @@ export async function validateShippingRawCase(result, requirement, output, repor
           throw Error(`Dev token config differs from contract: ${step.id}`);
         assertShippingTokenColor(stepCss.toString(), "shipping", expectedStep.backgroundColor);
       }
+      if (step.id === "token-removal")
+        assertShippingTokenRemovedFromConfig(await readJson(configPath), "transient");
       previousInputDigest = step.inputDigest;
     }
     if (result.steps.at(-1).rawCss.sha256 !== result.raw.servedCss.sha256)
@@ -387,19 +400,25 @@ export async function validateShippingRawCase(result, requirement, output, repor
     )
       throw Error(`Shipping CSS selector/token facts changed: ${result.id}`);
   }
-  if (result.id === "token-change") {
+  if (result.id === "token-change" || result.id === "token-removal") {
     const rawConfig = result.raw.config;
     if (!rawConfig?.path || !/^[0-9a-f]{64}$/.test(rawConfig.sha256 ?? ""))
-      throw Error("Shipping token-change config evidence missing");
+      throw Error(`Shipping ${result.id} config evidence missing`);
     const configPath = await outsideCheckout(resolve(output, rawConfig.path));
     if (
       !configPath.startsWith(`${output}/`) ||
-      sha256(await readFile(configPath)) !== rawConfig.sha256 ||
-      hexColorToRgb((await readJson(configPath)).wind?.tokens?.colors?.brand) !==
-        requirement.expectedObservation.backgroundColor
+      sha256(await readFile(configPath)) !== rawConfig.sha256
     )
-      throw Error("Shipping token-change config differs from contract");
-    assertShippingTokenColor(css, "brand", requirement.expectedObservation.backgroundColor);
+      throw Error(`Shipping ${result.id} config evidence changed`);
+    const config = await readJson(configPath);
+    if (result.id === "token-change") {
+      if (
+        hexColorToRgb(config.wind?.tokens?.colors?.brand) !==
+        requirement.expectedObservation.backgroundColor
+      )
+        throw Error("Shipping token-change config differs from contract");
+      assertShippingTokenColor(css, "brand", requirement.expectedObservation.backgroundColor);
+    } else assertShippingTokenRemovedFromConfig(config, "transient");
   }
   if (requirement.screenshotRequired) {
     const expectedViewport =

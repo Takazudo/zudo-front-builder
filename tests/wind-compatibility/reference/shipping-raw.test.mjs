@@ -200,3 +200,57 @@ test("token-change replay rejects stale CSS even with rehashed raw files and for
     await validateShippingRawCase(result, requirement, output, {});
   });
 });
+
+test("token-removal replay rejects a retained config token despite rehashed passing CSS", async () => {
+  await withOutput(async (output, save) => {
+    const requirement = {
+      mode: "cli-css-warm",
+      screenshotRequired: false,
+      expectedObservation: {
+        present: [".bg-brand"],
+        absent: [".text-transient", "--zw-color-transient"],
+      },
+    };
+    const css = ".bg-brand { background-color: #369; }";
+    const generatedCss = await save("generated.css", css);
+    const servedCss = await save("served.css", css);
+    const result = {
+      id: "token-removal",
+      engine: "chromium",
+      outcome: "passed",
+      raw: {
+        generatedCss,
+        servedCss,
+        screenshot: null,
+        observation: await save(
+          "observation.json",
+          JSON.stringify({
+            caseId: "token-removal",
+            engine: "chromium",
+            observed: requirement.expectedObservation,
+            cssResponse: {
+              status: 200,
+              contentType: "text/css; charset=utf-8",
+              sha256: servedCss.sha256,
+            },
+          }),
+        ),
+        config: await save(
+          "config.json",
+          JSON.stringify({
+            wind: { tokens: { colors: { brand: "#336699", transient: "#883344" } } },
+          }),
+        ),
+      },
+    };
+    await assert.rejects(
+      validateShippingRawCase(result, requirement, output, {}),
+      /removed token still present/,
+    );
+    result.raw.config = await save(
+      "config.json",
+      JSON.stringify({ wind: { tokens: { colors: { brand: "#336699" } } } }),
+    );
+    await validateShippingRawCase(result, requirement, output, {});
+  });
+});
