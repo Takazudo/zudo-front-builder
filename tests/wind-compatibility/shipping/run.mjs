@@ -19,6 +19,7 @@ import { testedInputIdentity } from "../../../scripts/wind-compatibility/referen
 import {
   validateShippingEvidence,
   shippingManifestPath,
+  validShippingCssResponse,
 } from "../../../scripts/wind-compatibility/reference-shipping.mjs";
 import {
   digest,
@@ -131,7 +132,7 @@ async function record(id, generatedCss, servedCss, observed, response, screensho
     (generatedCss && (!generatedCss.length || !generatedCss.equals(servedCss)))
   )
     throw Error(`Missing or mismatched generated/served CSS: ${id}`);
-  if (response.status !== 200 || response.contentType !== "text/css; charset=utf-8")
+  if (!validShippingCssResponse(response))
     throw Error(`CSS HTTP response invalid: ${id}: ${JSON.stringify(response)}`);
   if (digest(observed) !== digest(requirement.expectedObservation))
     throw Error(`Shipping observation failed: ${id}: ${JSON.stringify(observed)}`);
@@ -189,7 +190,9 @@ async function computedBackground(css, probeClass) {
       const page = await browser.newPage();
       try {
         await page.goto(origin, { waitUntil: "load" });
-        return page.locator("#probe").evaluate((node) => getComputedStyle(node).backgroundColor);
+        return await page
+          .locator("#probe")
+          .evaluate((node) => getComputedStyle(node).backgroundColor);
       } finally {
         await page.close();
       }
@@ -659,8 +662,12 @@ async function devCss(origin, present, absent, label, expectedBackground = null)
       const css = Buffer.from(await response.arrayBuffer());
       lastCss = css;
       const text = css.toString("utf8");
+      const cssResponse = {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+      };
       if (
-        response.status === 200 &&
+        validShippingCssResponse(cssResponse) &&
         present.every((needle) => text.includes(needle)) &&
         absent.every((needle) => !text.includes(needle))
       ) {
@@ -675,10 +682,10 @@ async function devCss(origin, present, absent, label, expectedBackground = null)
         return {
           css,
           backgroundColor,
-          response: { status: response.status, contentType: response.headers.get("content-type") },
+          response: cssResponse,
         };
       }
-      last = `HTTP ${response.status}: ${text.slice(0, 2000)}`;
+      last = `HTTP ${response.status} ${cssResponse.contentType}: ${text.slice(0, 2000)}`;
     } catch (error) {
       last = String(error);
     }

@@ -5805,6 +5805,15 @@ impl DevRenderInner {
     fn note_table_swap(&self, vanished: &[PathBuf]) {
         let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
         stale.generation += 1;
+        // A cold lazy route may not have published any content dependencies
+        // when this tick selected its pages. It still needs the new host:
+        // invalidate every outstanding claim, including routes outside the
+        // selected fan-out, so an old request cannot publish and clear it
+        // after the swap (#3880). Fresh routes remain untouched.
+        let generation = stale.generation;
+        for recorded in stale.entries.values_mut() {
+            *recorded = generation;
+        }
         if !vanished.is_empty() {
             let vanished: HashSet<&PathBuf> = vanished.iter().collect();
             stale.entries.retain(|path, _| !vanished.contains(path));
@@ -18338,6 +18347,25 @@ mod tests {
             }
 
             #[test]
+            fn table_swap_refreshes_pending_claims_without_staling_fresh_routes() {
+                let inner = bare_inner();
+                inner.mark_stale([out("index.html"), out("fresh.html")]);
+                inner.clear_stale(&[out("fresh.html")]);
+                let old = inner.claim(Path::new("index.html")).unwrap();
+                inner.take_tick_stale();
+
+                inner.note_table_swap(&[]);
+
+                assert!(!inner.claim_is_current(&old));
+                assert!(!inner.clear_if_current(&old));
+                let current = inner.claim(Path::new("index.html")).unwrap();
+                assert!(inner.claim_is_current(&current));
+                assert!(current.generation > old.generation);
+                assert!(inner.claim(Path::new("fresh.html")).is_none());
+                assert!(inner.take_tick_stale().is_empty());
+            }
+
+            #[test]
             fn take_tick_stale_drains_once_sorted() {
                 let inner = bare_inner();
                 inner.mark_stale([out("b.html"), out("a.html"), out("b.html")]);
@@ -19153,6 +19181,73 @@ mod tests {
     mod content_provenance {
         use super::*;
         use crate::render_pipeline::ResolvedRouteParams;
+
+        /// #3880: a provenance failure can happen after the removal planner
+        /// captured its precise consumers. Writing the response must not retire
+        /// the cold index's only remaining repair obligation in that ordering.
+        #[test]
+        fn lazy_request_with_failed_provenance_keeps_its_repair_claim() {
+            use crate::lazy_render_adapter::{LazyRenderAdapter, LazyRenderOutcome};
+            use zfb_build::renderer::HttpResponseLike;
+
+            let html_root = tempfile::tempdir().unwrap();
+            let renderer = start(RendererStartInput {
+                bundle_path: PathBuf::from("unused-stub.mjs"),
+                sourcemap_path: PathBuf::from("unused-stub.mjs.map"),
+                backend: Backend::Stub {
+                    handler: Arc::new(|_| HttpResponseLike {
+                        status: 200,
+                        content_type: "text/html".into(),
+                        headers: Vec::new(),
+                        body: b"<html><body>fallback</body></html>".to_vec(),
+                    }),
+                },
+                request_timeout: None,
+            })
+            .unwrap();
+            let session = stub_session_for_adapter_tests(
+                html_root.path().to_path_buf(),
+                vec![(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![route_entry("/", "index.html", "/", None).entry],
+                )],
+                Arc::new(Mutex::new(Some(renderer))),
+                true,
+            );
+            // Exercise the real reconciliation error path: this stub can
+            // render documents but cannot drain the V8 provenance endpoint.
+            session.begin_content_trace("test-trace".into());
+            session.inner.content_trace.lock().unwrap().boot_complete = true;
+            assert!(session.reconcile_content_provenance().is_err());
+            session.mark_routes_stale([PathBuf::from("index.html")]);
+            let pipeline = DevAssetPipeline::new();
+            let adapter = LazyRenderAdapter::new(
+                session.clone(),
+                pipeline.request_writer(),
+                html_root.path().to_path_buf(),
+                InjectedRouteSet::default(),
+            );
+
+            for written in [true, false] {
+                assert_eq!(
+                    adapter.render_stale_route("/"),
+                    LazyRenderOutcome::Rendered { written }
+                );
+                assert!(session.claim_stale(Path::new("index.html")).is_some());
+                assert!(std::fs::read_to_string(html_root.path().join("index.html"))
+                    .unwrap()
+                    .contains("fallback"));
+            }
+
+            // Restore the ordinary stub harness's successful no-trace path.
+            // A valid render (including byte-dedup) can retire the obligation.
+            session.inner.content_trace.lock().unwrap().token = None;
+            assert_eq!(
+                adapter.render_stale_route("/"),
+                LazyRenderOutcome::Rendered { written: false }
+            );
+            assert!(session.claim_stale(Path::new("index.html")).is_none());
+        }
 
         fn posts_config() -> config::Config {
             config::Config {

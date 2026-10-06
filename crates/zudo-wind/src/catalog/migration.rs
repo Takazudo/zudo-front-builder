@@ -6,7 +6,7 @@ use crate::{Candidate, TokenCategory, ValidatedTokens};
 
 /// Bump when an entry is added or removed; diagnostics name the version so a
 /// report stays interpretable after the vocabulary changes.
-pub const MIGRATION_VOCABULARY_VERSION: u32 = 6;
+pub const MIGRATION_VOCABULARY_VERSION: u32 = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForeignValue {
@@ -420,6 +420,25 @@ const FAMILIES: &[ForeignFamily] = &[
         values: &[Keyword("none"), Arbitrary],
         alternative: "a content declaration on a ::before or ::after rule",
     },
+    // Tailwind 4.3.2 registers these exact static names for align-content.
+    // Keep them distinct from pseudo-element `content-none`/`content-[...]`.
+    ForeignFamily {
+        root: "content",
+        values: &[
+            Keyword("normal"),
+            Keyword("center"),
+            Keyword("start"),
+            Keyword("end"),
+            Keyword("center-safe"),
+            Keyword("end-safe"),
+            Keyword("between"),
+            Keyword("around"),
+            Keyword("evenly"),
+            Keyword("baseline"),
+            Keyword("stretch"),
+        ],
+        alternative: "an align-content declaration",
+    },
 ];
 
 /// The foreign family a parsed candidate's utility names, if any. Variants
@@ -498,6 +517,17 @@ mod tests {
             ("will-change-transform", "will-change"),
             ("content-[\"\"]", "content"),
             ("before:content-none", "content"),
+            ("content-normal", "content"),
+            ("content-center", "content"),
+            ("content-start", "content"),
+            ("content-end", "content"),
+            ("content-center-safe", "content"),
+            ("content-end-safe", "content"),
+            ("content-between", "content"),
+            ("content-around", "content"),
+            ("content-evenly", "content"),
+            ("content-baseline", "content"),
+            ("content-stretch", "content"),
             ("container", "container"),
             ("ms-auto", "ms"),
             ("-me-[3px]", "me"),
@@ -552,6 +582,8 @@ mod tests {
             "table-wrapper",
             "order-summary",
             "content-area",
+            "content-centering",
+            "content-centerish",
             "container-inner",
             "fill-panel",
             "appearance-card",
