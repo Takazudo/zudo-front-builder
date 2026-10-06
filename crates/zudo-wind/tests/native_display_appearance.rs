@@ -312,8 +312,10 @@ fn adopted_modifier_rejections_keep_exact_codes_origins_and_alternatives() {
             ),
         ] {
             for strict in [false, true] {
-                let mut config = WindConfig::default();
-                config.strict = strict;
+                let config = WindConfig {
+                    strict,
+                    ..WindConfig::default()
+                };
                 let result = run(&[candidate], config, origin.clone());
                 assert_eq!(result.diagnostics.len(), 1, "{candidate} {origin:?}");
                 let diagnostic = &result.diagnostics[0];
@@ -373,8 +375,10 @@ fn exact_static_roots_do_not_claim_suffixes_or_underscore_names() {
     ];
     for candidate in ordinary {
         for strict in [false, true] {
-            let mut config = WindConfig::default();
-            config.strict = strict;
+            let config = WindConfig {
+                strict,
+                ..WindConfig::default()
+            };
             let result = run(
                 &[candidate],
                 config,
@@ -436,8 +440,10 @@ fn retained_table_layout_and_deferred_arbitrary_forms_keep_their_old_disposition
             "{candidate}"
         );
 
-        let mut strict = WindConfig::default();
-        strict.strict = true;
+        let strict = WindConfig {
+            strict: true,
+            ..WindConfig::default()
+        };
         let strict_result = run(
             &[candidate],
             strict,
