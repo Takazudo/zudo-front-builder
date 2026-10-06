@@ -13,7 +13,7 @@ export const PIN = Object.freeze({
   archiveSha256: "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   sourcePrefix: "tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/packages/tailwindcss/src/",
 });
-export const WIND_SOURCE_SHA = "8d2c45114db33d9444e0abb592e80a8ec3d92074";
+export const WIND_SOURCE_SHA = "cb983180adc156cafabe486c830d6e953cb2eb9e";
 export const digest = (data) => createHash("sha256").update(data).digest("hex");
 
 export function archiveSources(bytes) {
