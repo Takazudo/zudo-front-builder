@@ -13,6 +13,47 @@ each feature is built on.
 
 </Info>
 
+## unsupported island registration … has unsupported initializer
+
+**Symptom:** a production build exits nonzero and reports an unsupported island
+registration with the prefix `target Target has unsupported initializer`. A
+factory-member target is accepted only when zfb can prove its parameter and
+every direct call site from the scanned module graph. zfb does not execute a
+factory to discover a component.
+
+**Cause:** the selected component must come from a read-only parameter and a
+plain object literal at every call site. The literal may contain other plain
+properties, but the selected property must occur exactly once and every call
+must resolve it to the same function definition. A `let` or `var` target keeps
+the existing `mutable target binding` diagnostic.
+
+**Fix:** use a `const` member or object-pattern binding, keep the parameter
+read-only, and call the function directly with a plain object literal. Apply the
+rewrite for the first matching reason:
+
+| Diagnostic reason | Fix |
+| --- | --- |
+| `mutable target binding` | Use a `const` target binding and do not reassign it. |
+| `parameter <name> has a default value` | Remove the default and pass the object explicitly at every call site. |
+| `destructured parameter <name> uses a rest pattern` | Remove the rest pattern; destructure only the named static property. |
+| `parameter <name> is written or escapes at <loc>` | Use the parameter only for static member reads or a `const` object pattern; do not write, delete, pass, alias, return, or spread it. |
+| `factory <F> escapes as a value at <loc>` | Keep every reference to `F` as a direct call; do not pass, store, return, bind, apply, or render it as JSX. |
+| `factory <F> has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
+| `call site at <loc> passes too few arguments` | Pass the parameter at its declared position. |
+| `call site at <loc> spreads positional arguments` | Spell out the positional arguments through the parameter index. |
+| `call site at <loc> passes a non-literal argument` | Pass a plain object literal with no spread, computed key, method, or getter; other plain properties are allowed. |
+| `property <prop> missing at call site <loc>` | Add the selected property exactly once as a static key. |
+| `call site at <loc> selects <prop> conditionally (??, ternary, ||)` | Pass one function directly, or render alternatives as separate concrete island boundaries. For a package override, use the [composition seam](../concepts/islands.mdx#composition-seam-for-customisable-package-islands). |
+| `property <prop> at <loc> is not a function binding` | Pass a value that resolves to one function definition. If resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
+| `call sites disagree: <loc> passes Counter, <loc> passes Other` | Make every call pass the same function definition, or split them into separate fixed-target wrappers. |
+
+Parameter destructuring accepts a plain identifier parameter with no default and
+no rest, default, or nested object pattern. Call-site object literals reject any
+spread, computed key, method, or getter. The property value must be a function
+binding, not a conditional such as `ctx.hostBindings.Panel ?? fallback`. See
+[Factory-provided targets](../concepts/islands.mdx#factory-provided-targets) for
+the accepted spellings, call-site proof, and complete composition example.
+
 ## `curl | sh` install fails to resolve a release tag
 
 **Symptom:** the [curl installer](../install/node-free.mdx#install-paths-linux-macos-—-curl) exits with one of:

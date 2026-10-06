@@ -104,6 +104,21 @@ A boundary wrapper need not carry `"use client"`; its child must meet this rule.
 An unexported function in a page is unsupported: move/export it from a client
 module. Do not synthesize public exports or execute a factory to obtain one.
 
+There is one bounded exception to the ordinary component-value grammar:
+parameter-member targets are allowed at any function-body depth when the
+function is statically called. Accept a `const` member binding such as
+`const Target = deps.Counter` or
+`const Target = deps["Counter"]`, a `const` object pattern such as
+`const { Counter: Target } = deps` or `const { Counter } = deps`, and parameter
+destructuring such as `function F({ Counter: Target })` or
+`function F({ Counter })`. The parameter must be a plain identifier without a
+default, and the member key must be static. Destructuring does not support rest,
+defaults, or nested patterns. The parameter and target must satisfy the
+read-only and closed-call-site proof in section 5. `let` and `var` retain the
+existing `mutable target binding` rejection. This proof is syntactic: it does
+not execute `F`, invoke a factory to obtain a component, or synthesize exports.
+Calls such as `factory()` that return a component remain unsupported.
+
 Canonical identity is `(logical defining ModuleId, defining BindingId)`:
 
 - Resolve all imports and re-exports to the declaration that creates the
@@ -228,6 +243,53 @@ A completely unavailable third-party implementation cannot be inferred to contai
 an SDK call; when it is demanded as a boundary target or proven wrapper dependency,
 report the unresolved source/export instead of fabricating a registration.
 
+### Bounded factory-member targets
+
+A parameter-member target is a component value selected from a function parameter,
+not the result of executing a component factory. The accepted binding forms are
+listed in section 3. The plain identifier parameter belongs to the function
+owning the binding (`F`, or its enclosing function/ancestor as applicable); take
+the proof on `F`'s call sites. It is not a rest parameter and has no default
+value. TypeScript-only wrappers are unwrapped. Only `const` target and
+object-pattern bindings are accepted; `let` and `var` keep the existing
+`mutable target binding` diagnostic.
+
+The read-only parameter rule is conservative. Every reference to the parameter
+inside the owning function must be either the object of a static member read or
+the initializer of a `const` object-pattern declaration. Assignment to the
+parameter or one of its properties, `delete`, passing it, aliasing it, returning
+it, spreading it, or any other use fails, including a reference from a nested
+closure. A destructured target binding is never assigned. Ordinary reads of the
+bound target such as `!Target`, `typeof Target`, or passing `Target` to a
+non-Island helper do not affect registration; only its use as an `<Island>` child
+does.
+
+The function owning the parameter must resolve to a `FunctionValue`: a named
+top-level or nested function, or a `const F = function|arrow` binding. Its call
+site set is closed across the scanned module set, including import/re-export
+chains that `resolve_export` can follow. Every reference to the function binding
+must be the callee of a direct call (`F(...)`, `(0, F)(...)`, or `ns.F(...)`).
+Passing, storing, returning, binding, applying, or using `F` as JSX is an escape.
+An unfollowable export also fails the proof. The closure claim is limited to the
+modules in the scanner's discovered graph; it does not claim to account for
+runtime-generated or otherwise undiscovered callers.
+
+For parameter index `i` and static property `<prop>`, the call-site set must be
+non-empty. No call may spread positional arguments at or before `i`; every call
+must pass at `i` a plain object literal with no spread, computed key, method, or
+getter anywhere in the literal. `<prop>` must appear exactly once, as a shorthand
+or explicit static property. Other plain properties in the object are allowed.
+Each selected value must resolve to a `Value::Function`, and all calls must
+resolve it to the same `Definition`. A target registers as if that same function
+were the direct `<Island>` child; its identity, marker, route, and deduplication
+are unchanged.
+
+Collect `calls_by_callee: BTreeMap<Definition, Vec<CallSite>>` incrementally as
+each newly scanned module is visited once. Defer proofs until the module set is
+stable, or invalidate and re-prove an earlier result when a later module adds a
+call or reference to that function. Memoise proofs by `(F Definition, i,
+<prop>)`; budget tests count AST visits and resolver/proof operations.
+
 ## 6. Keep public marker and build identity compatible
 
 Public identity stays `{ component: marker_name, build: build_token }`. Keep
@@ -345,6 +407,33 @@ known-good artifact is acceptable only with a visible failed rebuild state.
 Existing SDK runtime errors remain a backstop for values that cannot be validated
 statically; no failed scan may be presented as a valid empty-islands result.
 
+For a factory-member target, keep the diagnostic prefix
+`target Target has unsupported initializer`, append the first matching reason
+below, then the standard rewrite suffix and a link to
+[`Composition seam for customisable package islands`](../../docs/src/content/docs/concepts/islands.mdx#composition-seam-for-customisable-package-islands).
+The function and property placeholders contain the actual binding names; `<loc>`
+is the source location. A `let` or `var` binding keeps its existing
+`mutable target binding` reason before this proof is attempted. The ordered
+factory-proof reasons are:
+
+1. `parameter <name> has a default value`
+2. `destructured parameter <name> uses a rest pattern`
+3. `parameter <name> is written or escapes at <loc>`
+4. `factory <F> escapes as a value at <loc>`
+5. `factory <F> has no call site in the scanned modules`
+6. `call site at <loc> passes too few arguments`
+7. `call site at <loc> spreads positional arguments`
+8. `call site at <loc> passes a non-literal argument`
+9. `property <prop> missing at call site <loc>`
+10. `call site at <loc> selects <prop> conditionally (??, ternary, ||)`
+11. `property <prop> at <loc> is not a function binding`
+12. `call sites disagree: <loc> passes Counter, <loc> passes Other`
+
+When resolving a selected value already yields an `Unsupported` result (for
+example, the existing `memo(X)` reason), append that resolver reason to the
+`not a function binding` diagnostic. Do not replace it with a guessed identity.
+The page-level migration table lists the concrete rewrite for each reason.
+
 ## 9. Required acceptance evidence
 
 #3507 owns focused AST/resolution/registry/entry tests and error propagation.
@@ -361,6 +450,8 @@ Every positive fixture must assert the exact marker set, not just successful exi
 | JSX, direct `Island({children:h(...)})`, `h(Island, ...)`, packed `jsx/jsxs/jsxDEV` | Same target set and runtime behavior, including aliased factories. |
 | Fixed/forwarding wrappers, nested wrapper chains, local/package call sites | Register concrete child only; forwarding definition without a use contributes no target. |
 | Factory target, dynamic child, unresolved demanded import, opaque wrapper or escape | Nonzero production build with use-site/reason/rewrite; never warning plus successful missing bundle. |
+| Accepted factory-member page | Build passes; supported `const` member, `const` object-pattern, and parameter-destructuring forms register the one function definition selected by every direct call-site literal. Other plain object properties and non-Island reads of the target are allowed. |
+| Factory proof near misses | Positional spreads; object-literal spreads, computed keys, methods, or getters; conditional selection; missing call sites; escaping factories; default/rest/mutable bindings; parameter write/escape; too few arguments; missing properties; non-function values; and disagreeing call sites fail nonzero with the first applicable named reason and rewrite. |
 | Two real targets with the same function name, including two bindings in one file | Hard ambiguity error before any registry can silently overwrite. |
 | Installed tarball with duplicate helpers | Pass; helper markers absent; emitted registry has unique keys. |
 | Installed tarball with two distinct actual same-name targets in the same package | Fail just as local collisions do; same-package bypass cannot suppress it. |
