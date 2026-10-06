@@ -65,14 +65,23 @@ struct SourceModule {
     client: bool,
 }
 
-/// Declaration facts only: resolving aliases still uses Discovery's cycle guard.
-/// Keep function bodies out of this index so nested declarations do not clone
-/// the surrounding AST. SWC IDs distinguish same-spelled lexical bindings.
+/// Per-module declaration, call, and reference facts. Resolving aliases still
+/// uses Discovery's cycle guard. Keep function bodies out of this index so
+/// nested declarations do not clone the surrounding AST. SWC IDs distinguish
+/// same-spelled lexical bindings.
 #[derive(Default)]
 struct NestedBindings {
     names: Vec<swc_core::ecma::ast::Ident>,
     functions: HashMap<swc_core::ecma::ast::Id, (String, Span)>,
     variables: HashMap<swc_core::ecma::ast::Id, NestedVariable>,
+    factory_members: HashMap<swc_core::ecma::ast::Id, FactoryMember>,
+    factory_functions: HashMap<swc_core::ecma::ast::Id, FactoryFunction>,
+    calls: HashMap<swc_core::ecma::ast::Id, Vec<CallExpr>>,
+    references: HashMap<swc_core::ecma::ast::Id, Vec<Span>>,
+    direct_callees: HashSet<u32>,
+    allowed_parameter_reads: HashSet<u32>,
+    written_parameters: HashMap<BindingId, Vec<Span>>,
+    owners: Vec<FactoryOwner>,
     #[cfg(test)]
     expression_visits: usize,
 }
@@ -85,7 +94,194 @@ struct NestedVariable {
 enum NestedInitializer {
     Function { marker: String, span: Span },
     Alias(swc_core::ecma::ast::Ident),
+    FactoryMember,
     Unsupported,
+}
+
+type BindingId = swc_core::ecma::ast::Id;
+
+#[derive(Clone)]
+struct FactoryOwner {
+    binding: swc_core::ecma::ast::Ident,
+    params: Vec<(Option<swc_core::ecma::ast::Ident>, bool)>,
+}
+
+#[derive(Clone)]
+struct FactoryFunction {
+    name: String,
+}
+
+#[derive(Clone)]
+struct FactoryMember {
+    factory: BindingId,
+    index: usize,
+    property: String,
+    parameter: Option<swc_core::ecma::ast::Ident>,
+    default: bool,
+    rest: bool,
+    invalid_pattern: bool,
+}
+
+fn static_member_name(member: &swc_core::ecma::ast::MemberExpr) -> Option<String> {
+    match &member.prop {
+        MemberProp::Ident(ident) => Some(ident.sym.to_string()),
+        MemberProp::Computed(computed) => match unwrap_expr(&computed.expr) {
+            Expr::Lit(Lit::Str(text)) => Some(atom_to_string(&text.value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn factory_object_key(name: &PropName) -> Option<String> {
+    match name {
+        PropName::Num(number) => Some(number.value.to_string()),
+        PropName::BigInt(number) => Some(number.value.to_string()),
+        other => prop_name(other),
+    }
+}
+
+fn object_pattern_members(
+    pattern: &swc_core::ecma::ast::ObjectPat,
+) -> Vec<(swc_core::ecma::ast::Ident, String)> {
+    pattern
+        .props
+        .iter()
+        .filter_map(|prop| match prop {
+            swc_core::ecma::ast::ObjectPatProp::Assign(assign) => {
+                Some((assign.key.clone().into(), assign.key.sym.to_string()))
+            }
+            swc_core::ecma::ast::ObjectPatProp::KeyValue(pair) => {
+                let binding = match &*pair.value {
+                    Pat::Ident(binding) => &binding.id,
+                    Pat::Assign(assign) => match &*assign.left {
+                        Pat::Ident(binding) => &binding.id,
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                Some((binding.clone(), factory_object_key(&pair.key)?))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn plain_object_pattern(pattern: &swc_core::ecma::ast::ObjectPat) -> bool {
+    pattern.props.iter().all(|prop| match prop {
+        swc_core::ecma::ast::ObjectPatProp::Assign(assign) => assign.value.is_none(),
+        swc_core::ecma::ast::ObjectPatProp::KeyValue(pair) => {
+            !matches!(&pair.key, PropName::Computed(_)) && matches!(&*pair.value, Pat::Ident(_))
+        }
+        _ => false,
+    })
+}
+
+impl NestedBindings {
+    fn enter_function(&mut self, binding: swc_core::ecma::ast::Ident, params: &[Pat]) {
+        let mut entries = Vec::new();
+        for (index, pat) in params.iter().enumerate() {
+            let (parameter, default) = match pat {
+                Pat::Ident(ident) => (Some(ident.id.clone()), false),
+                Pat::Assign(assign) => (
+                    match &*assign.left {
+                        Pat::Ident(ident) => Some(ident.id.clone()),
+                        _ => None,
+                    },
+                    true,
+                ),
+                _ => (None, false),
+            };
+            let object = match pat {
+                Pat::Object(object) => Some((object, false)),
+                Pat::Assign(assign) => match &*assign.left {
+                    Pat::Object(object) => Some((object, true)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((object, has_default)) = object {
+                let has_rest = object
+                    .props
+                    .iter()
+                    .any(|prop| matches!(prop, swc_core::ecma::ast::ObjectPatProp::Rest(_)));
+                for (target, property) in object_pattern_members(object) {
+                    self.factory_members.insert(
+                        target.to_id(),
+                        FactoryMember {
+                            factory: binding.to_id(),
+                            index,
+                            property,
+                            parameter: None,
+                            default: has_default,
+                            rest: has_rest,
+                            invalid_pattern: !plain_object_pattern(object) && !has_rest,
+                        },
+                    );
+                }
+            }
+            entries.push((parameter, default));
+        }
+        self.factory_functions.insert(
+            binding.to_id(),
+            FactoryFunction {
+                name: binding.sym.to_string(),
+            },
+        );
+        self.owners.push(FactoryOwner {
+            binding,
+            params: entries,
+        });
+    }
+
+    fn member_from_expr(&self, expr: &Expr) -> Option<FactoryMember> {
+        let Expr::Member(member) = unwrap_expr(expr) else {
+            return None;
+        };
+        let Expr::Ident(parameter) = unwrap_expr(&member.obj) else {
+            return None;
+        };
+        let property = static_member_name(member)?;
+        for owner in self.owners.iter().rev() {
+            for (index, (candidate, default)) in owner.params.iter().enumerate() {
+                if candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.to_id() == parameter.to_id())
+                {
+                    return Some(FactoryMember {
+                        factory: owner.binding.to_id(),
+                        index,
+                        property,
+                        parameter: Some(parameter.clone()),
+                        default: *default,
+                        rest: false,
+                        invalid_pattern: false,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn record_reference(&mut self, ident: &swc_core::ecma::ast::Ident) {
+        self.references
+            .entry(ident.to_id())
+            .or_default()
+            .push(ident.span);
+    }
+
+    fn record_parameter_write(&mut self, expr: &Expr) {
+        let object = match unwrap_expr(expr) {
+            Expr::Member(member) => unwrap_expr(&member.obj),
+            other => other,
+        };
+        if let Expr::Ident(ident) = object {
+            self.written_parameters
+                .entry(ident.to_id())
+                .or_default()
+                .push(ident.span);
+        }
+    }
 }
 
 impl Visit for NestedBindings {
@@ -95,48 +291,204 @@ impl Visit for NestedBindings {
             node.ident.to_id(),
             (node.ident.sym.to_string(), node.function.span),
         );
-        node.visit_children_with(self);
+        let params: Vec<_> = node
+            .function
+            .params
+            .iter()
+            .map(|param| param.pat.clone())
+            .collect();
+        self.enter_function(node.ident.clone(), &params);
+        node.function.visit_children_with(self);
+        self.owners.pop();
     }
 
     fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
         for declaration in &node.decls {
-            let Pat::Ident(binding) = &declaration.name else {
-                continue;
-            };
-            self.names.push(binding.id.clone());
-            let init = declaration
-                .init
-                .as_deref()
-                .map(|init| match unwrap_expr(init) {
-                    Expr::Fn(function) => NestedInitializer::Function {
-                        marker: function
-                            .ident
-                            .as_ref()
-                            .map(|name| name.sym.to_string())
-                            .unwrap_or_else(|| binding.id.sym.to_string()),
-                        span: function.function.span,
+            if let Pat::Ident(binding) = &declaration.name {
+                self.names.push(binding.id.clone());
+                let init = declaration
+                    .init
+                    .as_deref()
+                    .map(|init| match unwrap_expr(init) {
+                        Expr::Fn(function) => NestedInitializer::Function {
+                            marker: function
+                                .ident
+                                .as_ref()
+                                .map(|name| name.sym.to_string())
+                                .unwrap_or_else(|| binding.id.sym.to_string()),
+                            span: function.function.span,
+                        },
+                        Expr::Arrow(arrow) => NestedInitializer::Function {
+                            marker: binding.id.sym.to_string(),
+                            span: arrow.span,
+                        },
+                        Expr::Ident(alias) => NestedInitializer::Alias(alias.clone()),
+                        other if self.member_from_expr(other).is_some() => {
+                            self.factory_members
+                                .insert(binding.id.to_id(), self.member_from_expr(other).unwrap());
+                            NestedInitializer::FactoryMember
+                        }
+                        _ => NestedInitializer::Unsupported,
+                    });
+                self.variables.insert(
+                    binding.id.to_id(),
+                    NestedVariable {
+                        kind: node.kind,
+                        init,
                     },
-                    Expr::Arrow(arrow) => NestedInitializer::Function {
-                        marker: binding.id.sym.to_string(),
-                        span: arrow.span,
-                    },
-                    Expr::Ident(alias) => NestedInitializer::Alias(alias.clone()),
-                    _ => NestedInitializer::Unsupported,
+                );
+            } else if let Pat::Object(pattern) = &declaration.name {
+                let owner = declaration.init.as_deref().and_then(|init| {
+                    let Expr::Ident(parameter) = unwrap_expr(init) else {
+                        return None;
+                    };
+                    self.owners.iter().rev().find_map(|owner| {
+                        owner
+                            .params
+                            .iter()
+                            .enumerate()
+                            .find_map(|(index, (candidate, default))| {
+                                candidate
+                                    .as_ref()
+                                    .filter(|candidate| candidate.to_id() == parameter.to_id())
+                                    .map(|_| {
+                                        (owner.binding.to_id(), index, *default, parameter.clone())
+                                    })
+                            })
+                    })
                 });
-            self.variables.insert(
-                binding.id.to_id(),
-                NestedVariable {
-                    kind: node.kind,
-                    init,
-                },
-            );
+                let plain = plain_object_pattern(pattern);
+                if let Some((factory, index, default, parameter)) = owner {
+                    for (target, property) in object_pattern_members(pattern) {
+                        self.names.push(target.clone());
+                        if node.kind != swc_core::ecma::ast::VarDeclKind::Const || !plain {
+                            self.variables.insert(
+                                target.to_id(),
+                                NestedVariable {
+                                    kind: node.kind,
+                                    init: Some(NestedInitializer::Unsupported),
+                                },
+                            );
+                        } else {
+                            self.factory_members.insert(
+                                target.to_id(),
+                                FactoryMember {
+                                    factory: factory.clone(),
+                                    index,
+                                    property,
+                                    parameter: Some(parameter.clone()),
+                                    default,
+                                    rest: false,
+                                    invalid_pattern: false,
+                                },
+                            );
+                        }
+                    }
+                    if plain && node.kind == swc_core::ecma::ast::VarDeclKind::Const {
+                        self.allowed_parameter_reads.insert(parameter.span.lo.0);
+                    }
+                }
+            }
+            if let (Pat::Ident(binding), Some(init)) = (&declaration.name, &declaration.init) {
+                match unwrap_expr(init) {
+                    Expr::Arrow(arrow) => {
+                        self.enter_function(binding.id.clone(), &arrow.params);
+                        declaration.visit_children_with(self);
+                        self.owners.pop();
+                        continue;
+                    }
+                    Expr::Fn(function) => {
+                        let params: Vec<_> = function
+                            .function
+                            .params
+                            .iter()
+                            .map(|param| param.pat.clone())
+                            .collect();
+                        self.enter_function(binding.id.clone(), &params);
+                        declaration.visit_children_with(self);
+                        self.owners.pop();
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            declaration.visit_children_with(self);
+        }
+    }
+
+    fn visit_expr(&mut self, node: &Expr) {
+        #[cfg(test)]
+        self.expression_visits += 1;
+        if let Expr::Ident(ident) = node {
+            self.record_reference(ident);
         }
         node.visit_children_with(self);
     }
 
-    #[cfg(test)]
-    fn visit_expr(&mut self, node: &Expr) {
-        self.expression_visits += 1;
+    fn visit_member_expr(&mut self, member: &swc_core::ecma::ast::MemberExpr) {
+        if static_member_name(member).is_some() {
+            if let Expr::Ident(parameter) = unwrap_expr(&member.obj) {
+                self.allowed_parameter_reads.insert(parameter.span.lo.0);
+            }
+        }
+        member.visit_children_with(self);
+    }
+
+    fn visit_call_expr(&mut self, call: &CallExpr) {
+        if let Callee::Expr(callee) = &call.callee {
+            if let Expr::Ident(ident) = unwrap_expr(callee) {
+                self.calls
+                    .entry(ident.to_id())
+                    .or_default()
+                    .push(call.clone());
+                self.direct_callees.insert(ident.span.lo.0);
+            } else if let Expr::Seq(sequence) = unwrap_expr(callee) {
+                if sequence.exprs.len() == 2
+                    && matches!(unwrap_expr(&sequence.exprs[0]), Expr::Lit(Lit::Num(number)) if number.value == 0.0)
+                {
+                    if let Expr::Ident(ident) = unwrap_expr(&sequence.exprs[1]) {
+                        self.calls
+                            .entry(ident.to_id())
+                            .or_default()
+                            .push(call.clone());
+                        self.direct_callees.insert(ident.span.lo.0);
+                    }
+                }
+            }
+        }
+        call.visit_children_with(self);
+    }
+
+    fn visit_assign_expr(&mut self, node: &swc_core::ecma::ast::AssignExpr) {
+        if let Some(ident) = node.left.as_ident() {
+            self.written_parameters
+                .entry(ident.id.to_id())
+                .or_default()
+                .push(ident.id.span);
+        } else if let Some(swc_core::ecma::ast::SimpleAssignTarget::Member(member)) =
+            node.left.as_simple()
+        {
+            self.record_parameter_write(&member.obj);
+        }
+        node.visit_children_with(self);
+    }
+
+    fn visit_unary_expr(&mut self, node: &swc_core::ecma::ast::UnaryExpr) {
+        if node.op == swc_core::ecma::ast::UnaryOp::Delete {
+            self.record_parameter_write(&node.arg);
+        }
+        node.visit_children_with(self);
+    }
+
+    fn visit_update_expr(&mut self, node: &swc_core::ecma::ast::UpdateExpr) {
+        self.record_parameter_write(&node.arg);
+        node.visit_children_with(self);
+    }
+
+    fn visit_jsx_opening_element(&mut self, node: &swc_core::ecma::ast::JSXOpeningElement) {
+        if let JSXElementName::Ident(ident) = &node.name {
+            self.record_reference(ident);
+        }
         node.visit_children_with(self);
     }
 }
@@ -274,12 +626,15 @@ struct Discovery<'a, R: Resolver> {
     deferred_forward_sites: HashSet<(PathBuf, u32)>,
     owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
     nested_bindings: HashMap<PathBuf, Rc<NestedBindings>>,
+    factory_proofs: HashMap<(PathBuf, BindingId), Value>,
     function_returns: HashMap<PathBuf, Rc<FunctionReturnIndex>>,
     primed_modules: HashSet<PathBuf>,
     #[cfg(test)]
     function_return_expression_visits: usize,
     #[cfg(test)]
     nested_binding_expression_visits: usize,
+    #[cfg(test)]
+    factory_proof_evaluations: usize,
 }
 
 impl<'a, R: Resolver> Discovery<'a, R> {
@@ -296,12 +651,15 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             deferred_forward_sites: HashSet::new(),
             owned_factory_sites: HashMap::new(),
             nested_bindings: HashMap::new(),
+            factory_proofs: HashMap::new(),
             function_returns: HashMap::new(),
             primed_modules: HashSet::new(),
             #[cfg(test)]
             function_return_expression_visits: 0,
             #[cfg(test)]
             nested_binding_expression_visits: 0,
+            #[cfg(test)]
+            factory_proof_evaluations: 0,
         }
     }
 
@@ -578,11 +936,21 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                                 arrow.span,
                             )),
                             Expr::Ident(alias) => self.resolve_local(path, alias),
-                            other => Ok(Value::Unsupported(format!(
-                                "target {} has unsupported initializer {:?}",
-                                ident.sym,
-                                other.span()
-                            ))),
+                            other => {
+                                if self
+                                    .nested_bindings(path)?
+                                    .factory_members
+                                    .contains_key(&ident.to_id())
+                                {
+                                    self.resolve_factory_member(path, ident)
+                                } else {
+                                    Ok(Value::Unsupported(format!(
+                                        "target {} has unsupported initializer {:?}",
+                                        ident.sym,
+                                        other.span()
+                                    )))
+                                }
+                            }
                         };
                     }
                 }
@@ -616,6 +984,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                         Ok(self.definition(path, &ident.sym, marker.clone(), *span))
                     }
                     NestedInitializer::Alias(alias) => self.resolve_local(path, alias),
+                    NestedInitializer::FactoryMember => self.resolve_factory_member(path, ident),
                     NestedInitializer::Unsupported => Ok(Value::Unsupported(format!(
                         "target {} has unsupported initializer",
                         ident.sym
@@ -623,7 +992,383 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 };
             }
         }
+        if bindings.factory_members.contains_key(&id) {
+            return self.resolve_factory_member(path, ident);
+        }
         Ok(Value::Other)
+    }
+
+    fn site_location(&self, path: &Path, span: Span) -> String {
+        let source = self.modules.get(path).map(|module| module.source.as_str());
+        let (line, column) = line_column(source, span.lo.0);
+        format!("{}:{line}:{column}", path.display())
+    }
+
+    fn factory_failure(target: &str, reason: String) -> Value {
+        Value::Unsupported(format!(
+            "target {target} has unsupported initializer: {reason}; see concepts/islands#boundary-discovery-and-migration"
+        ))
+    }
+
+    fn resolve_factory_member(
+        &mut self,
+        path: &Path,
+        target: &swc_core::ecma::ast::Ident,
+    ) -> ScanResult<Value> {
+        let key = (path.to_path_buf(), target.to_id());
+        if let Some(value) = self.factory_proofs.get(&key) {
+            return Ok(value.clone());
+        }
+        #[cfg(test)]
+        {
+            self.factory_proof_evaluations += 1;
+        }
+        let value = self.resolve_factory_member_inner(path, target)?;
+        self.factory_proofs.insert(key, value.clone());
+        Ok(value)
+    }
+
+    fn resolve_factory_member_inner(
+        &mut self,
+        path: &Path,
+        target: &swc_core::ecma::ast::Ident,
+    ) -> ScanResult<Value> {
+        let bindings = self.nested_bindings(path)?;
+        let Some(member) = bindings.factory_members.get(&target.to_id()) else {
+            return Ok(Value::Other);
+        };
+        let Some(factory) = bindings.factory_functions.get(&member.factory) else {
+            return Ok(Value::Other);
+        };
+        let fail = |reason| Self::factory_failure(&target.sym, reason);
+        if member.default {
+            return Ok(fail(format!(
+                "parameter {} has a default value",
+                member
+                    .parameter
+                    .as_ref()
+                    .map(|p| p.sym.as_ref())
+                    .unwrap_or(&factory.name)
+            )));
+        }
+        if member.rest {
+            return Ok(fail(format!(
+                "destructured parameter {} uses a rest pattern",
+                target.sym
+            )));
+        }
+        if member.invalid_pattern {
+            return Ok(Value::Unsupported(format!(
+                "target {} has unsupported initializer",
+                target.sym
+            )));
+        }
+        let mut bad_reads = Vec::new();
+        bad_reads.extend(
+            bindings
+                .written_parameters
+                .get(&target.to_id())
+                .into_iter()
+                .flatten()
+                .map(|span| (target.sym.to_string(), *span)),
+        );
+        if let Some(parameter) = &member.parameter {
+            bad_reads.extend(
+                bindings
+                    .written_parameters
+                    .get(&parameter.to_id())
+                    .into_iter()
+                    .flatten()
+                    .chain(
+                        bindings
+                            .references
+                            .get(&parameter.to_id())
+                            .into_iter()
+                            .flatten()
+                            .filter(|span| !bindings.allowed_parameter_reads.contains(&span.lo.0)),
+                    )
+                    .map(|span| (parameter.sym.to_string(), *span)),
+            );
+        }
+        if let Some((name, span)) = bad_reads.into_iter().min_by_key(|(_, span)| span.lo.0) {
+            return Ok(fail(format!(
+                "parameter {name} is written or escapes at {}",
+                self.site_location(path, span)
+            )));
+        }
+        if let Some(span) = bindings
+            .references
+            .get(&member.factory)
+            .into_iter()
+            .flatten()
+            .filter(|span| !bindings.direct_callees.contains(&span.lo.0))
+            .min_by_key(|span| span.lo.0)
+        {
+            return Ok(fail(format!(
+                "factory {} escapes as a value at {}",
+                factory.name,
+                self.site_location(path, *span)
+            )));
+        }
+        let module = self.module(path)?;
+        let exported = module.ast.body.iter().any(|item| match item {
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => match &export.decl {
+                Decl::Fn(function) => function.ident.to_id() == member.factory,
+                Decl::Var(variable) => variable.decls.iter().any(|declarator| matches!(&declarator.name, Pat::Ident(ident) if ident.id.to_id() == member.factory)),
+                _ => false,
+            },
+            ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) if named.src.is_none() => named.specifiers.iter().any(|specifier| match specifier {
+                ExportSpecifier::Named(named) => matches!(&named.orig, ModuleExportName::Ident(ident) if ident.to_id() == member.factory),
+                _ => false,
+            }),
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default)) => matches!(&default.decl, DefaultDecl::Fn(function) if function.ident.as_ref().is_some_and(|ident| ident.to_id() == member.factory)),
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(default)) => matches!(unwrap_expr(&default.expr), Expr::Ident(ident) if ident.to_id() == member.factory),
+            _ => false,
+        });
+        if exported {
+            return Ok(fail(format!(
+                "factory {} has call sites outside this module; cross-module proof pending",
+                factory.name
+            )));
+        }
+        let Some(calls) = bindings
+            .calls
+            .get(&member.factory)
+            .filter(|calls| !calls.is_empty())
+        else {
+            return Ok(fail(format!(
+                "factory {} has no call site in the scanned modules",
+                factory.name
+            )));
+        };
+        // Validate each category across the complete call set before moving
+        // to the next one. The diagnostic precedence is part of the grammar.
+        for call in calls {
+            if call.args.len() <= member.index {
+                return Ok(fail(format!(
+                    "call site at {} passes too few arguments",
+                    self.site_location(path, call.span)
+                )));
+            }
+        }
+        for call in calls {
+            if call
+                .args
+                .iter()
+                .take(member.index + 1)
+                .any(|arg| arg.spread.is_some())
+            {
+                return Ok(fail(format!(
+                    "call site at {} spreads positional arguments",
+                    self.site_location(path, call.span)
+                )));
+            }
+        }
+        for call in calls {
+            let literal = matches!(unwrap_expr(&call.args[member.index].expr), Expr::Object(object)
+            if object.props.iter().all(|prop| match prop {
+                PropOrSpread::Prop(prop) => match &**prop {
+                    Prop::Shorthand(_) => true,
+                    Prop::KeyValue(pair) => !matches!(&pair.key, PropName::Computed(_)) && factory_object_key(&pair.key).is_some(),
+                    _ => false,
+                },
+                _ => false,
+            }));
+            if !literal {
+                return Ok(fail(format!(
+                    "call site at {} passes a non-literal argument",
+                    self.site_location(path, call.span)
+                )));
+            }
+        }
+        for call in calls {
+            let Expr::Object(object) = unwrap_expr(&call.args[member.index].expr) else {
+                unreachable!()
+            };
+            let count = object
+                .props
+                .iter()
+                .filter(|prop| match prop {
+                    PropOrSpread::Prop(prop) => match &**prop {
+                        Prop::Shorthand(ident) => ident.sym.as_ref() == member.property.as_str(),
+                        Prop::KeyValue(pair) => {
+                            factory_object_key(&pair.key).as_deref()
+                                == Some(member.property.as_str())
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                })
+                .count();
+            if count == 0 {
+                return Ok(fail(format!(
+                    "property {} missing at call site {}",
+                    member.property,
+                    self.site_location(path, call.span)
+                )));
+            }
+            if count > 1 {
+                return Ok(fail(format!(
+                    "call site at {} passes a non-literal argument",
+                    self.site_location(path, call.span)
+                )));
+            }
+        }
+        for call in calls {
+            let Expr::Object(object) = unwrap_expr(&call.args[member.index].expr) else {
+                unreachable!()
+            };
+            let selected = object.props.iter().find_map(|prop| match prop {
+                PropOrSpread::Prop(prop) => match &**prop {
+                    Prop::Shorthand(ident) if ident.sym.as_ref() == member.property.as_str() => {
+                        None
+                    }
+                    Prop::KeyValue(pair)
+                        if factory_object_key(&pair.key).as_deref()
+                            == Some(member.property.as_str()) =>
+                    {
+                        Some(&*pair.value)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            });
+            if selected.is_some_and(|expr| {
+                matches!(
+                    unwrap_expr(expr),
+                    Expr::Cond(_)
+                        | Expr::Bin(swc_core::ecma::ast::BinExpr {
+                            op: swc_core::ecma::ast::BinaryOp::NullishCoalescing
+                                | swc_core::ecma::ast::BinaryOp::LogicalOr,
+                            ..
+                        })
+                )
+            }) {
+                return Ok(fail(format!(
+                    "call site at {} selects {} conditionally (??, ternary, ||)",
+                    self.site_location(path, call.span),
+                    member.property
+                )));
+            }
+        }
+        let mut resolved: Vec<(FunctionValue, String)> = Vec::new();
+        for call in calls {
+            let location = self.site_location(path, call.span);
+            if call
+                .args
+                .iter()
+                .take(member.index + 1)
+                .any(|arg| arg.spread.is_some())
+            {
+                return Ok(fail(format!(
+                    "call site at {location} spreads positional arguments"
+                )));
+            }
+            let Some(argument) = call.args.get(member.index) else {
+                return Ok(fail(format!(
+                    "call site at {location} passes too few arguments"
+                )));
+            };
+            let Expr::Object(object) = unwrap_expr(&argument.expr) else {
+                return Ok(fail(format!(
+                    "call site at {location} passes a non-literal argument"
+                )));
+            };
+            let mut value: Option<Expr> = None;
+            for prop in &object.props {
+                let (name, expr): (String, Expr) = match prop {
+                    PropOrSpread::Prop(prop) => match &**prop {
+                        Prop::Shorthand(ident) => {
+                            (ident.sym.to_string(), Expr::Ident(ident.clone()))
+                        }
+                        Prop::KeyValue(pair) if !matches!(&pair.key, PropName::Computed(_)) => {
+                            let Some(name) = factory_object_key(&pair.key) else {
+                                return Ok(fail(format!(
+                                    "call site at {location} passes a non-literal argument"
+                                )));
+                            };
+                            (name, (*pair.value).clone())
+                        }
+                        _ => {
+                            return Ok(fail(format!(
+                                "call site at {location} passes a non-literal argument"
+                            )))
+                        }
+                    },
+                    _ => {
+                        return Ok(fail(format!(
+                            "call site at {location} passes a non-literal argument"
+                        )))
+                    }
+                };
+                if name == member.property {
+                    if value.is_some() {
+                        return Ok(fail(format!(
+                            "call site at {location} passes a non-literal argument"
+                        )));
+                    }
+                    value = Some(expr);
+                }
+            }
+            let Some(expr) = value else {
+                return Ok(fail(format!(
+                    "property {} missing at call site {location}",
+                    member.property
+                )));
+            };
+            if matches!(
+                unwrap_expr(&expr),
+                Expr::Cond(_)
+                    | Expr::Bin(swc_core::ecma::ast::BinExpr {
+                        op: swc_core::ecma::ast::BinaryOp::NullishCoalescing
+                            | swc_core::ecma::ast::BinaryOp::LogicalOr,
+                        ..
+                    })
+            ) {
+                return Ok(fail(format!(
+                    "call site at {location} selects {} conditionally (??, ternary, ||)",
+                    member.property
+                )));
+            }
+            let function = match self.resolve_expr(path, &expr)? {
+                Value::Function(function) => function,
+                Value::Unsupported(reason) => {
+                    return Ok(fail(format!(
+                        "property {} at {location} is not a function binding: {reason}",
+                        member.property
+                    )))
+                }
+                _ => {
+                    let detail = match unwrap_expr(&expr) {
+                        Expr::Call(call) => match &call.callee {
+                            Callee::Expr(callee) => match unwrap_expr(callee) {
+                                Expr::Ident(ident) => {
+                                    format!("; {}(...) is a call result", ident.sym)
+                                }
+                                _ => String::new(),
+                            },
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    return Ok(fail(format!(
+                        "property {} at {location} is not a function binding{detail}",
+                        member.property
+                    )));
+                }
+            };
+            resolved.push((function, location));
+        }
+        let (first, first_location) = &resolved[0];
+        for (function, location) in resolved.iter().skip(1) {
+            if first.definition != function.definition {
+                return Ok(fail(format!(
+                    "call sites disagree: {first_location} passes {}, {location} passes {}",
+                    first.marker, function.marker
+                )));
+            }
+        }
+        Ok(Value::Function(first.clone()))
     }
 
     fn nested_bindings(&mut self, path: &Path) -> ScanResult<Rc<NestedBindings>> {
@@ -2339,8 +3084,8 @@ mod tests {
     }
 
     #[test]
-    fn dependency_member_target_keeps_a_source_located_diagnostic() {
-        let error = scan(&[
+    fn dependency_member_target_registers_the_proven_function() {
+        let islands = scan(&[
             (
                 "pages/home.tsx",
                 "import '../factory'; export default function Page() { return <html />; }",
@@ -2349,22 +3094,310 @@ mod tests {
                 "factory.tsx",
                 r#"
                 import { Island } from '@takazudo/zfb';
-                export function createPanel(deps) {
-                    const Panel = deps.Panel;
-                    function PanelIsland() { return <Island><Panel /></Island>; }
+                import { Panel } from './panel';
+                function createPanel(deps) {
+                    const Target = deps.Panel;
+                    function PanelIsland() { return <Island><Target /></Island>; }
                     return PanelIsland;
                 }
+                createPanel({ flag: true, Panel });
             "#,
+            ),
+            (
+                "panel.tsx",
+                "'use client'; export function Panel() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(markers(&islands), ["Panel"]);
+        assert_eq!(islands[0].source_path, PathBuf::from("/proj/panel.tsx"));
+    }
+
+    #[test]
+    fn dependency_member_spread_keeps_a_source_located_diagnostic() {
+        let error = scan(&[
+            ("pages/home.tsx", "import '../factory';"),
+            (
+                "factory.tsx",
+                r#"
+                import { Island } from '@takazudo/zfb';
+                import { Panel } from './panel';
+                function createPanel(deps) {
+                    const Target = deps.Panel;
+                    return <Island><Target /></Island>;
+                }
+                createPanel({ ...extra, Panel });
+            "#,
+            ),
+            (
+                "panel.tsx",
+                "'use client'; export function Panel() { return null; }",
             ),
         ])
         .unwrap_err()
         .to_string();
         assert!(error.contains("/proj/factory.tsx:"), "{error}");
         assert!(
-            error.contains("target Panel has unsupported initializer"),
+            error.contains("target Target has unsupported initializer"),
             "{error}"
         );
-        assert!(error.contains("export a named function"), "{error}");
+        assert!(error.contains("passes a non-literal argument"), "{error}");
+    }
+
+    fn factory_case(body: &str, call: &str) -> ScanResult<IslandsSet> {
+        let source = format!(
+            "import {{ Island }} from '@takazudo/zfb'; import {{ Counter, Other }} from './counter';\n{body}\n{call}"
+        );
+        scan(&[
+            ("pages/home.tsx", "import '../factory';"),
+            ("factory.tsx", &source),
+            ("counter.tsx", "'use client'; export function Counter() { return null; } export function Other() { return null; }"),
+        ])
+    }
+
+    #[test]
+    fn factory_member_binding_forms_keep_counter_identity() {
+        for body in [
+            "function create(deps) { const Target = deps.Counter; if (!Target) return null; return <Island><Target /></Island>; }",
+            "function create(deps) { const Target = deps[\"Counter\"]; return <Island><Target /></Island>; }",
+            "function create(deps) { const Target = deps.Counter as unknown as Function; return <Island><Target /></Island>; }",
+            "function create(deps) { const { Counter: Target } = deps; return <Island><Target /></Island>; }",
+            "function create({ Counter: Target }) { return <Island><Target /></Island>; }",
+            "function create({ Counter }) { return <Island><Counter /></Island>; }",
+            "const create = (deps) => { const Target = deps.Counter; return <Island><Target /></Island>; };",
+        ] {
+            let islands = factory_case(body, "create({ flag: true, Counter });").unwrap();
+            assert_eq!(markers(&islands), ["Counter"], "{body}");
+            assert_eq!(islands[0].source_path, PathBuf::from("/proj/counter.tsx"));
+        }
+        let islands = factory_case(
+            "function create({ Target }) { return <Island><Target /></Island>; }",
+            "create({ Target: Counter });",
+        )
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+        let islands = factory_case(
+            "function create(deps) { const { Target } = deps; return <Island><Target /></Island>; }",
+            "create({ Target: Counter });",
+        )
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+        let islands = factory_case(
+            "function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }",
+            "create({ 1: true, Counter });",
+        )
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+    }
+
+    #[test]
+    fn factory_member_registers_owned_call_children_once() {
+        for boundary in [
+            "Island({ children: jsx(Target, {}) })",
+            "h(Island, { children: h(Target, {}) })",
+        ] {
+            let source = format!(
+                "import {{ Island }} from '@takazudo/zfb'; import {{ jsx }} from '@takazudo/zfb/zudo-react/jsx-runtime'; import {{ h }} from '@takazudo/zfb/zudo-react'; import {{ Counter }} from './counter'; function create(deps) {{ const Target = deps.Counter; return {boundary}; }} create({{ Counter }}); create({{ Counter }}); <Island><Counter /></Island>;"
+            );
+            let islands = scan(&[
+                ("pages/home.tsx", "import '../factory';"),
+                ("factory.tsx", &source),
+                (
+                    "counter.tsx",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            ])
+            .unwrap();
+            assert_eq!(markers(&islands), ["Counter"], "{boundary}");
+        }
+    }
+
+    #[test]
+    fn nested_boundary_uses_ancestor_factory_parameter() {
+        let islands = factory_case(
+            "function create(deps) { function Nested() { const Target = deps.Counter; return <Island><Target /></Island>; } return Nested; }",
+            "create({ Counter });",
+        ).unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+    }
+
+    #[test]
+    fn factory_member_proof_is_memoized_across_200_call_sites() {
+        struct CountingResolver {
+            inner: InMemoryResolver,
+            demands: std::cell::Cell<usize>,
+        }
+        impl Resolver for CountingResolver {
+            fn resolve(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.inner.resolve(dir, specifier)
+            }
+            fn resolve_demanded(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.demands.set(self.demands.get() + 1);
+                self.inner.resolve(dir, specifier)
+            }
+            fn read(&self, path: &Path) -> Result<String, String> {
+                self.inner.read(path)
+            }
+        }
+        let path = PathBuf::from("/proj/factory.tsx");
+        let mut source = String::from("import { Counter } from './counter'; function create(deps) { const Target = deps.Counter; return Target; }\n");
+        for _ in 0..200 {
+            source.push_str("create({ Counter });\n");
+        }
+        let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+        let resolver = CountingResolver {
+            inner: InMemoryResolver::new()
+                .with_file(path.clone(), source.clone())
+                .with_file(
+                    "/proj/counter.tsx",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            demands: std::cell::Cell::new(0),
+        };
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                path.clone(),
+                SourceModule {
+                    ast,
+                    source,
+                    client: false,
+                },
+            )]),
+        );
+        let target = discovery
+            .nested_bindings(&path)
+            .unwrap()
+            .names
+            .iter()
+            .find(|ident| ident.sym == "Target")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            discovery
+                .nested_bindings(&path)
+                .unwrap()
+                .calls
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+            200
+        );
+        for _ in 0..3 {
+            assert!(matches!(
+                discovery.resolve_local(&path, &target).unwrap(),
+                Value::Function(_)
+            ));
+        }
+        assert_eq!(discovery.factory_proof_evaluations, 1);
+        assert!(discovery.nested_binding_expression_visits < 200 * 10);
+        assert!(resolver.demands.get() < 200 * 4);
+    }
+
+    #[test]
+    fn factory_member_rejections_name_the_failed_proof() {
+        let body = "function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        for (body, call, reason) in [
+            (body, "", "factory create has no call site"),
+            (body, "create(value);", "passes a non-literal argument"),
+            (body, "create({});", "property Counter missing"),
+            (body, "create();", "passes too few arguments"),
+            (body, "create(...args);", "spreads positional arguments"),
+            (body, "create({ [\"Counter\"]: Counter });", "passes a non-literal argument"),
+            (body, "create({ Counter: memo(Counter) });", "memo(...) is a call result"),
+            (body, "create({ Counter: flag ? Counter : Other });", "selects Counter conditionally"),
+            (body, "create({ Counter: Counter ?? Other });", "selects Counter conditionally"),
+            (body, "create({ Counter: Counter || Other });", "selects Counter conditionally"),
+            (body, "create({ Counter }); create({ Counter: Other });", "call sites disagree"),
+            (body, "create({ Counter }); use(create);", "factory create escapes as a value"),
+            (body, "create({ Counter }); create.call(null, { Counter });", "factory create escapes as a value"),
+            (body, "create({ Counter }); const stored = { create };", "factory create escapes as a value"),
+            ("function create(deps) { deps.Counter = Other; const Target = deps.Counter; return <Island><Target /></Island>; }", "create({ Counter });", "parameter deps is written or escapes"),
+            ("function create(deps) { delete deps.Counter; const Target = deps.Counter; return <Island><Target /></Island>; }", "create({ Counter });", "parameter deps is written or escapes"),
+            ("function create(deps) { const d = deps; const Target = deps.Counter; return <Island><Target /></Island>; }", "create({ Counter });", "parameter deps is written or escapes"),
+            ("function create(deps) { use(deps); const Target = deps.Counter; return <Island><Target /></Island>; }", "create({ Counter });", "parameter deps is written or escapes"),
+            ("function create({ Counter: Target }) { Target = Other; return <Island><Target /></Island>; }", "create({ Counter });", "parameter Target is written or escapes"),
+            ("function create(deps = {}) { const Target = deps.Counter; return <Island><Target /></Island>; }", "create({ Counter });", "parameter deps has a default value"),
+            ("function create({ Counter: Target, ...rest }) { return <Island><Target /></Island>; }", "create({ Counter });", "uses a rest pattern"),
+        ] {
+            let error = factory_case(body, call).unwrap_err().to_string();
+            assert!(error.contains(reason), "{reason}: {error}");
+            assert!(error.contains("boundary-discovery-and-migration"), "{error}");
+        }
+    }
+
+    #[test]
+    fn factory_member_rejection_precedence_spans_all_calls() {
+        let body = "function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        for (calls, reason) in [
+            ("create(...args); create();", "passes too few arguments"),
+            (
+                "create({}); create(value);",
+                "passes a non-literal argument",
+            ),
+            (
+                "create({ Counter }); create({ Counter: Other }); create({ Counter: 1 });",
+                "is not a function binding",
+            ),
+        ] {
+            let error = factory_case(body, calls).unwrap_err().to_string();
+            assert!(error.contains(reason), "{calls}: {error}");
+        }
+    }
+
+    #[test]
+    fn factory_used_as_jsx_is_a_value_escape() {
+        let error = factory_case(
+            "function Create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }",
+            "Create({ Counter }); <Create />;",
+        ).unwrap_err().to_string();
+        assert!(
+            error.contains("factory Create escapes as a value"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn exported_factory_waits_for_cross_module_proof() {
+        let error = factory_case(
+            "export function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }",
+            "create({ Counter });",
+        ).unwrap_err().to_string();
+        assert!(error.contains("cross-module proof pending"), "{error}");
+    }
+
+    #[test]
+    fn destructured_declarators_obey_const_and_whole_pattern_shape() {
+        for (declaration, reason) in [
+            (
+                "let { Counter: Target } = deps;",
+                "mutable target binding Target",
+            ),
+            (
+                "var { Counter: Target } = deps;",
+                "mutable target binding Target",
+            ),
+            (
+                "const { Counter: Target = Other } = deps;",
+                "target Target has unsupported initializer",
+            ),
+            (
+                "const { Counter: Target, ...rest } = deps;",
+                "target Target has unsupported initializer",
+            ),
+            (
+                "const { Counter: Target, nested: { Other: Nested } } = deps;",
+                "target Target has unsupported initializer",
+            ),
+        ] {
+            let body = format!(
+                "function create(deps) {{ {declaration} return <Island><Target /></Island>; }}"
+            );
+            let error = factory_case(&body, "create({ Counter });")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(reason), "{declaration}: {error}");
+        }
     }
 
     #[test]
