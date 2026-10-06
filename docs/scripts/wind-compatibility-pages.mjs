@@ -13,7 +13,7 @@ const yamlString = (value) => {
 };
 // Complete reviewed upstream-plus-Wind rows, including unmapped registrations.
 export const REVIEWED_INVENTORY_DIGEST =
-  "5e5cd647bdf85ff66a7258f452a3b29f7f67033a92dd1c2fc092fc505476841b";
+  "fa8966e857fb2b12f2f1382621106d050a0f05cbd29f47d56976eb9670aac80f";
 const code = (value) => {
   const content = String(value);
   const ticks = "`".repeat(
@@ -173,9 +173,9 @@ function localizedNote(value, locale, field) {
   throw Error(`Missing Japanese ${field} translation: ${value}`);
 }
 
-// Fingerprint of the reviewed cb983180 source closure, independent of shallow CI Git history.
+// Fingerprint of the reviewed 478bbf83 source closure, independent of shallow CI Git history.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "d31142480d3ec0ce3fb7d1796c0a23f0d5d76e60c67dc9f7ee7c70c77a375cf5";
+  "9718c4b433c68701fa3abed20f91db62ca40bdcb7bde53cfe6cec58c0c9a32d2";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
