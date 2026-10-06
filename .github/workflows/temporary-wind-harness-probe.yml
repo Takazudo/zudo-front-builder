@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: 3e261c0aaeb597d93bb21d54a0fb8d10b2992378
+          ref: 3cfe07aa60046e642a3128b25cd93ad0203b5be5
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = 3e261c0aaeb597d93bb21d54a0fb8d10b2992378
+          test "$(git rev-parse HEAD)" = 3cfe07aa60046e642a3128b25cd93ad0203b5be5
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
