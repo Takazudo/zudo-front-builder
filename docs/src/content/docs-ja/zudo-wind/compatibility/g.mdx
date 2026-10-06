@@ -12,24 +12,24 @@ generated: true
 固定した参照: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
 確認した Wind ソース: `8d2c45114db33d9444e0abb592e80a8ec3d92074`; spec `1.14`.
 互換性プロファイル: `wind-preset-free 1.4`.
-公開版での対応: このソース一覧からは未確定. 検証: `source-inspected`; browser `not recorded`; accepted reference `null`.
+公開版での対応: このソース一覧からは未確定. 一覧の根拠: `source-inspected`. この表にブラウザー検証の結果は含まれません。現在の受け入れ済み参照は [正式な状態記録](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json)を確認してください。
 
 | 上流のクラスまたは基部 | Wind への対応 | 状態 | 必要な設定 | 動作と相違 | 代替または課題 | 検証状態 | 環境 / レポート |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `gap-px` | `gap-px` ([gap](../utilities/gap.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `gap-x-px` | `gap-x-px` ([gap](../utilities/gap.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `gap-y-px` | `gap-y-px` ([gap](../utilities/gap.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `grid` | `grid` ([display](../utilities/display.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `grid-flow-col` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `grid-flow-col-dense` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `grid-flow-dense` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `grid-flow-row` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `grid-flow-row-dense` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
-| `gap` | `gap-<value>` ([gap](../utilities/gap.mdx)) | `requires-review` | Upstream theme keys: --gap, --spacing, --space; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
-| `gap-x` | `gap-x-<value>` ([gap](../utilities/gap.mdx)) | `requires-review` | Upstream theme keys: --gap, --spacing, --space; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
-| `gap-y` | `gap-y-<value>` ([gap](../utilities/gap.mdx)) | `requires-review` | Upstream theme keys: --gap, --spacing, --space; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
-| `grayscale` | — | `unmapped-upstream-registration` | Upstream theme keys: --grayscale, --backdrop-grayscale; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
-| `grid-cols` | `grid-cols-<value>` ([grid](../utilities/grid.mdx)) | `requires-review` | Upstream theme keys: --grid-template-columns; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
-| `grid-rows` | `grid-rows-<value>` ([grid](../utilities/grid.mdx)) | `requires-review` | Upstream theme keys: --grid-template-rows; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
-| `grow` | `grow-<value>` ([flex-item](../utilities/flex-item.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `group` | `group-<one-of-wind-states>` | `candidate-mapping-untested` | State must be in Wind is_state allowlist; compound nesting and ordering unverified | — |  | `source-inspected` | — |
+| `gap-px` | `gap-px` ([gap](../utilities/gap.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `gap-x-px` | `gap-x-px` ([gap](../utilities/gap.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `gap-y-px` | `gap-y-px` ([gap](../utilities/gap.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `grid` | `grid` ([display](../utilities/display.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `grid-flow-col` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `grid-flow-col-dense` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `grid-flow-dense` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `grid-flow-row` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `grid-flow-row-dense` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `gap-<value>` | `gap-<value>` ([gap](../utilities/gap.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --gap, --spacing, --space。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `gap-x-<value>` | `gap-x-<value>` ([gap](../utilities/gap.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --gap, --spacing, --space。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `gap-y-<value>` | `gap-y-<value>` ([gap](../utilities/gap.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --gap, --spacing, --space。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `grayscale-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | 上流のテーマキー: --grayscale, --backdrop-grayscale。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `grid-cols-<value>` | `grid-cols-<value>` ([grid](../utilities/grid.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --grid-template-columns。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `grid-rows-<value>` | `grid-rows-<value>` ([grid](../utilities/grid.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --grid-template-rows。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `grow-<value>` | `grow-<value>` ([flex-item](../utilities/flex-item.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `group-<variant>` | `group-<one-of-wind-states>` | 候補対応・未検証 (`candidate-mapping-untested`) | 状態は Wind の is_state 許可リストに含まれる必要があります。複合ネストと順序は未検証です。 | — |  | `source-inspected` | — |

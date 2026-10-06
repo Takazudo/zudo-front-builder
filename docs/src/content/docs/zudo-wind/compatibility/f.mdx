@@ -12,7 +12,7 @@ Find an exact class or bounded utility root using site search or the alphabetica
 Pinned reference: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
 Reviewed Wind source: `8d2c45114db33d9444e0abb592e80a8ec3d92074`; spec `1.14`.
 Compatibility profile: `wind-preset-free 1.4`.
-Published-release support: Not established by this source inventory. Verification: `source-inspected`; browser `not recorded`; accepted reference `null`.
+Published-release support: Not established by this source inventory. Inventory evidence: `source-inspected`. This table does not carry browser verification results. See the current accepted reference in [the canonical status record](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json).
 
 | Upstream class or root | Wind mapping | Status | Configuration | Behavior and difference | Alternative or issue | Verification status | Environment / report |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -48,15 +48,15 @@ Published-release support: Not established by this source inventory. Verificatio
 | `font-stretch-ultra-expanded` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
 | `forced-color-adjust-auto` | — | `native-css-review-candidate` | No configuration established for this row. | — | Author the retained native form in CSS and reserve its complete class with wind.authoredClasses. | `source-inspected` | — |
 | `forced-color-adjust-none` | — | `native-css-review-candidate` | No configuration established for this row. | — | Author the retained native form in CSS and reserve its complete class with wind.authoredClasses. | `source-inspected` | — |
-| `fill` | `fill-current \| fill-none` | `partial-native-adoption-unverified` | Wind supported subset: exact fill-current and fill-none. Retained exclusions: named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs. No token configuration expands this native subset. | Wind supports exact fill-current and fill-none; retained exclusions: named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs. Source/catalog support alone does not establish browser parity. | Author fill in CSS for retained forms.; https://github.com/Takazudo/zudo-front-builder/issues/3812 | `source-inspected` | — |
-| `filter` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `flex` | `flex-<value>` ([display](../utilities/display.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `flex-grow` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `flex-shrink` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `font` | `font-<value>` ([font-family](../utilities/font-family.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `font-features` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `font-stretch` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
-| `from` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `fill-<value>` | `fill-current \| fill-none` ([svg](../utilities/svg.mdx)) | `partial-native-adoption-unverified` | Wind supported subset: exact fill-current and fill-none. Retained exclusions: named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs. No token configuration expands this native subset. | Wind supports exact fill-current and fill-none; retained exclusions: named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs. Source/catalog support alone does not establish browser parity. | Author fill in CSS for retained forms.; [#3812](https://github.com/Takazudo/zudo-front-builder/issues/3812) | `source-inspected` | — |
+| `filter-<value>` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `flex-<value>` | `flex-<value>` ([display](../utilities/display.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `flex-grow-<value>` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `flex-shrink-<value>` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `font-<value>` | `font-<value>` ([font-family](../utilities/font-family.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `font-features-<value>` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `font-stretch-<value>` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `from-<value>` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
 | `file` | — | `variant-unmapped` | No configuration established for this row. | — |  | `source-inspected` | — |
 | `first` | `first` | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
 | `first-letter` | — | `variant-unmapped` | No configuration established for this row. | — |  | `source-inspected` | — |

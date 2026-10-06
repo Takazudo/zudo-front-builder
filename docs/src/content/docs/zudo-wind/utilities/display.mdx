@@ -19,6 +19,19 @@ Choose display to control whether an element joins the text flow, starts a block
 | `grid` | `display: grid;` |
 | `inline-grid` | `display: inline-grid;` |
 | `hidden` | `display: none;` |
+| `contents` | `display: contents;` |
+| `flow-root` | `display: flow-root;` |
+| `list-item` | `display: list-item;` |
+| `table` | `display: table;` |
+| `table-caption` | `display: table-caption;` |
+| `table-cell` | `display: table-cell;` |
+| `table-column` | `display: table-column;` |
+| `table-column-group` | `display: table-column-group;` |
+| `table-footer-group` | `display: table-footer-group;` |
+| `table-header-group` | `display: table-header-group;` |
+| `table-row` | `display: table-row;` |
+| `table-row-group` | `display: table-row-group;` |
+| `inline-table` | `display: inline-table;` |
 
 <Details title={"Example setup"}>
 
@@ -186,6 +199,59 @@ hidden sets display:none, so the following item occupies its space.
 
 </Details>
 
+### Additional display modes
+
+additional-display uses exact supported Wind utility classes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new\"\u003e\u003cdiv class=\"contents\"\u003e\u003cspan\u003econtents\u003c/span\u003e\u003c/div\u003e\u003cdiv class=\"flow-root\"\u003eflow-root\u003c/div\u003e\u003cspan class=\"list-item\"\u003elist-item\u003c/span\u003e\u003ctable class=\"table\"\u003e\u003ccaption class=\"table-caption\"\u003ecaption\u003c/caption\u003e\u003ccolgroup class=\"table-column-group\"\u003e\u003ccol class=\"table-column\"\u003e\u003c/colgroup\u003e\u003cthead class=\"table-header-group\"\u003e\u003ctr class=\"table-row\"\u003e\u003cth class=\"table-cell\"\u003eheader\u003c/th\u003e\u003c/tr\u003e\u003c/thead\u003e\u003ctbody class=\"table-row-group\"\u003e\u003ctr\u003e\u003ctd\u003ebody\u003c/td\u003e\u003c/tr\u003e\u003c/tbody\u003e\u003ctfoot class=\"table-footer-group\"\u003e\u003ctr\u003e\u003ctd\u003efooter\u003c/td\u003e\u003c/tr\u003e\u003c/tfoot\u003e\u003c/table\u003e\u003cspan class=\"inline-table\"\u003e\u003cspan class=\"table-row\"\u003e\u003cspan class=\"table-cell\"\u003einline table\u003c/span\u003e\u003c/span\u003e\u003c/span\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.contents {\n  display: contents;\n}\n.flow-root {\n  display: flow-root;\n}\n.inline-table {\n  display: inline-table;\n}\n.list-item {\n  display: list-item;\n}\n.table {\n  display: table;\n}\n.table-caption {\n  display: table-caption;\n}\n.table-cell {\n  display: table-cell;\n}\n.table-column {\n  display: table-column;\n}\n.table-column-group {\n  display: table-column-group;\n}\n.table-footer-group {\n  display: table-footer-group;\n}\n.table-header-group {\n  display: table-header-group;\n}\n.table-row {\n  display: table-row;\n}\n.table-row-group {\n  display: table-row-group;\n}\n"} title={"Additional display modes"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "contents",
+        "flow-root",
+        "list-item",
+        "table",
+        "table-caption",
+        "table-cell",
+        "table-column",
+        "table-column-group",
+        "table-footer-group",
+        "table-header-group",
+        "table-row",
+        "table-row-group",
+        "inline-table"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
+```
+
+</Details>
+
 ## Custom and named values
 
 This family has eight exact class names and no value suffixes or custom values. inline, block, inline-block, flex, inline-flex, grid, inline-grid, and hidden map directly to display modes. hidden is display:none; invisible is a separate visibility utility that preserves the box.
@@ -228,6 +294,40 @@ This family has eight exact class names and no value suffixes or custom values. 
 | --- | --- |
 | `block` | `display: block` |
 
+## contents
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.contents` |
+| Class pattern | `contents` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"contents"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `contents` | `display: contents` |
+
 ## flex
 
 | Field | Value |
@@ -261,6 +361,40 @@ This family has eight exact class names and no value suffixes or custom values. 
 | Example class | Expected declarations |
 | --- | --- |
 | `flex` | `display: flex` |
+
+## flow-root
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.flow-root` |
+| Class pattern | `flow-root` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"flow-root"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `flow-root` | `display: flow-root` |
 
 ## grid
 
@@ -465,5 +599,379 @@ This family has eight exact class names and no value suffixes or custom values. 
 | Example class | Expected declarations |
 | --- | --- |
 | `inline-grid` | `display: inline-grid` |
+
+## inline-table
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.inline-table` |
+| Class pattern | `inline-table` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"inline-table"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `inline-table` | `display: inline-table` |
+
+## list-item
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.list-item` |
+| Class pattern | `list-item` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"list-item"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `list-item` | `display: list-item` |
+
+## table
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table` |
+| Class pattern | `table` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table` | `display: table` |
+
+## table-caption
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-caption` |
+| Class pattern | `table-caption` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-caption"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-caption` | `display: table-caption` |
+
+## table-cell
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-cell` |
+| Class pattern | `table-cell` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-cell"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-cell` | `display: table-cell` |
+
+## table-column
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-column` |
+| Class pattern | `table-column` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-column"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-column` | `display: table-column` |
+
+## table-column-group
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-column-group` |
+| Class pattern | `table-column-group` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-column-group"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-column-group` | `display: table-column-group` |
+
+## table-footer-group
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-footer-group` |
+| Class pattern | `table-footer-group` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-footer-group"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-footer-group` | `display: table-footer-group` |
+
+## table-header-group
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-header-group` |
+| Class pattern | `table-header-group` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-header-group"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-header-group` | `display: table-header-group` |
+
+## table-row
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-row` |
+| Class pattern | `table-row` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-row"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-row` | `display: table-row` |
+
+## table-row-group
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.table-row-group` |
+| Class pattern | `table-row-group` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `display` (`1`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `display` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"table-row-group"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `table-row-group` | `display: table-row-group` |
 
 </Details>

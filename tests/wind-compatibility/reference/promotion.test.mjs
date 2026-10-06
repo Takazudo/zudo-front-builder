@@ -547,6 +547,8 @@ test("full corpus identity rejects rehashed reports after fixture, helper, confi
     for (const path of [
       "tests/wind-compatibility/corpus/upstream/display-flex/index.html",
       "scripts/wind-compatibility/corpus-core.mjs",
+      "scripts/wind-compatibility/corpus-provenance.mjs",
+      "scripts/wind-compatibility/spec-identity.mjs",
       "tests/wind-compatibility/empty-token/configurations.json",
       "tests/wind-compatibility/inventory.v1.json",
     ]) {

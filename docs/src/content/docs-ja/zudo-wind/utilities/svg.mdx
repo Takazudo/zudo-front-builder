@@ -1,0 +1,217 @@
+---
+title: SVG の塗り
+description: SVG の塗りと線を currentColor または none に設定します。
+sidebar_position: 68
+generated: true
+---
+
+SVG の塗りを正確なユーティリティクラスで設定します。
+
+## クラスと CSS の早見表
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `fill-none` | `fill: none;` |
+| `stroke-current` | `stroke: currentColor;` |
+| `fill-current` | `fill: currentColor;` |
+| `stroke-none` | `stroke: none;` |
+
+<Details title={"例の設定"}>
+
+これらのクラスにトークン設定は不要です。プレビューの自作 CSS は例とともに表示されます。
+
+</Details>
+
+## 使い方の例
+
+<WindPreviewEnhancer />
+
+### SVG の塗り
+
+svg-paint は対応済みの Wind ユーティリティクラスを使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new\"\u003e\u003csvg width=\"64\" height=\"64\" viewBox=\"0 0 64 64\" role=\"img\" aria-label=\"Outlined circle\"\u003e\u003ccircle class=\"fill-none stroke-current\" cx=\"32\" cy=\"32\" r=\"24\" stroke-width=\"4\"/\u003e\u003c/svg\u003e\u003csvg width=\"64\" height=\"64\" viewBox=\"0 0 64 64\" role=\"img\" aria-label=\"Filled circle\"\u003e\u003ccircle class=\"fill-current stroke-none\" cx=\"32\" cy=\"32\" r=\"24\"/\u003e\u003c/svg\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.fill-current {\n  fill: currentColor;\n}\n.fill-none {\n  fill: none;\n}\n.stroke-current {\n  stroke: currentColor;\n}\n.stroke-none {\n  stroke: none;\n}\n"} title={"SVG の塗り"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "fill-none",
+        "stroke-current",
+        "fill-current",
+        "stroke-none"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
+```
+
+</Details>
+
+## 任意値と名前付きの値
+
+current と none の正確な形式だけが対象です。それ以外の SVG の塗りは CSS に記述してください。
+
+**関連ガイド:** [ユーティリティの文法](../utility-grammar.mdx) · [バリアント](../variants.mdx)
+
+<Details title={"カタログの詳細"}>
+
+## fill-current
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.fill-current` |
+| クラスパターン | `fill-current` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `svg` (`48`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `fill` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"currentColor"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `fill` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `fill-current` | `fill: currentColor` |
+
+## fill-none
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.fill-none` |
+| クラスパターン | `fill-none` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `svg` (`48`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `fill` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `fill` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `fill-none` | `fill: none` |
+
+## stroke-current
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.stroke-current` |
+| クラスパターン | `stroke-current` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `svg` (`48`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `stroke` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"currentColor"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `stroke` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `stroke-current` | `stroke: currentColor` |
+
+## stroke-none
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.stroke-none` |
+| クラスパターン | `stroke-none` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `svg` (`48`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `stroke` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `stroke` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `stroke-none` | `stroke: none` |
+
+</Details>

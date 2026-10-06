@@ -73,7 +73,7 @@ export function validateTargetedExecutionKeys(manifest, profile) {
 
 const compositionDigest = "f1a12520b9f4216ff71013771764b7dcbe87dde88b3e0f9c43b892486f62b153";
 const probePolicyDigest = "8a455866b68c8c2db7702eec5428c73b5379e2b34b5e6b73bad0ee3e87d8b962";
-const reviewedManifestDigest = "2d00b0a51d8e1f026c2ac61b3e7feb61bc2d27d81de4c1947868150c21b35e0d";
+const reviewedManifestDigest = "1ca7568e882aae3c91eea5a8fe233aad4d88420e0f0d387df78a926a7f3f8956";
 const mutationIds = [
   "missing-stylesheet",
   "missing-rule",

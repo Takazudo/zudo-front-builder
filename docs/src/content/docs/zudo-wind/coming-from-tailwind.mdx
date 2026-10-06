@@ -6,6 +6,15 @@ sidebar_position: 9
 
 Search the [class compatibility inventory](./compatibility/index.mdx) for exact implemented and missing upstream registrations. It identifies configuration requirements, syntax limits, source evidence, and separate browser verification. A source-inspected mapping does not establish published-release support.
 
+## Read the compatibility result
+
+- **Absent preset value:** `bg-gray-500` needs a project color named `gray-500` if you choose to keep that spelling. Wind never supplies a palette implicitly.
+- **Configuration required:** `sm:block` needs a configured `sm` breakpoint; nonzero numeric spacing such as `p-4` needs an explicit `spacingUnit`.
+- **Missing native utility:** a `ring-2` or `line-clamp-2` root has no Wind catalog implementation. Write the needed declaration in authored CSS and reserve the complete class where necessary.
+- **Intentional syntax exclusion:** arbitrary properties and `!important` class spellings receive diagnostics. Write those declarations in authored CSS.
+
+Structural classes such as `block`, `hidden`, `inline-flex`, and `mx-auto` work without tokens. `hidden` sets `display: none`; bare `none` is not its utility class. Spacing, colors, and named typography use project values. The exact class table records source-inspected mappings and differences; read its verification column before treating a row as tested support.
+
 ## Migrate in a short pass
 
 The docs site hosting this guide still uses Tailwind for its own chrome. This checklist and its compiled samples describe zudo-wind v1 in your project.
