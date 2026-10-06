@@ -102,15 +102,6 @@ async function save(id, label, bytes) {
 async function record(id, generatedCss, servedCss, observed, response, screenshot = null) {
   const requirement = manifest.required.find((row) => row.id === id);
   if (!requirement) throw Error(`Unknown shipping case ${id}`);
-  if (
-    !servedCss.length ||
-    (generatedCss && (!generatedCss.length || !generatedCss.equals(servedCss)))
-  )
-    throw Error(`Missing or mismatched generated/served CSS: ${id}`);
-  if (response.status !== 200 || response.contentType !== "text/css; charset=utf-8")
-    throw Error(`CSS HTTP response invalid: ${id}: ${JSON.stringify(response)}`);
-  if (digest(observed) !== digest(requirement.expectedObservation))
-    throw Error(`Shipping observation failed: ${id}: ${JSON.stringify(observed)}`);
   const raw = {
     generatedCss: generatedCss ? await save(id, "generated.css", generatedCss) : null,
     servedCss: await save(id, "served.css", servedCss),
@@ -135,6 +126,15 @@ async function record(id, generatedCss, servedCss, observed, response, screensho
       2,
     ) + "\n",
   );
+  if (
+    !servedCss.length ||
+    (generatedCss && (!generatedCss.length || !generatedCss.equals(servedCss)))
+  )
+    throw Error(`Missing or mismatched generated/served CSS: ${id}`);
+  if (response.status !== 200 || response.contentType !== "text/css; charset=utf-8")
+    throw Error(`CSS HTTP response invalid: ${id}: ${JSON.stringify(response)}`);
+  if (digest(observed) !== digest(requirement.expectedObservation))
+    throw Error(`Shipping observation failed: ${id}: ${JSON.stringify(observed)}`);
   results.set(id, {
     id,
     mode: requirement.mode,
@@ -158,7 +158,7 @@ async function record(id, generatedCss, servedCss, observed, response, screensho
   });
 }
 
-async function serveCss(css, callback) {
+async function serveCss(css, callback, probeClass = "bg-brand text-transient") {
   const server = createServer((request, response) => {
     if (request.url === "/style.css") {
       response.writeHead(200, { "Content-Type": "text/css; charset=utf-8" });
@@ -166,7 +166,7 @@ async function serveCss(css, callback) {
     } else if (request.url === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       response.end(
-        '<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head><body><div id="probe" class="bg-brand text-transient">probe</div></body></html>',
+        `<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head><body><div id="probe" class="${probeClass}">probe</div></body></html>`,
       );
     } else {
       response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
@@ -180,6 +180,22 @@ async function serveCss(css, callback) {
   } finally {
     await new Promise((ok) => server.close(ok));
   }
+}
+
+async function computedBackground(css, probeClass) {
+  return serveCss(
+    css,
+    async (origin) => {
+      const page = await browser.newPage();
+      try {
+        await page.goto(origin, { waitUntil: "load" });
+        return page.locator("#probe").evaluate((node) => getComputedStyle(node).backgroundColor);
+      } finally {
+        await page.close();
+      }
+    },
+    probeClass,
+  );
 }
 
 function runBinary(cwd, commands) {
@@ -289,6 +305,10 @@ async function cssPass(project, id) {
     });
     try {
       await page.goto(origin, { waitUntil: "load" });
+      if (id === "token-change")
+        observed.backgroundColor = await page
+          .locator("#probe")
+          .evaluate((node) => getComputedStyle(node).backgroundColor);
       let screenshot = null;
       if (id === "css-initial") {
         const windColors = await page.locator("#probe").evaluate((node) => ({
@@ -324,6 +344,9 @@ async function cssPass(project, id) {
       }
       const response = await page.request.get(`${origin}/style.css`);
       const served = await response.body();
+      const configRaw = ["token-change", "token-removal"].includes(id)
+        ? await save(id, "config.json", await readFile(join(project, "zfb.config.json")))
+        : null;
       await record(
         id,
         css,
@@ -332,6 +355,7 @@ async function cssPass(project, id) {
         { status: response.status(), contentType: response.headers()["content-type"] },
         screenshot,
       );
+      if (configRaw) results.get(id).raw.config = configRaw;
     } finally {
       await page.close();
     }
@@ -623,8 +647,9 @@ async function startDev(project) {
   }
 }
 
-async function devCss(origin, present, absent, label) {
+async function devCss(origin, present, absent, label, expectedBackground = null) {
   let last = "no response";
+  let lastCss = null;
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     try {
@@ -632,22 +657,34 @@ async function devCss(origin, present, absent, label) {
         signal: AbortSignal.timeout(5000),
       });
       const css = Buffer.from(await response.arrayBuffer());
+      lastCss = css;
       const text = css.toString("utf8");
       if (
         response.status === 200 &&
         present.every((needle) => text.includes(needle)) &&
         absent.every((needle) => !text.includes(needle))
-      )
+      ) {
+        const backgroundColor = expectedBackground
+          ? await computedBackground(css, "bg-shipping")
+          : null;
+        if (expectedBackground && backgroundColor !== expectedBackground) {
+          last = `background ${backgroundColor}, expected ${expectedBackground}`;
+          await new Promise((ok) => setTimeout(ok, 100));
+          continue;
+        }
         return {
           css,
+          backgroundColor,
           response: { status: response.status, contentType: response.headers.get("content-type") },
         };
+      }
       last = `HTTP ${response.status}: ${text.slice(0, 2000)}`;
     } catch (error) {
       last = String(error);
     }
     await new Promise((ok) => setTimeout(ok, 100));
   }
+  if (lastCss) await save(`dev-${label}`, "failed.css", lastCss);
   throw Error(`Dev CSS did not reach ${label}: ${last}`);
 }
 
@@ -690,7 +727,13 @@ async function devCases() {
     async function capture(id, mutationPath, oldPathAbsent = null) {
       const contract = stepContract[steps.length];
       if (contract?.id !== id) throw Error(`Dev step out of order: ${id}`);
-      const state = await devCss(warm.origin, contract.present, contract.absent, id);
+      const state = await devCss(
+        warm.origin,
+        contract.present,
+        contract.absent,
+        id,
+        contract.backgroundColor,
+      );
       let mutationBytes = null;
       try {
         mutationBytes = await readFile(join(project, mutationPath));
@@ -716,6 +759,7 @@ async function devCases() {
         id,
         present: contract.present,
         absent: contract.absent,
+        ...(contract.backgroundColor ? { backgroundColor: state.backgroundColor } : {}),
         mutation: { path: mutationPath, sha256: mutationSha256, oldPathAbsent },
         rawInput: mutationBytes ? await save(`dev-${id}`, "input", mutationBytes) : null,
         rawConfig: await save(`dev-${id}`, "config.json", configBytes),
@@ -777,7 +821,12 @@ async function devCases() {
         null,
         final.css,
         {
-          steps: steps.map(({ id, present, absent }) => ({ id, present, absent })),
+          steps: steps.map(({ id, present, absent, backgroundColor }) => ({
+            id,
+            present,
+            absent,
+            ...(backgroundColor ? { backgroundColor } : {}),
+          })),
           cleanFinalMatches: true,
         },
         final.response,

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "wind-shipping-manifest",
-  "revision": 1,
+  "revision": 2,
   "fixtureRoot": "tests/wind-compatibility/shipping/fixtures",
   "configFiles": [
     "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
@@ -75,7 +75,11 @@
       "configuration": "synthetic-preset-free",
       "fixture": "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
       "mechanism": "token-change",
-      "expectedObservation": { "present": [".bg-brand", "#224466"], "absent": ["#336699"] },
+      "expectedObservation": {
+        "present": [".bg-brand"],
+        "absent": [],
+        "backgroundColor": "rgb(34, 68, 102)"
+      },
       "screenshotRequired": false
     },
     {
@@ -85,7 +89,10 @@
       "configuration": "synthetic-preset-free",
       "fixture": "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
       "mechanism": "token-removal",
-      "expectedObservation": { "present": [".bg-brand"], "absent": [".text-transient", "#883344"] },
+      "expectedObservation": {
+        "present": [".bg-brand"],
+        "absent": [".text-transient", "--zw-color-transient"]
+      },
       "screenshotRequired": false
     },
     {
@@ -134,11 +141,16 @@
             "absent": [".bg-edited"]
           },
           { "id": "source-rename", "present": [".bg-renamed"], "absent": [".bg-old"] },
-          { "id": "token-change", "present": ["#224466"], "absent": ["#336699"] },
+          {
+            "id": "token-change",
+            "present": [".bg-shipping"],
+            "absent": [],
+            "backgroundColor": "rgb(34, 68, 102)"
+          },
           {
             "id": "token-removal",
             "present": [".bg-shipping", ".bg-renamed"],
-            "absent": [".text-transient", "#883344"]
+            "absent": [".text-transient", "--zw-color-transient"]
           }
         ],
         "cleanFinalMatches": true
