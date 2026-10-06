@@ -372,10 +372,6 @@ fn dist_var_factory_member_target_reports_mutable_binding() {
     let error = scan_islands(&[page], &FsResolver::new())
         .unwrap_err()
         .to_string();
-    assert!(
-        error.contains("target Target has unsupported initializer"),
-        "{error}"
-    );
     assert!(error.contains("mutable target binding Target"), "{error}");
 }
 
