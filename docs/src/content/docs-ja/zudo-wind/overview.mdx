@@ -6,7 +6,7 @@ sidebar_position: 1
 
 ## コンポーネントを設定して使う
 
-まず、プロジェクトで使う値を設定します。次の `wind` オブジェクトを `zfb.config.ts` または `zfb.config.json` のルートに置くと、例に必要な静的でない値をすべて定義できます。zudo-wind はパレットや余白スケールを用意しません。
+Wind は馴染みのあるユーティリティ表記を使い、値はプロジェクトが定義します。次の完全な `wind` オブジェクトを `zfb.config.json` のルートに置きます。`zfb.config.ts` では同じ `wind` プロパティを指定します。
 
 ```json
 {
@@ -15,15 +15,15 @@ sidebar_position: 1
     "reset": "none",
     "strict": true,
     "tokens": {
-      "spacingUnit": "0.25rem",
-      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "spacing": { "hsp-sm": "0.75rem", "vsp-md": "1.25rem" },
+      "colors": { "surface": "#f4f1ec", "ink": "#203046" },
       "radii": { "card": "0.5rem" }
     }
   }
 }
 ```
 
-`p-4` は `spacingUnit` の 4 倍を使います。`bg-panel`、`text-ink`、`rounded-card` はそれぞれ設定済みのトークンを参照します。これらはマークアップ内に完全な候補として記述され、コンパイラがユーティリティのルールを生成します。
+完全なクラスとして `px-hsp-sm` は横方向の余白、`py-vsp-md` は縦方向の余白、`bg-surface` と `text-ink` は名前付きの色、`rounded-card` は角丸を使います。色はリテラル値なので手書きのカスタムプロパティ宣言は不要です。`block`、`inline-flex`、`hidden` はトークンなしで使えます。display:none は `none` ではなく `hidden` です。`mx-auto` もトークン不要で、物理的な左右の余白を設定します。下のプレビューはこの設定を使い、別途書いた表示用 CSS も示します。
 
 {/* wind-preview: guide-overview/quickstart "プロジェクト値を使うコンポーネント" */}
 

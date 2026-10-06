@@ -62,6 +62,10 @@ export const strings = {
     browse: "用途から選ぶ",
   },
   families: {
+    svg: {
+      title: "SVG の塗り",
+      description: "SVG の塗りと線を currentColor または none に設定します。",
+    },
     display: {
       title: "表示",
       description: "要素の非表示、インライン、ブロック、フレックス、グリッドを選びます。",

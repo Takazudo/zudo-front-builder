@@ -5,15 +5,33 @@
     {
       "id": "quickstart",
       "kind": "positive",
-      "html": "<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">A configured card</h3>\n    <p>Each class is a complete candidate.</p>\n  </article>\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">Project values</h3>\n    <p>Wind emits only the rules these candidates request.</p>\n  </article>\n</div>",
-      "utilities": ["grid", "grid-cols-2", "gap-4", "rounded-card", "bg-panel", "p-4", "text-ink"],
-      "authoredClasses": ["wind-demo-grid", "wind-demo-card", "wind-demo-title"],
+      "html": "<div class=\"wind-demo-grid flex\"><article class=\"wind-demo-card block rounded-card bg-surface px-hsp-sm py-vsp-md\"><h3 class=\"wind-demo-title text-ink\">A configured card</h3><p>Every value is project defined.</p></article><article class=\"wind-demo-card inline-flex rounded-card bg-surface px-hsp-sm py-vsp-md\"><span class=\"text-ink\">Complete classes</span></article></div>",
+      "utilities": [
+        "flex",
+        "block",
+        "inline-flex",
+        "rounded-card",
+        "bg-surface",
+        "px-hsp-sm",
+        "py-vsp-md",
+        "text-ink"
+      ],
+      "authoredClasses": [
+        "wind-demo-grid",
+        "wind-demo-card",
+        "wind-demo-title"
+      ],
       "scaffoldCss": ".wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-card { border: 1px solid #8797aa; }\n.wind-demo-title { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }\n",
       "config": {
         "wind": {
           "tokens": {
+            "spacingUnit": null,
+            "spacing": {
+              "hsp-sm": "0.75rem",
+              "vsp-md": "1.25rem"
+            },
             "colors": {
-              "panel": "#f4f1ec",
+              "surface": "#f4f1ec",
               "ink": "#203046"
             },
             "radii": {

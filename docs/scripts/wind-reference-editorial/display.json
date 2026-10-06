@@ -41,6 +41,71 @@
       "entry": "v1.hidden",
       "candidate": "hidden",
       "example": "display-hidden"
+    },
+    {
+      "entry": "v1.contents",
+      "candidate": "contents",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.flow-root",
+      "candidate": "flow-root",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.list-item",
+      "candidate": "list-item",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table",
+      "candidate": "table",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-caption",
+      "candidate": "table-caption",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-cell",
+      "candidate": "table-cell",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-column",
+      "candidate": "table-column",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-column-group",
+      "candidate": "table-column-group",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-footer-group",
+      "candidate": "table-footer-group",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-header-group",
+      "candidate": "table-header-group",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-row",
+      "candidate": "table-row",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.table-row-group",
+      "candidate": "table-row-group",
+      "example": "additional-display"
+    },
+    {
+      "entry": "v1.inline-table",
+      "candidate": "inline-table",
+      "example": "additional-display"
     }
   ],
   "locales": {
@@ -63,6 +128,11 @@
           "id": "display-hidden",
           "title": "Remove a box from layout",
           "description": "hidden sets display:none, so the following item occupies its space."
+        },
+        {
+          "id": "additional-display",
+          "title": "Additional display modes",
+          "description": "additional-display uses exact supported Wind utility classes."
         }
       ]
     },
@@ -85,6 +155,11 @@
           "id": "display-hidden",
           "title": "箱をレイアウトから取り除く",
           "description": "hidden は display:none を設定するため、次の項目がその場所に詰めて配置されます。"
+        },
+        {
+          "id": "additional-display",
+          "title": "追加の表示モード",
+          "description": "additional-display は対応済みの Wind ユーティリティクラスを使います。"
         }
       ]
     }

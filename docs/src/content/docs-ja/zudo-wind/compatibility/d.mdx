@@ -1,0 +1,49 @@
+---
+title: "Tailwind クラス互換性: D"
+description: "zudo-wind のソースを確認したクラスとユーティリティ基部の一覧です。"
+sidebar_position: 24
+generated: true
+---
+
+完全なクラス名または有限の基部をサイト内検索か下のアルファベット順ページから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。
+
+[互換性一覧](index.mdx) · [移行ガイド](../coming-from-tailwind.mdx)
+
+固定した参照: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
+確認した Wind ソース: `8d2c45114db33d9444e0abb592e80a8ec3d92074`; spec `1.14`.
+互換性プロファイル: `wind-preset-free 1.4`.
+公開版での対応: このソース一覧からは未確定. 検証: `source-inspected`; browser `not recorded`; accepted reference `null`.
+
+| 上流のクラスまたは基部 | Wind への対応 | 状態 | 必要な設定 | 動作と相違 | 代替または課題 | 検証状態 | 環境 / レポート |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `decoration-auto` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-clone` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-dashed` | `decoration-dashed` ([text-decoration-color](../utilities/text-decoration-color.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-dotted` | `decoration-dotted` ([text-decoration-color](../utilities/text-decoration-color.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-double` | `decoration-double` ([text-decoration-color](../utilities/text-decoration-color.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-from-font` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-slice` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-solid` | `decoration-solid` ([text-decoration-color](../utilities/text-decoration-color.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration-wavy` | `decoration-wavy` ([text-decoration-color](../utilities/text-decoration-color.mdx)) | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `diagonal-fractions` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `divide-dashed` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-dotted` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-double` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-none` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-solid` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-x-reverse` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-y-reverse` | — | `excluded-deferred` | No configuration established for this row. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `drop-shadow-none` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `duration-initial` | — | `unmapped-upstream-registration` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `decoration` | `decoration-<value>` ([text-decoration-color](../utilities/text-decoration-color.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `delay` | — | `unmapped-upstream-registration` | Upstream theme keys: --transition-delay, --transition-duration, --ease; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — |  | `source-inspected` | — |
+| `divide` | `divide-<value>` ([divide-color](../utilities/divide-color.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `divide-x` | `divide-x-<value>` ([divide-width](../utilities/divide-width.mdx)) | `requires-review` | Upstream theme keys: --default-border-width, --divide-width, --border-width; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `divide-y` | `divide-y-<value>` ([divide-width](../utilities/divide-width.mdx)) | `requires-review` | Upstream theme keys: --default-border-width, --divide-width, --border-width; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant. | — | https://github.com/Takazudo/zudo-front-builder/issues/3386 | `source-inspected` | — |
+| `drop-shadow` | — | `unmapped-upstream-registration` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `duration` | `duration-<value>` ([duration](../utilities/duration.mdx)) | `requires-review` | Pattern domain requires case-specific source review; no default token guarantee. | — |  | `source-inspected` | — |
+| `dark` | `dark` | `candidate-mapping-untested` | dark enabled | — |  | `source-inspected` | — |
+| `data` | — | `variant-unmapped` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `default` | — | `variant-unmapped` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `details-content` | — | `variant-unmapped` | No configuration established for this row. | — |  | `source-inspected` | — |
+| `disabled` | `disabled` | `candidate-mapping-untested` | No configuration established for this row. | — |  | `source-inspected` | — |

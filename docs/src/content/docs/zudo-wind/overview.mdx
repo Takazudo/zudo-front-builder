@@ -6,7 +6,7 @@ sidebar_position: 1
 
 ## Configure and use a component
 
-Start with the values your project intends to use. Put this `wind` object at the root of `zfb.config.ts` or `zfb.config.json`; it defines every non-static value in the example. zudo-wind supplies no palette or spacing scale.
+Wind uses familiar utility spellings with values chosen by your project. Put this complete `wind` object at the root of `zfb.config.json` (or the equivalent `wind` property in `zfb.config.ts`):
 
 ```json
 {
@@ -15,15 +15,15 @@ Start with the values your project intends to use. Put this `wind` object at the
     "reset": "none",
     "strict": true,
     "tokens": {
-      "spacingUnit": "0.25rem",
-      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "spacing": { "hsp-sm": "0.75rem", "vsp-md": "1.25rem" },
+      "colors": { "surface": "#f4f1ec", "ink": "#203046" },
       "radii": { "card": "0.5rem" }
     }
   }
 }
 ```
 
-`p-4` uses four times `spacingUnit`; `bg-panel`, `text-ink`, and `rounded-card` each name a configured token. These classes are complete candidates in the markup, and the compiler emits their real utility rules.
+Use complete classes: `px-hsp-sm` applies the horizontal spacing token, `py-vsp-md` applies vertical spacing, `bg-surface` and `text-ink` use the named colors, and `rounded-card` uses the radius. The literal color values need no authored custom-property declarations. `block`, `inline-flex`, and `hidden` need no tokens; `hidden` is the display-none utility, not `none`. `mx-auto` also needs no token and uses physical left/right margins. The preview below uses this configuration and shows its separate authored presentation CSS.
 
 {/* wind-preview: guide-overview/quickstart "A component using project values" */}
 
