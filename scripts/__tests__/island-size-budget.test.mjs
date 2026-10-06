@@ -472,27 +472,27 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("3.2.0");
+    expect(linuxContract.toolchain.packageVersion).toBe("4.0.0");
     expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 64661, gzip: 21548 },
-      "scalar-signal": { raw: 64669, gzip: 21546 },
-      "show-for": { raw: 64815, gzip: 21625 },
-      model: { raw: 64660, gzip: 21548 },
-      "blog-theme": { raw: 65010, gzip: 21689 },
-      "json-api": { raw: 64815, gzip: 21637 },
-      "multi-island": { raw: 64937, gzip: 21650 },
+      "event-only": { raw: 65395, gzip: 21846 },
+      "scalar-signal": { raw: 65403, gzip: 21842 },
+      "show-for": { raw: 65549, gzip: 21921 },
+      model: { raw: 65394, gzip: 21846 },
+      "blog-theme": { raw: 65744, gzip: 21990 },
+      "json-api": { raw: 65549, gzip: 21936 },
+      "multi-island": { raw: 65671, gzip: 21948 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 64723, gzip: 21571 },
-      "scalar-signal": { raw: 64731, gzip: 21573 },
-      "show-for": { raw: 64877, gzip: 21660 },
-      model: { raw: 64722, gzip: 21583 },
-      "blog-theme": { raw: 65072, gzip: 21711 },
-      "json-api": { raw: 64877, gzip: 21665 },
-      "multi-island": { raw: 64999, gzip: 21673 },
+      "event-only": { raw: 65457, gzip: 21870 },
+      "scalar-signal": { raw: 65465, gzip: 21875 },
+      "show-for": { raw: 65611, gzip: 21958 },
+      model: { raw: 65456, gzip: 21879 },
+      "blog-theme": { raw: 65806, gzip: 22007 },
+      "json-api": { raw: 65611, gzip: 21962 },
+      "multi-island": { raw: 65733, gzip: 21973 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });
