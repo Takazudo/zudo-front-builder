@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "wind-shipping-manifest",
-  "revision": 2,
+  "revision": 3,
   "fixtureRoot": "tests/wind-compatibility/shipping/fixtures",
   "configFiles": [
     "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",

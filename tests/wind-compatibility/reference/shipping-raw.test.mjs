@@ -7,6 +7,7 @@ import { sha256 } from "../../../scripts/wind-compatibility/reference.mjs";
 import {
   assertReplayedReferenceCss,
   validateShippingRawCase,
+  validShippingCssResponse,
 } from "../../../scripts/wind-compatibility/reference-shipping.mjs";
 
 async function withOutput(run) {
@@ -98,7 +99,7 @@ test("dev evidence rejects missing or reordered warm transitions", async () => {
         rawInput: await save(`input-${index}`, input),
         rawConfig: await save(`config-${index}.json`, JSON.stringify({ phase: index })),
         inputDigest: (index ? "b" : "a").repeat(64),
-        cssResponse: { status: 200, contentType: "text/css; charset=utf-8", sha256: sha256(css) },
+        cssResponse: { status: 200, contentType: "text/css", sha256: sha256(css) },
         rawCss: await save(`step-${index}.css`, css),
       });
     }
@@ -121,7 +122,7 @@ test("dev evidence rejects missing or reordered warm transitions", async () => {
             observed: requirement.expectedObservation,
             cssResponse: {
               status: 200,
-              contentType: "text/css; charset=utf-8",
+              contentType: "text/css",
               sha256: servedCss.sha256,
             },
           }),
@@ -137,7 +138,42 @@ test("dev evidence rejects missing or reordered warm transitions", async () => {
       validateShippingRawCase({ ...result, steps: [...steps].reverse() }, requirement, output, {}),
       /transition identity invalid/,
     );
+    steps.at(-1).cssResponse.contentType = "text/css; charset=iso-8859-1";
+    await assert.rejects(
+      validateShippingRawCase(result, requirement, output, {}),
+      /transition identity invalid/,
+    );
+    steps.at(-1).cssResponse.contentType = "text/css";
+    result.raw.observation = await save(
+      "observation.json",
+      JSON.stringify({
+        caseId: "dev-stylesheet",
+        engine: "chromium",
+        observed: requirement.expectedObservation,
+        cssResponse: {
+          status: 200,
+          contentType: "text/css; charset=utf-8",
+          sha256: servedCss.sha256,
+        },
+      }),
+    );
+    await assert.rejects(
+      validateShippingRawCase(result, requirement, output, {}),
+      /observation or HTTP response invalid/,
+    );
   });
+});
+
+test("shipping CSS HTTP contract allows only the supported CSS media types with status 200", () => {
+  for (const contentType of ["text/css", "text/css; charset=utf-8"])
+    assert.equal(validShippingCssResponse({ status: 200, contentType }), true);
+  for (const response of [
+    { status: 404, contentType: "text/css" },
+    { status: 200, contentType: null },
+    { status: 200, contentType: "text/html" },
+    { status: 200, contentType: "text/css; charset=iso-8859-1" },
+  ])
+    assert.equal(validShippingCssResponse(response), false, JSON.stringify(response));
 });
 
 test("reference replay rejects a caller-hashed Wind substitute", () => {
