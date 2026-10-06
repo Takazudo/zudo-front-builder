@@ -383,7 +383,8 @@ test("seeded control requires exact ordered 10/6/6 corpus membership", async () 
         id: `specimen-${index}`, candidates, canonical: [...new Set(candidates)].sort() })),
       ...widths.map((width, index) => ({ kind: "arbitrary-width",
         id: `generated-${index}`, candidate: `w-[${width}px]` })),
-      ...sources.map((_, index) => ({ kind: "source-string", id: `source-${index}` })),
+      ...sources.map((source, index) => ({ kind: "source-string", id: `source-${index}`,
+        sourceSha256: sha256(source) })),
     ] };
   assert.equal(validateSeededMembership(seeded, policy, scannerIdentity), true);
   assert.throws(() => validateSeededMembership({ ...seeded,
@@ -391,6 +392,10 @@ test("seeded control requires exact ordered 10/6/6 corpus membership", async () 
   assert.throws(() => validateSeededMembership({ ...seeded,
     artifacts: [seeded.artifacts[0], ...seeded.artifacts.slice(0, -1)] },
   policy, scannerIdentity), /membership/);
+  const substituted = seeded.artifacts.map((row) => ({ ...row }));
+  substituted.at(-1).sourceSha256 = sha256("substituted source");
+  assert.throws(() => validateSeededMembership({ ...seeded, artifacts: substituted },
+    policy, scannerIdentity), /source input changed/);
 });
 
 test("corpus and pilot must identify the same browser executable", () => {

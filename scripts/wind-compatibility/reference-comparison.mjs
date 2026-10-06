@@ -195,6 +195,10 @@ export function validateSeededMembership(seeded, policy, scannerIdentity) {
   for (let index = 0; index < widths.length; index++)
     if (seeded.artifacts[specimens.length + index].candidate !== `w-[${widths[index]}px]`)
       throw Error(`Seeded width input changed: ${index}`);
+  for (let index = 0; index < sources.length; index++)
+    if (seeded.artifacts[specimens.length + widths.length + index].sourceSha256 !==
+        sha256(sources[index]))
+      throw Error(`Seeded source input changed: ${index}`);
   return true;
 }
 
