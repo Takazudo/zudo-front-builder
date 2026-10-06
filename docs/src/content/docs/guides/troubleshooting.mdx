@@ -43,7 +43,7 @@ rewrite for the first matching reason:
 | `call site at &lt;loc&gt; spreads positional arguments` | Spell out the positional arguments through the parameter index. |
 | `call site at &lt;loc&gt; passes a non-literal argument` | Pass a plain object literal with no spread, computed key, method, or getter; other plain properties are allowed. |
 | `property &lt;prop&gt; missing at call site &lt;loc&gt;` | Add the selected property exactly once as a static key. |
-| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | Pass one function directly, or render alternatives as separate concrete island boundaries. For a package override, use the [composition seam](../concepts/islands.mdx#composition-seam-for-customisable-package-islands). |
+| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | Pass one function directly, or render alternatives as separate concrete island boundaries. For a package override, use the [composition seam](../concepts/islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands). |
 | `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | Pass a value that resolves to one function definition. If resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
 | `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | Make every call pass the same function definition, or split them into separate fixed-target wrappers. |
 
@@ -51,7 +51,7 @@ Parameter destructuring accepts a plain identifier parameter with no default and
 no rest, default, or nested object pattern. Call-site object literals reject any
 spread, computed key, method, or getter. The property value must be a function
 binding, not a conditional such as `ctx.hostBindings.Panel ?? fallback`. See
-[Factory-provided targets](../concepts/islands.mdx#factory-provided-targets) for
+[Factory-provided targets](../concepts/islands.mdx#boundary-discovery-and-migration-factory-provided-targets) for
 the accepted spellings, call-site proof, and complete composition example.
 
 ## `curl | sh` install fails to resolve a release tag
