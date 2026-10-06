@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "profileId": "wind-preset-free",
   "profileVersion": 1,
-  "profileRevision": 3,
+  "profileRevision": 4,
   "policyDocument": "research/wind-compatibility-profile.md",
   "ratifiedOn": "2026-10-06",
   "decisionIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3826",
   "state": "policy-ratified-evidence-pending",
   "sourceBaseline": {
-    "gitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83",
+    "gitSha": "76b39fbc04f5d914ddbc7278f258185c67b932a2",
     "languageSpecVersion": 1,
-    "languageSpecRevision": 13,
+    "languageSpecRevision": 14,
     "catalogIdentity": "Catalog::v1",
     "evidence": "source-inspected",
     "paths": [
@@ -27,7 +27,9 @@
       "crates/zudo-wind/src/config.rs",
       "crates/zudo-wind/src/diagnostic.rs",
       "crates/zudo-wind/src/variant.rs",
-      "crates/zudo-wind/src/layers.rs"
+      "crates/zudo-wind/src/layers.rs",
+      "crates/zudo-wind/src/catalog/families/statics.rs",
+      "crates/zudo-wind/tests/native_flex_svg_accessibility.rs"
     ]
   },
   "referencePolicy": {
@@ -531,6 +533,12 @@
         "reference": 0
       },
       "compositionRule": "Derive expected nonemptiness from the fixture contract (reset, configured tokens, or resolved utility output), never from actual output. Assert one prelude for the whole nonempty generated stylesheet, including reset/token-only controls, not one per utility/case. An expected empty stylesheet must have none."
+    },
+    {
+      "id": "sr-reversal-clip-model",
+      "caseIds": ["native-not-sr-only", "native-sr-reversal"],
+      "kind": "structural",
+      "scope": "Wind not-sr-only emits clip:auto to reverse its sr-only clip:rect(0,0,0,0); Tailwind sr-only uses clip-path:inset(50%) and its reversal omits clip. Full ordered trees and inactive/active clipping observations are fixed independently."
     }
   ],
   "coverage": {
@@ -662,6 +670,13 @@
       "date": "2026-10-06",
       "issue": 3834,
       "change": "Adopt exact token-free display and appearance statics, and transition contents-gap from the profile 1.2 implementation gap to equivalent-shared while retaining its case ID and original run 37391761485 as historical evidence. Added display and appearance browser corpus cases; no compatibility baseline or reference acceptance is advanced."
+    },
+    {
+      "version": 1,
+      "revision": 4,
+      "date": "2026-10-06",
+      "issue": 3835,
+      "change": "Add bounded native order, basis, SVG presentation and not-sr-only reversal. Add five upstream browser cases and five declaration-only native basis guarantees, preserving all existing pilot/control and targeted obligations. Record exact sr-only clipping-model difference; no baseline or reference acceptance is advanced."
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 Ratified by [#3826](https://github.com/Takazudo/zudo-front-builder/issues/3826),
 2026-10-06. Canonical identity: [`tests/wind-compatibility/profile.json`](../tests/wind-compatibility/profile.json),
-`wind-preset-free`, **version 1, revision 3**. This is a policy commitment with
+`wind-preset-free`, **version 1, revision 4**. This is a policy commitment with
 pending evidence, not an admitted compatibility baseline.
 
 ## Product boundary and authority
@@ -33,8 +33,8 @@ collision/diagnostic review, implementation, and evidence; upstream availability
 alone does not authorize it.
 
 The current implementation source pin for this adoption is
-`6ad10cfcb1eeeca0288d577b88f8a9312828cc83`. Current
-`crates/zudo-wind/src/lib.rs` declares language spec **1**, revision **13**. The
+`76b39fbc04f5d914ddbc7278f258185c67b932a2`. Current
+`crates/zudo-wind/src/lib.rs` declares language spec **1**, revision **14**. The
 historical document revision 2 is not the current implementation revision.
 Inventory separately pins the Wind source SHA, exported catalog digest, and
 language identity.
@@ -291,3 +291,24 @@ no utility or harness, activates no watcher, and changes no release/ruleset poli
 | Profile | Date | Decision |
 | --- | --- | --- |
 | 1 / 1 | 2026-10-06 | #3826: initial bounded preset-free promise, exact required cases/differences and browser scope; source correction for Wind named variables; initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind prelude and numeric scale token rule/layer; no compatibility baseline admitted. |
+
+
+## Flex, SVG and accessibility adoption (#3835)
+
+Profile 1.4 adds native order, basis, SVG presentation and screen-reader
+reversal fixtures. `native-order`, `native-basis`, and `native-svg` run in
+Chromium; standalone `native-not-sr-only` and composed
+`native-sr-reversal` run in Chromium, Firefox and WebKit. The five
+`native-basis-*` empty-token guarantees inspect Wind declarations only; the
+pinned reference compiler omits those forms with an empty theme. No browser
+equivalence is claimed for them.
+
+The exact `sr-reversal-clip-model` difference records Wind's additional
+`clip:auto` reversal of its `clip:rect(0,0,0,0)` screen-reader hiding. The
+reference uses `clip-path:inset(50%)` and omits `clip` in its reversal. Both
+complete CSS trees and inactive/active computed clipping observations are
+fixed. Negative order's literal value, fraction multiplication spelling, and
+SVG current-color serialization remain visible in exact tree comparisons.
+Order arbitrary values, nonzero basis scale and tokens, broader SVG paint
+forms and table layout remain tracked under #3812 with authored CSS
+alternatives.

@@ -1,0 +1,5 @@
+{
+  "caseId": "native-sr-reversal",
+  "reset": "none",
+  "explicitCandidates": ["sr-only", "focus:not-sr-only"]
+}

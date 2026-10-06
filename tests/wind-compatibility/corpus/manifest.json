@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "issue": 3831,
-  "profile": "wind-preset-free@1.3",
+  "profile": "wind-preset-free@1.4",
   "sourceArchiveSha256": "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   "sourceTagCommit": "056a1550721d4bf79ff732d5ab9414fa83f7064f",
   "sourceTag": "v4.3.2",
@@ -65,7 +65,12 @@
     "native-inset-0",
     "native-top-px",
     "native-m-0",
-    "native-p-px"
+    "native-p-px",
+    "native-basis-zero",
+    "native-basis-min",
+    "native-basis-max",
+    "native-basis-fit",
+    "native-basis-content"
   ],
   "upstreamCases": [
     {
@@ -290,14 +295,69 @@
       "candidates": ["appearance-none", "appearance-auto"],
       "engines": ["chromium"],
       "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-order",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "order",
+      "originalInput": "['order-0', 'order-1', '-order-1', 'order-first', 'order-last', 'order-none']",
+      "adaptation": "Select bounded integers and keywords from the upstream order test; isolate six targets and compare computed order.",
+      "candidates": ["order-0", "order-1", "-order-1", "order-first", "order-last", "order-none"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-basis",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "flex basis",
+      "originalInput": "['basis-auto', 'basis-full', 'basis-px', 'basis-1/2']",
+      "adaptation": "Select empty-theme keyword and bounded fraction forms; give each flex item its own target.",
+      "candidates": ["basis-auto", "basis-full", "basis-px", "basis-1/2"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-svg",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "fill and stroke",
+      "originalInput": "['fill-current', 'fill-none', 'stroke-current', 'stroke-none']",
+      "adaptation": "Select only four exact SVG presentation forms and observe separate SVG elements under authored current color.",
+      "candidates": ["fill-current", "fill-none", "stroke-current", "stroke-none"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-not-sr-only",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "screen reader only",
+      "originalInput": "'not-sr-only'",
+      "adaptation": "Select standalone reversal and compare exact declarations and four computed properties.",
+      "candidates": ["not-sr-only"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"]
+    },
+    {
+      "id": "native-sr-reversal",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "screen reader only",
+      "originalInput": "['sr-only', 'focus:not-sr-only']",
+      "adaptation": "Compose current Wind clipping with keyboard focus reversal; compare inactive and active computed properties separately.",
+      "candidates": ["sr-only", "focus:not-sr-only"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"]
     }
   ],
   "counts": {
     "pilot": 15,
     "supplemental": 4,
-    "nativeGuarantees": 18,
-    "upstreamCases": 19,
-    "upstreamProbes": 55,
+    "nativeGuarantees": 23,
+    "upstreamCases": 24,
+    "upstreamProbes": 81,
     "seededSpecimens": 10,
     "mutationControls": 5,
     "seededArbitraryValues": 6,
@@ -489,9 +549,14 @@
         "arbitrary-width-one",
         "arbitrary-width-seventeen",
         "native-display",
-        "native-appearance"
+        "native-appearance",
+        "native-order",
+        "native-basis",
+        "native-svg",
+        "native-not-sr-only",
+        "native-sr-reversal"
       ],
-      "reviewedCount": 19,
+      "reviewedCount": 24,
       "reason": "Each side has a separately reviewed complete ordered CSS tree: Wind from catalog/selector/emit source, reference from pinned upstream compiler and original test adaptation. Every node, declaration, selector, condition and layer is fixed; any unlisted mutation fails."
     },
     {
@@ -511,6 +576,12 @@
       "caseIds": ["space-hidden-children"],
       "reason": "Wind spaces later non-hidden siblings on physical left; Tailwind spaces non-last children on logical inline end, including hidden-attribute and display:none children.",
       "reviewedCount": 1
+    },
+    {
+      "id": "sr-reversal-clip-model",
+      "caseIds": ["native-not-sr-only", "native-sr-reversal"],
+      "reviewedCount": 2,
+      "reason": "Wind reversal includes clip:auto because Wind sr-only uses clip:rect(0,0,0,0), whereas Tailwind sr-only uses clip-path:inset(50%) and its reversal omits clip. Inactive and active computed clipping are independently probed."
     }
   ]
 }

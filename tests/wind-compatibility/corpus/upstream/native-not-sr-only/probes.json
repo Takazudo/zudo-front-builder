@@ -1,0 +1,30 @@
+[
+  {
+    "name": "position",
+    "selector": "#target",
+    "property": "position",
+    "wind": "static",
+    "reference": "static"
+  },
+  {
+    "name": "clip",
+    "selector": "#target",
+    "property": "clip",
+    "wind": "auto",
+    "reference": "auto"
+  },
+  {
+    "name": "clip-path",
+    "selector": "#target",
+    "property": "clip-path",
+    "wind": "none",
+    "reference": "none"
+  },
+  {
+    "name": "white-space",
+    "selector": "#target",
+    "property": "white-space",
+    "wind": "normal",
+    "reference": "normal"
+  }
+]

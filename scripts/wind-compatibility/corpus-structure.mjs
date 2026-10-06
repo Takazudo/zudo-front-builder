@@ -2,7 +2,7 @@ import { digest } from "./reference.mjs";
 import { parseCssStructure } from "./structure.mjs";
 
 const prelude = "@layer zw-reset, zw-tokens, zfb-hi, base, components";
-const reviewedContractsDigest = "027a279d367c6ac1b593f41609acc6b85c776d4c2017e48832276445e9d98e3f";
+const reviewedContractsDigest = "ea35c43b00148af2c0e0a406d1bfd6bd043e88e4a0f61e4d802a42190c892e3a";
 
 export function canonical(node) {
   if (node.kind === "declaration")
@@ -51,7 +51,9 @@ export function compareCorpusStructure(contract, windCss, referenceCss) {
   const expectedWind = expectedWindTree(contract);
   const windPass = digest(wind) === digest(expectedWind);
   const referenceTreeSha256 = digest(reference);
-  const referencePass = referenceTreeSha256 === contract.referenceTreeSha256;
+  const referencePass =
+    referenceTreeSha256 === contract.referenceTreeSha256 &&
+    (!contract.referenceTree || digest(reference) === digest(contract.referenceTree));
   return {
     pass: windPass && referencePass,
     windPass,
@@ -82,6 +84,12 @@ export function validateStructureContracts(contracts, manifest, empty) {
         digest([...new Set(row.candidates)].sort())
     )
       throw Error(`Structural contract incomplete ${row.id}`);
+    if (
+      ["native-not-sr-only", "native-sr-reversal"].includes(row.id) &&
+      (!Array.isArray(contract.referenceTree) ||
+        digest(contract.referenceTree) !== contract.referenceTreeSha256)
+    )
+      throw Error(`Reversal reference tree incomplete ${row.id}`);
     if (
       !contract.rules.every(
         (item) =>

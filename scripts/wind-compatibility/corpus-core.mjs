@@ -4,9 +4,9 @@ import { validatePilot } from "./differential-core.mjs";
 const fixed = Object.freeze({
   pilot: 15,
   supplemental: 4,
-  nativeGuarantees: 18,
-  upstreamCases: 19,
-  upstreamProbes: 55,
+  nativeGuarantees: 23,
+  upstreamCases: 24,
+  upstreamProbes: 81,
   seededSpecimens: 10,
   seededArbitraryValues: 6,
   seededSourceStrings: 6,
@@ -24,6 +24,8 @@ const targetedEngines = new Set([
   "pseudo-before",
   "translate-composed",
   "space-hidden-children",
+  "native-not-sr-only",
+  "native-sr-reversal",
 ]);
 const reviewedTargetedExecutionKeys = Object.freeze({
   "p-0-mapped": ["pilot/p-0-mapped"],
@@ -70,8 +72,8 @@ export function validateTargetedExecutionKeys(manifest, profile) {
 }
 
 const compositionDigest = "f1a12520b9f4216ff71013771764b7dcbe87dde88b3e0f9c43b892486f62b153";
-const probePolicyDigest = "9bc08e42b312f476a59a39355fa260fb07d288302c9a621ffc5f19cbffa78368";
-const reviewedManifestDigest = "8694d907e81664ddc4f7d61f19650f703df1a840b52611ab5f9a892765cb8772";
+const probePolicyDigest = "8a455866b68c8c2db7702eec5428c73b5379e2b34b5e6b73bad0ee3e87d8b962";
+const reviewedManifestDigest = "2d00b0a51d8e1f026c2ac61b3e7feb61bc2d27d81de4c1947868150c21b35e0d";
 const mutationIds = [
   "missing-stylesheet",
   "missing-rule",
@@ -92,7 +94,7 @@ export function validateCorpus(
   if (manifest.schemaVersion !== 1 || manifest.issue !== 3831) throw Error("Unknown corpus policy");
   if (
     manifest.profile !== `wind-preset-free@${profile.profileVersion}.${profile.profileRevision}` ||
-    profile.profileRevision !== 3
+    profile.profileRevision !== 4
   )
     throw Error("Corpus is not bound to the reviewed profile revision");
   validatePilot(profile, pilot, pilotObservations);
@@ -186,6 +188,7 @@ export function validateCorpus(
     "physical-logical-axis-composition": ["padding-axis", "margin-axis"],
     "pseudo-default-content": ["pseudo-before"],
     "space-child-selection-axis": ["space-hidden-children"],
+    "sr-reversal-clip-model": ["native-not-sr-only", "native-sr-reversal"],
   };
   if (
     digest(
