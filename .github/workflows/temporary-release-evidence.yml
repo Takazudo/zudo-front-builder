@@ -1,0 +1,382 @@
+name: Temporary versioned release evidence
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: versioned-release-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Measure versioned island sizes (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert platform and capture pre-build disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/target/island-size"
+          test "$(git rev-parse HEAD)" = 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+          test "$(rustc --version | awk '{print $2}')" = 1.99.0
+          test "$(pnpm --version)" = 12.8.2
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const expected = process.argv[1];
+            const paths = [
+              "packages/zfb", "packages/zfb-runtime", "packages/zfb-adapter-cloudflare",
+              "packages/create-zfb", "crates/zfb-md-wasm/npm",
+              "packages/zfb-darwin-arm64", "packages/zfb-darwin-x64",
+              "packages/zfb-linux-x64-gnu", "packages/zfb-linux-arm64-gnu",
+              "packages/zfb-win32-x64-msvc",
+            ];
+            for (const path of paths) {
+              const manifest = JSON.parse(readFileSync(`${path}/package.json`));
+              if (manifest.version !== expected || manifest.private === true)
+                throw new Error(`${path} is not publishable version ${expected}`);
+            }
+          ' 4.0.0
+          mkdir -p "$out"
+          case "${{ matrix.os }}:$(uname -s):$(uname -m)" in
+            macos-15:Darwin:arm64|ubuntu-24.04:Linux:x86_64) ;;
+            *) echo "unexpected measurement platform" >&2; exit 1 ;;
+          esac
+          node --input-type=module -e '
+            if (process.version !== "v24.14.0") {
+              throw new Error("expected Node v24.14.0, got " + process.version);
+            }
+            if (process.versions.zlib !== "1.3.1-e00f703") {
+              throw new Error("expected zlib 1.3.1-e00f703, got " + process.versions.zlib);
+            }
+            if (!["darwin:arm64", "linux:x64"].includes(process.platform + ":" + process.arch)) {
+              throw new Error("unsupported platform");
+            }
+          '
+          free_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          if [[ ! "$free_kib" =~ ^[0-9]+$ ]]; then
+            echo "unable to determine available disk space before cargo build" >&2
+            exit 1
+          fi
+          free_bytes=$((free_kib * 1024))
+          free_gib="$(awk -v bytes="$free_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+          {
+            printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'runner=%s %s\n' "$(uname -s)" "$(uname -m)"
+            printf 'node=%s\n' "$(node --version)"
+            printf 'zlib=%s\n' "$(node -p 'process.versions.zlib')"
+            printf 'pnpm=%s\n' "$(pnpm --version)"
+            printf 'disk_free_before_cargo_build_bytes=%s\n' "$free_bytes"
+            printf 'disk_free_before_cargo_build_gib=%s\n' "$free_gib"
+            printf 'cargo_incremental=%s\n' "$CARGO_INCREMENTAL"
+            printf 'cargo_build_jobs=%s\n' "$CARGO_BUILD_JOBS"
+          } | tee "$out/runner-provenance.txt"
+
+          minimum_bytes=$((8 * 1024 * 1024 * 1024))
+          debug_reduction_bytes=$((20 * 1024 * 1024 * 1024))
+          if (( free_bytes < minimum_bytes )); then
+            echo "less than 8 GiB is free; refusing to start the native compile" >&2
+            exit 1
+          fi
+          if (( free_bytes < debug_reduction_bytes )); then
+            echo 'CARGO_PROFILE_DEV_DEBUG=0' >> "$GITHUB_ENV"
+            printf 'cargo_profile_dev_debug=0 (reduced: pre-build free disk below 20 GiB)\n' | tee -a "$out/runner-provenance.txt"
+          else
+            printf 'cargo_profile_dev_debug=default\n' | tee -a "$out/runner-provenance.txt"
+          fi
+
+      - name: Build the native zfb binary from this source SHA
+        run: cargo build --locked -p zfb
+
+      - name: Build and pack SDK and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/target/island-size"
+          version="$(node -p "require('./packages/zfb/package.json').version")"
+          mkdir -p "$out/pack" "$out/packed-package" "$out/packed-runtime"
+          pnpm -C packages/zfb build
+          pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb pack --pack-destination "$out/pack"
+          pnpm -C packages/zfb-runtime pack --pack-destination "$out/pack"
+          tar -xzf "$out/pack/takazudo-zfb-$version.tgz" -C "$out/packed-package"
+          tar -xzf "$out/pack/takazudo-zfb-runtime-$version.tgz" -C "$out/packed-runtime"
+
+      - name: Record native build and package provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/target/island-size"
+          version="$(node -p "require('./packages/zfb/package.json').version")"
+          esbuild="$GITHUB_WORKSPACE/crates/zfb/binaries/esbuild/esbuild"
+          zfb="$GITHUB_WORKSPACE/target/debug/zfb"
+          test -x "$esbuild"
+          test -x "$zfb"
+          test "$("$esbuild" --version)" = "0.25.12"
+          {
+            printf '\nrustc=%s\n' "$(rustc --version --verbose | tr '\n' ';')"
+            printf 'cargo=%s\n' "$(cargo --version)"
+            printf 'cargo_profile_dev_debug=%s\n' "${CARGO_PROFILE_DEV_DEBUG:-default}"
+            printf 'zfb_binary='; shasum -a 256 "$zfb"
+            printf 'zfb_binary_file=%s\n' "$(file -b "$zfb")"
+            printf 'esbuild_version=%s\n' "$("$esbuild" --version)"
+            printf 'esbuild_binary='; shasum -a 256 "$esbuild"
+            printf 'hono_version=%s\n' "$(node -p "require('./packages/zfb-runtime/node_modules/hono/package.json').version")"
+            printf 'zfb_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-$version.tgz"
+            printf 'runtime_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-runtime-$version.tgz"
+          } | tee -a "$out/runner-provenance.txt"
+
+      - name: Measure workspace and packed consumer outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/target/island-size"
+          version="$(node -p "require('./packages/zfb/package.json').version")"
+          sha="$(git rev-parse HEAD)"
+          zfb="$GITHUB_WORKSPACE/target/debug/zfb"
+          esbuild="$GITHUB_WORKSPACE/crates/zfb/binaries/esbuild/esbuild"
+          hono="$GITHUB_WORKSPACE/packages/zfb-runtime/node_modules/hono"
+          node research/v3-island-size/measure-real.mjs \
+            --mode workspace \
+            --package "$GITHUB_WORKSPACE/packages/zfb" \
+            --runtime-package "$GITHUB_WORKSPACE/packages/zfb-runtime" \
+            --hono-package "$hono" \
+            --zfb-tarball "$out/pack/takazudo-zfb-$version.tgz" \
+            --runtime-tarball "$out/pack/takazudo-zfb-runtime-$version.tgz" \
+            --zfb "$zfb" \
+            --esbuild "$esbuild" \
+            --source-sha "$sha" \
+            --out "$out/real-workspace"
+          node research/v3-island-size/measure-real.mjs \
+            --mode packed \
+            --package "$out/packed-package/package" \
+            --runtime-package "$out/packed-runtime/package" \
+            --hono-package "$hono" \
+            --zfb-tarball "$out/pack/takazudo-zfb-$version.tgz" \
+            --runtime-tarball "$out/pack/takazudo-zfb-runtime-$version.tgz" \
+            --zfb "$zfb" \
+            --esbuild "$esbuild" \
+            --source-sha "$sha" \
+            --out "$out/real-packed"
+
+      - name: Upload complete versioned island-size evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: versioned-island-size-${{ matrix.os }}
+          path: target/island-size/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Enforce the existing platform contract (expected mismatch requires review)
+        run: |
+          contract=research/v3-island-size/decision-linux-x64.json
+          if [[ "${{ matrix.os }}" == "macos-15" ]]; then contract=research/v3-island-size/decision.json; fi
+          node research/v3-island-size/check-budget.mjs \
+            --workspace target/island-size/real-workspace/measurement.json \
+            --packed target/island-size/real-packed/measurement.json \
+            --contract "$contract"
+
+  webkit:
+    name: Versioned Darwin WebKit
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+      - name: Assert final source and runtime version
+        run: |
+          test "$(git rev-parse HEAD)" = 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+          test "$(node -p "require('./packages/zfb-runtime/package.json').version")" = 4.0.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install webkit
+      - run: pnpm test:webkit-back
+
+  router:
+    name: Production router artifact (${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: before
+            source: b3a2b6eabda8287364b5836563092e3f0bb0927d
+          - label: after
+            source: 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+      - name: Preserve identical measurement instrumentation and select source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/router-harness"
+          cp .github/release-probe/instrument-router-probe.py .github/release-probe/inventory-router-probe.mjs .github/release-probe/compare-router-probe.mjs "$RUNNER_TEMP/router-harness/"
+          git checkout --detach "${{ matrix.source }}"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: release-router-probe
+      - name: Assert matched router toolchain before measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.14.0
+          test "$(node -p 'process.versions.zlib')" = 1.3.1-e00f703
+          test "$(pnpm --version)" = 12.8.2
+          test "$(rustc +1.99.0 --version | awk '{print $2}')" = 1.99.0
+          test "$(node -p "require('./packages/zfb-runtime/node_modules/hono/package.json').version")" = 4.12.25
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const [label, expected] = process.argv.slice(1);
+            const sdk = JSON.parse(readFileSync("packages/zfb/package.json"));
+            const runtime = JSON.parse(readFileSync("packages/zfb-runtime/package.json"));
+            if (sdk.version !== runtime.version || (label === "after" && sdk.version !== expected))
+              throw new Error(`wrong ${label} SDK/runtime version: ${sdk.version}/${runtime.version}`);
+          ' '${{ matrix.label }}' 4.0.0
+      - name: Capture source and add measurement-only output retention
+        run: |
+          set -euo pipefail
+          mkdir -p target/router-evidence
+          git rev-parse HEAD > target/router-evidence/source-sha.txt
+          git status --porcelain > target/router-evidence/original-status.txt
+          test ! -s target/router-evidence/original-status.txt
+          test "$(git rev-parse HEAD)" = '${{ matrix.source }}'
+          mkdir -p target/router-evidence/source-inputs
+          for source in Cargo.lock pnpm-lock.yaml packages/zfb/package.json packages/zfb-runtime/package.json; do
+            install -D -m 0644 "$source" "target/router-evidence/source-inputs/$source"
+          done
+          git show HEAD:crates/zfb/tests/client_router_autoinclude_build.rs | cmp - crates/zfb/tests/client_router_autoinclude_build.rs
+          sha256sum "$RUNNER_TEMP/router-harness/"*.py "$RUNNER_TEMP/router-harness/"*.mjs | sed "s|$RUNNER_TEMP/router-harness/||" > target/router-evidence/harness-hashes.txt
+          python3 "$RUNNER_TEMP/router-harness/instrument-router-probe.py" "$PWD" "$PWD/target/router-evidence"
+          test "$(git diff --name-only)" = crates/zfb/tests/client_router_autoinclude_build.rs
+          git diff --check
+          node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            import { readFileSync } from "node:fs";
+            const out = "target/router-evidence/";
+            const metadata = JSON.parse(readFileSync(out + "instrumentation.json"));
+            const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+            if (metadata.originalSha256 !== hash(out + "source-test-original.rs") ||
+                metadata.instrumentedSha256 !== hash(out + "source-test-instrumented.rs") ||
+                metadata.instrumentedSha256 !== hash("crates/zfb/tests/client_router_autoinclude_build.rs"))
+              throw new Error("retained router test bytes differ from the instrumented source");
+          '
+          git diff -- crates/zfb/tests/client_router_autoinclude_build.rs > target/router-evidence/instrumentation.patch
+          test -s target/router-evidence/instrumentation.patch
+          sha256sum target/router-evidence/instrumentation.patch > target/router-evidence/patch-hash.txt
+          # The checkout remains at the clean product SHA; the hash of that SHA,
+          # exact patch, and shared harness identifies the disposable tested tree.
+          cat target/router-evidence/source-sha.txt target/router-evidence/patch-hash.txt target/router-evidence/harness-hashes.txt | sha256sum | awk '{print $1}' > target/router-evidence/probe-identity.txt
+      - name: Build and retain the real production router fixture
+        run: |
+          set -euo pipefail
+          export ZFB_ROUTER_PROBE_OUT="$PWD/target/router-evidence/dist"
+          cargo +1.99.0 test --locked -p zfb --test client_router_autoinclude_build named_client_router_import_in_ssr_layout_ships_runtime_with_zero_islands -- --exact --nocapture 2>&1 | tee target/router-evidence/test.log
+          node "$RUNNER_TEMP/router-harness/inventory-router-probe.mjs" "$ZFB_ROUTER_PROBE_OUT"
+          sha256sum target/debug/zfb crates/zfb/binaries/esbuild/esbuild Cargo.lock pnpm-lock.yaml packages/zfb/package.json packages/zfb-runtime/package.json > target/router-evidence/input-hashes.txt
+          rustc +1.99.0 --version --verbose > target/router-evidence/rust.txt
+          test "$(crates/zfb/binaries/esbuild/esbuild --version)" = 0.25.12
+          node -p 'JSON.stringify({node:process.version,zlib:process.versions.zlib,pnpm:"12.8.2",rust:"1.99.0",esbuild:"0.25.12",hono:require("./packages/zfb-runtime/node_modules/hono/package.json").version})' > target/router-evidence/toolchain.json
+          pnpm --version > target/router-evidence/pnpm-version.txt
+          crates/zfb/binaries/esbuild/esbuild --version > target/router-evidence/esbuild-version.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: production-router-${{ matrix.label }}
+          path: target/router-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  router-compare:
+    name: Compare original production router artifacts
+    needs: router
+    runs-on: ubuntu-24.04
+    steps:
+      # This checkout is the disposable probe branch, never either product SHA.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+      - name: Assert comparator compression runtime
+        run: |
+          node --input-type=module -e '
+            if (process.version !== "v24.14.0" || process.versions.zlib !== "1.3.1-e00f703" ||
+                process.platform !== "linux" || process.arch !== "x64") {
+              throw new Error(`unexpected comparator runtime: ${process.version} zlib ${process.versions.zlib} ${process.platform}/${process.arch}`);
+            }
+          '
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: production-router-before
+          path: target/router-pair/before
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: production-router-after
+          path: target/router-pair/after
+      - name: Verify provenance and report actual byte differences
+        run: |
+          node .github/release-probe/compare-router-probe.mjs \
+            --before target/router-pair/before --after target/router-pair/after \
+            --baseline b3a2b6eabda8287364b5836563092e3f0bb0927d \
+            --candidate 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43 \
+            --candidate-version 4.0.0 \
+            --out target/router-pair/comparison.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: production-router-comparison
+          path: target/router-pair/comparison.json
+          if-no-files-found: error
+          retention-days: 7
