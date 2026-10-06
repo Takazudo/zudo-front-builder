@@ -629,19 +629,29 @@ async function runCli(args) {
   const existingFiles = readExistingPages(outputDir);
   const compatibility = loadCompatibilityInputs(REPO_ROOT);
   const compatibilityPages = renderCompatibilityPages(
-    compatibility.inventory, catalog, compatibility.profile, options.locale, WIND_REFERENCE_FAMILIES,
+    compatibility.inventory,
+    catalog,
+    compatibility.profile,
+    options.locale,
+    WIND_REFERENCE_FAMILIES,
   );
-  const compatibilityDir = join(REPO_ROOT, options.locale === "en"
-    ? "docs/src/content/docs/zudo-wind/compatibility"
-    : `docs/src/content/docs-${options.locale}/zudo-wind/compatibility`);
+  const compatibilityDir = join(
+    REPO_ROOT,
+    options.locale === "en"
+      ? "docs/src/content/docs/zudo-wind/compatibility"
+      : `docs/src/content/docs-${options.locale}/zudo-wind/compatibility`,
+  );
   const existingCompatibility = readExistingPages(compatibilityDir);
   if (options.check) {
     for (const [dir, expected, existing] of [
-      [outputDir, pages, existingFiles], [compatibilityDir, compatibilityPages, existingCompatibility],
+      [outputDir, pages, existingFiles],
+      [compatibilityDir, compatibilityPages, existingCompatibility],
     ]) {
       const diff = compareGeneratedPages(expected, existing);
-      for (const name of diff.changed) console.error(`would change: ${relative(REPO_ROOT, join(dir, name))}`);
-      for (const name of diff.stale) console.error(`would remove stale generated page: ${relative(REPO_ROOT, join(dir, name))}`);
+      for (const name of diff.changed)
+        console.error(`would change: ${relative(REPO_ROOT, join(dir, name))}`);
+      for (const name of diff.stale)
+        console.error(`would remove stale generated page: ${relative(REPO_ROOT, join(dir, name))}`);
       if (diff.changed.length || diff.stale.length) process.exitCode = 1;
     }
     return;

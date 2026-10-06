@@ -2,9 +2,10 @@
 @layer zw-tokens {
   :root {
     --zw-color-ink: #203046;
-    --zw-color-panel: #f4f1ec;
+    --zw-color-surface: #f4f1ec;
     --zw-radius-card: .5rem;
-    --zw-spacing-unit: .25rem;
+    --zw-spacing-hsp-sm: .75rem;
+    --zw-spacing-vsp-md: 1.25rem;
   }
 }
 .wind-demo-grid {
@@ -21,27 +22,28 @@
   font-size: 1rem;
   font-weight: 600;
 }
-.grid {
-  display: grid;
+.block {
+  display: block;
 }
-.grid-cols-2 {
-  grid-template-columns: repeat(2,minmax(0,1fr));
+.flex {
+  display: flex;
 }
-.p-4 {
-  padding-top: 1rem;
-  padding-right: 1rem;
-  padding-bottom: 1rem;
-  padding-left: 1rem;
+.inline-flex {
+  display: inline-flex;
 }
-.gap-4 {
-  column-gap: 1rem;
-  row-gap: 1rem;
+.px-hsp-sm {
+  padding-left: var(--zw-spacing-hsp-sm);
+  padding-right: var(--zw-spacing-hsp-sm);
+}
+.py-vsp-md {
+  padding-top: var(--zw-spacing-vsp-md);
+  padding-bottom: var(--zw-spacing-vsp-md);
 }
 .text-ink {
   color: var(--zw-color-ink);
 }
-.bg-panel {
-  background-color: var(--zw-color-panel);
+.bg-surface {
+  background-color: var(--zw-color-surface);
 }
 .rounded-card {
   border-top-left-radius: var(--zw-radius-card);

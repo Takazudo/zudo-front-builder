@@ -21,6 +21,10 @@ Set a flex item's sizing behavior when the container has extra or insufficient r
 | `shrink` | `flex-shrink: 1;` |
 | `shrink-0` | `flex-shrink: 0;` |
 | `shrink-[2]` | `flex-shrink: 2;` |
+| `basis-auto` | `flex-basis: auto;` |
+| `basis-1/2` | `flex-basis: calc(100% * 1 / 2);` |
+| `order-first` | `order: -9999;` |
+| `order-last` | `order: 9999;` |
 
 <Details title={"Example setup"}>
 
@@ -190,6 +194,51 @@ shrink items can compress below their starting widths; shrink-0 preserves its wi
 .wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
 .wind-demo-note { color: #53677f; font-size: 0.875rem; }
 .wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### Basis and order
+
+basis-and-order uses exact supported Wind utility classes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new flex\"\u003e\u003cspan class=\"basis-auto order-first\"\u003efirst\u003c/span\u003e\u003cspan class=\"basis-1/2 order-last\"\u003elast\u003c/span\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.flex {\n  display: flex;\n}\n.basis-1\\/2 {\n  flex-basis: calc(100% * 1 / 2);\n}\n.basis-auto {\n  flex-basis: auto;\n}\n.order-first {\n  order: -9999;\n}\n.order-last {\n  order: 9999;\n}\n"} title={"Basis and order"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "basis-auto",
+        "basis-1/2",
+        "order-first",
+        "order-last"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
 ```
 
 </Details>
@@ -407,5 +456,82 @@ flex-1 is 1 1 0%, flex-auto is 1 1 auto, flex-initial is 0 1 auto, and flex-none
 | Example class | Expected declarations |
 | --- | --- |
 | `shrink` | `flex-shrink: 1` |
+
+## basis
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.basis` |
+| Class pattern | `basis-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","fraction"],"arbitraryProperty":null,"allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| Accepted values | `8` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `1` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `flex-basis` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"content"` | `"content"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `flex-basis` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `basis-auto` | `flex-basis: auto` |
+
+## order
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.order` |
+| Class pattern | `order-<suffix>` |
+| Grammar | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `3` |
+| Token categories | No token category |
+| Negative-value policy | `allowed` |
+| Conflict group and rank | `flex-item` (`5`) |
+| Order rank | `2` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `order` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `keyword` | `"first"` | `"-9999"` |
+| `keyword` | `"last"` | `"9999"` |
+| `keyword` | `"none"` | `"0"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `order` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `order-first` | `order: -9999` |
 
 </Details>

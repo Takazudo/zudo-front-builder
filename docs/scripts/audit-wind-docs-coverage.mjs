@@ -138,10 +138,20 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
   const editorial = loadEditorial(join(root, "docs/scripts/wind-reference-editorial"));
   const preview = loadPreviewContext(root, records);
   const compatibility = loadCompatibilityInputs(root);
-  const compatibilityOutputs = Object.fromEntries(["en", "ja"].map((locale) => [
-    locale, renderCompatibilityPages(compatibility.inventory, catalog, compatibility.profile, locale, WIND_REFERENCE_FAMILIES),
-  ]));
-  if (compatibilityOutputs.en.size !== compatibilityOutputs.ja.size) fail("Compatibility locale page parity");
+  const compatibilityOutputs = Object.fromEntries(
+    ["en", "ja"].map((locale) => [
+      locale,
+      renderCompatibilityPages(
+        compatibility.inventory,
+        catalog,
+        compatibility.profile,
+        locale,
+        WIND_REFERENCE_FAMILIES,
+      ),
+    ]),
+  );
+  if (compatibilityOutputs.en.size !== compatibilityOutputs.ja.size)
+    fail("Compatibility locale page parity");
   const entriesById = validateCatalogFamilies(catalog, WIND_REFERENCE_FAMILIES);
   validateLocaleStrings(en, WIND_REFERENCE_FAMILIES);
   validateLocaleStrings(ja, WIND_REFERENCE_FAMILIES);
@@ -243,9 +253,16 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
       ["index.mdx", ...WIND_REFERENCE_FAMILIES.map(({ id }) => `${id}.mdx`)],
       `${locale} utility output inventory`,
     );
-    assertMdxInventory(join(windRoot, "compatibility"), compatibilityOutputs[locale].keys(), `${locale} compatibility output inventory`);
+    assertMdxInventory(
+      join(windRoot, "compatibility"),
+      compatibilityOutputs[locale].keys(),
+      `${locale} compatibility output inventory`,
+    );
     for (const [name, expected] of compatibilityOutputs[locale]) {
-      if (readFileSync(join(windRoot, "compatibility", name), "utf8") !== expected) fail(`${locale} compatibility page stale: ${name}`);
+      const path = join(windRoot, "compatibility", name);
+      if (readFileSync(path, "utf8") !== expected)
+        fail(`${locale} compatibility page stale: ${name}`);
+      await parseSource(path, root);
     }
     const localeMarkers = guideMarkers[locale];
     for (const page of WIND_GUIDE_PAGES) {
@@ -333,7 +350,7 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
     guideRecords: guideIds.size,
     historicalWindRoutes: Object.keys(windBaseline).length,
     negativeExamples: counts.negative,
-    parsedSources: sources.length,
+    parsedSources: sources.length + compatibilityOutputs.en.size + compatibilityOutputs.ja.size,
     positiveExamples: counts.positive,
     utilityFamilies: WIND_REFERENCE_FAMILIES.length,
   };
