@@ -592,7 +592,7 @@ fn html_tsx_and_mdx_keep_the_existing_static_class_extraction_paths() {
             .collect();
         assert_eq!(names.len(), expected.len(), "{kind:?}: {names:?}");
         for candidate in expected {
-            assert!(names.contains(&candidate), "{kind:?}: {names:?}");
+            assert!(names.contains(candidate), "{kind:?}: {names:?}");
         }
     }
 }
