@@ -42,8 +42,10 @@
 //!    against the older host and then mark the route fresh (silent
 //!    stale serve until the next edit, the #1027 lazy race).
 //! 7. [`DevRenderSession::clear_stale_claim`] — only after a
-//!    non-skipped write; ABA-safe: a tick that re-staled the route
-//!    mid-render keeps it stale for the next request.
+//!    non-skipped write with successful content-provenance reconciliation;
+//!    failed reconciliation leaves the written fallback claimable for repair.
+//!    ABA-safe: a host swap supersedes every still-stale route's old claim,
+//!    including a cold route the tick's page selection has not observed yet.
 //!
 //! ## Lock ordering (deadlock-critical)
 //!
@@ -189,7 +191,8 @@ pub(crate) enum LazyRenderOutcome {
     /// rendered it while we waited for the lock.
     Raced,
     /// Rendered and wrote. `written == false` means the bytes were
-    /// byte-identical to the dedup cache's copy (write skipped).
+    /// byte-identical to the dedup cache's copy (write skipped). Failed
+    /// provenance reconciliation keeps this document stale for repair.
     Rendered { written: bool },
     /// Rendered, but the write was skipped (#1027 lazy race): the
     /// guarded write's revalidation found the claim no longer current —
@@ -382,12 +385,17 @@ impl LazyRenderAdapter {
         // exclusion lock, preserving the adapter's renderer -> writer lock
         // ordering while allowing lazy aggregate readers to refresh their
         // provenance on the first request after a content edit.
-        if let Err(error) = self.session.reconcile_content_provenance() {
-            output::warn(format!(
-                "content provenance unavailable after lazy request render; \
-                 content edits will conservatively rebuild all pages: {error:#}"
-            ));
-        }
+        let provenance_current = match self.session.reconcile_content_provenance() {
+            Ok(()) => true,
+            Err(error) => {
+                output::warn(format!(
+                    "content provenance unavailable after lazy request render; \
+                     keeping the document stale for request-time repair; \
+                     content edits will conservatively rebuild all pages: {error:#}"
+                ));
+                false
+            }
+        };
 
         let (claim, bytes) = match rendered {
             Ok(RenderUnderLock::Rendered { claim, bytes }) => (claim, bytes),
@@ -427,7 +435,13 @@ impl LazyRenderAdapter {
                 // Still under the pipeline exclusion, so no tick can re-stale
                 // this exact claim between the ABA-safe clear and recovery
                 // commit. Never retire an obligation for a superseded claim.
-                if self.session.clear_stale_claim(&claim) {
+                // The removal planner may already have captured its consumers
+                // before this request discovered a membership mismatch. Its
+                // late graph wipe cannot widen that plan. Publish useful
+                // fallback bytes, but keep this route claimable until a render
+                // has valid provenance; otherwise old content can stay fresh
+                // forever after a deletion (#3880).
+                if provenance_current && self.session.clear_stale_claim(&claim) {
                     if let Some(publication_resolved) = &self.publication_resolved {
                         publication_resolved(&absolute_output);
                     }
@@ -1219,6 +1233,46 @@ mod tests {
                 .is_none(),
             "the retry cleared the claim"
         );
+    }
+
+    /// #3880: the deletion plan knows the detail consumer but has never
+    /// observed this cold index. The swap must supersede its pending render
+    /// even though the tick does not explicitly re-stale the index.
+    #[test]
+    fn table_swap_supersedes_unselected_cold_index_request() {
+        let (h, hook) = harness_hooked(
+            vec![(
+                PathBuf::from("pages/index.tsx"),
+                vec![entry("/", "index.html")],
+            )],
+            html_response("<html><body>deleted-entry</body></html>"),
+        );
+        h.session.mark_routes_stale([PathBuf::from("index.html")]);
+        let session = h.session.clone();
+        *hook.lock().unwrap() = Some(Box::new(move || {
+            session.bump_stale_generation();
+            // No mark_routes_stale(index): it was absent from the plan.
+        }));
+
+        assert_eq!(
+            h.adapter.render_stale_route("/"),
+            LazyRenderOutcome::WriteSuperseded
+        );
+        assert!(!h.html_root.path().join("index.html").exists());
+        assert!(h.session.claim_stale(Path::new("index.html")).is_some());
+
+        *h.session.renderer_handle().lock().unwrap() = Some(stub_renderer_state(counting_handler(
+            Arc::clone(&h.hits),
+            html_response("<html><body>seed</body></html>"),
+        )));
+        assert_eq!(
+            h.adapter.render_stale_route("/"),
+            LazyRenderOutcome::Rendered { written: true }
+        );
+        let body = std::fs::read_to_string(h.html_root.path().join("index.html")).unwrap();
+        assert!(body.contains("seed"));
+        assert!(!body.contains("deleted-entry"));
+        assert!(h.session.claim_stale(Path::new("index.html")).is_none());
     }
 
     /// Renderer-mutex contention smoke (the issue's deadlock guard): a
