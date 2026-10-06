@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -54,6 +54,44 @@ const plan = makePlan({
   channel: "stable",
   toolchain: { node: "test", lockfileSha256: "e" },
 });
+
+async function bootstrapCliFixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "wind-cli-state-")));
+  try {
+    await cp(fromRoot("scripts/wind-compatibility"), join(root, "scripts/wind-compatibility"), {
+      recursive: true,
+    });
+    await mkdir(join(root, "tests/wind-compatibility/reference"), { recursive: true });
+    await mkdir(join(root, "tests/wind-real-build"), { recursive: true });
+    for (const path of [
+      "tests/wind-real-build/dist-proof.mjs",
+      "tests/wind-compatibility/profile.json",
+      "tests/wind-compatibility/reference/bootstrap.json",
+      "pnpm-lock.yaml",
+    ])
+      await cp(fromRoot(path), join(root, path));
+    for (const [name, value] of [
+      ["accepted.json", { schemaVersion: 1, acceptedReference: null }],
+      ["reviewed-through.json", { schemaVersion: 1, reviewedThrough: null }],
+    ])
+      await writeFile(
+        join(root, "tests/wind-compatibility/reference", name),
+        JSON.stringify(value),
+      );
+    return {
+      root,
+      run: (...args) =>
+        spawnSync(
+          process.execPath,
+          [join(root, "scripts/wind-compatibility/reference-cli.mjs"), "plan", ...args],
+          { cwd: root, encoding: "utf8" },
+        ),
+    };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 test("accepted reference can be verified at the same version without reopening promotion", () => {
   const pinned = { ...candidate, artifactSha256: "a".repeat(64) };
@@ -451,15 +489,62 @@ test("CLI dry run leaves checkout tracked and untracked identity unchanged", asy
       cwd: fromRoot("."),
     }).toString();
   const before = { status: status(), inputs: await identity() };
-  const run = spawnSync(
-    process.execPath,
-    [fromRoot("scripts/wind-compatibility/reference-cli.mjs"), "plan"],
-    { cwd: fromRoot("."), encoding: "utf8" },
-  );
-  assert.equal(run.status, 0, run.stderr);
-  const emitted = JSON.parse(run.stdout);
-  assert.equal(emitted.previousAccepted, null);
-  assert.equal(emitted.previousReviewedThrough, null);
+  const fixture = await bootstrapCliFixture();
+  try {
+    const run = fixture.run();
+    assert.equal(run.status, 0, run.stderr);
+    const emitted = JSON.parse(run.stdout);
+    assert.equal(emitted.changes.bootstrap, true);
+    assert.equal(emitted.previousAccepted, null);
+    assert.equal(emitted.previousReviewedThrough, null);
+
+    // Exercise the post-admission CLI path with isolated, explicit state too.
+    // Neither test setup nor a future live reference advance may alter this case.
+    const accepted = {
+      ...emitted.candidate,
+      channel: "stable",
+      lockfileSha256: emitted.inputs.lock,
+      toolchain: emitted.toolchain,
+      profileId: emitted.profile.id,
+      profileVersion: emitted.profile.version,
+      profileRevision: emitted.profile.revision,
+      profileDigest: emitted.inputs.profile,
+      evidenceReportId: "fixture-comparison",
+      evidenceReportDigest: "fixture-digest",
+    };
+    const acceptedPath = join(fixture.root, "tests/wind-compatibility/reference/accepted.json");
+    const acceptedBytes = JSON.stringify({ schemaVersion: 1, acceptedReference: accepted });
+    await writeFile(acceptedPath, acceptedBytes);
+    const reviewed = {
+      package: accepted.package,
+      version: accepted.version,
+      channel: accepted.channel,
+      integrity: accepted.integrity,
+      disposition: "accept",
+      planId: emitted.planId,
+      assessmentId: "fixture-assessment",
+    };
+    const reviewedPath = join(
+      fixture.root,
+      "tests/wind-compatibility/reference/reviewed-through.json",
+    );
+    const reviewedBytes = JSON.stringify({ schemaVersion: 1, reviewedThrough: reviewed });
+    await writeFile(reviewedPath, reviewedBytes);
+    const rejected = fixture.run();
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /Candidate must advance accepted reference/);
+    const current = fixture.run("--current", "yes");
+    assert.equal(current.status, 0, current.stderr);
+    const verified = JSON.parse(current.stdout);
+    assert.equal(verified.verificationOnly, true);
+    assert.equal(verified.changes.bootstrap, false);
+    assert.deepEqual(verified.previousAccepted, accepted);
+    assert.deepEqual(verified.previousReviewedThrough, reviewed);
+    assert.equal(await readFile(acceptedPath, "utf8"), acceptedBytes);
+    assert.equal(await readFile(reviewedPath, "utf8"), reviewedBytes);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
   assert.deepEqual({ status: status(), inputs: await identity() }, before);
 });
 
@@ -481,6 +566,7 @@ test("all CLI acquisition entry points enforce exact channel before network acce
 });
 
 test("live and catalog bootstrap resolution normalize only matching exact metadata", async () => {
+  const before = await identity();
   const bootstrap = JSON.parse(
     await readFile(fromRoot("tests/wind-compatibility/reference/bootstrap.json"), "utf8"),
   );
@@ -490,8 +576,8 @@ test("live and catalog bootstrap resolution normalize only matching exact metada
     dist: { integrity: bootstrap.integrity, shasum: bootstrap.sha1, tarball: bootstrap.tarball },
     repository: { url: bootstrap.source.repository },
   };
-  const dir = await mkdtemp(join(tmpdir(), "wind-bootstrap-"));
-  const catalogPath = join(dir, "catalog.json");
+  const fixture = await bootstrapCliFixture();
+  const catalogPath = join(fixture.root, "catalog.json");
   const live = async (value) => ({ ok: true, json: async () => value });
   try {
     await writeFile(catalogPath, JSON.stringify(catalog(registry)));
@@ -500,13 +586,10 @@ test("live and catalog bootstrap resolution normalize only matching exact metada
     );
     const fromCatalog = await metadata("4.3.2", { catalog: catalogPath }, bootstrap);
     assert.deepEqual(fromLive, fromCatalog);
-    const cli = spawnSync(
-      process.execPath,
-      [fromRoot("scripts/wind-compatibility/reference-cli.mjs"), "plan", "--catalog", catalogPath],
-      { cwd: fromRoot("."), encoding: "utf8" },
-    );
+    const cli = fixture.run("--catalog", catalogPath);
     assert.equal(cli.status, 0, cli.stderr);
     assert.deepEqual(JSON.parse(cli.stdout).candidate, fromCatalog);
+    assert.equal(JSON.parse(cli.stdout).changes.bootstrap, true);
     assert.equal(fromLive.artifactSha256, bootstrap.verifiedAcquisition.tarballSha256);
     assert.equal(fromLive.source.observedTagCommit, bootstrap.source.observedTagCommit);
     for (const resolved of [fromLive, fromCatalog]) {
@@ -539,6 +622,7 @@ test("live and catalog bootstrap resolution normalize only matching exact metada
       );
     }
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(fixture.root, { recursive: true, force: true });
   }
+  assert.deepEqual(await identity(), before);
 });
