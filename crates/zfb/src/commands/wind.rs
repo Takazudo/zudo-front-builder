@@ -11,6 +11,7 @@ use crate::cli::{
     WindArgs, WindAuditArgs, WindAuditFailOn, WindAuditPlan, WindAuditSeverity, WindCommand,
     WindExplainArgs, WindManifestArgs,
 };
+use crate::commands::build::resolve_input_global_css;
 use crate::commands::css_support::{
     build_standalone_wind_source_plan, command_project_root, configured_wind,
     index_standalone_wind_sources, load_command_config,
@@ -144,11 +145,35 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
         &mut audit_sources,
     );
     append_role_class_audit_source(&plan, &mut audit_sources);
-    let report = zfb_css::audit_with_token_overrides(
+    let mut report = zfb_css::audit_with_token_overrides(
         &zfb_css::AuditInput::new(audit_sources),
         &wind_config,
         token_overrides,
     );
+    if report.outcome == zfb_css::AuditOutcome::Complete {
+        if let Some(path) = resolve_input_global_css(&project_root) {
+            let raw = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read global CSS at {}", path.display()))?;
+            let mut stylesheets = vec![path.clone()];
+            stylesheets.extend(zfb_css::resolve_css_imports(&path, &project_root));
+            let mut contents = Vec::with_capacity(stylesheets.len());
+            for stylesheet in stylesheets {
+                let css = if stylesheet == path {
+                    raw.clone()
+                } else {
+                    std::fs::read_to_string(&stylesheet)
+                        .with_context(|| format!("failed to read {}", stylesheet.display()))?
+                };
+                contents.push((stylesheet, css));
+            }
+            zfb_css::append_default_theme_var_diagnostics(
+                &mut report,
+                &contents,
+                &project_root,
+                wind_config.strict,
+            );
+        }
+    }
     let report = rewrite_role_class_origins(rewrite_manifest_origins(report, &manifest_owners));
     print_audit_and_apply_exit_policy(&report, Some(&coverage), output, fail_on)
 }
