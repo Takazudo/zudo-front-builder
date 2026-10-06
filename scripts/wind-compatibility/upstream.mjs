@@ -137,6 +137,38 @@ export async function assessUpstream(plan, cacheDir, fetcher = fetch) {
     }
     return { value, response };
   }
+  async function verifiedRepositoryId() {
+    const repository = (await json(gh)).value;
+    if (
+      repository?.full_name !== "tailwindlabs/tailwindcss" ||
+      !Number.isSafeInteger(repository.id) ||
+      repository.id <= 0
+    )
+      throw Error("Unverifiable GitHub repository identity");
+    return String(repository.id);
+  }
+  function nextReleaseUrl(link, page, repositoryId) {
+    const entries = [...link.matchAll(/<([^<>]+)>;\s*rel="([^"]+)"/g)],
+      next = entries.filter(([, , relation]) => relation === "next");
+    if (next.length > 1) throw Error("Ambiguous GitHub releases cursor");
+    if (!next.length) return null;
+    const target = new URL(next[0][1]);
+    const allowedPaths = new Set([
+      "/repos/tailwindlabs/tailwindcss/releases",
+      `/repositories/${repositoryId}/releases`,
+    ]);
+    if (
+      target.protocol !== "https:" ||
+      target.origin !== "https://api.github.com" ||
+      target.username ||
+      target.password ||
+      target.hash ||
+      !allowedPaths.has(target.pathname) ||
+      target.search !== `?per_page=100&page=${page + 1}`
+    )
+      throw Error("GitHub releases cursor mismatch");
+    return target.href;
+  }
   async function packageSnapshot(version) {
     const metadata = (await json(`${npm}/${encodeURIComponent(version)}`)).value;
     const meta = validateMetadata(metadata, version);
@@ -292,19 +324,19 @@ export async function assessUpstream(plan, cacheDir, fetcher = fetch) {
           throw Error("npm catalog/candidate mismatch");
       }
       releases = [];
+      const repositoryId = await verifiedRepositoryId();
+      let url = `${gh}/releases?per_page=100&page=1`;
       for (let page = 1; page <= maxReleasePages; page++) {
-        const url = `${gh}/releases?per_page=100&page=${page}`;
         const result = await json(url);
         if (!Array.isArray(result.value)) throw Error("Invalid GitHub releases page");
         releases.push(...result.value);
         const link = result.response.headers?.get?.("link") ?? "";
-        const next = /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+        const next = nextReleaseUrl(link, page, repositoryId);
         if (!next && result.value.length === 100)
           throw Error("Unverifiable GitHub releases last page");
         if (!next) break;
-        if (next !== `${gh}/releases?per_page=100&page=${page + 1}`)
-          throw Error("GitHub releases cursor mismatch");
         if (page === maxReleasePages) throw Error("GitHub releases pagination limit reached");
+        url = next;
       }
       const seen = new Set();
       releases = releases

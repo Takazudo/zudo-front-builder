@@ -1,5 +1,11 @@
 # First bounded reference admission
 
+The exact 4.3.2 to 4.3.3 manual upstream-following procedure and frozen
+target identity are in [`manual-following.md`](./manual-following.md) and
+[`manual-following-target.v1.json`](./manual-following-target.v1.json). That
+round keeps the admitted 4.3.2 state authoritative while it records complete
+4.3.3 assessment and three-way comparison evidence.
+
 ## Live state and history
 
 The current admission state is recorded in [`accepted.json`](./accepted.json)
