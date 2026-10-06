@@ -17,8 +17,7 @@ export const referenceModuleNames = Object.freeze([
 
 export function verifiedReferenceImport(specifier, parentURL, moduleDirectoryURL, names) {
   if (!parentURL?.startsWith(moduleDirectoryURL)) return false;
-  if (!/^\.\/[A-Za-z0-9_.-]+\.mjs$/.test(specifier) ||
-      !names.has(specifier.slice(2)))
+  if (!/^\.\/[A-Za-z0-9_.-]+\.mjs$/.test(specifier) || !names.has(specifier.slice(2)))
     throw Error(`Unsupported reference module import: ${specifier}`);
   return true;
 }
@@ -49,7 +48,8 @@ export function archivedReferenceModules(archiveBytes, pinned = false) {
     }
     at += 512 + Math.ceil(size / 512) * 512;
   }
-  if (pinned &&
+  if (
+    pinned &&
     JSON.stringify([...modules.keys()].sort()) !== JSON.stringify([...referenceModuleNames].sort())
   )
     throw Error("Pinned reference module set differs from reviewed package");
@@ -58,7 +58,12 @@ export function archivedReferenceModules(archiveBytes, pinned = false) {
   return modules;
 }
 
-export async function verifyExtractedReferenceModules(cacheRoot, modulePath, expectedModules, pinned = false) {
+export async function verifyExtractedReferenceModules(
+  cacheRoot,
+  modulePath,
+  expectedModules,
+  pinned = false,
+) {
   if (
     dirname(modulePath) === modulePath ||
     modulePath !== resolve(modulePath) ||

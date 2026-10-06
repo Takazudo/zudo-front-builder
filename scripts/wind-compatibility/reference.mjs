@@ -152,7 +152,9 @@ export async function identity() {
   const result = {};
   for (const [key, path] of Object.entries(paths))
     result[key] = sha256(await readFile(fromRoot(path)));
-  for (const name of (await readdir(fromRoot("scripts/wind-compatibility"))).filter((name) => name.endsWith(".mjs")).sort()) {
+  for (const name of (await readdir(fromRoot("scripts/wind-compatibility")))
+    .filter((name) => name.endsWith(".mjs"))
+    .sort()) {
     const path = `scripts/wind-compatibility/${name}`;
     result[path] = sha256(await readFile(fromRoot(path)));
   }

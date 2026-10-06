@@ -377,20 +377,54 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
     report.complete = false;
     report.exitCode = 1;
   });
-  assert.equal(validatePilotAssessmentEnvelope(observedMismatch, profile, pilot,
-    observations, extraction, identity), true);
-  assert.throws(() => validatePilotEnvelope(observedMismatch, profile, pilot,
-    observations, extraction, identity), /incomplete or invalid admission/);
-  assert.throws(() => validatePilotAssessmentEnvelope(changed((report) => {
-    report.cases.pop();
-    report.complete = false;
-    report.exitCode = 1;
-  }), profile, pilot, observations, extraction, identity), /assessment case rows/);
-  assert.throws(() => validatePilotAssessmentEnvelope(changed((report) => {
-    report.cases[0].outcome = "infrastructure-failure";
-    report.complete = false;
-    report.exitCode = 1;
-  }), profile, pilot, observations, extraction, identity), /truncated or inconsistent/);
+  assert.equal(
+    validatePilotAssessmentEnvelope(
+      observedMismatch,
+      profile,
+      pilot,
+      observations,
+      extraction,
+      identity,
+    ),
+    true,
+  );
+  assert.throws(
+    () =>
+      validatePilotEnvelope(observedMismatch, profile, pilot, observations, extraction, identity),
+    /incomplete or invalid admission/,
+  );
+  assert.throws(
+    () =>
+      validatePilotAssessmentEnvelope(
+        changed((report) => {
+          report.cases.pop();
+          report.complete = false;
+          report.exitCode = 1;
+        }),
+        profile,
+        pilot,
+        observations,
+        extraction,
+        identity,
+      ),
+    /assessment case rows/,
+  );
+  assert.throws(
+    () =>
+      validatePilotAssessmentEnvelope(
+        changed((report) => {
+          report.cases[0].outcome = "infrastructure-failure";
+          report.complete = false;
+          report.exitCode = 1;
+        }),
+        profile,
+        pilot,
+        observations,
+        extraction,
+        identity,
+      ),
+    /truncated or inconsistent/,
+  );
   assert.throws(
     () =>
       validatePilotEnvelope(
@@ -477,9 +511,23 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
 
 test("assessment mode is explicit and cannot be mislabeled", () => {
   const runner = new URL("../../../scripts/wind-compatibility/corpus-runner.mjs", import.meta.url);
-  const result = spawnSync(process.execPath, [runner.pathname, "--wind-binary", "missing",
-    "--wind-build-manifest", "missing", "--output", "/tmp/wind-invalid-assessment-mode",
-    "--pilot-report", "missing", "--assessment-mode", "no"], { encoding: "utf8" });
+  const result = spawnSync(
+    process.execPath,
+    [
+      runner.pathname,
+      "--wind-binary",
+      "missing",
+      "--wind-build-manifest",
+      "missing",
+      "--output",
+      "/tmp/wind-invalid-assessment-mode",
+      "--pilot-report",
+      "missing",
+      "--assessment-mode",
+      "no",
+    ],
+    { encoding: "utf8" },
+  );
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /--assessment-mode must be yes/);
 });

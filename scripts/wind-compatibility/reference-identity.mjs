@@ -7,25 +7,38 @@ import { fromRoot, digest, sha256 } from "./reference.mjs";
 // runner contracts, lockfiles and production sources. Reports live outside the
 // checkout and are not tracked inputs.
 export function testedPaths() {
-  const listed = execFileSync("git", ["ls-files", "--cached", "--others",
-    "--exclude-standard", "-z"], { cwd: fromRoot(".") })
-    .toString("utf8").split("\0").filter(Boolean);
-  return listed.filter((path) =>
-    !["tests/wind-compatibility/reference/accepted.json",
-      "tests/wind-compatibility/reference/reviewed-through.json"].includes(path)
-  ).sort();
+  const listed = execFileSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { cwd: fromRoot(".") },
+  )
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
+  return listed
+    .filter(
+      (path) =>
+        ![
+          "tests/wind-compatibility/reference/accepted.json",
+          "tests/wind-compatibility/reference/reviewed-through.json",
+        ].includes(path),
+    )
+    .sort();
 }
 
 export async function testedInputIdentity() {
-  const files = await Promise.all(testedPaths().map(async (path) =>
-    [path, sha256(await readFile(fromRoot(path)))],
-  ));
+  const files = await Promise.all(
+    testedPaths().map(async (path) => [path, sha256(await readFile(fromRoot(path)))]),
+  );
   return { schemaVersion: 1, files, digest: `sha256:${digest(files)}` };
 }
 
 export function sameTestedInputs(a, b) {
-  return a?.schemaVersion === 1 && b?.schemaVersion === 1 &&
+  return (
+    a?.schemaVersion === 1 &&
+    b?.schemaVersion === 1 &&
     a.digest === `sha256:${digest(a.files)}` &&
     b.digest === `sha256:${digest(b.files)}` &&
-    a.digest === b.digest;
+    a.digest === b.digest
+  );
 }

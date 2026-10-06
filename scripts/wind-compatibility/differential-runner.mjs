@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile, readdir, stat, unlink, realpath, lstat } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  readdir,
+  stat,
+  unlink,
+  realpath,
+  lstat,
+} from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
@@ -22,7 +31,12 @@ import {
   validatePilot,
 } from "./differential-core.mjs";
 import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
-import { archivedReferenceModules, verifiedReferenceImport, verifyExtractedReferenceModules, verifyPinnedReferenceModuleGraph } from "./reference-module-graph.mjs";
+import {
+  archivedReferenceModules,
+  verifiedReferenceImport,
+  verifyExtractedReferenceModules,
+  verifyPinnedReferenceModuleGraph,
+} from "./reference-module-graph.mjs";
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
 import {
   digest,
@@ -160,7 +174,8 @@ function tarMember(bytes, filename) {
 export async function loadReference(cache, candidate) {
   if (candidate?.package !== "tailwindcss") throw Error("Reference package must be tailwindcss");
   exactVersion(candidate.version);
-  const expectedSha = candidate.artifactSha256 ?? candidate.sha256 ?? candidate.verifiedAcquisition?.tarballSha256;
+  const expectedSha =
+    candidate.artifactSha256 ?? candidate.sha256 ?? candidate.verifiedAcquisition?.tarballSha256;
   if (!/^[0-9a-f]{64}$/.test(expectedSha ?? "")) throw Error("Reference artifact SHA-256 required");
   const pinned = candidate.version === "4.3.2";
   if (pinned && expectedSha !== referenceSha) throw Error("Bootstrap artifact digest changed");
@@ -181,14 +196,17 @@ export async function loadReference(cache, candidate) {
     await mkdir(dirname(modulePath), { recursive: true });
     const physicalCache = await realpath(cache);
     const physicalDist = await realpath(dirname(modulePath));
-    if (!physicalDist.startsWith(`${physicalCache}/`) ||
-        !(await lstat(dirname(modulePath))).isDirectory() ||
-        !(await lstat(dirname(dirname(modulePath)))).isDirectory())
+    if (
+      !physicalDist.startsWith(`${physicalCache}/`) ||
+      !(await lstat(dirname(modulePath))).isDirectory() ||
+      !(await lstat(dirname(dirname(modulePath)))).isDirectory()
+    )
       throw Error("Reference extraction directory escapes or aliases cache");
     for (const [name, content] of modules) {
       const path = await outsideCheckout(resolve(dirname(modulePath), name));
       await writeFile(path, content, { flag: "wx" }).catch(async (error) => {
-        if (error.code !== "EEXIST" || sha256(await readFile(path)) !== sha256(content)) throw error;
+        if (error.code !== "EEXIST" || sha256(await readFile(path)) !== sha256(content))
+          throw error;
       });
     }
   }
@@ -202,8 +220,10 @@ export async function loadReference(cache, candidate) {
       resolve(specifier, context, nextResolve) {
         if (verifiedReferenceImport(specifier, context.parentURL, moduleDirectoryUrl, verified)) {
           const resolved = nextResolve(specifier, context);
-          if (!resolved.url.startsWith(moduleDirectoryUrl) ||
-              !verified.has(resolved.url.slice(moduleDirectoryUrl.length)))
+          if (
+            !resolved.url.startsWith(moduleDirectoryUrl) ||
+            !verified.has(resolved.url.slice(moduleDirectoryUrl.length))
+          )
             throw Error(`Reference import escapes verified module graph: ${specifier}`);
           return resolved;
         }

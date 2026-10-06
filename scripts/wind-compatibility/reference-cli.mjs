@@ -17,9 +17,21 @@ import {
   validatePlan,
 } from "./reference.mjs";
 import { assessUpstream } from "./upstream.mjs";
-import { compareOutputs, executeReferenceRun, requirePassingCurrent, validateRun } from "./reference-comparison.mjs";
-import { assertStableTransition, recoverTransition, validateAssessment, validateComparison,
-  transition, upstreamReviewTransition, writeTransitionAtomically } from "./reference-promotion.mjs";
+import {
+  compareOutputs,
+  executeReferenceRun,
+  requirePassingCurrent,
+  validateRun,
+} from "./reference-comparison.mjs";
+import {
+  assertStableTransition,
+  recoverTransition,
+  validateAssessment,
+  validateComparison,
+  transition,
+  upstreamReviewTransition,
+  writeTransitionAtomically,
+} from "./reference-promotion.mjs";
 import { testedInputIdentity } from "./reference-identity.mjs";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -162,21 +174,39 @@ async function main() {
       const output = await outsideCheckout(resolve(opts.output));
       await mkdir(output, { recursive: true });
       const referencePath = resolve(output, "accepted-reference.json");
-      await writeFile(referencePath, JSON.stringify(state.accepted.acceptedReference) + "\n", { flag: "wx" });
-      await executeReferenceRun({ output, referenceFile: referencePath,
-        binary: opts["wind-binary"], buildManifest: opts["wind-build-manifest"], cache: opts.cache });
+      await writeFile(referencePath, JSON.stringify(state.accepted.acceptedReference) + "\n", {
+        flag: "wx",
+      });
+      await executeReferenceRun({
+        output,
+        referenceFile: referencePath,
+        binary: opts["wind-binary"],
+        buildManifest: opts["wind-build-manifest"],
+        cache: opts.cache,
+      });
       const manifest = await readJson(fromRoot("tests/wind-compatibility/corpus/manifest.json"));
-      requirePassingCurrent(await validateRun(output, state.accepted.acceptedReference,
-        await identity(), profile, manifest, { cache: opts.cache, strictArtifacts: true }));
+      requirePassingCurrent(
+        await validateRun(
+          output,
+          state.accepted.acceptedReference,
+          await identity(),
+          profile,
+          manifest,
+          { cache: opts.cache, strictArtifacts: true },
+        ),
+      );
       process.stdout.write(`${output}\n`);
     } else {
-      if (!opts.plan || !opts.assessment || !opts.cache ||
-          (command !== "review" && !opts.output))
-        throw Error(`${command} requires plan, assessment, cache${command === "review" ? "" : " and output"}`);
+      if (!opts.plan || !opts.assessment || !opts.cache || (command !== "review" && !opts.output))
+        throw Error(
+          `${command} requires plan, assessment, cache${command === "review" ? "" : " and output"}`,
+        );
       const inputPlan = await readJson(resolve(opts.plan));
       const hashes = await identity();
       const plan = validatePlan(inputPlan, hashes, state, inputPlan.candidate, {
-        node: process.version, lockfile: paths.lock, lockfileSha256: hashes.lock,
+        node: process.version,
+        lockfile: paths.lock,
+        lockfileSha256: hashes.lock,
       });
       const assessment = await readJson(resolve(opts.assessment));
       const artifactSha256 = await validateAssessment(assessment, plan, opts.cache);
@@ -186,56 +216,108 @@ async function main() {
         if (!opts.classification) throw Error("review requires --classification");
         const classification = await readJson(resolve(opts.classification));
         const finalSha = execFileSync("git", ["rev-parse", "HEAD"], {
-          cwd: fromRoot("."), encoding: "utf8",
+          cwd: fromRoot("."),
+          encoding: "utf8",
         }).trim();
-        const next = upstreamReviewTransition({ plan, assessment, classification,
-          state, finalSha, testedInputs: await testedInputIdentity() });
+        const next = upstreamReviewTransition({
+          plan,
+          assessment,
+          classification,
+          state,
+          finalSha,
+          testedInputs: await testedInputIdentity(),
+        });
         if (opts.apply === "yes") await writeTransitionAtomically(next, state);
         else if (opts.apply !== undefined) throw Error("--apply must be yes when supplied");
-        process.stdout.write(`${JSON.stringify({ dryRun: opts.apply !== "yes", next }, null, 2)}\n`);
+        process.stdout.write(
+          `${JSON.stringify({ dryRun: opts.apply !== "yes", next }, null, 2)}\n`,
+        );
       } else {
-      const output = await outsideCheckout(resolve(
-        command === "promote" ? (opts["artifact-root"] ?? opts.output) : opts.output));
-      if (command === "compare") {
-        if (!opts["wind-binary"] || !opts["wind-build-manifest"])
-          throw Error("compare requires Wind binary and build manifest");
-        await mkdir(output, { recursive: true });
-        const candidatePath = resolve(output, "candidate-reference.json");
-        await writeFile(candidatePath, JSON.stringify(candidate) + "\n", { flag: "wx" });
-        await executeReferenceRun({ output: resolve(output, "candidate"),
-          referenceFile: candidatePath, binary: opts["wind-binary"],
-          buildManifest: opts["wind-build-manifest"], cache: opts.cache,
-          assessmentMode: true });
-        if (accepted) {
-          const acceptedPath = resolve(output, "accepted-reference.json");
-          await writeFile(acceptedPath, JSON.stringify(accepted) + "\n", { flag: "wx" });
-          await executeReferenceRun({ output: resolve(output, "accepted"),
-            referenceFile: acceptedPath, binary: opts["wind-binary"],
-            buildManifest: opts["wind-build-manifest"], cache: opts.cache });
+        const output = await outsideCheckout(
+          resolve(command === "promote" ? (opts["artifact-root"] ?? opts.output) : opts.output),
+        );
+        if (command === "compare") {
+          if (!opts["wind-binary"] || !opts["wind-build-manifest"])
+            throw Error("compare requires Wind binary and build manifest");
+          await mkdir(output, { recursive: true });
+          const candidatePath = resolve(output, "candidate-reference.json");
+          await writeFile(candidatePath, JSON.stringify(candidate) + "\n", { flag: "wx" });
+          await executeReferenceRun({
+            output: resolve(output, "candidate"),
+            referenceFile: candidatePath,
+            binary: opts["wind-binary"],
+            buildManifest: opts["wind-build-manifest"],
+            cache: opts.cache,
+            assessmentMode: true,
+          });
+          if (accepted) {
+            const acceptedPath = resolve(output, "accepted-reference.json");
+            await writeFile(acceptedPath, JSON.stringify(accepted) + "\n", { flag: "wx" });
+            await executeReferenceRun({
+              output: resolve(output, "accepted"),
+              referenceFile: acceptedPath,
+              binary: opts["wind-binary"],
+              buildManifest: opts["wind-build-manifest"],
+              cache: opts.cache,
+            });
+          }
+          const comparison = await compareOutputs({
+            plan,
+            assessment,
+            output,
+            candidate,
+            accepted,
+            input: hashes,
+            cache: opts.cache,
+          });
+          await writeFile(
+            resolve(output, "comparison.json"),
+            JSON.stringify(comparison, null, 2) + "\n",
+            { flag: "wx" },
+          );
+          process.stdout.write(`${resolve(output, "comparison.json")}\n`);
+        } else {
+          if (!opts.classification) throw Error("promote requires --classification");
+          const comparison = await readJson(resolve(output, "comparison.json"));
+          await validateComparison({
+            comparison,
+            plan,
+            assessment,
+            output,
+            candidate,
+            accepted,
+            input: hashes,
+            cache: opts.cache,
+            strictArtifacts:
+              comparison.candidate.passing === true &&
+              (!comparison.accepted || comparison.accepted.passing === true),
+          });
+          const classification = await readJson(resolve(opts.classification));
+          const shipping = opts.shipping ? await readJson(resolve(opts.shipping)) : null;
+          const finalSha = execFileSync("git", ["rev-parse", "HEAD"], {
+            cwd: fromRoot("."),
+            encoding: "utf8",
+          }).trim();
+          const next = await transition({
+            plan,
+            assessment,
+            comparison,
+            classification,
+            shipping,
+            shippingOutput: opts["shipping-output"],
+            state,
+            finalSha,
+          });
+          if (opts.apply === "yes") await writeTransitionAtomically(next, state);
+          else if (opts.apply !== undefined) throw Error("--apply must be yes when supplied");
+          process.stdout.write(
+            `${JSON.stringify(
+              { dryRun: opts.apply !== "yes", next, testedInputs: await testedInputIdentity() },
+              null,
+              2,
+            )}\n`,
+          );
         }
-        const comparison = await compareOutputs({ plan, assessment, output, candidate,
-          accepted, input: hashes, cache: opts.cache });
-        await writeFile(resolve(output, "comparison.json"), JSON.stringify(comparison, null, 2) + "\n", { flag: "wx" });
-        process.stdout.write(`${resolve(output, "comparison.json")}\n`);
-      } else {
-        if (!opts.classification) throw Error("promote requires --classification");
-        const comparison = await readJson(resolve(output, "comparison.json"));
-        await validateComparison({ comparison, plan, assessment, output, candidate,
-          accepted, input: hashes, cache: opts.cache,
-          strictArtifacts: comparison.candidate.passing === true &&
-            (!comparison.accepted || comparison.accepted.passing === true) });
-        const classification = await readJson(resolve(opts.classification));
-        const shipping = opts.shipping ? await readJson(resolve(opts.shipping)) : null;
-        const finalSha = execFileSync("git", ["rev-parse", "HEAD"], {
-          cwd: fromRoot("."), encoding: "utf8",
-        }).trim();
-        const next = await transition({ plan, assessment, comparison, classification,
-          shipping, shippingOutput: opts["shipping-output"], state, finalSha });
-        if (opts.apply === "yes") await writeTransitionAtomically(next, state);
-        else if (opts.apply !== undefined) throw Error("--apply must be yes when supplied");
-        process.stdout.write(`${JSON.stringify({ dryRun: opts.apply !== "yes", next,
-          testedInputs: await testedInputIdentity() }, null, 2)}\n`);
-      }
       }
     }
   } else if (command === "acquire") {

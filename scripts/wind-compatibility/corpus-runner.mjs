@@ -222,15 +222,41 @@ async function pilotResults(
     browserEnvironment,
   });
   if (assessmentMode) {
-    validatePilotAssessmentEnvelope(report, profile, pilotManifest, pilotObservations,
-      extractionManifest, expectedIdentity);
-    await validatePilotAssessmentArtifacts(report, path, profile, pilotObservations,
-      reference, scanner);
+    validatePilotAssessmentEnvelope(
+      report,
+      profile,
+      pilotManifest,
+      pilotObservations,
+      extractionManifest,
+      expectedIdentity,
+    );
+    await validatePilotAssessmentArtifacts(
+      report,
+      path,
+      profile,
+      pilotObservations,
+      reference,
+      scanner,
+    );
   } else {
-    validatePilotEnvelope(report, profile, pilotManifest, pilotObservations,
-      extractionManifest, expectedIdentity);
-    await validatePilotArtifacts(report, path, profile, pilotManifest, pilotObservations,
-      extractionManifest, reference, scanner);
+    validatePilotEnvelope(
+      report,
+      profile,
+      pilotManifest,
+      pilotObservations,
+      extractionManifest,
+      expectedIdentity,
+    );
+    await validatePilotArtifacts(
+      report,
+      path,
+      profile,
+      pilotManifest,
+      pilotObservations,
+      extractionManifest,
+      reference,
+      scanner,
+    );
   }
   const results = {};
   const engine = browserEnvironment.name;
@@ -931,7 +957,11 @@ async function main(argv) {
     readJson(fromRoot("tests/wind-compatibility/extraction/manifest.json")),
     readJson(resolve(corpusRoot, "upstream/manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/empty-token/configurations.json")),
-    readJson(args.reference ? resolve(args.reference) : fromRoot("tests/wind-compatibility/reference/bootstrap.json")),
+    readJson(
+      args.reference
+        ? resolve(args.reference)
+        : fromRoot("tests/wind-compatibility/reference/bootstrap.json"),
+    ),
     readJson(fromRoot("tests/wind-compatibility/inventory.v1.json")),
     readJson(fromRoot("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json")),
     readJson(resolve(corpusRoot, "structure-contracts.json")),
@@ -1050,9 +1080,19 @@ async function main(argv) {
       };
     });
     const differencesPass = differenceSummary.every((row) => row.pass);
-    const identity = await currentCorpusIdentity({ manifest, profile, contracts,
-      pilotObservations, executed, engine: args.engine, source,
-      reference, scanner, windBuild, browserEnvironment });
+    const identity = await currentCorpusIdentity({
+      manifest,
+      profile,
+      contracts,
+      pilotObservations,
+      executed,
+      engine: args.engine,
+      source,
+      reference,
+      scanner,
+      windBuild,
+      browserEnvironment,
+    });
     report = {
       schemaVersion: 1,
       kind: "wind-independent-corpus",
