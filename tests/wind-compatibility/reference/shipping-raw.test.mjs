@@ -96,6 +96,7 @@ test("dev evidence rejects missing or reordered warm transitions", async () => {
           oldPathAbsent: null,
         },
         rawInput: await save(`input-${index}`, input),
+        rawConfig: await save(`config-${index}.json`, JSON.stringify({ phase: index })),
         inputDigest: (index ? "b" : "a").repeat(64),
         cssResponse: { status: 200, contentType: "text/css; charset=utf-8", sha256: sha256(css) },
         rawCss: await save(`step-${index}.css`, css),

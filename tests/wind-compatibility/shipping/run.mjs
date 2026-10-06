@@ -666,12 +666,14 @@ async function devCases() {
         components: await treeDigest(join(project, "components")),
         pages: await treeDigest(join(project, "pages")),
       });
+      const configBytes = await readFile(configPath);
       steps.push({
         id,
         present: contract.present,
         absent: contract.absent,
         mutation: { path: mutationPath, sha256: mutationSha256, oldPathAbsent },
         rawInput: mutationBytes ? await save(`dev-${id}`, "input", mutationBytes) : null,
+        rawConfig: await save(`dev-${id}`, "config.json", configBytes),
         inputDigest,
         cssResponse: { ...state.response, sha256: sha256(state.css) },
         rawCss: await save(`dev-${id}`, "served.css", state.css),

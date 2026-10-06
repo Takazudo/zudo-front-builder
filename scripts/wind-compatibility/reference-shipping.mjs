@@ -297,11 +297,19 @@ export async function validateShippingRawCase(result, requirement, output, repor
         step.cssResponse?.status !== 200 ||
         step.cssResponse?.contentType !== "text/css; charset=utf-8" ||
         !step.rawCss?.path ||
-        !/^[0-9a-f]{64}$/.test(step.rawCss.sha256 ?? "")
+        !/^[0-9a-f]{64}$/.test(step.rawCss.sha256 ?? "") ||
+        !step.rawConfig?.path ||
+        !/^[0-9a-f]{64}$/.test(step.rawConfig.sha256 ?? "")
       )
         throw Error(`Dev transition identity invalid: ${step?.id}`);
       const stepPath = await outsideCheckout(resolve(output, step.rawCss.path));
       const stepCss = await readFile(stepPath);
+      const configPath = await outsideCheckout(resolve(output, step.rawConfig.path));
+      if (
+        !configPath.startsWith(`${output}/`) ||
+        sha256(await readFile(configPath)) !== step.rawConfig.sha256
+      )
+        throw Error(`Dev config input changed: ${step.id}`);
       if (stepIndex === 3) {
         if (step.rawInput !== null) throw Error("Removed dev source retained as an input");
       } else {
