@@ -33,7 +33,6 @@ pub struct ForeignFamily {
 
 use ForeignValue::{Any, Arbitrary, Bare, Integer, Keyword, Token};
 
-const DISPLAY: &str = "a display declaration";
 const GRADIENT: &str = "a background-image gradient declaration";
 const LINEAR_GRADIENT: &str = "a background-image: linear-gradient(...) declaration";
 const RADIAL_GRADIENT: &str = "a background-image: radial-gradient(...) declaration";
