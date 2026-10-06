@@ -319,7 +319,7 @@ fn align_content_migration_names_have_property_specific_guidance_and_emit_no_css
             "{text}"
         );
         assert_eq!(
-            result.diagnostics[0].origin.as_ref(),
+            result.diagnostics[0].origin.as_deref(),
             Some(&source(SourcePositionKind::Class)),
             "{text}"
         );
