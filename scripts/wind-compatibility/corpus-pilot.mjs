@@ -18,6 +18,7 @@ import { documentFor, matchesExpected } from "./browser-adapter.mjs";
 import { scanOriginal } from "./oxide-scanner.mjs";
 import { expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
 import { digest, fromRoot, readJson, sha256 } from "./reference.mjs";
+import { currentWindSpecIdentity } from "./spec-identity.mjs";
 
 const pilotAdapters = [
   "differential-runner.mjs",
@@ -27,6 +28,7 @@ const pilotAdapters = [
   "oxide-scanner.mjs",
   "reference.mjs",
   "reference-module-graph.mjs",
+  "spec-identity.mjs",
 ];
 const exact = (actual, expected, label) => {
   if (digest(actual) !== digest(expected)) throw Error(`Pilot ${label} differs from current input`);
@@ -329,8 +331,7 @@ export async function currentPilotIdentity({
   );
   return {
     windBuild,
-    windSpecVersion: 1,
-    windSpecRevision: 13,
+    ...currentWindSpecIdentity(profile),
     catalogDigest: await treeDigest(fromRoot("crates/zudo-wind/src/catalog")),
     reference: reference.identity,
     scanner: scanner.identity,

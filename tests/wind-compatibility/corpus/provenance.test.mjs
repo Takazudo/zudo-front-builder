@@ -6,7 +6,11 @@ import {
   archiveName,
   verifyUpstreamProvenance,
 } from "../../../scripts/wind-compatibility/corpus-provenance.mjs";
-import { assertWindSpecIdentity } from "../../../scripts/wind-compatibility/spec-identity.mjs";
+import {
+  assertWindSpecIdentity,
+  currentWindSpecIdentity,
+} from "../../../scripts/wind-compatibility/spec-identity.mjs";
+import { currentPilotIdentity } from "../../../scripts/wind-compatibility/corpus-pilot.mjs";
 
 const root = new URL("../../../", import.meta.url);
 const json = async (path) => JSON.parse(await readFile(new URL(path, root), "utf8"));
@@ -17,6 +21,17 @@ test("pilot adapter binds the exact current profile and Rust spec revision", asy
   const profile = await json("tests/wind-compatibility/profile.json");
   const source = await readFile(new URL("crates/zudo-wind/src/lib.rs", root), "utf8");
   assert.equal(assertWindSpecIdentity(profile, source), true);
+  assert.deepEqual(currentWindSpecIdentity(profile), { windSpecVersion: 1, windSpecRevision: 14 });
+  const pilotManifest = await json("tests/wind-compatibility/pilot/manifest.json");
+  const identity = await currentPilotIdentity({
+    profile,
+    manifest: pilotManifest,
+    windBuild: { gitSha: "a".repeat(40) },
+    reference: { identity: { version: "4.3.2" } },
+    scanner: { identity: { version: "4.3.2" } },
+    browserEnvironment: { name: "chromium" },
+  });
+  assert.equal(identity.windSpecRevision, 14);
   assert.throws(
     () =>
       assertWindSpecIdentity(

@@ -1,4 +1,4 @@
-export function assertWindSpecIdentity(profile, source) {
+export function currentWindSpecIdentity(profile) {
   const baseline = profile?.sourceBaseline;
   if (
     profile?.profileId !== "wind-preset-free" ||
@@ -8,6 +8,15 @@ export function assertWindSpecIdentity(profile, source) {
     baseline?.languageSpecRevision !== 14
   )
     throw Error("Wind profile/spec identity differs from pilot adapter");
+  return {
+    windSpecVersion: baseline.languageSpecVersion,
+    windSpecRevision: baseline.languageSpecRevision,
+  };
+}
+
+export function assertWindSpecIdentity(profile, source) {
+  const baseline = profile?.sourceBaseline;
+  currentWindSpecIdentity(profile);
   const declarations = [...source.matchAll(/^pub const SPEC_(VERSION|REVISION): u32 = (\d+);$/gm)];
   if (
     declarations.length !== 2 ||

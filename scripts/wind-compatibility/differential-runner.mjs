@@ -31,7 +31,7 @@ import {
   validatePilot,
 } from "./differential-core.mjs";
 import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
-import { assertWindSpecIdentity } from "./spec-identity.mjs";
+import { assertWindSpecIdentity, currentWindSpecIdentity } from "./spec-identity.mjs";
 import {
   archivedReferenceModules,
   verifiedReferenceImport,
@@ -824,8 +824,7 @@ async function main() {
   );
   const identity = {
     windBuild,
-    windSpecVersion: 1,
-    windSpecRevision: 13,
+    ...currentWindSpecIdentity(profile),
     catalogDigest: await treeDigest(fromRoot("crates/zudo-wind/src/catalog")),
     reference: reference.identity,
     scanner: scanner.identity,
@@ -846,6 +845,7 @@ async function main() {
       sha256(await readFile(fromRoot("scripts/wind-compatibility/oxide-scanner.mjs"))),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/reference.mjs"))),
       sha256(await readFile(fromRoot("scripts/wind-compatibility/reference-module-graph.mjs"))),
+      sha256(await readFile(fromRoot("scripts/wind-compatibility/spec-identity.mjs"))),
     ]),
     lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
     browserEnvironment: environment,
