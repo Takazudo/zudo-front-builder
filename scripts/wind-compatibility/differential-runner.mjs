@@ -38,6 +38,7 @@ const defaults = {
   fixture: fromRoot("tests/wind-compatibility/pilot"),
   extraction: fromRoot("tests/wind-compatibility/extraction"),
   cache: "/tmp/zfb-wind-reference-cache",
+  engine: "chromium",
 };
 const referenceSha = "3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62";
 
@@ -49,7 +50,10 @@ function args(argv) {
   }
   for (const key of ["wind-binary", "wind-build-manifest", "output"])
     if (!options[key]) throw Error(`Missing --${key}`);
-  return { ...defaults, ...options };
+  const result = { ...defaults, ...options };
+  if (!["chromium", "firefox", "webkit"].includes(result.engine))
+    throw Error("Unknown browser engine");
+  return result;
 }
 
 export async function treeDigest(directory) {
@@ -463,15 +467,17 @@ async function main() {
     windOutput,
     "compiler",
   );
-  const { chromium } = await import("@playwright/test");
-  const browserExecutable = chromium.executablePath();
-  const browser = await chromium.launch({ headless: true, executablePath: browserExecutable });
+  const { chromium, firefox, webkit } = await import("@playwright/test");
+  const browserKind = { chromium, firefox, webkit }[options.engine];
+  const browserExecutable = browserKind.executablePath();
+  const browser = await browserKind.launch({ headless: true, executablePath: browserExecutable });
   const rows = {},
     controls = {};
   let environment;
   try {
     environment = await browserIdentity(browser, browserExecutable);
-    environment.requiredMatrixMember = requiredMatrixMember(profile, environment);
+    environment.requiredMatrixMember =
+      requiredMatrixMember(profile, environment) && environment.name === options.engine;
     let missingRejected = false;
     try {
       validatePilot(profile, { caseIds: [...manifest.caseIds, "not-a-fixture"] }, observations);
@@ -542,14 +548,10 @@ async function main() {
       );
       if (id === "block") {
         const probe = probes[0];
-        const missing = await observeIsolated(browser, "", row.candidate, probe, "wind");
-        const wrong = await observeIsolated(
-          browser,
-          windCss.replace(/display:\s*block/, "display: none"),
-          row.candidate,
-          probe,
-          "wind",
-        );
+        const missingCss = "";
+        const missing = await observeIsolated(browser, missingCss, row.candidate, probe, "wind");
+        const wrongValueCss = windCss.replace(/display:\s*block/, "display: none");
+        const wrong = await observeIsolated(browser, wrongValueCss, row.candidate, probe, "wind");
         const wrongSelectorCss = windCss.replace(/\.block\s*\{/, ".wrong { ");
         const wrongSelector = await observeIsolated(
           browser,
@@ -561,17 +563,31 @@ async function main() {
         controls["missing-rule-detection"] = {
           controlId: "missing-rule-detection",
           outcome:
-            !missing.pass && wrongSelectorCss !== windCss && !wrongSelector.pass
+            missing.verified &&
+            !missing.pass &&
+            wrongSelectorCss !== windCss &&
+            wrongSelector.verified &&
+            !wrongSelector.pass
               ? outcomes.shared
               : outcomes.mismatch,
           mutations: {
-            removedStylesheetDetected: !missing.pass,
-            wrongSelectorDetected: !wrongSelector.pass,
+            removedStylesheetDetected: missing.verified && !missing.pass,
+            wrongSelectorDetected:
+              wrongSelectorCss !== windCss && wrongSelector.verified && !wrongSelector.pass,
+            removedStylesheet: missing,
+            wrongSelector,
           },
         };
         controls["wrong-value-detection"] = {
           controlId: "wrong-value-detection",
-          outcome: !wrong.pass ? outcomes.shared : outcomes.mismatch,
+          outcome:
+            wrongValueCss !== windCss && wrong.verified && !wrong.pass
+              ? outcomes.shared
+              : outcomes.mismatch,
+          mutations: {
+            wrongValueDetected: wrongValueCss !== windCss && wrong.verified && !wrong.pass,
+            wrongValue: wrong,
+          },
         };
         controls["empty-output-accounting"] = {
           controlId: "empty-output-accounting",
@@ -637,10 +653,14 @@ async function main() {
             observation[1]?.wind.pass &&
             observation[1]?.reference.pass &&
             wrongMediaCss !== windCss &&
+            wrongMedia.verified &&
             !wrongMedia.pass
               ? outcomes.shared
               : outcomes.mismatch,
-          mutations: { wrongMediaDetected: wrongMediaCss !== windCss && !wrongMedia.pass },
+          mutations: {
+            wrongMediaDetected:
+              wrongMediaCss !== windCss && wrongMedia.verified && !wrongMedia.pass,
+          },
         };
       }
       if (id === "mx-auto") {

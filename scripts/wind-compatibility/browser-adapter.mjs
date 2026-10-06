@@ -7,7 +7,7 @@ import { sha256 } from "./reference.mjs";
 const cssUrl = "https://wind-fixture.invalid/style.css";
 const documentUrl = "https://wind-fixture.invalid/fixture";
 
-function documentFor(candidate, probe) {
+export function documentFor(candidate, probe) {
   if (
     typeof probe.documentHtml !== "string" ||
     !probe.documentHtml.includes("</head>") ||
