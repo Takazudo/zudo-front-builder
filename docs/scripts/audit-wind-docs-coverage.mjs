@@ -263,6 +263,7 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
       if (readFileSync(path, "utf8") !== expected)
         fail(`${locale} compatibility page stale: ${name}`);
       await parseSource(path, root);
+      await auditReadmeLinks(path, root);
     }
     const localeMarkers = guideMarkers[locale];
     for (const page of WIND_GUIDE_PAGES) {

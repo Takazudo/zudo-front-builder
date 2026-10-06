@@ -36,7 +36,7 @@ const labels = {
     source: "Reviewed Wind source",
     published: "Published-release support",
     notPublished: "Not established by this source inventory",
-    verification: "Verification",
+    verification: "Inventory evidence",
     profile: "Compatibility profile",
     rows: "Upstream registrations",
     entries: "Wind catalog entries",
@@ -61,7 +61,7 @@ const labels = {
     source: "確認した Wind ソース",
     published: "公開版での対応",
     notPublished: "このソース一覧からは未確定",
-    verification: "検証",
+    verification: "一覧の根拠",
     profile: "互換性プロファイル",
     rows: "上流の登録",
     entries: "Wind カタログ項目",
@@ -271,7 +271,7 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
     `${t.reference}: ${code(reference)}.`,
     `${t.source}: ${code(data.wind.gitSha)}; spec ${code(`${data.wind.specVersion}.${data.wind.specRevision}`)}.`,
     `${t.profile}: ${code(`${data.profile.id} ${data.profile.version}.${data.profile.revision}`)}.`,
-    `${t.published}: ${t.notPublished}. ${t.verification}: ${code("source-inspected")}; ${locale === "ja" ? "ブラウザー証拠" : "browser evidence"}: ${locale === "ja" ? "未記録" : "not recorded"}; ${locale === "ja" ? "受け入れ済み参照" : "accepted reference"}: ${code("null")}.`,
+    `${t.published}: ${t.notPublished}. ${t.verification}: ${code("source-inspected")}. ${locale === "ja" ? "この表にブラウザー検証の結果は含まれません。現在の受け入れ済み参照は" : "This table does not carry browser verification results. See the current accepted reference in"} [${locale === "ja" ? "正式な状態記録" : "the canonical status record"}](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json)${locale === "ja" ? "を確認してください。" : "."}`,
   ];
   const profileExamples = [...new Set(data.profileCases.map((item) => item.upstreamCandidate))];
   const missingExamples = ["line-clamp-2", "ring-2", "container"];
