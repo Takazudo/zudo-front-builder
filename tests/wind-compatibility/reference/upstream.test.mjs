@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { assessUpstream } from "../../../scripts/wind-compatibility/upstream.mjs";
+import { validateAssessment } from "../../../scripts/wind-compatibility/reference-promotion.mjs";
 import {
   fromRoot,
   identity,
@@ -166,7 +167,26 @@ function fixture() {
     channel: "stable",
     toolchain: {},
   });
-  return { responses, fetcher, bootstrapPlan, deltaPlan, trees };
+  const currentCandidate = {
+    ...candidate,
+    artifactSha256: createHash("sha256").update(packageTar["4.3.2"]).digest("hex"),
+    source: {
+      ...candidate.source,
+      status: "tag-observed-artifact-link-unverified",
+      tag: "v4.3.2",
+      observedTagCommit: commits["4.3.2"],
+    },
+  };
+  const currentAccepted = { ...accepted, ...currentCandidate, version: "4.3.2" };
+  const currentPlan = makePlan({
+    candidate: currentCandidate,
+    state: { ...state, accepted: { schemaVersion: 1, acceptedReference: currentAccepted } },
+    hashes,
+    channel: "stable",
+    toolchain: {},
+    verificationOnly: true,
+  });
+  return { responses, fetcher, bootstrapPlan, deltaPlan, currentPlan, trees };
 }
 
 async function withCache(fn) {
@@ -198,6 +218,35 @@ test("real upstream schemas produce complete bootstrap and accepted-to-candidate
     assert.equal(delta.sections.tests.changes.length, 2);
     assert.equal(delta.sections.source.previousTagCommit, commits["4.3.1"]);
     assert.deepEqual({ status: status(), inputs: await identity() }, before);
+  }));
+
+test("same-version accepted assessment replays exact current artifact without an upgrade range", async () =>
+  withCache(async (cache) => {
+    const f = fixture();
+    const current = await assessUpstream(f.currentPlan, cache, f.fetcher);
+    assert.equal(current.status, "ready-for-comparison", current.findings.join(", "));
+    assert.equal(current.verificationOnly, true);
+    assert.deepEqual(current.sections.changelog.releaseVersions, ["4.3.2"]);
+    assert.deepEqual(current.sections.source.changes, []);
+    assert.deepEqual(current.sections.artifacts.changes, []);
+    assert.equal(current.acceptedReferenceAdvanced, false);
+    assert.equal(
+      await validateAssessment(current, f.currentPlan, cache),
+      f.currentPlan.candidate.artifactSha256,
+    );
+    assert.equal(
+      (
+        await assessUpstream(
+          {
+            ...f.currentPlan,
+            previousAccepted: { ...f.currentPlan.previousAccepted, artifactSha256: "0".repeat(64) },
+          },
+          cache,
+          f.fetcher,
+        )
+      ).status,
+      "incomplete",
+    );
   }));
 
 test("source truncation, wrong blob, missing release page and tag drift remain incomplete", async () =>

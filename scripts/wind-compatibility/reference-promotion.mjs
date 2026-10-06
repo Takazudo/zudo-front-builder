@@ -25,6 +25,7 @@ export async function validateAssessment(assessment, plan, cache) {
   if (
     assessment?.schemaVersion !== 1 ||
     assessment.kind !== "wind-reference-assessment" ||
+    Boolean(assessment.verificationOnly) !== (plan.verificationOnly === true) ||
     assessment.status !== "ready-for-comparison" ||
     assessment.planId !== plan.planId ||
     assessment.acceptedReferenceAdvanced !== false ||
