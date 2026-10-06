@@ -1,0 +1,182 @@
+name: Temporary 4.0.0 focused release checks
+
+"on":
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-focused-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  focused:
+    name: Candidate package, Rust, docs, and Wind previews
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      EVIDENCE_DIR: /tmp/zfb-release-focused-${{ github.run_id }}
+    steps:
+      - name: Initialize retained evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR/logs"
+          printf 'requested_source=882e98eabe7c8d5425e73bdc1a34cea7e3f55f43\nrequested_version=4.0.0\n' > "$EVIDENCE_DIR/identity.txt"
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+          persist-credentials: false
+
+      - name: Guard source, version, and disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/logs/source-and-disk.log") 2>&1
+          test "$(git rev-parse HEAD)" = '882e98eabe7c8d5425e73bdc1a34cea7e3f55f43'
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const expected = process.argv[1];
+            const path = "packages/zfb/package.json";
+            const actual = JSON.parse(readFileSync(path, "utf8")).version;
+            if (actual !== expected) throw new Error(`${path}: expected ${expected}, got ${actual}`);
+          ' '4.0.0'
+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 {print $4}')"
+          [[ "$available_kib" =~ ^[0-9]+$ ]]
+          available_bytes=$((available_kib * 1024))
+          printf 'source=%s\nrunner=%s %s\ndisk_available_bytes=%s\n' \
+            "$(git rev-parse HEAD)" "$(uname -s)" "$(uname -m)" "$available_bytes" | tee -a "$EVIDENCE_DIR/identity.txt"
+          if (( available_bytes < 8 * 1024 * 1024 * 1024 )); then
+            echo 'Less than 8 GiB free before native compile' >&2
+            exit 1
+          fi
+          if (( available_bytes < 20 * 1024 * 1024 * 1024 )); then
+            echo 'CARGO_PROFILE_DEV_DEBUG=0' >> "$GITHUB_ENV"
+            echo 'Reduced Rust debug info because available disk is below 20 GiB' | tee -a "$EVIDENCE_DIR/identity.txt"
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node 24.14.0 and pnpm cache
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - name: Set up Rust 1.99.0
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: v2-zfb
+          shared-key: workspace-all-targets
+
+      - name: Record pinned toolchain and install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/logs/install.log") 2>&1
+          test "$(node --version)" = v24.14.0
+          test "$(pnpm --version)" = 12.8.2
+          test "$(rustc --version | awk '{print $2}')" = 1.99.0
+          node --version
+          pnpm --version
+          rustc --version --verbose
+          cargo --version
+          pnpm install --frozen-lockfile
+
+      - name: Test the package SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @takazudo/zfb test 2>&1 | tee "$EVIDENCE_DIR/logs/package-test.log"
+
+      - name: Test native CLI with default V8 features
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --package zfb 2>&1 | tee "$EVIDENCE_DIR/logs/cargo-test.log"
+
+      - name: Build and identify candidate local CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --package zfb --bin zfb 2>&1 | tee "$EVIDENCE_DIR/logs/cargo-build.log"
+          cli="$GITHUB_WORKSPACE/target/debug/zfb"
+          test -x "$cli"
+          {
+            printf 'cli=%s\n' "$(realpath "$cli")"
+            sha256sum "$cli"
+            "$cli" --version
+          } 2>&1 | tee "$EVIDENCE_DIR/logs/cli-identity.log"
+
+      # docs/package.json invokes `zfb`; pnpm resolves its bin wrapper through
+      # optional platform packages. Use the exact freshly built local executable
+      # so a registry binary cannot satisfy these release checks.
+      - name: Check docs with the candidate CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd docs
+          "$GITHUB_WORKSPACE/target/debug/zfb" check 2>&1 | tee "$EVIDENCE_DIR/logs/docs-check.log"
+
+      - name: Build docs strictly with the candidate CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd docs
+          "$GITHUB_WORKSPACE/target/debug/zfb" build --strict-broken 2>&1 | tee "$EVIDENCE_DIR/logs/docs-build.log"
+
+      - name: Validate built HTML
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter docs check:html 2>&1 | tee "$EVIDENCE_DIR/logs/docs-html.log"
+
+      - name: Check Markdown WASM size documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/assert-md-wasm-size-docs.mjs 2>&1 | tee "$EVIDENCE_DIR/logs/md-wasm-size-docs.log"
+
+      - name: Check generated Wind previews with the candidate CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          node docs/scripts/wind-preview-assets.mjs \
+            --compiler "$GITHUB_WORKSPACE/target/debug/zfb" --check \
+            2>&1 | tee "$EVIDENCE_DIR/logs/wind-preview-check.log"
+
+      - name: Record final source, CLI, and disk identity
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            git rev-parse HEAD
+            git status --short
+            if test -x "$GITHUB_WORKSPACE/target/debug/zfb"; then
+              sha256sum "$GITHUB_WORKSPACE/target/debug/zfb"
+            fi
+            df -h "$GITHUB_WORKSPACE"
+          } 2>&1 | tee "$EVIDENCE_DIR/logs/final-identity.log"
+
+      - name: Upload focused check evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-focused-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-focused/
+          if-no-files-found: error
+          retention-days: 7
