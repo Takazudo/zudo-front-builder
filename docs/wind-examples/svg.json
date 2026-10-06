@@ -6,15 +6,8 @@
       "id": "svg-paint",
       "kind": "positive",
       "html": "<div class=\"wind-demo-new\"><svg width=\"64\" height=\"64\" viewBox=\"0 0 64 64\" role=\"img\" aria-label=\"Outlined circle\"><circle class=\"fill-none stroke-current\" cx=\"32\" cy=\"32\" r=\"24\" stroke-width=\"4\"/></svg><svg width=\"64\" height=\"64\" viewBox=\"0 0 64 64\" role=\"img\" aria-label=\"Filled circle\"><circle class=\"fill-current stroke-none\" cx=\"32\" cy=\"32\" r=\"24\"/></svg></div>",
-      "utilities": [
-        "fill-none",
-        "stroke-current",
-        "fill-current",
-        "stroke-none"
-      ],
-      "authoredClasses": [
-        "wind-demo-new"
-      ],
+      "utilities": ["fill-none", "stroke-current", "fill-current", "stroke-none"],
+      "authoredClasses": ["wind-demo-new"],
       "scaffoldCss": ".wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }\n"
     }
   ]

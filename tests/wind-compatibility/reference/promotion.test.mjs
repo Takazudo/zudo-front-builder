@@ -503,6 +503,7 @@ test("full corpus identity rejects rehashed reports after fixture, helper, confi
     "tests/wind-compatibility/extraction",
     "tests/wind-compatibility/profile.json",
     "tests/wind-compatibility/inventory.v1.json",
+    "tests/wind-compatibility/reference/fixtures/native-margin-37405347552.v1.json",
     "crates/zudo-wind/catalog/zudo-wind-catalog.v1.json",
     "pnpm-lock.yaml",
   ];
@@ -549,8 +550,10 @@ test("full corpus identity rejects rehashed reports after fixture, helper, confi
       "scripts/wind-compatibility/corpus-core.mjs",
       "scripts/wind-compatibility/corpus-provenance.mjs",
       "scripts/wind-compatibility/spec-identity.mjs",
+      "scripts/wind-compatibility/pilot-adapter-identity.mjs",
       "tests/wind-compatibility/empty-token/configurations.json",
       "tests/wind-compatibility/inventory.v1.json",
+      "tests/wind-compatibility/reference/fixtures/native-margin-37405347552.v1.json",
     ]) {
       const file = join(root, path),
         original = await readFile(file);

@@ -2,7 +2,7 @@
 
 Ratified by [#3826](https://github.com/Takazudo/zudo-front-builder/issues/3826),
 2026-10-06. Canonical identity: [`tests/wind-compatibility/profile.json`](../tests/wind-compatibility/profile.json),
-`wind-preset-free`, **version 1, revision 4**. This is a policy commitment with
+`wind-preset-free`, **version 1, revision 5**. This is a policy commitment with
 pending evidence, not an admitted compatibility baseline.
 
 ## Product boundary and authority
@@ -190,9 +190,14 @@ Current source corrects a planning-era claim: **Wind named tokens use variables*
   and `vertical-rl`, each in `ltr` and `rtl`, with constrained boxes, computed physical
   margins and measured geometry. The pilot's 300px container and 100px child resolve
   horizontal left/right auto margins to 100px on both sides. In `vertical-rl`,
-  Wind's physical left/right auto margins resolve to 0px while the reference's
-  logical inline top/bottom auto margins resolve to 100px; emitted declarations
-  still contain literal `auto`. Horizontal coincidence cannot certify vertical parity.
+  Wind's physical left/right auto margins retain the same y=0px (ltr) / 200px
+  (rtl) geometry on the pinned Chromium, Firefox and WebKit engines; the reference's
+  logical inline auto margins center at y=100px. Chromium and Firefox serialize
+  Wind's vertical physical top/bottom margins as 0px. Pinned Linux WebKit 26.5
+  revision 2311 serializes the trailing physical margin as 200px, including for
+  literal authored physical-zero CSS. Only those two WebKit Wind computed values
+  have an engine-specific expectation. Emitted declarations remain literal `auto`;
+  horizontal coincidence cannot certify vertical parity.
 
 Composition cases must exercise overlapping utilities, reordered class strings,
 authored CSS before/after utilities, selector specificity, nested children and
@@ -291,6 +296,7 @@ no utility or harness, activates no watcher, and changes no release/ruleset poli
 | Profile | Date | Decision |
 | --- | --- | --- |
 | 1 / 1 | 2026-10-06 | #3826: initial bounded preset-free promise, exact required cases/differences and browser scope; source correction for Wind named variables; initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind prelude and numeric scale token rule/layer; no compatibility baseline admitted. |
+| 1 / 5 | 2026-10-06 | #3835 browser evidence repair: exactly two Wind vertical-rl resolved margins differ on pinned Linux WebKit 26.5/revision 2311; native authored CSS control run 37405347552 confirms the same result with physical auto and physical zero. All eight geometry probes now assert exact values, CSS trees and physical utility semantics stay fixed, and no baseline is admitted. |
 
 
 ## Flex, SVG and accessibility adoption (#3835)

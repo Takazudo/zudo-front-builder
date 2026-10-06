@@ -16,11 +16,7 @@
         "py-vsp-md",
         "text-ink"
       ],
-      "authoredClasses": [
-        "wind-demo-grid",
-        "wind-demo-card",
-        "wind-demo-title"
-      ],
+      "authoredClasses": ["wind-demo-grid", "wind-demo-card", "wind-demo-title"],
       "scaffoldCss": ".wind-demo-grid { font: 14px/1.5 system-ui, sans-serif; color: #203046; }\n.wind-demo-card { border: 1px solid #8797aa; }\n.wind-demo-title { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }\n",
       "config": {
         "wind": {

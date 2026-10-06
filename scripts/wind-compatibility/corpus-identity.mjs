@@ -16,6 +16,7 @@ const adapterPaths = [
   "differential-runner.mjs",
   "differential-core.mjs",
   "spec-identity.mjs",
+  "pilot-adapter-identity.mjs",
   "structure.mjs",
   "reference.mjs",
   "reference-module-graph.mjs",
@@ -57,6 +58,11 @@ export async function currentCorpusIdentity({
     emptyTokenFixtureTreeDigest: await treeDigest(at("tests/wind-compatibility/empty-token")),
     extractionFixtureTreeDigest: await treeDigest(at("tests/wind-compatibility/extraction")),
     inventoryDigest: sha256(await readFile(at("tests/wind-compatibility/inventory.v1.json"))),
+    nativeMarginEvidenceDigest: sha256(
+      await readFile(
+        at("tests/wind-compatibility/reference/fixtures/native-margin-37405347552.v1.json"),
+      ),
+    ),
     catalogDigest: sha256(await readFile(at("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json"))),
     sourceInputDigest: digest(
       manifest.upstreamCases.map((row) => [

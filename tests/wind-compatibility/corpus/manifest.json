@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "issue": 3831,
-  "profile": "wind-preset-free@1.4",
+  "profile": "wind-preset-free@1.5",
   "sourceArchiveSha256": "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   "sourceTagCommit": "056a1550721d4bf79ff732d5ab9414fa83f7064f",
   "sourceTag": "v4.3.2",

@@ -74,6 +74,46 @@ test("pilot is a complete, reviewed profile manifest", () => {
   assert.throws(() => validatePilot(staleSpec, manifest, observations));
 });
 
+test("pinned WebKit margin exception and every mx-auto geometry stay exact", () => {
+  assert.equal(validatePilot(profile, manifest, observations).size, 15);
+  const wrongBrowserPin = structuredClone(profile);
+  wrongBrowserPin.browserPolicy.requiredMatrix.find(
+    (row) => row.browser === "webkit",
+  ).browserVersion = "26.6";
+  assert.throws(
+    () => validatePilot(wrongBrowserPin, manifest, observations),
+    /Pinned WebKit resolved margin browser/,
+  );
+  for (const name of ["vertical-rl-ltr-margin-bottom", "vertical-rl-rtl-margin-top"]) {
+    const altered = structuredClone(observations);
+    altered["mx-auto"].probes.find((probe) => probe.name === name).windBrowserOverride.value =
+      "0px";
+    assert.throws(
+      () => validatePilot(profile, manifest, altered),
+      /Unreviewed WebKit resolved margin/,
+    );
+    const missing = structuredClone(observations);
+    delete missing["mx-auto"].probes.find((probe) => probe.name === name).windBrowserOverride;
+    assert.throws(
+      () => validatePilot(profile, manifest, missing),
+      /Unreviewed WebKit resolved margin/,
+    );
+  }
+  const expanded = structuredClone(observations);
+  expanded["mx-auto"].probes.find(
+    (probe) => probe.name === "horizontal-tb-ltr-margin-top",
+  ).windBrowserOverride = { value: "200px" };
+  assert.throws(() => validatePilot(profile, manifest, expanded), /Unreviewed browser override/);
+  const looseGeometry = structuredClone(observations);
+  looseGeometry["mx-auto"].probes.find(
+    (probe) => probe.name === "vertical-rl-ltr-geometry-top",
+  ).wind = { min: 0, max: 300 };
+  assert.throws(
+    () => validatePilot(profile, manifest, looseGeometry),
+    /Unreviewed mx-auto geometry/,
+  );
+});
+
 test("prelude is exact and counted once per expected stylesheet", () => {
   const statement = profile.reviewedDifferences.find(
     (row) => row.id === "wind-layer-order-prelude",
@@ -187,7 +227,7 @@ test("semantic cases count exactly two configured Wind tokens and one used refer
   const policy = profile.reviewedDifferences.find(
     (item) => item.id === "named-token-representation",
   );
-  assert.equal(profile.profileRevision, 4);
+  assert.equal(profile.profileRevision, 5);
   for (const [id, utility, reference, unusedToken] of cases) {
     const wind = `${prelude}${tokenRule}${utility}`;
     const row = profile.requiredCases.find((item) => item.id === id);

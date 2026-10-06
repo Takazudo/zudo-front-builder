@@ -4,9 +4,16 @@ import { join } from "node:path";
 import { WIND_SOURCE_SHA } from "../../scripts/wind-compatibility/inventory.mjs";
 
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const yamlString = (value) => {
+  const text = String(value);
+  const safePlain =
+    /^[\p{L}\p{N}][\p{L}\p{N} .,;!?()/、。・-]*$/u.test(text) &&
+    !/^(?:true|false|null|yes|no|on|off|~|[0-9]+(?:\.[0-9]+)?)$/i.test(text);
+  return safePlain ? text : JSON.stringify(text);
+};
 // Complete reviewed upstream-plus-Wind rows, including unmapped registrations.
 export const REVIEWED_INVENTORY_DIGEST =
-  "b90daa49a0a2d8a7ee25310446a975a6b2f87be2ffb4473307b9bb14ea35fc85";
+  "7aba6fccd3b80584ef46aad4b76291d6282ccce86770b088fcda9fc0481562bd";
 const code = (value) => {
   const content = String(value);
   const ticks = "`".repeat(
@@ -284,8 +291,8 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
     "index.mdx",
     [
       "---",
-      `title: ${JSON.stringify(t.title)}`,
-      `description: ${JSON.stringify(t.description)}`,
+      `title: ${yamlString(t.title)}`,
+      `description: ${yamlString(t.description)}`,
       "sidebar_position: 19",
       "generated: true",
       "---",
@@ -316,8 +323,8 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
     const rows = grouped.get(key);
     const lines = [
       "---",
-      `title: ${JSON.stringify(`${t.title}: ${key.toUpperCase()}`)}`,
-      `description: ${JSON.stringify(t.description)}`,
+      `title: ${yamlString(`${t.title}: ${key.toUpperCase()}`)}`,
+      `description: ${yamlString(t.description)}`,
       `sidebar_position: ${20 + sortedBuckets.indexOf(key)}`,
       "generated: true",
       "---",

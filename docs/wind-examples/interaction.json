@@ -6,15 +6,8 @@
       "id": "native-settings",
       "kind": "positive",
       "html": "<fieldset class=\"wind-demo-form\"><legend>Preferences</legend><label><input type=\"checkbox\" checked class=\"accent-brand\"> Enable email updates</label><button type=\"button\" class=\"wind-demo-button cursor-pointer\">Save preferences</button><button type=\"button\" disabled class=\"wind-demo-button cursor-not-allowed\">Unavailable while saving</button></fieldset>",
-      "utilities": [
-        "accent-brand",
-        "cursor-pointer",
-        "cursor-not-allowed"
-      ],
-      "authoredClasses": [
-        "wind-demo-form",
-        "wind-demo-button"
-      ],
+      "utilities": ["accent-brand", "cursor-pointer", "cursor-not-allowed"],
+      "authoredClasses": ["wind-demo-form", "wind-demo-button"],
       "scaffoldCss": ".wind-demo-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem 1.2rem; max-width: 35rem; padding: 1rem; border: 1px solid #a7bacd; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-form legend { padding: 0 0.35rem; font-weight: 650; }\n.wind-demo-form label { display: inline-flex; align-items: center; gap: 0.45rem; }\n.wind-demo-button { border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; padding: 0.55rem 0.75rem; color: inherit; font: inherit; }\n.wind-demo-button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n",
       "config": {
         "wind": {
@@ -30,9 +23,7 @@
       "id": "pointer-transparent-icon",
       "kind": "positive",
       "html": "<label class=\"wind-demo-search\"><span class=\"wind-demo-label\">Search</span><span class=\"wind-demo-searchbox\"><span class=\"wind-demo-search-icon pointer-events-none\" aria-hidden=\"true\">⌕</span><input type=\"search\" value=\"motion utilities\" class=\"wind-demo-search-input\"></span></label>",
-      "utilities": [
-        "pointer-events-none"
-      ],
+      "utilities": ["pointer-events-none"],
       "authoredClasses": [
         "wind-demo-search",
         "wind-demo-label",
@@ -46,10 +37,7 @@
       "id": "select-and-resize",
       "kind": "positive",
       "html": "<div class=\"wind-demo-tools\"><p>Click the command to select it in full: <code class=\"wind-demo-code select-all\">pnpm --filter docs check</code></p><label class=\"wind-demo-note\">Scratch notes<textarea class=\"wind-demo-textarea resize-y\">You can resize this field vertically.</textarea></label></div>",
-      "utilities": [
-        "select-all",
-        "resize-y"
-      ],
+      "utilities": ["select-all", "resize-y"],
       "authoredClasses": [
         "wind-demo-tools",
         "wind-demo-code",
@@ -62,13 +50,8 @@
       "id": "appearance",
       "kind": "positive",
       "html": "<div class=\"wind-demo-new\"><input class=\"appearance-auto\" type=\"checkbox\" checked aria-label=\"Native checkbox\"><input class=\"appearance-none\" type=\"checkbox\" aria-label=\"Unstyled checkbox\"></div>",
-      "utilities": [
-        "appearance-auto",
-        "appearance-none"
-      ],
-      "authoredClasses": [
-        "wind-demo-new"
-      ],
+      "utilities": ["appearance-auto", "appearance-none"],
+      "authoredClasses": ["wind-demo-new"],
       "scaffoldCss": ".wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }\n"
     }
   ]

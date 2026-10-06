@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "profileId": "wind-preset-free",
   "profileVersion": 1,
-  "profileRevision": 4,
+  "profileRevision": 5,
   "policyDocument": "research/wind-compatibility-profile.md",
   "ratifiedOn": "2026-10-06",
   "decisionIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3826",
@@ -72,6 +72,7 @@
     "referenceIntegrity",
     "referenceSourceIdentity",
     "adapterDigest",
+    "nativeMarginEvidenceDigest",
     "fixtureManifestDigest",
     "caseIds",
     "configDigest",
@@ -207,7 +208,7 @@
       "implementation": "implemented",
       "windTokenFreeGuarantee": true,
       "reviewedDifferenceIds": ["physical-logical-margin", "wind-layer-order-prelude"],
-      "expectedContract": "Wind margin-left/right:auto; reference margin-inline:auto",
+      "expectedContract": "Wind margin-left/right:auto and reference margin-inline:auto; exact horizontal and vertical geometry and per-engine computed physical margins are pinned. Linux WebKit 26.5/rev2311 serializes 200px on the trailing physical margin in vertical-rl, including an independently authored physical-zero control; Chromium/Firefox serialize 0px. This does not change Wind CSS or geometry.",
       "evidence": {
         "sourceInspected": {
           "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
@@ -446,7 +447,7 @@
       "id": "physical-logical-margin",
       "caseIds": ["mx-auto"],
       "kind": "semantic",
-      "scope": "Physical left/right versus inline margins; horizontal-tb and vertical-rl, ltr and rtl, with both computed longhands and geometry."
+      "scope": "Wind physical left/right versus reference logical inline margins; exact horizontal/vertical ltr/rtl geometry and computed longhands. Linux WebKit 26.5/rev2311 resolves the trailing physical vertical margin to 200px even for authored physical-zero CSS; Chromium/Firefox resolve 0px. Independent native diagnosis run 37405347552 (54 observations, verified CSS/DOM hashes) fixes the narrow browser-specific expectation."
     },
     {
       "id": "zero-without-theme",
@@ -677,6 +678,13 @@
       "date": "2026-10-06",
       "issue": 3835,
       "change": "Add bounded native order, basis, SVG presentation and not-sr-only reversal. Add five upstream browser cases and five declaration-only native basis guarantees, preserving all existing pilot/control and targeted obligations. Record exact sr-only clipping-model difference; no baseline or reference acceptance is advanced."
+    },
+    {
+      "version": 1,
+      "revision": 5,
+      "date": "2026-10-06",
+      "issue": 3835,
+      "change": "Refine two mx-auto Wind computed-margin expectations only for pinned Linux WebKit 26.5/rev2311 after independent authored CSS diagnosis run 37405347552. Preserve exact CSS trees, physical utility semantics, reference values and all geometry, now asserted exactly. No baseline or broad WebKit claim is advanced."
     }
   ]
 }
