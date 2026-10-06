@@ -1,0 +1,22 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-new {
+  color: #203046;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+.fill-current {
+  fill: currentColor;
+}
+.fill-none {
+  fill: none;
+}
+.stroke-current {
+  stroke: currentColor;
+}
+.stroke-none {
+  stroke: none;
+}

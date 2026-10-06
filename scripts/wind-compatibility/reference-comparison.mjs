@@ -63,6 +63,32 @@ export function assertSameBrowserEnvironment(corpus, pilot, engine) {
   return true;
 }
 
+export function assertTargetedExecution(profile, manifest, report, engine) {
+  const targeted = profile.browserPolicy?.targetedObligations ?? [];
+  if (
+    digest(Object.keys(manifest.targetedExecutionKeys ?? {})) !== digest(targeted) ||
+    digest(manifest.targetedExecutionKeys) !== digest(requiredTargetedKeys)
+  )
+    throw Error("Targeted browser execution mapping missing or unreviewed");
+  for (const id of targeted) {
+    const keys = manifest.targetedExecutionKeys[id];
+    if (
+      !Array.isArray(keys) ||
+      !keys.length ||
+      new Set(keys).size !== keys.length ||
+      keys.some((key) =>
+        key.startsWith("pilot/")
+          ? !Object.hasOwn(report.executed, `${key}/${engine}`)
+          : key.startsWith("control/")
+            ? report.controls.pilot[key.slice("control/".length)]?.outcome !== "matched"
+            : true,
+      )
+    )
+      throw Error(`${engine} profile targeted obligation absent: ${id}`);
+  }
+  return true;
+}
+
 export async function rawTree(directory) {
   const files = [];
   async function visit(path) {
@@ -469,29 +495,8 @@ export async function validateRun(
     )
       throw Error(`${engine} browser identity differs from profile matrix`);
   }
-  const targeted = profile.browserPolicy?.targetedObligations ?? [];
-  if (
-    digest(Object.keys(manifest.targetedExecutionKeys ?? {})) !== digest(targeted) ||
-    digest(manifest.targetedExecutionKeys) !== digest(requiredTargetedKeys)
-  )
-    throw Error("Targeted browser execution mapping missing or unreviewed");
   for (const engine of engines.filter((name) => name !== "chromium"))
-    for (const id of targeted) {
-      const keys = manifest.targetedExecutionKeys[id];
-      if (
-        !Array.isArray(keys) ||
-        !keys.length ||
-        new Set(keys).size !== keys.length ||
-        keys.some((key) =>
-          key.startsWith("pilot/")
-            ? !Object.hasOwn(reports[engine].executed, `${key}/${engine}`)
-            : key.startsWith("control/")
-              ? reports[engine].controls.pilot[key.slice("control/")]?.outcome !== "matched"
-              : true,
-        )
-      )
-        throw Error(`${engine} profile targeted obligation absent: ${id}`);
-    }
+    assertTargetedExecution(profile, manifest, reports[engine], engine);
   const passing =
     engines.every((engine) => pilots[engine].complete === true && pilots[engine].exitCode === 0) &&
     engines.every((engine) => reports[engine].complete === true && reports[engine].exitCode === 0);

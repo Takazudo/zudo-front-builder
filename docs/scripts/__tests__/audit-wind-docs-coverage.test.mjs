@@ -6,15 +6,15 @@ test("settled bilingual wind docs coverage, source syntax, and asset inventories
   assert.deepEqual(await auditWindDocsCoverage(), {
     adjacentRoutes: 42,
     adjacentSources: 43,
-    catalogEntries: 197,
-    editorialFamilies: 47,
-    examples: 168,
+    catalogEntries: 219,
+    editorialFamilies: 48,
+    examples: 173,
     guidePages: 10,
     guideRecords: 9,
     historicalWindRoutes: 116,
     negativeExamples: 30,
-    parsedSources: 159,
-    positiveExamples: 138,
-    utilityFamilies: 47,
+    parsedSources: 207,
+    positiveExamples: 143,
+    utilityFamilies: 48,
   });
 });

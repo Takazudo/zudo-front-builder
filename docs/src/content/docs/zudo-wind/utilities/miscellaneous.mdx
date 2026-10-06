@@ -23,6 +23,8 @@ Use these focused helpers for inline vertical alignment, box dimensions, replace
 | `object-none` | `object-fit: none;` |
 | `object-scale-down` | `object-fit: scale-down;` |
 | `sr-only` | `position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border-width: 0;` |
+| `sr-only` | `position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border-width: 0;` |
+| `not-sr-only` | `position: static; width: auto; height: auto; padding: 0; margin: 0; overflow: visible; clip: auto; clip-path: none; white-space: normal;` |
 
 <Details title={"Example setup"}>
 
@@ -216,6 +218,48 @@ The visible button remains labeled “Save”; sr-only adds a short supplemental
 .wind-demo-sr-example p { margin: 0; }
 .wind-demo-sr-button { border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; padding: 0.55rem 0.8rem; color: inherit; font: inherit; }
 .wind-demo-sr-button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }
+```
+
+</Details>
+
+### Screen reader visibility
+
+screen-reader-visibility uses exact supported Wind utility classes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new\"\u003e\u003cspan class=\"sr-only\"\u003eHidden visually\u003c/span\u003e\u003cspan class=\"not-sr-only\"\u003eVisible label\u003c/span\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  margin: -1px;\n  overflow: hidden;\n  clip: rect(0,0,0,0);\n  white-space: nowrap;\n  border-width: 0;\n}\n.not-sr-only {\n  position: static;\n  width: auto;\n  height: auto;\n  padding: 0;\n  margin: 0;\n  overflow: visible;\n  clip: auto;\n  clip-path: none;\n  white-space: normal;\n}\n"} title={"Screen reader visibility"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "sr-only",
+        "not-sr-only"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
 ```
 
 </Details>
@@ -643,5 +687,47 @@ All entries in this family are fixed keywords with no named token scale or arbit
 | Example class | Expected declarations |
 | --- | --- |
 | `sr-only` | `position: absolute`; `width: 1px`; `height: 1px`; `padding: 0`; `margin: -1px`; `overflow: hidden`; `clip: rect(0,0,0,0)`; `white-space: nowrap`; `border-width: 0` |
+
+## not-sr-only
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.not-sr-only` |
+| Class pattern | `not-sr-only` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `miscellaneous` (`44`) |
+| Order rank | `4` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `position`, `width`, `height`, `padding`, `margin`, `overflow`, `clip`, `clip-path`, `white-space` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"static"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `position` | `fixed` | `"static"` |
+| `width` | `fixed` | `"auto"` |
+| `height` | `fixed` | `"auto"` |
+| `padding` | `fixed` | `"0"` |
+| `margin` | `fixed` | `"0"` |
+| `overflow` | `fixed` | `"visible"` |
+| `clip` | `fixed` | `"auto"` |
+| `clip-path` | `fixed` | `"none"` |
+| `white-space` | `fixed` | `"normal"` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `not-sr-only` | `position: static`; `width: auto`; `height: auto`; `padding: 0`; `margin: 0`; `overflow: visible`; `clip: auto`; `clip-path: none`; `white-space: normal` |
 
 </Details>

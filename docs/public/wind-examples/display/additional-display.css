@@ -1,0 +1,49 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-new {
+  color: #203046;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+.contents {
+  display: contents;
+}
+.flow-root {
+  display: flow-root;
+}
+.inline-table {
+  display: inline-table;
+}
+.list-item {
+  display: list-item;
+}
+.table {
+  display: table;
+}
+.table-caption {
+  display: table-caption;
+}
+.table-cell {
+  display: table-cell;
+}
+.table-column {
+  display: table-column;
+}
+.table-column-group {
+  display: table-column-group;
+}
+.table-footer-group {
+  display: table-footer-group;
+}
+.table-header-group {
+  display: table-header-group;
+}
+.table-row {
+  display: table-row;
+}
+.table-row-group {
+  display: table-row-group;
+}

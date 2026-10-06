@@ -4,24 +4,13 @@ description: Define the project supplied values used by zudo-wind utility famili
 sidebar_position: 3
 ---
 
-## Give project values stable names
+## Name the values your project owns
 
-Add these maps under the root `wind.tokens` object in `zfb.config.ts` or `zfb.config.json`, then use complete classes wherever they belong. Numeric spacing multiplies the configured `spacingUnit`; a named value such as `spacing.card` is used directly. Colors, radii, fonts, and other named scales are also project supplied.
+Put named values under the root `wind.tokens` object. For example, `spacing: { "hsp-sm": "0.75rem", "vsp-md": "1.25rem" }` gives `px-hsp-sm` and `py-vsp-md`; `colors: { "surface": "#f4f1ec", "ink": "#203046" }` gives `bg-surface` and `text-ink`. These are complete class candidates. No custom-property declaration is needed for these literal values; Wind emits `--zw-spacing-hsp-sm`, `--zw-spacing-vsp-md`, `--zw-color-surface`, and `--zw-color-ink` from the configuration. See the [copyable quickstart](./overview.mdx).
 
-```json
-{
-  "wind": {
-    "tokens": {
-      "spacingUnit": "0.25rem",
-      "spacing": { "card": "1.5rem" },
-      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
-      "radii": { "card": "0.5rem" }
-    }
-  }
-}
-```
+## Optional numeric spacing unit
 
-The preview compares `p-4` with `p-card`; both use the same configured unit or named value every time.
+Nonzero numeric spacing is an explicit opt-in. Set `wind.tokens.spacingUnit` if your project wants classes such as `p-4`; with `"0.25rem"`, `p-4` means `1rem`. This is not a built-in Tailwind scale. The preview compares a numeric value with a named token. It explicitly configures both:
 
 {/* wind-preview: guide-tokens/named-values "Compare numeric and named spacing" */}
 

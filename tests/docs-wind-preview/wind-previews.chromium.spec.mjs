@@ -162,10 +162,13 @@ function casesForRoute(locale, labels, { family, kind, page }) {
         : `docs/zudo-wind/${page}/`;
   const localePath = `${labels.segment}${route}`;
   const baselineRoute = `${labels.segment}${route}index.html`;
-  assert.ok(
-    ANCHOR_BASELINE[baselineRoute],
-    `built anchor baseline is missing for ${baselineRoute}`,
-  );
+  // The new SVG route has no historical deep links to preserve.
+  if (family !== "svg") {
+    assert.ok(
+      ANCHOR_BASELINE[baselineRoute],
+      `built anchor baseline is missing for ${baselineRoute}`,
+    );
+  }
   const content =
     kind === "utility"
       ? { examples: utilityExamplesFor(family), diagnostics: [] }
@@ -681,6 +684,53 @@ async function frameForExample(page, testCase, id) {
 }
 
 async function assertRepresentativeUtilityBehavior(page, testCase) {
+  if (testCase.family === "display") {
+    const { frame } = await frameForExample(page, testCase, "additional-display");
+    assert.equal(
+      await frame.locator(".contents").evaluate((element) => getComputedStyle(element).display),
+      "contents",
+    );
+    assert.equal(
+      await frame.locator(".table").evaluate((element) => getComputedStyle(element).display),
+      "table",
+    );
+  }
+  if (testCase.family === "flex-item") {
+    const { frame } = await frameForExample(page, testCase, "basis-and-order");
+    assert.deepEqual(
+      await frame.locator(".basis-auto").evaluate((element) => ({
+        basis: getComputedStyle(element).flexBasis,
+        order: getComputedStyle(element).order,
+      })),
+      { basis: "auto", order: "-9999" },
+    );
+  }
+  if (testCase.family === "interaction") {
+    const { frame } = await frameForExample(page, testCase, "appearance");
+    assert.equal(
+      await frame
+        .locator(".appearance-none")
+        .evaluate((element) => getComputedStyle(element).appearance),
+      "none",
+    );
+  }
+  if (testCase.family === "miscellaneous") {
+    const { frame } = await frameForExample(page, testCase, "screen-reader-visibility");
+    assert.equal(
+      await frame.locator(".not-sr-only").evaluate((element) => getComputedStyle(element).position),
+      "static",
+    );
+  }
+  if (testCase.family === "svg") {
+    const { frame } = await frameForExample(page, testCase, "svg-paint");
+    assert.deepEqual(
+      await frame.locator(".fill-none").evaluate((element) => ({
+        fill: getComputedStyle(element).fill,
+        stroke: getComputedStyle(element).stroke,
+      })),
+      { fill: "none", stroke: "rgb(32, 48, 70)" },
+    );
+  }
   if (testCase.locale !== "en") return;
 
   if (testCase.family === "grid") {
@@ -949,7 +999,7 @@ async function assertGuideVariants(page, testCase) {
     .toBe("rgb(91, 91, 214)");
 }
 
-assert.equal(UTILITY_CASES.length, 94, "all 47 utility families have EN and JA browser cases");
+assert.equal(UTILITY_CASES.length, 96, "all 48 utility families have EN and JA browser cases");
 assert.equal(GUIDE_CASES.length, 20, "all ten guide pages have EN and JA browser cases");
 
 for (const testCase of CASES) {
@@ -1059,5 +1109,37 @@ for (const testCase of CASES) {
     }
 
     assertNoPageErrors(errors, `${testCase.locale}/${routeName}`);
+  });
+}
+
+for (const [locale, labels] of Object.entries(LOCALES)) {
+  test(`${locale} compatibility inventory keeps implemented and missing classes searchable`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(
+      `${PREVIEW_ORIGIN}${publicPath(`${labels.segment}docs/zudo-wind/compatibility/`)}`,
+      {
+        waitUntil: "networkidle",
+      },
+    );
+    await expect(page.locator("html")).toHaveAttribute("lang", labels.lang);
+    await expect(page.locator("main")).toContainText("line-clamp-2");
+    await expect(page.locator("main")).toContainText("contents");
+    await expect(page.locator("main")).toContainText("1288");
+    const missing = page.getByRole("link", { name: "L", exact: true });
+    await missing.focus();
+    await expect(missing).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/compatibility\/l\/$/);
+    await expect(page.locator("main")).toContainText("line-clamp");
+    await expect(page.locator("main")).toContainText("unmapped-upstream-registration");
+    await page.goto(
+      `${PREVIEW_ORIGIN}${publicPath(`${labels.segment}docs/zudo-wind/compatibility/m/`)}`,
+    );
+    await expect(page.locator("main")).toContainText("mx-auto");
+    await expect(page.locator("main")).toContainText("source-inspected");
+    const width = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(width).toBeLessThanOrEqual(391);
   });
 }

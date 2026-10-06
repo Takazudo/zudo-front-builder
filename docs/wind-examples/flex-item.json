@@ -40,6 +40,14 @@
         "wind-demo-tile"
       ],
       "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-alt { border-color: #b39761; background: #efe5cb; color: #483a1d; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "basis-and-order",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-new flex\"><span class=\"basis-auto order-first\">first</span><span class=\"basis-1/2 order-last\">last</span></div>",
+      "utilities": ["flex", "basis-auto", "basis-1/2", "order-first", "order-last"],
+      "authoredClasses": ["wind-demo-new"],
+      "scaffoldCss": ".wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }\n"
     }
   ]
 }

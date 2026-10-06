@@ -61,6 +61,16 @@
       "entry": "v1.sr-only",
       "candidate": "sr-only",
       "example": "supplemental-sr-only"
+    },
+    {
+      "entry": "v1.sr-only",
+      "candidate": "sr-only",
+      "example": "screen-reader-visibility"
+    },
+    {
+      "entry": "v1.not-sr-only",
+      "candidate": "not-sr-only",
+      "example": "screen-reader-visibility"
     }
   ],
   "locales": {
@@ -88,6 +98,11 @@
           "id": "supplemental-sr-only",
           "title": "Add optional screen-reader context",
           "description": "The visible button remains labeled “Save”; sr-only adds a short supplemental phrase without hiding essential content."
+        },
+        {
+          "id": "screen-reader-visibility",
+          "title": "Screen reader visibility",
+          "description": "screen-reader-visibility uses exact supported Wind utility classes."
         }
       ]
     },
@@ -115,6 +130,11 @@
           "id": "supplemental-sr-only",
           "title": "任意の読み上げ補足を加える",
           "description": "見えるボタン名「Save」はそのままに、sr-only で短い補足を追加します。重要な内容は隠しません。"
+        },
+        {
+          "id": "screen-reader-visibility",
+          "title": "スクリーンリーダーと表示",
+          "description": "screen-reader-visibility は対応済みの Wind ユーティリティクラスを使います。"
         }
       ]
     }

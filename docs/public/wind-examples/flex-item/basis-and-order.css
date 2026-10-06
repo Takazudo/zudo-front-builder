@@ -1,0 +1,25 @@
+@layer zw-reset, zw-tokens, zfb-hi, base, components;
+@layer zw-tokens {
+  :root {
+    --zw-spacing-unit: .25rem;
+  }
+}
+.wind-demo-new {
+  color: #203046;
+  font: 14px / 1.5 system-ui, sans-serif;
+}
+.flex {
+  display: flex;
+}
+.basis-1\/2 {
+  flex-basis: calc(100% * 1 / 2);
+}
+.basis-auto {
+  flex-basis: auto;
+}
+.order-first {
+  order: -9999;
+}
+.order-last {
+  order: 9999;
+}

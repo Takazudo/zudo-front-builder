@@ -44,6 +44,14 @@
       "utilities": ["sr-only"],
       "authoredClasses": ["wind-demo-sr-example", "wind-demo-sr-button"],
       "scaffoldCss": ".wind-demo-sr-example { display: grid; justify-items: start; gap: 0.7rem; max-width: 30rem; color: #24364b; font: 15px/1.5 system-ui, sans-serif; }\n.wind-demo-sr-example p { margin: 0; }\n.wind-demo-sr-button { border: 1px solid #526477; border-radius: 0.35rem; background: #eef3f8; padding: 0.55rem 0.8rem; color: inherit; font: inherit; }\n.wind-demo-sr-button:focus-visible { outline: 3px solid #1670b8; outline-offset: 3px; }\n"
+    },
+    {
+      "id": "screen-reader-visibility",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-new\"><span class=\"sr-only\">Hidden visually</span><span class=\"not-sr-only\">Visible label</span></div>",
+      "utilities": ["sr-only", "not-sr-only"],
+      "authoredClasses": ["wind-demo-new"],
+      "scaffoldCss": ".wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }\n"
     }
   ]
 }

@@ -1,0 +1,49 @@
+---
+title: Tailwind クラス互換性
+description: zudo-wind のソースを確認したクラスとユーティリティ基部の一覧です。
+sidebar_position: 19
+generated: true
+---
+
+完全なクラス名または有限の基部をサイト内検索か下のアルファベット順ページから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。
+
+固定した参照: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
+確認した Wind ソース: `8d2c45114db33d9444e0abb592e80a8ec3d92074`; spec `1.14`.
+互換性プロファイル: `wind-preset-free 1.5`.
+公開版での対応: このソース一覧からは未確定. 一覧の根拠: `source-inspected`. この表にブラウザー検証の結果は含まれません。現在の受け入れ済み参照は [正式な状態記録](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json)を確認してください。
+
+上流の登録: `1288`. Wind カタログ項目: `219`.
+
+## 検索例
+
+プロファイル内の候補: `block`, `hidden`, `inline-flex`, `mx-auto`, `grid-cols-2`, `p-0`, `p-hsp-sm`, `bg-surface`, `p-4`, `bg-gray-500`, `contents`, `hover:block`, `sm:block`.
+
+未対応の基部の例: `line-clamp-2`, `ring-2`, `container`. これは上流の基部登録の例で、任意の接尾辞が動作するという主張ではありません。
+
+## クラスの登録を探す
+
+- [SYMBOLS](symbols.mdx) (134)
+- [A](a.mdx) (26)
+- [B](b.mdx) (153)
+- [C](c.mdx) (81)
+- [D](d.mdx) (31)
+- [E](e.mdx) (8)
+- [F](f.mdx) (50)
+- [G](g.mdx) (17)
+- [H](h.mdx) (22)
+- [I](i.mdx) (68)
+- [J](j.mdx) (25)
+- [L](l.mdx) (19)
+- [M](m.mdx) (242)
+- [N](n.mdx) (11)
+- [O](o.mdx) (56)
+- [P](p.mdx) (60)
+- [R](r.mdx) (39)
+- [S](s.mdx) (133)
+- [T](t.mdx) (73)
+- [U](u.mdx) (5)
+- [V](v.mdx) (5)
+- [W](w.mdx) (28)
+- [Z](z.mdx) (2)
+
+ソースタグは観測値です。npm アーティファクトとの対応は未検証です。ブラウザー比較と受け入れ済み参照は別です。`mx-auto` の物理軸は書字方向による論理軸の慣例と異なります。リセット、カスケード、バリアントの相違は移行ガイドを参照してください。 [移行ガイド](../coming-from-tailwind.mdx).
