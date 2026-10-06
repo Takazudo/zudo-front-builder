@@ -698,6 +698,7 @@ struct Discovery<'a, R: Resolver> {
     owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
     nested_bindings: HashMap<PathBuf, Rc<NestedBindings>>,
     factory_proofs: HashMap<(Definition, usize, String), Value>,
+    factory_member_checks: HashMap<(PathBuf, BindingId), Option<Value>>,
     proving_factories: HashSet<Definition>,
     calls_by_callee: BTreeMap<Definition, Vec<FactoryCallSite>>,
     escapes_by_callee: BTreeMap<Definition, Vec<(PathBuf, Span)>>,
@@ -729,6 +730,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             owned_factory_sites: HashMap::new(),
             nested_bindings: HashMap::new(),
             factory_proofs: HashMap::new(),
+            factory_member_checks: HashMap::new(),
             proving_factories: HashSet::new(),
             calls_by_callee: BTreeMap::new(),
             escapes_by_callee: BTreeMap::new(),
@@ -1107,6 +1109,18 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             return Ok(Value::Other);
         };
         let factory = self.factory_definition(path, member)?;
+        let member_key = (path.to_path_buf(), target.to_id());
+        let member_check = if let Some(checked) = self.factory_member_checks.get(&member_key) {
+            checked.clone()
+        } else {
+            let checked = self.validate_factory_member(path, target, member, &bindings);
+            self.factory_member_checks
+                .insert(member_key, checked.clone());
+            checked
+        };
+        if let Some(reason) = member_check {
+            return Ok(reason);
+        }
         let key = (factory.clone(), member.index, member.property.clone());
         if let Some(value) = self.factory_proofs.get(&key) {
             return Ok(match value {
@@ -1316,21 +1330,17 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         Ok(())
     }
 
-    fn resolve_factory_member_inner(
-        &mut self,
+    fn validate_factory_member(
+        &self,
         path: &Path,
         target: &swc_core::ecma::ast::Ident,
-    ) -> ScanResult<Value> {
-        let bindings = self.nested_bindings(path)?;
-        let Some(member) = bindings.factory_members.get(&target.to_id()) else {
-            return Ok(Value::Other);
-        };
-        let Some(factory) = bindings.factory_functions.get(&member.factory) else {
-            return Ok(Value::Other);
-        };
+        member: &FactoryMember,
+        bindings: &NestedBindings,
+    ) -> Option<Value> {
+        let factory = bindings.factory_functions.get(&member.factory)?;
         let fail = |reason| Self::factory_failure(&target.sym, reason);
         if member.default {
-            return Ok(fail(format!(
+            return Some(fail(format!(
                 "parameter {} has a default value",
                 member
                     .parameter
@@ -1340,13 +1350,13 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             )));
         }
         if member.rest {
-            return Ok(fail(format!(
+            return Some(fail(format!(
                 "destructured parameter {} uses a rest pattern",
                 target.sym
             )));
         }
         if member.invalid_pattern {
-            return Ok(Value::Unsupported(format!(
+            return Some(Value::Unsupported(format!(
                 "target {} has unsupported initializer",
                 target.sym
             )));
@@ -1379,11 +1389,27 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             );
         }
         if let Some((name, span)) = bad_reads.into_iter().min_by_key(|(_, span)| span.lo.0) {
-            return Ok(fail(format!(
+            return Some(fail(format!(
                 "parameter {name} is written or escapes at {}",
                 self.site_location(path, span)
             )));
         }
+        None
+    }
+
+    fn resolve_factory_member_inner(
+        &mut self,
+        path: &Path,
+        target: &swc_core::ecma::ast::Ident,
+    ) -> ScanResult<Value> {
+        let bindings = self.nested_bindings(path)?;
+        let Some(member) = bindings.factory_members.get(&target.to_id()) else {
+            return Ok(Value::Other);
+        };
+        let Some(factory) = bindings.factory_functions.get(&member.factory) else {
+            return Ok(Value::Other);
+        };
+        let fail = |reason| Self::factory_failure(&target.sym, reason);
         let definition = self.factory_definition(path, member)?;
         if let Some((escape_path, span)) = self
             .escapes_by_callee
@@ -3191,18 +3217,77 @@ pub(super) fn discover<R: Resolver>(
     let mut discovery = Discovery::new(resolver, modules);
     let mut targets: BTreeMap<Definition, (FunctionValue, PathBuf, Span)> = BTreeMap::new();
     let mut scanned = BTreeSet::new();
+    let mut expanded_demanded = HashSet::new();
+    let mut primed_client_reexports = HashSet::new();
     loop {
         // Resolving importer callees and namespace references can demand
         // modules across the ordinary package traversal gate. Collect each
         // module's facts once, reaching a fixed module set before any proof.
         loop {
+            // Client route selection follows re-exports. Demand those
+            // sources before proving a factory, including when its first
+            // tentative proof would otherwise fail before route lookup.
+            let client_paths: Vec<_> = discovery
+                .modules
+                .keys()
+                .filter(|path| !primed_client_reexports.contains(*path))
+                .cloned()
+                .collect();
+            for path in client_paths {
+                primed_client_reexports.insert(path.clone());
+                let module = discovery.module(&path)?;
+                if !module.client {
+                    continue;
+                }
+                let sources: Vec<_> = module
+                    .ast
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
+                            named.src.as_ref().map(|src| atom_to_string(&src.value))
+                        }
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportAll(all)) if !all.type_only => {
+                            Some(atom_to_string(&all.src.value))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for source in sources {
+                    if let Some(target) = discovery.resolve_source(&path, &source) {
+                        if is_scannable_source(&target) {
+                            discovery.module(&target)?;
+                        }
+                    }
+                }
+            }
+            // The scanner later walks every import of a demanded module for
+            // ScanMeta. Bring that same closure into registration before a
+            // factory proof can be accepted. Each demanded root is expanded
+            // once, even when a proof demands another module later.
+            let fresh_demanded: Vec<_> = discovery
+                .modules
+                .keys()
+                .filter(|path| !initial_paths.contains(*path) && !expanded_demanded.contains(*path))
+                .cloned()
+                .collect();
+            if !fresh_demanded.is_empty() {
+                expanded_demanded.extend(fresh_demanded.iter().cloned());
+                let closure = scan_reachable_modules_with_meta(&fresh_demanded, resolver)?;
+                expanded_demanded.extend(closure.modules.iter().cloned());
+                for path in closure.modules {
+                    if is_scannable_source(&path) {
+                        discovery.module(&path)?;
+                    }
+                }
+            }
             let unaudited: Vec<_> = discovery
                 .modules
                 .keys()
                 .filter(|path| !discovery.audited_modules.contains(*path))
                 .cloned()
                 .collect();
-            if unaudited.is_empty() {
+            if unaudited.is_empty() && fresh_demanded.is_empty() {
                 break;
             }
             for path in unaudited {
@@ -3216,6 +3301,25 @@ pub(super) fn discover<R: Resolver>(
             .cloned()
             .collect();
         if paths.is_empty() {
+            // Route lookup can follow a client re-export and demand another
+            // module. Audit its import closure before accepting any cached
+            // factory proof from this pass.
+            for (target, _, _) in targets.values() {
+                discovery.find_client_route(target)?;
+            }
+            if discovery
+                .modules
+                .keys()
+                .any(|path| !discovery.audited_modules.contains(path))
+            {
+                discovery.factory_proofs.clear();
+                discovery.summary_cache.clear();
+                discovery.primed_modules.clear();
+                discovery.deferred_forward_sites.clear();
+                targets.clear();
+                scanned.clear();
+                continue;
+            }
             break;
         }
         let mut first_error = discovery.prime_wrapper_summaries().err();
@@ -3643,6 +3747,92 @@ mod tests {
         assert!(discovery.nested_binding_expression_visits < 200 * 10);
         assert!(discovery.factory_resolver_operations < 200 * 5);
         assert!(resolver.demands.get() < 200 * 4);
+    }
+
+    #[test]
+    fn factory_member_cache_does_not_skip_later_target_write() {
+        for (first, second) in [("A", "B"), ("B", "A")] {
+            let body = format!(
+                "function create(deps) {{ const A = deps.Counter; const B = deps.Counter; B = Other; <Island><{first} /></Island>; <Island><{second} /></Island>; }}"
+            );
+            let error = factory_case(&body, "create({ Counter });")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("parameter B is written or escapes"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn demanded_module_side_effect_closure_joins_factory_proof() {
+        struct DemandOnlyResolver(InMemoryResolver);
+        impl Resolver for DemandOnlyResolver {
+            fn resolve(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.0.resolve(dir, specifier)
+            }
+            fn resolve_demanded(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                if specifier == "late-pkg" {
+                    Some(PathBuf::from("/proj/factory.tsx"))
+                } else {
+                    self.0.resolve(dir, specifier)
+                }
+            }
+            fn read(&self, path: &Path) -> Result<String, String> {
+                self.0.read(path)
+            }
+        }
+        let factory = "import './late'; import { Island } from '@takazudo/zfb'; export function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        for (late, expected) in [
+            ("import { create } from './factory'; import { Other } from './counter'; create({ Counter: Other });", "call sites disagree"),
+            ("import { create } from './factory'; use(create);", "factory create escapes as a value"),
+        ] {
+            let resolver = DemandOnlyResolver(InMemoryResolver::new()
+                .with_file("/proj/pages/home.tsx", "import { create } from 'late-pkg'; import { Counter } from '../counter'; create({ Counter });")
+                .with_file("/proj/factory.tsx", factory)
+                .with_file("/proj/late.tsx", late)
+                .with_file("/proj/counter.tsx", "'use client'; export function Counter() { return null; } export function Other() { return null; }"));
+            let error = scan_islands(&[PathBuf::from("/proj/pages/home.tsx")], &resolver)
+                .unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("/proj/factory.tsx:"), "{error}");
+        }
+    }
+
+    #[test]
+    fn client_route_reexport_closure_joins_factory_proof() {
+        struct RouteDemandResolver(InMemoryResolver);
+        impl Resolver for RouteDemandResolver {
+            fn resolve(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.0.resolve(dir, specifier)
+            }
+            fn resolve_demanded(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+                if specifier == "route-pkg" {
+                    Some(PathBuf::from("/proj/bridge.ts"))
+                } else {
+                    self.0.resolve(dir, specifier)
+                }
+            }
+            fn read(&self, path: &Path) -> Result<String, String> {
+                self.0.read(path)
+            }
+        }
+        let resolver = RouteDemandResolver(InMemoryResolver::new()
+            .with_file("/proj/pages/home.tsx", "import '../route'; import { create } from '../factory'; import { Counter } from '../counter'; create({ Counter });")
+            .with_file("/proj/route.ts", "'use client'; export { Counter } from 'route-pkg';")
+            .with_file("/proj/bridge.ts", "import './late'; export { Counter } from './counter';")
+            .with_file("/proj/late.ts", "import { create } from './factory'; use(create);")
+            .with_file("/proj/factory.tsx", "import { Island } from '@takazudo/zfb'; export function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }")
+            .with_file("/proj/counter.tsx", "'use client'; export function Counter() { return null; }"));
+        let error = scan_islands(&[PathBuf::from("/proj/pages/home.tsx")], &resolver)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("factory create escapes as a value"),
+            "{error}"
+        );
+        assert!(error.contains("/proj/late.ts:"), "{error}");
     }
 
     #[test]
