@@ -189,7 +189,9 @@ async function computedBackground(css, probeClass) {
       const page = await browser.newPage();
       try {
         await page.goto(origin, { waitUntil: "load" });
-        return page.locator("#probe").evaluate((node) => getComputedStyle(node).backgroundColor);
+        return await page
+          .locator("#probe")
+          .evaluate((node) => getComputedStyle(node).backgroundColor);
       } finally {
         await page.close();
       }
