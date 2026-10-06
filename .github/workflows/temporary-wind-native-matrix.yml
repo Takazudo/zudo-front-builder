@@ -1,4 +1,4 @@
-# Preparation only. Replace 17878a2eb555fd86c4cf17abcaeba4a8989f2a76 and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
+# Preparation only. Replace dfa68c588f8e2c43313aac5489dc4c88b9e646d0 and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
 name: Temporary preset-free Wind harness probe
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: 17878a2eb555fd86c4cf17abcaeba4a8989f2a76
+          ref: dfa68c588f8e2c43313aac5489dc4c88b9e646d0
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = 17878a2eb555fd86c4cf17abcaeba4a8989f2a76
+          test "$(git rev-parse HEAD)" = dfa68c588f8e2c43313aac5489dc4c88b9e646d0
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
