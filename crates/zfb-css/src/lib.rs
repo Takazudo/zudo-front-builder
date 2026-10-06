@@ -62,6 +62,7 @@
 
 pub mod authored_engine;
 pub mod css_imports;
+mod default_theme_audit;
 pub mod default_theme_vars;
 pub mod emitter;
 pub mod engine;
@@ -79,6 +80,7 @@ pub use authored_engine::AuthoredCssEngine;
 pub use css_imports::{
     bundle_authored_css, bundle_authored_css_with_assets, resolve_css_imports, AuthoredCssBundle,
 };
+pub use default_theme_audit::append_default_theme_var_diagnostics;
 pub use default_theme_vars::{
     scan_custom_property_declarations, scan_default_theme_var_references,
     undeclared_default_theme_var_references, DefaultThemeVarReference,

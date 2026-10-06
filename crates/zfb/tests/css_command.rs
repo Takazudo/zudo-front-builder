@@ -1308,6 +1308,101 @@ fn wind_audit_clean_project_succeeds_with_complete_report() {
 }
 
 #[test]
+fn wind_audit_reports_default_theme_vars_only_for_enabled_audit() {
+    let css = "@import './tokens.css';\n.a { font-weight: var(--font-weight-normal); font-size: var(--text-2xl); }\n.b { gap: var(--spacing); font-weight: var(--font-weight-normal); }\n.c { font-weight: var(--font-weight-normal, 400); }\n";
+    let temp = wind_audit_fixture(
+        r#"{"wind":{"spec":1,"tokens":{"fontWeights":{"normal":"400"}}}}"#,
+        "export default () => <div class=\"block\" />;\n",
+    );
+    let styles = temp.path().join("src/styles");
+    fs::create_dir_all(&styles).unwrap();
+    fs::write(styles.join("global.css"), css).unwrap();
+    fs::write(styles.join("tokens.css"), ":root { --other: 1; }\n").unwrap();
+
+    let audit = run_wind_audit(temp.path(), &["--json", "--fail-on", "warning"]);
+    assert_success(&audit, "auditInfo does not fail warning threshold");
+    let document: serde_json::Value = serde_json::from_slice(&audit.stdout).unwrap();
+    assert_eq!(document["report"]["outcome"], "complete");
+    let rows: Vec<_> = document["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["code"] == "ZW016")
+        .collect();
+    assert_eq!(rows.len(), 4, "{document}");
+    for row in &rows {
+        assert_eq!(row["severity"], "auditInfo");
+        assert_eq!(row["origin"]["path"], "src/styles/global.css");
+        assert!(row["origin"]["line"].as_u64().unwrap() > 0);
+        assert!(row["origin"]["byteColumn"].as_u64().unwrap() > 0);
+        assert!(row["origin"]["byteOffset"].as_u64().is_some());
+    }
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["candidate"] == "--font-weight-normal")
+            .count(),
+        2
+    );
+
+    let text = run_wind_audit(temp.path(), &[]);
+    assert_success(&text, "text audit");
+    let rendered = process_stdout(&text);
+    assert!(
+        rendered.contains("ZW016 auditInfo at src/styles/global.css:2:"),
+        "{rendered}"
+    );
+    let grouped = run_wind_audit(temp.path(), &["--group"]);
+    assert_success(&grouped, "grouped audit");
+    assert!(process_stdout(&grouped).contains("[ZW016 auditInfo]"));
+    let filtered = run_wind_audit(temp.path(), &["--severity", "warning"]);
+    assert_success(&filtered, "warning filter");
+    assert!(!process_stdout(&filtered).contains("ZW016"));
+
+    fs::write(
+        temp.path().join("zfb.config.json"),
+        r#"{"wind":{"spec":1,"strict":true,"tokens":{"fontWeights":{"normal":"400"}}}}"#,
+    )
+    .unwrap();
+    let strict = run_wind_audit(temp.path(), &["--json", "--fail-on", "warning"]);
+    assert_failure(&strict, "strict ZW016 warning threshold");
+    let strict_json: serde_json::Value = serde_json::from_slice(&strict.stdout).unwrap();
+    assert_eq!(
+        strict_json["report"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["code"] == "ZW016" && row["severity"] == "warning")
+            .count(),
+        4
+    );
+
+    fs::write(
+        styles.join("tokens.css"),
+        ":root { --font-weight-normal: 400; }\n",
+    )
+    .unwrap();
+    let declared = run_wind_audit(temp.path(), &["--json"]);
+    assert_success(&declared, "imported declaration audit");
+    let declared_json: serde_json::Value = serde_json::from_slice(&declared.stdout).unwrap();
+    assert!(!declared_json["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["code"] == "ZW016" && row["candidate"] == "--font-weight-normal"));
+
+    fs::write(temp.path().join("zfb.config.json"), r#"{"wind":false}"#).unwrap();
+    let disabled = run_wind_audit(temp.path(), &["--json"]);
+    assert_success(&disabled, "disabled wind audit");
+    let disabled_json: serde_json::Value = serde_json::from_slice(&disabled.stdout).unwrap();
+    assert_eq!(disabled_json["report"]["outcome"], "generation_disabled");
+    assert!(!disabled_json["report"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["code"] == "ZW016"));
+}
+
+#[test]
 fn wind_cli_reports_authored_class_hint_and_reservation_controls_css() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1}}"#,
