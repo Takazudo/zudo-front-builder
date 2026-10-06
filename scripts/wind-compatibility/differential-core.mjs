@@ -32,9 +32,9 @@ export function validatePilot(profile, manifest, observations) {
   if (
     profile.profileId !== "wind-preset-free" ||
     profile.profileVersion !== 1 ||
-    profile.profileRevision !== 3 ||
+    profile.profileRevision !== 4 ||
     profile.sourceBaseline?.languageSpecVersion !== 1 ||
-    profile.sourceBaseline?.languageSpecRevision !== 13
+    profile.sourceBaseline?.languageSpecRevision !== 14
   )
     throw Error("Unexpected compatibility profile");
   if (

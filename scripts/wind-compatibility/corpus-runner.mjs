@@ -322,6 +322,53 @@ async function nativeResults(binary, manifest, empty, output) {
   return results;
 }
 
+async function assertNativeReferenceBoundaries(reference) {
+  const input = "@theme { --*: initial; } @tailwind utilities;";
+  for (const candidate of [
+    "basis-0",
+    "basis-min",
+    "basis-max",
+    "basis-fit",
+    "basis-content",
+    "basis-0.5/2",
+  ]) {
+    const compiler = await reference.compile(input);
+    if (referenceCandidateHeads(compiler.build([candidate])).length !== 0)
+      throw Error(`Empty-theme reference unexpectedly emitted ${candidate}`);
+  }
+  for (const [candidate, value] of [
+    ["basis-0/2", "calc(0 / 2 * 100%)"],
+    ["basis-1/0", "calc(1 / 0 * 100%)"],
+    ["basis-1000001/2", "calc(1000001 / 2 * 100%)"],
+  ]) {
+    const compiler = await reference.compile(input);
+    const css = compiler.build([candidate]);
+    const writes = ruleWrites(css, candidate);
+    if (digest(writes) !== digest([{ "flex-basis": value }]))
+      throw Error(`Reference bounded-fraction difference changed: ${candidate}`);
+  }
+  for (const [candidate, property, value] of [
+    ["-order-1", "order", "calc(1 * -1)"],
+    ["basis-1/2", "flex-basis", "calc(1 / 2 * 100%)"],
+    ["fill-current", "fill", "currentcolor"],
+    ["stroke-current", "stroke", "currentcolor"],
+  ]) {
+    const compiler = await reference.compile(input);
+    if (
+      digest(ruleWrites(compiler.build([candidate]), candidate)) !== digest([{ [property]: value }])
+    )
+      throw Error(`Reference shared native spelling changed: ${candidate}`);
+  }
+  const opacity = await reference.compile(input);
+  const opacityCss = opacity.build(["fill-current/50"]);
+  if (
+    digest(referenceCandidateHeads(opacityCss)) !== digest([escapedCandidate("fill-current/50")]) ||
+    !opacityCss.includes("@supports") ||
+    !opacityCss.includes("color-mix(in oklab, currentcolor 50%, transparent)")
+  )
+    throw Error("Reference SVG opacity fallback difference changed");
+}
+
 async function supplementalResults(
   binary,
   reference,
@@ -507,6 +554,12 @@ async function upstreamResults(
     const detectedDifferences = [];
     if (structure.pass && structure.windTreeSha256 !== structure.referenceTreeSha256)
       detectedDifferences.push("exact-tree-contract");
+    if (
+      structure.pass &&
+      (row.id === "native-not-sr-only" || row.id === "native-sr-reversal") &&
+      observed.every((pair) => pair.wind.pass && pair.reference.pass)
+    )
+      detectedDifferences.push("sr-reversal-clip-model");
     const semantic = {
       "padding-axis": "physical-logical-axis-composition",
       "margin-axis": "physical-logical-axis-composition",
@@ -993,6 +1046,7 @@ async function main(argv) {
   const source = await provenance(manifest, args.cache);
   const windBuild = await verifyWindBuild(args["wind-binary"], args["wind-build-manifest"]);
   const reference = await loadReference(args.cache, referenceSelection);
+  await assertNativeReferenceBoundaries(reference);
   const scanner = await loadIndependentScanner(args.cache);
   const { browser, executablePath } = await browserFor(args.engine);
   let report;

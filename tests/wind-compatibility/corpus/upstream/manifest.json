@@ -18,6 +18,11 @@
     "arbitrary-width-one",
     "arbitrary-width-seventeen",
     "native-display",
-    "native-appearance"
+    "native-appearance",
+    "native-order",
+    "native-basis",
+    "native-svg",
+    "native-not-sr-only",
+    "native-sr-reversal"
   ]
 }

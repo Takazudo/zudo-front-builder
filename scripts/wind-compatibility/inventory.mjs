@@ -308,7 +308,35 @@ const tracking = (name) =>
     ? issue(3372)
     : /^(?:space-|divide-)/.test(name)
       ? issue(3386)
-      : null;
+      : /^(?:table-auto$|table-fixed$|order$|basis$|fill$|stroke$|fill-|stroke-)/.test(name)
+        ? issue(3812)
+        : null;
+const partialNative = Object.freeze({
+  order: {
+    supported:
+      "first, last, none, and ASCII integer 0..2147483647 with optional negative numeric form",
+    retained: "arbitrary values, custom properties, named tokens, and noninteger suffixes",
+    alternative: "Author order in CSS for retained forms.",
+  },
+  basis: {
+    supported:
+      "auto, full, px, 0, min, max, fit, content, and positive integer fractions with parts 1..1000000",
+    retained: "nonzero numeric scale, named tokens, arbitrary values, and invalid fraction parts",
+    alternative:
+      "Author flex-basis in CSS for retained forms, optionally using configured --zw-spacing-* or --zw-size-* variables.",
+  },
+  fill: {
+    supported: "exact fill-current and fill-none",
+    retained: "named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs",
+    alternative: "Author fill in CSS for retained forms.",
+  },
+  stroke: {
+    supported: "exact stroke-current and stroke-none",
+    retained:
+      "named/transparent/inherit colors, opacity modifiers, arbitrary values, URLs and stroke-width",
+    alternative: "Author stroke or stroke-width in CSS for retained forms.",
+  },
+});
 function windExact(name, catalog) {
   return catalog.entries.find((entry) =>
     entry.acceptedValues?.some((value) => {
@@ -346,6 +374,9 @@ function axisReview(kind, name) {
 function sourceEvidence(windSha, catalog, profile, upstream) {
   return {
     status: "source-inspected",
+    sourceInspected: { windGitSha: windSha },
+    contractTested: null,
+    independentlyDifferentialTested: null,
     windGitSha: windSha,
     windSpecVersion: catalog.specVersion,
     windSpecRevision: catalog.specRevision,
@@ -446,6 +477,7 @@ export function makeInventory(
           )
         : null;
     const candidate = kind.startsWith("utility") && nativeCandidate(name);
+    const partial = kind === "utility-pattern" ? partialNative[name] : null;
     const axisDifference = axisReview(kind, name);
     const special = Boolean(axisDifference && exact);
     const variant = variantMapping(kind, name);
@@ -474,42 +506,51 @@ export function makeInventory(
         constraints: constraint,
       },
       windMapping: mapping,
-      configurationRequirement:
-        variant?.requirement ??
-        (kind === "utility-pattern"
-          ? constraint?.themeKeys.length
-            ? `Upstream theme keys: ${constraint.themeKeys.join(", ")}; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant.`
-            : "Pattern domain requires case-specific source review; no default token guarantee."
-          : family?.tokenCategories?.length
-            ? `Configure Wind ${family.tokenCategories.join(", ")} token for named values.`
-            : "No configuration established for this row."),
-      implementation: variant
-        ? "source-inspected-variant-parser"
-        : exact
-          ? "source-inspected-exact-registration"
-          : family
-            ? "root-collision-unverified"
-            : "not-established",
-      disposition: special
-        ? "reviewed-difference"
+      configurationRequirement: partial
+        ? `Wind supported subset: ${partial.supported}. Retained exclusions: ${partial.retained}. No token configuration expands this native subset.`
+        : (variant?.requirement ??
+          (kind === "utility-pattern"
+            ? constraint?.themeKeys.length
+              ? `Upstream theme keys: ${constraint.themeKeys.join(", ")}; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant.`
+              : "Pattern domain requires case-specific source review; no default token guarantee."
+            : family?.tokenCategories?.length
+              ? `Configure Wind ${family.tokenCategories.join(", ")} token for named values.`
+              : "No configuration established for this row.")),
+      implementation: partial
+        ? "bounded-native-subset-source-inspected"
         : variant
-          ? "candidate-mapping-untested"
-          : kind.startsWith("variant")
-            ? "variant-unmapped"
-            : exact
-              ? "candidate-mapping-untested"
-              : family
-                ? "requires-review"
-                : candidate
-                  ? "native-css-review-candidate"
-                  : tracking(name)
-                    ? "excluded-deferred"
-                    : "unmapped-upstream-registration",
-      semanticDifference: axisDifference,
-      alternative: candidate
-        ? "Review native CSS and accessibility behavior; no automatic adoption."
-        : null,
-      trackingIssue: tracking(name),
+          ? "source-inspected-variant-parser"
+          : exact
+            ? "source-inspected-exact-registration"
+            : family
+              ? "root-collision-unverified"
+              : "not-established",
+      disposition: partial
+        ? "partial-native-adoption-unverified"
+        : special
+          ? "reviewed-difference"
+          : variant
+            ? "candidate-mapping-untested"
+            : kind.startsWith("variant")
+              ? "variant-unmapped"
+              : exact
+                ? "candidate-mapping-untested"
+                : family
+                  ? "requires-review"
+                  : candidate
+                    ? "native-css-review-candidate"
+                    : tracking(name)
+                      ? "excluded-deferred"
+                      : "unmapped-upstream-registration",
+      semanticDifference: partial
+        ? `Wind supports ${partial.supported}; retained exclusions: ${partial.retained}. Source/catalog support alone does not establish browser parity.`
+        : axisDifference,
+      alternative: partial
+        ? partial.alternative
+        : candidate
+          ? "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses."
+          : null,
+      trackingIssue: exact ? null : tracking(name),
       evidence: sourceEvidence(windSha, catalog, profile, upstream),
     };
   });
@@ -646,15 +687,28 @@ export function makeInventory(
       evidence: { ...sourceEvidence(windSha, catalog, profile, upstream), caseIds: [c.id] },
     })),
     nativeCssReview: [
-      "flex order/basis",
-      "SVG fill/stroke presentation",
-      "accessibility screen-reader helpers",
-    ].map((family) => ({
+      [
+        "flex order/basis",
+        "Bounded order and basis subsets adopted; arbitrary order, basis scale/token/arbitrary values remain under #3812.",
+        "Author order or flex-basis in CSS for retained forms.",
+      ],
+      [
+        "SVG fill/stroke presentation",
+        "Only current and none presentation values adopted; color/opacity/URL/stroke-width forms remain under #3812.",
+        "Author fill, stroke or stroke-width in CSS for retained forms.",
+      ],
+      [
+        "accessibility screen-reader helpers",
+        "Exact not-sr-only reversal adopted after sr-only; Wind clip:auto is a reviewed model difference.",
+        "Author additional accessibility behavior in CSS as needed.",
+      ],
+    ].map(([family, scope, alternative]) => ({
       family,
-      disposition: "review-candidate",
-      approval: null,
+      disposition: "bounded-native-adoption",
+      approval: "#3835",
       evidenceStatus: "source-inspected",
-      alternative: "Native CSS and semantic HTML review required before any adoption.",
+      scope,
+      alternative,
     })),
     noSingleCompatibilityPercentage: true,
   };

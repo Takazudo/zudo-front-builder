@@ -1,0 +1,66 @@
+[
+  {
+    "name": "inactive-position",
+    "selector": "#target",
+    "property": "position",
+    "wind": "absolute",
+    "reference": "absolute"
+  },
+  {
+    "name": "inactive-clip",
+    "selector": "#target",
+    "property": "clip",
+    "wind": "rect(0px, 0px, 0px, 0px)",
+    "reference": "auto"
+  },
+  {
+    "name": "inactive-clip-path",
+    "selector": "#target",
+    "property": "clip-path",
+    "wind": "none",
+    "reference": "inset(50%)"
+  },
+  {
+    "name": "inactive-white-space",
+    "selector": "#target",
+    "property": "white-space",
+    "wind": "nowrap",
+    "reference": "nowrap"
+  },
+  {
+    "name": "active-position",
+    "selector": "#target",
+    "property": "position",
+    "wind": "static",
+    "reference": "static",
+    "focusSelector": "#target",
+    "keyboardFocus": true
+  },
+  {
+    "name": "active-clip",
+    "selector": "#target",
+    "property": "clip",
+    "wind": "auto",
+    "reference": "auto",
+    "focusSelector": "#target",
+    "keyboardFocus": true
+  },
+  {
+    "name": "active-clip-path",
+    "selector": "#target",
+    "property": "clip-path",
+    "wind": "none",
+    "reference": "none",
+    "focusSelector": "#target",
+    "keyboardFocus": true
+  },
+  {
+    "name": "active-white-space",
+    "selector": "#target",
+    "property": "white-space",
+    "wind": "normal",
+    "reference": "normal",
+    "focusSelector": "#target",
+    "keyboardFocus": true
+  }
+]
