@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile, mkdir, realpath } from "node:fs/promises";
+import { readFile, writeFile, mkdir, realpath, readdir } from "node:fs/promises";
 import { dirname, resolve, sep, basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
@@ -152,12 +152,10 @@ export async function identity() {
   const result = {};
   for (const [key, path] of Object.entries(paths))
     result[key] = sha256(await readFile(fromRoot(path)));
-  for (const path of [
-    "scripts/wind-compatibility/reference.mjs",
-    "scripts/wind-compatibility/reference-cli.mjs",
-    "scripts/wind-compatibility/upstream.mjs",
-  ])
+  for (const name of (await readdir(fromRoot("scripts/wind-compatibility"))).filter((name) => name.endsWith(".mjs")).sort()) {
+    const path = `scripts/wind-compatibility/${name}`;
     result[path] = sha256(await readFile(fromRoot(path)));
+  }
   result.runtime = digest({
     node: process.version,
     platform: process.platform,

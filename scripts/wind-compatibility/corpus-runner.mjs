@@ -904,7 +904,7 @@ async function main(argv) {
     extractionManifest,
     upstream,
     configurations,
-    bootstrap,
+    referenceSelection,
     inventory,
     catalog,
     contracts,
@@ -917,7 +917,7 @@ async function main(argv) {
     readJson(fromRoot("tests/wind-compatibility/extraction/manifest.json")),
     readJson(resolve(corpusRoot, "upstream/manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/empty-token/configurations.json")),
-    readJson(fromRoot("tests/wind-compatibility/reference/bootstrap.json")),
+    readJson(args.reference ? resolve(args.reference) : fromRoot("tests/wind-compatibility/reference/bootstrap.json")),
     readJson(fromRoot("tests/wind-compatibility/inventory.v1.json")),
     readJson(fromRoot("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json")),
     readJson(resolve(corpusRoot, "structure-contracts.json")),
@@ -948,7 +948,7 @@ async function main(argv) {
     throw Error("Upstream fixture import skipped or unlisted");
   const source = await provenance(manifest, args.cache);
   const windBuild = await verifyWindBuild(args["wind-binary"], args["wind-build-manifest"]);
-  const reference = await loadReference(args.cache, bootstrap);
+  const reference = await loadReference(args.cache, referenceSelection);
   const scanner = args.engine === "chromium" ? await loadIndependentScanner(args.cache) : null;
   const { browser, executablePath } = await browserFor(args.engine);
   let report;
