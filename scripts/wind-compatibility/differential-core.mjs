@@ -32,7 +32,7 @@ export function validatePilot(profile, manifest, observations) {
   if (
     profile.profileId !== "wind-preset-free" ||
     profile.profileVersion !== 1 ||
-    profile.profileRevision !== 4 ||
+    profile.profileRevision !== 5 ||
     profile.sourceBaseline?.languageSpecVersion !== 1 ||
     profile.sourceBaseline?.languageSpecRevision !== 14
   )
@@ -95,6 +95,52 @@ export function validatePilot(profile, manifest, observations) {
       ])
         if (!mx.has(`${mode}-${direction}-${measure}`))
           throw Error(`Missing axis probe ${mode}/${direction}/${measure}`);
+  const webkit = profile.browserPolicy.requiredMatrix.find((row) => row.browser === "webkit");
+  if (
+    webkit?.browserVersion !== "26.5" ||
+    webkit.revision !== "2311" ||
+    webkit.hostPlatform !== "ubuntu24.04-x64"
+  )
+    throw Error("Pinned WebKit resolved margin browser changed without policy review");
+  const overrideNames = new Set(["vertical-rl-ltr-margin-bottom", "vertical-rl-rtl-margin-top"]);
+  const nativeReportSha256 = "afb7f2b557900acdbe061f0fe48ec4b2ae5375cd79f9394b15138072319acbe4";
+  for (const probe of observations["mx-auto"].probes) {
+    if (overrideNames.has(probe.name)) {
+      const expected = {
+        browser: "webkit",
+        browserVersion: webkit?.browserVersion,
+        revision: webkit?.revision,
+        hostPlatform: webkit?.hostPlatform,
+        value: "200px",
+        nativeRun: 37405347552,
+        nativeReportSha256,
+      };
+      if (
+        probe.wind !== "0px" ||
+        probe.reference !== "100px" ||
+        !probe.windBrowserOverride ||
+        digest(probe.windBrowserOverride) !== digest(expected)
+      )
+        throw Error(`Unreviewed WebKit resolved margin expectation: ${probe.name}`);
+    } else if (probe.windBrowserOverride !== undefined) {
+      throw Error(`Unreviewed browser override: ${probe.name}`);
+    }
+  }
+  for (const mode of ["horizontal-tb", "vertical-rl"])
+    for (const direction of ["ltr", "rtl"])
+      for (const axis of ["left", "top"]) {
+        const probe = observations["mx-auto"].probes.find(
+          (row) => row.name === `${mode}-${direction}-geometry-${axis}`,
+        );
+        const expected =
+          mode === "horizontal-tb"
+            ? [axis === "left" ? "100" : "0", axis === "left" ? "100" : "0"]
+            : axis === "left"
+              ? ["200", "200"]
+              : [direction === "ltr" ? "0" : "200", "100"];
+        if (probe.wind !== expected[0] || probe.reference !== expected[1])
+          throw Error(`Unreviewed mx-auto geometry: ${probe.name}`);
+      }
   if (
     !observations["grid-cols-2"]?.probes.some(
       (probe) => probe.selector === "#child-b" && probe.property.startsWith("geometry:"),

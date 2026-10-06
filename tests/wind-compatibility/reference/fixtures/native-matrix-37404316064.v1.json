@@ -1,0 +1,95 @@
+{
+  "source": "CI run 37404316064 retained candidate reports; compact replay, not browser policy",
+  "firefox": {
+    "corpusReportSha256": "aa25123f57c223c0545f971d932b05a57fc1639e8f71cf7e04883cde621e2ded",
+    "executedPilotKeys": [
+      "pilot/block/firefox",
+      "pilot/hidden/firefox",
+      "pilot/inline-flex/firefox",
+      "pilot/mx-auto/firefox",
+      "pilot/grid-cols-2/firefox",
+      "pilot/p-0-empty/firefox",
+      "pilot/p-0-mapped/firefox",
+      "pilot/named-spacing/firefox",
+      "pilot/named-color/firefox",
+      "pilot/unconfigured-p-4/firefox",
+      "pilot/undeclared-palette/firefox",
+      "pilot/configured-p-4/firefox",
+      "pilot/contents-gap/firefox",
+      "pilot/hover-block/firefox",
+      "pilot/breakpoint-block/firefox"
+    ],
+    "controlOutcomes": {
+      "empty-output-accounting": "matched",
+      "missing-fixture-rejection": "matched",
+      "wrong-value-detection": "matched",
+      "missing-rule-detection": "matched",
+      "extra-rule-detection": "matched",
+      "stale-input-rejection": "matched",
+      "variant-inactive-state": "matched",
+      "specificity-and-authored-cascade": "matched",
+      "nested-token-scope": "matched",
+      "writing-mode-axis": "matched",
+      "native-reset-controls": "matched"
+    }
+  },
+  "reversal": {
+    "chromium": {
+      "corpusReportSha256": "81937fde193c8310bb55017c267f2186c1c8973e079697d96b01404a1beb1dcb",
+      "rows": {
+        "native-not-sr-only": {
+          "outcome": "matched",
+          "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+          "differencePass": true,
+          "structurePass": true,
+          "transportPass": true
+        },
+        "native-sr-reversal": {
+          "outcome": "matched",
+          "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+          "differencePass": true,
+          "structurePass": true,
+          "transportPass": true
+        }
+      }
+    },
+    "firefox": {
+      "corpusReportSha256": "aa25123f57c223c0545f971d932b05a57fc1639e8f71cf7e04883cde621e2ded",
+      "rows": {
+        "native-not-sr-only": {
+          "outcome": "matched",
+          "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+          "differencePass": true,
+          "structurePass": true,
+          "transportPass": true
+        },
+        "native-sr-reversal": {
+          "outcome": "matched",
+          "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+          "differencePass": true,
+          "structurePass": true,
+          "transportPass": true
+        }
+      }
+    },
+    "webkit": {
+      "corpusReportSha256": "4d4ba644a30c507936f5fd4d359c78400a105a9dcce285c5dab65d5ae67b0e5d",
+      "rows": {
+        "native-not-sr-only": {
+          "outcome": "matched",
+          "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+          "differencePass": true,
+          "structurePass": true,
+          "transportPass": true
+        },
+        "native-sr-reversal": {
+          "outcome": "matched",
+          "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+          "differencePass": true,
+          "structurePass": true,
+          "transportPass": true
+        }
+      }
+    }
+  }
+}

@@ -86,14 +86,8 @@
       {
         "name": "horizontal-tb-ltr-geometry-top",
         "property": "geometry:top",
-        "wind": {
-          "min": 0,
-          "max": 300
-        },
-        "reference": {
-          "min": 0,
-          "max": 300
-        },
+        "wind": "0",
+        "reference": "0",
         "writingMode": "horizontal-tb",
         "direction": "ltr"
       },
@@ -140,14 +134,8 @@
       {
         "name": "horizontal-tb-rtl-geometry-top",
         "property": "geometry:top",
-        "wind": {
-          "min": 0,
-          "max": 300
-        },
-        "reference": {
-          "min": 0,
-          "max": 300
-        },
+        "wind": "0",
+        "reference": "0",
         "writingMode": "horizontal-tb",
         "direction": "rtl"
       },
@@ -181,33 +169,30 @@
         "wind": "0px",
         "reference": "100px",
         "writingMode": "vertical-rl",
-        "direction": "ltr"
+        "direction": "ltr",
+        "windBrowserOverride": {
+          "browser": "webkit",
+          "browserVersion": "26.5",
+          "revision": "2311",
+          "hostPlatform": "ubuntu24.04-x64",
+          "value": "200px",
+          "nativeRun": 37405347552,
+          "nativeReportSha256": "afb7f2b557900acdbe061f0fe48ec4b2ae5375cd79f9394b15138072319acbe4"
+        }
       },
       {
         "name": "vertical-rl-ltr-geometry-left",
         "property": "geometry:left",
-        "wind": {
-          "min": 0,
-          "max": 300
-        },
-        "reference": {
-          "min": 0,
-          "max": 300
-        },
+        "wind": "200",
+        "reference": "200",
         "writingMode": "vertical-rl",
         "direction": "ltr"
       },
       {
         "name": "vertical-rl-ltr-geometry-top",
         "property": "geometry:top",
-        "wind": {
-          "min": 0,
-          "max": 300
-        },
-        "reference": {
-          "min": 0,
-          "max": 300
-        },
+        "wind": "0",
+        "reference": "100",
         "writingMode": "vertical-rl",
         "direction": "ltr"
       },
@@ -233,7 +218,16 @@
         "wind": "0px",
         "reference": "100px",
         "writingMode": "vertical-rl",
-        "direction": "rtl"
+        "direction": "rtl",
+        "windBrowserOverride": {
+          "browser": "webkit",
+          "browserVersion": "26.5",
+          "revision": "2311",
+          "hostPlatform": "ubuntu24.04-x64",
+          "value": "200px",
+          "nativeRun": 37405347552,
+          "nativeReportSha256": "afb7f2b557900acdbe061f0fe48ec4b2ae5375cd79f9394b15138072319acbe4"
+        }
       },
       {
         "name": "vertical-rl-rtl-margin-bottom",
@@ -246,28 +240,16 @@
       {
         "name": "vertical-rl-rtl-geometry-left",
         "property": "geometry:left",
-        "wind": {
-          "min": 0,
-          "max": 300
-        },
-        "reference": {
-          "min": 0,
-          "max": 300
-        },
+        "wind": "200",
+        "reference": "200",
         "writingMode": "vertical-rl",
         "direction": "rtl"
       },
       {
         "name": "vertical-rl-rtl-geometry-top",
         "property": "geometry:top",
-        "wind": {
-          "min": 0,
-          "max": 300
-        },
-        "reference": {
-          "min": 0,
-          "max": 300
-        },
+        "wind": "200",
+        "reference": "100",
         "writingMode": "vertical-rl",
         "direction": "rtl"
       }
