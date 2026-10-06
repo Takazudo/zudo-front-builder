@@ -1,5 +1,5 @@
-# Preparation only. Replace 8b2a17ca9a67a237f8e9096da2f773f035e4550d and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
-name: Temporary Wind comparison and production shipping
+# Preparation only. Replace c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37 and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
+name: Temporary checked Wind baseline admission
 on:
   pull_request:
 permissions:
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: 8b2a17ca9a67a237f8e9096da2f773f035e4550d
+          ref: c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = 8b2a17ca9a67a237f8e9096da2f773f035e4550d
+          test "$(git rev-parse HEAD)" = c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
@@ -67,160 +67,35 @@ jobs:
           node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs 2>&1 | tee /tmp/wind-harness-evidence/node-contracts.log
           cargo fmt --all -- --check
           cargo test --locked -p zudo-wind --test empty_token_contracts 2>&1 | tee /tmp/wind-harness-evidence/rust-empty-token.log
-      - name: Build exact Wind adapter artifact
-        id: wind_build
-        run: node scripts/wind-compatibility/differential-runner.mjs build-wind /tmp/wind-harness-evidence/wind-build.json
-      - run: pnpm exec playwright install --with-deps chromium firefox webkit
-      - name: Execute real comparison CLI and complete per-engine matrix
-        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
+      - name: Install declared browser matrix
+        run: node_modules/.bin/playwright install --with-deps chromium firefox webkit
+      - name: Run complete required Wind verification
+        run: bash scripts/wind-compatibility/ci-run.sh full
+      - name: Verify generated EN and JA data and actual preview freshness
         run: |
           set -euo pipefail
-          wind_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-harness-evidence/wind-build.json")).binaryPath')
-          node scripts/wind-compatibility/reference-cli.mjs compare --plan /tmp/wind-harness-evidence/plan.json --assessment /tmp/wind-harness-evidence/assessment.json --cache /tmp/zfb-wind-reference-cache --wind-binary "$wind_binary" --wind-build-manifest /tmp/wind-harness-evidence/wind-build.json --output /tmp/wind-harness-evidence/comparison 2>&1 | tee /tmp/wind-harness-evidence/comparison.log
-          node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("/tmp/wind-harness-evidence/comparison/comparison.json")); if(r.candidate.passing!==true || (r.accepted!==null && r.accepted.passing!==true)) throw Error("Comparison retained a failing required outcome; no admission"); if(r.admission!=="pending-independent-review-and-shipping-evidence") throw Error("Unexpected admission state")'
-      - name: Compile fixture harness before authenticating production CLI
-        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/wind-shipping-evidence
-          cargo test --locked -p zfb --test wind_real_build_confirm_build --no-run --message-format=json > /tmp/wind-shipping-evidence/test-compile.jsonl 2> /tmp/wind-shipping-evidence/test-compile.stderr.txt
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
-          const rows = fs.readFileSync("/tmp/wind-shipping-evidence/test-compile.jsonl", "utf8").trim().split("\n").map(JSON.parse).filter(row => row.reason === "compiler-artifact" && row.target?.name === "wind_real_build_confirm_build" && row.target.kind.includes("test") && row.profile?.test === true && row.executable);
-          if (rows.length !== 1) throw Error("Expected exactly one compiled fixture test artifact");
-          fs.writeFileSync("/tmp/wind-shipping-evidence/test-executable.txt", rows[0].executable + "\n");
-          NODE
-      - name: Build authenticated current-source production CLI
-        id: production_build
-        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
-        run: node scripts/wind-compatibility/build-production.mjs /tmp/wind-shipping-evidence
-      - name: Execute actual production build fixture and retain its sidecar
-        env:
-          ZFB_WIND_REAL_BUILD_DIST: /tmp/wind-shipping-evidence/dist
-          ZFB_WIND_REAL_BUILD_EXECUTION: /tmp/wind-shipping-evidence/build-execution.json
-        run: |
-          set -euo pipefail
-          test -x crates/zfb/binaries/esbuild/esbuild
-          crates/zfb/binaries/esbuild/esbuild --version
-          test_executable=$(cat /tmp/wind-shipping-evidence/test-executable.txt)
-          (cd crates/zfb && "$test_executable" --nocapture) 2>&1 | tee /tmp/wind-shipping-evidence/rust-build-fixture.log
-          node tests/wind-real-build/dist-proof.mjs /tmp/wind-shipping-evidence/production-build.json /tmp/wind-shipping-evidence/dist /tmp/wind-shipping-evidence/build-execution.json /tmp/wind-shipping-evidence/dist-proof.json
-      - name: Exercise shipping CLI, live dev, request-time SSR and browser composition
-        run: |
-          set -euo pipefail
-          node tests/wind-compatibility/shipping/run.mjs --production-build /tmp/wind-shipping-evidence/production-build.json --comparison /tmp/wind-harness-evidence/comparison/comparison.json --plan /tmp/wind-harness-evidence/plan.json --dist /tmp/wind-shipping-evidence/dist --dist-proof /tmp/wind-shipping-evidence/dist-proof.json --reference-cache /tmp/zfb-wind-reference-cache --output /tmp/wind-shipping-evidence/shipping 2>&1 | tee /tmp/wind-shipping-evidence/shipping.log
-      - name: Verify existing real-build asset and composition browser contracts
-        env:
-          ZFB_WIND_REAL_BUILD_DIST: /tmp/wind-shipping-evidence/dist
-          ZFB_WIND_REAL_BUILD_PROOF: /tmp/wind-shipping-evidence/dist-proof.json
-        run: pnpm exec playwright test --config tests/wind-real-build/playwright.config.mjs
-      - name: Generate fresh docs previews from the same actual production binary
-        if: ${{ !cancelled() && steps.production_build.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          production_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-shipping-evidence/production-build.json")).binaryPath')
-          node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary"
+          node docs/scripts/generate-wind-reference.mjs --locale en --check
+          node docs/scripts/generate-wind-reference.mjs --locale ja --check
+          production_binary=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).binaryPath' "$RUNNER_TEMP/wind-gate/production/production-build.json")
           node docs/scripts/wind-preview-assets.mjs --compiler "$production_binary" --check
-          mkdir -p /tmp/wind-shipping-evidence/generated-docs
-          cp -R docs/public/wind-examples /tmp/wind-shipping-evidence/generated-docs/
+          test -z "$(git status --porcelain)"
+      # Explicit one-time bootstrap operation in this disposable workflow only.
+      # The manager must review all original evidence before committing the pair.
+      - name: Propose checked ephemeral bootstrap admission
+        run: |
+          set -euo pipefail
+          node scripts/wind-compatibility/bootstrap-admission.mjs bootstrap --evidence "$RUNNER_TEMP/wind-gate" --cache "$RUNNER_TEMP/wind-reference-cache"
+          test -z "$(git status --porcelain)"
       - name: Preserve original evidence even on failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: wind-comparison-shipping-evidence
+          name: wind-checked-admission-evidence
           path: |
             /tmp/wind-harness-evidence/
             /tmp/zfb-wind-reference-cache/
-            /tmp/wind-shipping-evidence/
+            ${{ runner.temp }}/wind-gate/
+            ${{ runner.temp }}/wind-reference-cache/
             test-results/
-          if-no-files-found: error
-          retention-days: 7
-
-  deletion-regressions:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      RUSTUP_TOOLCHAIN: 1.99.0
-      ZFB_DELETION_DIAGNOSTIC: 1
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - name: Preserve exact test-only regression patch
-        run: |
-          mkdir -p "$RUNNER_TEMP/deletion-evidence"
-          cp .github/ci-fixtures/deletion-race-regressions.patch "$RUNNER_TEMP/deletion-evidence/regressions.patch"
-          sha256sum "$RUNNER_TEMP/deletion-evidence/regressions.patch" > "$RUNNER_TEMP/deletion-evidence/patch.sha256"
-          git fetch --no-tags --depth=1 origin 2ee0dd380177fd37361ff1f8025bfa7c72c7161f
-          git checkout --detach 2ee0dd380177fd37361ff1f8025bfa7c72c7161f
-          git apply --check "$RUNNER_TEMP/deletion-evidence/regressions.patch"
-          git apply "$RUNNER_TEMP/deletion-evidence/regressions.patch"
-          git rev-parse HEAD > "$RUNNER_TEMP/deletion-evidence/before.sha"
-          sha256sum crates/zfb/tests/dev_content_aggregate_cold_boot_e2e.rs > "$RUNNER_TEMP/deletion-evidence/before-original-e2e.sha256"
-          git diff > "$RUNNER_TEMP/deletion-evidence/before-test-only.diff"
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: 24.14.0
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: 1.99.0
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          prefix-key: v2-zfb
-          shared-key: workspace-all-targets
-          cache-on-failure: true
-      - run: pnpm install --frozen-lockfile
-      - name: Prove new regression assertions fail on unchanged parent implementation
-        run: |
-          set -euo pipefail
-          rustc -Vv > "$RUNNER_TEMP/deletion-evidence/rustc.txt"
-          cargo -V > "$RUNNER_TEMP/deletion-evidence/cargo.txt"
-          node --version > "$RUNNER_TEMP/deletion-evidence/node.txt"
-          for test_name in table_swap_refreshes_pending_claims_without_staling_fresh_routes table_swap_supersedes_unselected_cold_index_request lazy_request_with_failed_provenance_keeps_its_repair_claim; do
-            set +e
-            cargo test --locked -p zfb --lib "$test_name" -- --nocapture > "$RUNNER_TEMP/deletion-evidence/before-$test_name.log" 2>&1
-            result=$?
-            set -e
-            test "$result" -ne 0
-            grep -Eq '^running 1 test$' "$RUNNER_TEMP/deletion-evidence/before-$test_name.log"
-            grep -Eq 'test result: FAILED. 0 passed; 1 failed;' "$RUNNER_TEMP/deletion-evidence/before-$test_name.log"
-          done
-      - name: Switch to exact reviewed fix while retaining warm Cargo target
-        run: |
-          set -euo pipefail
-          git apply --reverse "$RUNNER_TEMP/deletion-evidence/regressions.patch"
-          test -z "$(git status --porcelain)"
-          git fetch --no-tags --depth=1 origin 8b2a17ca9a67a237f8e9096da2f773f035e4550d
-          git checkout --detach 8b2a17ca9a67a237f8e9096da2f773f035e4550d
-          test "$(git rev-parse HEAD)" = 8b2a17ca9a67a237f8e9096da2f773f035e4550d
-          git rev-parse HEAD > "$RUNNER_TEMP/deletion-evidence/fix.sha"
-          sha256sum crates/zfb/tests/dev_content_aggregate_cold_boot_e2e.rs > "$RUNNER_TEMP/deletion-evidence/original-e2e.sha256"
-          cmp "$RUNNER_TEMP/deletion-evidence/before-original-e2e.sha256" "$RUNNER_TEMP/deletion-evidence/original-e2e.sha256"
-      - name: Execute fixed claim and adapter regressions
-        run: |
-          set -euo pipefail
-          for test_name in table_swap_refreshes_pending_claims_without_staling_fresh_routes table_swap_supersedes_unselected_cold_index_request lazy_request_with_failed_provenance_keeps_its_repair_claim; do
-            cargo test --locked -p zfb --lib "$test_name" -- --nocapture > "$RUNNER_TEMP/deletion-evidence/fix-$test_name.log" 2>&1
-            grep -Eq 'test result: ok. 1 passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-$test_name.log"
-          done
-          cargo test --locked -p zfb --lib lazy_render_adapter::tests -- --nocapture > "$RUNNER_TEMP/deletion-evidence/fix-adapter.log" 2>&1
-          grep -Eq 'test result: ok. [1-9][0-9]* passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-adapter.log"
-      - name: Repeat unchanged real default-V8 deletion sequences without retries
-        run: |
-          set -euo pipefail
-          for pass in 1 2 3 4 5 6 7 8 9 10; do
-            cargo test --locked -p zfb --test dev_content_aggregate_cold_boot_e2e cold_lazy_deleted_entry -- --nocapture --test-threads=1 > "$RUNNER_TEMP/deletion-evidence/fix-real-sequences-$pass.log" 2>&1
-            grep -Eq 'test result: ok. 3 passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-real-sequences-$pass.log"
-          done
-          test -z "$(git status --porcelain)"
-      - name: Retain original regression proof and logs
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: deletion-race-regression-evidence
-          path: ${{ runner.temp }}/deletion-evidence/
           if-no-files-found: error
           retention-days: 7
