@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile, realpath } from "node:fs/promises";
 import { resolve, relative } from "node:path";
-import { completeCorpus, expectedObligations, expectedOutcomes } from "./corpus-core.mjs";
+import { checkMutations, completeCorpus, expectedObligations, expectedOutcomes } from "./corpus-core.mjs";
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
+import { canonical } from "./corpus-structure.mjs";
+import { parseCssStructure } from "./structure.mjs";
 import { testedInputIdentity } from "./reference-identity.mjs";
 import { matchesExpected } from "./browser-adapter.mjs";
 import { currentPilotIdentity, validatePilotArtifacts, validatePilotEnvelope,
@@ -10,6 +12,7 @@ import { currentPilotIdentity, validatePilotArtifacts, validatePilotEnvelope,
 import { loadReference } from "./differential-runner.mjs";
 import { loadIndependentScanner } from "./oxide-scanner.mjs";
 import { candidateInventory } from "./reference-inventory.mjs";
+import { assertCurrentCorpusIdentity, currentCorpusIdentity } from "./corpus-identity.mjs";
 
 const engines = ["chromium", "firefox", "webkit"];
 const requiredTargetedKeys = Object.freeze({
@@ -59,12 +62,78 @@ export async function readRecordedArtifact(path, hash, output, originalOutput) {
   if (!physical.startsWith(`${physicalRoot}/`))
     throw Error(`Raw artifact escapes declared bundle: ${path}`);
   const bytes = await readFile(physical);
-  if (sha256(bytes) !== hash) throw Error(`Raw artifact hash changed: ${path}`);
+  if (hash && sha256(bytes) !== hash) throw Error(`Raw artifact hash changed: ${path}`);
   return bytes;
 }
 
 function expectedCorpusIds(manifest, engine) {
   return expectedObligations(manifest).filter((id) => id.endsWith(`/${engine}`));
+}
+
+export function validateCorpusProbeOutcomes(row, definitions, engine, htmlHash,
+  strictArtifacts = false) {
+  if (!Array.isArray(row.probes) || row.probes.length !== definitions.length ||
+      row.htmlSha256 !== htmlHash)
+    throw Error(`${engine} browser probe membership/HTML changed`);
+  for (let index = 0; index < definitions.length; index++) {
+    const probe = definitions[index], pair = row.probes[index];
+    for (const sideName of ["wind", "reference"]) {
+      const item = pair?.[sideName];
+      if (!item || item.probe !== probe.name || item.engine !== sideName ||
+          item.settings?.documentSha256 !== htmlHash ||
+          item.settings?.authoredCssSha256 !== sha256(probe.authoredCss ?? "") ||
+          digest(item.expected) !== digest(probe[sideName]) ||
+          item.pass !== matchesExpected(item.observation, item.expected) ||
+          (strictArtifacts && item.pass !== true))
+        throw Error(`${engine} browser probe identity or outcome invalid: ${probe.name}`);
+    }
+  }
+  return true;
+}
+
+export async function validateNativeRawRow(row, guarantee, output, originalOutput) {
+  if (!row || digest(row.expected) !== digest(guarantee.writes))
+    throw Error(`Native guarantee claim missing or changed: ${guarantee.id}`);
+  const css = await readRecordedArtifact(row.windCssPath, row.cssSha256, output, originalOutput);
+  if (row.structure?.actual !== digest(parseCssStructure(css.toString("utf8")).map(canonical)))
+    throw Error(`Native guarantee raw structure changed: ${guarantee.id}`);
+  return css;
+}
+
+export async function validateSupplementalRawRow(claim, definition, output,
+  originalOutput, referenceCompiler = null) {
+  if (!claim) throw Error(`Supplemental claim missing: ${definition.caseId}`);
+  const wind = await readRecordedArtifact(claim.windCssPath, claim.windCssSha256,
+    output, originalOutput);
+  const referenceCss = await readRecordedArtifact(claim.referenceCssPath,
+    claim.referenceCssSha256, output, originalOutput);
+  const referenceInput = await readRecordedArtifact(claim.referenceInputPath,
+    claim.referenceInputSha256, output, originalOutput);
+  if (referenceCompiler) {
+    const compiler = await referenceCompiler.compile(referenceInput.toString("utf8"));
+    if (compiler.build(definition.explicitCandidates) !== referenceCss.toString("utf8"))
+      throw Error(`Supplemental reference compiler output changed: ${definition.caseId}`);
+  }
+  const pairs = claim.observations?.flat();
+  if (!Array.isArray(pairs) || pairs.length !== claim.observationCount ||
+      pairs.some((pair) => [pair.wind, pair.reference].some((side) =>
+        !side?.verified || side.stylesheetSha256 !== side.servedSha256 ||
+        side.stylesheetSha256 !== (side === pair.wind
+          ? sha256(wind) : sha256(referenceCss)) ||
+        side.pass !== matchesExpected(side.observation, side.expected))))
+    throw Error(`Supplemental raw browser observation changed: ${definition.caseId}`);
+  return { wind, referenceCss, referenceInput };
+}
+
+export function validateSeededArtifactHashes(artifact) {
+  const paths = Object.keys(artifact).filter((key) => key.endsWith("Path"));
+  if (!paths.length) throw Error("Seeded artifact has no retained raw paths");
+  for (const key of paths) {
+    const hashKey = `${key.slice(0, -4)}Sha256`;
+    if (!/^[0-9a-f]{64}$/.test(artifact[hashKey] ?? ""))
+      throw Error(`Seeded raw artifact hash missing: ${artifact.kind}/${artifact.id}/${key}`);
+  }
+  return true;
 }
 
 export async function validateRun(output, expectedReference, input, profile, manifest,
@@ -192,10 +261,10 @@ export async function validateRun(output, expectedReference, input, profile, man
   const passing = engines.every((engine) => pilots[engine].complete === true &&
     pilots[engine].exitCode === 0) &&
     engines.every((engine) => reports[engine].complete === true && reports[engine].exitCode === 0);
-  let referenceCompiler = null;
+  let referenceCompiler = null, scanner = null;
   if (cache) {
     referenceCompiler = await loadReference(cache, expectedReference);
-    const scanner = await loadIndependentScanner(cache);
+    scanner = await loadIndependentScanner(cache);
     const pilotManifest = await readJson(fromRoot("tests/wind-compatibility/pilot/manifest.json"));
     const observations = await readJson(fromRoot("tests/wind-compatibility/pilot/observations.json"));
     const extraction = await readJson(fromRoot("tests/wind-compatibility/extraction/manifest.json"));
@@ -216,16 +285,40 @@ export async function validateRun(output, expectedReference, input, profile, man
           profile, pilotManifest, observations, extraction, referenceCompiler, scanner);
       }
     }
-    for (const engine of engines)
-      for (const [id, row] of Object.entries(reports[engine].executed))
-        if (id.startsWith("upstream/") && row.probes.some((pair) =>
-          [pair.wind, pair.reference].some((side) =>
-            !side.pass || !matchesExpected(side.observation, side.expected))))
-          throw Error(`${engine} browser expectation failed: ${id}`);
   } else if (strictArtifacts) throw Error("Reference cache required for acceptance replay");
   for (const engine of engines) {
     const corpusDir = resolve(output, `corpus-${engine}`);
     const originalCorpusDir = resolve(originalOutput, `corpus-${engine}`);
+    if (engine === "chromium") {
+      const empty = await readJson(fromRoot("tests/wind-compatibility/empty-token/manifest.json"));
+      for (const guarantee of empty.nativeGuarantees) {
+        const id = `native/${guarantee.id}/chromium`;
+        const row = reports[engine].executed[id];
+        await validateNativeRawRow(row, guarantee, corpusDir, originalCorpusDir);
+      }
+      for (const row of empty.cases.filter((item) => manifest.supplementalCaseIds.includes(item.caseId))) {
+        const id = `supplemental/${row.caseId}/chromium`;
+        const claim = reports[engine].executed[id];
+        await validateSupplementalRawRow(claim, row, corpusDir, originalCorpusDir,
+          referenceCompiler);
+      }
+      const controls = reports[engine].controls;
+      same(controls.mutations, checkMutations(controls.mutations?.validControls,
+        controls.mutations?.mutations), "corpus mutation controls");
+      const seeded = controls.seeded;
+      if (!Array.isArray(seeded?.artifacts) || !seeded.artifacts.length ||
+          seeded.outcome !== "matched")
+        throw Error("Seeded corpus controls missing or failed");
+      for (const artifact of seeded.artifacts) {
+        validateSeededArtifactHashes(artifact);
+        for (const [key, value] of Object.entries(artifact))
+          if (key.endsWith("Path")) {
+            const hashKey = `${key.slice(0, -4)}Sha256`;
+            await readRecordedArtifact(value, artifact[hashKey],
+              corpusDir, originalCorpusDir);
+          }
+      }
+    }
     for (const [id, row] of Object.entries(reports[engine].executed)) {
       if (!id.startsWith("upstream/")) continue;
       const raw = {};
@@ -238,6 +331,12 @@ export async function validateRun(output, expectedReference, input, profile, man
         const fixture = manifest.upstreamCases.find((item) =>
           id === `upstream/${item.id}/${engine}`);
         if (!fixture) throw Error(`${engine} upstream fixture absent for ${id}`);
+        const definition = await readJson(fromRoot(
+          `tests/wind-compatibility/corpus/upstream/${fixture.id}/case.json`));
+        if (row.configDigest !== digest(definition) ||
+            row.originalInput !== fixture.originalInput ||
+            row.source !== `${fixture.upstreamPath}#${fixture.upstreamTest}`)
+          throw Error(`${engine} corpus fixture/config/source claim stale: ${id}`);
         const compiler = await referenceCompiler.compile(raw.referenceInputPath.toString("utf8"));
         if (compiler.build(fixture.candidates) !== raw.referenceCssPath.toString("utf8"))
           throw Error(`${engine} raw upstream compiler output changed: ${id}`);
@@ -248,6 +347,29 @@ export async function validateRun(output, expectedReference, input, profile, man
             side.stylesheetSha256 !== (side === pair.wind
               ? row.windCssSha256 : row.referenceCssSha256))))
         throw Error(`${engine} browser transport invalid: ${id}`);
+      const fixtureId = id.split("/")[1];
+      const fixtureRoot = fromRoot(`tests/wind-compatibility/corpus/upstream/${fixtureId}`);
+      const html = await readFile(resolve(fixtureRoot, "index.html"));
+      const definitions = (await readJson(resolve(fixtureRoot, "probes.json")))
+        .filter((probe) => !probe.engines || probe.engines.includes(engine));
+      validateCorpusProbeOutcomes(row, definitions, engine, sha256(html), strictArtifacts);
+    }
+    if (cache) {
+      const archive = await readFile(resolve(cache, `response-${manifest.sourceArchiveSha256}`));
+      if (sha256(archive) !== manifest.sourceArchiveSha256)
+        throw Error("Pinned imported-test source archive changed");
+      const source = { sourceArchiveSha256: manifest.sourceArchiveSha256,
+        sourceTagCommit: manifest.sourceTagCommit,
+        packageLink: manifest.sourceToPackageLink };
+      const contracts = await readJson(fromRoot(
+        "tests/wind-compatibility/corpus/structure-contracts.json"));
+      const pilotObservations = await readJson(fromRoot(
+        "tests/wind-compatibility/pilot/observations.json"));
+      const expectedIdentity = await currentCorpusIdentity({ manifest, profile, contracts,
+        pilotObservations, executed: reports[engine].executed, engine, source,
+        reference: referenceCompiler, scanner, windBuild,
+        browserEnvironment: reports[engine].identity.browserEnvironment });
+      assertCurrentCorpusIdentity(reports[engine].identity, expectedIdentity);
     }
   }
   return { reports, windBuild, reference, passing, files: await rawTree(output) };
@@ -352,6 +474,14 @@ export async function compareOutputs({ plan, assessment, output, candidate, acce
     path, acceptedSha256: oldFiles.get(path) ?? null, candidateSha256: hash,
     changed: acceptedRun ? oldFiles.get(path) !== hash : null,
   }));
+  const oldWindFiles = new Map((acceptedRun?.files ?? []).filter(([path]) =>
+    path.endsWith("wind.css")));
+  const newWindFiles = new Map(candidateRun.files.filter(([path]) => path.endsWith("wind.css")));
+  if (acceptedRun) same([...oldWindFiles.keys()], [...newWindFiles.keys()],
+    "three-way Wind CSS membership");
+  const windDelta = [...newWindFiles].map(([path, hash]) => ({ path,
+    acceptedSha256: oldWindFiles.get(path) ?? null, candidateSha256: hash,
+    changed: acceptedRun ? oldWindFiles.get(path) !== hash : null }));
   const candidateObservations = observationRows(candidateRun);
   const acceptedObservations = acceptedRun && observationRows(acceptedRun);
   if (acceptedObservations) same(candidateObservations.map((row) =>
@@ -410,6 +540,7 @@ export async function compareOutputs({ plan, assessment, output, candidate, acce
         ...engines.map((engine) => [`corpus-${engine}`, acceptedRun.reports[engine].reportId])]),
       files: acceptedRun.files },
     upstreamDelta,
+    windDelta,
     browserDelta,
     controlDelta,
     candidateInventory: plan.previousAccepted

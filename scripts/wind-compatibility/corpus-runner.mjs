@@ -45,6 +45,7 @@ import { supplementalProbePlan } from "./corpus-supplemental.mjs";
 import { loadReference, treeDigest, verifyWindBuild } from "./differential-runner.mjs";
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { parseCssStructure } from "./structure.mjs";
+import { currentCorpusIdentity } from "./corpus-identity.mjs";
 
 const corpusRoot = fromRoot("tests/wind-compatibility/corpus");
 const archiveName = "response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3";
@@ -649,8 +650,11 @@ async function seededControls(binary, reference, browser, scanner, output) {
       candidates,
       canonical,
       windActualPath: resolve(windOutput, "actual/wind.css"),
+      windActualSha256: sha256(actualWind),
       windCanonicalPath: resolve(windOutput, "canonical/wind.css"),
+      windCanonicalSha256: sha256(canonicalWind),
       referenceInputPath,
+      referenceInputSha256: sha256("@theme { --*: initial; } @tailwind utilities;"),
       actualPath,
       actualSha256: sha256(actualReference),
       canonicalPath,
@@ -718,7 +722,9 @@ async function seededControls(binary, reference, browser, scanner, output) {
       id,
       candidate,
       windCssPath: resolve(windOutput, "width/wind.css"),
+      windCssSha256: sha256(windCss),
       referenceInputPath,
+      referenceInputSha256: sha256("@theme { --*: initial; } @tailwind utilities;"),
       referenceCssPath,
       referenceCssSha256: sha256(referenceCss),
     });
@@ -811,16 +817,21 @@ async function seededControls(binary, reference, browser, scanner, output) {
     const referenceCandidatesPath = resolve(referenceDir, "scanner-candidates.json");
     await writeFile(referenceInputPath, referenceInput);
     await writeFile(referenceCssPath, referenceCss);
-    await writeFile(referenceCandidatesPath, JSON.stringify(scanned, null, 2) + "\n");
+    const candidatesJson = JSON.stringify(scanned, null, 2) + "\n";
+    await writeFile(referenceCandidatesPath, candidatesJson);
+    const windCss = await readFile(resolve(sourceOutput, id, "wind.css"));
     artifacts.push({
       kind: "source-string",
       id,
       sourcePath: resolve(sourceRoot, id, "index.html"),
       windCssPath: resolve(sourceOutput, id, "wind.css"),
+      windCssSha256: sha256(windCss),
       referenceInputPath,
+      referenceInputSha256: sha256(referenceInput),
       referenceCssPath,
       referenceCssSha256: sha256(referenceCss),
       referenceCandidatesPath,
+      referenceCandidatesSha256: sha256(candidatesJson),
       sourceSha256: sha256(sources[index]),
     });
     const pass =
@@ -1039,70 +1050,9 @@ async function main(argv) {
       };
     });
     const differencesPass = differenceSummary.every((row) => row.pass);
-    const adapterPaths = [
-      "corpus-runner.mjs",
-      "corpus-core.mjs",
-      "corpus-seeds.mjs",
-      "corpus-structure.mjs",
-      "corpus-supplemental.mjs",
-      "corpus-pilot.mjs",
-      "browser-adapter.mjs",
-      "differential-runner.mjs",
-      "differential-core.mjs",
-      "structure.mjs",
-      "reference.mjs",
-      "reference-module-graph.mjs",
-      "oxide-scanner.mjs",
-    ];
-    const adapterFiles = await Promise.all(
-      adapterPaths.map(async (name) => [
-        name,
-        sha256(await readFile(fromRoot(`scripts/wind-compatibility/${name}`))),
-      ]),
-    );
-    const identity = {
-      source,
-      reference: reference.identity,
-      scanner: scanner?.identity ?? null,
-      windBuild,
-      profileId: profile.profileId,
-      profileVersion: profile.profileVersion,
-      profileRevision: profile.profileRevision,
-      profileDigest: sha256(await readFile(fromRoot("tests/wind-compatibility/profile.json"))),
-      corpusTreeDigest: await treeDigest(corpusRoot),
-      pilotFixtureTreeDigest: await treeDigest(fromRoot("tests/wind-compatibility/pilot")),
-      emptyTokenFixtureTreeDigest: await treeDigest(
-        fromRoot("tests/wind-compatibility/empty-token"),
-      ),
-      extractionFixtureTreeDigest: await treeDigest(
-        fromRoot("tests/wind-compatibility/extraction"),
-      ),
-      inventoryDigest: sha256(
-        await readFile(fromRoot("tests/wind-compatibility/inventory.v1.json")),
-      ),
-      catalogDigest: sha256(
-        await readFile(fromRoot("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json")),
-      ),
-      sourceInputDigest: digest(
-        manifest.upstreamCases.map((row) => [row.id, row.originalInput, row.candidates]),
-      ),
-      configurationDigest: digest(
-        manifest.upstreamCases.map((row) => [
-          row.id,
-          executed[`upstream/${row.id}/${args.engine}`]?.configDigest ?? null,
-        ]),
-      ),
-      assertionDigest: digest([
-        contracts,
-        pilotObservations,
-        manifest.compositionObligations,
-        manifest.targetedExecutionKeys,
-      ]),
-      adapterFiles,
-      adapterDigest: digest(adapterFiles),
-      lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
-      browserEnvironment,
-    };
+    const identity = await currentCorpusIdentity({ manifest, profile, contracts,
+      pilotObservations, executed, engine: args.engine, source,
+      reference, scanner, windBuild, browserEnvironment });
     report = {
       schemaVersion: 1,
       kind: "wind-independent-corpus",

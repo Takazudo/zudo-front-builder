@@ -18,7 +18,8 @@ import {
 } from "./reference.mjs";
 import { assessUpstream } from "./upstream.mjs";
 import { compareOutputs, executeReferenceRun, requirePassingCurrent, validateRun } from "./reference-comparison.mjs";
-import { assertStableTransition, recoverTransition, validateAssessment, validateComparison, transition, writeTransitionAtomically } from "./reference-promotion.mjs";
+import { assertStableTransition, recoverTransition, validateAssessment, validateComparison,
+  transition, upstreamReviewTransition, writeTransitionAtomically } from "./reference-promotion.mjs";
 import { testedInputIdentity } from "./reference-identity.mjs";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -148,7 +149,7 @@ async function main() {
       lockfileSha256: hashes.lock,
     });
     process.stdout.write(`${JSON.stringify(await assessUpstream(plan, opts.cache), null, 2)}\n`);
-  } else if (["compare", "promote", "verify-current"].includes(command)) {
+  } else if (["compare", "promote", "review", "verify-current"].includes(command)) {
     const state = {
       profile,
       accepted: await readJson(fromRoot(paths.accepted)),
@@ -169,8 +170,9 @@ async function main() {
         await identity(), profile, manifest, { cache: opts.cache, strictArtifacts: true }));
       process.stdout.write(`${output}\n`);
     } else {
-      if (!opts.plan || !opts.assessment || !opts.cache || !opts.output)
-        throw Error(`${command} requires plan, assessment, cache and output`);
+      if (!opts.plan || !opts.assessment || !opts.cache ||
+          (command !== "review" && !opts.output))
+        throw Error(`${command} requires plan, assessment, cache${command === "review" ? "" : " and output"}`);
       const inputPlan = await readJson(resolve(opts.plan));
       const hashes = await identity();
       const plan = validatePlan(inputPlan, hashes, state, inputPlan.candidate, {
@@ -180,6 +182,18 @@ async function main() {
       const artifactSha256 = await validateAssessment(assessment, plan, opts.cache);
       const candidate = { ...plan.candidate, artifactSha256 };
       const accepted = state.accepted.acceptedReference;
+      if (command === "review") {
+        if (!opts.classification) throw Error("review requires --classification");
+        const classification = await readJson(resolve(opts.classification));
+        const finalSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: fromRoot("."), encoding: "utf8",
+        }).trim();
+        const next = upstreamReviewTransition({ plan, assessment, classification,
+          state, finalSha, testedInputs: await testedInputIdentity() });
+        if (opts.apply === "yes") await writeTransitionAtomically(next, state);
+        else if (opts.apply !== undefined) throw Error("--apply must be yes when supplied");
+        process.stdout.write(`${JSON.stringify({ dryRun: opts.apply !== "yes", next }, null, 2)}\n`);
+      } else {
       const output = await outsideCheckout(resolve(
         command === "promote" ? (opts["artifact-root"] ?? opts.output) : opts.output));
       if (command === "compare") {
@@ -221,6 +235,7 @@ async function main() {
         else if (opts.apply !== undefined) throw Error("--apply must be yes when supplied");
         process.stdout.write(`${JSON.stringify({ dryRun: opts.apply !== "yes", next,
           testedInputs: await testedInputIdentity() }, null, 2)}\n`);
+      }
       }
     }
   } else if (command === "acquire") {

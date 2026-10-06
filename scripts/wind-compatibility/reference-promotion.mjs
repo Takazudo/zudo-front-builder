@@ -84,7 +84,7 @@ export function validateClassification(record, comparison, plan) {
       record.planId !== plan.planId || record.comparisonReportId !== comparison.reportId ||
       !["accept", "review-only"].includes(record.disposition) ||
       !Array.isArray(record.upstreamChanges) || !Array.isArray(record.browserChanges) ||
-      !Array.isArray(record.controlChanges) ||
+      !Array.isArray(record.controlChanges) || !Array.isArray(record.windChanges) ||
       !Array.isArray(record.inventoryChanges))
     throw Error("Missing actual reviewed classification record");
   const expected = comparison.upstreamDelta.filter((row) => row.changed);
@@ -118,6 +118,15 @@ export function validateClassification(record, comparison, plan) {
   for (const row of record.controlChanges)
     if (!categories.has(row.category) || !row.rationale?.trim())
       throw Error("Unclassified control change");
+  const expectedWind = comparison.windDelta.filter((row) => row.changed);
+  same(record.windChanges.map(({ path, acceptedSha256, candidateSha256 }) =>
+    ({ path, acceptedSha256, candidateSha256 })),
+    expectedWind.map(({ path, acceptedSha256, candidateSha256 }) =>
+      ({ path, acceptedSha256, candidateSha256 })), "local Wind CSS change membership");
+  for (const row of record.windChanges)
+    if (!["local-implementation-gap", "unexplained-drift"].includes(row.category) ||
+        !row.rationale?.trim())
+      throw Error("Unclassified local Wind CSS change");
   if (record.disposition === "accept" &&
       [...record.upstreamChanges, ...record.browserChanges, ...record.controlChanges]
         .some((row) => row.category === "unexplained-drift"))
@@ -148,9 +157,71 @@ export function validateClassification(record, comparison, plan) {
   return true;
 }
 
+export function validateUpstreamReview(record, assessment, plan) {
+  if (record?.schemaVersion !== 1 || record.kind !== "wind-upstream-review" ||
+      record.planId !== plan.planId ||
+      record.assessmentIdentity !== assessment.captureIdentity ||
+      record.disposition !== "review-only" ||
+      record.independentCompatibility !== false ||
+      record.reason !== "upstream-only-review" ||
+      !record.rationale?.trim() || Object.hasOwn(record, "comparisonReportId"))
+    throw Error("Upstream-only review cannot claim acceptance or compatibility");
+  const categories = new Set(["upstream-semantic", "upstream-default-theme",
+    "upstream-packaging", "intentional-exclusion", "local-implementation-gap",
+    "unexplained-drift"]);
+  const sectionRows = {
+    releases: assessment.sections.changelog.releaseVersions.map((version, index) => ({
+      version, id: assessment.sections.changelog.releaseIds[index],
+      bodySha256: assessment.sections.changelog.releaseBodiesSha256[index],
+    })),
+    artifacts: assessment.sections.artifacts.changes,
+    source: assessment.sections.source.changes,
+    tests: assessment.sections.tests.changes,
+  };
+  same(Object.keys(record.classification ?? {}), Object.keys(sectionRows),
+    "upstream review section membership");
+  for (const [name, expected] of Object.entries(sectionRows)) {
+    const rows = record.classification?.[name];
+    if (!Array.isArray(rows) || rows.length !== expected.length)
+      throw Error(`Upstream review ${name} membership missing or truncated`);
+    for (let index = 0; index < expected.length; index++) {
+      const { category, rationale, ...actual } = rows[index];
+      same(actual, expected[index], `upstream review ${name}/${index}`);
+      if (!categories.has(category) || !rationale?.trim())
+        throw Error(`Unclassified upstream review ${name}/${index}`);
+    }
+  }
+  return true;
+}
+
+export function upstreamReviewTransition({ plan, assessment, classification, state,
+  finalSha, testedInputs }) {
+  validateUpstreamReview(classification, assessment, plan);
+  return {
+    accepted: state.accepted,
+    reviewed: monotonicReviewed(state.reviewed, { schemaVersion: 1, reviewedThrough: {
+      package: "tailwindcss", version: plan.candidate.version,
+      channel: plan.channel, integrity: plan.candidate.integrity,
+      disposition: "review-only", reason: classification.reason,
+      independentCompatibility: false, planId: plan.planId,
+      assessmentId: assessment.captureIdentity, comparisonReportId: null,
+      classificationDigest: `sha256:${digest(classification)}`,
+      testedSourceSha: null, testedInputsDigest: testedInputs.digest,
+      finalVerificationSha: finalSha,
+    } }),
+  };
+}
+
+export function monotonicReviewed(previous, proposed) {
+  const old = previous.reviewedThrough;
+  if (old && compareVersion(proposed.reviewedThrough.version, old.version) < 0)
+    return previous;
+  return proposed;
+}
+
 export async function transition({ plan, assessment, comparison, classification, shipping, shippingOutput, state, finalSha }) {
   validateClassification(classification, comparison, plan);
-  const reviewed = {
+  const reviewed = monotonicReviewed(state.reviewed, {
     schemaVersion: 1,
     reviewedThrough: {
       package: "tailwindcss", version: plan.candidate.version, channel: plan.channel,
@@ -160,7 +231,7 @@ export async function transition({ plan, assessment, comparison, classification,
       testedSourceSha: comparison.testedSourceSha, finalVerificationSha: finalSha,
       testedInputsDigest: comparison.testedInputs.digest,
     },
-  };
+  });
   if (classification.disposition !== "accept")
     return { accepted: state.accepted, reviewed };
   if (comparison.candidate.passing !== true ||
@@ -168,6 +239,8 @@ export async function transition({ plan, assessment, comparison, classification,
     throw Error("Acceptance requires every mandatory comparison to pass");
   if (comparison.browserDelta.some((row) => row.localChanged === true))
     throw Error("Local Wind/browser environment changed during three-way comparison");
+  if (comparison.windDelta.some((row) => row.changed === true))
+    throw Error("Wind CSS changed between reference runs");
   const shippingIdentity = await validateShippingEvidence(shipping, comparison, shippingOutput, plan.toolchain);
   const candidate = comparison.candidate.reference;
   if (state.accepted.acceptedReference &&
@@ -210,7 +283,8 @@ export async function writeTransitionAtomically(next, expected, overrides = {}) 
   const stagedA = `${acceptedPath}.${suffix}.tmp`, stagedR = `${reviewedPath}.${suffix}.tmp`;
   const stagedJ = `${journal}.${suffix}.tmp`;
   try {
-    await writeFile(stagedA, JSON.stringify(next.accepted, null, 2) + "\n", { flag: "wx" });
+    await writeFile(stagedA, digest(next.accepted) === digest(expected.accepted)
+      ? oldAccepted : JSON.stringify(next.accepted, null, 2) + "\n", { flag: "wx" });
     await writeFile(stagedR, JSON.stringify(next.reviewed, null, 2) + "\n", { flag: "wx" });
     await writeFile(stagedJ, JSON.stringify({ schemaVersion: 1,
       oldAccepted: oldAccepted.toString("utf8"), oldReviewed: oldReviewed.toString("utf8") }),
@@ -233,8 +307,9 @@ export async function writeTransitionAtomically(next, expected, overrides = {}) 
 const lockPath = fromRoot("tests/wind-compatibility/reference/.transition-lock");
 const journalPath = fromRoot("tests/wind-compatibility/reference/.transition-journal.json");
 
-export async function assertStableTransition() {
-  for (const path of [lockPath, journalPath]) {
+export async function assertStableTransition({ lockPath: lock = lockPath,
+  journalPath: journal = journalPath } = {}) {
+  for (const path of [lock, journal]) {
     try { await stat(path); throw Error("Reference transition active or recovery required"); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
   }

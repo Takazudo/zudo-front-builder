@@ -1,17 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, rename, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, rename, symlink, cp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testedPaths, sameTestedInputs } from "../../../scripts/wind-compatibility/reference-identity.mjs";
-import { validateClassification, transition, writeTransitionAtomically, withTransitionLock } from "../../../scripts/wind-compatibility/reference-promotion.mjs";
+import { assertStableTransition, monotonicReviewed, upstreamReviewTransition, validateClassification,
+  validateUpstreamReview, transition, writeTransitionAtomically,
+  withTransitionLock } from "../../../scripts/wind-compatibility/reference-promotion.mjs";
 import { digest } from "../../../scripts/wind-compatibility/reference.mjs";
 import { validateShippingManifest } from "../../../scripts/wind-compatibility/reference-shipping.mjs";
-import { observationRows, readRecordedArtifact, requirePassingCurrent, validateRun } from "../../../scripts/wind-compatibility/reference-comparison.mjs";
+import { observationRows, readRecordedArtifact, requirePassingCurrent,
+  validateCorpusProbeOutcomes, validateNativeRawRow, validateSupplementalRawRow,
+  validateSeededArtifactHashes, validateRun } from "../../../scripts/wind-compatibility/reference-comparison.mjs";
 import { sha256 } from "../../../scripts/wind-compatibility/reference.mjs";
 import { validatePilotAssessmentCases } from "../../../scripts/wind-compatibility/corpus-pilot.mjs";
 import { treeDigest } from "../../../scripts/wind-compatibility/differential-runner.mjs";
 import { fromRoot } from "../../../scripts/wind-compatibility/reference.mjs";
+import { assertCurrentCorpusIdentity, currentCorpusIdentity } from "../../../scripts/wind-compatibility/corpus-identity.mjs";
+import { parseCssStructure } from "../../../scripts/wind-compatibility/structure.mjs";
+import { canonical } from "../../../scripts/wind-compatibility/corpus-structure.mjs";
 
 const plan = { planId: "plan", channel: "stable", candidate: {
   package: "tailwindcss", version: "4.3.2", integrity: "sha512-test", source: { status: "unknown" },
@@ -20,7 +27,7 @@ const comparison = { reportId: "comparison", testedSourceSha: "a".repeat(40),
   testedInputs: { digest: "input" }, profile: { id: "wind-preset-free", version: 1,
     revision: 2, digest: "profile" }, candidate: { passing: true,
     reference: { integrity: "sha512-test", artifactSha256: "artifact" } },
-  accepted: null, upstreamDelta: [], browserDelta: [], controlDelta: [] };
+  accepted: null, upstreamDelta: [], browserDelta: [], controlDelta: [], windDelta: [] };
 const state = { accepted: { schemaVersion: 1, acceptedReference: null },
   reviewed: { schemaVersion: 1, reviewedThrough: null } };
 
@@ -39,7 +46,7 @@ test("tested closure includes MDX fixtures and excludes only transition records"
 test("reviewed rejection advances only reviewed-through; acceptance requires shipping evidence", async () => {
   const classification = { schemaVersion: 1, kind: "wind-reference-classification",
     planId: "plan", comparisonReportId: "comparison", disposition: "review-only",
-    upstreamChanges: [], browserChanges: [], controlChanges: [], inventoryChanges: [] };
+    upstreamChanges: [], browserChanges: [], controlChanges: [], windChanges: [], inventoryChanges: [] };
   const next = await transition({ plan, assessment: { captureIdentity: "assessment" },
     comparison, classification, shipping: null, state, finalSha: "b".repeat(40) });
   assert.deepEqual(next.accepted, state.accepted);
@@ -56,7 +63,7 @@ test("classification rejects omitted or unexplained exact three-way differences"
       candidateObservation: { value: "2px" }, changed: true,
     }] };
   const base = { schemaVersion: 1, kind: "wind-reference-classification", planId: "plan",
-    comparisonReportId: "comparison", disposition: "accept", upstreamChanges: [], browserChanges: [], controlChanges: [], inventoryChanges: [] };
+    comparisonReportId: "comparison", disposition: "accept", upstreamChanges: [], browserChanges: [], controlChanges: [], windChanges: [], inventoryChanges: [] };
   assert.throws(() => validateClassification(base, changed, plan), /upstream change membership/);
   const classified = { ...base, upstreamChanges: [{ path: "pilot/x/reference.css",
     acceptedSha256: "old", candidateSha256: "new", category: "upstream-semantic",
@@ -203,4 +210,202 @@ test("three-way observation accounting pairs actual flat native control sides", 
   for (const engine of ["chromium", "firefox", "webkit"])
     assert.equal(rows.filter((row) => row.id === "control/native-reset-controls" &&
       row.engine === engine).length, 6);
+});
+
+test("complete candidate browser mismatch stays assessment data but false pass and missing probe fail", () => {
+  const htmlHash = sha256("<div></div>");
+  const definitions = [{ name: "display", wind: "block", reference: "block" }];
+  const side = (engine, value, pass) => ({ engine, probe: "display", verified: true,
+    settings: { documentSha256: htmlHash, authoredCssSha256: sha256("") },
+    expected: "block", observation: { value }, pass });
+  const row = { htmlSha256: htmlHash, probes: [{ wind: side("wind", "block", true),
+    reference: side("reference", "none", false) }] };
+  assert.equal(validateCorpusProbeOutcomes(row, definitions, "chromium", htmlHash), true);
+  assert.throws(() => validateCorpusProbeOutcomes(row, definitions,
+    "chromium", htmlHash, true), /outcome invalid/);
+  row.probes[0].reference.pass = true;
+  assert.throws(() => validateCorpusProbeOutcomes(row, definitions,
+    "chromium", htmlHash), /outcome invalid/);
+  row.probes = [];
+  assert.throws(() => validateCorpusProbeOutcomes(row, definitions,
+    "chromium", htmlHash), /membership/);
+});
+
+test("full corpus identity rejects rehashed reports after fixture, helper, config or inventory edits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wind-corpus-identity-"));
+  const paths = ["scripts/wind-compatibility", "tests/wind-compatibility/corpus",
+    "tests/wind-compatibility/pilot", "tests/wind-compatibility/empty-token",
+    "tests/wind-compatibility/extraction", "tests/wind-compatibility/profile.json",
+    "tests/wind-compatibility/inventory.v1.json",
+    "crates/zudo-wind/catalog/zudo-wind-catalog.v1.json", "pnpm-lock.yaml"];
+  try {
+    for (const path of paths) {
+      await mkdir(join(root, path, ".."), { recursive: true });
+      await cp(fromRoot(path), join(root, path), { recursive: true });
+    }
+    const manifest = JSON.parse(await readFile(join(root,
+      "tests/wind-compatibility/corpus/manifest.json")));
+    const profile = JSON.parse(await readFile(join(root,
+      "tests/wind-compatibility/profile.json")));
+    const contracts = JSON.parse(await readFile(join(root,
+      "tests/wind-compatibility/corpus/structure-contracts.json")));
+    const pilotObservations = JSON.parse(await readFile(join(root,
+      "tests/wind-compatibility/pilot/observations.json")));
+    const executed = {};
+    for (const row of manifest.upstreamCases.filter((item) => item.engines.includes("chromium"))) {
+      const definition = JSON.parse(await readFile(join(root,
+        `tests/wind-compatibility/corpus/upstream/${row.id}/case.json`)));
+      executed[`upstream/${row.id}/chromium`] = { configDigest: digest(definition) };
+    }
+    const inputs = { manifest, profile, contracts, pilotObservations, executed,
+      engine: "chromium", source: { sourceArchiveSha256: "source" },
+      reference: { identity: { artifactSha256: "artifact" } },
+      scanner: { identity: { artifactSha256: "scanner" } },
+      windBuild: { gitSha: "a".repeat(40) }, browserEnvironment: { name: "chromium" },
+      rootDir: root };
+    const baseline = await currentCorpusIdentity(inputs);
+    assert.equal(assertCurrentCorpusIdentity(baseline, baseline), true);
+    for (const path of ["tests/wind-compatibility/corpus/upstream/display-flex/index.html",
+      "scripts/wind-compatibility/corpus-core.mjs",
+      "tests/wind-compatibility/empty-token/configurations.json",
+      "tests/wind-compatibility/inventory.v1.json"]) {
+      const file = join(root, path), original = await readFile(file);
+      await writeFile(file, Buffer.concat([original, Buffer.from("\nchanged") ]));
+      const current = await currentCorpusIdentity(inputs);
+      const rehashedReport = { identity: baseline,
+        reportId: `sha256:${digest({ identity: baseline })}` };
+      assert.match(rehashedReport.reportId, /^sha256:/);
+      assert.throws(() => assertCurrentCorpusIdentity(rehashedReport.identity, current),
+        /full current input identity stale/);
+      await writeFile(file, original);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native and supplemental raw rows reject missing or altered retained CSS", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wind-aux-raw-"));
+  const output = join(root, "restored"), original = "/tmp/original-corpus";
+  try {
+    await mkdir(output);
+    const nativeCss = ".block { display: block; }", supplementalCss = ".p { padding: 1px; }";
+    const nativeFile = join(output, "native.css"), windFile = join(output, "wind.css"),
+      referenceFile = join(output, "reference.css"), inputFile = join(output, "input.css");
+    await writeFile(nativeFile, nativeCss);
+    await writeFile(windFile, supplementalCss);
+    await writeFile(referenceFile, supplementalCss);
+    await writeFile(inputFile, "@tailwind utilities;");
+    const native = { expected: { display: "block" }, windCssPath: `${original}/native.css`,
+      cssSha256: sha256(nativeCss), structure: {
+        actual: digest(parseCssStructure(nativeCss).map(canonical)) } };
+    const guarantee = { id: "block", writes: { display: "block" } };
+    assert.equal((await validateNativeRawRow(native, guarantee, output, original)).toString(), nativeCss);
+    const pair = (engine) => ({ engine, verified: true, stylesheetSha256: sha256(supplementalCss),
+      servedSha256: sha256(supplementalCss), expected: "block",
+      observation: { value: "block" }, pass: true });
+    const supplemental = { windCssPath: `${original}/wind.css`,
+      windCssSha256: sha256(supplementalCss), referenceCssPath: `${original}/reference.css`,
+      referenceCssSha256: sha256(supplementalCss),
+      referenceInputPath: `${original}/input.css`, referenceInputSha256: sha256("@tailwind utilities;"),
+      observationCount: 1, observations: [[{ wind: pair("wind"), reference: pair("reference") }]] };
+    const reference = { compile: async () => ({ build: () => supplementalCss }) };
+    assert.equal((await validateSupplementalRawRow(supplemental,
+      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference)).wind.toString(),
+    supplementalCss);
+    await rm(nativeFile);
+    await assert.rejects(validateNativeRawRow(native, guarantee, output, original), /ENOENT/);
+    await writeFile(referenceFile, "changed");
+    await assert.rejects(validateSupplementalRawRow(supplemental,
+      { caseId: "s", explicitCandidates: ["p"] }, output, original, reference), /hash changed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a native Wind CSS delta blocks acceptance even without a browser observation row", async () => {
+  const changed = { ...comparison, accepted: { passing: true },
+    windDelta: [{ path: "corpus-chromium/native-wind/block/wind.css",
+      acceptedSha256: "old", candidateSha256: "new", changed: true }] };
+  const classification = { schemaVersion: 1, kind: "wind-reference-classification",
+    planId: "plan", comparisonReportId: "comparison", disposition: "accept",
+    upstreamChanges: [], browserChanges: [], controlChanges: [], inventoryChanges: [],
+    windChanges: [{ path: "corpus-chromium/native-wind/block/wind.css",
+      acceptedSha256: "old", candidateSha256: "new", category: "local-implementation-gap",
+      rationale: "local drift under review" }] };
+  await assert.rejects(transition({ plan, assessment: { captureIdentity: "assessment" },
+    comparison: changed, classification, shipping: null, state,
+    finalSha: "b".repeat(40) }), /Wind CSS changed/);
+});
+
+test("old seeded artifact shape without every raw hash is stale", () => {
+  const hash = "a".repeat(64);
+  const old = { kind: "candidate-permutation", id: "specimen-0",
+    windActualPath: "/tmp/wind.css", windCanonicalPath: "/tmp/canonical-wind.css",
+    referenceInputPath: "/tmp/input.css", actualPath: "/tmp/actual.css",
+    actualSha256: hash, canonicalPath: "/tmp/canonical.css", canonicalSha256: hash };
+  assert.throws(() => validateSeededArtifactHashes(old), /hash missing/);
+  const complete = { ...old, windActualSha256: hash, windCanonicalSha256: hash,
+    referenceInputSha256: hash };
+  assert.equal(validateSeededArtifactHashes(complete), true);
+});
+
+test("upstream-only review requires exact assessed change membership and cannot claim acceptance", () => {
+  const assessment = { captureIdentity: "capture", sections: {
+    changelog: { releaseVersions: ["4.3.2"], releaseIds: [17],
+      releaseBodiesSha256: ["body"] },
+    artifacts: { changes: [{ path: "dist/lib.mjs", before: null,
+      after: { sha256: "new", bytes: 12 } }] },
+    source: { changes: [{ path: "src/utilities.ts", before: null,
+      after: { sha256: "new", bytes: 13 } }] },
+    tests: { changes: [{ path: "src/utilities.test.ts", before: null,
+      after: { sha256: "new", bytes: 14 } }] },
+  } };
+  const classified = (row) => ({ ...row, category: "upstream-semantic",
+    rationale: "reviewed exact delta" });
+  const record = { schemaVersion: 1, kind: "wind-upstream-review", planId: "plan",
+    assessmentIdentity: "capture", disposition: "review-only",
+    reason: "upstream-only-review", independentCompatibility: false,
+    rationale: "comparison not attempted", classification: {
+      releases: [classified({ version: "4.3.2", id: 17, bodySha256: "body" })],
+      artifacts: assessment.sections.artifacts.changes.map(classified),
+      source: assessment.sections.source.changes.map(classified),
+      tests: assessment.sections.tests.changes.map(classified),
+    } };
+  assert.equal(validateUpstreamReview(record, assessment, plan), true);
+  assert.throws(() => validateUpstreamReview({ ...record,
+    classification: { ...record.classification, tests: [] } }, assessment, plan), /membership/);
+  assert.throws(() => validateUpstreamReview({ ...record,
+    disposition: "accept" }, assessment, plan), /cannot claim acceptance/);
+  assert.throws(() => validateUpstreamReview({ ...record,
+    reason: "unsupported-reference-execution" }, assessment, plan), /cannot claim acceptance/);
+  const next = upstreamReviewTransition({ plan, assessment, classification: record, state,
+    finalSha: "b".repeat(40), testedInputs: { digest: "inputs" } });
+  assert.deepEqual(next.accepted, state.accepted);
+  assert.equal(next.reviewed.reviewedThrough.independentCompatibility, false);
+});
+
+test("reviewed-through preserves the highest version while accepted may advance below it", () => {
+  const higher = { schemaVersion: 1, reviewedThrough: { version: "4.4.0", disposition: "review-only" } };
+  const lower = { schemaVersion: 1, reviewedThrough: { version: "4.3.3", disposition: "accept" } };
+  const equal = { schemaVersion: 1, reviewedThrough: { version: "4.4.0", disposition: "accept" } };
+  assert.deepEqual(monotonicReviewed(higher, lower), higher);
+  assert.deepEqual(monotonicReviewed(higher, equal), equal);
+  assert.deepEqual(monotonicReviewed({ schemaVersion: 1, reviewedThrough: null }, lower), lower);
+});
+
+test("review-only write preserves accepted bytes and readers refuse an interrupted transition", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wind-review-only-"));
+  const acceptedPath = join(dir, "accepted.json"), reviewedPath = join(dir, "reviewed.json");
+  const opts = { acceptedPath, reviewedPath, lockPath: join(dir, "lock"),
+    journalPath: join(dir, "journal.json") };
+  const accepted = { schemaVersion: 1, acceptedReference: null };
+  const reviewed = { schemaVersion: 1, reviewedThrough: null };
+  const originalBytes = '{ "schemaVersion": 1, "acceptedReference": null }\n';
+  try {
+    await writeFile(acceptedPath, originalBytes);
+    await writeFile(reviewedPath, JSON.stringify(reviewed));
+    await writeTransitionAtomically({ accepted, reviewed: { schemaVersion: 1,
+      reviewedThrough: { version: "4.3.2" } } }, { accepted, reviewed }, opts);
+    assert.equal((await readFile(acceptedPath, "utf8")), originalBytes);
+    await writeFile(opts.journalPath, JSON.stringify({ schemaVersion: 1,
+      oldAccepted: originalBytes, oldReviewed: JSON.stringify(reviewed) }));
+    await assert.rejects(assertStableTransition(opts), /recovery required/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
