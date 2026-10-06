@@ -81,6 +81,7 @@ export type WindConfig = {
     colors?: Record<string, string>;
     spacing?: Record<string, string>;
     sizes?: Record<string, string>;
+    /** Entries are objects with `size` and optional `lineHeight`; bare strings are rejected at load time. */
     fontSizes?: Record<string, { size: string; lineHeight?: string }>;
     fontFamilies?: Record<string, string>;
     fontWeights?: Record<string, string>;
