@@ -1,0 +1,87 @@
+# Preparation only. Replace 17878a2eb555fd86c4cf17abcaeba4a8989f2a76 and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
+name: Temporary preset-free Wind harness probe
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: wind-harness-probe-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+      WIND_PINNED_SOURCE_ARCHIVE: /tmp/zfb-wind-reference-cache/response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3
+      WIND_NPM_TARBALL: /tmp/zfb-wind-reference-cache/response-3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62
+      WIND_COMPILER_MODULE: /tmp/zfb-wind-reference-cache/tailwindcss-4.3.2-3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62/dist/lib.mjs
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: 17878a2eb555fd86c4cf17abcaeba4a8989f2a76
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: wind-harness-pilot
+      - run: pnpm install --frozen-lockfile
+      - name: Record exact source and environment
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wind-harness-evidence
+          test "$(git rev-parse HEAD)" = 17878a2eb555fd86c4cf17abcaeba4a8989f2a76
+          test -z "$(git status --porcelain)"
+          {
+            git rev-parse HEAD
+            node --version
+            pnpm --version
+            rustc -Vv
+            cargo -V
+            cat /etc/os-release
+            uname -a
+          } > /tmp/wind-harness-evidence/environment.txt
+      - name: Acquire independently pinned reference inputs
+        run: |
+          set -euo pipefail
+          node scripts/wind-compatibility/reference-cli.mjs plan > /tmp/wind-harness-evidence/plan.json
+          node scripts/wind-compatibility/reference-cli.mjs acquire --cache /tmp/zfb-wind-reference-cache > /tmp/wind-harness-evidence/acquire.json
+          node scripts/wind-compatibility/reference-cli.mjs probe --cache /tmp/zfb-wind-reference-cache --candidates block,hidden,p-0,mx-auto,contents > /tmp/wind-harness-evidence/reference-probe.json
+          node scripts/wind-compatibility/reference-cli.mjs assess --plan /tmp/wind-harness-evidence/plan.json --cache /tmp/zfb-wind-reference-cache > /tmp/wind-harness-evidence/assessment.json
+          node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("/tmp/wind-harness-evidence/assessment.json")); if(r.status!=="ready-for-comparison") throw Error("Incomplete upstream capture")'
+          test -s "$WIND_PINNED_SOURCE_ARCHIVE"
+          test -s "$WIND_NPM_TARBALL"
+          test -s "$WIND_COMPILER_MODULE"
+      - name: Contract tests with all pinned-input cases enabled
+        run: |
+          set -euo pipefail
+          node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs 2>&1 | tee /tmp/wind-harness-evidence/node-contracts.log
+          cargo test --locked -p zudo-wind --test empty_token_contracts 2>&1 | tee /tmp/wind-harness-evidence/rust-empty-token.log
+      - name: Build exact Wind adapter artifact
+        id: wind_build
+        run: node scripts/wind-compatibility/differential-runner.mjs build-wind /tmp/wind-harness-evidence/wind-build.json
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: Execute real comparison CLI and complete per-engine matrix
+        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          wind_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-harness-evidence/wind-build.json")).binaryPath')
+          node scripts/wind-compatibility/reference-cli.mjs compare --plan /tmp/wind-harness-evidence/plan.json --assessment /tmp/wind-harness-evidence/assessment.json --cache /tmp/zfb-wind-reference-cache --wind-binary "$wind_binary" --wind-build-manifest /tmp/wind-harness-evidence/wind-build.json --output /tmp/wind-harness-evidence/comparison 2>&1 | tee /tmp/wind-harness-evidence/comparison.log
+          node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("/tmp/wind-harness-evidence/comparison/comparison.json")); if(r.candidate.passing!==true || (r.accepted!==null && r.accepted.passing!==true)) throw Error("Comparison retained a failing required outcome; no admission"); if(r.admission!=="pending-independent-review-and-shipping-evidence") throw Error("Unexpected admission state")'
+      - name: Preserve original evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preset-free-wind-harness-evidence
+          path: |
+            /tmp/wind-harness-evidence/
+            /tmp/zfb-wind-reference-cache/
+          if-no-files-found: error
+          retention-days: 7
