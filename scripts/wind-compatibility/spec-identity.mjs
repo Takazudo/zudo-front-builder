@@ -3,7 +3,7 @@ export function currentWindSpecIdentity(profile) {
   if (
     profile?.profileId !== "wind-preset-free" ||
     profile?.profileVersion !== 1 ||
-    profile?.profileRevision !== 4 ||
+    profile?.profileRevision !== 5 ||
     baseline?.languageSpecVersion !== 1 ||
     baseline?.languageSpecRevision !== 14
   )

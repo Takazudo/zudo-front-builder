@@ -11,6 +11,11 @@ import {
   currentWindSpecIdentity,
 } from "../../../scripts/wind-compatibility/spec-identity.mjs";
 import { currentPilotIdentity } from "../../../scripts/wind-compatibility/corpus-pilot.mjs";
+import { producedPilotAdapterDigest } from "../../../scripts/wind-compatibility/differential-runner.mjs";
+import {
+  nativeMarginEvidenceDigest,
+  pilotAdapterDigest,
+} from "../../../scripts/wind-compatibility/pilot-adapter-identity.mjs";
 
 const root = new URL("../../../", import.meta.url);
 const json = async (path) => JSON.parse(await readFile(new URL(path, root), "utf8"));
@@ -32,6 +37,9 @@ test("pilot adapter binds the exact current profile and Rust spec revision", asy
     browserEnvironment: { name: "chromium" },
   });
   assert.equal(identity.windSpecRevision, 14);
+  assert.equal(identity.adapterDigest, await pilotAdapterDigest());
+  assert.equal(identity.adapterDigest, await producedPilotAdapterDigest());
+  assert.equal(identity.nativeMarginEvidenceDigest, await nativeMarginEvidenceDigest());
   assert.throws(
     () =>
       assertWindSpecIdentity(

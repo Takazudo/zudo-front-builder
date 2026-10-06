@@ -14,22 +14,13 @@ import {
   structuralChecks,
   treeDigest,
 } from "./differential-runner.mjs";
-import { documentFor, matchesExpected } from "./browser-adapter.mjs";
+import { documentFor, matchesExpected, resolvedWindExpectation } from "./browser-adapter.mjs";
 import { scanOriginal } from "./oxide-scanner.mjs";
 import { expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
 import { digest, fromRoot, readJson, sha256 } from "./reference.mjs";
 import { currentWindSpecIdentity } from "./spec-identity.mjs";
+import { nativeMarginEvidenceDigest, pilotAdapterDigest } from "./pilot-adapter-identity.mjs";
 
-const pilotAdapters = [
-  "differential-runner.mjs",
-  "browser-adapter.mjs",
-  "differential-core.mjs",
-  "structure.mjs",
-  "oxide-scanner.mjs",
-  "reference.mjs",
-  "reference-module-graph.mjs",
-  "spec-identity.mjs",
-];
 const exact = (actual, expected, label) => {
   if (digest(actual) !== digest(expected)) throw Error(`Pilot ${label} differs from current input`);
 };
@@ -324,11 +315,6 @@ export async function currentPilotIdentity({
 }) {
   const pilotRoot = fromRoot("tests/wind-compatibility/pilot");
   const extractionRoot = fromRoot("tests/wind-compatibility/extraction");
-  const adapterHashes = await Promise.all(
-    pilotAdapters.map(async (name) =>
-      sha256(await readFile(fromRoot(`scripts/wind-compatibility/${name}`))),
-    ),
-  );
   return {
     windBuild,
     ...currentWindSpecIdentity(profile),
@@ -340,6 +326,7 @@ export async function currentPilotIdentity({
     pilotFixtureTreeDigest: await treeDigest(pilotRoot),
     extractionFixtureTreeDigest: await treeDigest(extractionRoot),
     nativeFixtureTreeDigest: await treeDigest(fromRoot("tests/wind-compatibility/native")),
+    nativeMarginEvidenceDigest: await nativeMarginEvidenceDigest(),
     sourceInputDigest: digest(
       manifest.caseIds.map((id) => [
         id,
@@ -349,7 +336,7 @@ export async function currentPilotIdentity({
     observationsDigest: sha256(await readFile(resolve(pilotRoot, "observations.json"))),
     assertionDigest: sha256(await readFile(resolve(pilotRoot, "observations.json"))),
     extractionManifestDigest: sha256(await readFile(resolve(extractionRoot, "manifest.json"))),
-    adapterDigest: digest(adapterHashes),
+    adapterDigest: await pilotAdapterDigest(),
     lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
     browserEnvironment,
     resetMode: { shared: "none", native: "minimal-v1", referenceNative: "pinned-preflight-css" },
@@ -458,8 +445,13 @@ export async function validatePilotArtifacts(
       throw Error(`Pilot case artifact claim differs from current inputs: ${row.caseId}`);
     row.observations.forEach((pair, index) => {
       const probe = observations[row.caseId].probes[index];
+      const expectedWind = resolvedWindExpectation(
+        probe,
+        report.identity?.browserEnvironment,
+        profile,
+      );
       if (
-        digest(pair?.wind?.expected) !== digest(probe.wind) ||
+        digest(pair?.wind?.expected) !== digest(expectedWind) ||
         digest(pair?.reference?.expected) !== digest(probe.reference)
       )
         throw Error(`Pilot observation expected state changed: ${row.caseId}/${probe.name}`);
@@ -707,6 +699,11 @@ export async function validatePilotAssessmentCases(
     for (let index = 0; index < row.observations.length; index++) {
       const pair = row.observations[index],
         probe = observations[row.caseId].probes[index];
+      const expectedWind = resolvedWindExpectation(
+        probe,
+        report.identity?.browserEnvironment,
+        profile,
+      );
       for (const [side, css] of [
         ["wind", windCss],
         ["reference", referenceCss],
@@ -721,7 +718,7 @@ export async function validatePilotAssessmentCases(
           item.servedSha256 !== sha256(css) ||
           item.settings?.documentSha256 !== sha256(html) ||
           item.settings?.authoredCssSha256 !== sha256(probe.authoredCss ?? "") ||
-          digest(item.expected) !== digest(probe[side]) ||
+          digest(item.expected) !== digest(side === "wind" ? expectedWind : probe.reference) ||
           item.pass !== matchesExpected(item.observation, item.expected)
         )
           throw Error(

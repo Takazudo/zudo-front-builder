@@ -37,6 +37,21 @@ export function matchesExpected(actual, expected) {
   return false;
 }
 
+export function resolvedWindExpectation(probe, environment, profile) {
+  const override = probe.windBrowserOverride;
+  if (!override) return probe.wind;
+  if (profile?.profileRevision !== 5 || !environment || !requiredMatrixMember(profile, environment))
+    throw Error(`Unreviewed browser for Wind expectation: ${probe.name}`);
+  if (environment.name !== override.browser) return probe.wind;
+  if (
+    environment.version !== override.browserVersion ||
+    environment.revision !== override.revision ||
+    environment.hostPlatform !== override.hostPlatform
+  )
+    throw Error(`Browser-specific Wind expectation pin changed: ${probe.name}`);
+  return override.value;
+}
+
 export async function observeIsolated(browser, css, candidate, probe, engine) {
   const html = documentFor(candidate, probe);
   const selector = probe.selector ?? "#target";

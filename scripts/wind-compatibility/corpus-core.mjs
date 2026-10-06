@@ -73,7 +73,7 @@ export function validateTargetedExecutionKeys(manifest, profile) {
 
 const compositionDigest = "f1a12520b9f4216ff71013771764b7dcbe87dde88b3e0f9c43b892486f62b153";
 const probePolicyDigest = "8a455866b68c8c2db7702eec5428c73b5379e2b34b5e6b73bad0ee3e87d8b962";
-const reviewedManifestDigest = "1ca7568e882aae3c91eea5a8fe233aad4d88420e0f0d387df78a926a7f3f8956";
+const reviewedManifestDigest = "cfcc9ca43fc51cac979d4bc1e1f91d07177289cac9cd3c16b765c3e1587c11db";
 const mutationIds = [
   "missing-stylesheet",
   "missing-rule",
@@ -94,7 +94,7 @@ export function validateCorpus(
   if (manifest.schemaVersion !== 1 || manifest.issue !== 3831) throw Error("Unknown corpus policy");
   if (
     manifest.profile !== `wind-preset-free@${profile.profileVersion}.${profile.profileRevision}` ||
-    profile.profileRevision !== 4
+    profile.profileRevision !== 5
   )
     throw Error("Corpus is not bound to the reviewed profile revision");
   validatePilot(profile, pilot, pilotObservations);

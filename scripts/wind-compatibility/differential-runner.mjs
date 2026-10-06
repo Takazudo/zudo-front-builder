@@ -21,6 +21,7 @@ import {
   observePair,
   observeIsolated,
   requiredMatrixMember,
+  resolvedWindExpectation,
 } from "./browser-adapter.mjs";
 import {
   artifactIdentity,
@@ -32,6 +33,7 @@ import {
 } from "./differential-core.mjs";
 import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
 import { assertWindSpecIdentity, currentWindSpecIdentity } from "./spec-identity.mjs";
+import { nativeMarginEvidenceDigest, pilotAdapterDigest } from "./pilot-adapter-identity.mjs";
 import {
   archivedReferenceModules,
   verifiedReferenceImport,
@@ -55,6 +57,10 @@ const defaults = {
   cache: "/tmp/zfb-wind-reference-cache",
   engine: "chromium",
 };
+
+export async function producedPilotAdapterDigest() {
+  return pilotAdapterDigest();
+}
 const referenceSha = "3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62";
 
 function args(argv) {
@@ -517,6 +523,7 @@ async function main() {
       const probeHtml = await readFile(resolve(options.fixture, id, "index.html"), "utf8");
       const probes = observations[id].probes.map((probe) => ({
         ...probe,
+        wind: resolvedWindExpectation(probe, environment, profile),
         documentHtml: probeHtml,
       }));
       expectedWindConfig(row, fixture, profile);
@@ -833,20 +840,12 @@ async function main() {
     pilotFixtureTreeDigest: await treeDigest(options.fixture),
     extractionFixtureTreeDigest: await treeDigest(options.extraction),
     nativeFixtureTreeDigest: await treeDigest(fromRoot("tests/wind-compatibility/native")),
+    nativeMarginEvidenceDigest: await nativeMarginEvidenceDigest(),
     sourceInputDigest: digest(manifest.caseIds.map((id) => [id, required.get(id).candidate])),
     observationsDigest: sha256(await readFile(resolve(options.fixture, "observations.json"))),
     assertionDigest: sha256(await readFile(resolve(options.fixture, "observations.json"))),
     extractionManifestDigest: sha256(await readFile(resolve(options.extraction, "manifest.json"))),
-    adapterDigest: digest([
-      sha256(await readFile(import.meta.filename)),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/browser-adapter.mjs"))),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/differential-core.mjs"))),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/structure.mjs"))),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/oxide-scanner.mjs"))),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/reference.mjs"))),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/reference-module-graph.mjs"))),
-      sha256(await readFile(fromRoot("scripts/wind-compatibility/spec-identity.mjs"))),
-    ]),
+    adapterDigest: await producedPilotAdapterDigest(),
     lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
     browserEnvironment: environment,
     resetMode: { shared: "none", native: "minimal-v1", referenceNative: "pinned-preflight-css" },
