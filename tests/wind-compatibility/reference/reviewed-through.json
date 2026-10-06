@@ -1,4 +1,17 @@
 {
   "schemaVersion": 1,
-  "reviewedThrough": null
+  "reviewedThrough": {
+    "package": "tailwindcss",
+    "version": "4.3.2",
+    "channel": "stable",
+    "integrity": "sha512-WtctNNSH8A9jlMIqxzuYumOHU5uGZyRv0Q5svQl+oEPy5w84YpBxdb7MdqyiSPQge5jTJ6zFQLq0PFygdccSBA==",
+    "disposition": "accept",
+    "planId": "sha256:caee5410868d5555ee8d95fd26cda7b6202ac7790b1f11d2f2544946ea89bd99",
+    "assessmentId": "sha256:38bd0404139e74b456402829e56696bd936ca2b49e407a7c18e851dbc8df855b",
+    "comparisonReportId": "sha256:62c1c3b20cf9b570c39e6302d18ab9633737930099b28f994b05ec9d9d2ff439",
+    "classificationDigest": "sha256:f0fd5b9fea56ed5e721a3ce25d0d9056f048936900aa306e5913f24fbf86f773",
+    "testedSourceSha": "c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37",
+    "finalVerificationSha": "c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37",
+    "testedInputsDigest": "sha256:8d52ca068fbe49b70e55033c6a2efa96e724c2bba3bc7b2d875f743b6e8e5c48"
+  }
 }

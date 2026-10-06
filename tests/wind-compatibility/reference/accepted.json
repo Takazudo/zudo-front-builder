@@ -1,4 +1,35 @@
 {
   "schemaVersion": 1,
-  "acceptedReference": null
+  "acceptedReference": {
+    "package": "tailwindcss",
+    "version": "4.3.2",
+    "channel": "stable",
+    "integrity": "sha512-WtctNNSH8A9jlMIqxzuYumOHU5uGZyRv0Q5svQl+oEPy5w84YpBxdb7MdqyiSPQge5jTJ6zFQLq0PFygdccSBA==",
+    "artifactSha256": "3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62",
+    "lockfileSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2",
+    "toolchain": {
+      "node": "v24.14.0",
+      "lockfile": "pnpm-lock.yaml",
+      "lockfileSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2"
+    },
+    "source": {
+      "repository": "https://github.com/tailwindlabs/tailwindcss.git",
+      "tag": "v4.3.2",
+      "observedTagCommit": "056a1550721d4bf79ff732d5ab9414fa83f7064f",
+      "tagVerification": "git ls-remote https://github.com/tailwindlabs/tailwindcss.git refs/tags/v4.3.2",
+      "packageGitSha": null,
+      "status": "tag-observed-artifact-link-unverified"
+    },
+    "profileId": "wind-preset-free",
+    "profileVersion": 1,
+    "profileRevision": 5,
+    "profileDigest": "8ca6c71340ec20082c200318f19985461252eb6a3431f52cc9cadd8e037819f2",
+    "evidenceReportId": "sha256:62c1c3b20cf9b570c39e6302d18ab9633737930099b28f994b05ec9d9d2ff439",
+    "evidenceReportDigest": "sha256:15cf9867d0e3f0cebd9a6e82bbe5591a0cfc5fb1270412dfdf12129bf4ced295",
+    "testedSourceSha": "c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37",
+    "finalVerificationSha": "c4ded4b1fdd56cf0ff27afd98923c707f5ae2f37",
+    "testedInputsDigest": "sha256:8d52ca068fbe49b70e55033c6a2efa96e724c2bba3bc7b2d875f743b6e8e5c48",
+    "shippingEvidenceDigest": "sha256:4893300970b0935a4018eb7192a32ce4a0f791cb4821c12bf9ad7558252e54ad",
+    "shippingManifestDigest": "0dae08706f523829649b452837dcbb393039043074e2877b4179ebb1383ce73a"
+  }
 }
