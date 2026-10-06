@@ -1,1 +1,1 @@
-export const renameClass = "bg-renamed";
+export const renameClass = "bg-old";

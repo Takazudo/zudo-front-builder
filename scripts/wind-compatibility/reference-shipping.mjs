@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
-import { treeDigest } from "./differential-runner.mjs";
+import { loadReference, treeDigest } from "./differential-runner.mjs";
 import { testedPaths } from "./reference-identity.mjs";
 import { verifyProductionBuild } from "./production-build.mjs";
 import { requiredMatrixMember } from "./browser-adapter.mjs";
@@ -102,10 +102,12 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     report.windBuild.gitSha !== comparison.testedSourceSha ||
     digest(report.reference) !== digest(comparison.candidate.reference) ||
     !report.referenceCss ||
+    !report.referenceCache ||
     !report.referenceScreenshot ||
     !report.sourcePlan ||
     !report.productionBuild ||
     !report.distProof ||
+    !report.nodeFreeCss ||
     !Array.isArray(report.results) ||
     report.results.length !== manifest.required.length
   )
@@ -114,6 +116,15 @@ export async function validateShippingEvidence(report, comparison, output, toolc
   await verifyDistProof(report.distProof, report.distProof.distPath);
   if (digest(report.distProof.productionBuild) !== digest(report.productionBuild))
     throw Error("Shipping dist proof does not match production executable");
+  if (
+    digest(report.nodeFreeDevEnvironment) !==
+    digest({
+      PATH: "",
+      NODE_PATH: null,
+      ZFB_ESBUILD_BIN: report.distProof.execution?.buildEnvironment?.ZFB_ESBUILD_BIN,
+    })
+  )
+    throw Error("Node-free dev environment unverified");
   const { chromium } = await import("@playwright/test");
   const profile = await readJson(fromRoot("tests/wind-compatibility/profile.json"));
   if (
@@ -130,6 +141,32 @@ export async function validateShippingEvidence(report, comparison, output, toolc
   )
     throw Error("Shipping browser executable or profile membership invalid");
   output = await outsideCheckout(output);
+  if (
+    digest(report.nodeFreeCss.args) !==
+      digest([
+        "css",
+        "--input",
+        "entry.css",
+        "--output",
+        "node-free.css",
+        "--project-root",
+        "<project>",
+      ]) ||
+    digest(report.nodeFreeCss.environment) !== digest({ PATH: "", NODE_PATH: null }) ||
+    report.nodeFreeCss.exitCode !== 0
+  )
+    throw Error("Node-free CSS command or environment invalid");
+  for (const key of ["rawCss", "stdout", "stderr"]) {
+    const item = report.nodeFreeCss[key];
+    if (!item?.path || !/^[0-9a-f]{64}$/.test(item.sha256 ?? ""))
+      throw Error(`Node-free CSS ${key} missing`);
+    const path = await outsideCheckout(resolve(output, item.path));
+    if (!path.startsWith(`${output}/`) || sha256(await readFile(path)) !== item.sha256)
+      throw Error(`Node-free CSS ${key} changed`);
+  }
+  const initial = report.results.find((row) => row.id === "css-initial");
+  if (!initial || report.nodeFreeCss.rawCss.sha256 !== initial.raw.generatedCss?.sha256)
+    throw Error("Node-free CSS differs from public CLI CSS");
   const referenceCssPath = await outsideCheckout(resolve(output, report.referenceCss.path));
   if (
     !referenceCssPath.startsWith(`${output}/`) ||
@@ -138,6 +175,15 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     sha256(await readFile(referenceCssPath)) !== report.referenceCss.sha256
   )
     throw Error("Independent reference CSS missing or changed");
+  const reference = await loadReference(report.referenceCache, comparison.candidate.reference);
+  if (digest(reference.identity) !== digest(report.reference))
+    throw Error("Independent reference artifact changed");
+  const referenceCompiler = await reference.compile(
+    "@theme { --*: initial; --color-brand: #336699; --color-transient: #883344; } @tailwind utilities;",
+  );
+  const replayedReferenceCss = Buffer.from(referenceCompiler.build(["bg-brand", "text-transient"]));
+  if (!replayedReferenceCss.equals(await readFile(referenceCssPath)))
+    throw Error("Independent reference CSS cannot be reproduced from SRI artifact");
   const referenceScreenshotPath = await outsideCheckout(
     resolve(output, report.referenceScreenshot.path),
   );
@@ -157,7 +203,7 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     sha256(sourcePlan) !== report.sourcePlan.sha256 ||
     !sourcePlan.toString().includes("src") ||
     !sourcePlan.toString().includes("@fixture/shipping-ui") ||
-    !sourcePlan.toString().includes("wind.json")
+    !sourcePlan.toString().includes("manifest wind-shipping-fixture")
   )
     throw Error("Shipping source/package plan missing or changed");
   const expected = manifest.required.map(
@@ -187,16 +233,98 @@ export async function validateShippingEvidence(report, comparison, output, toolc
     for (const key of ["generatedCss", "servedCss", "observation", "screenshot"]) {
       const item = result.raw?.[key];
       if (key === "screenshot" && item === null && !requirement.screenshotRequired) continue;
+      if (key === "generatedCss" && requirement.mode.startsWith("production-dev") && item === null)
+        continue;
       if (!item || !item.path || !/^[0-9a-f]{64}$/.test(item.sha256 ?? ""))
         throw Error(`Missing shipping raw ${key}: ${result.id}`);
       const path = await outsideCheckout(resolve(output, item.path));
       if (!path.startsWith(`${output}/`) || sha256(await readFile(path)) !== item.sha256)
         throw Error(`Shipping raw ${key} changed: ${result.id}`);
     }
-    if (result.raw.generatedCss.sha256 !== result.raw.servedCss.sha256)
+    if (requirement.mode.startsWith("production-dev") && result.raw.generatedCss !== null)
+      throw Error(`Dev mode must report served-only CSS: ${result.id}`);
+    if (result.raw.generatedCss && result.raw.generatedCss.sha256 !== result.raw.servedCss.sha256)
       throw Error(`Shipping generated/served CSS differs: ${result.id}`);
-    const css = await readFile(resolve(output, result.raw.generatedCss.path), "utf8");
+    const css = await readFile(resolve(output, result.raw.servedCss.path), "utf8");
     if (!css.length) throw Error(`Shipping CSS empty: ${result.id}`);
+    if (requirement.mode === "production-dev-warm") {
+      const contract = requirement.expectedObservation.steps;
+      if (
+        !Array.isArray(result.steps) ||
+        result.steps.length !== contract.length ||
+        !result.cleanFinalCss?.path ||
+        !/^[0-9a-f]{64}$/.test(result.cleanFinalCss.sha256 ?? "")
+      )
+        throw Error("Dev transition raw evidence incomplete");
+      const cleanPath = await outsideCheckout(resolve(output, result.cleanFinalCss.path));
+      if (
+        !cleanPath.startsWith(`${output}/`) ||
+        sha256(await readFile(cleanPath)) !== result.cleanFinalCss.sha256 ||
+        result.cleanFinalCss.sha256 !== result.raw.servedCss.sha256
+      )
+        throw Error("Dev clean/warm same-mode CSS differs");
+      let previousInputDigest;
+      const mutationPaths = [
+        "components/shipping.tsx",
+        "components/added.tsx",
+        "components/added.tsx",
+        "components/added.tsx",
+        "components/shipping-renamed.tsx",
+        "zfb.config.json",
+        "zfb.config.json",
+      ];
+      for (let stepIndex = 0; stepIndex < contract.length; stepIndex++) {
+        const step = result.steps[stepIndex],
+          expectedStep = contract[stepIndex];
+        if (
+          digest({ id: step.id, present: step.present, absent: step.absent }) !==
+            digest(expectedStep) ||
+          step.mutation?.path !== mutationPaths[stepIndex] ||
+          (stepIndex === 3
+            ? step.mutation.sha256 !== null
+            : !/^[0-9a-f]{64}$/.test(step.mutation.sha256 ?? "")) ||
+          (stepIndex === 4 && step.mutation.oldPathAbsent !== true) ||
+          !/^[0-9a-f]{64}$/.test(step.inputDigest ?? "") ||
+          step.inputDigest === previousInputDigest ||
+          step.cssResponse?.status !== 200 ||
+          step.cssResponse?.contentType !== "text/css; charset=utf-8" ||
+          !step.rawCss?.path ||
+          !/^[0-9a-f]{64}$/.test(step.rawCss.sha256 ?? "")
+        )
+          throw Error(`Dev transition identity invalid: ${step?.id}`);
+        const stepPath = await outsideCheckout(resolve(output, step.rawCss.path));
+        const stepCss = await readFile(stepPath);
+        if (stepIndex === 3) {
+          if (step.rawInput !== null) throw Error("Removed dev source retained as an input");
+        } else {
+          if (!step.rawInput?.path || step.rawInput.sha256 !== step.mutation.sha256)
+            throw Error(`Dev mutation input missing: ${step.id}`);
+          const inputPath = await outsideCheckout(resolve(output, step.rawInput.path));
+          if (
+            !inputPath.startsWith(`${output}/`) ||
+            sha256(await readFile(inputPath)) !== step.mutation.sha256
+          )
+            throw Error(`Dev mutation input changed: ${step.id}`);
+        }
+        if (
+          !stepPath.startsWith(`${output}/`) ||
+          !stepCss.length ||
+          sha256(stepCss) !== step.rawCss.sha256 ||
+          step.cssResponse.sha256 !== step.rawCss.sha256 ||
+          expectedStep.present.some((needle) => !stepCss.toString().includes(needle)) ||
+          expectedStep.absent.some((needle) => stepCss.toString().includes(needle))
+        )
+          throw Error(`Dev transition CSS changed: ${step.id}`);
+        previousInputDigest = step.inputDigest;
+      }
+      if (result.steps.at(-1).rawCss.sha256 !== result.raw.servedCss.sha256)
+        throw Error("Dev final CSS does not match retained transition");
+    }
+    if (requirement.mode === "production-dev-ssr") {
+      const dev = report.results.find((row) => row.id === "dev-stylesheet");
+      if (result.raw.servedCss.sha256 !== dev?.raw?.servedCss?.sha256)
+        throw Error("Request-time route CSS differs from live dev stylesheet");
+    }
     if (Array.isArray(requirement.expectedObservation.present)) {
       if (
         requirement.expectedObservation.present.some((needle) => !css.includes(needle)) ||

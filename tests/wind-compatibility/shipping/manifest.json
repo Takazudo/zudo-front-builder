@@ -5,7 +5,8 @@
   "fixtureRoot": "tests/wind-compatibility/shipping/fixtures",
   "configFiles": [
     "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
-    "crates/zfb/tests/fixtures/wind-assets/zfb.config.json"
+    "crates/zfb/tests/fixtures/wind-assets/zfb.config.json",
+    "crates/zfb/tests/fixtures/embedded-host-request-time/zfb.config.json"
   ],
   "required": [
     {
@@ -64,7 +65,7 @@
       "configuration": "synthetic-preset-free",
       "fixture": "tests/wind-compatibility/shipping/fixtures/cli/src/rename-before.tsx",
       "mechanism": "source-rename",
-      "expectedObservation": { "present": [".bg-renamed"], "absent": [] },
+      "expectedObservation": { "present": [".bg-renamed"], "absent": [".bg-old"] },
       "screenshotRequired": false
     },
     {
@@ -119,13 +120,27 @@
       "fixture": "tests/wind-compatibility/shipping/fixtures/composition.json",
       "mechanism": "css-dev",
       "expectedObservation": {
-        "servedStylesheet": true,
-        "sourceAdd": true,
-        "sourceEdit": true,
-        "sourceRemove": true,
-        "sourceRename": true,
-        "tokenChange": true,
-        "tokenRemoval": true,
+        "steps": [
+          {
+            "id": "initial",
+            "present": [".bg-shipping", ".bg-old", ".text-transient"],
+            "absent": [".bg-added"]
+          },
+          { "id": "source-add", "present": [".bg-added", ".bg-old"], "absent": [".bg-edited"] },
+          { "id": "source-edit", "present": [".bg-edited", ".bg-old"], "absent": [".bg-added"] },
+          {
+            "id": "source-remove",
+            "present": [".bg-shipping", ".bg-old"],
+            "absent": [".bg-edited"]
+          },
+          { "id": "source-rename", "present": [".bg-renamed"], "absent": [".bg-old"] },
+          { "id": "token-change", "present": ["#224466"], "absent": ["#336699"] },
+          {
+            "id": "token-removal",
+            "present": [".bg-shipping", ".bg-renamed"],
+            "absent": [".text-transient", "#883344"]
+          }
+        ],
         "cleanFinalMatches": true
       },
       "screenshotRequired": false

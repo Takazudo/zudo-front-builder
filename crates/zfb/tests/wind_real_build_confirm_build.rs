@@ -102,6 +102,8 @@ fn run_build_output(root: &Path, esbuild: &Path) -> std::process::Output {
         .arg("build")
         .current_dir(root)
         .env("ZFB_ESBUILD_BIN", esbuild)
+        .env("PATH", "")
+        .env_remove("NODE_PATH")
         .output()
         .expect("spawn `zfb build`")
 }
@@ -441,7 +443,7 @@ fn remove_assembled_class_probe(root: &Path) {
         .expect("remove unrelated dynamic-class probe for W-A06");
 }
 
-fn copy_first_build_dist_for_browser(dist: &Path) {
+fn copy_first_build_dist_for_browser(dist: &Path, esbuild: &Path) {
     if let Some(destination) = std::env::var_os("ZFB_WIND_REAL_BUILD_DIST") {
         let destination = PathBuf::from(destination);
         if destination.exists() {
@@ -467,6 +469,12 @@ fn copy_first_build_dist_for_browser(dist: &Path) {
                 "indexSha256": format!("{:x}", Sha256::digest(index_bytes)),
                 "stylesheet": stylesheet,
                 "stylesheetSha256": format!("{:x}", Sha256::digest(css.as_bytes())),
+                "buildEnvironment": {
+                    "PATH": "",
+                    "NODE_PATH": null,
+                    "ZFB_ESBUILD_BIN": esbuild,
+                    "esbuildSha256": format!("{:x}", Sha256::digest(fs::read(esbuild).expect("read native esbuild"))),
+                },
             });
             fs::write(
                 execution_path,
@@ -556,7 +564,7 @@ fn w_a06_real_build_preserves_package_assets_and_css_modules() {
     };
 
     let dist = root.join("dist");
-    copy_first_build_dist_for_browser(&dist);
+    copy_first_build_dist_for_browser(&dist, &esbuild);
     let (stylesheet, css) = read_stylesheet(&dist);
     assert_modules_and_global_css(&dist, &css);
     assert_authored_and_package_assets(&stylesheet, &css);

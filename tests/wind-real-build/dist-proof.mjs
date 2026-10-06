@@ -1,31 +1,63 @@
 import { readFile, realpath, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { treeDigest } from "../../scripts/wind-compatibility/differential-runner.mjs";
-import {
-  recordProductionBuild,
-  verifyProductionBuild,
-} from "../../scripts/wind-compatibility/production-build.mjs";
+import { verifyProductionBuild } from "../../scripts/wind-compatibility/production-build.mjs";
 import { testedInputIdentity } from "../../scripts/wind-compatibility/reference-identity.mjs";
-import { fromRoot, sha256 } from "../../scripts/wind-compatibility/reference.mjs";
+import {
+  digest,
+  fromRoot,
+  outsideCheckout,
+  sha256,
+} from "../../scripts/wind-compatibility/reference.mjs";
 
-export async function recordDistProof(binary, cargoLog, dist, executionPath) {
-  const productionBuild = await recordProductionBuild(binary, cargoLog);
-  const distPath = await realpath(dist);
-  const index = await readFile(resolve(distPath, "index.html"));
-  if (!index.length) throw Error("Built index.html is empty");
-  const execution = JSON.parse(await readFile(executionPath, "utf8"));
+export async function verifyRustBuildExport(
+  executionPath,
+  expectedSha,
+  recorded,
+  productionBuild,
+  distPath,
+) {
+  executionPath = await outsideCheckout(executionPath);
+  const executionBytes = await readFile(executionPath);
+  if (sha256(executionBytes) !== expectedSha)
+    throw Error("Rust build execution sidecar hash changed");
+  const execution = JSON.parse(executionBytes);
+  if (digest(execution) !== digest(recorded))
+    throw Error("Rust build execution sidecar contents changed");
   const stylesheet = resolve(distPath, execution.stylesheet ?? "");
+  const esbuild = execution.buildEnvironment?.ZFB_ESBUILD_BIN;
   if (
     execution.schemaVersion !== 1 ||
     execution.kind !== "zfb-rust-build-export" ||
     execution.binaryPath !== productionBuild.binaryPath ||
     execution.binarySha256 !== productionBuild.binarySha256 ||
-    execution.indexSha256 !== sha256(index) ||
+    execution.indexSha256 !== sha256(await readFile(resolve(distPath, "index.html"))) ||
     !stylesheet.startsWith(`${distPath}/`) ||
-    execution.stylesheetSha256 !== sha256(await readFile(stylesheet))
+    execution.stylesheetSha256 !== sha256(await readFile(stylesheet)) ||
+    execution.buildEnvironment?.PATH !== "" ||
+    execution.buildEnvironment?.NODE_PATH !== null ||
+    !esbuild ||
+    !isAbsolute(esbuild) ||
+    execution.buildEnvironment.esbuildSha256 !== sha256(await readFile(esbuild))
   )
-    throw Error("Rust build export does not match the current production executable or dist");
+    throw Error("Rust build execution does not match current-source dist or Node-free environment");
+  return execution;
+}
+
+export async function recordDistProof(productionBuildPath, dist, executionPath) {
+  const productionBuild = JSON.parse(await readFile(productionBuildPath, "utf8"));
+  const inputs = await testedInputIdentity();
+  await verifyProductionBuild(productionBuild, {
+    testedSourceSha: productionBuild.gitSha,
+    testedInputs: inputs,
+  });
+  const distPath = await realpath(dist);
+  const index = await readFile(resolve(distPath, "index.html"));
+  if (!index.length) throw Error("Built index.html is empty");
+  const execution = JSON.parse(await readFile(executionPath, "utf8"));
+  const executionSha256 = sha256(await readFile(executionPath));
+  await verifyRustBuildExport(executionPath, executionSha256, execution, productionBuild, distPath);
   return {
     schemaVersion: 1,
     kind: "zfb-current-source-dist",
@@ -35,6 +67,8 @@ export async function recordDistProof(binary, cargoLog, dist, executionPath) {
     distTreeDigest: await treeDigest(distPath),
     indexSha256: sha256(index),
     execution,
+    executionPath: resolve(executionPath),
+    executionSha256,
   };
 }
 
@@ -55,27 +89,24 @@ export async function verifyDistProof(proof, dist) {
     proof.indexSha256 !== sha256(await readFile(resolve(distPath, "index.html")))
   )
     throw Error("Built dist bytes, fixture, or path changed");
-  const stylesheet = resolve(distPath, proof.execution?.stylesheet ?? "");
-  if (
-    proof.execution?.kind !== "zfb-rust-build-export" ||
-    proof.execution.binaryPath !== proof.productionBuild.binaryPath ||
-    proof.execution.binarySha256 !== proof.productionBuild.binarySha256 ||
-    proof.execution.indexSha256 !== proof.indexSha256 ||
-    !stylesheet.startsWith(`${distPath}/`) ||
-    proof.execution.stylesheetSha256 !== sha256(await readFile(stylesheet))
-  )
-    throw Error("Rust build export proof changed");
+  await verifyRustBuildExport(
+    proof.executionPath,
+    proof.executionSha256,
+    proof.execution,
+    proof.productionBuild,
+    distPath,
+  );
   return proof;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [binary, cargoLog, dist, execution, output] = process.argv.slice(2);
-  if (![binary, cargoLog, dist, execution, output].every(Boolean))
+  const [productionBuild, dist, execution, output] = process.argv.slice(2);
+  if (![productionBuild, dist, execution, output].every(Boolean))
     throw Error(
-      "Usage: dist-proof.mjs <zfb-binary> <cargo-json-log> <dist> <rust-execution-json> <output-json>",
+      "Usage: dist-proof.mjs <production-build.json> <dist> <rust-execution-json> <output-json>",
     );
   await writeFile(
     output,
-    JSON.stringify(await recordDistProof(binary, cargoLog, dist, execution), null, 2) + "\n",
+    JSON.stringify(await recordDistProof(productionBuild, dist, execution), null, 2) + "\n",
   );
 }

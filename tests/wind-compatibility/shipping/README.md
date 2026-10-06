@@ -9,13 +9,14 @@ The utility reference is the exact SRI-verified Tailwind tarball already used by
 All paths below are examples; choose an **outside-checkout** evidence directory and current comparison/plan files. Run the Cargo build and Rust dist export through the repository heavy guard in the manager lane, after all shipping source changes are integrated:
 
 ```sh
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build --locked -p zfb --bin zfb --message-format=json > "$EVIDENCE_DIR/cargo.jsonl"
+bash "$HOME/.codex/scripts/heavy-guard.sh" -- \
+  node scripts/wind-compatibility/build-production.mjs "$EVIDENCE_DIR"
 ZFB_WIND_REAL_BUILD_DIST="$EVIDENCE_DIR/dist" \
   ZFB_WIND_REAL_BUILD_EXECUTION="$EVIDENCE_DIR/build-execution.json" \
   bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo test -p zfb --test wind_real_build_confirm_build -- --nocapture
-node tests/wind-real-build/dist-proof.mjs target/debug/zfb "$EVIDENCE_DIR/cargo.jsonl" "$EVIDENCE_DIR/dist" "$EVIDENCE_DIR/build-execution.json" "$EVIDENCE_DIR/dist-proof.json"
+node tests/wind-real-build/dist-proof.mjs "$EVIDENCE_DIR/production-build.json" "$EVIDENCE_DIR/dist" "$EVIDENCE_DIR/build-execution.json" "$EVIDENCE_DIR/dist-proof.json"
 node tests/wind-compatibility/shipping/run.mjs \
-  --binary target/debug/zfb --cargo-log "$EVIDENCE_DIR/cargo.jsonl" \
+  --production-build "$EVIDENCE_DIR/production-build.json" \
   --comparison "$COMPARISON_JSON" --plan "$PLAN_JSON" \
   --dist "$EVIDENCE_DIR/dist" --dist-proof "$EVIDENCE_DIR/dist-proof.json" \
   --reference-cache "$REFERENCE_CACHE" --output "$EVIDENCE_DIR/shipping"

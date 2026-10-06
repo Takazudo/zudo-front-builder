@@ -14,10 +14,7 @@ import {
   loadReference,
   treeDigest,
 } from "../../../scripts/wind-compatibility/differential-runner.mjs";
-import {
-  recordProductionBuild,
-  verifyProductionBuild,
-} from "../../../scripts/wind-compatibility/production-build.mjs";
+import { verifyProductionBuild } from "../../../scripts/wind-compatibility/production-build.mjs";
 import { testedInputIdentity } from "../../../scripts/wind-compatibility/reference-identity.mjs";
 import {
   validateShippingEvidence,
@@ -42,8 +39,7 @@ const args = Object.fromEntries(
   }, []),
 );
 for (const key of [
-  "binary",
-  "cargo-log",
+  "production-build",
   "comparison",
   "plan",
   "dist",
@@ -62,7 +58,7 @@ const profile = await readJson(fromRoot("tests/wind-compatibility/profile.json")
 const inputs = await testedInputIdentity();
 if (comparison.testedInputs.digest !== inputs.digest)
   throw Error("Comparison was not run against the current shipping inputs");
-const productionBuild = await recordProductionBuild(args.binary, args["cargo-log"]);
+const productionBuild = await readJson(args["production-build"]);
 await verifyProductionBuild(productionBuild, comparison);
 const proof = await readJson(args["dist-proof"]);
 await verifyDistProof(proof, args.dist);
@@ -86,6 +82,7 @@ const temp = await mkdtemp(join(tmpdir(), "zfb-shipping-"));
 const results = new Map();
 let sourcePlanRaw;
 let referenceScreenshotRaw;
+let nodeFreeCssEvidence;
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const referenceCompiler = await reference.compile(
   "@theme { --*: initial; --color-brand: #336699; --color-transient: #883344; } @tailwind utilities;",
@@ -104,14 +101,17 @@ async function save(id, label, bytes) {
 async function record(id, generatedCss, servedCss, observed, response, screenshot = null) {
   const requirement = manifest.required.find((row) => row.id === id);
   if (!requirement) throw Error(`Unknown shipping case ${id}`);
-  if (!generatedCss.length || !servedCss.length || !generatedCss.equals(servedCss))
+  if (
+    !servedCss.length ||
+    (generatedCss && (!generatedCss.length || !generatedCss.equals(servedCss)))
+  )
     throw Error(`Missing or mismatched generated/served CSS: ${id}`);
   if (response.status !== 200 || response.contentType !== "text/css; charset=utf-8")
     throw Error(`CSS HTTP response invalid: ${id}: ${JSON.stringify(response)}`);
   if (digest(observed) !== digest(requirement.expectedObservation))
     throw Error(`Shipping observation failed: ${id}: ${JSON.stringify(observed)}`);
   const raw = {
-    generatedCss: await save(id, "generated.css", generatedCss),
+    generatedCss: generatedCss ? await save(id, "generated.css", generatedCss) : null,
     servedCss: await save(id, "served.css", servedCss),
     observation: null,
     screenshot: screenshot ? await save(id, "composition.png", screenshot) : null,
@@ -213,7 +213,7 @@ async function cssPass(project, id) {
   await cp(project, fresh, {
     recursive: true,
     filter: (path) =>
-      !["generated.css", "dist", ".zfb", ".zfb-build"].includes(basename(path)) &&
+      !["generated.css", "node-free.css", "dist", ".zfb", ".zfb-build"].includes(basename(path)) &&
       !basename(path).startsWith(".zfb-dev-"),
   });
   runBinary(fresh, [
@@ -289,6 +289,7 @@ async function cssPass(project, id) {
       await page.close();
     }
   });
+  return css;
 }
 
 async function cliSequence() {
@@ -306,11 +307,40 @@ async function cliSequence() {
   if (
     !audit.includes("src") ||
     !audit.includes("@fixture/shipping-ui") ||
-    !audit.includes("wind.json")
+    !audit.includes("manifest wind-shipping-fixture")
   )
     throw Error("Shipping source plan omitted configured source or package root");
   sourcePlanRaw = await save("source", "plan.txt", audit);
-  await cssPass(project, "css-initial");
+  const initialCss = await cssPass(project, "css-initial");
+  const { NODE_PATH: _nodePath, ...nodeFreeEnvironment } = process.env;
+  const nodeFreeArgs = [
+    "css",
+    "--input",
+    "entry.css",
+    "--output",
+    "node-free.css",
+    "--project-root",
+    project,
+  ];
+  const nodeFree = spawnSync(productionBuild.binaryPath, nodeFreeArgs, {
+    cwd: project,
+    encoding: "utf8",
+    timeout: 120_000,
+    env: { ...nodeFreeEnvironment, PATH: "" },
+  });
+  if (nodeFree.error || nodeFree.status !== 0)
+    throw Error(`Production zfb css needs a PATH executable: ${nodeFree.error ?? nodeFree.stderr}`);
+  const nodeFreeCss = await readFile(join(project, "node-free.css"));
+  if (!nodeFreeCss.length || !nodeFreeCss.equals(initialCss))
+    throw Error("Node-free zfb css differs from normal current-source CSS");
+  nodeFreeCssEvidence = {
+    args: nodeFreeArgs.map((arg) => (arg === project ? "<project>" : arg)),
+    environment: { PATH: "", NODE_PATH: null },
+    exitCode: nodeFree.status,
+    rawCss: await save("node-free", "cli.css", nodeFreeCss),
+    stdout: await save("node-free", "stdout.txt", nodeFree.stdout),
+    stderr: await save("node-free", "stderr.txt", nodeFree.stderr),
+  };
   const added = join(project, "src/added.tsx");
   await writeFile(added, 'export const added = "bg-added";\n');
   await cssPass(project, "source-add");
@@ -319,6 +349,10 @@ async function cliSequence() {
   await rm(added);
   await cssPass(project, "source-remove");
   await rename(join(project, "src/rename-before.tsx"), join(project, "src/rename-after.tsx"));
+  await writeFile(
+    join(project, "src/rename-after.tsx"),
+    'export const renameClass = "bg-renamed";\n',
+  );
   await cssPass(project, "source-rename");
   const configPath = join(project, "zfb.config.json");
   const config = await readJson(configPath);
@@ -360,6 +394,10 @@ async function buildCases() {
     let ready = false;
     for (let attempt = 0; attempt < 100; attempt++) {
       if (server.exitCode !== null) throw Error(`Dist server exited: ${logs}`);
+      if (!logs.includes("READY http://localhost:4332")) {
+        await new Promise((ok) => setTimeout(ok, 100));
+        continue;
+      }
       try {
         ready = (await fetch(origin)).status === 200;
       } catch {
@@ -477,7 +515,12 @@ async function buildCases() {
 async function startDev(project) {
   const child = spawn(productionBuild.binaryPath, ["dev", "--port", "0"], {
     cwd: project,
-    env: process.env,
+    env: {
+      ...process.env,
+      PATH: "",
+      NODE_PATH: undefined,
+      ZFB_ESBUILD_BIN: proof.execution.buildEnvironment.ZFB_ESBUILD_BIN,
+    },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -584,6 +627,7 @@ async function devCases() {
           added: "#456789",
           edited: "#56789a",
           renamed: "#123456",
+          old: "#123455",
           transient: "#883344",
         },
       },
@@ -592,35 +636,70 @@ async function devCases() {
   await writeFile(configPath, JSON.stringify(config));
   await mkdir(join(project, "components"), { recursive: true });
   const oldPath = join(project, "components/shipping.tsx");
-  await writeFile(
-    oldPath,
-    'export const shippingClass = "bg-shipping bg-renamed text-transient";\n',
-  );
+  await writeFile(oldPath, 'export const shippingClass = "bg-shipping bg-old text-transient";\n');
   const warm = await startDev(project);
   try {
-    await devCss(warm.origin, [".bg-shipping", ".bg-renamed", ".text-transient"], [], "initial");
+    const steps = [];
+    const stepContract = manifest.required.find((row) => row.id === "dev-stylesheet")
+      .expectedObservation.steps;
+    async function capture(id, mutationPath, oldPathAbsent = null) {
+      const contract = stepContract[steps.length];
+      if (contract?.id !== id) throw Error(`Dev step out of order: ${id}`);
+      const state = await devCss(warm.origin, contract.present, contract.absent, id);
+      let mutationBytes = null;
+      try {
+        mutationBytes = await readFile(join(project, mutationPath));
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      const mutationSha256 = mutationBytes ? sha256(mutationBytes) : null;
+      if (oldPathAbsent) {
+        try {
+          await readFile(oldPath);
+          throw Error("Renamed source old path still exists");
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+      const inputDigest = digest({
+        config: sha256(await readFile(configPath)),
+        components: await treeDigest(join(project, "components")),
+        pages: await treeDigest(join(project, "pages")),
+      });
+      steps.push({
+        id,
+        present: contract.present,
+        absent: contract.absent,
+        mutation: { path: mutationPath, sha256: mutationSha256, oldPathAbsent },
+        rawInput: mutationBytes ? await save(`dev-${id}`, "input", mutationBytes) : null,
+        inputDigest,
+        cssResponse: { ...state.response, sha256: sha256(state.css) },
+        rawCss: await save(`dev-${id}`, "served.css", state.css),
+      });
+      return state;
+    }
+    await capture("initial", "components/shipping.tsx");
     const added = join(project, "components/added.tsx");
     await writeFile(added, 'export const added = "bg-added";\n');
-    await devCss(warm.origin, [".bg-added"], [], "source add");
+    await capture("source-add", "components/added.tsx");
     await writeFile(added, 'export const edited = "bg-edited";\n');
-    await devCss(warm.origin, [".bg-edited"], [".bg-added"], "source edit");
+    await capture("source-edit", "components/added.tsx");
     await rm(added);
-    await devCss(warm.origin, [".bg-shipping"], [".bg-edited"], "source remove");
+    await capture("source-remove", "components/added.tsx");
     const newPath = join(project, "components/shipping-renamed.tsx");
     await rename(oldPath, newPath);
-    await devCss(warm.origin, [".bg-renamed"], [], "source rename");
+    await writeFile(
+      newPath,
+      'export const shippingClass = "bg-shipping bg-renamed text-transient";\n',
+    );
+    await capture("source-rename", "components/shipping-renamed.tsx", true);
     config.wind.tokens.colors.shipping = "#224466";
     await writeFile(configPath, JSON.stringify(config));
-    await devCss(warm.origin, ["#224466"], ["#336699"], "token change");
+    await capture("token-change", "zfb.config.json");
     delete config.wind.tokens.colors.transient;
     await writeFile(newPath, 'export const shippingClass = "bg-shipping bg-renamed";\n');
     await writeFile(configPath, JSON.stringify(config));
-    const final = await devCss(
-      warm.origin,
-      [".bg-shipping", ".bg-renamed"],
-      [".text-transient", "#883344"],
-      "token removal",
-    );
+    const final = await capture("token-removal", "zfb.config.json");
     const cleanProject = join(temp, "request-time-clean");
     await cp(project, cleanProject, {
       recursive: true,
@@ -629,6 +708,7 @@ async function devCases() {
         !basename(path).startsWith(".zfb-dev-"),
     });
     const clean = await startDev(cleanProject);
+    let cleanFinalCss;
     try {
       const cleanFinal = await devCss(
         clean.origin,
@@ -638,6 +718,7 @@ async function devCases() {
       );
       if (!final.css.equals(cleanFinal.css))
         throw Error("Warm dev stylesheet differs from clean dev stylesheet");
+      cleanFinalCss = await save("dev-clean-final", "served.css", cleanFinal.css);
     } finally {
       await clean.stop();
     }
@@ -648,23 +729,19 @@ async function devCases() {
       const style = await page.locator("head > style").textContent();
       await record(
         "dev-stylesheet",
-        final.css,
+        null,
         final.css,
         {
-          servedStylesheet: final.css.length > 0,
-          sourceAdd: true,
-          sourceEdit: true,
-          sourceRemove: true,
-          sourceRename: true,
-          tokenChange: true,
-          tokenRemoval: true,
+          steps: steps.map(({ id, present, absent }) => ({ id, present, absent })),
           cleanFinalMatches: true,
         },
         final.response,
       );
+      results.get("dev-stylesheet").steps = steps;
+      results.get("dev-stylesheet").cleanFinalCss = cleanFinalCss;
       await record(
         "request-time-ssr",
-        final.css,
+        null,
         final.css,
         {
           routeMarker:
@@ -707,10 +784,17 @@ try {
     fixtureTreeDigest,
     configDigest,
     reference: reference.identity,
+    referenceCache: resolve(args["reference-cache"]),
     referenceCss: referenceRaw,
     referenceScreenshot: referenceScreenshotRaw,
     sourcePlan: sourcePlanRaw,
     browserEnvironment,
+    nodeFreeCss: nodeFreeCssEvidence,
+    nodeFreeDevEnvironment: {
+      PATH: "",
+      NODE_PATH: null,
+      ZFB_ESBUILD_BIN: proof.execution.buildEnvironment.ZFB_ESBUILD_BIN,
+    },
     results: manifest.required.map((row) => {
       const result = results.get(row.id);
       if (!result) throw Error(`Mandatory shipping case missing: ${row.id}`);
