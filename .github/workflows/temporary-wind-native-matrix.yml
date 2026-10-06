@@ -1,5 +1,4 @@
-# Preparation only. Replace dfa68c588f8e2c43313aac5489dc4c88b9e646d0 and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
-name: Temporary preset-free Wind harness probe
+name: Temporary independent native margin diagnosis
 on:
   pull_request:
 permissions:
@@ -8,14 +7,11 @@ concurrency:
   group: wind-harness-probe-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  harness:
+  native-margin:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     env:
-      RUSTUP_TOOLCHAIN: 1.99.0
-      WIND_PINNED_SOURCE_ARCHIVE: /tmp/zfb-wind-reference-cache/response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3
-      WIND_NPM_TARBALL: /tmp/zfb-wind-reference-cache/response-3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62
-      WIND_COMPILER_MODULE: /tmp/zfb-wind-reference-cache/tailwindcss-4.3.2-3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62/dist/lib.mjs
+      SOURCE_SHA: dfa68c588f8e2c43313aac5489dc4c88b9e646d0
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -25,63 +21,72 @@ jobs:
         with:
           node-version: 24.14.0
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: 1.99.0
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          shared-key: wind-harness-pilot
       - run: pnpm install --frozen-lockfile
-      - name: Record exact source and environment
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: Observe independent authored native CSS
         run: |
           set -euo pipefail
-          mkdir -p /tmp/wind-harness-evidence
           test "$(git rev-parse HEAD)" = dfa68c588f8e2c43313aac5489dc4c88b9e646d0
           test -z "$(git status --porcelain)"
-          {
-            git rev-parse HEAD
-            node --version
-            pnpm --version
-            rustc -Vv
-            cargo -V
-            cat /etc/os-release
-            uname -a
-          } > /tmp/wind-harness-evidence/environment.txt
-      - name: Acquire independently pinned reference inputs
-        run: |
-          set -euo pipefail
-          node scripts/wind-compatibility/reference-cli.mjs plan > /tmp/wind-harness-evidence/plan.json
-          node scripts/wind-compatibility/reference-cli.mjs acquire --cache /tmp/zfb-wind-reference-cache > /tmp/wind-harness-evidence/acquire.json
-          node scripts/wind-compatibility/reference-cli.mjs probe --cache /tmp/zfb-wind-reference-cache --candidates block,hidden,p-0,mx-auto,contents > /tmp/wind-harness-evidence/reference-probe.json
-          node scripts/wind-compatibility/reference-cli.mjs assess --plan /tmp/wind-harness-evidence/plan.json --cache /tmp/zfb-wind-reference-cache > /tmp/wind-harness-evidence/assessment.json
-          node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("/tmp/wind-harness-evidence/assessment.json")); if(r.status!=="ready-for-comparison") throw Error("Incomplete upstream capture")'
-          test -s "$WIND_PINNED_SOURCE_ARCHIVE"
-          test -s "$WIND_NPM_TARBALL"
-          test -s "$WIND_COMPILER_MODULE"
-      - name: Contract tests with all pinned-input cases enabled
-        run: |
-          set -euo pipefail
-          node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs 2>&1 | tee /tmp/wind-harness-evidence/node-contracts.log
-          cargo test --locked -p zudo-wind --test empty_token_contracts 2>&1 | tee /tmp/wind-harness-evidence/rust-empty-token.log
-      - name: Build exact Wind adapter artifact
-        id: wind_build
-        run: node scripts/wind-compatibility/differential-runner.mjs build-wind /tmp/wind-harness-evidence/wind-build.json
-      - run: pnpm exec playwright install --with-deps chromium firefox webkit
-      - name: Execute real comparison CLI and complete per-engine matrix
-        if: ${{ !cancelled() && steps.wind_build.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          wind_binary=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/wind-harness-evidence/wind-build.json")).binaryPath')
-          node scripts/wind-compatibility/reference-cli.mjs compare --plan /tmp/wind-harness-evidence/plan.json --assessment /tmp/wind-harness-evidence/assessment.json --cache /tmp/zfb-wind-reference-cache --wind-binary "$wind_binary" --wind-build-manifest /tmp/wind-harness-evidence/wind-build.json --output /tmp/wind-harness-evidence/comparison 2>&1 | tee /tmp/wind-harness-evidence/comparison.log
-          node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("/tmp/wind-harness-evidence/comparison/comparison.json")); if(r.candidate.passing!==true || (r.accepted!==null && r.accepted.passing!==true)) throw Error("Comparison retained a failing required outcome; no admission"); if(r.admission!=="pending-independent-review-and-shipping-evidence") throw Error("Unexpected admission state")'
-      - name: Preserve original evidence even on failure
+          mkdir -p /tmp/native-margin-evidence
+          cat > /tmp/native-margin-evidence/probe.mjs <<'NATIVE_SCRIPT'
+          import { chromium, firefox, webkit } from '@playwright/test';
+          import { readFile, writeFile, mkdir } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { browserIdentity } from './scripts/wind-compatibility/browser-adapter.mjs';
+          const output = '/tmp/native-margin-evidence';
+          await mkdir(output, { recursive: true });
+          const hash = value => createHash('sha256').update(value).digest('hex');
+          const source = await readFile('tests/wind-compatibility/pilot/mx-auto/index.html', 'utf8');
+          const styles = {
+            'physical-auto': '.mx-auto{margin-left:auto;margin-right:auto}',
+            'logical-auto': '.mx-auto{margin-inline:auto}',
+            'physical-zero': '.mx-auto{margin-left:0;margin-right:0;margin-top:0;margin-bottom:0}',
+          };
+          const report = { kind: 'independent-native-margin-diagnosis', source: process.env.SOURCE_SHA, node: process.version, interpretation: 'observations only; no compatibility admission or expected-value update', browsers: {}, results: [] };
+          for (const [engine, type] of Object.entries({ chromium, firefox, webkit })) {
+            const executable = type.executablePath();
+            const browser = await type.launch({ executablePath: executable });
+            report.browsers[engine] = await browserIdentity(browser, executable);
+            try {
+              for (const writingMode of ['horizontal-tb', 'vertical-rl', 'vertical-lr']) {
+                for (const direction of ['ltr', 'rtl']) {
+                  for (const [kind, css] of Object.entries(styles)) {
+                    const id = `${engine}-${writingMode}-${direction}-${kind}`;
+                    const html = source.replace('</head>', `<link rel="stylesheet" href="https://native-margin.invalid/style.css"><style>#box{width:300px;height:300px;writing-mode:${writingMode};direction:${direction}}</style></head>`);
+                    const context = await browser.newContext({ viewport: { width: 800, height: 700 }, deviceScaleFactor: 1, reducedMotion: 'no-preference', colorScheme: 'light' });
+                    try {
+                      await context.route('https://native-margin.invalid/style.css', route => route.fulfill({ status: 200, contentType: 'text/css; charset=utf-8', body: css }));
+                      await context.route('https://native-margin.invalid/fixture', route => route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html }));
+                      const page = await context.newPage();
+                      const responsePromise = page.waitForResponse('https://native-margin.invalid/style.css');
+                      await page.goto('https://native-margin.invalid/fixture', { waitUntil: 'load' });
+                      const response = await responsePromise;
+                      const served = await response.body();
+                      const observed = await page.evaluate(async () => {
+                        await document.fonts.ready;
+                        const target = document.querySelector('#target'), parent = document.querySelector('#box');
+                        const style = getComputedStyle(target), box = target.getBoundingClientRect(), parentBox = parent.getBoundingClientRect();
+                        return { margins: Object.fromEntries(['margin-left','margin-right','margin-top','margin-bottom'].map(name => [name, style.getPropertyValue(name)])), writingMode: style.writingMode, direction: style.direction, specifiedStyle: target.getAttribute('style'), box: { x: box.x-parentBox.x, y: box.y-parentBox.y, width: box.width, height: box.height, parentWidth: parentBox.width, parentHeight: parentBox.height }, cssRules: [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].map(rule => rule.cssText)) };
+                      });
+                      if (response.status() !== 200 || hash(served) !== hash(css)) throw Error(`Native CSS delivery failed: ${id}`);
+                      await writeFile(`${output}/${id}.html`, html);
+                      await writeFile(`${output}/${id}.css`, css);
+                      report.results.push({ id, engine, kind, writingMode, direction, stylesheetSha256: hash(css), servedSha256: hash(served), documentSha256: hash(html), cssStatus: response.status(), observed });
+                    } finally { await context.close(); }
+                  }
+                }
+              }
+            } finally { await browser.close(); }
+          }
+          await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2)+'\n');
+          console.log(`Recorded ${report.results.length} independent native CSS observations`);
+          NATIVE_SCRIPT
+          node --input-type=module < /tmp/native-margin-evidence/probe.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: preset-free-wind-harness-evidence
-          path: |
-            /tmp/wind-harness-evidence/
-            /tmp/zfb-wind-reference-cache/
+          name: independent-native-margin-evidence
+          path: /tmp/native-margin-evidence/
           if-no-files-found: error
           retention-days: 7
