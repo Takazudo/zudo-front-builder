@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "decisionIssue": 3469,
+  "outcome": "no-product-code-change",
+  "selectedOptimizations": [],
+  "baselineSourceSha": "882e98eabe7c8d5425e73bdc1a34cea7e3f55f43",
+  "platform": {
+    "os": "linux",
+    "arch": "x64"
+  },
+  "fixtureVersion": "v3-islands-1",
+  "fixtureSha256": {
+    "event-only": "2264320634b4c896cd5ad62d3a7cfcd12691d6744226183a6756e262e5045eeb",
+    "scalar-signal": "1f69011b37ca925b4ed9a2868592d150efcf9450f220c7c3fc7d0bd491cdd364",
+    "show-for": "a2288f1a3bf185f9191309ef08dfb768cda0c62f2f56fb66d7d1b0bc97b29c38",
+    "model": "1273665b15a9f7ff0adefb301961f1484690fe95f8c79450fa5387079ed4995c",
+    "blog-menu": "f901991768adc5146562429544de9b1f23f843862efe8f0401e46c297969166a",
+    "theme-toggle": "206d45d5289464398e93943c78e9efb97267eaca7c3314ad9c9877057aeb4af0",
+    "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
+  },
+  "runnerSha256": {
+    "measure-real.mjs": "f12881c67b1295904ada30bc923b7fe137e849e880ad37829d58dc833cf41564",
+    "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
+  },
+  "toolchain": {
+    "packageVersion": "4.0.0",
+    "honoVersion": "4.12.25",
+    "esbuildVersion": "0.25.12",
+    "nodeVersion": "v24.14.0",
+    "zlibVersion": "1.3.1-e00f703",
+    "pnpmLockSha256": "f45a3b1d60ba2483224278b57c09938671ba2ac9dafe8df9c0dcccf2dd31593c",
+    "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
+  },
+  "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
+  "allowance": {
+    "raw": 0,
+    "gzip": 0
+  },
+  "ceilings": {
+    "workspace": {
+      "no-island": {
+        "raw": 0,
+        "gzip": 0
+      },
+      "event-only": {
+        "raw": 65395,
+        "gzip": 21846
+      },
+      "scalar-signal": {
+        "raw": 65403,
+        "gzip": 21842
+      },
+      "show-for": {
+        "raw": 65549,
+        "gzip": 21921
+      },
+      "model": {
+        "raw": 65394,
+        "gzip": 21846
+      },
+      "blog-theme": {
+        "raw": 65744,
+        "gzip": 21990
+      },
+      "json-api": {
+        "raw": 65549,
+        "gzip": 21936
+      },
+      "multi-island": {
+        "raw": 65671,
+        "gzip": 21948
+      }
+    },
+    "packed": {
+      "no-island": {
+        "raw": 0,
+        "gzip": 0
+      },
+      "event-only": {
+        "raw": 65457,
+        "gzip": 21870
+      },
+      "scalar-signal": {
+        "raw": 65465,
+        "gzip": 21875
+      },
+      "show-for": {
+        "raw": 65611,
+        "gzip": 21958
+      },
+      "model": {
+        "raw": 65456,
+        "gzip": 21879
+      },
+      "blog-theme": {
+        "raw": 65806,
+        "gzip": 22007
+      },
+      "json-api": {
+        "raw": 65611,
+        "gzip": 21962
+      },
+      "multi-island": {
+        "raw": 65733,
+        "gzip": 21973
+      }
+    }
+  },
+  "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured on the final versioned candidate after the dynamic root-unmount repair; other platforms and toolchains are not covered.",
+  "baselineEvidence": {
+    "event": "ci",
+    "runId": 37439127554,
+    "jobId": 112188217080,
+    "sourceSha": "882e98eabe7c8d5425e73bdc1a34cea7e3f55f43",
+    "note": "Complete workspace and packed eight-fixture matrices at lockstep 4.0.0, with two byte-identical full-dist passes each. Original output files, tarballs and provenance were retained and independently rehashed. Every nonempty fixture is 734 raw bytes above the prior exact baseline, including the functional root-unmount repair. Gzip totals include actual versioned build identities without normalization. The original exact budget gate failed on those deltas. These reviewed rows retain zero allowance and no-island 0/0; previous measured contracts remain in git history."
+  }
+}

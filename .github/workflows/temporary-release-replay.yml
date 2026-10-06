@@ -1,0 +1,103 @@
+name: Temporary 4.0.0 reviewed artifact replay
+'on':
+  pull_request: null
+permissions:
+  contents: read
+  actions: read
+jobs:
+  router-compare:
+    name: Replay retained production router comparison
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      with:
+        fetch-depth: 0
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      with:
+        node-version: 24.14.0
+    - name: Assert comparator compression runtime
+      run: "node --input-type=module -e '\n  if (process.version !== \"v24.14.0\" || process.versions.zlib !== \"1.3.1-e00f703\"\
+        \ ||\n      process.platform !== \"linux\" || process.arch !== \"x64\") {\n    throw new Error(`unexpected comparator\
+        \ runtime: ${process.version} zlib ${process.versions.zlib} ${process.platform}/${process.arch}`);\n  }\n'\n"
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: production-router-before
+        path: target/router-pair/before
+        run-id: 37439127554
+        github-token: ${{ github.token }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: production-router-after
+        path: target/router-pair/after
+        run-id: 37439127554
+        github-token: ${{ github.token }}
+    - name: Verify provenance and report actual byte differences
+      run: "node .github/release-probe/compare-router-probe.mjs \\\n  --before target/router-pair/before --after target/router-pair/after\
+        \ \\\n  --baseline b3a2b6eabda8287364b5836563092e3f0bb0927d \\\n  --candidate 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43\
+        \ \\\n  --candidate-version 4.0.0 \\\n  --out target/router-pair/comparison.json\n"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always()
+      with:
+        name: production-router-comparison-replay
+        path: target/router-pair/comparison.json
+        if-no-files-found: error
+        retention-days: 7
+  island-budget:
+    name: Replay reviewed island contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-24.04
+          artifact: versioned-island-size-ubuntu-24.04
+          contract: decision-linux-x64.json
+        - os: macos-15
+          artifact: versioned-island-size-macos-15
+          contract: decision.json
+    steps:
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      with:
+        fetch-depth: 0
+    - name: Preserve reviewed contract and select measured source
+      shell: bash
+      run: 'set -euo pipefail
+
+        cp ''.github/release-probe/${{ matrix.contract }}'' "$RUNNER_TEMP/reviewed-island-contract.json"
+
+        git checkout --detach 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+
+        test "$(git rev-parse HEAD)" = 882e98eabe7c8d5425e73bdc1a34cea7e3f55f43
+
+        test -z "$(git status --porcelain)"
+
+        '
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      with:
+        node-version: 24.14.0
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: ${{ matrix.artifact }}
+        path: target/island-size
+        run-id: 37439127554
+        github-token: ${{ github.token }}
+    - name: Validate original artifacts against reviewed exact contract
+      shell: bash
+      run: "set -euo pipefail\nnode --input-type=module -e '\n  import {readFileSync} from \"node:fs\";\n  const m=JSON.parse(readFileSync(\"\
+        target/island-size/real-workspace/measurement.json\"));\n  if(m.provenance.packagePath !== process.cwd()+\"/packages/zfb\"\
+        ) throw new Error(\"original source paths differ from current runner\");\n  if(process.version !== \"v24.14.0\" ||\
+        \ process.versions.zlib !== \"1.3.1-e00f703\") throw new Error(\"wrong replay compression runtime\");\n'\nnode research/v3-island-size/check-budget.mjs\
+        \ --workspace target/island-size/real-workspace/measurement.json --packed target/island-size/real-packed/measurement.json\
+        \ --contract \"$RUNNER_TEMP/reviewed-island-contract.json\" 2>&1 | tee \"$RUNNER_TEMP/reviewed-island-replay.log\"\
+        \n"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      if: always()
+      with:
+        name: reviewed-island-replay-${{ matrix.os }}
+        path: ${{ runner.temp }}/reviewed-island-*
+        if-no-files-found: error
+        retention-days: 7
