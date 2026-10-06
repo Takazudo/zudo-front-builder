@@ -1,9 +1,31 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { h } from "../../zudo-react/index.js";
 import { islandRoot, renderToString } from "../../zudo-react/server.js";
 import { hydrate, mount } from "../../zudo-react/client.js";
 import { rawHtmlReserved } from "../../zudo-react/raw-html.js";
 import type { Diagnostic } from "../../zudo-react/index.js";
+
+function jsonForRawHtml(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new TypeError("Expected a JSON-compatible object");
+  return json
+    .replace(/</g, "\\u003c")
+    .replace(
+      /data-zfb-island|zr:1:/gi,
+      (marker) => `\\u${marker.charCodeAt(0).toString(16).padStart(4, "0")}${marker.slice(1)}`,
+    );
+}
+
+const jsonCases = [
+  ["ordinary marker", { text: "data-zfb-island" }],
+  ["mixed-case marker", { text: "DATA-zfb-IsLaNd and Zr:1:" }],
+  ["quoted attribute", { text: '<i data-zfb-island="Demo">' }],
+  ["comment marker", { text: "<!--zr:1:9:h-->" }],
+  ["literal backslash-u", { text: String.raw`\u0064ata-zfb-island \u003c` }],
+  ["closing script", { text: "</ScRiPt><script>" }],
+] as const;
 
 // Display-only payloads (#3570): marker-like text that cannot form a reserved
 // attribute or protocol comment, paired with the exact visible text.
@@ -128,6 +150,74 @@ describe("rawHtml combined #3569/#3570 payload", () => {
   });
 });
 
+describe("JSON data in script rawHtml", () => {
+  it.each(jsonCases)(
+    "round-trips %s through the public server renderer and HTML parser",
+    (_, data) => {
+      const serialized = JSON.stringify(data);
+      const encoded = jsonForRawHtml(data);
+      expect(JSON.parse(encoded)).toEqual(data);
+      expect(encoded).not.toMatch(/<|data-zfb-island|zr:1:/i);
+      expect(rawHtmlReserved(`<script type="application/json">${serialized}</script>`, "div")).toBe(
+        serialized.toLowerCase().includes("data-zfb-island") ||
+          serialized.toLowerCase().includes("zr:1:"),
+      );
+
+      const html = renderToString(h("script", { type: "application/json", rawHtml: encoded }));
+      expect(html).toBe(`<script type="application/json">${encoded}</script>`);
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      const script = host.querySelector("script");
+      expect(script?.textContent).toBe(encoded);
+      expect(JSON.parse(script!.textContent!)).toEqual(data);
+      expect(host.childElementCount).toBe(1);
+    },
+  );
+
+  it("escapes the original marker's initial character without changing its case", () => {
+    const encoded = jsonForRawHtml({ text: "DATA-zfb-IsLaNd Zr:1: data-zfb-island" });
+    expect(encoded).toContain("\\u0044ATA-zfb-IsLaNd");
+    expect(encoded).toContain("\\u005ar:1:");
+    expect(encoded).toContain("\\u0064ata-zfb-island");
+    expect(JSON.parse(encoded)).toEqual({ text: "DATA-zfb-IsLaNd Zr:1: data-zfb-island" });
+  });
+
+  it("keeps the nested-script fallback and direct-script closing boundary", () => {
+    const raw = JSON.stringify({ text: "data-zfb-island" });
+    expect(() =>
+      renderToString(h("div", { rawHtml: `<script type="application/json">${raw}</script>` })),
+    ).toThrow("ZR_RAW_HTML: reserved boundary in rawHtml");
+    const encoded = jsonForRawHtml({ text: "data-zfb-island" });
+    expect(
+      renderToString(h("div", { rawHtml: `<script type="application/json">${encoded}</script>` })),
+    ).toBe(`<div><script type="application/json">${encoded}</script></div>`);
+    expect(() =>
+      renderToString(h("script", { type: "application/json", rawHtml: '"</script>"' })),
+    ).toThrow("ZR_RAW_HTML");
+  });
+
+  it("keeps the English and Japanese recipes equal to the exercised helper", () => {
+    const recipe = `function jsonForRawHtml(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new TypeError("Expected a JSON-compatible object");
+  return json
+    .replace(/</g, "\\\\u003c")
+    .replace(/data-zfb-island|zr:1:/gi, (marker) =>
+      \`\\\\u\${marker.charCodeAt(0).toString(16).padStart(4, "0")}\${marker.slice(1)}\`,
+    );
+}`;
+    for (const locale of ["docs", "docs-ja"]) {
+      const path = `docs/src/content/${locale}/zudo-react/components-and-jsx.mdx`;
+      const fromRoot = resolve(process.cwd(), path);
+      const page = readFileSync(
+        existsSync(fromRoot) ? fromRoot : resolve(process.cwd(), "../..", path),
+        "utf8",
+      );
+      expect(page).toContain(recipe);
+    }
+  });
+});
+
 describe.each(["hydrate", "mount"] as const)("%s rawHtml reserved boundaries", (mode) => {
   const attach = mode === "hydrate" ? hydrate : mount;
   const identity = { component: "Demo", build: "b1" };
@@ -155,6 +245,24 @@ describe.each(["hydrate", "mount"] as const)("%s rawHtml reserved boundaries", (
     expect(diagnostics).toEqual([]);
     expect(container.querySelector("pre")?.textContent).toBe(accepted[2]![1]);
     expect(container.querySelector("pre [data-zfb-island]")).toBeNull();
+  });
+
+  it("preserves JSON data in a direct script host", () => {
+    const data = {
+      text: String.raw`DATA-zfb-IsLaNd \u0064ata-zfb-island </ScRiPt> <!--zr:1:9:h-->`,
+    };
+    const encoded = jsonForRawHtml(data);
+    const scriptDemo = () =>
+      function Demo() {
+        return h("script", { type: "application/json", rawHtml: encoded });
+      };
+    const host = document.createElement("div");
+    document.body.append(host);
+    host.innerHTML = renderToString(islandRoot(h(scriptDemo(), {}), { identity }));
+    const container = host.firstElementChild!;
+    expect(attach(h(scriptDemo(), {}), container, options())).not.toBeNull();
+    expect(diagnostics).toEqual([]);
+    expect(JSON.parse(container.querySelector("script")!.textContent!)).toEqual(data);
   });
 
   it("rejects a real marker", () => {
