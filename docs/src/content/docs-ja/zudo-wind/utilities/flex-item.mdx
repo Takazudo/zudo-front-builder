@@ -21,6 +21,10 @@ generated: true
 | `shrink` | `flex-shrink: 1;` |
 | `shrink-0` | `flex-shrink: 0;` |
 | `shrink-[2]` | `flex-shrink: 2;` |
+| `basis-auto` | `flex-basis: auto;` |
+| `basis-1/2` | `flex-basis: calc(100% * 1 / 2);` |
+| `order-first` | `order: -9999;` |
+| `order-last` | `order: 9999;` |
 
 <Details title={"例の設定"}>
 
@@ -190,6 +194,51 @@ shrink の項目は初期幅より縮み、shrink-0 は幅を保ちます。比�
 .wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }
 .wind-demo-note { color: #53677f; font-size: 0.875rem; }
 .wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }
+```
+
+</Details>
+
+### basis と order
+
+basis-and-order は対応済みの Wind ユーティリティクラスを使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new flex\"\u003e\u003cspan class=\"basis-auto order-first\"\u003efirst\u003c/span\u003e\u003cspan class=\"basis-1/2 order-last\"\u003elast\u003c/span\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.flex {\n  display: flex;\n}\n.basis-1\\/2 {\n  flex-basis: calc(100% * 1 / 2);\n}\n.basis-auto {\n  flex-basis: auto;\n}\n.order-first {\n  order: -9999;\n}\n.order-last {\n  order: 9999;\n}\n"} title={"basis と order"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "flex",
+        "basis-auto",
+        "basis-1/2",
+        "order-first",
+        "order-last"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
 ```
 
 </Details>
@@ -407,5 +456,82 @@ flex-1 は 1 1 0%、flex-auto は 1 1 auto、flex-initial は 0 1 auto、flex-no
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `shrink` | `flex-shrink: 1` |
+
+## basis
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.basis` |
+| クラスパターン | `basis-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","fraction"],"arbitraryProperty":null,"allowsFractionSlash":true,"allowsColorOpacity":false}` |
+| 受け入れる値 | `8` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `1` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `flex-basis` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"auto"` | `"auto"` |
+| `keyword` | `"full"` | `"100%"` |
+| `keyword` | `"px"` | `"1px"` |
+| `keyword` | `"0"` | `"0"` |
+| `keyword` | `"min"` | `"min-content"` |
+| `keyword` | `"max"` | `"max-content"` |
+| `keyword` | `"fit"` | `"fit-content"` |
+| `keyword` | `"content"` | `"content"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `flex-basis` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `basis-auto` | `flex-basis: auto` |
+
+## order
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.order` |
+| クラスパターン | `order-<suffix>` |
+| 文法 | `{"acceptedKinds":["keyword","integer"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `3` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `allowed` |
+| 競合グループと順位 | `flex-item` (`5`) |
+| 並び順の順位 | `2` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `order` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `keyword` | `"first"` | `"-9999"` |
+| `keyword` | `"last"` | `"9999"` |
+| `keyword` | `"none"` | `"0"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `order` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `order-first` | `order: -9999` |
 
 </Details>

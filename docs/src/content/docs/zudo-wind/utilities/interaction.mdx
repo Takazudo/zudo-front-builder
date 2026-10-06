@@ -16,6 +16,8 @@ Adjust the small browser behaviors around native controls: accent color, pointer
 | `pointer-events-none` | `pointer-events: none;` |
 | `resize-y` | `resize: vertical;` |
 | `select-all` | `user-select: all;` |
+| `appearance-auto` | `appearance: auto;` |
+| `appearance-none` | `appearance: none;` |
 
 <Details title={"Example setup"}>
 
@@ -177,6 +179,48 @@ select-all lets a click select the full command, while resize-y gives a native t
 
 </Details>
 
+### Native appearance
+
+appearance uses exact supported Wind utility classes.
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new\"\u003e\u003cinput class=\"appearance-auto\" type=\"checkbox\" checked aria-label=\"Native checkbox\"\u003e\u003cinput class=\"appearance-none\" type=\"checkbox\" aria-label=\"Unstyled checkbox\"\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.appearance-auto {\n  appearance: auto;\n}\n.appearance-none {\n  appearance: none;\n}\n"} title={"Native appearance"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"Configuration for this example"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "appearance-auto",
+        "appearance-none"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"Authored demonstration CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
+```
+
+</Details>
+
 ## Custom and named values
 
 The accent utility accepts a configured colors token such as accent-brand, the fixed values transparent and current, or a valid arbitrary color. Cursor, pointer-events, resize, and select use finite catalog keywords; they have no inherited named theme values. pointer-events-none on the decorative search glyph lets the pointer reach the underlying input. Use disabled on an actually unavailable button as well as a not-allowed cursor.
@@ -219,6 +263,74 @@ The accent utility accepts a configured colors token such as accent-brand, the f
 | Example class | Expected declarations |
 | --- | --- |
 | `accent-[red]/40` | `accent-color: color-mix(in oklab, red 40%, transparent)` |
+
+## appearance-auto
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.appearance-auto` |
+| Class pattern | `appearance-auto` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `appearance` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"auto"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `appearance` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `appearance-auto` | `appearance: auto` |
+
+## appearance-none
+
+| Field | Value |
+| --- | --- |
+| Catalog identifier | `v1.appearance-none` |
+| Class pattern | `appearance-none` |
+| Grammar | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| Accepted values | `1` |
+| Token categories | No token category |
+| Negative-value policy | `forbidden` |
+| Conflict group and rank | `interaction` (`40`) |
+| Order rank | `0` |
+| Selector shape | `ownElement` |
+| Spec version | `1` |
+| Emitter properties | `appearance` |
+
+### Accepted values
+
+| Kind | Suffix | Emitted value |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### Declaration templates
+
+| Property | Value kind | Fixed value |
+| --- | --- | --- |
+| `appearance` | `resolved` | `null` |
+
+### Catalog examples
+
+| Example class | Expected declarations |
+| --- | --- |
+| `appearance-none` | `appearance: none` |
 
 ## cursor
 

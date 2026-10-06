@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vite-plus/test";
+import { readFileSync } from "node:fs";
 import {
   compareGeneratedPages,
   escapeTableCell,
   renderReferencePages,
   validateCatalogFamilies,
 } from "../../docs/scripts/generate-wind-reference.mjs";
+import {
+  assertCurrentWindSource,
+  renderCompatibilityPages,
+  validateCompatibilityInventory,
+} from "../../docs/scripts/wind-compatibility-pages.mjs";
+import { WIND_REFERENCE_FAMILIES } from "../../docs/scripts/wind-reference-families.mjs";
+
+const realJson = (path) =>
+  JSON.parse(readFileSync(new URL(`../../${path}`, import.meta.url), "utf8"));
+const compatCatalog = realJson("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json");
+const realProfile = realJson("tests/wind-compatibility/profile.json");
+const inventory = realJson("tests/wind-compatibility/inventory.v1.json");
 
 const catalog = {
   schemaVersion: 1,
@@ -318,8 +331,8 @@ const options = { editorial, preview };
 
 describe("reader-first wind pages", () => {
   it("preserves all family/entry membership, old root and nested anchors, and nonpilot bytes in both locales", () => {
-    expect(WIND_REFERENCE_FAMILIES).toHaveLength(47);
-    expect(WIND_REFERENCE_FAMILIES.flatMap((family) => family.entries)).toHaveLength(197);
+    expect(WIND_REFERENCE_FAMILIES).toHaveLength(48);
+    expect(WIND_REFERENCE_FAMILIES.flatMap((family) => family.entries)).toHaveLength(219);
     for (const [locale, localized] of [
       ["en", en],
       ["ja", ja],
@@ -329,11 +342,11 @@ describe("reader-first wind pages", () => {
         ...options,
         locale,
       });
-      expect(after.size).toBe(48);
+      expect(after.size).toBe(49);
       for (const family of WIND_REFERENCE_FAMILIES) {
         const name = `${family.id}.mdx`;
         const newIds = extractAllHeadingIds(after.get(name));
-        for (const id of anchorContract.locales[locale][name]) expect(newIds).toContain(id);
+        for (const id of anchorContract.locales[locale][name] ?? []) expect(newIds).toContain(id);
         expect(new Set(newIds).size).toBe(newIds.length);
         expect(editorial.has(family.id)).toBe(true);
         for (const entry of family.entries) expect(after.get(name)).toContain(`\`${entry}\``);
@@ -572,5 +585,86 @@ describe("reader-first wind pages", () => {
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
+  }, 20_000);
+});
+
+describe("source-pinned compatibility pages", () => {
+  it("accounts for every upstream row and Wind entry in both locales", () => {
+    const en = renderCompatibilityPages(
+      inventory,
+      compatCatalog,
+      realProfile,
+      "en",
+      WIND_REFERENCE_FAMILIES,
+    );
+    const ja = renderCompatibilityPages(
+      inventory,
+      compatCatalog,
+      realProfile,
+      "ja",
+      WIND_REFERENCE_FAMILIES,
+    );
+    expect([...en.keys()]).toEqual([...ja.keys()]);
+    expect(en.get("index.mdx")).toContain("`1288`");
+    expect(ja.get("index.mdx")).toContain("`219`");
+    expect(en.get("l.mdx")).toContain("`line-clamp-<value>`");
+    expect(en.get("m.mdx")).toContain("`mx-auto`");
+    expect(ja.get("m.mdx")).toContain("`mx-auto`");
+    expect(en.get("index.mdx")).toContain("`line-clamp-2`");
+    expect(en.get("index.mdx")).toContain("`contents`");
+  });
+
+  it("rejects stale support pins and missing upstream rows", () => {
+    assertCurrentWindSource(process.cwd(), inventory.wind.gitSha);
+    expect(() => assertCurrentWindSource(process.cwd(), inventory.wind.gitSha, "stale")).toThrow(
+      "differs",
+    );
+    expect(() =>
+      validateCompatibilityInventory(
+        { ...inventory, wind: { ...inventory.wind, gitSha: "old" } },
+        compatCatalog,
+        realProfile,
+      ),
+    ).toThrow("Stale");
+    expect(() =>
+      validateCompatibilityInventory(
+        { ...inventory, rows: inventory.rows.slice(1) },
+        compatCatalog,
+        realProfile,
+      ),
+    ).toThrow("row accounting");
+    const substituted = inventory.rows.map((row) =>
+      row.id === "utility-static:table-auto"
+        ? {
+            ...row,
+            id: "utility-static:fictional-class",
+            upstream: {
+              ...row.upstream,
+              name: "fictional-class",
+              representation: "fictional-class",
+            },
+          }
+        : row,
+    );
+    expect(substituted).toHaveLength(inventory.rows.length);
+    expect(() =>
+      validateCompatibilityInventory(
+        { ...inventory, rows: substituted },
+        compatCatalog,
+        realProfile,
+      ),
+    ).toThrow("Unreviewed compatibility inventory content");
+    const bounded = inventory.rows.find((row) => row.windMapping?.catalogIds);
+    const broken = {
+      ...bounded,
+      windMapping: { ...bounded.windMapping, catalogIds: ["v1.missing"] },
+    };
+    expect(() =>
+      validateCompatibilityInventory(
+        { ...inventory, rows: inventory.rows.map((row) => (row.id === bounded.id ? broken : row)) },
+        compatCatalog,
+        realProfile,
+      ),
+    ).toThrow("bounded mapping");
   });
 });

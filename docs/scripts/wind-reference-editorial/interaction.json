@@ -26,6 +26,16 @@
       "entry": "v1.select",
       "candidate": "select-all",
       "example": "select-and-resize"
+    },
+    {
+      "entry": "v1.appearance-auto",
+      "candidate": "appearance-auto",
+      "example": "appearance"
+    },
+    {
+      "entry": "v1.appearance-none",
+      "candidate": "appearance-none",
+      "example": "appearance"
     }
   ],
   "locales": {
@@ -48,6 +58,11 @@
           "id": "select-and-resize",
           "title": "Select a command and resize notes",
           "description": "select-all lets a click select the full command, while resize-y gives a native textarea a vertical resize handle."
+        },
+        {
+          "id": "appearance",
+          "title": "Native appearance",
+          "description": "appearance uses exact supported Wind utility classes."
         }
       ]
     },
@@ -70,6 +85,11 @@
           "id": "select-and-resize",
           "title": "コマンド全体を選択してメモ欄を広げる",
           "description": "select-all はクリックでコマンド全文を選択し、resize-y はネイティブのテキストエリアに垂直方向のサイズ変更を追加します。"
+        },
+        {
+          "id": "appearance",
+          "title": "ネイティブの外観",
+          "description": "appearance は対応済みの Wind ユーティリティクラスを使います。"
         }
       ]
     }

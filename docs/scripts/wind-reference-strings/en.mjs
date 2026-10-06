@@ -61,6 +61,10 @@ export const strings = {
     browse: "Choose by task",
   },
   families: {
+    svg: {
+      title: "SVG paint",
+      description: "Set currentColor or none for SVG fill and stroke.",
+    },
     display: {
       title: "Display",
       description: "Choose whether an element is hidden, inline, block-level, flex, or grid.",

@@ -19,6 +19,19 @@ display で、文章の流れに入るか、ブロックとして改行するか
 | `grid` | `display: grid;` |
 | `inline-grid` | `display: inline-grid;` |
 | `hidden` | `display: none;` |
+| `contents` | `display: contents;` |
+| `flow-root` | `display: flow-root;` |
+| `list-item` | `display: list-item;` |
+| `table` | `display: table;` |
+| `table-caption` | `display: table-caption;` |
+| `table-cell` | `display: table-cell;` |
+| `table-column` | `display: table-column;` |
+| `table-column-group` | `display: table-column-group;` |
+| `table-footer-group` | `display: table-footer-group;` |
+| `table-header-group` | `display: table-header-group;` |
+| `table-row` | `display: table-row;` |
+| `table-row-group` | `display: table-row-group;` |
+| `inline-table` | `display: inline-table;` |
 
 <Details title={"例の設定"}>
 
@@ -186,6 +199,59 @@ hidden は display:none を設定するため、次の項目がその場所に�
 
 </Details>
 
+### 追加の表示モード
+
+additional-display は対応済みの Wind ユーティリティクラスを使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new\"\u003e\u003cdiv class=\"contents\"\u003e\u003cspan\u003econtents\u003c/span\u003e\u003c/div\u003e\u003cdiv class=\"flow-root\"\u003eflow-root\u003c/div\u003e\u003cspan class=\"list-item\"\u003elist-item\u003c/span\u003e\u003ctable class=\"table\"\u003e\u003ccaption class=\"table-caption\"\u003ecaption\u003c/caption\u003e\u003ccolgroup class=\"table-column-group\"\u003e\u003ccol class=\"table-column\"\u003e\u003c/colgroup\u003e\u003cthead class=\"table-header-group\"\u003e\u003ctr class=\"table-row\"\u003e\u003cth class=\"table-cell\"\u003eheader\u003c/th\u003e\u003c/tr\u003e\u003c/thead\u003e\u003ctbody class=\"table-row-group\"\u003e\u003ctr\u003e\u003ctd\u003ebody\u003c/td\u003e\u003c/tr\u003e\u003c/tbody\u003e\u003ctfoot class=\"table-footer-group\"\u003e\u003ctr\u003e\u003ctd\u003efooter\u003c/td\u003e\u003c/tr\u003e\u003c/tfoot\u003e\u003c/table\u003e\u003cspan class=\"inline-table\"\u003e\u003cspan class=\"table-row\"\u003e\u003cspan class=\"table-cell\"\u003einline table\u003c/span\u003e\u003c/span\u003e\u003c/span\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.contents {\n  display: contents;\n}\n.flow-root {\n  display: flow-root;\n}\n.inline-table {\n  display: inline-table;\n}\n.list-item {\n  display: list-item;\n}\n.table {\n  display: table;\n}\n.table-caption {\n  display: table-caption;\n}\n.table-cell {\n  display: table-cell;\n}\n.table-column {\n  display: table-column;\n}\n.table-column-group {\n  display: table-column-group;\n}\n.table-footer-group {\n  display: table-footer-group;\n}\n.table-header-group {\n  display: table-header-group;\n}\n.table-row {\n  display: table-row;\n}\n.table-row-group {\n  display: table-row-group;\n}\n"} title={"追加の表示モード"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "contents",
+        "flow-root",
+        "list-item",
+        "table",
+        "table-caption",
+        "table-cell",
+        "table-column",
+        "table-column-group",
+        "table-footer-group",
+        "table-header-group",
+        "table-row",
+        "table-row-group",
+        "inline-table"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
+```
+
+</Details>
+
 ## 任意値と名前付きの値
 
 このファミリーは値の接尾辞や任意値を持たない、8 個の固定クラスです。inline、block、inline-block、flex、inline-flex、grid、inline-grid、hidden は display の種類に対応します。hidden は display:none です。invisible は箱の場所を残す別の visibility ユーティリティです。
@@ -228,6 +294,40 @@ hidden は display:none を設定するため、次の項目がその場所に�
 | --- | --- |
 | `block` | `display: block` |
 
+## contents
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.contents` |
+| クラスパターン | `contents` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"contents"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `contents` | `display: contents` |
+
 ## flex
 
 | フィールド | 値 |
@@ -261,6 +361,40 @@ hidden は display:none を設定するため、次の項目がその場所に�
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `flex` | `display: flex` |
+
+## flow-root
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.flow-root` |
+| クラスパターン | `flow-root` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"flow-root"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `flow-root` | `display: flow-root` |
 
 ## grid
 
@@ -465,5 +599,379 @@ hidden は display:none を設定するため、次の項目がその場所に�
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `inline-grid` | `display: inline-grid` |
+
+## inline-table
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.inline-table` |
+| クラスパターン | `inline-table` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"inline-table"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `inline-table` | `display: inline-table` |
+
+## list-item
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.list-item` |
+| クラスパターン | `list-item` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"list-item"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `list-item` | `display: list-item` |
+
+## table
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table` |
+| クラスパターン | `table` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table` | `display: table` |
+
+## table-caption
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-caption` |
+| クラスパターン | `table-caption` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-caption"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-caption` | `display: table-caption` |
+
+## table-cell
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-cell` |
+| クラスパターン | `table-cell` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-cell"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-cell` | `display: table-cell` |
+
+## table-column
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-column` |
+| クラスパターン | `table-column` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-column"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-column` | `display: table-column` |
+
+## table-column-group
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-column-group` |
+| クラスパターン | `table-column-group` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-column-group"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-column-group` | `display: table-column-group` |
+
+## table-footer-group
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-footer-group` |
+| クラスパターン | `table-footer-group` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-footer-group"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-footer-group` | `display: table-footer-group` |
+
+## table-header-group
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-header-group` |
+| クラスパターン | `table-header-group` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-header-group"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-header-group` | `display: table-header-group` |
+
+## table-row
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-row` |
+| クラスパターン | `table-row` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-row"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-row` | `display: table-row` |
+
+## table-row-group
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.table-row-group` |
+| クラスパターン | `table-row-group` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `display` (`1`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `display` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"table-row-group"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `display` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `table-row-group` | `display: table-row-group` |
 
 </Details>

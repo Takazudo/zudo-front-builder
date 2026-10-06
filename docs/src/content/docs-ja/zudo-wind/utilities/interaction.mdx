@@ -16,6 +16,8 @@ generated: true
 | `pointer-events-none` | `pointer-events: none;` |
 | `resize-y` | `resize: vertical;` |
 | `select-all` | `user-select: all;` |
+| `appearance-auto` | `appearance: auto;` |
+| `appearance-none` | `appearance: none;` |
 
 <Details title={"例の設定"}>
 
@@ -177,6 +179,48 @@ select-all はクリックでコマンド全文を選択し、resize-y はネイ
 
 </Details>
 
+### ネイティブの外観
+
+appearance は対応済みの Wind ユーティリティクラスを使います。
+
+<HtmlPreview html={"\u003cdiv class=\"wind-demo-new\"\u003e\u003cinput class=\"appearance-auto\" type=\"checkbox\" checked aria-label=\"Native checkbox\"\u003e\u003cinput class=\"appearance-none\" type=\"checkbox\" aria-label=\"Unstyled checkbox\"\u003e\u003c/div\u003e\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-new {\n  color: #203046;\n  font: 14px / 1.5 system-ui, sans-serif;\n}\n.appearance-auto {\n  appearance: auto;\n}\n.appearance-none {\n  appearance: none;\n}\n"} title={"ネイティブの外観"} lang="ja" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+
+<Details title={"この例の設定"}>
+
+```json
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "strict": true,
+    "tokens": {
+      "spacingUnit": "0.25rem"
+    },
+    "breakpoints": {},
+    "defaultTransitionTimingFunction": "ease",
+    "authoredClasses": {
+      "wind-demo-new": true
+    },
+    "safelist": {
+      "docs-preview": [
+        "appearance-auto",
+        "appearance-none"
+      ]
+    }
+  }
+}
+```
+
+</Details>
+
+<Details title={"デモ用の自作 CSS"}>
+
+```css
+.wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }
+```
+
+</Details>
+
 ## 任意値と名前付きの値
 
 アクセント色には accent-brand のような色トークン、固定値 transparent と current、または有効な任意色を指定できます。cursor、pointer-events、resize、select はカタログにある有限のキーワードを使い、テーマ値は継承しません。装飾用の検索アイコンに pointer-events-none を指定すると、クリックは下の入力欄に届きます。利用できないボタンでは not-allowed カーソルだけでなく、disabled も指定します。
@@ -219,6 +263,74 @@ select-all はクリックでコマンド全文を選択し、resize-y はネイ
 | クラスの例 | 期待される宣言 |
 | --- | --- |
 | `accent-[red]/40` | `accent-color: color-mix(in oklab, red 40%, transparent)` |
+
+## appearance-auto
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.appearance-auto` |
+| クラスパターン | `appearance-auto` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `interaction` (`40`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `appearance` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"auto"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `appearance` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `appearance-auto` | `appearance: auto` |
+
+## appearance-none
+
+| フィールド | 値 |
+| --- | --- |
+| カタログ識別子 | `v1.appearance-none` |
+| クラスパターン | `appearance-none` |
+| 文法 | `{"acceptedKinds":["exact"],"arbitraryProperty":null,"allowsFractionSlash":false,"allowsColorOpacity":false}` |
+| 受け入れる値 | `1` |
+| トークンカテゴリ | トークンカテゴリなし |
+| 負の値の規則 | `forbidden` |
+| 競合グループと順位 | `interaction` (`40`) |
+| 並び順の順位 | `0` |
+| セレクタの形 | `ownElement` |
+| 仕様バージョン | `1` |
+| 出力するプロパティ | `appearance` |
+
+### 受け入れる値
+
+| 種類 | 接尾辞 | 出力される値 |
+| --- | --- | --- |
+| `exact` | `null` | `"none"` |
+
+### 宣言テンプレート
+
+| プロパティ | 値の種類 | 固定値 |
+| --- | --- | --- |
+| `appearance` | `resolved` | `null` |
+
+### カタログの例
+
+| クラスの例 | 期待される宣言 |
+| --- | --- |
+| `appearance-none` | `appearance: none` |
 
 ## cursor
 

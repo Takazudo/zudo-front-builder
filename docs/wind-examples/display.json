@@ -6,8 +6,20 @@
       "id": "display-flow",
       "kind": "positive",
       "html": "<div class=\"wind-demo\">\n  <p class=\"wind-demo-note\">Inline content stays in the sentence; block content starts a new line.</p>\n  <div class=\"wind-demo-frame w-72\">\n    A <span class=\"wind-demo-tile inline\">inline</span> B\n    <span class=\"wind-demo-tile inline-block w-24\">inline-block</span>\n    <span class=\"wind-demo-tile block w-full\">block takes its own line</span>\n  </div>\n</div>",
-      "utilities": ["block", "inline", "inline-block", "w-24", "w-72", "w-full"],
-      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "utilities": [
+        "block",
+        "inline",
+        "inline-block",
+        "w-24",
+        "w-72",
+        "w-full"
+      ],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-note",
+        "wind-demo-tile"
+      ],
       "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
     },
     {
@@ -24,16 +36,55 @@
         "inline-flex",
         "inline-grid"
       ],
-      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-note",
+        "wind-demo-tile"
+      ],
       "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
     },
     {
       "id": "display-hidden",
       "kind": "positive",
       "html": "<div class=\"wind-demo\">\n  <div class=\"wind-demo-frame flex items-center gap-2\">\n    <div class=\"wind-demo-tile\">First</div>\n    <div class=\"wind-demo-tile hidden\">Hidden item</div>\n    <div class=\"wind-demo-tile\">Next item moves into its place</div>\n  </div>\n  <p class=\"wind-demo-note\">hidden removes the box from layout.</p>\n</div>",
-      "utilities": ["flex", "gap-2", "hidden", "items-center"],
-      "authoredClasses": ["wind-demo", "wind-demo-frame", "wind-demo-note", "wind-demo-tile"],
+      "utilities": [
+        "flex",
+        "gap-2",
+        "hidden",
+        "items-center"
+      ],
+      "authoredClasses": [
+        "wind-demo",
+        "wind-demo-frame",
+        "wind-demo-note",
+        "wind-demo-tile"
+      ],
       "scaffoldCss": ".wind-demo { font: 14px/1.45 system-ui, sans-serif; color: #203046; }\n.wind-demo-frame { border: 1px solid #9aaabd; background: #f8fafc; padding: 0.75rem; }\n.wind-demo-note { color: #53677f; font-size: 0.875rem; }\n.wind-demo-tile { border: 1px solid #849bb3; background: #dce8f2; color: #203046; padding: 0.5rem; text-align: center; }\n"
+    },
+    {
+      "id": "additional-display",
+      "kind": "positive",
+      "html": "<div class=\"wind-demo-new\"><div class=\"contents\"><span>contents</span></div><div class=\"flow-root\">flow-root</div><span class=\"list-item\">list-item</span><table class=\"table\"><caption class=\"table-caption\">caption</caption><colgroup class=\"table-column-group\"><col class=\"table-column\"></colgroup><thead class=\"table-header-group\"><tr class=\"table-row\"><th class=\"table-cell\">header</th></tr></thead><tbody class=\"table-row-group\"><tr><td>body</td></tr></tbody><tfoot class=\"table-footer-group\"><tr><td>footer</td></tr></tfoot></table><span class=\"inline-table\"><span class=\"table-row\"><span class=\"table-cell\">inline table</span></span></span></div>",
+      "utilities": [
+        "contents",
+        "flow-root",
+        "list-item",
+        "table",
+        "table-caption",
+        "table-cell",
+        "table-column",
+        "table-column-group",
+        "table-footer-group",
+        "table-header-group",
+        "table-row",
+        "table-row-group",
+        "inline-table"
+      ],
+      "authoredClasses": [
+        "wind-demo-new"
+      ],
+      "scaffoldCss": ".wind-demo-new { color: #203046; font: 14px/1.5 system-ui, sans-serif; }\n"
     }
   ]
 }

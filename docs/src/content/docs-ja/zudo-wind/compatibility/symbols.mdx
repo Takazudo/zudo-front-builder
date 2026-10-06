@@ -1,0 +1,152 @@
+---
+title: "Tailwind クラス互換性: SYMBOLS"
+description: "zudo-wind のソースを確認したクラスとユーティリティ基部の一覧です。"
+sidebar_position: 20
+generated: true
+---
+
+完全なクラス名または有限の基部をサイト内検索か下のアルファベット順ページから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。
+
+[互換性一覧](index.mdx) · [移行ガイド](../coming-from-tailwind.mdx)
+
+固定した参照: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
+確認した Wind ソース: `8d2c45114db33d9444e0abb592e80a8ec3d92074`; spec `1.14`.
+互換性プロファイル: `wind-preset-free 1.4`.
+公開版での対応: このソース一覧からは未確定. 一覧の根拠: `source-inspected`. この表にブラウザー検証の結果は含まれません。現在の受け入れ済み参照は [正式な状態記録](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json)を確認してください。
+
+| 上流のクラスまたは基部 | Wind への対応 | 状態 | 必要な設定 | 動作と相違 | 代替または課題 | 検証状態 | 環境 / レポート |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `-bottom-full` | `-bottom-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-bottom-px` | `-bottom-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-end-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-end-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-indent-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-be-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-be-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-bs-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-bs-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-e-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-e-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-full` | `-inset-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-px` | `-inset-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-s-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-s-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-inset-x-full` | `-inset-x-full` ([inset](../utilities/inset.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の inset-inline は論理軸、Wind の left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-inset-x-px` | `-inset-x-px` ([inset](../utilities/inset.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の inset-inline は論理軸、Wind の left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-inset-y-full` | `-inset-y-full` ([inset](../utilities/inset.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の inset-block は論理軸、Wind の top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-inset-y-px` | `-inset-y-px` ([inset](../utilities/inset.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の inset-block は論理軸、Wind の top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-left-full` | `-left-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-left-px` | `-left-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-m-px` | `-m-px` ([margin](../utilities/margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-mb-px` | `-mb-px` ([margin](../utilities/margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-mbe-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-mbs-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-me-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-ml-px` | `-ml-px` ([margin](../utilities/margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-mr-px` | `-mr-px` ([margin](../utilities/margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-ms-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-mt-px` | `-mt-px` ([margin](../utilities/margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-mx-px` | `-mx-px` ([margin](../utilities/margin.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の margin-inline は論理軸、Wind の margin-left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-my-px` | `-my-px` ([margin](../utilities/margin.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の margin-block は論理軸、Wind の margin-top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-right-full` | `-right-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-right-px` | `-right-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-m-px` | `-scroll-m-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-mb-px` | `-scroll-mb-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-mbe-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-mbs-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-me-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-ml-px` | `-scroll-ml-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-mr-px` | `-scroll-mr-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-ms-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-mt-px` | `-scroll-mt-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-scroll-mx-px` | `-scroll-mx-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の scroll-margin-inline は論理軸、Wind の scroll-margin-left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-scroll-my-px` | `-scroll-my-px` ([scroll-margin](../utilities/scroll-margin.mdx)) | 相違を確認 (`reviewed-difference`) | この行の設定要件は未確定です。 | Tailwind の scroll-margin-block は論理軸、Wind の scroll-margin-top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-space-x-px` | `-space-x-px` ([child-space](../utilities/child-space.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-space-y-px` | `-space-y-px` ([child-space](../utilities/child-space.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-start-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-start-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-top-full` | `-top-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-top-px` | `-top-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-full` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-x-full` | `-translate-x-full` ([translate](../utilities/translate.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-x-px` | `-translate-x-px` ([translate](../utilities/translate.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-y-full` | `-translate-y-full` ([translate](../utilities/translate.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-y-px` | `-translate-y-px` ([translate](../utilities/translate.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-translate-z-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `-backdrop-hue-rotate-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-bg-conic-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-bg-linear-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-bottom-<value>` | `-bottom-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-col-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-col-end-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-col-start-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-end-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-hue-rotate-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-indent-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-inset-<value>` | `-inset-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-inset-be-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-inset-bs-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-inset-e-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-inset-s-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-inset-x-<value>` | `-inset-x-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | Tailwind の inset-inline は論理軸、Wind の left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-inset-y-<value>` | `-inset-y-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | Tailwind の inset-block は論理軸、Wind の top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-left-<value>` | `-left-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-m-<value>` | `-m-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mask-conic-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mask-linear-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mb-<value>` | `-mb-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mbe-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mbs-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-me-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-ml-<value>` | `-ml-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mr-<value>` | `-mr-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-ms-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mt-<value>` | `-mt-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-mx-<value>` | `-mx-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | Tailwind の margin-inline は論理軸、Wind の margin-left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-my-<value>` | `-my-<value>` ([margin](../utilities/margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | Tailwind の margin-block は論理軸、Wind の margin-top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-order-<value>` | `-order-N (N: 0..2147483647)` ([flex-item](../utilities/flex-item.mdx)) | 一部実装・未検証 (`partial-native-adoption-unverified`) | Wind は 負の ASCII 整数 0..2147483647 のみに対応します。対象外: 負のキーワード、任意値、カスタムプロパティ、名前付きトークン、整数以外の接尾辞。トークン設定でこのネイティブ範囲は拡大しません。 | Wind は 負の ASCII 整数 0..2147483647 のみに対応します。対象外: 負のキーワード、任意値、カスタムプロパティ、名前付きトークン、整数以外の接尾辞。ソースとカタログ上の対応だけではブラウザーの一致は証明されません。 | 残す形式の order は CSS に記述してください。; [#3812](https://github.com/Takazudo/zudo-front-builder/issues/3812) | `source-inspected` | — |
+| `-outline-offset-<value>` | `-outline-offset-<value>` ([outline-width](../utilities/outline-width.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-right-<value>` | `-right-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-rotate-<value>` | `-rotate-<value>` ([rotate](../utilities/rotate.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-rotate-x-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-rotate-y-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-rotate-z-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-row-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-row-end-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-row-start-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scale-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scale-x-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scale-y-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scale-z-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-m-<value>` | `-scroll-m-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-mb-<value>` | `-scroll-mb-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-mbe-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-mbs-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-me-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-ml-<value>` | `-scroll-ml-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-mr-<value>` | `-scroll-mr-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-ms-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-mt-<value>` | `-scroll-mt-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-scroll-mx-<value>` | `-scroll-mx-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | Tailwind の scroll-margin-inline は論理軸、Wind の scroll-margin-left/right は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-scroll-my-<value>` | `-scroll-my-<value>` ([scroll-margin](../utilities/scroll-margin.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | Tailwind の scroll-margin-block は論理軸、Wind の scroll-margin-top/bottom は物理軸を使います。横書きと縦書きを確認してください。 |  | `source-inspected` | — |
+| `-skew-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-skew-x-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-skew-y-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-space-x-<value>` | `-space-x-<value>` ([child-space](../utilities/child-space.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-space-y-<value>` | `-space-y-<value>` ([child-space](../utilities/child-space.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-start-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-top-<value>` | `-top-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-tracking-<value>` | `-tracking-<value>` ([tracking](../utilities/tracking.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-translate-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-translate-x-<value>` | `-translate-x-<value>` ([translate](../utilities/translate.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-translate-y-<value>` | `-translate-y-<value>` ([translate](../utilities/translate.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-translate-z-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-underline-offset-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `-z-<value>` | `-z-<value>` ([z-index](../utilities/z-index.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `@container-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `*` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `**` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `@<container-name>` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `@max-<value>` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `@min-<value>` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |

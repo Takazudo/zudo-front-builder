@@ -6,7 +6,7 @@ sidebar_position: 1
 
 ## Configure and use a component
 
-Start with the values your project intends to use. Put this `wind` object at the root of `zfb.config.ts` or `zfb.config.json`; it defines every non-static value in the example. zudo-wind supplies no palette or spacing scale.
+Wind uses familiar utility spellings with values chosen by your project. Put this complete `wind` object at the root of `zfb.config.json` (or the equivalent `wind` property in `zfb.config.ts`):
 
 ```json
 {
@@ -15,21 +15,21 @@ Start with the values your project intends to use. Put this `wind` object at the
     "reset": "none",
     "strict": true,
     "tokens": {
-      "spacingUnit": "0.25rem",
-      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
+      "spacing": { "hsp-sm": "0.75rem", "vsp-md": "1.25rem" },
+      "colors": { "surface": "#f4f1ec", "ink": "#203046" },
       "radii": { "card": "0.5rem" }
     }
   }
 }
 ```
 
-`p-4` uses four times `spacingUnit`; `bg-panel`, `text-ink`, and `rounded-card` each name a configured token. These classes are complete candidates in the markup, and the compiler emits their real utility rules.
+Use complete classes: `px-hsp-sm` applies the horizontal spacing token, `py-vsp-md` applies vertical spacing, `bg-surface` and `text-ink` use the named colors, and `rounded-card` uses the radius. The literal color values need no authored custom-property declarations. `block`, `inline-flex`, and `hidden` need no tokens; `hidden` is the display-none utility, not `none`. `mx-auto` also needs no token and uses physical left/right margins. The preview below uses this configuration and shows its separate authored presentation CSS.
 
 {/* wind-preview: guide-overview/quickstart "A component using project values" */}
 
 <WindPreviewEnhancer />
 
-<HtmlPreview html={"<div class=\"wind-demo-grid grid grid-cols-2 gap-4\">\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">A configured card</h3>\n    <p>Each class is a complete candidate.</p>\n  </article>\n  <article class=\"wind-demo-card rounded-card bg-panel p-4\">\n    <h3 class=\"wind-demo-title text-ink\">Project values</h3>\n    <p>Wind emits only the rules these candidates request.</p>\n  </article>\n</div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #203046;\n    --zw-color-panel: #f4f1ec;\n    --zw-radius-card: .5rem;\n    --zw-spacing-unit: .25rem;\n  }\n}\n.wind-demo-grid {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-card {\n  border: 1px solid #8797aa;\n}\n\n.wind-demo-title {\n  margin: 0 0 .5rem;\n  font-size: 1rem;\n  font-weight: 600;\n}\n.grid {\n  display: grid;\n}\n.grid-cols-2 {\n  grid-template-columns: repeat(2,minmax(0,1fr));\n}\n.p-4 {\n  padding-top: 1rem;\n  padding-right: 1rem;\n  padding-bottom: 1rem;\n  padding-left: 1rem;\n}\n.gap-4 {\n  column-gap: 1rem;\n  row-gap: 1rem;\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-panel {\n  background-color: var(--zw-color-panel);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n"} title={"A component using project values"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
+<HtmlPreview html={"<div class=\"wind-demo-grid flex\"><article class=\"wind-demo-card block rounded-card bg-surface px-hsp-sm py-vsp-md\"><h3 class=\"wind-demo-title text-ink\">A configured card</h3><p>Every value is project defined.</p></article><article class=\"wind-demo-card inline-flex rounded-card bg-surface px-hsp-sm py-vsp-md\"><span class=\"text-ink\">Complete classes</span></article></div>\n"} css={"@layer zw-reset, zw-tokens, zfb-hi, base, components;\n@layer zw-tokens {\n  :root {\n    --zw-color-ink: #203046;\n    --zw-color-surface: #f4f1ec;\n    --zw-radius-card: .5rem;\n    --zw-spacing-hsp-sm: .75rem;\n    --zw-spacing-vsp-md: 1.25rem;\n  }\n}\n.wind-demo-grid {\n  font: 14px / 1.5 system-ui, sans-serif;\n  color: #203046;\n}\n\n.wind-demo-card {\n  border: 1px solid #8797aa;\n}\n\n.wind-demo-title {\n  margin: 0 0 .5rem;\n  font-size: 1rem;\n  font-weight: 600;\n}\n.block {\n  display: block;\n}\n.flex {\n  display: flex;\n}\n.inline-flex {\n  display: inline-flex;\n}\n.px-hsp-sm {\n  padding-left: var(--zw-spacing-hsp-sm);\n  padding-right: var(--zw-spacing-hsp-sm);\n}\n.py-vsp-md {\n  padding-top: var(--zw-spacing-vsp-md);\n  padding-bottom: var(--zw-spacing-vsp-md);\n}\n.text-ink {\n  color: var(--zw-color-ink);\n}\n.bg-surface {\n  background-color: var(--zw-color-surface);\n}\n.rounded-card {\n  border-top-left-radius: var(--zw-radius-card);\n  border-top-right-radius: var(--zw-radius-card);\n  border-bottom-right-radius: var(--zw-radius-card);\n  border-bottom-left-radius: var(--zw-radius-card);\n}\n"} title={"A component using project values"} lang="en" preflight={false} defaultOpen={true} showSource={true} showViewportControls={true} />
 
 <Details title={"Configuration for this example"}>
 
@@ -40,9 +40,12 @@ Start with the values your project intends to use. Put this `wind` object at the
     "reset": "none",
     "strict": true,
     "tokens": {
-      "spacingUnit": "0.25rem",
+      "spacing": {
+        "hsp-sm": "0.75rem",
+        "vsp-md": "1.25rem"
+      },
       "colors": {
-        "panel": "#f4f1ec",
+        "surface": "#f4f1ec",
         "ink": "#203046"
       },
       "radii": {
@@ -58,12 +61,13 @@ Start with the values your project intends to use. Put this `wind` object at the
     },
     "safelist": {
       "docs-preview": [
-        "grid",
-        "grid-cols-2",
-        "gap-4",
+        "flex",
+        "block",
+        "inline-flex",
         "rounded-card",
-        "bg-panel",
-        "p-4",
+        "bg-surface",
+        "px-hsp-sm",
+        "py-vsp-md",
         "text-ink"
       ]
     }

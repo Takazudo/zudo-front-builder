@@ -51,6 +51,26 @@
       "entry": "v1.shrink",
       "candidate": "shrink-[2]",
       "example": "flex-shrink"
+    },
+    {
+      "entry": "v1.basis",
+      "candidate": "basis-auto",
+      "example": "basis-and-order"
+    },
+    {
+      "entry": "v1.basis",
+      "candidate": "basis-1/2",
+      "example": "basis-and-order"
+    },
+    {
+      "entry": "v1.order",
+      "candidate": "order-first",
+      "example": "basis-and-order"
+    },
+    {
+      "entry": "v1.order",
+      "candidate": "order-last",
+      "example": "basis-and-order"
     }
   ],
   "locales": {
@@ -73,6 +93,11 @@
           "id": "flex-shrink",
           "title": "Control compression",
           "description": "shrink items can compress below their starting widths; shrink-0 preserves its width. A factor of 2 gives the final item a larger share of the shrink."
+        },
+        {
+          "id": "basis-and-order",
+          "title": "Basis and order",
+          "description": "basis-and-order uses exact supported Wind utility classes."
         }
       ]
     },
@@ -95,6 +120,11 @@
           "id": "flex-shrink",
           "title": "縮み方を制御",
           "description": "shrink の項目は初期幅より縮み、shrink-0 は幅を保ちます。比率2の最後の項目は不足分をより多く引き受けます。"
+        },
+        {
+          "id": "basis-and-order",
+          "title": "basis と order",
+          "description": "basis-and-order は対応済みの Wind ユーティリティクラスを使います。"
         }
       ]
     }

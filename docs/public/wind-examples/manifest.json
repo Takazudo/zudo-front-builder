@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "compiler": {
     "version": "0.0.0",
-    "sourceSha256": "d2499e932ff6309744bfe2b140810abe481ef6f59b813fb343ca37015230fc7c"
+    "sourceSha256": "ae72c6f1c83dea487cdd8334feff27b0b89ce9f92332d0c250ef3fcf89cdbdd3"
   },
   "examples": [
     {
@@ -380,6 +380,20 @@
       "cssSha256": "d8e723a975bec98b0ca0eec692bdd4cb27de642d8da35d5b6e76b79a63cb3aee"
     },
     {
+      "family": "display",
+      "id": "additional-display",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "d452dc1fbe931103c3be631c919e0b6927a9b484218055cb838384631292a805",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "e412618b76e7f1cbc94f0e1848ada3f0d2599141789f1efb9fb7be15fa8743e3",
+      "configSha256": "bc5d7e03af8026c4eb5c1f86e44aec24a8e1d27cc929280e2abb7c8a1fd2be0c",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/display/additional-display.css",
+      "htmlPath": "wind-examples/display/additional-display.html",
+      "cssSha256": "26223dac043f5aca999c16b09c9231991714c72e24318e013ac2581c20c4f55b"
+    },
+    {
       "family": "divide-color",
       "id": "visible-child-colors",
       "kind": "positive",
@@ -546,6 +560,20 @@
       "cssPath": "wind-examples/flex-item/flex-shrink.css",
       "htmlPath": "wind-examples/flex-item/flex-shrink.html",
       "cssSha256": "9cb56af02b57cc8231cfc0df87e1d5e8b8f649d530ebca30acec3116ca80d8ee"
+    },
+    {
+      "family": "flex-item",
+      "id": "basis-and-order",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "8b50b7bddd276b47b6b19ec20b3ac86847e1624e4bbddaa492c2b6acf1b70308",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "e412618b76e7f1cbc94f0e1848ada3f0d2599141789f1efb9fb7be15fa8743e3",
+      "configSha256": "dfc1c7cb3a6042ef3d44a628a2943c33363925e151c4e7f28d2d11ff855c5c75",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/flex-item/basis-and-order.css",
+      "htmlPath": "wind-examples/flex-item/basis-and-order.html",
+      "cssSha256": "55cbc30542a1ab62b855558e2812d8e4feafcb1f2a0fa651624338a6d8d2a57d"
     },
     {
       "family": "font-family",
@@ -942,14 +970,14 @@
       "id": "quickstart",
       "kind": "positive",
       "candidateOrigin": "safelist",
-      "htmlSha256": "138057e86f812ed3c0083ed0c126744ece3fc96c725252529f29080bb08e4f17",
+      "htmlSha256": "2579046d2fa999833813e2209343ca39feefb48924b55cc1ef2a4b87a9ea52bc",
       "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "inputSha256": "348567515d5ac95a3754a40c2035efb9293017a08da4bea027440e3ebf70086b",
-      "configSha256": "6fbda3e41cdc9f034f893afef4f074a76329b8cb4b21d1fc0cdd21b02ad12519",
+      "configSha256": "a97709de5c6961d175a946bc90b03ccee97d733dcd951cac2b27aab4bed63a41",
       "expectedDiagnostics": [],
       "cssPath": "wind-examples/guide-overview/quickstart.css",
       "htmlPath": "wind-examples/guide-overview/quickstart.html",
-      "cssSha256": "0f12387c4dba6b646098faef72eddb07df2ff32374bac12979cf436c128b19c4"
+      "cssSha256": "66782b4e9ffdd9041988c294e5ae6476a622d763c4ca6e6bca80f07cc0e0ef3a"
     },
     {
       "family": "guide-sources-and-candidates",
@@ -1454,6 +1482,20 @@
       "cssSha256": "c5f39f136f17cb45674a2b56df9d3310caa40687240587ca08bb7427155e458b"
     },
     {
+      "family": "interaction",
+      "id": "appearance",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "234f685f76ab63e5e46d582a519566aeb79eca903abc396d5ca57fef62275816",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "e412618b76e7f1cbc94f0e1848ada3f0d2599141789f1efb9fb7be15fa8743e3",
+      "configSha256": "dd38bbfeccc3e4c3f453f0c659c2243fa5ab3288c2898b4ab7983838752367c1",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/interaction/appearance.css",
+      "htmlPath": "wind-examples/interaction/appearance.html",
+      "cssSha256": "6bfdd6f9b47967db1107bf8943f89571ff28461ae7a2a29f930d3963e47e0306"
+    },
+    {
       "family": "line-height",
       "id": "leading-compare",
       "kind": "positive",
@@ -1662,6 +1704,20 @@
       "cssPath": "wind-examples/miscellaneous/supplemental-sr-only.css",
       "htmlPath": "wind-examples/miscellaneous/supplemental-sr-only.html",
       "cssSha256": "ddbc4cb20e6c9371a1f7f974bc0da7ba75f7338441cde3bba27339415ef35dd7"
+    },
+    {
+      "family": "miscellaneous",
+      "id": "screen-reader-visibility",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "59232f3275bf50439b8de68e2832b89b5f53e4dfadf9439a053a26b436345ad9",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "e412618b76e7f1cbc94f0e1848ada3f0d2599141789f1efb9fb7be15fa8743e3",
+      "configSha256": "8920b03272b487a9ec367b623ac42d542f6abb11ac63ed6a13a9876291f81d3a",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/miscellaneous/screen-reader-visibility.css",
+      "htmlPath": "wind-examples/miscellaneous/screen-reader-visibility.html",
+      "cssSha256": "0e3d3e31df746a757f829b0b3cffcdb7bf9c6cd8d65d4398adb69f5a694b0d6d"
     },
     {
       "family": "opacity",
@@ -2110,6 +2166,20 @@
       "cssPath": "wind-examples/sizing/sizing-custom.css",
       "htmlPath": "wind-examples/sizing/sizing-custom.html",
       "cssSha256": "720fa0c959d9ed79240b50862e95eaf87dd0679bbcac740c02f195639f9c48f4"
+    },
+    {
+      "family": "svg",
+      "id": "svg-paint",
+      "kind": "positive",
+      "candidateOrigin": "safelist",
+      "htmlSha256": "efa1670d530a229a4a886fe9ba59f552bfc16704ccacbaf62ad0d5abce8ababd",
+      "headSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "inputSha256": "e412618b76e7f1cbc94f0e1848ada3f0d2599141789f1efb9fb7be15fa8743e3",
+      "configSha256": "a2a8b3c3a9d5526c789cc504c3816556929c70c32428953788cb28e0f67fd69d",
+      "expectedDiagnostics": [],
+      "cssPath": "wind-examples/svg/svg-paint.css",
+      "htmlPath": "wind-examples/svg/svg-paint.html",
+      "cssSha256": "66716a86461e4c8b5e2da566bf213ced1b139a684a8a8d71e95909dfb6e218e5"
     },
     {
       "family": "text-decoration-color",
