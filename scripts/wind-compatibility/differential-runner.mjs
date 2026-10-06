@@ -31,6 +31,7 @@ import {
   validatePilot,
 } from "./differential-core.mjs";
 import { compareStructure, expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
+import { assertWindSpecIdentity } from "./spec-identity.mjs";
 import {
   archivedReferenceModules,
   verifiedReferenceImport,
@@ -452,11 +453,7 @@ async function main() {
   await mkdir(options.output, { recursive: true });
   const profile = await readJson(fromRoot("tests/wind-compatibility/profile.json"));
   const windLib = await readFile(fromRoot("crates/zudo-wind/src/lib.rs"), "utf8");
-  if (
-    !windLib.includes("pub const SPEC_VERSION: u32 = 1;") ||
-    !windLib.includes("pub const SPEC_REVISION: u32 = 13;")
-  )
-    throw Error("Wind spec identity differs from pilot adapter");
+  assertWindSpecIdentity(profile, windLib);
   const manifest = await readJson(resolve(options.fixture, "manifest.json"));
   const observations = await readJson(resolve(options.fixture, "observations.json"));
   const required = validatePilot(profile, manifest, observations);
