@@ -298,7 +298,6 @@ no utility or harness, activates no watcher, and changes no release/ruleset poli
 | 1 / 1 | 2026-10-06 | #3826: initial bounded preset-free promise, exact required cases/differences and browser scope; source correction for Wind named variables; initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind prelude and numeric scale token rule/layer; no compatibility baseline admitted. |
 | 1 / 5 | 2026-10-06 | #3835 browser evidence repair: exactly two Wind vertical-rl resolved margins differ on pinned Linux WebKit 26.5/revision 2311; native authored CSS control run 37405347552 confirms the same result with physical auto and physical zero. All eight geometry probes now assert exact values, CSS trees and physical utility semantics stay fixed, and no baseline is admitted. |
 
-
 ## Flex, SVG and accessibility adoption (#3835)
 
 Profile 1.4 adds native order, basis, SVG presentation and screen-reader
