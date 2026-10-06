@@ -21,3 +21,20 @@
 .global-authored-marker {
   --wind-global-marker: present;
 }
+
+.shipping-nav { display: flex; gap: 12px; }
+.shipping-nav a:focus-visible { outline: 3px solid #336699; }
+.shipping-layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.shipping-card { padding: 16px; border-radius: 8px; color: white; }
+.shipping-card h2 { font-size: 24px; line-height: 32px; }
+.shipping-copy { line-height: 24px; }
+.shipping-form { display: flex; flex-direction: column; gap: 8px; }
+.shipping-form input { border: 1px solid #336699; padding: 8px; }
+.shipping-form input:focus { outline: 2px solid #336699; }
+.shipping-form button { border: 0; padding: 8px 16px; background: #336699; color: white; }
+.shipping-form button:hover { background: #224466; }
+.shipping-theme { background: #f7f7f7; color: #112233; }
+.shipping-theme[data-theme="dark"] { background: #112233; color: #f7f7f7; }
+@media (min-width: 768px) {
+  .shipping-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

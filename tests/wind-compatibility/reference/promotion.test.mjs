@@ -83,11 +83,18 @@ test("tested closure includes MDX fixtures and excludes only transition records"
   assert.ok(paths.includes("tests/wind-compatibility/extraction/mdx/index.mdx"));
   assert.ok(paths.includes("research/wind-compatibility-profile.md"));
   assert.ok(!paths.includes("tests/wind-compatibility/reference/accepted.json"));
-  const a = { schemaVersion: 1, files: [["fixture.mdx", "old"]] };
+  const a = {
+    schemaVersion: 2,
+    files: [["fixture.mdx", { kind: "file", executable: false, sha256: "old" }]],
+  };
   a.digest = `sha256:${digest(a.files)}`;
-  const b = { schemaVersion: 1, files: [["fixture.mdx", "changed"]] };
+  const b = {
+    schemaVersion: 2,
+    files: [["fixture.mdx", { kind: "file", executable: false, sha256: "changed" }]],
+  };
   b.digest = `sha256:${digest(b.files)}`;
   assert.equal(sameTestedInputs(a, b), false);
+  assert.equal(sameTestedInputs(a, structuredClone(a)), true);
 });
 
 test("reviewed rejection advances only reviewed-through; acceptance requires shipping evidence", async () => {
@@ -124,7 +131,7 @@ test("reviewed rejection advances only reviewed-through; acceptance requires shi
       state,
       finalSha: "b".repeat(40),
     }),
-    /shipping manifest missing/,
+    /Shipping evidence identity, build, or membership invalid/,
   );
 });
 

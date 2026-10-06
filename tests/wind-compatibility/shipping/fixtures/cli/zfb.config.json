@@ -1,0 +1,21 @@
+{
+  "wind": {
+    "spec": 1,
+    "reset": "none",
+    "tokens": {
+      "colors": {
+        "brand": "#336699",
+        "transient": "#883344",
+        "renamed": "#123456",
+        "added": "#456789",
+        "edited": "#56789a",
+        "old": "#123455",
+        "manifest": "#778899"
+      }
+    },
+    "sources": { "roots": ["src"], "packageRoots": ["@fixture/shipping-ui"] },
+    "manifests": {
+      "wind-shipping-fixture": { "path": "@fixture/shipping-ui/wind.json" }
+    }
+  }
+}

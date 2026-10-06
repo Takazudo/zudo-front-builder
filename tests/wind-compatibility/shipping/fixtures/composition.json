@@ -1,0 +1,5 @@
+{
+  "project": "crates/zfb/tests/fixtures/wind-assets",
+  "requestTimeProject": "crates/zfb/tests/fixtures/embedded-host-request-time",
+  "description": "Synthetic public navigation, card, form, typography, responsive and nested theme checks"
+}
