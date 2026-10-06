@@ -626,6 +626,68 @@ impl Visit for FormCollector {
     }
 }
 
+#[derive(Clone)]
+struct FactoryCallSite {
+    path: PathBuf,
+    call: CallExpr,
+}
+
+#[derive(Default)]
+struct FactoryReferenceCollector {
+    calls: Vec<(Expr, CallExpr)>,
+    references: Vec<(Expr, Span)>,
+    direct: HashSet<(u32, u32)>,
+    jsx: Vec<(JSXElementName, Span)>,
+}
+
+impl Visit for FactoryReferenceCollector {
+    fn visit_call_expr(&mut self, call: &CallExpr) {
+        if let Callee::Expr(callee) = &call.callee {
+            let callee = unwrap_expr(callee);
+            let direct = match callee {
+                Expr::Seq(sequence)
+                    if sequence.exprs.len() == 2
+                        && matches!(unwrap_expr(&sequence.exprs[0]), Expr::Lit(Lit::Num(number)) if number.value == 0.0) =>
+                {
+                    unwrap_expr(&sequence.exprs[1])
+                }
+                other => other,
+            };
+            if matches!(direct, Expr::Ident(_) | Expr::Member(_)) {
+                self.direct.insert((direct.span().lo.0, direct.span().hi.0));
+                self.calls.push((direct.clone(), call.clone()));
+            }
+        }
+        call.visit_children_with(self);
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) {
+        if matches!(expr, Expr::Ident(_) | Expr::Member(_)) {
+            self.references.push((expr.clone(), expr.span()));
+        }
+        expr.visit_children_with(self);
+    }
+
+    fn visit_prop(&mut self, prop: &Prop) {
+        if let Prop::Shorthand(ident) = prop {
+            self.references
+                .push((Expr::Ident(ident.clone()), ident.span));
+        }
+        prop.visit_children_with(self);
+    }
+
+    fn visit_export_default_expr(&mut self, node: &swc_core::ecma::ast::ExportDefaultExpr) {
+        if !matches!(unwrap_expr(&node.expr), Expr::Ident(_)) {
+            node.visit_children_with(self);
+        }
+    }
+
+    fn visit_jsx_opening_element(&mut self, node: &swc_core::ecma::ast::JSXOpeningElement) {
+        self.jsx.push((node.name.clone(), node.span));
+        node.visit_children_with(self);
+    }
+}
+
 struct Discovery<'a, R: Resolver> {
     resolver: &'a R,
     modules: BTreeMap<PathBuf, Rc<SourceModule>>,
@@ -635,7 +697,11 @@ struct Discovery<'a, R: Resolver> {
     deferred_forward_sites: HashSet<(PathBuf, u32)>,
     owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
     nested_bindings: HashMap<PathBuf, Rc<NestedBindings>>,
-    factory_proofs: HashMap<(PathBuf, BindingId), Value>,
+    factory_proofs: HashMap<(Definition, usize, String), Value>,
+    proving_factories: HashSet<Definition>,
+    calls_by_callee: BTreeMap<Definition, Vec<FactoryCallSite>>,
+    escapes_by_callee: BTreeMap<Definition, Vec<(PathBuf, Span)>>,
+    audited_modules: HashSet<PathBuf>,
     function_returns: HashMap<PathBuf, Rc<FunctionReturnIndex>>,
     primed_modules: HashSet<PathBuf>,
     #[cfg(test)]
@@ -644,6 +710,8 @@ struct Discovery<'a, R: Resolver> {
     nested_binding_expression_visits: usize,
     #[cfg(test)]
     factory_proof_evaluations: usize,
+    #[cfg(test)]
+    factory_resolver_operations: usize,
 }
 
 impl<'a, R: Resolver> Discovery<'a, R> {
@@ -661,6 +729,10 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             owned_factory_sites: HashMap::new(),
             nested_bindings: HashMap::new(),
             factory_proofs: HashMap::new(),
+            proving_factories: HashSet::new(),
+            calls_by_callee: BTreeMap::new(),
+            escapes_by_callee: BTreeMap::new(),
+            audited_modules: HashSet::new(),
             function_returns: HashMap::new(),
             primed_modules: HashSet::new(),
             #[cfg(test)]
@@ -669,6 +741,8 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             nested_binding_expression_visits: 0,
             #[cfg(test)]
             factory_proof_evaluations: 0,
+            #[cfg(test)]
+            factory_resolver_operations: 0,
         }
     }
 
@@ -1028,17 +1102,218 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         path: &Path,
         target: &swc_core::ecma::ast::Ident,
     ) -> ScanResult<Value> {
-        let key = (path.to_path_buf(), target.to_id());
+        let bindings = self.nested_bindings(path)?;
+        let Some(member) = bindings.factory_members.get(&target.to_id()) else {
+            return Ok(Value::Other);
+        };
+        let factory = self.factory_definition(path, member)?;
+        let key = (factory.clone(), member.index, member.property.clone());
         if let Some(value) = self.factory_proofs.get(&key) {
-            return Ok(value.clone());
+            return Ok(match value {
+                Value::Unsupported(reason) if reason.contains(" has unsupported initializer") => {
+                    let suffix = reason
+                        .split_once(" has unsupported initializer")
+                        .map(|(_, suffix)| suffix)
+                        .unwrap_or("");
+                    Value::Unsupported(format!(
+                        "target {} has unsupported initializer{suffix}",
+                        target.sym
+                    ))
+                }
+                other => other.clone(),
+            });
+        }
+        if !self.proving_factories.insert(factory.clone()) {
+            return Ok(Self::factory_failure(
+                &target.sym,
+                format!("factory {} has a recursive proof cycle", factory.binding),
+            ));
         }
         #[cfg(test)]
         {
             self.factory_proof_evaluations += 1;
         }
-        let value = self.resolve_factory_member_inner(path, target)?;
+        let result = self.resolve_factory_member_inner(path, target);
+        self.proving_factories.remove(&factory);
+        let value = result?;
         self.factory_proofs.insert(key, value.clone());
         Ok(value)
+    }
+
+    fn factory_definition(&self, path: &Path, member: &FactoryMember) -> ScanResult<Definition> {
+        let bindings = self
+            .nested_bindings
+            .get(path)
+            .expect("factory bindings indexed");
+        let Some(ident) = bindings
+            .names
+            .iter()
+            .find(|ident| ident.to_id() == member.factory)
+        else {
+            return Err(ScanError::Registration {
+                path: path.to_path_buf(),
+                line: 1,
+                column: 1,
+                message: "factory binding is missing from the module index".into(),
+            });
+        };
+        // The function span, rather than the declaration identifier, is the
+        // identity returned by resolve_local and followed through imports.
+        let module = self.modules.get(path).expect("factory module loaded");
+        let mut span = None;
+        for item in &module.ast.body {
+            let declaration = match item {
+                ModuleItem::Stmt(Stmt::Decl(decl)) => Some(decl),
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => Some(&export.decl),
+                _ => None,
+            };
+            if let Some(declaration) = declaration {
+                match declaration {
+                    Decl::Fn(function) if function.ident.to_id() == member.factory => {
+                        span = Some(function.function.span)
+                    }
+                    Decl::Var(variable) => {
+                        for declarator in &variable.decls {
+                            if matches!(&declarator.name, Pat::Ident(binding) if binding.id.to_id() == member.factory)
+                            {
+                                span = declarator
+                                    .init
+                                    .as_deref()
+                                    .map(|expr| unwrap_expr(expr).span());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if span.is_none() {
+            span = bindings
+                .functions
+                .get(&member.factory)
+                .map(|(_, span)| *span)
+                .or_else(|| {
+                    bindings
+                        .variables
+                        .get(&member.factory)
+                        .and_then(|variable| match &variable.init {
+                            Some(NestedInitializer::Function { span, .. }) => Some(*span),
+                            _ => None,
+                        })
+                });
+        }
+        Ok(Definition {
+            module: canonicalize_or_self(path),
+            binding: ident.sym.to_string(),
+            position: span.unwrap_or(ident.span).lo.0,
+        })
+    }
+
+    fn factory_reference_candidate(
+        expr: &Expr,
+        bindings: &NestedBindings,
+        imports: &HashSet<BindingId>,
+    ) -> bool {
+        let candidate = |ident: &swc_core::ecma::ast::Ident| {
+            let id = ident.to_id();
+            imports.contains(&id) || bindings.factory_functions.contains_key(&id)
+        };
+        match expr {
+            Expr::Ident(ident) => candidate(ident),
+            Expr::Member(member) => match unwrap_expr(&member.obj) {
+                Expr::Ident(ident) => candidate(ident),
+                other => Self::factory_reference_candidate(other, bindings, imports),
+            },
+            _ => false,
+        }
+    }
+
+    fn audit_factory_references(&mut self, path: &Path) -> ScanResult<()> {
+        if !self.audited_modules.insert(path.to_path_buf()) {
+            return Ok(());
+        }
+        let module = self.module(path)?;
+        let bindings = self.nested_bindings(path)?;
+        let mut collector = FactoryReferenceCollector::default();
+        module.ast.visit_with(&mut collector);
+        let imports: HashSet<BindingId> = module
+            .ast
+            .body
+            .iter()
+            .filter_map(|item| match item {
+                ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => Some(import),
+                _ => None,
+            })
+            .flat_map(|import| {
+                import
+                    .specifiers
+                    .iter()
+                    .map(|specifier| specifier.local().to_id())
+            })
+            .collect();
+        let mut local_calls = Vec::new();
+        for (callee, call) in &collector.calls {
+            if !Self::factory_reference_candidate(callee, &bindings, &imports)
+                || matches!(callee, Expr::Ident(ident) if bindings.factory_members.contains_key(&ident.to_id()))
+            {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.factory_resolver_operations += 1;
+            }
+            if let Value::Function(function) = self.resolve_expr(path, callee)? {
+                local_calls.push((function.definition, call.clone()));
+            }
+        }
+        let mut local_escapes = Vec::new();
+        for (reference, span) in &collector.references {
+            if collector.direct.contains(&(span.lo.0, span.hi.0)) {
+                continue;
+            }
+            if !Self::factory_reference_candidate(reference, &bindings, &imports)
+                || matches!(reference, Expr::Ident(ident) if bindings.factory_members.contains_key(&ident.to_id()))
+            {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.factory_resolver_operations += 1;
+            }
+            if let Value::Function(function) = self.resolve_expr(path, reference)? {
+                local_escapes.push((function.definition, *span));
+            }
+        }
+        for (name, span) in &collector.jsx {
+            if matches!(name, JSXElementName::Ident(ident) if bindings.factory_members.contains_key(&ident.to_id())
+                || !imports.contains(&ident.to_id()) && !bindings.factory_functions.contains_key(&ident.to_id()))
+            {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.factory_resolver_operations += 1;
+            }
+            if let Value::Function(function) = self.resolve_jsx_name(path, name)? {
+                local_escapes.push((function.definition, *span));
+            }
+        }
+        for (definition, call) in local_calls {
+            self.calls_by_callee
+                .entry(definition)
+                .or_default()
+                .push(FactoryCallSite {
+                    path: path.to_path_buf(),
+                    call,
+                });
+        }
+        for (definition, span) in local_escapes {
+            self.escapes_by_callee
+                .entry(definition)
+                .or_default()
+                .push((path.to_path_buf(), span));
+        }
+        Ok(())
     }
 
     fn resolve_factory_member_inner(
@@ -1109,63 +1384,46 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 self.site_location(path, span)
             )));
         }
-        if let Some(span) = bindings
-            .references
-            .get(&member.factory)
-            .into_iter()
-            .flatten()
-            .filter(|span| !bindings.direct_callees.contains(&span.lo.0))
-            .min_by_key(|span| span.lo.0)
+        let definition = self.factory_definition(path, member)?;
+        if let Some((escape_path, span)) = self
+            .escapes_by_callee
+            .get(&definition)
+            .and_then(|escapes| escapes.iter().min_by_key(|(path, span)| (path, &span.lo.0)))
         {
             return Ok(fail(format!(
                 "factory {} escapes as a value at {}",
                 factory.name,
-                self.site_location(path, *span)
+                self.site_location(escape_path, *span)
             )));
         }
-        let module = self.module(path)?;
-        let exported = module.ast.body.iter().any(|item| match item {
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => match &export.decl {
-                Decl::Fn(function) => function.ident.to_id() == member.factory,
-                Decl::Var(variable) => variable.decls.iter().any(|declarator| matches!(&declarator.name, Pat::Ident(ident) if ident.id.to_id() == member.factory)),
-                _ => false,
-            },
-            ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) if named.src.is_none() => named.specifiers.iter().any(|specifier| match specifier {
-                ExportSpecifier::Named(named) => matches!(&named.orig, ModuleExportName::Ident(ident) if ident.to_id() == member.factory),
-                _ => false,
-            }),
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default)) => matches!(&default.decl, DefaultDecl::Fn(function) if function.ident.as_ref().is_some_and(|ident| ident.to_id() == member.factory)),
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(default)) => matches!(unwrap_expr(&default.expr), Expr::Ident(ident) if ident.to_id() == member.factory),
-            _ => false,
-        });
-        if exported {
-            return Ok(fail(format!(
-                "factory {} has call sites outside this module; cross-module proof pending",
-                factory.name
-            )));
-        }
-        let Some(calls) = bindings
-            .calls
-            .get(&member.factory)
+        let Some(calls) = self
+            .calls_by_callee
+            .get(&definition)
             .filter(|calls| !calls.is_empty())
+            .cloned()
         else {
             return Ok(fail(format!(
                 "factory {} has no call site in the scanned modules",
                 factory.name
             )));
         };
+        let mut calls: Vec<_> = calls.iter().collect();
+        calls.sort_by(|left, right| {
+            (&left.path, left.call.span.lo.0).cmp(&(&right.path, right.call.span.lo.0))
+        });
         // Validate each category across the complete call set before moving
         // to the next one. The diagnostic precedence is part of the grammar.
-        for call in calls {
-            if call.args.len() <= member.index {
+        for call in &calls {
+            if call.call.args.len() <= member.index {
                 return Ok(fail(format!(
                     "call site at {} passes too few arguments",
-                    self.site_location(path, call.span)
+                    self.site_location(&call.path, call.call.span)
                 )));
             }
         }
-        for call in calls {
+        for call in &calls {
             if call
+                .call
                 .args
                 .iter()
                 .take(member.index + 1)
@@ -1173,12 +1431,12 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             {
                 return Ok(fail(format!(
                     "call site at {} spreads positional arguments",
-                    self.site_location(path, call.span)
+                    self.site_location(&call.path, call.call.span)
                 )));
             }
         }
-        for call in calls {
-            let literal = matches!(unwrap_expr(&call.args[member.index].expr), Expr::Object(object)
+        for call in &calls {
+            let literal = matches!(unwrap_expr(&call.call.args[member.index].expr), Expr::Object(object)
             if object.props.iter().all(|prop| match prop {
                 PropOrSpread::Prop(prop) => match &**prop {
                     Prop::Shorthand(_) => true,
@@ -1190,12 +1448,12 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             if !literal {
                 return Ok(fail(format!(
                     "call site at {} passes a non-literal argument",
-                    self.site_location(path, call.span)
+                    self.site_location(&call.path, call.call.span)
                 )));
             }
         }
-        for call in calls {
-            let Expr::Object(object) = unwrap_expr(&call.args[member.index].expr) else {
+        for call in &calls {
+            let Expr::Object(object) = unwrap_expr(&call.call.args[member.index].expr) else {
                 unreachable!()
             };
             let count = object
@@ -1217,18 +1475,18 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 return Ok(fail(format!(
                     "property {} missing at call site {}",
                     member.property,
-                    self.site_location(path, call.span)
+                    self.site_location(&call.path, call.call.span)
                 )));
             }
             if count > 1 {
                 return Ok(fail(format!(
                     "call site at {} passes a non-literal argument",
-                    self.site_location(path, call.span)
+                    self.site_location(&call.path, call.call.span)
                 )));
             }
         }
-        for call in calls {
-            let Expr::Object(object) = unwrap_expr(&call.args[member.index].expr) else {
+        for call in &calls {
+            let Expr::Object(object) = unwrap_expr(&call.call.args[member.index].expr) else {
                 unreachable!()
             };
             let selected = object.props.iter().find_map(|prop| match prop {
@@ -1259,15 +1517,16 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             }) {
                 return Ok(fail(format!(
                     "call site at {} selects {} conditionally (??, ternary, ||)",
-                    self.site_location(path, call.span),
+                    self.site_location(&call.path, call.call.span),
                     member.property
                 )));
             }
         }
         let mut resolved: Vec<(FunctionValue, String)> = Vec::new();
-        for call in calls {
-            let location = self.site_location(path, call.span);
+        for call in &calls {
+            let location = self.site_location(&call.path, call.call.span);
             if call
+                .call
                 .args
                 .iter()
                 .take(member.index + 1)
@@ -1277,7 +1536,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     "call site at {location} spreads positional arguments"
                 )));
             }
-            let Some(argument) = call.args.get(member.index) else {
+            let Some(argument) = call.call.args.get(member.index) else {
                 return Ok(fail(format!(
                     "call site at {location} passes too few arguments"
                 )));
@@ -1343,7 +1602,11 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     member.property
                 )));
             }
-            let function = match self.resolve_expr(path, &expr)? {
+            #[cfg(test)]
+            {
+                self.factory_resolver_operations += 1;
+            }
+            let function = match self.resolve_expr(&call.path, &expr)? {
                 Value::Function(function) => function,
                 Value::Unsupported(reason) => {
                     return Ok(fail(format!(
@@ -2929,6 +3192,23 @@ pub(super) fn discover<R: Resolver>(
     let mut targets: BTreeMap<Definition, (FunctionValue, PathBuf, Span)> = BTreeMap::new();
     let mut scanned = BTreeSet::new();
     loop {
+        // Resolving importer callees and namespace references can demand
+        // modules across the ordinary package traversal gate. Collect each
+        // module's facts once, reaching a fixed module set before any proof.
+        loop {
+            let unaudited: Vec<_> = discovery
+                .modules
+                .keys()
+                .filter(|path| !discovery.audited_modules.contains(*path))
+                .cloned()
+                .collect();
+            if unaudited.is_empty() {
+                break;
+            }
+            for path in unaudited {
+                discovery.audit_factory_references(&path)?;
+            }
+        }
         let paths: Vec<PathBuf> = discovery
             .modules
             .keys()
@@ -2938,21 +3218,47 @@ pub(super) fn discover<R: Resolver>(
         if paths.is_empty() {
             break;
         }
-        discovery.prime_wrapper_summaries()?;
+        let mut first_error = discovery.prime_wrapper_summaries().err();
         for path in paths {
             scanned.insert(path.clone());
             let module = discovery.module(&path)?;
             let mut collector = FormCollector::default();
             module.ast.visit_with(&mut collector);
             for form in collector.forms {
-                if let Some(target) = discovery.resolve_form(&path, &form)? {
-                    targets.entry(target.definition.clone()).or_insert((
-                        target,
-                        path.clone(),
-                        form.span(),
-                    ));
+                match discovery.resolve_form(&path, &form) {
+                    Ok(Some(target)) => {
+                        targets.entry(target.definition.clone()).or_insert((
+                            target,
+                            path.clone(),
+                            form.span(),
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
                 }
             }
+        }
+        if discovery
+            .modules
+            .keys()
+            .any(|path| !discovery.audited_modules.contains(path))
+        {
+            // A target or wrapper demanded another module. Re-evaluate all
+            // forms against the expanded call/reference closure.
+            discovery.factory_proofs.clear();
+            discovery.summary_cache.clear();
+            discovery.primed_modules.clear();
+            discovery.deferred_forward_sites.clear();
+            targets.clear();
+            scanned.clear();
+            continue;
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
     }
     let mut selected = Vec::new();
@@ -3308,6 +3614,7 @@ mod tests {
                 },
             )]),
         );
+        discovery.audit_factory_references(&path).unwrap();
         let target = discovery
             .nested_bindings(&path)
             .unwrap()
@@ -3334,6 +3641,7 @@ mod tests {
         }
         assert_eq!(discovery.factory_proof_evaluations, 1);
         assert!(discovery.nested_binding_expression_visits < 200 * 10);
+        assert!(discovery.factory_resolver_operations < 200 * 5);
         assert!(resolver.demands.get() < 200 * 4);
     }
 
@@ -3433,12 +3741,73 @@ mod tests {
     }
 
     #[test]
-    fn exported_factory_waits_for_cross_module_proof() {
-        let error = factory_case(
-            "export function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }",
-            "create({ Counter });",
-        ).unwrap_err().to_string();
-        assert!(error.contains("cross-module proof pending"), "{error}");
+    fn exported_factory_accepts_cross_module_calls() {
+        let body = "import { Island } from '@takazudo/zfb'; export function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        for factory_import in [
+            "import { create } from '../factory';",
+            "import { create } from '../barrel';",
+            "import * as F from '../barrel';",
+        ] {
+            let call = if factory_import.contains("* as F") {
+                "F.create({ Counter });"
+            } else {
+                "create({ Counter });"
+            };
+            let page = format!("{factory_import} import {{ Counter }} from '../counter'; {call}");
+            let islands = scan(&[
+                ("pages/home.tsx", &format!("import './other'; {page}")),
+                ("pages/other.tsx", &page),
+                ("factory.tsx", body),
+                ("barrel.ts", "export { create } from './factory';"),
+                (
+                    "counter.tsx",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            ])
+            .unwrap();
+            assert_eq!(markers(&islands), ["Counter"]);
+        }
+    }
+
+    #[test]
+    fn cross_module_rejections_include_late_calls_and_escapes() {
+        let factory = "import { Island } from '@takazudo/zfb'; export function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        let counter = "'use client'; export function Counter() { return null; } export function Other() { return null; }";
+        for (extra, expected) in [
+            ("create({ Counter: Other });", "call sites disagree"),
+            ("use(create);", "factory create escapes as a value"),
+            (
+                "create({ ...extra, Counter });",
+                "passes a non-literal argument",
+            ),
+        ] {
+            let first = "import { create } from '../factory'; import { Counter } from '../counter'; create({ Counter });";
+            let late = format!("import {{ create }} from '../factory'; import {{ Counter, Other }} from '../counter'; {extra}");
+            for (a, b) in [(first, late.as_str()), (late.as_str(), first)] {
+                let error = scan(&[
+                    ("pages/home.tsx", &format!("import './other'; {a}")),
+                    ("pages/other.tsx", b),
+                    ("factory.tsx", factory),
+                    ("counter.tsx", counter),
+                ])
+                .unwrap_err()
+                .to_string();
+                assert!(error.contains(expected), "{extra}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn cross_module_factory_cycle_has_a_finite_diagnostic() {
+        let error = scan(&[
+            ("pages/home.tsx", "import { left } from '../left'; import { right } from '../right'; left({ Counter: right }); right({ Counter: left });"),
+            ("left.tsx", "import { Island } from '@takazudo/zfb'; export function left(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }"),
+            ("right.tsx", "import { Island } from '@takazudo/zfb'; export function right(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }"),
+        ]).unwrap_err().to_string();
+        assert!(
+            error.contains("escapes as a value") || error.contains("recursive proof cycle"),
+            "{error}"
+        );
     }
 
     #[test]
