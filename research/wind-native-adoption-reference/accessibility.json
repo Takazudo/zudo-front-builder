@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "package": "tailwindcss",
+  "version": "4.3.2",
+  "integrity": "sha512-WtctNNSH8A9jlMIqxzuYumOHU5uGZyRv0Q5svQl+oEPy5w84YpBxdb7MdqyiSPQge5jTJ6zFQLq0PFygdccSBA==",
+  "artifactSha256": "3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62",
+  "source": {
+    "repository": "https://github.com/tailwindlabs/tailwindcss.git",
+    "tag": "v4.3.2",
+    "observedTagCommit": "056a1550721d4bf79ff732d5ab9414fa83f7064f",
+    "tagVerification": "git ls-remote https://github.com/tailwindlabs/tailwindcss.git refs/tags/v4.3.2",
+    "packageGitSha": null,
+    "status": "tag-observed-artifact-link-unverified"
+  },
+  "css": "/*! tailwindcss v4.3.2 | MIT License | https://tailwindcss.com */\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  margin: -1px;\n  overflow: hidden;\n  clip-path: inset(50%);\n  white-space: nowrap;\n  border-width: 0;\n}\n.not-sr-only {\n  position: static;\n  width: auto;\n  height: auto;\n  padding: 0;\n  margin: 0;\n  overflow: visible;\n  clip-path: none;\n  white-space: normal;\n}\n.focus\\:not-sr-only {\n  &:focus {\n    position: static;\n    width: auto;\n    height: auto;\n    padding: 0;\n    margin: 0;\n    overflow: visible;\n    clip-path: none;\n    white-space: normal;\n  }\n}\n",
+  "candidates": ["sr-only", "not-sr-only", "focus:not-sr-only"]
+}
