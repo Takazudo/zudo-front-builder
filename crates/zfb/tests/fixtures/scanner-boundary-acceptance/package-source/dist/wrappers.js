@@ -1,7 +1,21 @@
 import { Island as Boundary } from "@takazudo/zfb";
-import { jsx, jsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
+import { Fragment, jsx, jsxs } from "@takazudo/zfb/zudo-react/jsx-runtime";
 import { jsxDEV } from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
 import { PackedCounter } from "./barrels/cycle-a.js";
+import { DefaultPanel } from "./client/default-panel.js";
+
+export function PanelSlot({ children }) {
+  return jsx(Fragment, { children });
+}
+
+export function DefaultPanelIsland() {
+  return jsx(Fragment, {
+    children: jsx(Boundary, {
+      when: "load",
+      children: jsx(DefaultPanel, {}),
+    }),
+  });
+}
 
 export function PackedForwardBoundary({ children }) {
   return jsx(Boundary, { children });
