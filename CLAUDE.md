@@ -10,6 +10,46 @@ super-epic development unnecessarily slow. The default development structure is
 This repo-specific policy takes precedence over generic workflow-skill instructions that require
 heavy child verification or green CI before each development merge.
 
+### Planning invariant and boundary vocabulary
+
+Every implementation plan must inherit this section. Use a compact reference to
+`CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`, plus the
+plan's actual integration parent, dependency DAG, verification owner, checks, and exceptions.
+Do not copy this entire policy into each issue. The worked example and review cases in
+[the planning policy reference](.claude/references/development-planning.md) apply to plans,
+epics, sub-topics, and confirmation topics created by any workflow skill.
+
+Branch names are not safety properties: `main` may be a development integration target.
+Follow the recorded parent/base topology and identify the actual external-impact boundary.
+
+| Boundary | Green required before proceeding? | Meaning |
+| --- | --- | --- |
+| Child → epic base | No by default | Reviewed and integrated; CI may be pending |
+| Epic → super-epic/development parent | No by default | Integrated; CI alerts remain owned |
+| Development base → next independent work | Conditional | Failure understood/localized, work independent, repair tracked |
+| Final development completion | Evidence reconciliation required | Required checks satisfied; no unresolved real regression called complete |
+| Release/npm publication/external impact | Yes, per the authoritative procedure | Release verification and publication gates apply |
+
+Use these states precisely in plans and evidence ledgers:
+
+- **Implemented:** the change exists.
+- **Reviewed:** topic review completed.
+- **Integrated:** merged into the intended development parent.
+- **CI pending / CI observed:** recorded status for an exact SHA, with run/job evidence.
+- **Verified:** required evidence passed for the named boundary and tested state.
+- **Release-ready:** the release procedure's required evidence is satisfied.
+
+Pending, cancelled, skipped, deferred, superseded, pass-on-retry, and failed are not passed.
+Preserve the original failure and retry evidence; an older SHA's green result does not prove
+that a newer integrated head is green.
+
+Plans must name the manager responsible for CI diagnosis/fixing rounds, batch heavy checks at
+integration boundaries, and assign practical cheap affected checks to children. Encode explicit
+dependency edges for shared-file/generated-artifact collisions as well as logical dependencies.
+Dependent work starts from the actual merged base and revalidates the assumptions it relies on.
+If further integration would obscure failure attribution, pause that affected chain.
+Confirmation topics collect evidence and missing coverage; they never manufacture a green status.
+
 ### Branches and progression
 
 - Sub-topic branches merge into their epic base; epic PRs merge into the super-epic base; the
