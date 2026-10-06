@@ -21,7 +21,9 @@ import { ConsumerB } from "../components/consumer-b";
 import { Island as UnrelatedIsland } from "../components/fake-island";
 import { NeverRegistered } from "../components/unregistered";
 import { LiveCounter } from "../components/live-counter";
+import { FactoryCounter } from "../components/factory-counter";
 import { ForwardBoundary, OuterForwardBoundary } from "../components/wrappers";
+import { DefaultPanelIsland, PanelSlot } from "@fixture/widgets";
 import {
   InferredArrow as ArrowAlias,
   ExportedExpression as ExpressionAlias,
@@ -31,6 +33,21 @@ import NamedDefault from "../components/named-default";
 import AnonymousDefault from "../components/anonymous-default";
 
 void (0 as unknown as TypeOnlyIsland);
+
+function createFactoryBoundary(deps: { FactoryCounter: typeof FactoryCounter }) {
+  const Target = deps.FactoryCounter;
+  return function FactoryBoundary() {
+    return (
+      <>
+        <Boundary when="load">
+          <Target />
+        </Boundary>
+      </>
+    );
+  };
+}
+
+const FactoryBoundary = createFactoryBoundary({ FactoryCounter });
 
 export default function Home() {
   const entry = getCollection("content").find((candidate) => candidate.slug === "index");
@@ -87,6 +104,10 @@ export default function Home() {
           <PackedNamed label="Forwarded package chain" />
         </PackedOuterForwardBoundary>
         <PackedFixedBoundary />
+        <FactoryBoundary />
+        <PanelSlot>
+          <DefaultPanelIsland />
+        </PanelSlot>
         <PackedJsxsBoundary />
         <PackedDevBoundary />
         <Boundary>

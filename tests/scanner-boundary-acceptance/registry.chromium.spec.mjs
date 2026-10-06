@@ -50,7 +50,7 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   const ssrMarkers = await islands.evaluateAll((nodes) =>
     [...new Set(nodes.map((node) => node.getAttribute("data-zfb-island")))].sort(),
   );
-  expect(ssrMarkers).toEqual([...expected.markers].sort());
+  expect(ssrMarkers).toEqual([...expected.pageMarkers].sort());
 
   const clientRegistryWrites = await page.evaluate(() =>
     [...globalThis.__zfbBoundaryAcceptanceRegistryKeys].sort(),
@@ -93,6 +93,16 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   ).toEqual({ parentMarker: "Counter", parentElementCount: 1 });
   await mdxCounter.click();
   await expect(mdxCounter).toHaveText("Counter: 1");
+
+  const factoryCounter = page.locator("#factory-counter");
+  await expect(factoryCounter).toHaveText("Factory counter: 0");
+  await factoryCounter.click();
+  await expect(factoryCounter).toHaveText("Factory counter: 1");
+
+  const defaultPanel = page.locator("#default-panel");
+  await expect(defaultPanel).toHaveText("Default panel: 0");
+  await defaultPanel.click();
+  await expect(defaultPanel).toHaveText("Default panel: 1");
 
   const namedMdxCounter = page.locator("#mdx-named-counter");
   await expect(namedMdxCounter).toHaveText("Named counter: 0");
@@ -148,6 +158,17 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   await expect(equalDisplayName).toHaveText("Equal displayName: 0");
   await equalDisplayName.click();
   await expect(equalDisplayName).toHaveText("Equal displayName: 1");
+
+  await page.goto("/host-override/index.html");
+  const overrideIslands = page.locator("[data-zfb-island]");
+  await expect(overrideIslands).toHaveCount(1);
+  await expect(overrideIslands).toHaveAttribute("data-zfb-island", "HostPanel");
+  await expect(overrideIslands).toHaveAttribute("data-zfb-island-mounted", "");
+  await expect(page.locator('[data-zfb-island="DefaultPanel"]')).toHaveCount(0);
+  const hostPanel = page.locator("#host-panel");
+  await expect(hostPanel).toHaveText("Host panel: 0");
+  await hostPanel.click();
+  await expect(hostPanel).toHaveText("Host panel: 1");
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

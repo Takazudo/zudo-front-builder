@@ -45,6 +45,56 @@ fn scan_component_names(page: &Path) -> Vec<String> {
     islands.iter().map(|i| i.component_name.clone()).collect()
 }
 
+fn write_factory_dist_fixture(root: &Path, target_declaration: &str) -> std::path::PathBuf {
+    let pkg = root.join("node_modules/@acme/factory-widgets");
+    write(
+        &pkg.join("package.json"),
+        r#"{ "name": "@acme/factory-widgets", "type": "module",
+            "exports": { ".": "./dist/index.js" } }"#,
+    );
+    write(
+        &pkg.join("dist/factory.js"),
+        &format!(
+            r#"import {{ Island }} from "@takazudo/zfb";
+import {{ jsx }} from "@takazudo/zfb/zudo-react/jsx-runtime";
+
+export function createPanelBoundary(deps) {{
+  {target_declaration}
+  return function PanelBoundary() {{
+    return jsx(Island, {{ when: "load", children: jsx(Target, {{}}) }});
+  }};
+}}
+"#
+        ),
+    );
+    write(
+        &pkg.join("dist/panel.js"),
+        r#""use client";
+export function Panel() { return null; }
+"#,
+    );
+    write(
+        &pkg.join("dist/index.js"),
+        r#"import { Panel } from "./panel.js";
+import { createPanelBoundary } from "./factory.js";
+
+const PanelBoundary = (0, createPanelBoundary)({ Panel });
+export { PanelBoundary };
+"#,
+    );
+
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { PanelBoundary } from "@acme/factory-widgets";
+export default function Home() {
+  return <html><body><PanelBoundary /></body></html>;
+}
+"#,
+    );
+    page
+}
+
 /// A regular npm package laid out as a flat `node_modules/<pkg>` directory
 /// (npm/yarn-classic layout — a real dir, NOT a workspace symlink) whose
 /// dist module carries `"use client"` must register its target when a
@@ -299,6 +349,34 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
     // The named export keys the registry under the same marker the SSR
     // side derives from `displayName`.
     assert_eq!(island.marker_name, "ThemeToggle");
+}
+
+/// Emitted package modules retain the same bounded proof as source factories:
+/// a factory exported from one dist module may be called in another with a
+/// static object literal and a `(0, fn)` callee shape.
+#[test]
+fn dist_cross_module_factory_member_target_is_registered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let page = write_factory_dist_fixture(dir.path(), "const Target = deps.Panel;");
+
+    assert_eq!(scan_component_names(&page), vec!["Panel".to_string()]);
+}
+
+/// The emitted `var` form remains rejected even when its initializer is a
+/// static factory member, pinning the scanner's const-only target rule.
+#[test]
+fn dist_var_factory_member_target_reports_mutable_binding() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let page = write_factory_dist_fixture(dir.path(), "var Target = deps.Panel;");
+
+    let error = scan_islands(&[page], &FsResolver::new())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("target Target has unsupported initializer"),
+        "{error}"
+    );
+    assert!(error.contains("mutable target binding Target"), "{error}");
 }
 
 /// A bare import made from INSIDE a package's dist must NOT be followed:

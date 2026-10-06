@@ -6,6 +6,8 @@ export { default } from "./barrels/two.js";
 export { PackedCounter as PackedNamed } from "./barrels/cycle-a.js";
 export { PreferredTarget as ShadowTarget } from "./helpers/preferred.js";
 export {
+  DefaultPanelIsland,
+  PanelSlot,
   PackedForwardBoundary,
   PackedOuterForwardBoundary,
   PackedFixedBoundary,
