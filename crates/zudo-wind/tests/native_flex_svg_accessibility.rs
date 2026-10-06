@@ -294,11 +294,13 @@ fn native_forms_ignore_configured_names_and_authored_complete_candidates() {
         writes(&result, "fill-current"),
         vec![("fill".into(), "currentColor".into())]
     );
-    let mut reserved = WindConfig::default();
-    reserved.authored_classes = BTreeMap::from([
-        ("order-first".into(), true),
-        ("hover:fill-current".into(), true),
-    ]);
+    let reserved = WindConfig {
+        authored_classes: BTreeMap::from([
+            ("order-first".into(), true),
+            ("hover:fill-current".into(), true),
+        ]),
+        ..WindConfig::default()
+    };
     let result = run(
         &["order-first", "hover:fill-current", "fill-current"],
         reserved,
