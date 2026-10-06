@@ -1,4 +1,4 @@
-# Preparation only. Replace a53f6bf05fb6a5a8b0c27430eac2c5adca39cab7 and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
+# Preparation only. Replace 8b2a17ca9a67a237f8e9096da2f773f035e4550d and revalidate final integrated CLI before use. Expanded matrix recipe after cec6bba4; no execution evidence by itself.
 name: Temporary Wind comparison and production shipping
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: a53f6bf05fb6a5a8b0c27430eac2c5adca39cab7
+          ref: 8b2a17ca9a67a237f8e9096da2f773f035e4550d
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-harness-evidence
-          test "$(git rev-parse HEAD)" = a53f6bf05fb6a5a8b0c27430eac2c5adca39cab7
+          test "$(git rev-parse HEAD)" = 8b2a17ca9a67a237f8e9096da2f773f035e4550d
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
@@ -185,17 +185,17 @@ jobs:
             result=$?
             set -e
             test "$result" -ne 0
-            rg -q '^running 1 test$' "$RUNNER_TEMP/deletion-evidence/before-$test_name.log"
-            rg -q 'test result: FAILED. 0 passed; 1 failed;' "$RUNNER_TEMP/deletion-evidence/before-$test_name.log"
+            grep -Eq '^running 1 test$' "$RUNNER_TEMP/deletion-evidence/before-$test_name.log"
+            grep -Eq 'test result: FAILED. 0 passed; 1 failed;' "$RUNNER_TEMP/deletion-evidence/before-$test_name.log"
           done
       - name: Switch to exact reviewed fix while retaining warm Cargo target
         run: |
           set -euo pipefail
           git apply --reverse "$RUNNER_TEMP/deletion-evidence/regressions.patch"
           test -z "$(git status --porcelain)"
-          git fetch --no-tags --depth=1 origin a53f6bf05fb6a5a8b0c27430eac2c5adca39cab7
-          git checkout --detach a53f6bf05fb6a5a8b0c27430eac2c5adca39cab7
-          test "$(git rev-parse HEAD)" = a53f6bf05fb6a5a8b0c27430eac2c5adca39cab7
+          git fetch --no-tags --depth=1 origin 8b2a17ca9a67a237f8e9096da2f773f035e4550d
+          git checkout --detach 8b2a17ca9a67a237f8e9096da2f773f035e4550d
+          test "$(git rev-parse HEAD)" = 8b2a17ca9a67a237f8e9096da2f773f035e4550d
           git rev-parse HEAD > "$RUNNER_TEMP/deletion-evidence/fix.sha"
           sha256sum crates/zfb/tests/dev_content_aggregate_cold_boot_e2e.rs > "$RUNNER_TEMP/deletion-evidence/original-e2e.sha256"
           cmp "$RUNNER_TEMP/deletion-evidence/before-original-e2e.sha256" "$RUNNER_TEMP/deletion-evidence/original-e2e.sha256"
@@ -204,16 +204,16 @@ jobs:
           set -euo pipefail
           for test_name in table_swap_refreshes_pending_claims_without_staling_fresh_routes table_swap_supersedes_unselected_cold_index_request lazy_request_with_failed_provenance_keeps_its_repair_claim; do
             cargo test --locked -p zfb --lib "$test_name" -- --nocapture > "$RUNNER_TEMP/deletion-evidence/fix-$test_name.log" 2>&1
-            rg -q 'test result: ok. 1 passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-$test_name.log"
+            grep -Eq 'test result: ok. 1 passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-$test_name.log"
           done
           cargo test --locked -p zfb --lib lazy_render_adapter::tests -- --nocapture > "$RUNNER_TEMP/deletion-evidence/fix-adapter.log" 2>&1
-          rg -q 'test result: ok. [1-9][0-9]* passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-adapter.log"
+          grep -Eq 'test result: ok. [1-9][0-9]* passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-adapter.log"
       - name: Repeat unchanged real default-V8 deletion sequences without retries
         run: |
           set -euo pipefail
           for pass in 1 2 3 4 5 6 7 8 9 10; do
             cargo test --locked -p zfb --test dev_content_aggregate_cold_boot_e2e cold_lazy_deleted_entry -- --nocapture --test-threads=1 > "$RUNNER_TEMP/deletion-evidence/fix-real-sequences-$pass.log" 2>&1
-            rg -q 'test result: ok. 3 passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-real-sequences-$pass.log"
+            grep -Eq 'test result: ok. 3 passed; 0 failed;' "$RUNNER_TEMP/deletion-evidence/fix-real-sequences-$pass.log"
           done
           test -z "$(git status --porcelain)"
       - name: Retain original regression proof and logs
