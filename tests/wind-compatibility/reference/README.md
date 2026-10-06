@@ -20,11 +20,12 @@ and the complete evidence rerun before promotion.
 
 ## Evidence required
 
-Run the full required `health` lane against a clean checkout of the exact
-integration source. The optional Chromium-only `wind-computed-style` workflow
-does not qualify. The retained `wind-required-health-evidence` must be from
-`ci-run.sh full`, with a passing three-engine comparison and authenticated
-production shipping evidence from that same Linux runner.
+On a clean checkout of the exact integration source, run the required Wind
+policy/inventory/accounting/mutation and empty-token checks, `ci-run.sh full`,
+and the generated EN/JA plus preview freshness checks together. The optional
+Chromium-only `wind-computed-style` workflow does not qualify. The retained
+full-run bundle must contain a passing three-engine comparison and
+authenticated production shipping evidence from that Linux x64 run.
 
 Review exact membership and identity, not a percentage:
 
@@ -48,62 +49,69 @@ input blocks admission. Retain original CI reports and logs outside Git; never
 rebuild an expected result from Wind output or reconstruct shipping evidence on
 a different runner.
 
-## Checked promotion
+## Ephemeral checked-transition artifact
 
-The accepted-reference transition is performed only by
-`reference-cli.mjs promote`. It replays the comparison against the current
-inputs, checks the reviewed classification and shipping report, then writes the
-accepted and reviewed-through records atomically. Run both commands on the same
-Linux runner while the production, dist, and browser executables and original
-report trees from the successful full run are still present. Keep the
-classification file outside the checkout. For GitHub Actions, use the same job
-that produced the full evidence; downloading reports to another machine does
-not preserve the executable identity required by shipping validation.
+The permanent required `health` job only produces and verifies evidence; it
+does not advance reference state. The temporary #3840 admission probe invokes
+the helper below after the full health contracts and `ci-run.sh full` pass, and
+before its evidence artifact is uploaded. Do not add this invocation to the
+permanent health workflow.
+
+The helper accepts only the first bootstrap: the plan and live state must have
+no accepted reference, must target stable `tailwindcss@4.3.2`, and must bind the
+passing full comparison to the current source and tested-input digest. It also
+checks the exact full report memberships (112 upstream, 358 browser, 33
+control, and 189 Wind delta rows), requires `candidateInventory` to remain the
+bootstrap-pinned null case, and rejects any non-null change flag or any
+`localChanged` flag other than null. These null deltas mean there is no prior
+accepted baseline to compare; they do not replace the candidate-versus-oracle
+case assertions and shipping checks. Any unexpected row, flag, identity,
+profile, or state fails closed and requires renewed review.
+
+Only after those checks does the helper create a fixed empty-change
+classification bound to the exact plan and comparison report IDs. It runs
+`reference-cli.mjs promote` first as a dry run and then with `--apply yes`; the
+existing CLI replays the comparison, validates the shipping evidence, and
+writes the two records as a recoverable checked pair. The helper compares the
+two transition results and tested-input identities, preserves original report
+bytes, copies the paired state records and command outputs under
+`wind-gate/admission/`, and restores the checkout's original state bytes in a
+`finally` path. The helper and CLI never commit, push, or publish the temporary
+records.
 
 ```sh
 EVIDENCE="${RUNNER_TEMP:?}/wind-gate"
 CACHE="${RUNNER_TEMP:?}/wind-reference-cache"
-CLASSIFICATION="${RUNNER_TEMP:?}/wind-reference-classification.json"
-
-node scripts/wind-compatibility/reference-cli.mjs promote \
-  --plan "$EVIDENCE/plan.json" \
-  --assessment "$EVIDENCE/assessment.json" \
-  --cache "$CACHE" \
-  --output "$EVIDENCE/comparison" \
-  --classification "$CLASSIFICATION" \
-  --shipping "$EVIDENCE/shipping/report.json" \
-  --shipping-output "$EVIDENCE/shipping" \
-  > "$EVIDENCE/admission-dry-run.json"
-
-node scripts/wind-compatibility/reference-cli.mjs promote \
-  --plan "$EVIDENCE/plan.json" \
-  --assessment "$EVIDENCE/assessment.json" \
-  --cache "$CACHE" \
-  --output "$EVIDENCE/comparison" \
-  --classification "$CLASSIFICATION" \
-  --shipping "$EVIDENCE/shipping/report.json" \
-  --shipping-output "$EVIDENCE/shipping" \
-  --apply yes \
-  > "$EVIDENCE/admission-applied.json"
+node scripts/wind-compatibility/bootstrap-admission.mjs bootstrap \
+  --evidence "$EVIDENCE" \
+  --cache "$CACHE"
 ```
 
-Before applying, independently inspect the comparison, shipping report,
-classification, and exact case/difference membership. The classification must
-name every observed upstream, browser, control, Wind, and inventory change with
-the exact report identity and a rationale; `accept` cannot contain unexplained
-drift. Preserve both command outputs and compare their `next` state values and
-tested-input identities exactly. Keep the two resulting JSON state records as
-the original pair from this checked transition; do not hand-edit either one.
+The root-owned temporary admission probe runs this only after its required
+health contracts and full evidence step succeed, and before it uploads the
+`wind-checked-admission-evidence` artifact. The helper writes the
+classification, dry-run/apply outputs, summary, and state pair beneath
+`wind-gate/admission/`; downloading a completed ordinary health artifact alone
+cannot perform the executable-bound shipping replay.
+
+Review the downloaded full comparison, shipping reports, bootstrap summary,
+CLI dry-run/apply outputs, and exact case/difference membership before
+committing anything. Verify that the paired records under
+`wind-gate/admission/state/` equal both CLI `next` values and carry the exact
+source, report, reference, profile, and tested-input identities. Commit only
+`accepted.json` and `reviewed-through.json` after independent evidence review;
+do not hand-edit either record. If any required evidence is red, missing,
+deferred, or fails the bootstrap policy, leave both authoritative records
+unchanged.
 
 Only `accepted.json` and `reviewed-through.json` are excluded from the schema 2
 tested-input digest, to avoid a hash-of-itself cycle. Every other tracked or
 unignored file, including Markdown/MDX, fixtures, helpers, lockfiles, generated
 compatibility data, and workflow contracts, is part of the digest. After the
-successful run, change none of those inputs before dry-run and apply. Commit
-only the two transition records after verifying the pair matches the
-dry-run/applied `next` values. The source commit used as
-`finalVerificationSha` is recorded by the CLI; the later metadata commit is not
-part of its own tested preimage.
+successful run, change none of those inputs before dry-run and apply. The
+helper verifies the pair against both CLI `next` values before copying it to
+the artifact. The source commit used as `finalVerificationSha` is recorded by
+the CLI; the later metadata commit is not part of its own tested preimage.
 
 Admission remains incomplete while any required result is missing, red,
 cancelled, skipped, or deferred. Source-inspected inventory rows stay at
