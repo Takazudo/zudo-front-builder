@@ -418,7 +418,9 @@ impl Visit for NestedBindings {
 
     fn visit_expr(&mut self, node: &Expr) {
         #[cfg(test)]
-        self.expression_visits += 1;
+        {
+            self.expression_visits += 1;
+        }
         if let Expr::Ident(ident) = node {
             self.record_reference(ident);
         }
