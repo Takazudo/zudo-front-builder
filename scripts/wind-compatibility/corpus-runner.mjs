@@ -13,6 +13,7 @@ import {
   completeCorpus,
   expectedOutcomes,
   finiteInventoryAccounting,
+  observedUpstreamOutcome,
   validateCorpus,
 } from "./corpus-core.mjs";
 import {
@@ -567,13 +568,7 @@ async function upstreamResults(
       )
       .map((item) => item.id);
     results[`upstream/${row.id}/${engine}`] = {
-      outcome: !transportPass
-        ? "infrastructure-failure"
-        : pass
-          ? semantic
-            ? "reviewed-difference"
-            : "matched"
-          : "unexpected-mismatch",
+      outcome: observedUpstreamOutcome(transportPass, pass, detectedDifferences),
       reviewedDifferenceIds: detectedDifferences,
       differencePass,
       structure,

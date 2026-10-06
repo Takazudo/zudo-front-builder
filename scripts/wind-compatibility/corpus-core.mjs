@@ -295,6 +295,12 @@ export function expectedOutcomes(manifest, profile) {
   ]);
 }
 
+export function observedUpstreamOutcome(transportPass, pass, detectedDifferenceIds) {
+  if (!transportPass) return "infrastructure-failure";
+  if (!pass) return "unexpected-mismatch";
+  return detectedDifferenceIds.length > 1 ? "reviewed-difference" : "matched";
+}
+
 export function completeCorpus(expected, executed, allowedOutcomes = {}) {
   const keys = Object.keys(executed);
   if (new Set(expected).size !== expected.length || keys.some((key) => !expected.includes(key)))
