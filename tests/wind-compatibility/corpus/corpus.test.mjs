@@ -7,6 +7,7 @@ import {
   expectedOutcomes,
   finiteInventoryAccounting,
   validateCorpus,
+  validateTargetedExecutionKeys,
   checkMutations,
 } from "../../../scripts/wind-compatibility/corpus-core.mjs";
 import {
@@ -28,8 +29,12 @@ import { supplementalProbePlan } from "../../../scripts/wind-compatibility/corpu
 import {
   signedPilotReportId,
   validatePilotEnvelope,
+  validatePilotCorruptionControls,
+  validatePilotControlPairs,
+  validatePilotNativeObservations,
 } from "../../../scripts/wind-compatibility/corpus-pilot.mjs";
 import {
+  documentFor,
   hostPlatformIdentity,
   requiredMatrixMember,
 } from "../../../scripts/wind-compatibility/browser-adapter.mjs";
@@ -67,11 +72,34 @@ const validate = (
 
 test("exact corpus membership, source adaptations and composition probes are accounted", () => {
   const expected = validate();
-  assert.equal(expected.length, 74);
+  assert.equal(expected.length, 104);
   assert.equal(expected.filter((id) => id.endsWith("/chromium")).length, 54);
-  assert.equal(expected.filter((id) => id.endsWith("/firefox")).length, 10);
-  assert.equal(expected.filter((id) => id.endsWith("/webkit")).length, 10);
+  assert.equal(expected.filter((id) => id.endsWith("/firefox")).length, 25);
+  assert.equal(expected.filter((id) => id.endsWith("/webkit")).length, 25);
   assert.equal(manifest.counts.upstreamProbes, 40);
+});
+
+test("targeted execution map binds every policy obligation to current pilot/control evidence", () => {
+  const mapping = validateTargetedExecutionKeys(manifest, profile);
+  assert.deepEqual(Object.keys(mapping), profile.browserPolicy.targetedObligations);
+  assert.deepEqual(mapping["wrong-value-or-missing-rule-detection"], [
+    "control/wrong-value-detection",
+    "control/missing-rule-detection",
+  ]);
+  for (const value of [
+    undefined,
+    ["pilot/p-0-mapped", "pilot/p-0-mapped"],
+    ["pilot/p-0-mapped/chromium"],
+    ["pilot/renamed"],
+  ]) {
+    const changed = copy(manifest);
+    if (value === undefined) delete changed.targetedExecutionKeys["p-0-mapped"];
+    else changed.targetedExecutionKeys["p-0-mapped"] = value;
+    assert.throws(() => validate(changed), /Targeted browser execution mapping/);
+  }
+  const oneCorruption = copy(manifest);
+  oneCorruption.targetedExecutionKeys["wrong-value-or-missing-rule-detection"].pop();
+  assert.throws(() => validate(oneCorruption), /Targeted browser execution mapping/);
 });
 
 test("missing fixtures, duplicate IDs, empty candidate lists and missing execution fail", () => {
@@ -98,6 +126,12 @@ test("missing fixtures, duplicate IDs, empty candidate lists and missing executi
   assert.equal(completeCorpus(obligations, downgraded, allowed).complete, false);
   assert.deepEqual(completeCorpus(obligations, downgraded, allowed).failures, [
     "upstream/display-flex/chromium",
+  ]);
+  const missingFirefoxPilot = { ...downgraded };
+  missingFirefoxPilot["upstream/display-flex/chromium"] = { outcome: "matched" };
+  delete missingFirefoxPilot["pilot/mx-auto/firefox"];
+  assert.deepEqual(completeCorpus(obligations, missingFirefoxPilot, allowed).missing, [
+    "pilot/mx-auto/firefox",
   ]);
 });
 
@@ -322,6 +356,13 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
     validatePilotEnvelope(valid, profile, pilot, observations, extraction, identity),
     true,
   );
+  assert.throws(
+    () =>
+      validatePilotEnvelope(valid, profile, pilot, observations, extraction, {
+        browserEnvironment: { name: "firefox" },
+      }),
+    /Pilot identity differs/,
+  );
   const changed = (mutate) => {
     const report = copy(valid);
     mutate(report);
@@ -410,6 +451,231 @@ test("pilot admission rejects edited and rehashed row sets, outcomes and identit
       ),
     /reportId/,
   );
+});
+
+test("pilot corruption controls require both observed failures and served CSS hashes", async () => {
+  const { createHash } = await import("node:crypto");
+  const hash = (value) => createHash("sha256").update(value).digest("hex");
+  const html = await readFile(new URL("../pilot/block/index.html", root), "utf8");
+  const probe = observations.block.probes[0];
+  const css = ".block { display: block; }";
+  const wrong = css.replace(/display:\s*block/, "display: none");
+  const selector = css.replace(/\.block\s*\{/, ".wrong { ");
+  const negative = (style) => ({
+    engine: "wind",
+    probe: probe.name,
+    verified: true,
+    pass: false,
+    observation: {
+      value: "inline",
+      cssTree: [],
+      cssRules: [],
+      box: {
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        parentX: 0,
+        parentY: 0,
+        parentWidth: 100,
+        parentHeight: 100,
+      },
+    },
+    expected: probe.wind,
+    stylesheetSha256: hash(style),
+    servedSha256: hash(style),
+    settings: {
+      documentSha256: hash(html),
+      authoredCssSha256: hash(""),
+      selector: "#target",
+      viewportWidth: 800,
+      viewportHeight: 700,
+      writingMode: "horizontal-tb",
+      direction: "ltr",
+      hover: false,
+      keyboardFocus: false,
+      pseudo: null,
+      relativeTo: "#box",
+    },
+  });
+  const controls = [
+    {
+      controlId: "missing-rule-detection",
+      mutations: {
+        removedStylesheetDetected: true,
+        wrongSelectorDetected: true,
+        removedStylesheet: negative(""),
+        wrongSelector: negative(selector),
+      },
+    },
+    {
+      controlId: "wrong-value-detection",
+      mutations: { wrongValueDetected: true, wrongValue: negative(wrong) },
+    },
+  ];
+  assert.equal(validatePilotCorruptionControls(controls, css, probe, html), true);
+  const missing = copy(controls);
+  missing[1].mutations.wrongValue = null;
+  assert.throws(
+    () => validatePilotCorruptionControls(missing, css, probe, html),
+    /browser controls/,
+  );
+  const forged = copy(controls);
+  forged[0].mutations.removedStylesheet.servedSha256 = hash("wrong");
+  assert.throws(
+    () => validatePilotCorruptionControls(forged, css, probe, html),
+    /browser controls/,
+  );
+  const passed = copy(controls);
+  passed[1].mutations.wrongValue.pass = true;
+  assert.throws(
+    () => validatePilotCorruptionControls(passed, css, probe, html),
+    /browser controls/,
+  );
+  const emptyObservation = copy(controls);
+  emptyObservation[1].mutations.wrongValue.observation = {};
+  assert.throws(
+    () => validatePilotCorruptionControls(emptyObservation, css, probe, html),
+    /browser controls/,
+  );
+});
+
+test("pilot native and scoped controls bind exact ordered probes, sides, settings and raw CSS", async () => {
+  const { createHash } = await import("node:crypto");
+  const hash = (value) => createHash("sha256").update(value).digest("hex");
+  const html = await readFile(new URL("../native/native-reset/index.html", root), "utf8");
+  const windCss = ".block { display: block; }";
+  const referenceCss = ".block { display: block; }";
+  const names = [
+    "native-reset-box-sizing",
+    "native-authored-cascade",
+    "native-heading",
+    "native-list",
+    "native-border",
+    "native-form",
+  ];
+  const selectors = ["#target", "#target", "#heading", "#list", "#border", "#form"];
+  const expected = [
+    ["border-box", "border-box"],
+    ["inline", "inline"],
+    ["32px", "16px"],
+    ["disc", "none"],
+    ["inset", "solid"],
+    ["outset", "solid"],
+  ];
+  const probes = names.map((name, index) => ({
+    name,
+    selector: selectors[index],
+    wind: expected[index][0],
+    reference: expected[index][1],
+    documentHtml: html,
+  }));
+  const row = (side, css, candidate, probe) => ({
+    engine: side,
+    probe: probe.name,
+    expected: probe[side],
+    pass: true,
+    verified: true,
+    stylesheetSha256: hash(css),
+    servedSha256: hash(css),
+    observation: {
+      value: probe[side],
+      cssTree: [],
+      cssRules: [],
+      box: {
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        parentX: 0,
+        parentY: 0,
+        parentWidth: 100,
+        parentHeight: 100,
+      },
+    },
+    settings: {
+      documentSha256: hash(probe.documentHtml),
+      servedDocumentSha256: hash(documentFor(candidate, probe)),
+      authoredCssSha256: hash(probe.authoredCss ?? ""),
+      scopeVars: probe.scopeVars ?? "",
+      selector: probe.selector ?? "#target",
+      viewportWidth: probe.viewportWidth ?? 800,
+      viewportHeight: 700,
+      writingMode: probe.writingMode ?? "horizontal-tb",
+      direction: probe.direction ?? "ltr",
+      hover: Boolean(probe.hover),
+      keyboardFocus: Boolean(probe.keyboardFocus),
+      pseudo: probe.pseudo ?? null,
+      relativeTo: probe.relativeTo ?? "#box",
+    },
+  });
+  const native = probes.flatMap((probe) => [
+    row("wind", windCss, "block native", probe),
+    row("reference", referenceCss, "block native", probe),
+  ]);
+  assert.equal(validatePilotNativeObservations(native, probes, windCss, referenceCss), true);
+  for (const change of [
+    (rows) => rows.fill(copy(rows[0])),
+    (rows) => {
+      rows[5] = copy(rows[0]);
+    },
+    (rows) => {
+      rows.pop();
+    },
+    (rows) => {
+      rows[3].settings.selector = "#wrong";
+    },
+    (rows) => {
+      rows[7].stylesheetSha256 = hash("stale");
+    },
+  ]) {
+    const changed = copy(native);
+    change(changed);
+    assert.throws(
+      () => validatePilotNativeObservations(changed, probes, windCss, referenceCss),
+      /native control probe/,
+    );
+  }
+  const cascadeProbe = {
+    name: "authored-cascade",
+    selector: "#target",
+    wind: "inline",
+    reference: "inline",
+    authoredCss: ".block { display: inline; }",
+    documentHtml: html,
+  };
+  const pair = [
+    {
+      wind: row("wind", windCss, "block", cascadeProbe),
+      reference: row("reference", referenceCss, "block", cascadeProbe),
+    },
+  ];
+  assert.equal(
+    validatePilotControlPairs(pair, [cascadeProbe], windCss, referenceCss, "block"),
+    true,
+  );
+  for (const change of [
+    (items) => {
+      delete items[0].wind.stylesheetSha256;
+      delete items[0].wind.servedSha256;
+    },
+    (items) => {
+      items[0].reference.engine = "wrong-side";
+    },
+    (items) => {
+      items[0].wind.probe = "unrelated";
+    },
+    (items) => {
+      items[0].reference.settings.scopeVars = "unexpected";
+    },
+  ]) {
+    const changed = copy(pair);
+    change(changed);
+    assert.throws(
+      () => validatePilotControlPairs(changed, [cascadeProbe], windCss, referenceCss, "block"),
+      /control probe/,
+    );
+  }
 });
 
 test("browser matrix fails closed for distro, architecture and toolchain drift", () => {

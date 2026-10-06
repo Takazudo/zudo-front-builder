@@ -24,9 +24,53 @@ const targetedEngines = new Set([
   "translate-composed",
   "space-hidden-children",
 ]);
+const reviewedTargetedExecutionKeys = Object.freeze({
+  "p-0-mapped": ["pilot/p-0-mapped"],
+  "named-spacing": ["pilot/named-spacing"],
+  "named-color": ["pilot/named-color"],
+  "hover-block": ["pilot/hover-block"],
+  "breakpoint-block": ["pilot/breakpoint-block"],
+  "grid-cols-2": ["pilot/grid-cols-2"],
+  "inline-flex": ["pilot/inline-flex"],
+  "mx-auto": ["pilot/mx-auto"],
+  "nested-token-scope": ["control/nested-token-scope"],
+  "specificity-and-authored-cascade": ["control/specificity-and-authored-cascade"],
+  "native-reset-controls": ["control/native-reset-controls"],
+  "wrong-value-or-missing-rule-detection": [
+    "control/wrong-value-detection",
+    "control/missing-rule-detection",
+  ],
+});
+
+export function validateTargetedExecutionKeys(manifest, profile) {
+  const mapping = manifest.targetedExecutionKeys;
+  if (
+    !mapping ||
+    digest(Object.keys(mapping)) !== digest(profile.browserPolicy.targetedObligations) ||
+    digest(mapping) !== digest(reviewedTargetedExecutionKeys)
+  )
+    throw Error("Targeted browser execution mapping changed without review");
+  for (const [obligation, keys] of Object.entries(mapping)) {
+    if (!Array.isArray(keys) || !keys.length || new Set(keys).size !== keys.length)
+      throw Error(`Duplicate or missing targeted execution key: ${obligation}`);
+    for (const key of keys) {
+      const [lane, id, extra] = key.split("/");
+      if (
+        extra ||
+        !(
+          (lane === "pilot" && manifest.pilotCaseIds.includes(id)) ||
+          (lane === "control" && profile.requiredControls.includes(id))
+        )
+      )
+        throw Error(`Targeted execution key is not a current pilot/control: ${key}`);
+    }
+  }
+  return mapping;
+}
+
 const compositionDigest = "f1a12520b9f4216ff71013771764b7dcbe87dde88b3e0f9c43b892486f62b153";
 const probePolicyDigest = "0b2ea16aa0279f5658a69070e5536c58de4aca9bfa96e31a328381058e127891";
-const reviewedManifestDigest = "bec2a684bd6b85b6dd57a21d9c9c79135051fea3de93655ec653f4da233ef0cc";
+const reviewedManifestDigest = "6e026439d4bff2b235403353e851a9050ff9617ef5c69faeb996b645c1610261";
 const mutationIds = [
   "missing-stylesheet",
   "missing-rule",
@@ -50,6 +94,7 @@ export function validateCorpus(
     profile.profileRevision !== 2
   )
     throw Error("Corpus is not bound to the reviewed profile revision");
+  validateTargetedExecutionKeys(manifest, profile);
   if (digest(manifest.counts) !== digest(fixed))
     throw Error("Corpus counts changed without policy review");
   const lanes = [
@@ -212,7 +257,7 @@ export function validateCorpus(
 
 export function expectedObligations(manifest) {
   const ids = [
-    ...manifest.pilotCaseIds.map((id) => `pilot/${id}/chromium`),
+    ...engines.flatMap((engine) => manifest.pilotCaseIds.map((id) => `pilot/${id}/${engine}`)),
     ...manifest.supplementalCaseIds.map((id) => `supplemental/${id}/chromium`),
     ...manifest.nativeGuaranteeIds.map((id) => `native/${id}/chromium`),
     ...manifest.upstreamCases.flatMap((row) =>
@@ -231,7 +276,9 @@ export function expectedOutcomes(manifest, profile) {
     "implementation-gap": "expected-unsupported",
   };
   return Object.fromEntries([
-    ...profile.requiredCases.map((row) => [`pilot/${row.id}/chromium`, pilot[row.disposition]]),
+    ...engines.flatMap((engine) =>
+      profile.requiredCases.map((row) => [`pilot/${row.id}/${engine}`, pilot[row.disposition]]),
+    ),
     ...manifest.supplementalCaseIds.map((id) => [`supplemental/${id}/chromium`, "matched"]),
     ...manifest.nativeGuaranteeIds.map((id) => [`native/${id}/chromium`, "matched"]),
     ...manifest.upstreamCases.flatMap((row) =>

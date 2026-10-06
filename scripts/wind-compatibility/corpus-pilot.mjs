@@ -14,7 +14,7 @@ import {
   structuralChecks,
   treeDigest,
 } from "./differential-runner.mjs";
-import { matchesExpected } from "./browser-adapter.mjs";
+import { documentFor, matchesExpected } from "./browser-adapter.mjs";
 import { scanOriginal } from "./oxide-scanner.mjs";
 import { expectedExtractionStructure, parseCssStructure } from "./structure.mjs";
 import { digest, fromRoot, readJson, sha256 } from "./reference.mjs";
@@ -136,6 +136,79 @@ function validatedObservation(item, engine, name, cssHash, htmlHash, authoredHas
     throw Error(`Pilot browser observation invalid: ${name}`);
 }
 
+function exactControlObservation(item, side, css, candidate, probe) {
+  const settings = item?.settings;
+  const box = item?.observation?.box;
+  return (
+    item?.engine === side &&
+    item.probe === probe.name &&
+    item.verified === true &&
+    item.pass === true &&
+    item.expected === probe[side] &&
+    item.stylesheetSha256 === sha256(css) &&
+    item.servedSha256 === sha256(css) &&
+    settings?.documentSha256 === sha256(probe.documentHtml) &&
+    settings?.servedDocumentSha256 === sha256(documentFor(candidate, probe)) &&
+    settings?.authoredCssSha256 === sha256(probe.authoredCss ?? "") &&
+    settings?.scopeVars === (probe.scopeVars ?? "") &&
+    settings?.selector === (probe.selector ?? "#target") &&
+    settings?.viewportWidth === (probe.viewportWidth ?? 800) &&
+    settings?.viewportHeight === 700 &&
+    settings?.writingMode === (probe.writingMode ?? "horizontal-tb") &&
+    settings?.direction === (probe.direction ?? "ltr") &&
+    settings?.hover === Boolean(probe.hover) &&
+    settings?.keyboardFocus === Boolean(probe.keyboardFocus) &&
+    settings?.pseudo === (probe.pseudo ?? null) &&
+    settings?.relativeTo === (probe.relativeTo ?? "#box") &&
+    typeof item.observation?.value === "string" &&
+    item.observation.value.length > 0 &&
+    Array.isArray(item.observation.cssTree) &&
+    Array.isArray(item.observation.cssRules) &&
+    box &&
+    ["x", "y", "width", "height", "parentX", "parentY", "parentWidth", "parentHeight"].every(
+      (key) => Number.isFinite(box[key]),
+    ) &&
+    matchesExpected(item.observation, probe[side])
+  );
+}
+
+export function validatePilotControlPairs(pairs, probes, windCss, referenceCss, candidate) {
+  if (!Array.isArray(pairs) || pairs.length !== probes.length)
+    throw Error("Pilot control probe count changed");
+  for (let index = 0; index < probes.length; index++) {
+    const pair = pairs[index];
+    if (
+      !exactControlObservation(pair?.wind, "wind", windCss, candidate, probes[index]) ||
+      !exactControlObservation(pair?.reference, "reference", referenceCss, candidate, probes[index])
+    )
+      throw Error(
+        `Pilot control probe identity/artifact/expectation changed: ${probes[index].name}`,
+      );
+  }
+  return true;
+}
+
+export function validatePilotNativeObservations(items, probes, windCss, referenceCss) {
+  if (!Array.isArray(items) || items.length !== probes.length * 2)
+    throw Error("Pilot native control probe count changed");
+  for (let index = 0; index < probes.length; index++) {
+    if (
+      !exactControlObservation(items[2 * index], "wind", windCss, "block native", probes[index]) ||
+      !exactControlObservation(
+        items[2 * index + 1],
+        "reference",
+        referenceCss,
+        "block native",
+        probes[index],
+      )
+    )
+      throw Error(
+        `Pilot native control probe identity/artifact/expectation changed: ${probes[index].name}`,
+      );
+  }
+  return true;
+}
+
 export async function currentPilotIdentity({
   profile,
   manifest,
@@ -179,6 +252,54 @@ export async function currentPilotIdentity({
     caseIds: manifest.caseIds,
     windProcess: { status: 0, stderr: "", stdout: "" },
   };
+}
+
+export function validatePilotCorruptionControls(controls, blockCss, blockProbe, blockHtml) {
+  const byId = new Map(controls.map((row) => [row.controlId, row]));
+  const missing = byId.get("missing-rule-detection")?.mutations;
+  const wrong = byId.get("wrong-value-detection")?.mutations;
+  const wrongValueCss = blockCss.replace(/display:\s*block/, "display: none");
+  const wrongSelectorCss = blockCss.replace(/\.block\s*\{/, ".wrong { ");
+  const negative = (item, css) =>
+    item?.engine === "wind" &&
+    item.probe === blockProbe.name &&
+    item.verified === true &&
+    item.pass === false &&
+    item.stylesheetSha256 === sha256(css) &&
+    item.servedSha256 === sha256(css) &&
+    item.settings?.documentSha256 === sha256(blockHtml) &&
+    item.settings?.authoredCssSha256 === sha256(blockProbe.authoredCss ?? "") &&
+    item.settings?.selector === (blockProbe.selector ?? "#target") &&
+    item.settings?.viewportWidth === (blockProbe.viewportWidth ?? 800) &&
+    item.settings?.viewportHeight === 700 &&
+    item.settings?.writingMode === (blockProbe.writingMode ?? "horizontal-tb") &&
+    item.settings?.direction === (blockProbe.direction ?? "ltr") &&
+    item.settings?.hover === Boolean(blockProbe.hover) &&
+    item.settings?.keyboardFocus === Boolean(blockProbe.keyboardFocus) &&
+    item.settings?.pseudo === (blockProbe.pseudo ?? null) &&
+    item.settings?.relativeTo === (blockProbe.relativeTo ?? "#box") &&
+    typeof item.observation?.value === "string" &&
+    item.observation.value.length > 0 &&
+    Array.isArray(item.observation.cssTree) &&
+    Array.isArray(item.observation.cssRules) &&
+    item.observation.box &&
+    ["x", "y", "width", "height", "parentX", "parentY", "parentWidth", "parentHeight"].every(
+      (key) => Number.isFinite(item.observation.box[key]),
+    ) &&
+    digest(item.expected) === digest(blockProbe.wind) &&
+    !matchesExpected(item.observation, blockProbe.wind);
+  if (
+    !missing?.removedStylesheetDetected ||
+    !missing?.wrongSelectorDetected ||
+    !wrong?.wrongValueDetected ||
+    wrongValueCss === blockCss ||
+    wrongSelectorCss === blockCss ||
+    !negative(missing.removedStylesheet, "") ||
+    !negative(missing.wrongSelector, wrongSelectorCss) ||
+    !negative(wrong.wrongValue, wrongValueCss)
+  )
+    throw Error("Pilot wrong-value/missing-rule browser controls absent or forged");
+  return true;
 }
 
 export async function validatePilotArtifacts(
@@ -257,6 +378,12 @@ export async function validatePilotArtifacts(
     });
   }
   const control = new Map(report.controls.map((row) => [row.controlId, row]));
+  validatePilotCorruptionControls(
+    report.controls,
+    await readFile(resolve(output, "wind-compiler/block/wind.css"), "utf8"),
+    observations.block.probes[0],
+    await readFile(fromRoot("tests/wind-compatibility/pilot/block/index.html"), "utf8"),
+  );
   if (
     control.get("missing-rule-detection")?.mutations?.removedStylesheetDetected !== true ||
     control.get("missing-rule-detection")?.mutations?.wrongSelectorDetected !== true ||
@@ -264,24 +391,57 @@ export async function validatePilotArtifacts(
     control.get("writing-mode-axis")?.verticalDifferences !== true
   )
     throw Error("Pilot mutation or writing-mode evidence absent");
-  for (const id of ["specificity-and-authored-cascade", "nested-token-scope"]) {
-    const pairs = control.get(id)?.observations;
-    if (
-      !Array.isArray(pairs) ||
-      pairs.length !== 1 ||
-      !pairs[0]?.wind?.pass ||
-      !pairs[0]?.reference?.pass ||
-      !pairs[0]?.wind?.verified ||
-      !pairs[0]?.reference?.verified ||
-      [pairs[0].wind, pairs[0].reference].some(
-        (item) =>
-          !matchesExpected(item.observation, item.expected) ||
-          item.servedSha256 !== item.stylesheetSha256 ||
-          item.expected !== (id === "nested-token-scope" ? "31px" : "inline"),
-      )
-    )
-      throw Error(`Pilot control observation missing: ${id}`);
-  }
+  const blockHtml = await readFile(
+    fromRoot("tests/wind-compatibility/pilot/block/index.html"),
+    "utf8",
+  );
+  const blockWindCss = await readFile(resolve(output, "wind-compiler/block/wind.css"), "utf8");
+  const blockReferenceCss = await readFile(
+    resolve(output, "reference-compiler/block/reference.css"),
+    "utf8",
+  );
+  const cascadeProbe = {
+    ...observations.block.probes[0],
+    name: "authored-cascade",
+    authoredCss: ".block { display: inline; }",
+    wind: "inline",
+    reference: "inline",
+    documentHtml: blockHtml,
+  };
+  validatePilotControlPairs(
+    control.get("specificity-and-authored-cascade")?.observations,
+    [cascadeProbe],
+    blockWindCss,
+    blockReferenceCss,
+    "block",
+  );
+  const spacingHtml = await readFile(
+    fromRoot("tests/wind-compatibility/pilot/named-spacing/index.html"),
+    "utf8",
+  );
+  const spacingWindCss = await readFile(
+    resolve(output, "wind-compiler/named-spacing/wind.css"),
+    "utf8",
+  );
+  const spacingReferenceCss = await readFile(
+    resolve(output, "reference-compiler/named-spacing/reference.css"),
+    "utf8",
+  );
+  const scopeProbe = {
+    name: "nested-token-scope",
+    property: "padding-top",
+    scopeVars: "--zw-spacing-hsp-sm:31px;--spacing-hsp-sm:31px;",
+    wind: "31px",
+    reference: "31px",
+    documentHtml: spacingHtml,
+  };
+  validatePilotControlPairs(
+    control.get("nested-token-scope")?.observations,
+    [scopeProbe],
+    spacingWindCss,
+    spacingReferenceCss,
+    "p-hsp-sm",
+  );
   const native = control.get("native-reset-controls");
   const nativeCss = await readFile(resolve(output, "wind-native/native-reset/wind.css"));
   const nativeReferenceCss = await readFile(
@@ -292,20 +452,52 @@ export async function validatePilotArtifacts(
     fromRoot("tests/wind-compatibility/native/native-reset/authored.css"),
     "utf8",
   );
+  const nativeHtml = await readFile(
+    fromRoot("tests/wind-compatibility/native/native-reset/index.html"),
+    "utf8",
+  );
+  const nativeProbes = [
+    {
+      name: "native-reset-box-sizing",
+      property: "box-sizing",
+      wind: "border-box",
+      reference: "border-box",
+    },
+    { name: "native-authored-cascade", property: "display", wind: "inline", reference: "inline" },
+    {
+      name: "native-heading",
+      selector: "#heading",
+      property: "font-size",
+      wind: "32px",
+      reference: "16px",
+    },
+    {
+      name: "native-list",
+      selector: "#list",
+      property: "list-style-type",
+      wind: "disc",
+      reference: "none",
+    },
+    {
+      name: "native-border",
+      selector: "#border",
+      property: "border-top-style",
+      wind: "inset",
+      reference: "solid",
+    },
+    {
+      name: "native-form",
+      selector: "#form",
+      property: "border-top-style",
+      wind: "outset",
+      reference: "solid",
+    },
+  ].map((probe) => ({ ...probe, documentHtml: nativeHtml }));
   const nativeCompiler = await reference.compile("@theme { --*: initial; } @tailwind utilities;");
   const expectedNativeReferenceCss = `@layer theme, base, components, utilities;\n@layer base {\n${reference.preflightCss}\n}\n@layer utilities {\n${nativeCompiler.build(["block"])}\n}\n${nativeAuthored}`;
   const nativeWindReport = await readJson(resolve(output, "wind-native/native-reset/report.json"));
   if (
-    native?.observations?.length !== 12 ||
-    native.observations.some(
-      (item) =>
-        !item.pass ||
-        !item.verified ||
-        !matchesExpected(item.observation, item.expected) ||
-        item.stylesheetSha256 !==
-          (item.engine === "wind" ? sha256(nativeCss) : sha256(nativeReferenceCss)) ||
-        item.servedSha256 !== item.stylesheetSha256,
-    ) ||
+    !native ||
     native.windCssSha256 !== sha256(nativeCss) ||
     native.referenceCssSha256 !== sha256(nativeReferenceCss) ||
     nativeReferenceCss !== expectedNativeReferenceCss ||
@@ -314,6 +506,7 @@ export async function validatePilotArtifacts(
     native.windProcessStatus !== 0
   )
     throw Error("Pilot native control artifact claim invalid");
+  validatePilotNativeObservations(native.observations, nativeProbes, nativeCss, nativeReferenceCss);
   for (const row of report.extraction) {
     const directory = fromRoot(`tests/wind-compatibility/extraction/${row.caseId}`);
     const definition = await readJson(resolve(directory, "case.json"));
