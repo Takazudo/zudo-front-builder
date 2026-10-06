@@ -95,6 +95,7 @@ function fixture() {
     },
   };
   const responses = new Map();
+  const releaseLinks = new Map();
   for (const version of ["4.3.1", "4.3.2"]) {
     const commit = commits[version];
     responses.set(`${npm}/${version}`, metadata[version]);
@@ -111,14 +112,19 @@ function fixture() {
     responses.set(`${gh}/releases/tags/v${version}`, releases[version]);
   }
   responses.set(npm, { versions: metadata });
+  responses.set(gh, { full_name: "tailwindlabs/tailwindcss", id: 106017343 });
   responses.set(`${gh}/releases?per_page=100&page=1`, [releases["4.3.2"]]);
   responses.set(`${gh}/releases?per_page=100&page=2`, []);
+  releaseLinks.set(
+    `${gh}/releases?per_page=100&page=1`,
+    `<${gh}/releases?per_page=100&page=2>; rel="next"`,
+  );
   const fetcher = async (url) => {
     const value = responses.get(url);
     const bytes = Buffer.isBuffer(value)
       ? value
       : Buffer.from(JSON.stringify(value ?? { message: "Not Found" }));
-    const link = url.endsWith("page=1") ? `<${gh}/releases?per_page=100&page=2>; rel="next"` : null;
+    const link = releaseLinks.get(url) ?? null;
     return {
       ok: value !== undefined,
       status: value === undefined ? 404 : 200,
@@ -186,7 +192,7 @@ function fixture() {
     toolchain: {},
     verificationOnly: true,
   });
-  return { responses, fetcher, bootstrapPlan, deltaPlan, currentPlan, trees };
+  return { responses, releaseLinks, fetcher, bootstrapPlan, deltaPlan, currentPlan, trees };
 }
 
 async function withCache(fn) {
@@ -218,6 +224,56 @@ test("real upstream schemas produce complete bootstrap and accepted-to-candidate
     assert.equal(delta.sections.tests.changes.length, 2);
     assert.equal(delta.sections.source.previousTagCommit, commits["4.3.1"]);
     assert.deepEqual({ status: status(), inputs: await identity() }, before);
+  }));
+
+test("numeric GitHub release cursor is followed only for the verified repository identity", async () =>
+  withCache(async (cache) => {
+    const f = fixture(),
+      pageOne = `${gh}/releases?per_page=100&page=1`,
+      canonicalPageTwo =
+        "https://api.github.com/repositories/106017343/releases?per_page=100&page=2";
+    f.responses.set(canonicalPageTwo, []);
+    f.releaseLinks.set(pageOne, `<${canonicalPageTwo}>; rel="next"`);
+    const result = await assessUpstream(f.deltaPlan, cache, f.fetcher);
+    assert.equal(result.status, "ready-for-comparison", result.findings.join(", "));
+    assert.ok(result.captures.some((capture) => capture.url === canonicalPageTwo));
+  }));
+
+test("GitHub release cursor rejects an unbound repository ID, host, path, or page", async () =>
+  withCache(async (cache) => {
+    const cases = [
+      [
+        "wrong repository ID",
+        "https://api.github.com/repositories/999/releases?per_page=100&page=2",
+      ],
+      [
+        "wrong host",
+        "https://api.github.example/repositories/106017343/releases?per_page=100&page=2",
+      ],
+      [
+        "wrong repository path",
+        "https://api.github.com/repos/tailwindlabs/other/releases?per_page=100&page=2",
+      ],
+      ["wrong page", "https://api.github.com/repositories/106017343/releases?per_page=100&page=3"],
+      ["wrong query", "https://api.github.com/repositories/106017343/releases?per_page=99&page=2"],
+    ];
+    for (const [label, cursor] of cases) {
+      const f = fixture();
+      f.releaseLinks.set(`${gh}/releases?per_page=100&page=1`, `<${cursor}>; rel="next"`);
+      const result = await assessUpstream(f.deltaPlan, cache, f.fetcher);
+      assert.equal(result.status, "incomplete", label);
+      assert.match(result.findings[0], /GitHub releases cursor mismatch/);
+      assert.ok(!result.captures.some((capture) => capture.url === cursor), label);
+    }
+  }));
+
+test("numeric GitHub pagination requires API identity bound to tailwindlabs/tailwindcss", async () =>
+  withCache(async (cache) => {
+    const f = fixture();
+    f.responses.set(gh, { full_name: "tailwindlabs/other", id: 106017343 });
+    const result = await assessUpstream(f.deltaPlan, cache, f.fetcher);
+    assert.equal(result.status, "incomplete");
+    assert.match(result.findings[0], /Unverifiable GitHub repository identity/);
   }));
 
 test("same-version accepted assessment replays exact current artifact without an upgrade range", async () =>
