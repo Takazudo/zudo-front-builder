@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use zudo_wind::{
-    compile, CompileInput, DiagnosticCode, Origin, OriginCandidate, Severity, SourcePositionKind,
-    WindConfig,
+    compile, BreakpointConfig, CompileInput, DiagnosticCode, Origin, OriginCandidate, Severity,
+    SourcePositionKind, WindConfig,
 };
 
 fn origin(text: &str, kind: SourcePositionKind) -> Origin {
@@ -269,16 +269,11 @@ fn invalid_adopted_shapes_and_retained_gaps_keep_distinct_diagnostics() {
 #[test]
 fn native_forms_ignore_configured_names_and_authored_complete_candidates() {
     let mut config = WindConfig::default();
-    config.tokens.colors = BTreeMap::from([
-        ("current".into(), "red".into()),
-        ("none".into(), "blue".into()),
-        ("brand".into(), "green".into()),
-    ]);
+    config.tokens.colors = BTreeMap::from([("brand".into(), "green".into())]);
     config.tokens.spacing = BTreeMap::from([
         ("first".into(), "17px".into()),
         ("content".into(), "19px".into()),
     ]);
-    config.tokens.sizes = BTreeMap::from([("min".into(), "23px".into())]);
     let result = run(
         &[
             "order-first",
@@ -311,4 +306,151 @@ fn native_forms_ignore_configured_names_and_authored_complete_candidates() {
     );
     assert_eq!(result.rules.len(), 1);
     assert_eq!(result.rules[0].candidate, "fill-current");
+}
+
+#[test]
+fn adopted_forms_use_existing_variants_and_stable_raw_tie_break() {
+    let mut config = WindConfig::default();
+    config
+        .breakpoints
+        .insert("sm".into(), BreakpointConfig { min_width_px: 640 });
+    let left = run(
+        &[
+            "order-none",
+            "order-last",
+            "order-2",
+            "order-10",
+            "order-1",
+            "-order-1",
+            "basis-auto",
+            "flex-1",
+            "fill-none",
+            "fill-current",
+            "stroke-none",
+            "stroke-current",
+            "focus:order-1",
+            "sm:basis-1/2",
+            "hover:fill-current",
+            "focus:not-sr-only",
+        ],
+        config.clone(),
+        origin("order-1", SourcePositionKind::Class),
+    );
+    let right = run(
+        &[
+            "focus:not-sr-only",
+            "hover:fill-current",
+            "sm:basis-1/2",
+            "focus:order-1",
+            "-order-1",
+            "order-1",
+            "order-10",
+            "order-2",
+            "order-last",
+            "order-none",
+            "stroke-current",
+            "stroke-none",
+            "fill-current",
+            "fill-none",
+            "flex-1",
+            "basis-auto",
+            "order-1",
+        ],
+        config,
+        origin("order-1", SourcePositionKind::Class),
+    );
+    assert!(left.diagnostics.is_empty(), "{:?}", left.diagnostics);
+    assert_eq!(left.stylesheet, right.stylesheet);
+    let ordered = left
+        .rules
+        .iter()
+        .map(|rule| rule.candidate.as_str())
+        .collect::<Vec<_>>();
+    for (before, after) in [
+        ("flex-1", "basis-auto"),
+        ("basis-auto", "-order-1"),
+        ("-order-1", "order-1"),
+        ("order-10", "order-2"),
+        ("order-last", "order-none"),
+        ("fill-current", "fill-none"),
+        ("stroke-current", "stroke-none"),
+    ] {
+        assert!(
+            ordered.iter().position(|x| x == &before).unwrap()
+                < ordered.iter().position(|x| x == &after).unwrap(),
+            "{before} before {after}"
+        );
+    }
+    assert_eq!(
+        writes(&left, "focus:order-1"),
+        vec![("order".into(), "1".into())]
+    );
+    assert_eq!(
+        writes(&left, "sm:basis-1/2"),
+        vec![("flex-basis".into(), "calc(100% * 1 / 2)".into())]
+    );
+    assert!(left.stylesheet.contains("640px"));
+    assert!(!left.stylesheet.contains("content:"));
+}
+
+#[test]
+fn invalid_and_migration_forms_preserve_origin_and_strictness_policy() {
+    for (name, code) in [
+        ("basis-0/2", DiagnosticCode::Zw005),
+        ("basis-1", DiagnosticCode::Zw014),
+    ] {
+        for strict in [false, true] {
+            let config = WindConfig {
+                strict,
+                ..WindConfig::default()
+            };
+            for (source_kind, severity) in [
+                (
+                    SourcePositionKind::Class,
+                    if code == DiagnosticCode::Zw014 && !strict {
+                        Severity::Warning
+                    } else {
+                        Severity::Error
+                    },
+                ),
+                (SourcePositionKind::Literal, Severity::AuditInfo),
+            ] {
+                let result = run(&[name], config.clone(), origin(name, source_kind));
+                assert_eq!(result.diagnostics.len(), 1, "{name}");
+                assert_eq!(
+                    (result.diagnostics[0].code, result.diagnostics[0].severity),
+                    (code, severity),
+                    "{name}"
+                );
+                assert!(result.diagnostics[0].message.contains(name), "{name}");
+                assert!(result.rules.is_empty());
+            }
+            for explicit in [
+                Origin::Safelist {
+                    owner: "test".into(),
+                    index: 0,
+                },
+                Origin::Manifest {
+                    producer: "test".into(),
+                    path: "classes.json".into(),
+                    index: 0,
+                },
+            ] {
+                let result = run(&[name], config.clone(), explicit);
+                assert_eq!(
+                    (result.diagnostics[0].code, result.diagnostics[0].severity),
+                    (code, Severity::Error)
+                );
+            }
+            let role = run(
+                &[name],
+                config,
+                Origin::RoleClass {
+                    role_key: "className".into(),
+                },
+            );
+            assert!(role.diagnostics.is_empty(), "{name}");
+            assert!(role.rules.is_empty(), "{name}");
+        }
+    }
 }

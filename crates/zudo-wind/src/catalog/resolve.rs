@@ -317,11 +317,15 @@ impl Catalog {
             );
         }
         if utility.negative && !entry.negative {
-            return if is_new_exact_static_root(&entry.root) {
+            return if is_new_exact_static_root(&entry.root) || entry.root == "basis" {
                 adopted_static_modifier_error(
                     candidate,
                     origin,
-                    &entry.root,
+                    if entry.root == "basis" {
+                        "basis-auto or basis-1/2"
+                    } else {
+                        &entry.root
+                    },
                     "negative values are not supported",
                     "R12",
                 )
@@ -339,11 +343,15 @@ impl Catalog {
             && !entry.grammar.allows_fraction_slash
             && !entry.grammar.allows_color_opacity
         {
-            return if is_new_exact_static_root(&entry.root) {
+            return if is_new_exact_static_root(&entry.root) || entry.root == "order" {
                 adopted_static_modifier_error(
                     candidate,
                     origin,
-                    &entry.root,
+                    if entry.root == "order" {
+                        "order-N"
+                    } else {
+                        &entry.root
+                    },
                     "slash modifiers are not supported",
                     "R14",
                 )
@@ -360,6 +368,18 @@ impl Catalog {
         let (mut value, mut status) = match entry_value(entry, suffix, candidate, tokens) {
             Ok(value) => value,
             Err((code, message, rejection_id)) => {
+                let message = if code == DiagnosticCode::Zw005
+                    && (entry.root == "basis" || entry.root == "order")
+                {
+                    let supported = if entry.root == "basis" {
+                        "basis-auto, basis-full, basis-px, basis-0, basis-min/max/fit/content, or basis-N/D with parts 1..1000000"
+                    } else {
+                        "order-first/last/none or order-N with N 0..2147483647"
+                    };
+                    format!("{}: {message}; use {supported}, or author the declaration in CSS and reserve the complete candidate with wind.authoredClasses", candidate.raw)
+                } else {
+                    message
+                };
                 let mut result = invalid(candidate, origin, code, &message, rejection_id);
                 if entry.root == "aspect" {
                     let denominator = candidate.utility.slash_modifier.as_deref().unwrap_or("1");
@@ -643,14 +663,14 @@ fn resolve_value(
             Some("R15"),
         ));
     }
-    if entry.root == "basis"
-        && modifier.is_some()
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
+    if let Some(denominator) = modifier.filter(|_| {
+        entry.root == "basis"
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    }) {
         let numerator = positive_ratio_part(suffix)?;
-        let denominator = positive_ratio_part(modifier.expect("checked above"))?;
+        let denominator = positive_ratio_part(denominator)?;
         return Ok((
             format!("calc(100% * {numerator} / {denominator})"),
             ValueStatus::Verified,
