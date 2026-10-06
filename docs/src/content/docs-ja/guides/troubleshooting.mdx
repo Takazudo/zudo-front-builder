@@ -10,6 +10,32 @@ sidebar_position: 9
 
 </Info>
 
+## unsupported island registration … has unsupported initializer
+
+**症状:** 本番ビルドが非ゼロで終了し、`target Target has unsupported initializer` という接頭辞を持つ未サポートの島登録エラーを報告します。ファクトリのパラメーターから取ったターゲットを使えるのは、スキャンされたモジュールグラフ内のパラメーターとすべての直接呼び出しを zfb が証明できる場合だけです。zfb はコンポーネントを探すためにファクトリを実行しません。
+
+**原因:** 選択するコンポーネントは、読み取り専用のパラメーターから取得し、すべての呼び出し箇所でプレーンなオブジェクトリテラルから渡す必要があります。リテラルにはほかのプレーンなプロパティも含められますが、選択するプロパティはちょうど 1 回だけ指定し、すべての呼び出しで同じ関数定義に解決されなければなりません。`let` または `var` のターゲットは従来どおり `mutable target binding` と診断されます。
+
+**対処:** `const` のメンバーアクセスまたはオブジェクトパターンで束縛し、パラメーターを読み取り専用に保ち、プレーンなオブジェクトリテラルを使って関数を直接呼び出してください。最初に該当する理由の修正方法を適用します。
+
+| 診断理由 | 修正方法 |
+| --- | --- |
+| `mutable target binding` | `const` のターゲット束縛を使い、再代入しません。 |
+| `parameter <name> has a default value` | デフォルト値を取り除き、すべての呼び出しでオブジェクトを明示的に渡します。 |
+| `destructured parameter <name> uses a rest pattern` | rest パターンを取り除き、名前を指定した静的プロパティだけを分割代入します。 |
+| `parameter <name> is written or escapes at <loc>` | パラメーターを静的メンバーの読み取りか `const` オブジェクトパターンにだけ使います。書き込み、削除、引き渡し、別名への束縛、返却、スプレッドを避けます。 |
+| `factory <F> escapes as a value at <loc>` | `F` への参照をすべて直接呼び出しにします。渡す、保存する、返す、bind/apply する、JSX として描画するといった操作を避けます。 |
+| `factory <F> has no call site in the scanned modules` | 必要なオブジェクトリテラルを使う直接呼び出しをスキャン対象モジュールに追加するか、固定ターゲットを直接使います。 |
+| `call site at <loc> passes too few arguments` | 宣言された位置にパラメーターを渡します。 |
+| `call site at <loc> spreads positional arguments` | パラメーターの位置までの位置引数を明示的に書きます。 |
+| `call site at <loc> passes a non-literal argument` | スプレッド、計算プロパティキー、メソッド、getter のないプレーンなオブジェクトリテラルを渡します。ほかのプレーンなプロパティは含められます。 |
+| `property <prop> missing at call site <loc>` | 選択するプロパティを静的なキーでちょうど 1 回追加します。 |
+| `call site at <loc> selects <prop> conditionally (??, ternary, ||)` | 1 つの関数を直接渡すか、候補をそれぞれ具体的な島の境界として描画します。パッケージの差し替えには[合成方法](../concepts/islands.mdx#境界ターゲットの検出と移行-パッケージの島を差し替えるための合成)を使います。 |
+| `property <prop> at <loc> is not a function binding` | 1 つの関数定義に解決される値を渡します。値の解決自体が `memo(X)` などの未サポート理由を返した場合、その理由も追加されます。 |
+| `call sites disagree: <loc> passes Counter, <loc> passes Other` | すべての呼び出しで同じ関数定義を渡すか、別々の固定ターゲット wrapper に分けます。 |
+
+パラメーターの分割代入では、デフォルト値のない単純な識別子パラメーターを使い、rest、デフォルト値、ネストしたオブジェクトパターンを含められません。呼び出し箇所のオブジェクトリテラルには、スプレッド、計算プロパティキー、メソッド、getter を含められません。プロパティの値は関数の束縛である必要があり、`ctx.hostBindings.Panel ?? fallback` のような条件式は使えません。使用できる構文、呼び出し箇所の証明、合成の例は[ファクトリから渡すターゲット](../concepts/islands.mdx#境界ターゲットの検出と移行-ファクトリから渡すターゲット)を参照してください。
+
 ## `curl | sh` インストールがリリースタグを解決できない
 
 **症状:** [curl インストーラ](../install/node-free.mdx#インストール経路-linux-macos-—-curl) が次のいずれかで終了する。
