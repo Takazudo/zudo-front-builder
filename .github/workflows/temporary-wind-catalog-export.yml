@@ -1,0 +1,58 @@
+# Preparation only. Pin 72904d491136919c9812fdac20779b722d2e4502 to reviewed child source commit before use.
+name: Temporary Wind native catalog export
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: wind-catalog-export-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: 72904d491136919c9812fdac20779b722d2e4502
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: wind-harness-pilot
+      - name: Verify source and retain compiler inputs
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wind-catalog-export
+          test "$(git rev-parse HEAD)" = 72904d491136919c9812fdac20779b722d2e4502
+          test -z "$(git status --porcelain)"
+          {
+            git rev-parse HEAD
+            git ls-tree -r HEAD crates/zudo-wind Cargo.toml Cargo.lock
+            rustc -Vv
+            cargo -V
+            cat /etc/os-release
+          } > /tmp/wind-catalog-export/source-environment.txt
+          cp crates/zudo-wind/catalog/zudo-wind-catalog.v1.json /tmp/wind-catalog-export/prior-catalog.json
+      - name: Export catalog from actual candidate Rust source
+        run: |
+          set -euo pipefail
+          cargo run --locked -p zudo-wind --example export_catalog 2>&1 | tee /tmp/wind-catalog-export/generator.log
+          cp crates/zudo-wind/catalog/zudo-wind-catalog.v1.json /tmp/wind-catalog-export/zudo-wind-catalog.v1.json
+          sha256sum /tmp/wind-catalog-export/zudo-wind-catalog.v1.json > /tmp/wind-catalog-export/catalog.sha256
+          git diff -- crates/zudo-wind/catalog/zudo-wind-catalog.v1.json > /tmp/wind-catalog-export/catalog.diff
+      - name: Focused Wind Rust contracts after generated export
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p zudo-wind 2>&1 | tee /tmp/wind-catalog-export/rust-tests.log
+          cargo clippy --locked -p zudo-wind --all-targets -- -D warnings 2>&1 | tee /tmp/wind-catalog-export/clippy.log
+      - name: Preserve original export and verification logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: wind-catalog-export
+          path: /tmp/wind-catalog-export/
+          if-no-files-found: error
+          retention-days: 7
