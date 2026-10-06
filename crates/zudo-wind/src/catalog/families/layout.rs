@@ -36,6 +36,38 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             value,
         ));
     }
+    for (root, value) in [
+        ("contents", "contents"),
+        ("flow-root", "flow-root"),
+        ("list-item", "list-item"),
+        ("table", "table"),
+        ("inline-table", "inline-table"),
+        ("table-caption", "table-caption"),
+        ("table-cell", "table-cell"),
+        ("table-column", "table-column"),
+        ("table-column-group", "table-column-group"),
+        ("table-footer-group", "table-footer-group"),
+        ("table-header-group", "table-header-group"),
+        ("table-row", "table-row"),
+        ("table-row-group", "table-row-group"),
+    ] {
+        entries.push(entry(
+            root,
+            "display",
+            1,
+            0,
+            &["display"],
+            STATIC,
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            OWN,
+            None,
+            value,
+        ));
+    }
     for root in ["static", "relative", "absolute", "fixed", "sticky"] {
         entries.push(entry(
             root,

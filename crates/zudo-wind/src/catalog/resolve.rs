@@ -8,6 +8,28 @@ use crate::{
     SourcePositionKind, ValidatedTokens, ValueStatus, VariantKind,
 };
 
+const NEW_EXACT_STATIC_ROOTS: &[&str] = &[
+    "contents",
+    "flow-root",
+    "list-item",
+    "table",
+    "inline-table",
+    "table-caption",
+    "table-cell",
+    "table-column",
+    "table-column-group",
+    "table-footer-group",
+    "table-header-group",
+    "table-row",
+    "table-row-group",
+    "appearance-auto",
+    "appearance-none",
+];
+
+fn is_new_exact_static_root(root: &str) -> bool {
+    NEW_EXACT_STATIC_ROOTS.contains(&root)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Declaration {
     pub property: String,
@@ -149,7 +171,8 @@ impl Catalog {
             // A static decoration style claims only its exact spelling. Its
             // prefix still belongs to the color token lookup and diagnostics.
             .filter(|(entry, suffix)| {
-                !entry.id.starts_with("v1.decoration.style.") || suffix.is_empty()
+                (!entry.id.starts_with("v1.decoration.style.") || suffix.is_empty())
+                    && (!is_new_exact_static_root(&entry.root) || suffix.is_empty())
             })
             .collect();
         // Exact style roots were added after color tokens. Keep configured
@@ -273,25 +296,45 @@ impl Catalog {
         }
         let utility = &candidate.utility;
         if utility.negative && !entry.negative {
-            return invalid(
-                candidate,
-                origin,
-                DiagnosticCode::Zw005,
-                "negative value is not supported",
-                Some("R12"),
-            );
+            return if is_new_exact_static_root(&entry.root) {
+                adopted_static_modifier_error(
+                    candidate,
+                    origin,
+                    &entry.root,
+                    "negative values are not supported",
+                    "R12",
+                )
+            } else {
+                invalid(
+                    candidate,
+                    origin,
+                    DiagnosticCode::Zw005,
+                    "negative value is not supported",
+                    Some("R12"),
+                )
+            };
         }
         if utility.slash_modifier.is_some()
             && !entry.grammar.allows_fraction_slash
             && !entry.grammar.allows_color_opacity
         {
-            return invalid(
-                candidate,
-                origin,
-                DiagnosticCode::Zw005,
-                "slash modifier is not supported",
-                Some("R14"),
-            );
+            return if is_new_exact_static_root(&entry.root) {
+                adopted_static_modifier_error(
+                    candidate,
+                    origin,
+                    &entry.root,
+                    "slash modifiers are not supported",
+                    "R14",
+                )
+            } else {
+                invalid(
+                    candidate,
+                    origin,
+                    DiagnosticCode::Zw005,
+                    "slash modifier is not supported",
+                    Some("R14"),
+                )
+            };
         }
         let (mut value, mut status) = match entry_value(entry, suffix, candidate, tokens) {
             Ok(value) => value,
@@ -1147,8 +1190,36 @@ impl Catalog {
         ["ring", "animate", "scale", "transform", "group", "peer"]
             .into_iter()
             .any(starts_at)
-            || self.entries.iter().any(|entry| starts_at(&entry.root))
+            || self
+                .entries
+                .iter()
+                .any(|entry| !is_new_exact_static_root(&entry.root) && starts_at(&entry.root))
     }
+}
+
+fn adopted_static_modifier_error(
+    candidate: &Candidate,
+    origin: &Origin,
+    supported: &str,
+    reason: &str,
+    rejection_id: &'static str,
+) -> Resolution {
+    let reserved = serde_json::to_string(&candidate.raw).expect("candidate is a string");
+    let message = format!(
+        "{}: {reason}; use `{supported}` or author the declaration in CSS and reserve the complete candidate with wind.authoredClasses: {{ {reserved}: true }}",
+        candidate.raw
+    );
+    let mut result = invalid(
+        candidate,
+        origin,
+        DiagnosticCode::Zw005,
+        &message,
+        Some(rejection_id),
+    );
+    if let Resolution::Diagnostic(diagnostic) | Resolution::Failure(diagnostic) = &mut result {
+        diagnostic.suggested_spelling = Some(supported.to_owned());
+    }
+    result
 }
 
 fn unknown_root(candidate: &Candidate, origin: &Origin) -> Resolution {

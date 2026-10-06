@@ -31,11 +31,11 @@ fn source(text: &str, kind: SourcePositionKind) -> OriginCandidate {
 #[test]
 fn rejected_variants_keep_wrapped_migration_and_original_origin() {
     for text in [
-        "min-[56rem]:table-cell",
-        "max-[42rem]:table-cell",
+        "min-[56rem]:table-auto",
+        "max-[42rem]:table-auto",
         "has-[:focus-visible]:filter-[blur(2px)]",
         "supports-[display:grid]:bg-gradient-to-b",
-        "group-data-[current=true]:table-cell",
+        "group-data-[current=true]:table-auto",
     ] {
         let input = source(text, SourcePositionKind::Class);
         let result = compile(&CompileInput {
@@ -73,13 +73,13 @@ fn rejected_variants_keep_wrapped_migration_and_original_origin() {
     let mut with_safelist = config();
     with_safelist
         .safelist
-        .insert("app".to_owned(), vec!["table-cell".to_owned()]);
-    let explanation = explain("min-[56rem]:table-cell", &with_safelist);
+        .insert("app".to_owned(), vec!["table-auto".to_owned()]);
+    let explanation = explain("min-[56rem]:table-auto", &with_safelist);
     assert_eq!(explanation.diagnostics.len(), 2);
     assert!(explanation
         .diagnostics
         .iter()
-        .all(|diagnostic| diagnostic.candidate.as_deref() == Some("min-[56rem]:table-cell")));
+        .all(|diagnostic| diagnostic.candidate.as_deref() == Some("min-[56rem]:table-auto")));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn valid_wrapped_utility_is_only_a_variant_error_and_bad_forms_stay_syntax_error
 #[test]
 fn audit_text_json_severity_and_authored_class_behavior() {
     let classes = [
-        "min-[56rem]:table-cell",
+        "min-[56rem]:table-auto",
         "has-[:focus-visible]:filter-[blur(2px)]",
         "supports-[display:grid]:bg-gradient-to-b",
     ];

@@ -1,11 +1,12 @@
 import { digest } from "./reference.mjs";
+import { validatePilot } from "./differential-core.mjs";
 
 const fixed = Object.freeze({
   pilot: 15,
   supplemental: 4,
   nativeGuarantees: 18,
-  upstreamCases: 17,
-  upstreamProbes: 40,
+  upstreamCases: 19,
+  upstreamProbes: 55,
   seededSpecimens: 10,
   seededArbitraryValues: 6,
   seededSourceStrings: 6,
@@ -69,8 +70,8 @@ export function validateTargetedExecutionKeys(manifest, profile) {
 }
 
 const compositionDigest = "f1a12520b9f4216ff71013771764b7dcbe87dde88b3e0f9c43b892486f62b153";
-const probePolicyDigest = "0b2ea16aa0279f5658a69070e5536c58de4aca9bfa96e31a328381058e127891";
-const reviewedManifestDigest = "6e026439d4bff2b235403353e851a9050ff9617ef5c69faeb996b645c1610261";
+const probePolicyDigest = "9bc08e42b312f476a59a39355fa260fb07d288302c9a621ffc5f19cbffa78368";
+const reviewedManifestDigest = "8694d907e81664ddc4f7d61f19650f703df1a840b52611ab5f9a892765cb8772";
 const mutationIds = [
   "missing-stylesheet",
   "missing-rule",
@@ -91,9 +92,10 @@ export function validateCorpus(
   if (manifest.schemaVersion !== 1 || manifest.issue !== 3831) throw Error("Unknown corpus policy");
   if (
     manifest.profile !== `wind-preset-free@${profile.profileVersion}.${profile.profileRevision}` ||
-    profile.profileRevision !== 2
+    profile.profileRevision !== 3
   )
     throw Error("Corpus is not bound to the reviewed profile revision");
+  validatePilot(profile, pilot, pilotObservations);
   validateTargetedExecutionKeys(manifest, profile);
   if (digest(manifest.counts) !== digest(fixed))
     throw Error("Corpus counts changed without policy review");

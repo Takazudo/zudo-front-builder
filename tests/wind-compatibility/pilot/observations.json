@@ -385,7 +385,7 @@
       {
         "name": "contents-display",
         "property": "display",
-        "wind": "inline",
+        "wind": "contents",
         "reference": "contents"
       }
     ]
