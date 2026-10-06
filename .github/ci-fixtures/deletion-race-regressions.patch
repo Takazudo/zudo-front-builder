@@ -1,0 +1,155 @@
+diff --git a/crates/zfb/src/commands/dev.rs b/crates/zfb/src/commands/dev.rs
+index c17813f2..883529eb 100644
+--- a/crates/zfb/src/commands/dev.rs
++++ b/crates/zfb/src/commands/dev.rs
+@@ -18337,6 +18346,25 @@ mod tests {
+                 );
+             }
+ 
++            #[test]
++            fn table_swap_refreshes_pending_claims_without_staling_fresh_routes() {
++                let inner = bare_inner();
++                inner.mark_stale([out("index.html"), out("fresh.html")]);
++                inner.clear_stale(&[out("fresh.html")]);
++                let old = inner.claim(Path::new("index.html")).unwrap();
++                inner.take_tick_stale();
++
++                inner.note_table_swap(&[]);
++
++                assert!(!inner.claim_is_current(&old));
++                assert!(!inner.clear_if_current(&old));
++                let current = inner.claim(Path::new("index.html")).unwrap();
++                assert!(inner.claim_is_current(&current));
++                assert!(current.generation > old.generation);
++                assert!(inner.claim(Path::new("fresh.html")).is_none());
++                assert!(inner.take_tick_stale().is_empty());
++            }
++
+             #[test]
+             fn take_tick_stale_drains_once_sorted() {
+                 let inner = bare_inner();
+@@ -19154,6 +19182,73 @@ mod tests {
+         use super::*;
+         use crate::render_pipeline::ResolvedRouteParams;
+ 
++        /// #3880: a provenance failure can happen after the removal planner
++        /// captured its precise consumers. Writing the response must not retire
++        /// the cold index's only remaining repair obligation in that ordering.
++        #[test]
++        fn lazy_request_with_failed_provenance_keeps_its_repair_claim() {
++            use crate::lazy_render_adapter::{LazyRenderAdapter, LazyRenderOutcome};
++            use zfb_build::renderer::HttpResponseLike;
++
++            let html_root = tempfile::tempdir().unwrap();
++            let renderer = start(RendererStartInput {
++                bundle_path: PathBuf::from("unused-stub.mjs"),
++                sourcemap_path: PathBuf::from("unused-stub.mjs.map"),
++                backend: Backend::Stub {
++                    handler: Arc::new(|_| HttpResponseLike {
++                        status: 200,
++                        content_type: "text/html".into(),
++                        headers: Vec::new(),
++                        body: b"<html><body>fallback</body></html>".to_vec(),
++                    }),
++                },
++                request_timeout: None,
++            })
++            .unwrap();
++            let session = stub_session_for_adapter_tests(
++                html_root.path().to_path_buf(),
++                vec![(
++                    PathBuf::from("pages/index.tsx"),
++                    vec![route_entry("/", "index.html", "/", None).entry],
++                )],
++                Arc::new(Mutex::new(Some(renderer))),
++                true,
++            );
++            // Exercise the real reconciliation error path: this stub can
++            // render documents but cannot drain the V8 provenance endpoint.
++            session.begin_content_trace("test-trace".into());
++            session.inner.content_trace.lock().unwrap().boot_complete = true;
++            assert!(session.reconcile_content_provenance().is_err());
++            session.mark_routes_stale([PathBuf::from("index.html")]);
++            let pipeline = DevAssetPipeline::new();
++            let adapter = LazyRenderAdapter::new(
++                session.clone(),
++                pipeline.request_writer(),
++                html_root.path().to_path_buf(),
++                InjectedRouteSet::default(),
++            );
++
++            for written in [true, false] {
++                assert_eq!(
++                    adapter.render_stale_route("/"),
++                    LazyRenderOutcome::Rendered { written }
++                );
++                assert!(session.claim_stale(Path::new("index.html")).is_some());
++                assert!(std::fs::read_to_string(html_root.path().join("index.html"))
++                    .unwrap()
++                    .contains("fallback"));
++            }
++
++            // Restore the ordinary stub harness's successful no-trace path.
++            // A valid render (including byte-dedup) can retire the obligation.
++            session.inner.content_trace.lock().unwrap().token = None;
++            assert_eq!(
++                adapter.render_stale_route("/"),
++                LazyRenderOutcome::Rendered { written: false }
++            );
++            assert!(session.claim_stale(Path::new("index.html")).is_none());
++        }
++
+         fn posts_config() -> config::Config {
+             config::Config {
+                 collections: vec![config::CollectionDef {
+diff --git a/crates/zfb/src/lazy_render_adapter.rs b/crates/zfb/src/lazy_render_adapter.rs
+index e46a1d2c..500cf602 100644
+--- a/crates/zfb/src/lazy_render_adapter.rs
++++ b/crates/zfb/src/lazy_render_adapter.rs
+@@ -1221,6 +1235,46 @@ mod tests {
+         );
+     }
+ 
++    /// #3880: the deletion plan knows the detail consumer but has never
++    /// observed this cold index. The swap must supersede its pending render
++    /// even though the tick does not explicitly re-stale the index.
++    #[test]
++    fn table_swap_supersedes_unselected_cold_index_request() {
++        let (h, hook) = harness_hooked(
++            vec![(
++                PathBuf::from("pages/index.tsx"),
++                vec![entry("/", "index.html")],
++            )],
++            html_response("<html><body>deleted-entry</body></html>"),
++        );
++        h.session.mark_routes_stale([PathBuf::from("index.html")]);
++        let session = h.session.clone();
++        *hook.lock().unwrap() = Some(Box::new(move || {
++            session.bump_stale_generation();
++            // No mark_routes_stale(index): it was absent from the plan.
++        }));
++
++        assert_eq!(
++            h.adapter.render_stale_route("/"),
++            LazyRenderOutcome::WriteSuperseded
++        );
++        assert!(!h.html_root.path().join("index.html").exists());
++        assert!(h.session.claim_stale(Path::new("index.html")).is_some());
++
++        *h.session.renderer_handle().lock().unwrap() = Some(stub_renderer_state(counting_handler(
++            Arc::clone(&h.hits),
++            html_response("<html><body>seed</body></html>"),
++        )));
++        assert_eq!(
++            h.adapter.render_stale_route("/"),
++            LazyRenderOutcome::Rendered { written: true }
++        );
++        let body = std::fs::read_to_string(h.html_root.path().join("index.html")).unwrap();
++        assert!(body.contains("seed"));
++        assert!(!body.contains("deleted-entry"));
++        assert!(h.session.claim_stale(Path::new("index.html")).is_none());
++    }
++
+     /// Renderer-mutex contention smoke (the issue's deadlock guard): a
+     /// lazy render issued WHILE a refresh-style host swap holds the
+     /// renderer mutex must block, then complete against the NEW host,
