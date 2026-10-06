@@ -6,22 +6,11 @@ sidebar_position: 3
 
 ## プロジェクトの値に名前を付ける
 
-これらのマップを `zfb.config.ts` または `zfb.config.json` のルートにある `wind.tokens` に設定し、必要な場所で完全なクラスを使います。数値の余白は設定済みの `spacingUnit` を掛け合わせます。`spacing.card` のような名前付き値はそのまま使われます。色、角丸、フォントなどの名前付きスケールもプロジェクトが用意します。
+名前付きの値をルートの `wind.tokens` に置きます。たとえば `spacing: { "hsp-sm": "0.75rem", "vsp-md": "1.25rem" }` は `px-hsp-sm` と `py-vsp-md`、`colors: { "surface": "#f4f1ec", "ink": "#203046" }` は `bg-surface` と `text-ink` に対応します。いずれも完全なクラス候補です。値がリテラルなのでカスタムプロパティを手書きする必要はありません。Wind は設定から `--zw-spacing-hsp-sm`、`--zw-spacing-vsp-md`、`--zw-color-surface`、`--zw-color-ink` を出力します。[コピー可能な最初の設定](./overview.mdx)を参照してください。
 
-```json
-{
-  "wind": {
-    "tokens": {
-      "spacingUnit": "0.25rem",
-      "spacing": { "card": "1.5rem" },
-      "colors": { "panel": "#f4f1ec", "ink": "#203046" },
-      "radii": { "card": "0.5rem" }
-    }
-  }
-}
-```
+## 任意の数値余白単位
 
-プレビューでは `p-4` と `p-card` を比較します。どちらも設定した単位または名前付きの値を常に使います。
+ゼロ以外の数値余白は明示的に選ぶ機能です。`p-4` のようなクラスが必要なら `wind.tokens.spacingUnit` を設定します。`"0.25rem"` のとき `p-4` は `1rem` です。Tailwind の組み込みスケールではありません。次のプレビューは数値と名前付きの値を比較し、両方を明示的に設定しています。
 
 {/* wind-preview: guide-tokens/named-values "数値と名前付き余白を比較する" */}
 

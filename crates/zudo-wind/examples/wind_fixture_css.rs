@@ -25,6 +25,8 @@ struct CaseDefinition {
     #[serde(default)]
     colors: BTreeMap<String, String>,
     #[serde(default)]
+    spacing: BTreeMap<String, String>,
+    #[serde(default)]
     shadows: BTreeMap<String, String>,
     #[serde(default)]
     easings: BTreeMap<String, String>,
@@ -36,11 +38,32 @@ struct CaseDefinition {
     authored_classes: BTreeMap<String, bool>,
     #[serde(default)]
     explicit_candidates: Vec<String>,
+    #[serde(default = "default_source_file")]
+    source_file: String,
+    #[serde(default)]
+    expected_candidates: Vec<String>,
     /// Authored global CSS file, relative to the fixture, assembled with the utilities.
     #[serde(default)]
     authored_css: Option<String>,
     #[serde(default)]
     utility_placement: PlacementChoice,
+}
+
+fn default_source_file() -> String {
+    "index.html".to_owned()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StrictManifest {
+    case_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum InputMode {
+    Legacy,
+    Compiler,
+    Extract,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -96,29 +119,84 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.next()
             .ok_or("usage: wind_fixture_css <fixture-root> <output-root>")?,
     );
-    if args.next().is_some() {
-        return Err("expected exactly two path arguments".into());
+    let mut mode = InputMode::Legacy;
+    let mut manifest_path = None;
+    if let Some(flag) = args.next() {
+        if flag != "--mode" {
+            return Err("expected --mode compiler|extract --manifest <path>".into());
+        }
+        mode = match args.next().as_deref() {
+            Some(value) if value == "compiler" => InputMode::Compiler,
+            Some(value) if value == "extract" => InputMode::Extract,
+            _ => return Err("expected compiler or extract mode".into()),
+        };
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--manifest")) {
+            return Err("strict mode requires --manifest".into());
+        }
+        manifest_path = Some(PathBuf::from(args.next().ok_or("missing manifest path")?));
+        if args.next().is_some() {
+            return Err("unexpected argument".into());
+        }
     }
+
+    let required = if let Some(path) = manifest_path {
+        let manifest: StrictManifest = serde_json::from_slice(&fs::read(path)?)?;
+        let set = manifest.case_ids.iter().collect::<BTreeSet<_>>();
+        if set.len() != manifest.case_ids.len() || set.is_empty() {
+            return Err("strict manifest has duplicate or no case IDs".into());
+        }
+        Some(manifest.case_ids.into_iter().collect::<BTreeSet<_>>())
+    } else {
+        None
+    };
 
     let mut fixture_dirs = fs::read_dir(&fixture_root)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()?;
     fixture_dirs.sort();
 
+    let mut seen = BTreeSet::new();
     for fixture_dir in fixture_dirs {
         if !fixture_dir.is_dir() {
             continue;
         }
         let definition_path = fixture_dir.join("case.json");
         if !definition_path.is_file() {
+            if required.is_some() {
+                return Err(format!("missing case.json in {}", fixture_dir.display()).into());
+            }
             continue;
         }
-        generate_fixture(&fixture_dir, &output_root)?;
+        let name = fixture_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or("invalid directory name")?
+            .to_owned();
+        if let Some(required) = &required {
+            if !required.contains(&name) {
+                return Err(format!("unlisted fixture {name}").into());
+            }
+        }
+        seen.insert(name);
+        generate_fixture(&fixture_dir, &output_root, mode)?;
+    }
+    if let Some(required) = required {
+        if seen != required {
+            return Err(format!(
+                "missing fixtures: {:?}",
+                required.difference(&seen).collect::<Vec<_>>()
+            )
+            .into());
+        }
     }
     Ok(())
 }
 
-fn generate_fixture(fixture_dir: &Path, output_root: &Path) -> Result<(), Box<dyn Error>> {
+fn generate_fixture(
+    fixture_dir: &Path,
+    output_root: &Path,
+    mode: InputMode,
+) -> Result<(), Box<dyn Error>> {
     let directory_name = fixture_dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -126,19 +204,48 @@ fn generate_fixture(fixture_dir: &Path, output_root: &Path) -> Result<(), Box<dy
     let definition_path = fixture_dir.join("case.json");
     let definition: CaseDefinition = serde_json::from_slice(&fs::read(&definition_path)?)?;
     let case_id = definition.case_id.clone();
+    if matches!(mode, InputMode::Extract) && definition.expected_candidates.is_empty() {
+        return Err("extract mode requires expectedCandidates".into());
+    }
     if case_id.is_empty() {
         return Err(format!("{} has an empty caseId", definition_path.display()).into());
     }
+    if !matches!(mode, InputMode::Legacy) && case_id != directory_name {
+        return Err(
+            format!("strict caseId {case_id} does not match directory {directory_name}").into(),
+        );
+    }
     let explicit_candidates = definition.explicit_candidates.clone();
-    let source_path = fixture_dir.join("index.html");
-    let source = fs::read(&source_path)?;
-    let source_id = format!("fixtures/{directory_name}/index.html");
-    let extraction = extract_candidates(&source, SourceKind::Html);
+    if matches!(mode, InputMode::Compiler) && explicit_candidates.is_empty() {
+        return Err("compiler mode requires explicitCandidates".into());
+    }
+    if definition.source_file.contains("..") || Path::new(&definition.source_file).is_absolute() {
+        return Err("sourceFile must be fixture-relative".into());
+    }
+    let source_id = format!("fixtures/{directory_name}/{}", definition.source_file);
+    let source_path = fixture_dir.join(&definition.source_file);
+    let (source, extraction) = match mode {
+        InputMode::Compiler => (Vec::new(), None),
+        _ => {
+            let source = fs::read(&source_path)?;
+            let kind = match source_path.extension().and_then(|s| s.to_str()) {
+                Some("html") => SourceKind::Html,
+                Some("tsx") => SourceKind::Tsx,
+                Some("mdx") => SourceKind::Mdx,
+                Some("ts") => SourceKind::Ts,
+                Some("jsx") => SourceKind::Jsx,
+                Some("js") => SourceKind::Js,
+                Some("md") => SourceKind::Md,
+                _ => return Err("unsupported sourceFile extension".into()),
+            };
+            (source.clone(), Some(extract_candidates(&source, kind)))
+        }
+    };
     let config = make_config(&definition);
 
     let mut candidates = extraction
-        .candidates
         .iter()
+        .flat_map(|extraction| extraction.candidates.iter())
         .flat_map(|candidate| {
             candidate
                 .occurrences
@@ -162,6 +269,9 @@ fn generate_fixture(fixture_dir: &Path, output_root: &Path) -> Result<(), Box<dy
         })
         .collect::<Vec<_>>();
 
+    if matches!(mode, InputMode::Extract) && !explicit_candidates.is_empty() {
+        return Err("extract mode forbids explicitCandidates".into());
+    }
     let case_path = format!("{directory_name}/case.json");
     for (index, text) in explicit_candidates.into_iter().enumerate() {
         candidates.push(OriginCandidate {
@@ -190,12 +300,21 @@ fn generate_fixture(fixture_dir: &Path, output_root: &Path) -> Result<(), Box<dy
     fs::write(output_dir.join("wind.css"), &stylesheet)?;
 
     let audit_report = audit(
-        &AuditInput::new(vec![AuditSource::new(source_id, extraction)]),
+        &AuditInput::new(
+            extraction
+                .clone()
+                .into_iter()
+                .map(|extraction| AuditSource::new(source_id.clone(), extraction))
+                .collect(),
+        ),
         &config,
     );
     let explanations = explanation_map(&candidates, &config)?;
     let mut report = json!({
         "caseId": directory_name,
+        "inputMode": match mode { InputMode::Legacy => "legacy", InputMode::Compiler => "compiler", InputMode::Extract => "extract" },
+        "sourceBytes": source.len(),
+        "extractedCandidates": extraction.as_ref().map(|e| e.candidates.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()),
         "specCaseId": case_id,
         "diagnostics": result.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
         "explanations": explanations,
@@ -258,6 +377,7 @@ fn make_config(definition: &CaseDefinition) -> WindConfig {
         tokens: TokenConfig {
             spacing_unit: definition.spacing_unit.clone(),
             colors: definition.colors.clone(),
+            spacing: definition.spacing.clone(),
             shadows: definition.shadows.clone(),
             easings: definition.easings.clone(),
             ..TokenConfig::default()

@@ -1,0 +1,6 @@
+{
+  "expectedWindCandidates": ["inline-flex", "mx-auto"],
+  "expectedReferenceCandidates": ["className", "const", "export", "inline-flex", "mx-auto"],
+  "expectedWindRules": ["inline-flex", "mx-auto"],
+  "expectedReferenceRules": ["mx-auto", "inline-flex"]
+}

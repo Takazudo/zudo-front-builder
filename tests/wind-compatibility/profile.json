@@ -1,0 +1,690 @@
+{
+  "schemaVersion": 1,
+  "profileId": "wind-preset-free",
+  "profileVersion": 1,
+  "profileRevision": 5,
+  "policyDocument": "research/wind-compatibility-profile.md",
+  "ratifiedOn": "2026-10-06",
+  "decisionIssue": "https://github.com/Takazudo/zudo-front-builder/issues/3826",
+  "state": "policy-ratified-evidence-pending",
+  "sourceBaseline": {
+    "gitSha": "76b39fbc04f5d914ddbc7278f258185c67b932a2",
+    "languageSpecVersion": 1,
+    "languageSpecRevision": 14,
+    "catalogIdentity": "Catalog::v1",
+    "evidence": "source-inspected",
+    "paths": [
+      "crates/zudo-wind/src/lib.rs",
+      "crates/zudo-wind/src/catalog/families/layout.rs",
+      "crates/zudo-wind/src/catalog/families/interaction.rs",
+      "crates/zudo-wind/src/catalog/migration.rs",
+      "crates/zudo-wind/tests/native_display_appearance.rs",
+      "crates/zudo-wind/src/catalog/families/spacing.rs",
+      "crates/zudo-wind/src/catalog/families/flex_grid.rs",
+      "crates/zudo-wind/src/catalog/resolve.rs",
+      "crates/zudo-wind/src/token_vars.rs",
+      "crates/zudo-wind/src/emit.rs",
+      "crates/zudo-wind/src/config.rs",
+      "crates/zudo-wind/src/diagnostic.rs",
+      "crates/zudo-wind/src/variant.rs",
+      "crates/zudo-wind/src/layers.rs",
+      "crates/zudo-wind/src/catalog/families/statics.rs",
+      "crates/zudo-wind/tests/native_flex_svg_accessibility.rs"
+    ]
+  },
+  "referencePolicy": {
+    "package": "tailwindcss",
+    "initialCandidateVersion": "4.3.2",
+    "testOnly": true,
+    "defaultTheme": "omit",
+    "sharedUtilityPreflight": false,
+    "nativeMigrationReset": "record-separately",
+    "initialState": {
+      "acceptedReference": null,
+      "reviewedThrough": null
+    },
+    "metadataOwnerIssue": 3827,
+    "planningIntegrityHint": {
+      "value": "sha512-WtctNNSH8A9jlMIqxzuYumOHU5uGZyRv0Q5svQl+oEPy5w84YpBxdb7MdqyiSPQge5jTJ6zFQLq0PFygdccSBA==",
+      "verifiedByThisProfile": false
+    },
+    "sourceGitSha": null,
+    "sourceIdentityStatus": "unknown-until-independently-verified"
+  },
+  "dispositions": [
+    "equivalent-shared",
+    "equivalent-mapped",
+    "intentional-difference",
+    "implementation-gap",
+    "out-of-scope"
+  ],
+  "evidenceLevels": ["source-inspected", "contract-tested", "independently-differential-tested"],
+  "evidenceIdentityRequired": [
+    "windGitSha",
+    "windSpecVersion",
+    "windSpecRevision",
+    "catalogDigest",
+    "profileId",
+    "profileVersion",
+    "profileRevision",
+    "profileDigest",
+    "referenceVersion",
+    "referenceIntegrity",
+    "referenceSourceIdentity",
+    "adapterDigest",
+    "nativeMarginEvidenceDigest",
+    "fixtureManifestDigest",
+    "caseIds",
+    "configDigest",
+    "sourceInputDigest",
+    "lockfileDigest",
+    "resetMode",
+    "assertionDigest",
+    "browserEnvironment",
+    "reportId"
+  ],
+  "configurations": {
+    "empty": {
+      "wind": {
+        "tokens": {},
+        "breakpoints": {},
+        "reset": "none"
+      },
+      "referenceTheme": {}
+    },
+    "zero-mapping": {
+      "wind": {
+        "tokens": {},
+        "breakpoints": {},
+        "reset": "none"
+      },
+      "referenceTheme": {
+        "--spacing-0": "0px"
+      }
+    },
+    "semantic": {
+      "wind": {
+        "tokens": {
+          "spacing": {
+            "hsp-sm": "17px"
+          },
+          "colors": {
+            "surface": "#123456"
+          }
+        },
+        "breakpoints": {},
+        "reset": "none"
+      },
+      "referenceTheme": {
+        "--spacing-hsp-sm": "17px",
+        "--color-surface": "#123456"
+      }
+    },
+    "numeric-opt-in": {
+      "wind": {
+        "tokens": {
+          "spacingUnit": "0.25rem"
+        },
+        "breakpoints": {},
+        "reset": "none"
+      },
+      "referenceTheme": {
+        "--spacing": "0.25rem"
+      }
+    },
+    "breakpoint": {
+      "wind": {
+        "tokens": {},
+        "breakpoints": {
+          "sm": 640
+        },
+        "reset": "none"
+      },
+      "referenceTheme": {
+        "--breakpoint-sm": "640px"
+      }
+    }
+  },
+  "requiredCases": [
+    {
+      "id": "block",
+      "candidate": "block",
+      "configuration": "empty",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
+      "expectedContract": "display:block",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "hidden",
+      "candidate": "hidden",
+      "configuration": "empty",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
+      "expectedContract": "display:none; none is not a display utility spelling",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "inline-flex",
+      "candidate": "inline-flex",
+      "configuration": "empty",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
+      "expectedContract": "display:inline-flex",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "mx-auto",
+      "candidate": "mx-auto",
+      "configuration": "empty",
+      "disposition": "intentional-difference",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["physical-logical-margin", "wind-layer-order-prelude"],
+      "expectedContract": "Wind margin-left/right:auto and reference margin-inline:auto; exact horizontal and vertical geometry and per-engine computed physical margins are pinned. Linux WebKit 26.5/rev2311 serializes 200px on the trailing physical margin in vertical-rl, including an independently authored physical-zero control; Chromium/Firefox serialize 0px. This does not change Wind CSS or geometry.",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "grid-cols-2",
+      "candidate": "grid-cols-2",
+      "configuration": "empty",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
+      "expectedContract": "repeat(2,minmax(0,1fr)); use a grid container in geometry cases",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "p-0-empty",
+      "candidate": "p-0",
+      "configuration": "empty",
+      "disposition": "intentional-difference",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["zero-without-theme", "wind-layer-order-prelude"],
+      "expectedContract": "Wind emits zero padding; empty-theme reference omits candidate",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "p-0-mapped",
+      "candidate": "p-0",
+      "configuration": "zero-mapping",
+      "disposition": "equivalent-mapped",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": [
+        "zero-variable-indirection",
+        "padding-expansion",
+        "wind-layer-order-prelude"
+      ],
+      "expectedContract": "Explicit reference --spacing-0:0px; Wind remains token-free",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration zero-mapping"
+    },
+    {
+      "id": "named-spacing",
+      "candidate": "p-hsp-sm",
+      "configuration": "semantic",
+      "disposition": "equivalent-mapped",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": false,
+      "reviewedDifferenceIds": [
+        "named-token-representation",
+        "padding-expansion",
+        "wind-layer-order-prelude"
+      ],
+      "expectedContract": "Semantic config declares colors.surface=#123456 and spacing.hsp-sm=17px. Wind emits both --zw tokens once in color-then-spacing order; reference emits only used --spacing-hsp-sm:17px for this candidate.",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration semantic"
+    },
+    {
+      "id": "named-color",
+      "candidate": "bg-surface",
+      "configuration": "semantic",
+      "disposition": "equivalent-mapped",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": false,
+      "reviewedDifferenceIds": ["named-token-representation", "wind-layer-order-prelude"],
+      "expectedContract": "Semantic config declares colors.surface=#123456 and spacing.hsp-sm=17px. Wind emits both --zw tokens once in color-then-spacing order; reference emits only used --color-surface:#123456 for this candidate.",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration semantic"
+    },
+    {
+      "id": "unconfigured-p-4",
+      "candidate": "p-4",
+      "configuration": "empty",
+      "disposition": "intentional-difference",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": false,
+      "reviewedDifferenceIds": ["missing-token-diagnostics"],
+      "expectedContract": "No spacingUnit or spacing token: no utility CSS on either side; diagnostics are independently asserted",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "spacingUnit is intentionally absent; family implemented, value unavailable"
+    },
+    {
+      "id": "undeclared-palette",
+      "candidate": "bg-gray-500",
+      "configuration": "empty",
+      "disposition": "intentional-difference",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": false,
+      "reviewedDifferenceIds": ["missing-token-diagnostics"],
+      "expectedContract": "No palette: no utility CSS on either side; missing token is not a missing family",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "colors.gray-500 is intentionally absent; family implemented, value unavailable"
+    },
+    {
+      "id": "configured-p-4",
+      "candidate": "p-4",
+      "configuration": "numeric-opt-in",
+      "disposition": "equivalent-mapped",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": false,
+      "reviewedDifferenceIds": [
+        "numeric-scale-representation",
+        "padding-expansion",
+        "wind-layer-order-prelude"
+      ],
+      "expectedContract": "Wind spacingUnit=0.25rem; reference --spacing:0.25rem; computed padding 1rem",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration numeric-opt-in"
+    },
+    {
+      "id": "contents-gap",
+      "candidate": "contents",
+      "configuration": "empty",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"],
+      "expectedContract": "Token-free Wind and reference display:contents; exact one-rule utility output",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "hover-block",
+      "candidate": "hover:block",
+      "configuration": "empty",
+      "disposition": "equivalent-shared",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": true,
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"],
+      "expectedContract": "Test hover active/inactive and hover capability; preserve media and specificity",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration empty"
+    },
+    {
+      "id": "breakpoint-block",
+      "candidate": "sm:block",
+      "configuration": "breakpoint",
+      "disposition": "equivalent-mapped",
+      "implementation": "implemented",
+      "windTokenFreeGuarantee": false,
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"],
+      "expectedContract": "Wind breakpoints.sm=640; reference --breakpoint-sm:640px; test below/at/above boundary",
+      "evidence": {
+        "sourceInspected": {
+          "windGitSha": "6ad10cfcb1eeeca0288d577b88f8a9312828cc83"
+        },
+        "contractTested": null,
+        "independentlyDifferentialTested": null
+      },
+      "configurationRequirements": "exact configuration breakpoint"
+    }
+  ],
+  "requiredControls": [
+    "empty-output-accounting",
+    "missing-fixture-rejection",
+    "wrong-value-detection",
+    "missing-rule-detection",
+    "extra-rule-detection",
+    "stale-input-rejection",
+    "variant-inactive-state",
+    "specificity-and-authored-cascade",
+    "nested-token-scope",
+    "writing-mode-axis",
+    "native-reset-controls"
+  ],
+  "reviewedDifferences": [
+    {
+      "id": "physical-logical-margin",
+      "caseIds": ["mx-auto"],
+      "kind": "semantic",
+      "scope": "Wind physical left/right versus reference logical inline margins; exact horizontal/vertical ltr/rtl geometry and computed longhands. Linux WebKit 26.5/rev2311 resolves the trailing physical vertical margin to 200px even for authored physical-zero CSS; Chromium/Firefox resolve 0px. Independent native diagnosis run 37405347552 (54 observations, verified CSS/DOM hashes) fixes the narrow browser-specific expectation."
+    },
+    {
+      "id": "zero-without-theme",
+      "caseIds": ["p-0-empty"],
+      "kind": "generation",
+      "scope": "Wind zero padding versus omitted reference rule; absence must be asserted and counted."
+    },
+    {
+      "id": "zero-variable-indirection",
+      "caseIds": ["p-0-mapped"],
+      "kind": "structural",
+      "scope": "Reference var(--spacing-0) plus explicit theme rule versus Wind literal zero; fixed mapped config, no override equivalence promised."
+    },
+    {
+      "id": "padding-expansion",
+      "caseIds": ["p-0-mapped", "named-spacing", "configured-p-4"],
+      "kind": "structural",
+      "scope": "Reference padding shorthand versus Wind four physical longhands; compare parsed writes and browser behavior."
+    },
+    {
+      "id": "named-token-representation",
+      "caseIds": ["named-spacing", "named-color"],
+      "kind": "structural",
+      "scope": "For the exact semantic config, Wind emits both configured tokens once in @layer zw-tokens/:root, in --zw-color-surface then --zw-spacing-hsp-sm order; each standalone reference compilation emits only its candidate-used token in :root,:host. Named utilities on both sides use their own var() namespaces. Each named case requires exactly two Wind token declarations and one reference token declaration; the other Wind token is explicitly unused by that candidate. Additional, absent or reordered token declarations fail.",
+      "expectedOccurrencesByCase": {
+        "named-spacing": {
+          "windDeclarations": ["--zw-color-surface", "--zw-spacing-hsp-sm"],
+          "referenceDeclarations": ["--spacing-hsp-sm"],
+          "unusedWindDeclaration": "--zw-color-surface"
+        },
+        "named-color": {
+          "windDeclarations": ["--zw-color-surface", "--zw-spacing-hsp-sm"],
+          "referenceDeclarations": ["--color-surface"],
+          "unusedWindDeclaration": "--zw-spacing-hsp-sm"
+        }
+      }
+    },
+    {
+      "id": "numeric-scale-representation",
+      "caseIds": ["configured-p-4"],
+      "kind": "structural",
+      "scope": "Reference configured --spacing:0.25rem in its :root,:host theme rule and padding calculation versus Wind --zw-spacing-unit:0.25rem in @layer zw-tokens/:root and computed literal utility padding. Compare and count both token rules/layers and utility values; shared token declarations occur once per generated stylesheet in composition. No runtime variable override equivalence promised; extra declarations/rules/layers fail."
+    },
+    {
+      "id": "missing-token-diagnostics",
+      "caseIds": ["unconfigured-p-4", "undeclared-palette"],
+      "kind": "diagnostic",
+      "scope": "No generated utility on either side; Wind origin/strictness-sensitive diagnostic versus reference omission. Probe separately."
+    },
+    {
+      "id": "variant-nesting",
+      "caseIds": ["hover-block", "breakpoint-block"],
+      "kind": "structural",
+      "scope": "Reference nested selector/media representation versus Wind flat rules; retain conditions, specificity, and ordering during structural analysis."
+    },
+    {
+      "id": "wind-layer-order-prelude",
+      "caseIds": [
+        "block",
+        "hidden",
+        "inline-flex",
+        "mx-auto",
+        "grid-cols-2",
+        "p-0-empty",
+        "p-0-mapped",
+        "named-spacing",
+        "named-color",
+        "configured-p-4",
+        "contents-gap",
+        "hover-block",
+        "breakpoint-block"
+      ],
+      "kind": "structural",
+      "scope": "Exact Wind layer-order statement is first and occurs once per expected nonempty generated stylesheet; the reference has no corresponding Wind statement. Compare and count it without removing it. Composition shares one occurrence across all member cases. Extra, missing, reordered or differently named layers/statements remain failures.",
+      "statement": "@layer zw-reset, zw-tokens, zfb-hi, base, components;",
+      "countUnit": "generated-stylesheet",
+      "expectedOccurrences": {
+        "wind": 1,
+        "reference": 0
+      },
+      "standaloneAbsentCaseIds": ["unconfigured-p-4", "undeclared-palette"],
+      "emptyStylesheetExpectedOccurrences": {
+        "wind": 0,
+        "reference": 0
+      },
+      "compositionRule": "Derive expected nonemptiness from the fixture contract (reset, configured tokens, or resolved utility output), never from actual output. Assert one prelude for the whole nonempty generated stylesheet, including reset/token-only controls, not one per utility/case. An expected empty stylesheet must have none."
+    },
+    {
+      "id": "sr-reversal-clip-model",
+      "caseIds": ["native-not-sr-only", "native-sr-reversal"],
+      "kind": "structural",
+      "scope": "Wind not-sr-only emits clip:auto to reverse its sr-only clip:rect(0,0,0,0); Tailwind sr-only uses clip-path:inset(50%) and its reversal omits clip. Full ordered trees and inactive/active clipping observations are fixed independently."
+    }
+  ],
+  "coverage": {
+    "definition": "Every requiredCases row plus every requiredControls obligation; core expansion must enumerate case IDs before assessment.",
+    "sampling": "Finite keyword/count domains selected into core are exhaustive; open token/numeric/arbitrary/variant domains use committed named boundary and representative fixtures. No implicit Cartesian product or all-Tailwind claim.",
+    "unlistedInventoryRows": "visible-unverified-until-explicit-core-admission",
+    "missingRequiredCase": "fail",
+    "unsupportedBrowserOrOS": "unverified",
+    "policyReviewRequiredFor": [
+      "case-removal",
+      "difference-expansion",
+      "tolerance-increase",
+      "semantic-change",
+      "browser-scope-change",
+      "disposition-downgrade"
+    ],
+    "invalidIdentityOrMembership": "fail"
+  },
+  "browserPolicy": {
+    "lockfile": "pnpm-lock.yaml",
+    "observedLockfileSha256": "f34fbd2b26d452fb69c92d2b49c6e4e391b5016b947f917e170d8785dcdd12e2",
+    "playwrightTestVersion": "1.61.0",
+    "playwrightCoreVersion": "1.61.0",
+    "playwrightCoreIntegrity": "sha512-caX7TrY3Ml6egyDX0WUcTHDxodl/b51y5wJOdCEA36QviK/s2g081hvmGs8eaE3DWb6NYZQ6BjO/QkNRPenoPA==",
+    "browserManifest": {
+      "packagePath": "playwright-core/browsers.json",
+      "sha256": "ee39bc924bc3d1bd895626c2910f1292d109bbfeeb5abd113acb45e1951cc942",
+      "evidence": "source-inspected-existing-manager-installation",
+      "executionEvidence": null
+    },
+    "requiredMatrix": [
+      {
+        "os": "linux",
+        "hostPlatform": "ubuntu24.04-x64",
+        "browser": "chromium",
+        "revision": "1228",
+        "browserVersion": "149.0.7827.55",
+        "scope": "full-declared-core",
+        "headlessShellRevision": "1228"
+      },
+      {
+        "os": "linux",
+        "hostPlatform": "ubuntu24.04-x64",
+        "browser": "firefox",
+        "revision": "1532",
+        "browserVersion": "151.0",
+        "scope": "targeted-composition-controls-writing-modes"
+      },
+      {
+        "os": "linux",
+        "hostPlatform": "ubuntu24.04-x64",
+        "browser": "webkit",
+        "revision": "2311",
+        "browserVersion": "26.5",
+        "scope": "targeted-composition-controls-writing-modes"
+      }
+    ],
+    "runtimeEvidenceRequired": [
+      "os",
+      "osVersion",
+      "architecture",
+      "hostPlatform",
+      "playwrightVersion",
+      "browserManifestDigest",
+      "resolvedBrowserRevision",
+      "browserVersion",
+      "executableIdentity",
+      "headlessMode",
+      "viewport",
+      "deviceScaleFactor",
+      "colorScheme",
+      "reducedMotion",
+      "hoverCapability",
+      "writingMode",
+      "direction"
+    ],
+    "revisionRule": "Resolve host-specific revisionOverrides from the pinned manifest; any matrix/pin change needs recorded review and new evidence.",
+    "targetedObligations": [
+      "p-0-mapped",
+      "named-spacing",
+      "named-color",
+      "hover-block",
+      "breakpoint-block",
+      "grid-cols-2",
+      "inline-flex",
+      "mx-auto",
+      "nested-token-scope",
+      "specificity-and-authored-cascade",
+      "native-reset-controls",
+      "wrong-value-or-missing-rule-detection"
+    ]
+  },
+  "deferred": [
+    {
+      "issue": 3372,
+      "scope": "composed ring and animation",
+      "autoAdopt": false
+    },
+    {
+      "issue": 3386,
+      "scope": "cascade/layer/relation redesign",
+      "autoAdopt": false
+    },
+    {
+      "issue": 3822,
+      "scope": "optional release watcher",
+      "autoAdopt": false
+    }
+  ],
+  "excludedOwnership": [3696, 3328, 3329],
+  "history": [
+    {
+      "version": 1,
+      "revision": 1,
+      "date": "2026-10-06",
+      "issue": 3826,
+      "change": "Initial bounded preset-free promise; no baseline admitted. Current-source named token indirection corrects the planning-era literal claim. Initial independent review corrected the unadmitted draft to account for the exact once-per-stylesheet Wind layer-order prelude and the numeric scale token rule/layer."
+    },
+    {
+      "version": 1,
+      "revision": 2,
+      "date": "2026-10-06",
+      "issue": 3829,
+      "change": "Pilot contract refinement after Linux Chromium execution: exact resolved mx-auto margin observations and exact two-token Wind versus used-token-only reference emission for each semantic case. No compatibility baseline or reference acceptance is advanced."
+    },
+    {
+      "version": 1,
+      "revision": 3,
+      "date": "2026-10-06",
+      "issue": 3834,
+      "change": "Adopt exact token-free display and appearance statics, and transition contents-gap from the profile 1.2 implementation gap to equivalent-shared while retaining its case ID and original run 37391761485 as historical evidence. Added display and appearance browser corpus cases; no compatibility baseline or reference acceptance is advanced."
+    },
+    {
+      "version": 1,
+      "revision": 4,
+      "date": "2026-10-06",
+      "issue": 3835,
+      "change": "Add bounded native order, basis, SVG presentation and not-sr-only reversal. Add five upstream browser cases and five declaration-only native basis guarantees, preserving all existing pilot/control and targeted obligations. Record exact sr-only clipping-model difference; no baseline or reference acceptance is advanced."
+    },
+    {
+      "version": 1,
+      "revision": 5,
+      "date": "2026-10-06",
+      "issue": 3835,
+      "change": "Refine two mx-auto Wind computed-margin expectations only for pinned Linux WebKit 26.5/rev2311 after independent authored CSS diagnosis run 37405347552. Preserve exact CSS trees, physical utility semantics, reference values and all geometry, now asserted exactly. No baseline or broad WebKit claim is advanced."
+    }
+  ]
+}

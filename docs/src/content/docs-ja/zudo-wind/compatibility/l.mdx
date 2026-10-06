@@ -1,0 +1,37 @@
+---
+title: "Tailwind クラス互換性: L"
+description: zudo-wind のソースを確認したクラスとユーティリティ基部の一覧です。
+sidebar_position: 31
+generated: true
+---
+
+完全なクラス名または有限の基部をサイト内検索か下のアルファベット順ページから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。
+
+[互換性一覧](index.mdx) · [移行ガイド](../coming-from-tailwind.mdx)
+
+固定した参照: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
+確認した Wind ソース: `478bbf83e137fbdbe2f386df834839c08e884b9e`; spec `1.14`.
+互換性プロファイル: `wind-preset-free 1.5`.
+公開版での対応: このソース一覧からは未確定. 一覧の根拠: `source-inspected`. この表にブラウザー検証の結果は含まれません。現在の受け入れ済み参照は [正式な状態記録](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json)を確認してください。
+
+| 上流のクラスまたは基部 | Wind への対応 | 状態 | 必要な設定 | 動作と相違 | 代替または課題 | 検証状態 | 環境 / レポート |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `leading-px` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `left-auto` | `left-auto` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `left-full` | `left-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `left-px` | `left-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `line-through` | `line-through` ([text-style](../utilities/text-style.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `lining-nums` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `list-inside` | `list-inside` ([list](../utilities/list.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `list-item` | `list-item` ([display](../utilities/display.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `list-outside` | `list-outside` ([list](../utilities/list.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `lowercase` | `lowercase` ([text-style](../utilities/text-style.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `leading-<value>` | `leading-<value>` ([line-height](../utilities/line-height.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --leading, --spacing。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `left-<value>` | `left-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `line-clamp-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | 上流のテーマキー: --line-clamp。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `list-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | 上流のテーマキー: --list-style-type。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `list-image-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | 上流のテーマキー: --list-style-image。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `landscape` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `last` | `last` | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `last-of-type` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `ltr` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |

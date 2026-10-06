@@ -22,6 +22,26 @@ export default function Home() {
           <div class={styles.moduleMarker}>CSS Modules marker</div>
           <img id="project-image" src="/assets/project-image.svg" alt="Project asset" />
           <AssembledClass />
+          <nav id="shipping-nav" aria-label="Fixture navigation" class="shipping-nav">
+            <a href="#shipping-card">Overview</a>
+            <a href="#shipping-form">Form</a>
+          </nav>
+          <div id="shipping-layout" class="shipping-layout">
+            <article id="shipping-card" class="shipping-card bg-asset-probe">
+              <h2>Shipping card</h2>
+              <p class="shipping-copy">A public synthetic composition probe.</p>
+            </article>
+            <form id="shipping-form" class="shipping-form">
+              <label for="shipping-email">Email</label>
+              <input id="shipping-email" type="email" required />
+              <button id="shipping-submit" type="submit">
+                Submit
+              </button>
+            </form>
+          </div>
+          <section data-theme="dark" class="shipping-theme">
+            <p id="shipping-dark">Nested dark theme</p>
+          </section>
           <Island when="load">
             <ClientOnly />
           </Island>

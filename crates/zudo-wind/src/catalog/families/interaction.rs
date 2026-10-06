@@ -1,6 +1,25 @@
 use super::*;
 
 pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
+    for (root, value) in [("appearance-auto", "auto"), ("appearance-none", "none")] {
+        entries.push(entry(
+            root,
+            "interaction",
+            40,
+            0,
+            &["appearance"],
+            STATIC,
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            OWN,
+            None,
+            value,
+        ));
+    }
+
     let mut cursor = entry(
         "cursor",
         "interaction",

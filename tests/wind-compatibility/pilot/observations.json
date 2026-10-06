@@ -1,0 +1,419 @@
+{
+  "block": {
+    "caseId": "block",
+    "probes": [
+      {
+        "name": "display",
+        "property": "display",
+        "wind": "block",
+        "reference": "block"
+      }
+    ]
+  },
+  "hidden": {
+    "caseId": "hidden",
+    "probes": [
+      {
+        "name": "display",
+        "property": "display",
+        "wind": "none",
+        "reference": "none"
+      }
+    ]
+  },
+  "inline-flex": {
+    "caseId": "inline-flex",
+    "probes": [
+      {
+        "name": "display",
+        "property": "display",
+        "wind": "inline-flex",
+        "reference": "inline-flex"
+      },
+      {
+        "name": "inline-flex-child-second-position",
+        "property": "geometry:left",
+        "wind": "20",
+        "reference": "20",
+        "selector": "#child-b",
+        "relativeTo": "#target"
+      }
+    ]
+  },
+  "mx-auto": {
+    "caseId": "mx-auto",
+    "probes": [
+      {
+        "name": "horizontal-tb-ltr-margin-left",
+        "property": "margin-left",
+        "wind": "100px",
+        "reference": "100px",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-margin-right",
+        "property": "margin-right",
+        "wind": "100px",
+        "reference": "100px",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-margin-top",
+        "property": "margin-top",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-margin-bottom",
+        "property": "margin-bottom",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-geometry-left",
+        "property": "geometry:left",
+        "wind": "100",
+        "reference": "100",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-ltr-geometry-top",
+        "property": "geometry:top",
+        "wind": "0",
+        "reference": "0",
+        "writingMode": "horizontal-tb",
+        "direction": "ltr"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-left",
+        "property": "margin-left",
+        "wind": "100px",
+        "reference": "100px",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-right",
+        "property": "margin-right",
+        "wind": "100px",
+        "reference": "100px",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-top",
+        "property": "margin-top",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-margin-bottom",
+        "property": "margin-bottom",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-geometry-left",
+        "property": "geometry:left",
+        "wind": "100",
+        "reference": "100",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "horizontal-tb-rtl-geometry-top",
+        "property": "geometry:top",
+        "wind": "0",
+        "reference": "0",
+        "writingMode": "horizontal-tb",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-left",
+        "property": "margin-left",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-right",
+        "property": "margin-right",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-top",
+        "property": "margin-top",
+        "wind": "0px",
+        "reference": "100px",
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-margin-bottom",
+        "property": "margin-bottom",
+        "wind": "0px",
+        "reference": "100px",
+        "writingMode": "vertical-rl",
+        "direction": "ltr",
+        "windBrowserOverride": {
+          "browser": "webkit",
+          "browserVersion": "26.5",
+          "revision": "2311",
+          "hostPlatform": "ubuntu24.04-x64",
+          "value": "200px",
+          "nativeRun": 37405347552,
+          "nativeReportSha256": "afb7f2b557900acdbe061f0fe48ec4b2ae5375cd79f9394b15138072319acbe4"
+        }
+      },
+      {
+        "name": "vertical-rl-ltr-geometry-left",
+        "property": "geometry:left",
+        "wind": "200",
+        "reference": "200",
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-ltr-geometry-top",
+        "property": "geometry:top",
+        "wind": "0",
+        "reference": "100",
+        "writingMode": "vertical-rl",
+        "direction": "ltr"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-left",
+        "property": "margin-left",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-right",
+        "property": "margin-right",
+        "wind": "0px",
+        "reference": "0px",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-margin-top",
+        "property": "margin-top",
+        "wind": "0px",
+        "reference": "100px",
+        "writingMode": "vertical-rl",
+        "direction": "rtl",
+        "windBrowserOverride": {
+          "browser": "webkit",
+          "browserVersion": "26.5",
+          "revision": "2311",
+          "hostPlatform": "ubuntu24.04-x64",
+          "value": "200px",
+          "nativeRun": 37405347552,
+          "nativeReportSha256": "afb7f2b557900acdbe061f0fe48ec4b2ae5375cd79f9394b15138072319acbe4"
+        }
+      },
+      {
+        "name": "vertical-rl-rtl-margin-bottom",
+        "property": "margin-bottom",
+        "wind": "0px",
+        "reference": "100px",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-geometry-left",
+        "property": "geometry:left",
+        "wind": "200",
+        "reference": "200",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      },
+      {
+        "name": "vertical-rl-rtl-geometry-top",
+        "property": "geometry:top",
+        "wind": "200",
+        "reference": "100",
+        "writingMode": "vertical-rl",
+        "direction": "rtl"
+      }
+    ]
+  },
+  "grid-cols-2": {
+    "caseId": "grid-cols-2",
+    "probes": [
+      {
+        "name": "columns",
+        "property": "grid-template-columns",
+        "wind": {
+          "notValue": "none"
+        },
+        "reference": {
+          "notValue": "none"
+        }
+      },
+      {
+        "name": "grid-child-second-column",
+        "property": "geometry:left",
+        "wind": "150",
+        "reference": "150",
+        "selector": "#child-b",
+        "relativeTo": "#target"
+      }
+    ]
+  },
+  "p-0-empty": {
+    "caseId": "p-0-empty",
+    "probes": [
+      {
+        "name": "button-padding",
+        "property": "padding-top",
+        "wind": "0px",
+        "reference": {
+          "min": 1
+        }
+      }
+    ]
+  },
+  "p-0-mapped": {
+    "caseId": "p-0-mapped",
+    "probes": [
+      {
+        "name": "button-padding",
+        "property": "padding-top",
+        "wind": "0px",
+        "reference": "0px"
+      }
+    ]
+  },
+  "named-spacing": {
+    "caseId": "named-spacing",
+    "probes": [
+      {
+        "name": "named-padding",
+        "property": "padding-top",
+        "wind": "17px",
+        "reference": "17px"
+      }
+    ]
+  },
+  "named-color": {
+    "caseId": "named-color",
+    "probes": [
+      {
+        "name": "named-background",
+        "property": "background-color",
+        "wind": "rgb(18, 52, 86)",
+        "reference": "rgb(18, 52, 86)"
+      }
+    ]
+  },
+  "unconfigured-p-4": {
+    "caseId": "unconfigured-p-4",
+    "probes": [
+      {
+        "name": "unconfigured-padding",
+        "property": "padding-top",
+        "wind": {
+          "min": 1
+        },
+        "reference": {
+          "min": 1
+        }
+      }
+    ]
+  },
+  "undeclared-palette": {
+    "caseId": "undeclared-palette",
+    "probes": [
+      {
+        "name": "unconfigured-background",
+        "property": "background-color",
+        "wind": "rgba(0, 0, 0, 0)",
+        "reference": "rgba(0, 0, 0, 0)"
+      }
+    ]
+  },
+  "configured-p-4": {
+    "caseId": "configured-p-4",
+    "probes": [
+      {
+        "name": "numeric-padding",
+        "property": "padding-top",
+        "wind": "16px",
+        "reference": "16px"
+      }
+    ]
+  },
+  "contents-gap": {
+    "caseId": "contents-gap",
+    "probes": [
+      {
+        "name": "contents-display",
+        "property": "display",
+        "wind": "contents",
+        "reference": "contents"
+      }
+    ]
+  },
+  "hover-block": {
+    "caseId": "hover-block",
+    "probes": [
+      {
+        "name": "hover-inactive",
+        "property": "display",
+        "wind": "inline",
+        "reference": "inline"
+      },
+      {
+        "name": "hover-active",
+        "property": "display",
+        "wind": "block",
+        "reference": "block",
+        "hover": true
+      }
+    ]
+  },
+  "breakpoint-block": {
+    "caseId": "breakpoint-block",
+    "probes": [
+      {
+        "name": "below-breakpoint",
+        "property": "display",
+        "wind": "inline",
+        "reference": "inline",
+        "viewportWidth": 639
+      },
+      {
+        "name": "at-breakpoint",
+        "property": "display",
+        "wind": "block",
+        "reference": "block",
+        "viewportWidth": 640
+      },
+      {
+        "name": "above-breakpoint",
+        "property": "display",
+        "wind": "block",
+        "reference": "block",
+        "viewportWidth": 641
+      }
+    ]
+  }
+}

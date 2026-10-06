@@ -1,0 +1,19 @@
+{
+  "caseIds": [
+    "block",
+    "hidden",
+    "inline-flex",
+    "mx-auto",
+    "grid-cols-2",
+    "p-0-empty",
+    "p-0-mapped",
+    "named-spacing",
+    "named-color",
+    "unconfigured-p-4",
+    "undeclared-palette",
+    "configured-p-4",
+    "contents-gap",
+    "hover-block",
+    "breakpoint-block"
+  ]
+}

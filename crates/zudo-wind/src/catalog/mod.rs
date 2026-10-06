@@ -272,7 +272,7 @@ mod tests {
             .iter()
             .map(|entry| entry.conflict_group_rank)
             .collect();
-        assert_eq!(ranks, (1..=47).collect::<BTreeSet<u16>>());
+        assert_eq!(ranks, (1..=48).collect::<BTreeSet<u16>>());
     }
     #[test]
     fn duplicate_identifier_is_rejected() {

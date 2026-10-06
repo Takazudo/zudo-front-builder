@@ -1,0 +1,5 @@
+{
+  "caseId": "undeclared-palette",
+  "reset": "none",
+  "explicitCandidates": ["bg-gray-500"]
+}

@@ -1,0 +1,6 @@
+!node_modules/
+node_modules/*
+!node_modules/@fixture/
+node_modules/@fixture/*
+!node_modules/@fixture/shipping-ui/
+!node_modules/@fixture/shipping-ui/**

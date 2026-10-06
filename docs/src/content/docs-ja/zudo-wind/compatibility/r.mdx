@@ -1,0 +1,57 @@
+---
+title: "Tailwind クラス互換性: R"
+description: zudo-wind のソースを確認したクラスとユーティリティ基部の一覧です。
+sidebar_position: 36
+generated: true
+---
+
+完全なクラス名または有限の基部をサイト内検索か下のアルファベット順ページから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。
+
+[互換性一覧](index.mdx) · [移行ガイド](../coming-from-tailwind.mdx)
+
+固定した参照: `tailwindcss@4.3.2 (v4.3.2, 056a1550721d4bf79ff732d5ab9414fa83f7064f)`.
+確認した Wind ソース: `478bbf83e137fbdbe2f386df834839c08e884b9e`; spec `1.14`.
+互換性プロファイル: `wind-preset-free 1.5`.
+公開版での対応: このソース一覧からは未確定. 一覧の根拠: `source-inspected`. この表にブラウザー検証の結果は含まれません。現在の受け入れ済み参照は [正式な状態記録](https://github.com/Takazudo/zudo-front-builder/blob/main/tests/wind-compatibility/reference/accepted.json)を確認してください。
+
+| 上流のクラスまたは基部 | Wind への対応 | 状態 | 必要な設定 | 動作と相違 | 代替または課題 | 検証状態 | 環境 / レポート |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `relative` | `relative` ([position](../utilities/position.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `resize` | `resize` ([interaction](../utilities/interaction.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `resize-none` | `resize-none` ([interaction](../utilities/interaction.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `resize-x` | `resize-x` ([interaction](../utilities/interaction.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `resize-y` | `resize-y` ([interaction](../utilities/interaction.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `right-auto` | `right-auto` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `right-full` | `right-full` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `right-px` | `right-px` ([inset](../utilities/inset.mdx)) | 候補対応・未検証 (`candidate-mapping-untested`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `ring-inset` | — | 対象外・延期 (`excluded-deferred`) | この行の設定要件は未確定です。 | — | [#3372](https://github.com/Takazudo/zudo-front-builder/issues/3372) | `source-inspected` | — |
+| `rotate-none` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `right-<value>` | `right-<value>` ([inset](../utilities/inset.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `ring-<value>` | — | 対象外・延期 (`excluded-deferred`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — | [#3372](https://github.com/Takazudo/zudo-front-builder/issues/3372) | `source-inspected` | — |
+| `ring-offset-<value>` | — | 対象外・延期 (`excluded-deferred`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — | [#3372](https://github.com/Takazudo/zudo-front-builder/issues/3372) | `source-inspected` | — |
+| `rotate-<value>` | `rotate-<value>` ([rotate](../utilities/rotate.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rotate-x-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rotate-y-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rotate-z-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-<value>` | `rounded-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-b-<value>` | `rounded-b-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-bl-<value>` | `rounded-bl-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-br-<value>` | `rounded-br-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-e-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-ee-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-es-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-l-<value>` | `rounded-l-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-r-<value>` | `rounded-r-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-s-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-se-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-ss-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-t-<value>` | `rounded-t-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-tl-<value>` | `rounded-tl-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `rounded-tr-<value>` | `rounded-tr-<value>` ([radius](../utilities/radius.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `row-<value>` | — | 上流登録・Wind 対応なし (`unmapped-upstream-registration`) | 上流のテーマキー: --grid-row。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `row-end-<value>` | `row-end-<value>` ([grid](../utilities/grid.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --grid-row-end。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `row-span-<value>` | `row-span-<value>` ([grid](../utilities/grid.mdx)) | 要確認 (`requires-review`) | パターンの範囲には個別のソース確認が必要です。既定トークンの保証はありません。 | — |  | `source-inspected` | — |
+| `row-start-<value>` | `row-start-<value>` ([grid](../utilities/grid.mdx)) | 要確認 (`requires-review`) | 上流のテーマキー: --grid-row-start。Wind の名前付きトークンは zw-tokens 内の var(--zw-...) を使います。該当する場合、数値 spacingUnit は任意です。 | — |  | `source-inspected` | — |
+| `read-only` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `required` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |
+| `rtl` | — | バリアント対応なし (`variant-unmapped`) | この行の設定要件は未確定です。 | — |  | `source-inspected` | — |

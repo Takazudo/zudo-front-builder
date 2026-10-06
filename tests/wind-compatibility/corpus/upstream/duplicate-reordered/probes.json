@@ -1,0 +1,14 @@
+[
+  {
+    "name": "baseline",
+    "property": "display",
+    "wind": "flex",
+    "reference": "flex"
+  },
+  {
+    "name": "direction",
+    "property": "flex-direction",
+    "wind": "row",
+    "reference": "row"
+  }
+]

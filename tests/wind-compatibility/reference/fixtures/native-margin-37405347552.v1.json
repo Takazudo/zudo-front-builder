@@ -1,0 +1,460 @@
+{
+  "source": "Independent authored CSS diagnostic, CI run 37405347552; observation evidence, not browser parity admission",
+  "sourceCommit": "dfa68c588f8e2c43313aac5489dc4c88b9e646d0",
+  "sourceProbeSha256": "889600e86075afa7f87206426e327857b19cfbb52999d3648ae645795675d908",
+  "rawReportSha256": "afb7f2b557900acdbe061f0fe48ec4b2ae5375cd79f9394b15138072319acbe4",
+  "browsers": {
+    "chromium": {
+      "version": "149.0.7827.55",
+      "revision": "1228",
+      "hostPlatform": "ubuntu24.04-x64",
+      "executableSha256": "2d18db9d8608b052b6a552ee00ec1e830f93692e928b65ecc67d693bd33fe801"
+    },
+    "firefox": {
+      "version": "151.0",
+      "revision": "1532",
+      "hostPlatform": "ubuntu24.04-x64",
+      "executableSha256": "934ffa962b3f73809e910303568df1c435b86a6c1abdbd54a70730242ea24868"
+    },
+    "webkit": {
+      "version": "26.5",
+      "revision": "2311",
+      "hostPlatform": "ubuntu24.04-x64",
+      "executableSha256": "a85baad3d8c07173ac387a59b41500c382b21ed692afe0964d29aac247ccc63b"
+    }
+  },
+  "verticalRl": [
+    {
+      "engine": "chromium",
+      "kind": "physical-auto",
+      "direction": "ltr",
+      "stylesheetSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "servedSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "chromium",
+      "kind": "logical-auto",
+      "direction": "ltr",
+      "stylesheetSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "servedSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "100px",
+          "margin-bottom": "100px"
+        },
+        "box": {
+          "x": 200,
+          "y": 100,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "chromium",
+      "kind": "physical-zero",
+      "direction": "ltr",
+      "stylesheetSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "servedSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "chromium",
+      "kind": "physical-auto",
+      "direction": "rtl",
+      "stylesheetSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "servedSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 200,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "chromium",
+      "kind": "logical-auto",
+      "direction": "rtl",
+      "stylesheetSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "servedSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "100px",
+          "margin-bottom": "100px"
+        },
+        "box": {
+          "x": 200,
+          "y": 100,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "chromium",
+      "kind": "physical-zero",
+      "direction": "rtl",
+      "stylesheetSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "servedSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 200,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "firefox",
+      "kind": "physical-auto",
+      "direction": "ltr",
+      "stylesheetSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "servedSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "firefox",
+      "kind": "logical-auto",
+      "direction": "ltr",
+      "stylesheetSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "servedSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "100px",
+          "margin-bottom": "100px"
+        },
+        "box": {
+          "x": 200,
+          "y": 100,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "firefox",
+      "kind": "physical-zero",
+      "direction": "ltr",
+      "stylesheetSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "servedSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "firefox",
+      "kind": "physical-auto",
+      "direction": "rtl",
+      "stylesheetSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "servedSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 200,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "firefox",
+      "kind": "logical-auto",
+      "direction": "rtl",
+      "stylesheetSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "servedSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "100px",
+          "margin-bottom": "100px"
+        },
+        "box": {
+          "x": 200,
+          "y": 100,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "firefox",
+      "kind": "physical-zero",
+      "direction": "rtl",
+      "stylesheetSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "servedSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 200,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "webkit",
+      "kind": "physical-auto",
+      "direction": "ltr",
+      "stylesheetSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "servedSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "200px"
+        },
+        "box": {
+          "x": 200,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "webkit",
+      "kind": "logical-auto",
+      "direction": "ltr",
+      "stylesheetSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "servedSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "100px",
+          "margin-bottom": "100px"
+        },
+        "box": {
+          "x": 200,
+          "y": 100,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "webkit",
+      "kind": "physical-zero",
+      "direction": "ltr",
+      "stylesheetSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "servedSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "documentSha256": "ec5c114b5703b48350d2787cd9cbbf20245544365e88fdc8595aed09279b06fb",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "0px",
+          "margin-bottom": "200px"
+        },
+        "box": {
+          "x": 200,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "webkit",
+      "kind": "physical-auto",
+      "direction": "rtl",
+      "stylesheetSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "servedSha256": "215164a58af2d1d3051a579238cacaf53105c8a58e23f20da4a0a151f31dcf6b",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "200px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 200,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "webkit",
+      "kind": "logical-auto",
+      "direction": "rtl",
+      "stylesheetSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "servedSha256": "fa618e47ad64b2a450508afc8c0e24f6cc4d2baef4ea22d47431cef62f745c30",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "100px",
+          "margin-bottom": "100px"
+        },
+        "box": {
+          "x": 200,
+          "y": 100,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    },
+    {
+      "engine": "webkit",
+      "kind": "physical-zero",
+      "direction": "rtl",
+      "stylesheetSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "servedSha256": "e18451481c0b06cdc298e1e9bb84b1a6b4305f92b2e53ed473047d4c896b08c2",
+      "documentSha256": "0255418aedcc0a8d78042932c6dc299e4bf13312420cb89cc79b410e45d0a0d4",
+      "observed": {
+        "margins": {
+          "margin-left": "0px",
+          "margin-right": "0px",
+          "margin-top": "200px",
+          "margin-bottom": "0px"
+        },
+        "box": {
+          "x": 200,
+          "y": 200,
+          "width": 100,
+          "height": 100,
+          "parentWidth": 300,
+          "parentHeight": 300
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "name": "without-content",
+    "property": "content",
+    "pseudo": "::before",
+    "wind": "none",
+    "reference": "\"\""
+  },
+  {
+    "name": "with-authored-content",
+    "property": "display",
+    "pseudo": "::before",
+    "wind": "flex",
+    "reference": "flex",
+    "authoredCss": "#target::before{content:\"x\";}"
+  }
+]

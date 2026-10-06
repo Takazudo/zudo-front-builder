@@ -129,6 +129,25 @@ return <section rawHtml={markup} />;
 
 `script` と `style` では子を拒否します。インラインの raw-text には `rawHtml` で静的な文字列を指定し、外部 script は子なしで `src` を指定できます。リアクティブな内容や内部コメントマーカーには対応しません。現在の要素を閉じる script または style の並びは、大文字小文字を区別せずに拒否されます。また、`<!--<script>` のように HTML パーサーがレンダラーの終了タグ `</script>` をテキストとして取り込む script の内容も拒否します。`<!--`、`<!-- <script> -->`、通常の `<script>` というテキストは引き続き受け入れます。この判定は HTML の script トークナイザーのエスケープ状態と二重エスケープ状態に従い、`style` には RAWTEXT の規則を適用します。拒否時はサーバーでもクライアントでも `ZR_RAW_HTML` を報告します。ランタイムは任意の JavaScript や CSS をエスケープしません。島の props は実行可能な script ブロックではなく属性で運ばれます。
 
+直接の `<script type="application/json">` に JSON データを入れる場合は、JSON に対応したオブジェクトを先にシリアライズし、得られた JSON 内の `<` と予約済みマーカーの部分文字列をエスケープします。各マーカーの先頭文字を JSON の Unicode エスケープにすると、元の大文字小文字、パース後の値、文字どおりのバックスラッシュ u を保てます。これはデータ転送用であり、サニタイザーでも、実行する JavaScript のシリアライザーでもありません。
+
+~~~tsx
+function jsonForRawHtml(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new TypeError("Expected a JSON-compatible object");
+  return json
+    .replace(/</g, "\\u003c")
+    .replace(/data-zfb-island|zr:1:/gi, (marker) =>
+      `\\u${marker.charCodeAt(0).toString(16).padStart(4, "0")}${marker.slice(1)}`,
+    );
+}
+
+const data = { label: 'DATA-zfb-IsLaNd', text: '</script>' };
+return <script type="application/json" rawHtml={jsonForRawHtml(data)} />;
+~~~
+
+script のテキストは JSON のままで、`JSON.parse(script.textContent)` によって `data` を正確に復元できます。別の要素の `rawHtml` に `<script type="application/json">` を入れ子にする場合、外側のペイロードには、大文字小文字を区別せず、マーカーを含む JSON の部分文字列を保守的に拒否するフォールバックが適用されます。埋め込む前に同じレシピでエンコードしてください。実際の予約済み属性、プロトコルコメント、レンダラーの境界を取り込むペイロードは引き続き拒否されます。
+
 style 要素のテキストの子は `rawHtml` に移します。
 
 ~~~tsx

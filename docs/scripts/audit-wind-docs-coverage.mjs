@@ -8,6 +8,7 @@ import ja from "./wind-reference-strings/ja.mjs";
 import { WIND_GUIDE_PAGES } from "./generate-wind-guide-previews.mjs";
 import { validateCatalogFamilies, validateLocaleStrings } from "./generate-wind-reference.mjs";
 import { WIND_REFERENCE_FAMILIES } from "./wind-reference-families.mjs";
+import { loadCompatibilityInputs, renderCompatibilityPages } from "./wind-compatibility-pages.mjs";
 import { exampleSource, loadRecords, REPO_ROOT } from "./wind-preview-assets.mjs";
 import {
   loadEditorial,
@@ -19,18 +20,18 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPECTED = Object.freeze({
   adjacentRoutes: 42,
   adjacentSources: 43,
-  catalogEntries: 197,
+  catalogEntries: 219,
   diagnosticExamples: 5,
-  editorialFamilies: 47,
+  editorialFamilies: 48,
   guidePages: 10,
   guideRecords: 9,
   historicalWindRoutes: 116,
   negativeExamples: 30,
-  positiveExamples: 138,
-  records: 57,
-  utilityFamilies: 47,
-  utilityPositiveExamples: 122,
-  windExamples: 168,
+  positiveExamples: 143,
+  records: 58,
+  utilityFamilies: 48,
+  utilityPositiveExamples: 127,
+  windExamples: 173,
 });
 
 const fail = (message) => {
@@ -136,6 +137,21 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
   const records = loadRecords(root);
   const editorial = loadEditorial(join(root, "docs/scripts/wind-reference-editorial"));
   const preview = loadPreviewContext(root, records);
+  const compatibility = loadCompatibilityInputs(root);
+  const compatibilityOutputs = Object.fromEntries(
+    ["en", "ja"].map((locale) => [
+      locale,
+      renderCompatibilityPages(
+        compatibility.inventory,
+        catalog,
+        compatibility.profile,
+        locale,
+        WIND_REFERENCE_FAMILIES,
+      ),
+    ]),
+  );
+  if (compatibilityOutputs.en.size !== compatibilityOutputs.ja.size)
+    fail("Compatibility locale page parity");
   const entriesById = validateCatalogFamilies(catalog, WIND_REFERENCE_FAMILIES);
   validateLocaleStrings(en, WIND_REFERENCE_FAMILIES);
   validateLocaleStrings(ja, WIND_REFERENCE_FAMILIES);
@@ -166,7 +182,7 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
     recordFamilies.size !== expectedRecordFamilies.size ||
     [...expectedRecordFamilies].some((family) => !recordFamilies.has(family))
   )
-    fail("Example records must be the 47 utility families, 9 guide records, and diagnostics");
+    fail("Example records must be the 48 utility families, 9 guide records, and diagnostics");
   requireCount(records, EXPECTED.records, "Example record inventory");
 
   const exampleByKey = new Map();
@@ -237,6 +253,18 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
       ["index.mdx", ...WIND_REFERENCE_FAMILIES.map(({ id }) => `${id}.mdx`)],
       `${locale} utility output inventory`,
     );
+    assertMdxInventory(
+      join(windRoot, "compatibility"),
+      compatibilityOutputs[locale].keys(),
+      `${locale} compatibility output inventory`,
+    );
+    for (const [name, expected] of compatibilityOutputs[locale]) {
+      const path = join(windRoot, "compatibility", name);
+      if (readFileSync(path, "utf8") !== expected)
+        fail(`${locale} compatibility page stale: ${name}`);
+      await parseSource(path, root);
+      await auditReadmeLinks(path, root);
+    }
     const localeMarkers = guideMarkers[locale];
     for (const page of WIND_GUIDE_PAGES) {
       const path = join(windRoot, `${page}.mdx`);
@@ -323,7 +351,7 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
     guideRecords: guideIds.size,
     historicalWindRoutes: Object.keys(windBaseline).length,
     negativeExamples: counts.negative,
-    parsedSources: sources.length,
+    parsedSources: sources.length + compatibilityOutputs.en.size + compatibilityOutputs.ja.size,
     positiveExamples: counts.positive,
     utilityFamilies: WIND_REFERENCE_FAMILIES.length,
   };

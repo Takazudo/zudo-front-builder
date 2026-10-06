@@ -1,0 +1,5 @@
+{
+  "caseId": "arbitrary-width-one",
+  "reset": "none",
+  "explicitCandidates": ["w-[1px]"]
+}

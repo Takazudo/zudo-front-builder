@@ -6,7 +6,9 @@
 
 import { createServer } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
+import { verifyDistProof } from "./dist-proof.mjs";
 
 const DIST_DIR = process.env.ZFB_WIND_REAL_BUILD_DIST
   ? resolve(process.env.ZFB_WIND_REAL_BUILD_DIST)
@@ -55,6 +57,12 @@ if (!existsSync(DIST_DIR)) {
   console.error(`[wind-real-build] dist/ not found at ${DIST_DIR}; build wind-assets first.`);
   process.exit(1);
 }
+if (!process.env.ZFB_WIND_REAL_BUILD_PROOF)
+  throw Error("Set ZFB_WIND_REAL_BUILD_PROOF to current-source dist provenance");
+await verifyDistProof(
+  JSON.parse(await readFile(resolve(process.env.ZFB_WIND_REAL_BUILD_PROOF), "utf8")),
+  DIST_DIR,
+);
 
 const server = createServer((request, response) => {
   const url = new URL(request.url, `http://localhost:${PORT}`);

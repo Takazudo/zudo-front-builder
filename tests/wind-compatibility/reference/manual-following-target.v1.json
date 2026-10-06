@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "wind-manual-following-target",
+  "selectedAt": "2026-10-06",
+  "selection": {
+    "source": "manager read-only public npm registry scout",
+    "rule": "freeze exact stable 4.3.3; repository plan, assess, and acquire commands independently resolve and verify it",
+    "floatingLatest": false
+  },
+  "currentAccepted": {
+    "package": "tailwindcss",
+    "version": "4.3.2",
+    "channel": "stable",
+    "integrity": "sha512-WtctNNSH8A9jlMIqxzuYumOHU5uGZyRv0Q5svQl+oEPy5w84YpBxdb7MdqyiSPQge5jTJ6zFQLq0PFygdccSBA==",
+    "artifactSha256": "3673da9004404d12d4672bb5d002945319c2b3dea8c13ea022fdd33a3e260e62",
+    "authority": "tests/wind-compatibility/reference/accepted.json"
+  },
+  "target": {
+    "package": "tailwindcss",
+    "version": "4.3.3",
+    "channel": "stable",
+    "registry": "https://registry.npmjs.org/tailwindcss/4.3.3",
+    "tarball": "https://registry.npmjs.org/tailwindcss/-/tailwindcss-4.3.3.tgz",
+    "integrity": "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==",
+    "sha1": "c006861611c213c1877893ab5b23daa16be2bb55",
+    "preparationAcquisitionSha256": "f1493c5bcb29a80310da63d19282d233ba259479f36561a27146cd4747d1faef",
+    "source": {
+      "repository": "https://github.com/tailwindlabs/tailwindcss.git",
+      "tag": "v4.3.3",
+      "observedTagCommit": "c2b24dd15fed1c59dd521bd86082f520c9f5ad0d",
+      "packageGitSha": null,
+      "status": "tag-observed-artifact-link-unverified"
+    }
+  },
+  "rehearsalPolicy": {
+    "acceptedBaselineMustPass": true,
+    "candidatePassesRequiredForAcceptance": true,
+    "candidateFailureMayBeRecordedAsReviewOnly": true,
+    "automaticUtilityAdoption": false,
+    "acceptedReferenceChangesDuringRehearsal": false,
+    "reviewedThroughDuringRehearsal": "disposable-metadata-only",
+    "authoritativeReviewOnlyCommitRequiresIndependentEvidenceReview": true,
+    "optionalLiveDetector": "3822 remains open and unimplemented"
+  },
+  "evidenceStatus": "preparation-only; full repository assessment, three-way Wind comparison, classification, and checked transition are pending manager-owned execution"
+}

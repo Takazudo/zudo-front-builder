@@ -6,7 +6,7 @@ use crate::{Candidate, TokenCategory, ValidatedTokens};
 
 /// Bump when an entry is added or removed; diagnostics name the version so a
 /// report stays interpretable after the vocabulary changes.
-pub const MIGRATION_VOCABULARY_VERSION: u32 = 4;
+pub const MIGRATION_VOCABULARY_VERSION: u32 = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForeignValue {
@@ -33,7 +33,6 @@ pub struct ForeignFamily {
 
 use ForeignValue::{Any, Arbitrary, Bare, Integer, Keyword, Token};
 
-const DISPLAY: &str = "a display declaration";
 const GRADIENT: &str = "a background-image gradient declaration";
 const LINEAR_GRADIENT: &str = "a background-image: linear-gradient(...) declaration";
 const RADIAL_GRADIENT: &str = "a background-image: radial-gradient(...) declaration";
@@ -373,50 +372,13 @@ const FAMILIES: &[ForeignFamily] = &[
     },
     ForeignFamily {
         root: "table",
-        values: &[
-            Bare,
-            Keyword("auto"),
-            Keyword("fixed"),
-            Keyword("caption"),
-            Keyword("cell"),
-            Keyword("column"),
-            Keyword("column-group"),
-            Keyword("footer-group"),
-            Keyword("header-group"),
-            Keyword("row"),
-            Keyword("row-group"),
-        ],
+        values: &[Keyword("auto"), Keyword("fixed")],
         alternative: "a display or table-layout declaration",
-    },
-    ForeignFamily {
-        root: "inline-table",
-        values: &[Bare],
-        alternative: DISPLAY,
-    },
-    ForeignFamily {
-        root: "contents",
-        values: &[Bare],
-        alternative: DISPLAY,
-    },
-    ForeignFamily {
-        root: "flow-root",
-        values: &[Bare],
-        alternative: DISPLAY,
-    },
-    ForeignFamily {
-        root: "list-item",
-        values: &[Bare],
-        alternative: DISPLAY,
     },
     ForeignFamily {
         root: "container",
         values: &[Bare],
         alternative: "width and max-width declarations per breakpoint",
-    },
-    ForeignFamily {
-        root: "not-sr-only",
-        values: &[Bare],
-        alternative: "declarations that undo the sr-only clipping",
     },
     ForeignFamily {
         root: "line-clamp",
@@ -425,13 +387,7 @@ const FAMILIES: &[ForeignFamily] = &[
     },
     ForeignFamily {
         root: "order",
-        values: &[
-            Integer,
-            Keyword("first"),
-            Keyword("last"),
-            Keyword("none"),
-            Arbitrary,
-        ],
+        values: &[Arbitrary],
         alternative: "an order declaration",
     },
     ForeignFamily {
@@ -441,23 +397,18 @@ const FAMILIES: &[ForeignFamily] = &[
     },
     ForeignFamily {
         root: "fill",
-        values: &[Keyword("current"), Keyword("none"), Arbitrary],
+        values: &[Arbitrary],
         alternative: "a fill declaration",
     },
     ForeignFamily {
         root: "stroke",
-        values: &[Keyword("current"), Keyword("none"), Integer, Arbitrary],
+        values: &[Integer, Arbitrary],
         alternative: "a stroke or stroke-width declaration",
     },
     ForeignFamily {
         root: "backdrop-blur",
         values: &[Bare, Any],
         alternative: "a backdrop-filter declaration",
-    },
-    ForeignFamily {
-        root: "appearance",
-        values: &[Keyword("none"), Keyword("auto")],
-        alternative: "an appearance declaration",
     },
     ForeignFamily {
         root: "will-change",
@@ -468,6 +419,25 @@ const FAMILIES: &[ForeignFamily] = &[
         root: "content",
         values: &[Keyword("none"), Arbitrary],
         alternative: "a content declaration on a ::before or ::after rule",
+    },
+    // Tailwind 4.3.2 registers these exact static names for align-content.
+    // Keep them distinct from pseudo-element `content-none`/`content-[...]`.
+    ForeignFamily {
+        root: "content",
+        values: &[
+            Keyword("normal"),
+            Keyword("center"),
+            Keyword("start"),
+            Keyword("end"),
+            Keyword("center-safe"),
+            Keyword("end-safe"),
+            Keyword("between"),
+            Keyword("around"),
+            Keyword("evenly"),
+            Keyword("baseline"),
+            Keyword("stretch"),
+        ],
+        alternative: "an align-content declaration",
     },
 ];
 
@@ -536,21 +506,28 @@ mod tests {
             ("bg-conic-45", "bg-conic"),
             ("-bg-conic-45", "bg-conic"),
             ("bg-conic-[from_90deg]", "bg-conic"),
-            ("table", "table"),
-            ("table-row", "table"),
-            ("contents", "contents"),
-            ("flow-root", "flow-root"),
+            ("table-auto", "table"),
+            ("table-fixed", "table"),
             ("line-clamp-2", "line-clamp"),
-            ("order-1", "order"),
-            ("basis-1/2", "basis"),
-            ("fill-current", "fill"),
-            ("stroke-current", "stroke"),
+            ("order-[2]", "order"),
+            ("basis-[20px]", "basis"),
+            ("fill-[red]", "fill"),
+            ("stroke-2", "stroke"),
             ("backdrop-blur-sm", "backdrop-blur"),
-            ("appearance-none", "appearance"),
             ("will-change-transform", "will-change"),
-            ("not-sr-only", "not-sr-only"),
             ("content-[\"\"]", "content"),
             ("before:content-none", "content"),
+            ("content-normal", "content"),
+            ("content-center", "content"),
+            ("content-start", "content"),
+            ("content-end", "content"),
+            ("content-center-safe", "content"),
+            ("content-end-safe", "content"),
+            ("content-between", "content"),
+            ("content-around", "content"),
+            ("content-evenly", "content"),
+            ("content-baseline", "content"),
+            ("content-stretch", "content"),
             ("container", "container"),
             ("ms-auto", "ms"),
             ("-me-[3px]", "me"),
@@ -605,6 +582,8 @@ mod tests {
             "table-wrapper",
             "order-summary",
             "content-area",
+            "content-centering",
+            "content-centerish",
             "container-inner",
             "fill-panel",
             "appearance-card",

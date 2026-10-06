@@ -1,0 +1,5 @@
+{
+  "caseId": "native-basis",
+  "reset": "none",
+  "explicitCandidates": ["basis-auto", "basis-full", "basis-px", "basis-1/2"]
+}

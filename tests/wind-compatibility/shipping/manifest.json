@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 1,
+  "kind": "wind-shipping-manifest",
+  "revision": 3,
+  "fixtureRoot": "tests/wind-compatibility/shipping/fixtures",
+  "configFiles": [
+    "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
+    "crates/zfb/tests/fixtures/wind-assets/zfb.config.json",
+    "crates/zfb/tests/fixtures/embedded-host-request-time/zfb.config.json"
+  ],
+  "required": [
+    {
+      "id": "css-initial",
+      "mode": "cli-css",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
+      "mechanism": "css-build",
+      "expectedObservation": {
+        "present": [
+          ".bg-brand",
+          ".text-transient",
+          ".text-brand",
+          ".bg-manifest",
+          ".authored-shell"
+        ],
+        "absent": [".bg-added"]
+      },
+      "screenshotRequired": true
+    },
+    {
+      "id": "source-add",
+      "mode": "cli-css-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/src/index.tsx",
+      "mechanism": "source-add",
+      "expectedObservation": { "present": [".bg-added", ".bg-brand"], "absent": [] },
+      "screenshotRequired": false
+    },
+    {
+      "id": "source-edit",
+      "mode": "cli-css-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/src/index.tsx",
+      "mechanism": "source-edit",
+      "expectedObservation": { "present": [".bg-edited", ".bg-brand"], "absent": [".bg-added"] },
+      "screenshotRequired": false
+    },
+    {
+      "id": "source-remove",
+      "mode": "cli-css-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/src/index.tsx",
+      "mechanism": "source-remove",
+      "expectedObservation": { "present": [".bg-brand"], "absent": [".bg-edited"] },
+      "screenshotRequired": false
+    },
+    {
+      "id": "source-rename",
+      "mode": "cli-css-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/src/rename-before.tsx",
+      "mechanism": "source-rename",
+      "expectedObservation": { "present": [".bg-renamed"], "absent": [".bg-old"] },
+      "screenshotRequired": false
+    },
+    {
+      "id": "token-change",
+      "mode": "cli-css-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
+      "mechanism": "token-change",
+      "expectedObservation": {
+        "present": [".bg-brand"],
+        "absent": [],
+        "backgroundColor": "rgb(34, 68, 102)"
+      },
+      "screenshotRequired": false
+    },
+    {
+      "id": "token-removal",
+      "mode": "cli-css-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/cli/zfb.config.json",
+      "mechanism": "token-removal",
+      "expectedObservation": {
+        "present": [".bg-brand"],
+        "absent": [".text-transient", "--zw-color-transient"]
+      },
+      "screenshotRequired": false
+    },
+    {
+      "id": "build-composition",
+      "mode": "production-build",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/composition.json",
+      "mechanism": "component-state",
+      "expectedObservation": {
+        "cardBackground": "rgb(51, 102, 153)",
+        "headingFontSize": "24px",
+        "darkText": "rgb(247, 247, 247)",
+        "navDisplay": "flex",
+        "globalMarker": "present",
+        "moduleMarker": "present",
+        "mobileStacked": true,
+        "wideColumns": true,
+        "invalidEmailRejected": true,
+        "validEmailAccepted": true,
+        "navFocusOutline": "3px",
+        "inputFocusOutline": "2px",
+        "buttonHoverBackground": "rgb(34, 68, 102)"
+      },
+      "screenshotRequired": true
+    },
+    {
+      "id": "dev-stylesheet",
+      "mode": "production-dev-warm",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/composition.json",
+      "mechanism": "css-dev",
+      "expectedObservation": {
+        "steps": [
+          {
+            "id": "initial",
+            "present": [".bg-shipping", ".bg-old", ".text-transient"],
+            "absent": [".bg-added"]
+          },
+          { "id": "source-add", "present": [".bg-added", ".bg-old"], "absent": [".bg-edited"] },
+          { "id": "source-edit", "present": [".bg-edited", ".bg-old"], "absent": [".bg-added"] },
+          {
+            "id": "source-remove",
+            "present": [".bg-shipping", ".bg-old"],
+            "absent": [".bg-edited"]
+          },
+          { "id": "source-rename", "present": [".bg-renamed"], "absent": [".bg-old"] },
+          {
+            "id": "token-change",
+            "present": [".bg-shipping"],
+            "absent": [],
+            "backgroundColor": "rgb(34, 68, 102)"
+          },
+          {
+            "id": "token-removal",
+            "present": [".bg-shipping", ".bg-renamed"],
+            "absent": [".text-transient", "--zw-color-transient"]
+          }
+        ],
+        "cleanFinalMatches": true
+      },
+      "screenshotRequired": false
+    },
+    {
+      "id": "request-time-ssr",
+      "mode": "production-dev-ssr",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/composition.json",
+      "mechanism": "css-ssr",
+      "expectedObservation": { "routeMarker": true, "quotedCss": true },
+      "screenshotRequired": false
+    },
+    {
+      "id": "missing-css",
+      "mode": "production-build",
+      "engine": "chromium",
+      "configuration": "synthetic-preset-free",
+      "fixture": "tests/wind-compatibility/shipping/fixtures/composition.json",
+      "mechanism": "missing-css-detection",
+      "expectedObservation": {
+        "missingStatus": 404,
+        "missingContentType": "text/plain; charset=utf-8"
+      },
+      "screenshotRequired": false
+    }
+  ]
+}

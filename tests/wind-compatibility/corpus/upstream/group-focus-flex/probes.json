@@ -1,0 +1,23 @@
+[
+  {
+    "name": "inactive",
+    "property": "display",
+    "wind": "inline",
+    "reference": "inline"
+  },
+  {
+    "name": "matching",
+    "property": "display",
+    "wind": "flex",
+    "reference": "flex",
+    "focusSelector": "#group",
+    "keyboardFocus": true
+  },
+  {
+    "name": "nonmatching",
+    "property": "display",
+    "wind": "inline",
+    "reference": "inline",
+    "focusSelector": "#unrelated"
+  }
+]

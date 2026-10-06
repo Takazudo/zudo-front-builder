@@ -1,0 +1,11 @@
+{
+  "caseId": "named-color",
+  "reset": "none",
+  "explicitCandidates": ["bg-surface"],
+  "spacing": {
+    "hsp-sm": "17px"
+  },
+  "colors": {
+    "surface": "#123456"
+  }
+}

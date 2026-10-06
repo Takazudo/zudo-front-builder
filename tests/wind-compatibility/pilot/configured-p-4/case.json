@@ -1,0 +1,6 @@
+{
+  "caseId": "configured-p-4",
+  "reset": "none",
+  "explicitCandidates": ["p-4"],
+  "spacingUnit": "0.25rem"
+}

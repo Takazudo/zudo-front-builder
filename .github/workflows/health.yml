@@ -11,6 +11,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main, "base/**"]
+  workflow_dispatch:
+    inputs:
+      wind_full:
+        description: Run full Wind compatibility and shipping evidence
+        type: boolean
+        default: true
 
 # Default to least privilege; jobs that need more must opt in.
 permissions:
@@ -115,7 +121,8 @@ jobs:
               - '.github/workflows/health.yml'
 
   health:
-    runs-on: ubuntu-latest
+    # Profile 1.5 admits the exact Ubuntu 24.04 x64 browser matrix.
+    runs-on: ubuntu-24.04
     # Job-level permissions override (issue #1341): the "Detect and report
     # flaky tests" step near the end of this job calls `gh issue create`/
     # `gh issue comment`, which needs issues:write. Scoped to THIS job only —
@@ -127,13 +134,15 @@ jobs:
     permissions:
       contents: read
       issues: write
-    # V8 first compile costs 15-30 min; subsequent runs hit the Swatinem cache
-    # and typically complete well within this budget. Headroom bumped 45 -> 60
-    # when this job started *running* the test suite (issue #638), not just
-    # compiling it — test execution had never been timed in CI before.
-    timeout-minutes: 60
+    # Existing native suite had a 60-minute ceiling. The integrated probe
+    # measured about 4 minutes for comparison, 3 for production build, and
+    # 90 seconds for Rust fixture compile/execution. Allow bounded headroom
+    # for browser installation and cold-cache variance on the same runner.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
 
       # Syntax-only fail-fast gate (issue #791), kept before any toolchain
       # setup. bash -n is a pure parse check (bash parses the POSIX-sh scripts
@@ -332,6 +341,11 @@ jobs:
           ZFB_SUPERVISOR_TIMELINE: "1"
 
       - run: pnpm format:check
+
+      - name: Wind policy, inventory, accounting and mutation contracts
+        run: |
+          node scripts/wind-compatibility/inventory-cli.mjs validate
+          node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs
 
       # Keep the shipped-size documentation synchronized with the manifest
       # (issue #2482). This pure-Node check is cheap and belongs in the health
@@ -703,6 +717,55 @@ jobs:
             }
             console.log("Node " + process.version + "; zlib " + process.versions.zlib + "; " + process.platform + " " + process.arch);
           '
+
+      # This is part of the existing required health job. It shares the
+      # already-built native Cargo target and cannot be silently skipped by a
+      # path-filtered optional workflow or by a failed upstream job.
+      - name: Route required Wind compatibility evidence
+        id: wind_route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          WIND_FULL: ${{ inputs.wind_full }}
+        run: |
+          test -z "$(git status --porcelain)" || { echo 'Dirty source before Wind routing' >&2; exit 1; }
+          node scripts/wind-compatibility/ci-route.mjs --github-output "$GITHUB_OUTPUT"
+
+      - name: Install profile browser engines
+        if: ${{ steps.wind_route.outputs.relevant == 'true' }}
+        run: |
+          if [[ '${{ steps.wind_route.outputs.mode }}' == full ]]; then
+            node_modules/.bin/playwright install --with-deps chromium firefox webkit
+          else
+            node_modules/.bin/playwright install --with-deps chromium
+          fi
+
+      - name: Required Wind comparison and shipping evidence
+        if: ${{ steps.wind_route.outputs.relevant == 'true' }}
+        run: bash scripts/wind-compatibility/ci-run.sh '${{ steps.wind_route.outputs.mode }}'
+
+      - name: Assert explicit irrelevant Wind no-op
+        if: ${{ steps.wind_route.outputs.relevant == 'false' }}
+        env:
+          DETECTOR_RESULT: success
+          WIND_RELEVANT: "false"
+          WIND_MODE: chromium
+          WIND_RESULT: skipped
+          NATIVE_RESULT: success
+        run: node scripts/wind-compatibility/ci-gate.mjs aggregate
+
+      - name: Retain Wind evidence and exact runner inputs
+        if: ${{ always() && steps.wind_route.outputs.relevant == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wind-required-health-evidence
+          path: |
+            ${{ runner.temp }}/wind-gate/
+            ${{ runner.temp }}/wind-reference-cache/
+            test-results/
+          if-no-files-found: error
+          retention-days: 7
 
       # Rebuild and pack both packages from this checkout so workspace and
       # published-consumer resolution are measured from the same source SHA.

@@ -1,0 +1,614 @@
+{
+  "schemaVersion": 1,
+  "issue": 3831,
+  "profile": "wind-preset-free@1.5",
+  "sourceArchiveSha256": "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
+  "sourceTagCommit": "056a1550721d4bf79ff732d5ab9414fa83f7064f",
+  "sourceTag": "v4.3.2",
+  "referencePackage": "tailwindcss@4.3.2",
+  "sourceToPackageLink": "unverified",
+  "pilotCaseIds": [
+    "block",
+    "hidden",
+    "inline-flex",
+    "mx-auto",
+    "grid-cols-2",
+    "p-0-empty",
+    "p-0-mapped",
+    "named-spacing",
+    "named-color",
+    "unconfigured-p-4",
+    "undeclared-palette",
+    "configured-p-4",
+    "contents-gap",
+    "hover-block",
+    "breakpoint-block"
+  ],
+  "targetedExecutionKeys": {
+    "p-0-mapped": ["pilot/p-0-mapped"],
+    "named-spacing": ["pilot/named-spacing"],
+    "named-color": ["pilot/named-color"],
+    "hover-block": ["pilot/hover-block"],
+    "breakpoint-block": ["pilot/breakpoint-block"],
+    "grid-cols-2": ["pilot/grid-cols-2"],
+    "inline-flex": ["pilot/inline-flex"],
+    "mx-auto": ["pilot/mx-auto"],
+    "nested-token-scope": ["control/nested-token-scope"],
+    "specificity-and-authored-cascade": ["control/specificity-and-authored-cascade"],
+    "native-reset-controls": ["control/native-reset-controls"],
+    "wrong-value-or-missing-rule-detection": [
+      "control/wrong-value-detection",
+      "control/missing-rule-detection"
+    ]
+  },
+  "supplementalCaseIds": [
+    "semantic-initial-composed",
+    "semantic-changed-composed",
+    "numeric-spacing-removed",
+    "palette-gray-500-opt-in"
+  ],
+  "nativeGuaranteeIds": [
+    "block",
+    "hidden",
+    "inline-flex",
+    "mx-auto",
+    "grid-cols-2",
+    "p-0-empty",
+    "native-relative",
+    "native-absolute",
+    "native-flex-row",
+    "native-flex-wrap",
+    "native-flex-1",
+    "native-w-min",
+    "native-h-max",
+    "native-size-px",
+    "native-inset-0",
+    "native-top-px",
+    "native-m-0",
+    "native-p-px",
+    "native-basis-zero",
+    "native-basis-min",
+    "native-basis-max",
+    "native-basis-fit",
+    "native-basis-content"
+  ],
+  "upstreamCases": [
+    {
+      "id": "display-flex",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "display",
+      "originalInput": "'flex'",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["flex"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "display-grid",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "display",
+      "originalInput": "'grid'",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["grid"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "flex-direction",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "flex-direction",
+      "originalInput": "['flex-row', 'flex-row-reverse', 'flex-col', 'flex-col-reverse']",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["flex", "flex-row"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "hover-flex",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/variants.test.ts",
+      "upstreamTest": "hover",
+      "originalInput": "['hover:flex', 'group-hover:flex', 'peer-hover:flex']",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["hover:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "focus-flex",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/variants.test.ts",
+      "upstreamTest": "focus",
+      "originalInput": "['focus:flex', 'group-focus:flex', 'peer-focus:flex']",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["focus:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "group-focus-flex",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/variants.test.ts",
+      "upstreamTest": "focus",
+      "originalInput": "['focus:flex', 'group-focus:flex', 'peer-focus:flex']",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["group-focus:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "peer-focus-flex",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/variants.test.ts",
+      "upstreamTest": "focus",
+      "originalInput": "['focus:flex', 'group-focus:flex', 'peer-focus:flex']",
+      "adaptation": "Retain the named upstream test and selected utility candidates; replace stock scale with explicit project semantic token where applicable, and use authored DOM with independent side-specific computed expectations.",
+      "candidates": ["peer-focus:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "padding-axis",
+      "configuration": "semantic",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "p",
+      "originalInput": "['p-1', 'p-4', 'p-99', 'p-big', 'p-[4px]']",
+      "adaptation": "Retain the upstream margin or padding ordering input and replace stock spacing with explicit 17px/29px semantic tokens. The vertical writing-mode expectations preserve Wind physical and upstream logical axes.",
+      "candidates": ["p-hsp-sm", "px-vsp-md", "pl-hsp-sm"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "physical-logical-axis-composition"]
+    },
+    {
+      "id": "margin-axis",
+      "configuration": "semantic",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "margin sort order",
+      "originalInput": "['mb-4', 'me-4', 'mx-4', 'ml-4', 'ms-4', 'm-4', 'mr-4', 'mt-4', 'my-4']",
+      "adaptation": "Retain the upstream margin or padding ordering input and replace stock spacing with explicit 17px/29px semantic tokens. The vertical writing-mode expectations preserve Wind physical and upstream logical axes.",
+      "candidates": ["m-hsp-sm", "mx-vsp-md", "ml-hsp-sm"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "physical-logical-axis-composition"]
+    },
+    {
+      "id": "dark-flex",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/variants.test.ts",
+      "upstreamTest": "dark",
+      "originalInput": "['dark:flex']",
+      "adaptation": "Replace upstream media dark mode with an explicit project-owned data-theme=dark self/ancestor selector on both compiler sides; test inactive, self and ancestor states.",
+      "candidates": ["dark:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "pseudo-before",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/variants.test.ts",
+      "upstreamTest": "before",
+      "originalInput": "['before:flex']",
+      "adaptation": "Keep the upstream pseudo variant and test with and without authored content; record Wind/reference content behavior separately.",
+      "candidates": ["before:flex"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "pseudo-default-content"]
+    },
+    {
+      "id": "translate-composed",
+      "configuration": "numeric-opt-in",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "translate-x",
+      "originalInput": "['translate-x-full', '-translate-x-full', 'translate-x-px', '-translate-x-[var(--value)]']",
+      "adaptation": "Use a separate explicit numeric spacing profile and compose x/y translations; geometry checks both axes.",
+      "candidates": ["translate-x-4", "translate-y-2"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "space-hidden-children",
+      "configuration": "numeric-opt-in",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "space-x",
+      "originalInput": "'space-x-4'",
+      "adaptation": "Keep the upstream child-spacing candidate and add hidden attribute, display:none and visible children; candidate selection and browser layout are separate observations.",
+      "candidates": ["space-x-4"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "space-child-selection-axis"]
+    },
+    {
+      "id": "duplicate-reordered",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "flex-direction",
+      "originalInput": "['flex-row', 'flex-row-reverse', 'flex-col', 'flex-col-reverse']",
+      "adaptation": "Repeat and reverse candidate input while preserving the upstream flex-direction utility; compare exact emitted structure and computed outcome.",
+      "candidates": ["flex", "flex-row", "flex"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "arbitrary-width-zero",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "width",
+      "originalInput": "'w-[4px]'",
+      "adaptation": "Seeded synthetic boundary specimen 0px derived from the upstream arbitrary-width grammar; no stock spacing or width token is imported.",
+      "candidates": ["w-[0px]"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "arbitrary-width-one",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "width",
+      "originalInput": "'w-[4px]'",
+      "adaptation": "Seeded synthetic boundary specimen 1px derived from the upstream arbitrary-width grammar; no stock spacing or width token is imported.",
+      "candidates": ["w-[1px]"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "arbitrary-width-seventeen",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "width",
+      "originalInput": "'w-[4px]'",
+      "adaptation": "Seeded synthetic boundary specimen 17px derived from the upstream arbitrary-width grammar; no stock spacing or width token is imported.",
+      "candidates": ["w-[17px]"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-display",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "display",
+      "originalInput": "['block', 'inline-block', 'inline', 'flex', 'inline-flex', 'table', 'inline-table', 'table-caption', 'table-cell', 'table-column', 'table-column-group', 'table-footer-group', 'table-header-group', 'table-row-group', 'table-row', 'flow-root', 'grid', 'inline-grid', 'contents', 'list-item', 'hidden',]",
+      "adaptation": "Retain all 13 approved display statics from the upstream display test. Give each candidate a separate element and preserve valid table formatting contexts for table display roles so browser blockification cannot change computed values.",
+      "candidates": [
+        "contents",
+        "flow-root",
+        "list-item",
+        "table",
+        "inline-table",
+        "table-caption",
+        "table-cell",
+        "table-column",
+        "table-column-group",
+        "table-footer-group",
+        "table-header-group",
+        "table-row",
+        "table-row-group"
+      ],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-appearance",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "appearance",
+      "originalInput": "['appearance-none', 'appearance-auto']",
+      "adaptation": "Retain both approved appearance statics from the upstream appearance test. Use separate native input controls and assert each computed appearance value.",
+      "candidates": ["appearance-none", "appearance-auto"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-order",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "order",
+      "originalInput": "['order-4', '-order-4', 'order-[123]', '-order-[var(--value)]', 'order-first', 'order-last', 'order-none',]",
+      "adaptation": "The pinned order test covers numeric, negative, arbitrary, and keyword forms. This corpus selects bounded zero/one/negative-one samples and its three original keywords, with six isolated computed-order targets; selected integers are adapted inputs, not a quoted upstream test array.",
+      "candidates": ["order-0", "order-1", "-order-1", "order-first", "order-last", "order-none"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-basis",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "flex-basis",
+      "originalInput": "['basis-auto', 'basis-full', 'basis-xl', 'basis-11/12', 'basis-[123px]']",
+      "adaptation": "The pinned flex-basis test covers auto/full, a configured container token, a fraction, and an arbitrary value. This corpus retains auto/full and adapts px and 1/2 as empty-theme bounded samples in separate flex items; the adapted list is not a quoted upstream test array.",
+      "candidates": ["basis-auto", "basis-full", "basis-px", "basis-1/2"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"]
+    },
+    {
+      "id": "native-svg",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "fill",
+      "originalInput": "'fill-current',",
+      "adaptation": "Combine fill-current from the pinned fill test, stroke-current/stroke-none from the separate stroke test, and fill-none from its exact source registration. Four isolated SVG targets under authored current color are the corpus adaptation, not a quoted contiguous upstream test array.",
+      "candidates": ["fill-current", "fill-none", "stroke-current", "stroke-none"],
+      "engines": ["chromium"],
+      "reviewedDifferenceIds": ["exact-tree-contract"],
+      "provenanceAnchors": [
+        {
+          "kind": "test",
+          "path": "packages/tailwindcss/src/utilities.test.ts",
+          "test": "stroke",
+          "input": "'stroke-current',"
+        },
+        {
+          "kind": "test",
+          "path": "packages/tailwindcss/src/utilities.test.ts",
+          "test": "stroke",
+          "input": "'stroke-none',"
+        },
+        {
+          "kind": "source",
+          "path": "packages/tailwindcss/src/utilities.ts",
+          "input": "staticUtility('fill-none', [['fill', 'none']])"
+        }
+      ]
+    },
+    {
+      "id": "native-not-sr-only",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "not-sr-only",
+      "originalInput": "await run(['not-sr-only'])",
+      "adaptation": "Retain the exact not-sr-only test input and adapt it to a standalone DOM target with four computed-property probes and complete side-specific declaration trees.",
+      "candidates": ["not-sr-only"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"]
+    },
+    {
+      "id": "native-sr-reversal",
+      "configuration": "empty",
+      "upstreamPath": "packages/tailwindcss/src/utilities.test.ts",
+      "upstreamTest": "not-sr-only",
+      "originalInput": "await run(['not-sr-only'])",
+      "adaptation": "Compose the separately tested sr-only and not-sr-only forms with the existing focus variant for an inactive/active keyboard target; the composed class list is an adapted input, not a quoted upstream test array.",
+      "candidates": ["sr-only", "focus:not-sr-only"],
+      "engines": ["chromium", "firefox", "webkit"],
+      "reviewedDifferenceIds": ["exact-tree-contract", "sr-reversal-clip-model"],
+      "provenanceAnchors": [
+        {
+          "kind": "test",
+          "path": "packages/tailwindcss/src/utilities.test.ts",
+          "test": "sr-only",
+          "input": "await run(['sr-only'])"
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "pilot": 15,
+    "supplemental": 4,
+    "nativeGuarantees": 23,
+    "upstreamCases": 24,
+    "upstreamProbes": 81,
+    "seededSpecimens": 10,
+    "mutationControls": 5,
+    "seededArbitraryValues": 6,
+    "seededSourceStrings": 6
+  },
+  "sampling": {
+    "finiteStaticKeyword": "Covered members are enumerated in inventory.v1.json; this executable set is selected, not exhaustive over all 212 Wind entries.",
+    "openDomains": "Arbitrary values and source strings are sampled; no exhaustive claim.",
+    "variantCombinations": "Selected single and relationship states are sampled; all possible chains are not covered."
+  },
+  "pilotPolicies": [
+    {
+      "id": "block",
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
+    },
+    {
+      "id": "hidden",
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
+    },
+    {
+      "id": "inline-flex",
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
+    },
+    {
+      "id": "mx-auto",
+      "disposition": "intentional-difference",
+      "reviewedDifferenceIds": ["physical-logical-margin", "wind-layer-order-prelude"]
+    },
+    {
+      "id": "grid-cols-2",
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
+    },
+    {
+      "id": "p-0-empty",
+      "disposition": "intentional-difference",
+      "reviewedDifferenceIds": ["zero-without-theme", "wind-layer-order-prelude"]
+    },
+    {
+      "id": "p-0-mapped",
+      "disposition": "equivalent-mapped",
+      "reviewedDifferenceIds": [
+        "zero-variable-indirection",
+        "padding-expansion",
+        "wind-layer-order-prelude"
+      ]
+    },
+    {
+      "id": "named-spacing",
+      "disposition": "equivalent-mapped",
+      "reviewedDifferenceIds": [
+        "named-token-representation",
+        "padding-expansion",
+        "wind-layer-order-prelude"
+      ]
+    },
+    {
+      "id": "named-color",
+      "disposition": "equivalent-mapped",
+      "reviewedDifferenceIds": ["named-token-representation", "wind-layer-order-prelude"]
+    },
+    {
+      "id": "unconfigured-p-4",
+      "disposition": "intentional-difference",
+      "reviewedDifferenceIds": ["missing-token-diagnostics"]
+    },
+    {
+      "id": "undeclared-palette",
+      "disposition": "intentional-difference",
+      "reviewedDifferenceIds": ["missing-token-diagnostics"]
+    },
+    {
+      "id": "configured-p-4",
+      "disposition": "equivalent-mapped",
+      "reviewedDifferenceIds": [
+        "numeric-scale-representation",
+        "padding-expansion",
+        "wind-layer-order-prelude"
+      ]
+    },
+    {
+      "id": "contents-gap",
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["wind-layer-order-prelude"]
+    },
+    {
+      "id": "hover-block",
+      "disposition": "equivalent-shared",
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"]
+    },
+    {
+      "id": "breakpoint-block",
+      "disposition": "equivalent-mapped",
+      "reviewedDifferenceIds": ["variant-nesting", "wind-layer-order-prelude"]
+    }
+  ],
+  "compositionObligations": {
+    "shorthand-axis-side": [
+      "upstream/padding-axis/horizontal-left",
+      "upstream/padding-axis/horizontal-right",
+      "upstream/padding-axis/vertical-bottom",
+      "upstream/margin-axis/vertical-right"
+    ],
+    "duplicate-reordered-input": [
+      "upstream/duplicate-reordered/baseline",
+      "upstream/duplicate-reordered/direction"
+    ],
+    "responsive-threshold": [
+      "pilot/breakpoint-block/below-breakpoint",
+      "pilot/breakpoint-block/at-breakpoint",
+      "pilot/breakpoint-block/above-breakpoint"
+    ],
+    "hover-capability": [
+      "upstream/hover-flex/inactive",
+      "upstream/hover-flex/active",
+      "upstream/hover-flex/no-hover-capability"
+    ],
+    "keyboard-focus": ["upstream/focus-flex/inactive", "upstream/focus-flex/active"],
+    "group-peer-relationships": [
+      "upstream/group-focus-flex/inactive",
+      "upstream/group-focus-flex/matching",
+      "upstream/group-focus-flex/nonmatching",
+      "upstream/peer-focus-flex/inactive",
+      "upstream/peer-focus-flex/matching",
+      "upstream/peer-focus-flex/nonmatching"
+    ],
+    "dark-self-ancestor": [
+      "upstream/dark-flex/inactive",
+      "upstream/dark-flex/self",
+      "upstream/dark-flex/ancestor"
+    ],
+    "pseudo-content": [
+      "upstream/pseudo-before/without-content",
+      "upstream/pseudo-before/with-authored-content"
+    ],
+    "translation-composition": ["upstream/translate-composed/x", "upstream/translate-composed/y"],
+    "hidden-versus-display-none": [
+      "upstream/space-hidden-children/hidden-attribute-left",
+      "upstream/space-hidden-children/hidden-attribute-right",
+      "upstream/space-hidden-children/display-none-left",
+      "upstream/space-hidden-children/display-none-right",
+      "upstream/space-hidden-children/visible-last-left",
+      "upstream/space-hidden-children/visible-last-right"
+    ],
+    "authored-reset-layer": [
+      "control/native-reset-controls",
+      "control/specificity-and-authored-cascade"
+    ],
+    "writing-mode-direction": [
+      "pilot/mx-auto/horizontal-tb-ltr-margin-left",
+      "pilot/mx-auto/horizontal-tb-rtl-margin-left",
+      "pilot/mx-auto/vertical-rl-ltr-margin-left",
+      "pilot/mx-auto/vertical-rl-rtl-margin-left"
+    ],
+    "physical-logical-axes": [
+      "pilot/mx-auto/vertical-rl-ltr-geometry-left",
+      "pilot/mx-auto/vertical-rl-rtl-geometry-top",
+      "upstream/padding-axis/vertical-bottom",
+      "upstream/margin-axis/vertical-right"
+    ],
+    "wrong-output-detection": [
+      "control/wrong-value-detection",
+      "control/missing-rule-detection",
+      "control/variant-inactive-state"
+    ]
+  },
+  "reviewedDifferences": [
+    {
+      "id": "exact-tree-contract",
+      "caseIds": [
+        "display-flex",
+        "display-grid",
+        "flex-direction",
+        "hover-flex",
+        "focus-flex",
+        "group-focus-flex",
+        "peer-focus-flex",
+        "padding-axis",
+        "margin-axis",
+        "dark-flex",
+        "pseudo-before",
+        "translate-composed",
+        "space-hidden-children",
+        "duplicate-reordered",
+        "arbitrary-width-zero",
+        "arbitrary-width-one",
+        "arbitrary-width-seventeen",
+        "native-display",
+        "native-appearance",
+        "native-order",
+        "native-basis",
+        "native-svg",
+        "native-not-sr-only",
+        "native-sr-reversal"
+      ],
+      "reviewedCount": 24,
+      "reason": "Each side has a separately reviewed complete ordered CSS tree: Wind from catalog/selector/emit source, reference from pinned upstream compiler and original test adaptation. Every node, declaration, selector, condition and layer is fixed; any unlisted mutation fails."
+    },
+    {
+      "id": "physical-logical-axis-composition",
+      "caseIds": ["padding-axis", "margin-axis"],
+      "reason": "Wind physical x/side declarations and Tailwind logical inline declarations resolve to different physical sides in vertical writing mode; exact expected values are stored per probe.",
+      "reviewedCount": 2
+    },
+    {
+      "id": "pseudo-default-content",
+      "caseIds": ["pseudo-before"],
+      "reason": "Tailwind before variant synthesizes empty content; Wind before variant only selects the pseudo-element and requires authored content to create its box.",
+      "reviewedCount": 1
+    },
+    {
+      "id": "space-child-selection-axis",
+      "caseIds": ["space-hidden-children"],
+      "reason": "Wind spaces later non-hidden siblings on physical left; Tailwind spaces non-last children on logical inline end, including hidden-attribute and display:none children.",
+      "reviewedCount": 1
+    },
+    {
+      "id": "sr-reversal-clip-model",
+      "caseIds": ["native-not-sr-only", "native-sr-reversal"],
+      "reviewedCount": 2,
+      "reason": "Wind reversal includes clip:auto because Wind sr-only uses clip:rect(0,0,0,0), whereas Tailwind sr-only uses clip-path:inset(50%) and its reversal omits clip. Inactive and active computed clipping are independently probed."
+    }
+  ]
+}

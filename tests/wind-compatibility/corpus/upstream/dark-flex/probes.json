@@ -1,0 +1,26 @@
+[
+  {
+    "name": "inactive",
+    "property": "display",
+    "wind": "inline",
+    "reference": "inline"
+  },
+  {
+    "name": "self",
+    "property": "display",
+    "wind": "flex",
+    "reference": "flex",
+    "targetAttributes": {
+      "data-theme": "dark"
+    }
+  },
+  {
+    "name": "ancestor",
+    "property": "display",
+    "wind": "flex",
+    "reference": "flex",
+    "ancestorAttributes": {
+      "data-theme": "dark"
+    }
+  }
+]

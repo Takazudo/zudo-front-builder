@@ -1,0 +1,5 @@
+{
+  "caseId": "native-not-sr-only",
+  "reset": "none",
+  "explicitCandidates": ["not-sr-only"]
+}

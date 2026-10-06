@@ -1,0 +1,5 @@
+{
+  "caseId": "native-appearance",
+  "reset": "none",
+  "explicitCandidates": ["appearance-none", "appearance-auto"]
+}

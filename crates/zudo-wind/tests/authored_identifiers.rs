@@ -240,30 +240,21 @@ const FOREIGN: &[&str] = &[
     "from-[15%]",
     // These share a prefix with a catalog root (`inline`, `list`, ...), so
     // the vocabulary must win when the root cannot resolve the suffix.
-    "inline-table",
-    "list-item",
-    "table-row",
     "table-auto",
-    "order-first",
-    "fill-none",
+    "order-[2]",
+    "fill-[red]",
     "stroke-2",
     "backdrop-blur",
-    "appearance-auto",
     "will-change-scroll",
-    "table",
-    "contents",
-    "flow-root",
     "line-clamp-2",
-    "order-1",
-    "basis-1/2",
-    "fill-current",
-    "stroke-current",
+    "basis-[20px]",
+    "stroke-[2px]",
     "backdrop-blur-sm",
-    "appearance-none",
     "will-change-transform",
-    "not-sr-only",
     "content-[\"\"]",
     "before:content-none",
+    "content-center",
+    "content-between",
     "container",
 ];
 
@@ -302,6 +293,148 @@ fn foreign_names_warn_by_default_and_error_under_strict_at_class_positions() {
             ExplanationOutcome::ForeignUtility,
             "{text}"
         );
+    }
+}
+
+#[test]
+fn align_content_migration_names_have_property_specific_guidance_and_emit_no_css() {
+    for text in [
+        "content-normal",
+        "content-center",
+        "content-start",
+        "content-end",
+        "content-center-safe",
+        "content-end-safe",
+        "content-between",
+        "content-around",
+        "content-evenly",
+        "content-baseline",
+        "content-stretch",
+        "hover:content-center",
+    ] {
+        let result = compile_at(text, source(SourcePositionKind::Class), config());
+        assert_eq!(
+            outcome(&result, text),
+            Some((DiagnosticCode::Zw014, Severity::Warning)),
+            "{text}"
+        );
+        assert_eq!(
+            result.diagnostics[0].origin.as_deref(),
+            Some(&source(SourcePositionKind::Class)),
+            "{text}"
+        );
+        assert_eq!(
+            result
+                .rules
+                .iter()
+                .map(|rule| rule.candidate.as_str())
+                .collect::<Vec<_>>(),
+            ["p-2"],
+            "{text} must not generate a rule"
+        );
+        let message = &result.diagnostics[0].message;
+        assert!(
+            message.contains("Author an align-content declaration in CSS"),
+            "{message}"
+        );
+        assert!(!message.contains("::before"), "{message}");
+        assert!(!message.contains("::after"), "{message}");
+
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+        assert!(explanation.declarations.is_empty(), "{text}");
+        assert!(explanation.entry_identifier.is_none(), "{text}");
+    }
+
+    for text in ["content-none", "before:content-[\"\"]"] {
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ForeignUtility,
+            "{text}"
+        );
+        let message = &explanation.diagnostics[0].message;
+        assert!(
+            message.contains("content declaration on a ::before or ::after rule"),
+            "{message}"
+        );
+        assert!(!message.contains("align-content"), "{message}");
+    }
+}
+
+#[test]
+fn align_content_migration_preserves_origin_strictness_and_authored_reservations() {
+    let mut strict = config();
+    strict.strict = true;
+    for text in [
+        "content-center",
+        "hover:content-center",
+        "content-center-safe",
+    ] {
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Class), strict.clone()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(
+                &compile_at(text, source(SourcePositionKind::Literal), strict.clone()),
+                text
+            ),
+            Some((DiagnosticCode::Zw014, Severity::AuditInfo)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(&compile_at(text, manifest(), config()), text),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+        assert_eq!(
+            outcome(&safelisted(text, config()), text),
+            Some((DiagnosticCode::Zw014, Severity::Error)),
+            "{text}"
+        );
+
+        let mut reserved = strict.clone();
+        reserved.authored_classes.insert(text.to_owned(), true);
+        let result = compile_at(text, source(SourcePositionKind::Class), reserved.clone());
+        assert_eq!(outcome(&result, text), None, "{text}");
+        assert_eq!(
+            outcome(&compile_at(text, manifest(), reserved.clone()), text),
+            None,
+            "{text}"
+        );
+        assert_eq!(
+            explain(text, &reserved).outcome,
+            ExplanationOutcome::Ordinary,
+            "{text}"
+        );
+    }
+
+    for text in ["content-area", "contents-list", "content-centering"] {
+        let result = compile_at(text, source(SourcePositionKind::Class), strict.clone());
+        assert_eq!(outcome(&result, text), None, "{text}");
+        assert!(is_ordinary(&result, text), "{text}");
+    }
+    for (text, property) in [
+        ("items-center", "align-items"),
+        ("justify-center", "justify-content"),
+        ("place-content-center", "place-content"),
+    ] {
+        let explanation = explain(text, &config());
+        assert_eq!(
+            explanation.outcome,
+            ExplanationOutcome::ResolvedUtility,
+            "{text}"
+        );
+        assert_eq!(explanation.declarations[0].property, property, "{text}");
     }
 }
 
@@ -454,7 +587,7 @@ fn foreign_names_fail_from_manifests_and_safelists_regardless_of_strict() {
     for text in [
         "line-clamp-2",
         "container",
-        "basis-1/2",
+        "basis-[20px]",
         "bg-linear-to-r",
         "bg-gradient-to-b",
         "from-zd-black/70",

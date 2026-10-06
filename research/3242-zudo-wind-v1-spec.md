@@ -753,3 +753,54 @@ node-free receives no wind stylesheet after final cutover because absent wind ha
 Revision 2 locks #3248–#3257, #3261, #3263–#3271, #3285, #3292–#3296, #3299, #3301, #3302, #3305, #3306, #3309 and #3310 under the expanded #3246 planner addendum. Their “Locked by the zudo-wind v1 spec” sections name the binding decision ids. Scheduling headers and every other body section are preserved. All implementations must read this spec under the authority order.
 
 Required downstream verification: parser rejection fixtures per G/R id (#3248); config and token validation (#3249); executable catalog examples (#3250/#3251); exact reset/output goldens and permutation tests (#3252); extractor/source-index fixtures (#3253/#3254); schema/export/explain tests (#3255); browser computed values for spacing, variant specificity, noninherited translation, all resets and unlayered cascade (#3257); real clean/warm builds, manifest ownership and authored/package assets (#3269). No browser, compiler or performance claim is certified by this document-only decision task.
+
+## Later compatibility policy (2026-10-06)
+
+The separate [Wind preset-free compatibility profile](wind-compatibility-profile.md)
+(#3826) defines the bounded compatibility promise and evidence requirements. It
+preserves this document's historical revision and owned-language boundary while
+allowing reviewed native utility adoptions. Its version is independent of language
+spec/catalog revisions; it does not certify this spec's historical verification.
+
+## Current implementation addendum: spec 1 revision 13 (2026-10-06)
+
+This implementation addendum records the exact display and appearance statics
+adopted after the historical revision 2 ratification. It does not revise that
+historical ratification or imply that its original verification covered these
+additions.
+
+The display family adds contents, flow-root, list-item, table, inline-table,
+table-caption, table-cell, table-column, table-column-group,
+table-footer-group, table-header-group, table-row, and table-row-group. Each
+exact candidate emits only display with the same value. The appearance family
+adds appearance-auto and appearance-none, each emitting only appearance with
+the matching auto or none value. These are exact statics: suffixes, negative
+forms, slash forms, arbitrary values, and new tokens are not admitted.
+
+The existing ten-field sort tuple remains authoritative. Display entries use
+the display conflict group at rank 1/order 0; appearance entries use the
+interaction group at rank 40/order 0. Authored-class suppression remains exact
+candidate matching before parsing and diagnostics. The migration vocabulary is
+revision 5: implemented names leave migration diagnostics, while table-auto
+and table-fixed remain deferred migration forms.
+
+## Current implementation addendum: spec 1 revision 14 (2026-10-06)
+
+The #3835 native batch adds `order` (first/last/none and unsigned ASCII integers
+0 through 2147483647, with optional negative numeric form), `basis`
+(auto/full/px/0/min/max/fit/content and bounded positive integer fractions),
+`fill-current`, `fill-none`, `stroke-current`, `stroke-none`, and the exact
+`not-sr-only` reversal. The complete grammar, rejection IDs, declaration
+order, and retained gaps are recorded in
+[`wind-native-adoption-decision.md`](wind-native-adoption-decision.md).
+No token category, implicit scale, arbitrary value, broad SVG color family, or
+new variant is introduced.
+
+`basis` uses flex-item rank 5/order 1 and `order` uses rank 5/order 2, so
+source class order cannot change their relative cascade placement. The SVG
+statics use rank 48, with fill order 0 and stroke order 1. The reversal uses
+miscellaneous rank 44/order 4 after `sr-only`, whose clipping model remains
+unchanged. Order numeric magnitude does not decide its cascade winner: the
+existing raw-candidate UTF-8 tie-break does. Migration vocabulary revision 6
+removes only implemented forms; order arbitrary, basis scale/token/arbitrary,
+SVG numeric/arbitrary and table-layout forms remain diagnostic gaps.

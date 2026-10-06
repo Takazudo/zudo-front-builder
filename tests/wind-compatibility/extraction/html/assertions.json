@@ -1,0 +1,6 @@
+{
+  "expectedWindCandidates": ["block", "hidden"],
+  "expectedReferenceCandidates": ["block", "class", "hidden"],
+  "expectedWindRules": ["block", "hidden"],
+  "expectedReferenceRules": ["block", "hidden"]
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "family": "svg",
+  "lookup": [
+    {
+      "entry": "v1.fill-none",
+      "candidate": "fill-none",
+      "example": "svg-paint"
+    },
+    {
+      "entry": "v1.stroke-current",
+      "candidate": "stroke-current",
+      "example": "svg-paint"
+    },
+    {
+      "entry": "v1.fill-current",
+      "candidate": "fill-current",
+      "example": "svg-paint"
+    },
+    {
+      "entry": "v1.stroke-none",
+      "candidate": "stroke-none",
+      "example": "svg-paint"
+    }
+  ],
+  "locales": {
+    "en": {
+      "purpose": "Set SVG paint with exact utility classes.",
+      "setup": "These classes need no token configuration. The preview uses authored presentation CSS shown with the example.",
+      "customValues": "Only the exact current and none forms are supported; author other SVG paint values in CSS.",
+      "examples": [
+        {
+          "id": "svg-paint",
+          "title": "SVG paint",
+          "description": "svg-paint uses exact supported Wind utility classes."
+        }
+      ]
+    },
+    "ja": {
+      "purpose": "SVG の塗りを正確なユーティリティクラスで設定します。",
+      "setup": "これらのクラスにトークン設定は不要です。プレビューの自作 CSS は例とともに表示されます。",
+      "customValues": "current と none の正確な形式だけが対象です。それ以外の SVG の塗りは CSS に記述してください。",
+      "examples": [
+        {
+          "id": "svg-paint",
+          "title": "SVG の塗り",
+          "description": "svg-paint は対応済みの Wind ユーティリティクラスを使います。"
+        }
+      ]
+    }
+  }
+}
