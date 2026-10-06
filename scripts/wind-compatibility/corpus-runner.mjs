@@ -30,6 +30,8 @@ import {
 import { loadIndependentScanner, scanOriginal } from "./oxide-scanner.mjs";
 import {
   currentPilotIdentity,
+  validatePilotAssessmentArtifacts,
+  validatePilotAssessmentEnvelope,
   validatePilotArtifacts,
   validatePilotEnvelope,
 } from "./corpus-pilot.mjs";
@@ -43,6 +45,7 @@ import { supplementalProbePlan } from "./corpus-supplemental.mjs";
 import { loadReference, treeDigest, verifyWindBuild } from "./differential-runner.mjs";
 import { digest, fromRoot, outsideCheckout, readJson, sha256 } from "./reference.mjs";
 import { parseCssStructure } from "./structure.mjs";
+import { currentCorpusIdentity } from "./corpus-identity.mjs";
 
 const corpusRoot = fromRoot("tests/wind-compatibility/corpus");
 const archiveName = "response-1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3";
@@ -61,6 +64,8 @@ function options(argv) {
     throw Error("Unknown browser engine");
   if (!result["pilot-report"])
     throw Error("Every corpus engine requires --pilot-report from the same Wind build and browser");
+  if (result["assessment-mode"] !== undefined && result["assessment-mode"] !== "yes")
+    throw Error("--assessment-mode must be yes when supplied");
   return result;
 }
 
@@ -205,6 +210,7 @@ async function pilotResults(
   reference,
   scanner,
   browserEnvironment,
+  assessmentMode = false,
 ) {
   const report = await readJson(path);
   const expectedIdentity = await currentPilotIdentity({
@@ -215,24 +221,17 @@ async function pilotResults(
     scanner,
     browserEnvironment,
   });
-  validatePilotEnvelope(
-    report,
-    profile,
-    pilotManifest,
-    pilotObservations,
-    extractionManifest,
-    expectedIdentity,
-  );
-  await validatePilotArtifacts(
-    report,
-    path,
-    profile,
-    pilotManifest,
-    pilotObservations,
-    extractionManifest,
-    reference,
-    scanner,
-  );
+  if (assessmentMode) {
+    validatePilotAssessmentEnvelope(report, profile, pilotManifest, pilotObservations,
+      extractionManifest, expectedIdentity);
+    await validatePilotAssessmentArtifacts(report, path, profile, pilotObservations,
+      reference, scanner);
+  } else {
+    validatePilotEnvelope(report, profile, pilotManifest, pilotObservations,
+      extractionManifest, expectedIdentity);
+    await validatePilotArtifacts(report, path, profile, pilotManifest, pilotObservations,
+      extractionManifest, reference, scanner);
+  }
   const results = {};
   const engine = browserEnvironment.name;
   for (const row of report.cases) {
@@ -651,8 +650,11 @@ async function seededControls(binary, reference, browser, scanner, output) {
       candidates,
       canonical,
       windActualPath: resolve(windOutput, "actual/wind.css"),
+      windActualSha256: sha256(actualWind),
       windCanonicalPath: resolve(windOutput, "canonical/wind.css"),
+      windCanonicalSha256: sha256(canonicalWind),
       referenceInputPath,
+      referenceInputSha256: sha256("@theme { --*: initial; } @tailwind utilities;"),
       actualPath,
       actualSha256: sha256(actualReference),
       canonicalPath,
@@ -720,7 +722,9 @@ async function seededControls(binary, reference, browser, scanner, output) {
       id,
       candidate,
       windCssPath: resolve(windOutput, "width/wind.css"),
+      windCssSha256: sha256(windCss),
       referenceInputPath,
+      referenceInputSha256: sha256("@theme { --*: initial; } @tailwind utilities;"),
       referenceCssPath,
       referenceCssSha256: sha256(referenceCss),
     });
@@ -813,16 +817,21 @@ async function seededControls(binary, reference, browser, scanner, output) {
     const referenceCandidatesPath = resolve(referenceDir, "scanner-candidates.json");
     await writeFile(referenceInputPath, referenceInput);
     await writeFile(referenceCssPath, referenceCss);
-    await writeFile(referenceCandidatesPath, JSON.stringify(scanned, null, 2) + "\n");
+    const candidatesJson = JSON.stringify(scanned, null, 2) + "\n";
+    await writeFile(referenceCandidatesPath, candidatesJson);
+    const windCss = await readFile(resolve(sourceOutput, id, "wind.css"));
     artifacts.push({
       kind: "source-string",
       id,
       sourcePath: resolve(sourceRoot, id, "index.html"),
       windCssPath: resolve(sourceOutput, id, "wind.css"),
+      windCssSha256: sha256(windCss),
       referenceInputPath,
+      referenceInputSha256: sha256(referenceInput),
       referenceCssPath,
       referenceCssSha256: sha256(referenceCss),
       referenceCandidatesPath,
+      referenceCandidatesSha256: sha256(candidatesJson),
       sourceSha256: sha256(sources[index]),
     });
     const pass =
@@ -909,7 +918,7 @@ async function main(argv) {
     extractionManifest,
     upstream,
     configurations,
-    bootstrap,
+    referenceSelection,
     inventory,
     catalog,
     contracts,
@@ -922,7 +931,7 @@ async function main(argv) {
     readJson(fromRoot("tests/wind-compatibility/extraction/manifest.json")),
     readJson(resolve(corpusRoot, "upstream/manifest.json")),
     readJson(fromRoot("tests/wind-compatibility/empty-token/configurations.json")),
-    readJson(fromRoot("tests/wind-compatibility/reference/bootstrap.json")),
+    readJson(args.reference ? resolve(args.reference) : fromRoot("tests/wind-compatibility/reference/bootstrap.json")),
     readJson(fromRoot("tests/wind-compatibility/inventory.v1.json")),
     readJson(fromRoot("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json")),
     readJson(resolve(corpusRoot, "structure-contracts.json")),
@@ -953,7 +962,7 @@ async function main(argv) {
     throw Error("Upstream fixture import skipped or unlisted");
   const source = await provenance(manifest, args.cache);
   const windBuild = await verifyWindBuild(args["wind-binary"], args["wind-build-manifest"]);
-  const reference = await loadReference(args.cache, bootstrap);
+  const reference = await loadReference(args.cache, referenceSelection);
   const scanner = await loadIndependentScanner(args.cache);
   const { browser, executablePath } = await browserFor(args.engine);
   let report;
@@ -977,6 +986,7 @@ async function main(argv) {
       reference,
       scanner,
       browserEnvironment,
+      args["assessment-mode"] === "yes",
     );
     Object.assign(executed, pilotEvidence.results);
     if (args.engine === "chromium") {
@@ -1040,70 +1050,9 @@ async function main(argv) {
       };
     });
     const differencesPass = differenceSummary.every((row) => row.pass);
-    const adapterPaths = [
-      "corpus-runner.mjs",
-      "corpus-core.mjs",
-      "corpus-seeds.mjs",
-      "corpus-structure.mjs",
-      "corpus-supplemental.mjs",
-      "corpus-pilot.mjs",
-      "browser-adapter.mjs",
-      "differential-runner.mjs",
-      "differential-core.mjs",
-      "structure.mjs",
-      "reference.mjs",
-      "reference-module-graph.mjs",
-      "oxide-scanner.mjs",
-    ];
-    const adapterFiles = await Promise.all(
-      adapterPaths.map(async (name) => [
-        name,
-        sha256(await readFile(fromRoot(`scripts/wind-compatibility/${name}`))),
-      ]),
-    );
-    const identity = {
-      source,
-      reference: reference.identity,
-      scanner: scanner?.identity ?? null,
-      windBuild,
-      profileId: profile.profileId,
-      profileVersion: profile.profileVersion,
-      profileRevision: profile.profileRevision,
-      profileDigest: sha256(await readFile(fromRoot("tests/wind-compatibility/profile.json"))),
-      corpusTreeDigest: await treeDigest(corpusRoot),
-      pilotFixtureTreeDigest: await treeDigest(fromRoot("tests/wind-compatibility/pilot")),
-      emptyTokenFixtureTreeDigest: await treeDigest(
-        fromRoot("tests/wind-compatibility/empty-token"),
-      ),
-      extractionFixtureTreeDigest: await treeDigest(
-        fromRoot("tests/wind-compatibility/extraction"),
-      ),
-      inventoryDigest: sha256(
-        await readFile(fromRoot("tests/wind-compatibility/inventory.v1.json")),
-      ),
-      catalogDigest: sha256(
-        await readFile(fromRoot("crates/zudo-wind/catalog/zudo-wind-catalog.v1.json")),
-      ),
-      sourceInputDigest: digest(
-        manifest.upstreamCases.map((row) => [row.id, row.originalInput, row.candidates]),
-      ),
-      configurationDigest: digest(
-        manifest.upstreamCases.map((row) => [
-          row.id,
-          executed[`upstream/${row.id}/${args.engine}`]?.configDigest ?? null,
-        ]),
-      ),
-      assertionDigest: digest([
-        contracts,
-        pilotObservations,
-        manifest.compositionObligations,
-        manifest.targetedExecutionKeys,
-      ]),
-      adapterFiles,
-      adapterDigest: digest(adapterFiles),
-      lockfileDigest: sha256(await readFile(fromRoot("pnpm-lock.yaml"))),
-      browserEnvironment,
-    };
+    const identity = await currentCorpusIdentity({ manifest, profile, contracts,
+      pilotObservations, executed, engine: args.engine, source,
+      reference, scanner, windBuild, browserEnvironment });
     report = {
       schemaVersion: 1,
       kind: "wind-independent-corpus",
