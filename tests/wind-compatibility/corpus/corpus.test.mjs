@@ -85,11 +85,11 @@ test("exact corpus membership, source adaptations and composition probes are acc
       reviewedDifferenceIds: ["wind-layer-order-prelude"],
     },
   );
-  assert.equal(expected.length, 106);
-  assert.equal(expected.filter((id) => id.endsWith("/chromium")).length, 56);
-  assert.equal(expected.filter((id) => id.endsWith("/firefox")).length, 25);
-  assert.equal(expected.filter((id) => id.endsWith("/webkit")).length, 25);
-  assert.equal(manifest.counts.upstreamProbes, 55);
+  assert.equal(expected.length, 120);
+  assert.equal(expected.filter((id) => id.endsWith("/chromium")).length, 66);
+  assert.equal(expected.filter((id) => id.endsWith("/firefox")).length, 27);
+  assert.equal(expected.filter((id) => id.endsWith("/webkit")).length, 27);
+  assert.equal(manifest.counts.upstreamProbes, 81);
 });
 
 test("native display and appearance fixtures use the adapter target and separate exact probes", async () => {
@@ -115,6 +115,49 @@ test("native display and appearance fixtures use the adapter target and separate
     '<tfoot id="table-footer-group"',
   ])
     assert.ok(displayHtml.includes(tag), tag);
+});
+
+test("native flex, SVG and reversal cases retain their exact probe and engine policy", async () => {
+  const expected = {
+    "native-order": [6, ["chromium"]],
+    "native-basis": [4, ["chromium"]],
+    "native-svg": [4, ["chromium"]],
+    "native-not-sr-only": [4, ["chromium", "firefox", "webkit"]],
+    "native-sr-reversal": [8, ["chromium", "firefox", "webkit"]],
+  };
+  for (const [id, [count, engines]] of Object.entries(expected)) {
+    const row = manifest.upstreamCases.find((item) => item.id === id);
+    assert.deepEqual(row.engines, engines);
+    assert.equal(probes[id].length, count);
+    const html = await readFile(new URL(`upstream/${id}/index.html`, root), "utf8");
+    assert.ok(html.includes('id="target"'));
+    assert.ok(html.includes('id="box"'));
+    for (const candidate of row.candidates)
+      assert.ok(html.includes(candidate), `${id}/${candidate}`);
+    for (const probe of probes[id]) {
+      assert.ok(
+        html.includes(`id="${(probe.selector ?? "#target").slice(1)}"`),
+        `${id}/${probe.name}`,
+      );
+    }
+  }
+  assert.deepEqual(
+    manifest.nativeGuaranteeIds.slice(-5),
+    ["zero", "min", "max", "fit", "content"].map((name) => `native-basis-${name}`),
+  );
+  assert.deepEqual(
+    empty.nativeGuarantees.slice(-5).map(({ writes }) => writes),
+    [
+      { "flex-basis": "0" },
+      { "flex-basis": "min-content" },
+      { "flex-basis": "max-content" },
+      { "flex-basis": "fit-content" },
+      { "flex-basis": "content" },
+    ],
+  );
+  const downgraded = copy(manifest);
+  downgraded.upstreamCases.find((row) => row.id === "native-sr-reversal").engines = ["chromium"];
+  assert.throws(() => validate(downgraded), /Engine obligation downgraded/);
 });
 
 test("targeted execution map binds every policy obligation to current pilot/control evidence", () => {
@@ -313,6 +356,16 @@ test("exact structure detects extra declarations, layers, selector, media and or
   assert.equal(
     compareCorpusStructure(nativeAppearance, nativeAppearanceWind, nativeAppearanceReference).pass,
     true,
+  );
+  const reversal = contracts.cases["native-not-sr-only"];
+  const reversalWind = emit(expectedWindTree(reversal));
+  const reversalReference =
+    ".not-sr-only{position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip-path:none;white-space:normal;}";
+  assert.equal(compareCorpusStructure(reversal, reversalWind, reversalReference).pass, true);
+  assert.equal(
+    compareCorpusStructure(reversal, reversalWind.replace("clip:auto;", ""), reversalReference)
+      .windPass,
+    false,
   );
   assert.equal(nativeAppearance.rules.length, 2);
   const quoted = (css) => parseCssStructure(css).map(canonical);

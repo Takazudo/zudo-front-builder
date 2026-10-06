@@ -24,6 +24,11 @@ const NEW_EXACT_STATIC_ROOTS: &[&str] = &[
     "table-row-group",
     "appearance-auto",
     "appearance-none",
+    "fill-current",
+    "fill-none",
+    "stroke-current",
+    "stroke-none",
+    "not-sr-only",
 ];
 
 fn is_new_exact_static_root(root: &str) -> bool {
@@ -173,6 +178,8 @@ impl Catalog {
             .filter(|(entry, suffix)| {
                 (!entry.id.starts_with("v1.decoration.style.") || suffix.is_empty())
                     && (!is_new_exact_static_root(&entry.root) || suffix.is_empty())
+                    && (entry.root != "order" || is_order_shape(suffix))
+                    && (entry.root != "basis" || is_basis_shape(suffix, candidate))
             })
             .collect();
         // Exact style roots were added after color tokens. Keep configured
@@ -243,8 +250,10 @@ impl Catalog {
             // (`inline-table` under `inline`); after a catalog value fails, it
             // is foreign, not a bad value. Successful configured tokens above
             // keep their catalog meaning.
-            if let Some(family) = super::migration::foreign_family(candidate, tokens) {
-                return foreign(candidate, origin, family);
+            if !is_adopted_value_shape(candidate) {
+                if let Some(family) = super::migration::foreign_family(candidate, tokens) {
+                    return foreign(candidate, origin, family);
+                }
             }
         }
         if successful.len() > 1 {
@@ -295,12 +304,28 @@ impl Catalog {
             );
         }
         let utility = &candidate.utility;
+        if entry.root == "order"
+            && utility.negative
+            && !suffix.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return adopted_static_modifier_error(
+                candidate,
+                origin,
+                "order-N",
+                "negative values require a numeric order",
+                "R12",
+            );
+        }
         if utility.negative && !entry.negative {
-            return if is_new_exact_static_root(&entry.root) {
+            return if is_new_exact_static_root(&entry.root) || entry.root == "basis" {
                 adopted_static_modifier_error(
                     candidate,
                     origin,
-                    &entry.root,
+                    if entry.root == "basis" {
+                        "basis-auto or basis-1/2"
+                    } else {
+                        &entry.root
+                    },
                     "negative values are not supported",
                     "R12",
                 )
@@ -318,11 +343,15 @@ impl Catalog {
             && !entry.grammar.allows_fraction_slash
             && !entry.grammar.allows_color_opacity
         {
-            return if is_new_exact_static_root(&entry.root) {
+            return if is_new_exact_static_root(&entry.root) || entry.root == "order" {
                 adopted_static_modifier_error(
                     candidate,
                     origin,
-                    &entry.root,
+                    if entry.root == "order" {
+                        "order-N"
+                    } else {
+                        &entry.root
+                    },
                     "slash modifiers are not supported",
                     "R14",
                 )
@@ -339,6 +368,18 @@ impl Catalog {
         let (mut value, mut status) = match entry_value(entry, suffix, candidate, tokens) {
             Ok(value) => value,
             Err((code, message, rejection_id)) => {
+                let message = if code == DiagnosticCode::Zw005
+                    && (entry.root == "basis" || entry.root == "order")
+                {
+                    let supported = if entry.root == "basis" {
+                        "basis-auto, basis-full, basis-px, basis-0, basis-min/max/fit/content, or basis-N/D with parts 1..1000000"
+                    } else {
+                        "order-first/last/none or order-N with N 0..2147483647"
+                    };
+                    format!("{}: {message}; use {supported}, or author the declaration in CSS and reserve the complete candidate with wind.authoredClasses", candidate.raw)
+                } else {
+                    message
+                };
                 let mut result = invalid(candidate, origin, code, &message, rejection_id);
                 if entry.root == "aspect" {
                     let denominator = candidate.utility.slash_modifier.as_deref().unwrap_or("1");
@@ -364,7 +405,13 @@ impl Catalog {
             }
         };
         if utility.negative {
-            if value == "auto" {
+            if entry.root == "order" {
+                value = if value == "0" {
+                    value
+                } else {
+                    format!("-{value}")
+                };
+            } else if value == "auto" {
                 return invalid(
                     candidate,
                     origin,
@@ -372,8 +419,9 @@ impl Catalog {
                     "auto cannot be negative",
                     Some("R12"),
                 );
+            } else {
+                value = negate(&value);
             }
-            value = negate(&value);
         }
         let mut declarations = Vec::new();
         for template in &entry.declaration_templates {
@@ -563,6 +611,33 @@ fn full_arbitrary_suffix(suffix: &str, candidate: &Candidate) -> bool {
         == Some(value)
 }
 
+fn is_order_shape(suffix: &str) -> bool {
+    matches!(suffix, "first" | "last" | "none")
+        || (!suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn is_basis_shape(suffix: &str, candidate: &Candidate) -> bool {
+    matches!(
+        suffix,
+        "auto" | "full" | "px" | "0" | "min" | "max" | "fit" | "content"
+    ) || (candidate.utility.slash_modifier.is_some()
+        && !suffix.is_empty()
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.'))
+}
+
+fn is_adopted_value_shape(candidate: &Candidate) -> bool {
+    let name = candidate.utility.named.as_str();
+    if let Some(suffix) = name.strip_prefix("basis-") {
+        return is_basis_shape(suffix, candidate);
+    }
+    if let Some(suffix) = name.strip_prefix("order-") {
+        return is_order_shape(suffix);
+    }
+    false
+}
+
 fn resolve_value(
     entry: &CatalogEntry,
     suffix: &str,
@@ -586,6 +661,19 @@ fn resolve_value(
             DiagnosticCode::Zw005,
             "utility requires a value".to_owned(),
             Some("R15"),
+        ));
+    }
+    if let Some(denominator) = modifier.filter(|_| {
+        entry.root == "basis"
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    }) {
+        let numerator = positive_ratio_part(suffix)?;
+        let denominator = positive_ratio_part(denominator)?;
+        return Ok((
+            format!("calc(100% * {numerator} / {denominator})"),
+            ValueStatus::Verified,
         ));
     }
     if let Some((_, value)) = grammar.keywords.iter().find(|(key, _)| *key == suffix) {
@@ -695,7 +783,7 @@ fn resolve_value(
     if grammar.accepted_kinds.contains(&ValueKind::Integer) {
         if let Ok(number) = suffix.parse::<u32>() {
             let value = match entry.root.as_str() {
-                "z" if number <= i32::MAX as u32 => number.to_string(),
+                "z" | "order" if number <= i32::MAX as u32 => number.to_string(),
                 "grid-cols" | "grid-rows" if (1..=12).contains(&number) => {
                     format!("repeat({number},minmax(0,1fr))")
                 }
@@ -1190,10 +1278,11 @@ impl Catalog {
         ["ring", "animate", "scale", "transform", "group", "peer"]
             .into_iter()
             .any(starts_at)
-            || self
-                .entries
-                .iter()
-                .any(|entry| !is_new_exact_static_root(&entry.root) && starts_at(&entry.root))
+            || self.entries.iter().any(|entry| {
+                !is_new_exact_static_root(&entry.root)
+                    && entry.root != "order"
+                    && starts_at(&entry.root)
+            })
     }
 }
 

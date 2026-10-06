@@ -1,0 +1,44 @@
+[
+  {
+    "name": "order-0",
+    "selector": "#order-0",
+    "property": "order",
+    "wind": "0",
+    "reference": "0"
+  },
+  {
+    "name": "order-1",
+    "selector": "#order-1",
+    "property": "order",
+    "wind": "1",
+    "reference": "1"
+  },
+  {
+    "name": "-order-1",
+    "selector": "#-order-1",
+    "property": "order",
+    "wind": "-1",
+    "reference": "-1"
+  },
+  {
+    "name": "order-first",
+    "selector": "#order-first",
+    "property": "order",
+    "wind": "-9999",
+    "reference": "-9999"
+  },
+  {
+    "name": "order-last",
+    "selector": "#order-last",
+    "property": "order",
+    "wind": "9999",
+    "reference": "9999"
+  },
+  {
+    "name": "order-none",
+    "selector": "#order-none",
+    "property": "order",
+    "wind": "0",
+    "reference": "0"
+  }
+]

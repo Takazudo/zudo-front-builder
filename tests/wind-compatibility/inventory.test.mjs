@@ -37,8 +37,8 @@ test("pinned membership, evidence and profile cases validate", () => {
     runtime,
   );
   assert.equal(result.rows, 1288);
-  assert.equal(inventory.wind.specRevision, 13);
-  assert.equal(inventory.wind.catalogEntryCount, 212);
+  assert.equal(inventory.wind.specRevision, 14);
+  assert.equal(inventory.wind.catalogEntryCount, 219);
   assert.equal(inventory.profileCases.length, profile.requiredCases.length);
   assert.equal(
     inventory.profileCases.find((row) => row.id === "profile:mx-auto").disposition,
@@ -165,7 +165,7 @@ test("duplicate IDs, missing mappings, stale catalog and stale profile case fail
 });
 
 test("reverse Wind membership and content pins catch same-count changes", () => {
-  assert.equal(inventory.windEntries.length, 212);
+  assert.equal(inventory.windEntries.length, 219);
   const removed = copy();
   removed.windEntries.pop();
   assert.throws(
@@ -238,12 +238,54 @@ test("every runtime static keyword intersection has its exact Wind catalog mappi
           assert.equal(row.windMapping?.catalogId, entry.id, row.id);
           assert.equal(row.implementation, "source-inspected-exact-registration", row.id);
         }
-  assert.equal(intersections, 238);
+  assert.equal(intersections, 242);
   for (const name of ["mx-auto", "my-auto", "m-auto", "cursor-pointer", "h-full", "-m-px"])
     assert.equal(
       inventory.rows.find((row) => row.id === `utility-static:${name}`).windMapping?.kind,
       "exact-catalog",
     );
+});
+
+test("partial native patterns and retained table layout stay bounded", () => {
+  for (const [name, ids] of Object.entries({
+    order: ["v1.order"],
+    "-order": ["v1.order"],
+    basis: ["v1.basis"],
+    fill: ["v1.fill-current", "v1.fill-none"],
+    stroke: ["v1.stroke-current", "v1.stroke-none"],
+  })) {
+    const row = inventory.rows.find((item) => item.id === `utility-pattern:${name}`);
+    assert.equal(row.windMapping.kind, "bounded-subset", name);
+    assert.deepEqual(row.windMapping.catalogIds, ids, name);
+    assert.equal(row.disposition, "partial-native-adoption-unverified", name);
+    assert.match(row.configurationRequirement, /Retained exclusions:/, name);
+    assert.match(row.trackingIssue, /\/issues\/3812$/, name);
+    const mutated = copy();
+    mutated.rows.find((item) => item.id === row.id).windMapping.wind = `${name}-<value>`;
+    assert.throws(
+      () =>
+        validateInventory(
+          mutated,
+          upstream,
+          catalog,
+          profile,
+          variantSource,
+          docsEvidence,
+          runtime,
+        ),
+      /Incorrect bounded subset mapping/,
+      name,
+    );
+  }
+  for (const [name, value] of [
+    ["table-auto", "auto"],
+    ["table-fixed", "fixed"],
+  ]) {
+    const row = inventory.rows.find((item) => item.id === `utility-static:${name}`);
+    assert.match(row.alternative, new RegExp(`table-layout: ${value}`));
+    assert.match(row.alternative, /wind\.authoredClasses/);
+    assert.match(row.trackingIssue, /\/issues\/3812$/);
+  }
 });
 
 test("related logical and physical axis cases remain explicit reviewed differences", () => {

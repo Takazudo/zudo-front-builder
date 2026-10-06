@@ -1,0 +1,30 @@
+[
+  {
+    "name": "basis-auto",
+    "selector": "#basis-0",
+    "property": "flex-basis",
+    "wind": "auto",
+    "reference": "auto"
+  },
+  {
+    "name": "basis-full",
+    "selector": "#basis-1",
+    "property": "flex-basis",
+    "wind": "100%",
+    "reference": "100%"
+  },
+  {
+    "name": "basis-px",
+    "selector": "#basis-2",
+    "property": "flex-basis",
+    "wind": "1px",
+    "reference": "1px"
+  },
+  {
+    "name": "basis-1/2",
+    "selector": "#basis-3",
+    "property": "flex-basis",
+    "wind": "50%",
+    "reference": "50%"
+  }
+]

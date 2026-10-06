@@ -1,0 +1,12 @@
+{
+  "caseId": "native-order",
+  "reset": "none",
+  "explicitCandidates": [
+    "order-0",
+    "order-1",
+    "-order-1",
+    "order-first",
+    "order-last",
+    "order-none"
+  ]
+}

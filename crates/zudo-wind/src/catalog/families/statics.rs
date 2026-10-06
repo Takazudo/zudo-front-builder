@@ -212,6 +212,53 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
     );
     entries.push(sr_only);
 
+    let mut not_sr_only = entry(
+        "not-sr-only",
+        "miscellaneous",
+        44,
+        4,
+        &[
+            "position",
+            "width",
+            "height",
+            "padding",
+            "margin",
+            "overflow",
+            "clip",
+            "clip-path",
+            "white-space",
+        ],
+        STATIC,
+        &[],
+        &[],
+        None,
+        false,
+        false,
+        OWN,
+        None,
+        "static",
+    );
+    let reversal = [
+        ("position", "static"),
+        ("width", "auto"),
+        ("height", "auto"),
+        ("padding", "0"),
+        ("margin", "0"),
+        ("overflow", "visible"),
+        ("clip", "auto"),
+        ("clip-path", "none"),
+        ("white-space", "normal"),
+    ];
+    set_templates(
+        &mut not_sr_only,
+        &reversal
+            .iter()
+            .map(|(property, value)| fixed(property, value))
+            .collect::<Vec<_>>(),
+        &reversal,
+    );
+    entries.push(not_sr_only);
+
     for (root, value) in [("visible", "visible"), ("invisible", "hidden")] {
         entries.push(entry(
             root,
@@ -219,6 +266,29 @@ pub(super) fn add(entries: &mut Vec<CatalogEntry>) {
             47,
             0,
             &["visibility"],
+            STATIC,
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            OWN,
+            None,
+            value,
+        ));
+    }
+    for (root, property, value, order_rank) in [
+        ("fill-current", "fill", "currentColor", 0),
+        ("fill-none", "fill", "none", 0),
+        ("stroke-current", "stroke", "currentColor", 1),
+        ("stroke-none", "stroke", "none", 1),
+    ] {
+        entries.push(entry(
+            root,
+            "svg",
+            48,
+            order_rank,
+            &[property],
             STATIC,
             &[],
             &[],

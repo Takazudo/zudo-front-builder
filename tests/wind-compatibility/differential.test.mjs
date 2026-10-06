@@ -187,7 +187,7 @@ test("semantic cases count exactly two configured Wind tokens and one used refer
   const policy = profile.reviewedDifferences.find(
     (item) => item.id === "named-token-representation",
   );
-  assert.equal(profile.profileRevision, 3);
+  assert.equal(profile.profileRevision, 4);
   for (const [id, utility, reference, unusedToken] of cases) {
     const wind = `${prelude}${tokenRule}${utility}`;
     const row = profile.requiredCases.find((item) => item.id === id);

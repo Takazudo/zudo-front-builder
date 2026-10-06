@@ -1,0 +1,5 @@
+{
+  "caseId": "native-svg",
+  "reset": "none",
+  "explicitCandidates": ["fill-current", "fill-none", "stroke-current", "stroke-none"]
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "name": "fill-current",
+    "selector": "#fill-current",
+    "property": "fill",
+    "wind": "rgb(18, 52, 86)",
+    "reference": "rgb(18, 52, 86)"
+  },
+  {
+    "name": "fill-none",
+    "selector": "#fill-none",
+    "property": "fill",
+    "wind": "none",
+    "reference": "none"
+  },
+  {
+    "name": "stroke-current",
+    "selector": "#stroke-current",
+    "property": "stroke",
+    "wind": "rgb(18, 52, 86)",
+    "reference": "rgb(18, 52, 86)"
+  },
+  {
+    "name": "stroke-none",
+    "selector": "#stroke-none",
+    "property": "stroke",
+    "wind": "none",
+    "reference": "none"
+  }
+]

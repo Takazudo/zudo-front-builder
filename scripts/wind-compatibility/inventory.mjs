@@ -13,7 +13,7 @@ export const PIN = Object.freeze({
   archiveSha256: "1d73680e19488b19e97ea3c96722e363cc0c4fd118af546857d8703e8f0f9be3",
   sourcePrefix: "tailwindcss-056a1550721d4bf79ff732d5ab9414fa83f7064f/packages/tailwindcss/src/",
 });
-export const WIND_SOURCE_SHA = "6ad10cfcb1eeeca0288d577b88f8a9312828cc83";
+export const WIND_SOURCE_SHA = "8d2c45114db33d9444e0abb592e80a8ec3d92074";
 export const digest = (data) => createHash("sha256").update(data).digest("hex");
 
 export function archiveSources(bytes) {
@@ -308,7 +308,51 @@ const tracking = (name) =>
     ? issue(3372)
     : /^(?:space-|divide-)/.test(name)
       ? issue(3386)
-      : null;
+      : /^(?:table-auto$|table-fixed$|-?order$|basis$|fill$|stroke$|fill-|stroke-)/.test(name)
+        ? issue(3812)
+        : null;
+const partialNative = Object.freeze({
+  order: {
+    supported: "first, last, none, and ASCII integer 0..2147483647",
+    retained: "arbitrary values, custom properties, named tokens, and noninteger suffixes",
+    alternative: "Author order in CSS for retained forms.",
+    catalogIds: ["v1.order"],
+    windSyntax: "order-first | order-last | order-none | order-N (N: 0..2147483647)",
+  },
+  "-order": {
+    supported: "negative ASCII integer 0..2147483647 only",
+    retained:
+      "negative keywords, arbitrary values, custom properties, named tokens, and noninteger suffixes",
+    alternative: "Author order in CSS for retained forms.",
+    catalogIds: ["v1.order"],
+    windSyntax: "-order-N (N: 0..2147483647)",
+  },
+  basis: {
+    supported:
+      "auto, full, px, 0, min, max, fit, content, and positive integer fractions with parts 1..1000000",
+    retained: "nonzero numeric scale, named tokens, arbitrary values, and invalid fraction parts",
+    alternative:
+      "Author flex-basis in CSS for retained forms, optionally using configured --zw-spacing-* or --zw-size-* variables.",
+    catalogIds: ["v1.basis"],
+    windSyntax:
+      "basis-auto | basis-full | basis-px | basis-0 | basis-min | basis-max | basis-fit | basis-content | basis-N/D (N,D: 1..1000000)",
+  },
+  fill: {
+    supported: "exact fill-current and fill-none",
+    retained: "named/transparent/inherit colors, opacity modifiers, arbitrary values and URLs",
+    alternative: "Author fill in CSS for retained forms.",
+    catalogIds: ["v1.fill-current", "v1.fill-none"],
+    windSyntax: "fill-current | fill-none",
+  },
+  stroke: {
+    supported: "exact stroke-current and stroke-none",
+    retained:
+      "named/transparent/inherit colors, opacity modifiers, arbitrary values, URLs and stroke-width",
+    alternative: "Author stroke or stroke-width in CSS for retained forms.",
+    catalogIds: ["v1.stroke-current", "v1.stroke-none"],
+    windSyntax: "stroke-current | stroke-none",
+  },
+});
 function windExact(name, catalog) {
   return catalog.entries.find((entry) =>
     entry.acceptedValues?.some((value) => {
@@ -346,6 +390,9 @@ function axisReview(kind, name) {
 function sourceEvidence(windSha, catalog, profile, upstream) {
   return {
     status: "source-inspected",
+    sourceInspected: { windGitSha: windSha },
+    contractTested: null,
+    independentlyDifferentialTested: null,
     windGitSha: windSha,
     windSpecVersion: catalog.specVersion,
     windSpecRevision: catalog.specRevision,
@@ -446,6 +493,7 @@ export function makeInventory(
           )
         : null;
     const candidate = kind.startsWith("utility") && nativeCandidate(name);
+    const partial = kind === "utility-pattern" ? partialNative[name] : null;
     const axisDifference = axisReview(kind, name);
     const special = Boolean(axisDifference && exact);
     const variant = variantMapping(kind, name);
@@ -453,9 +501,11 @@ export function makeInventory(
       variant ??
       (exact
         ? { kind: "exact-catalog", catalogId: exact.id, wind: name }
-        : family
-          ? { kind: "root-only-unverified", catalogId: family.id, wind: `${name}-<value>` }
-          : null);
+        : partial
+          ? { kind: "bounded-subset", catalogIds: partial.catalogIds, wind: partial.windSyntax }
+          : family
+            ? { kind: "root-only-unverified", catalogId: family.id, wind: `${name}-<value>` }
+            : null);
     return {
       id,
       upstream: {
@@ -474,42 +524,57 @@ export function makeInventory(
         constraints: constraint,
       },
       windMapping: mapping,
-      configurationRequirement:
-        variant?.requirement ??
-        (kind === "utility-pattern"
-          ? constraint?.themeKeys.length
-            ? `Upstream theme keys: ${constraint.themeKeys.join(", ")}; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant.`
-            : "Pattern domain requires case-specific source review; no default token guarantee."
-          : family?.tokenCategories?.length
-            ? `Configure Wind ${family.tokenCategories.join(", ")} token for named values.`
-            : "No configuration established for this row."),
-      implementation: variant
-        ? "source-inspected-variant-parser"
-        : exact
-          ? "source-inspected-exact-registration"
-          : family
-            ? "root-collision-unverified"
-            : "not-established",
-      disposition: special
-        ? "reviewed-difference"
+      configurationRequirement: partial
+        ? `Wind supported subset: ${partial.supported}. Retained exclusions: ${partial.retained}. No token configuration expands this native subset.`
+        : (variant?.requirement ??
+          (kind === "utility-pattern"
+            ? constraint?.themeKeys.length
+              ? `Upstream theme keys: ${constraint.themeKeys.join(", ")}; Wind named tokens use var(--zw-...) in zw-tokens; numeric spacingUnit is optional where relevant.`
+              : "Pattern domain requires case-specific source review; no default token guarantee."
+            : family?.tokenCategories?.length
+              ? `Configure Wind ${family.tokenCategories.join(", ")} token for named values.`
+              : "No configuration established for this row.")),
+      implementation: partial
+        ? "bounded-native-subset-source-inspected"
         : variant
-          ? "candidate-mapping-untested"
-          : kind.startsWith("variant")
-            ? "variant-unmapped"
-            : exact
-              ? "candidate-mapping-untested"
-              : family
-                ? "requires-review"
-                : candidate
-                  ? "native-css-review-candidate"
-                  : tracking(name)
-                    ? "excluded-deferred"
-                    : "unmapped-upstream-registration",
-      semanticDifference: axisDifference,
-      alternative: candidate
-        ? "Review native CSS and accessibility behavior; no automatic adoption."
-        : null,
-      trackingIssue: tracking(name),
+          ? "source-inspected-variant-parser"
+          : exact
+            ? "source-inspected-exact-registration"
+            : family
+              ? "root-collision-unverified"
+              : "not-established",
+      disposition: partial
+        ? "partial-native-adoption-unverified"
+        : special
+          ? "reviewed-difference"
+          : variant
+            ? "candidate-mapping-untested"
+            : kind.startsWith("variant")
+              ? "variant-unmapped"
+              : exact
+                ? "candidate-mapping-untested"
+                : family
+                  ? "requires-review"
+                  : candidate
+                    ? "native-css-review-candidate"
+                    : tracking(name)
+                      ? "excluded-deferred"
+                      : "unmapped-upstream-registration",
+      semanticDifference: partial
+        ? `Wind supports ${partial.supported}; retained exclusions: ${partial.retained}. Source/catalog support alone does not establish browser parity.`
+        : axisDifference,
+      alternative: exact
+        ? null
+        : name === "table-auto"
+          ? "Author table-layout: auto in CSS and reserve the complete class with wind.authoredClasses."
+          : name === "table-fixed"
+            ? "Author table-layout: fixed in CSS and reserve the complete class with wind.authoredClasses."
+            : partial
+              ? partial.alternative
+              : candidate
+                ? "Author the retained native form in CSS and reserve its complete class with wind.authoredClasses."
+                : null,
+      trackingIssue: exact ? null : tracking(name),
       evidence: sourceEvidence(windSha, catalog, profile, upstream),
     };
   });
@@ -618,7 +683,11 @@ export function makeInventory(
     ],
     windEntries: catalog.entries.map((entry) => {
       const upstreamRowIds = rows
-        .filter((row) => row.windMapping?.catalogId === entry.id)
+        .filter(
+          (row) =>
+            row.windMapping?.catalogId === entry.id ||
+            row.windMapping?.catalogIds?.includes(entry.id),
+        )
         .map((row) => row.id);
       return {
         id: `wind:${entry.id}`,
@@ -646,15 +715,28 @@ export function makeInventory(
       evidence: { ...sourceEvidence(windSha, catalog, profile, upstream), caseIds: [c.id] },
     })),
     nativeCssReview: [
-      "flex order/basis",
-      "SVG fill/stroke presentation",
-      "accessibility screen-reader helpers",
-    ].map((family) => ({
+      [
+        "flex order/basis",
+        "Bounded order and basis subsets adopted; arbitrary order, basis scale/token/arbitrary values remain under #3812.",
+        "Author order or flex-basis in CSS for retained forms.",
+      ],
+      [
+        "SVG fill/stroke presentation",
+        "Only current and none presentation values adopted; color/opacity/URL/stroke-width forms remain under #3812.",
+        "Author fill, stroke or stroke-width in CSS for retained forms.",
+      ],
+      [
+        "accessibility screen-reader helpers",
+        "Exact not-sr-only reversal adopted after sr-only; Wind clip:auto is a reviewed model difference.",
+        "Author additional accessibility behavior in CSS as needed.",
+      ],
+    ].map(([family, scope, alternative]) => ({
       family,
-      disposition: "review-candidate",
-      approval: null,
+      disposition: "bounded-native-adoption",
+      approval: "#3835",
       evidenceStatus: "source-inspected",
-      alternative: "Native CSS and semantic HTML review required before any adoption.",
+      scope,
+      alternative,
     })),
     noSingleCompatibilityPercentage: true,
   };
@@ -771,10 +853,14 @@ export function validateInventory(
     !Array.isArray(inventory.nativeCssReview) ||
     inventory.nativeCssReview.length !== 3 ||
     inventory.nativeCssReview.some(
-      (r) => r.approval !== null || r.disposition !== "review-candidate",
+      (r) =>
+        r.approval !== "#3835" ||
+        r.disposition !== "bounded-native-adoption" ||
+        !r.scope ||
+        !r.alternative,
     )
   )
-    fail("Native CSS candidates not explicitly pending");
+    fail("Native CSS adopted scope is incomplete");
   if (
     inventory.configuredPatterns?.length !== 6 ||
     new Set(inventory.configuredPatterns.map((row) => row.id)).size !== 6 ||
@@ -791,7 +877,11 @@ export function validateInventory(
   for (const entry of catalog.entries) {
     const row = inventory.windEntries.find((item) => item.catalogId === entry.id);
     const mapped = inventory.rows
-      .filter((item) => item.windMapping?.catalogId === entry.id)
+      .filter(
+        (item) =>
+          item.windMapping?.catalogId === entry.id ||
+          item.windMapping?.catalogIds?.includes(entry.id),
+      )
       .map((item) => item.id);
     if (
       !row ||
@@ -843,6 +933,15 @@ export function validateInventory(
     )
       fail(`Incorrect root mapping ${row.id}`);
     if (
+      row.windMapping?.kind === "bounded-subset" &&
+      (!partialNative[row.upstream.name] ||
+        JSON.stringify(row.windMapping.catalogIds) !==
+          JSON.stringify(partialNative[row.upstream.name].catalogIds) ||
+        row.windMapping.wind !== partialNative[row.upstream.name].windSyntax ||
+        row.windMapping.catalogIds.some((id) => !catalogIds.has(id)))
+    )
+      fail(`Incorrect bounded subset mapping ${row.id}`);
+    if (
       row.upstream.kind === "utility-pattern" &&
       JSON.stringify(row.upstream.constraints) !==
         JSON.stringify(
@@ -862,6 +961,9 @@ export function validateInventory(
     if (
       row.evidence.status !== "source-inspected" ||
       row.evidence.windGitSha !== inventory.wind.gitSha ||
+      row.evidence.sourceInspected?.windGitSha !== inventory.wind.gitSha ||
+      row.evidence.contractTested !== null ||
+      row.evidence.independentlyDifferentialTested !== null ||
       row.evidence.referenceVersion !== upstream.pin.version ||
       row.evidence.reportId !== null ||
       row.evidence.browserEnvironment !== null
