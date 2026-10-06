@@ -27,6 +27,12 @@ checked promotion under #3840.
 
 This is the test-only reference boundary for [profile 1.5](../../tests/wind-compatibility/profile.json). The initial candidate is exactly `tailwindcss@4.3.2`. It is a deliberate initial target because the existing lockfile resolves `@tailwindcss/browser@4.3.2` transitively; it is **not** a historical consumer baseline. No Tailwind dependency is added to a product or workspace manifest. The live [accepted](../../tests/wind-compatibility/reference/accepted.json) and [reviewed-through](../../tests/wind-compatibility/reference/reviewed-through.json) records are separate. The profile's `referencePolicy.initialState` is immutable bootstrap policy, not live state.
 
+The optional Tailwind release detector is dispatch-only and has no active
+schedule. It can file a deduplicated manual review issue for a newer on-track
+release, but never changes the profile or reference records. See the
+[release detection contract](../../tests/wind-compatibility/reference/README.md#release-detection-optional-dispatch-only)
+for its statuses, dry-run behavior, secret boundary and manual review flow.
+
 Run from the repository root with Node 24:
 
 ```sh

@@ -40,7 +40,7 @@
     "acceptedReferenceChangesDuringRehearsal": false,
     "reviewedThroughDuringRehearsal": "disposable-metadata-only",
     "authoritativeReviewOnlyCommitRequiresIndependentEvidenceReview": true,
-    "optionalLiveDetector": "3822 remains open and unimplemented"
+    "optionalLiveDetector": "3822 implemented as a dispatch-only detector (tailwind-release-watch.yml); no schedule active"
   },
   "evidenceStatus": "preparation-only; full repository assessment, three-way Wind comparison, classification, and checked transition are pending manager-owned execution"
 }
