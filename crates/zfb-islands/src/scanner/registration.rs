@@ -2233,6 +2233,15 @@ impl<'a, R: Resolver> Discovery<'a, R> {
     ) -> ScanResult<WrapperSummary> {
         match child {
             Child::Target(target) => Ok(WrapperSummary::Fixed(target)),
+            // A failed factory proof must reach its boundary diagnostic. The
+            // forwarding check can otherwise mistake its parameter read for
+            // an unchanged child and defer this site.
+            Child::Dynamic(reason)
+                if reason.contains("has unsupported initializer")
+                    && reason.contains("boundary-discovery-and-migration") =>
+            {
+                Ok(WrapperSummary::Unsupported(reason))
+            }
             Child::Empty | Child::Dynamic(_) if self.form_forwards_child(path, form, params)? => {
                 self.deferred_forward_sites
                     .insert((path.to_path_buf(), form.span().lo.0));
@@ -3299,6 +3308,7 @@ mod tests {
     #[test]
     fn factory_member_rejections_name_the_failed_proof() {
         let body = "function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        let mut mismatches = Vec::new();
         for (body, call, reason) in [
             (body, "", "factory create has no call site"),
             (body, "create(value);", "passes a non-literal argument"),
@@ -3322,10 +3332,23 @@ mod tests {
             ("function create(deps = {}) { const Target = deps.Counter; return <Island><Target /></Island>; }", "create({ Counter });", "parameter deps has a default value"),
             ("function create({ Counter: Target, ...rest }) { return <Island><Target /></Island>; }", "create({ Counter });", "uses a rest pattern"),
         ] {
-            let error = factory_case(body, call).unwrap_err().to_string();
-            assert!(error.contains(reason), "{reason}: {error}");
-            assert!(error.contains("boundary-discovery-and-migration"), "{error}");
+            match factory_case(body, call) {
+                Ok(islands) => mismatches.push(format!(
+                    "{call:?} / {reason}: expected a diagnostic, registered {:?}",
+                    markers(&islands)
+                )),
+                Err(error) => {
+                    let error = error.to_string();
+                    if !error.contains(reason) {
+                        mismatches.push(format!("{call:?} / {reason}: {error}"));
+                    }
+                    if !error.contains("boundary-discovery-and-migration") {
+                        mismatches.push(format!("{call:?} / missing seam anchor: {error}"));
+                    }
+                }
+            }
         }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     }
 
     #[test]
