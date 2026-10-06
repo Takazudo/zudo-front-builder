@@ -1,0 +1,16 @@
+---
+title: v4.0.0
+sidebar_position: 28
+---
+
+# v4.0.0
+
+Released: 2026-10-06
+
+## Features
+
+- Accept `linkValidation.anchorComponents` in the shared Markdown feature configuration so declared MDX JSX components with literal anchor props contribute static fragment targets. Dynamically computed IDs are not inferred (da87f163, 68aeec59).
+
+## Other Changes
+
+- All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so their SHA-256 digests change for v4.0.0 even when a particular artifact's size moves only slightly. Re-verify any pinned artifact digests after publication; byte sizes were measured for the v4.0.0 candidate in CI run 37436944773.

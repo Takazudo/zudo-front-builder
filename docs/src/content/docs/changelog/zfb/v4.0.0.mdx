@@ -1,0 +1,32 @@
+---
+title: v4.0.0
+sidebar_position: 142
+---
+
+# v4.0.0
+
+Released: 2026-10-06
+
+## Breaking Changes
+
+- `@takazudo/zfb/zudo-react` now types form defaults by control kind. A broad `type: string` with `defaultValue` or `defaultChecked` can stop type-checking even when its runtime value is supported. Narrow the type to `"text" | "search" | "email" | "url" | "tel" | "password"` before using `defaultValue`, or to `"checkbox" | "radio"` before using `defaultChecked`. Literal combinations such as `type="number"` with `defaultValue` were already rejected by the 3.2.0 renderer and form adapters; this change makes their types match that existing runtime rule. Unmodelled radios can now use `defaultChecked` without a name or value (e4c59317).
+- Reject `script` `rawHtml` whose HTML parsing state would consume the renderer's closing tag. Rework the script payload so its closing boundary is unambiguous; the renderer continues to reject a literal `</script` inside that payload (16b0a34c).
+
+## Features
+
+- Add `wind.sources.roots`, `classHelpers`, `ignoreAttributes`, and `rootPackage: false` for explicit discovery and extraction control. Defaults retain the existing implicit root behavior; declared project roots participate in CSS commands and dev watching (4e86b0a3, db789d0b, 9a0b9fb0, b53beea1).
+- Expand the preset-free Wind engine with bounded selection and pointer variants, decoration thickness/styles, bare outline, checked variants, additional cursor keywords, inset fractions, alignment keywords and pixel translate axes (7d0c34c6, ad9984f4, 4422e506, 1019e523, d6fcde14, a858fad3, d67c9d7f, fcfa7666).
+- Add exact native display/appearance, order/basis, SVG fill/stroke and `not-sr-only` forms. These are finite utilities, not a Tailwind preset or a full compatibility claim; token and arbitrary-value exclusions still apply. Wind remains spec 1/revision 14 (e6d4060f, 836bf52d).
+- Explain unequal host token overrides with preset provenance, group `zfb wind audit` text output by candidate/code/severity, and give bounded unsupported utilities and variants more specific migration or missing-token diagnostics (7d4e744c, 322f19cd, 49019aaf, 1171b0af, 5e87f73c).
+- Add coded build warnings, optional structured plugin logger metadata, sorted `build --warnings-json` reports and opt-in build phase timing. Authored TSX/JSX and MDX pragma checks also report migration warnings (36afe4c8, 24a3dd59, e88e6b47, 42fd7265).
+- Configure `linkValidation.anchorComponents` so a declared MDX JSX component's literal anchor prop contributes a static fragment target. Names and prop spellings are validated; dynamically computed IDs are not inferred (da87f163, 68aeec59).
+- Recognize `class` and `className` props in named, owned `zudo-react` `h()` imports and aliases for Wind extraction and diagnostics. Unrelated or shadowed factories remain conservative; this does not make a renderer-invalid prop valid (a7688204).
+
+## Bug Fixes
+
+- Preserve candidates and source positions from quoted multiline JSX classes; keep class scanning conservative for impossible literals and embedded preview markup (72507c3a, be380b6f).
+- Remove late dynamic `Show`, `For` and reactive content inside a `zudo-react` root when it unmounts, while retaining caller-owned siblings. Accept the `rb` Ruby element (6a8e682b, b173f291).
+- Repair dev collection deletion invalidation, including unknown consumers, racing initial reads and retained stale repair claims, while keeping known-consumer selection precise (18fbec4e, 30a8a292, 76cd634f).
+- Stop reporting false Wind conflict diagnostics for compatible translate axes and catalog-declared default overrides; genuine conflicting writes remain reported (43f2924b, c0c68437).
+- Reuse parsed modules and indexed lexical bindings during island registration scanning of large linked package graphs, avoiding repeated full-module walks. Unsupported dependency-member targets still produce a finite, source-located diagnostic; this does not claim every consumer build succeeds (291401a1, 3303d765, 220433a9).
+- New basic-blog projects omit the unnecessary TypeScript `baseUrl` setting while retaining the `~/*` path alias. This is the `zfb new` template also used through `create-zfb` (f1ac6b83).

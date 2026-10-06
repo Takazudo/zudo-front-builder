@@ -1,0 +1,13 @@
+---
+title: v4.0.0
+sidebar_position: 28
+---
+
+# v4.0.0
+
+Released: 2026-10-06
+
+## Bug Fixes
+
+- Observe readiness rejection when a native view transition is skipped, without suppressing genuine update failures or leaving rejected promise children unhandled (91b42337).
+- Ignore non-Element targets in delegated prefetch listeners, including document and text nodes, while retaining prefetch through nested links (a98731f5).
