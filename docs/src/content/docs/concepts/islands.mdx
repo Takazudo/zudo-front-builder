@@ -129,18 +129,18 @@ The complete rejection set and its rewrites are:
 | Diagnostic reason | Rewrite |
 | --- | --- |
 | `mutable target binding` | Change `let`/`var` to a `const` binding whose value is not reassigned. |
-| `parameter <name> has a default value` | Remove the default and pass the object explicitly at every call site. |
-| `destructured parameter <name> uses a rest pattern` | Destructure only the named static property; remove the rest pattern. |
-| `parameter <name> is written or escapes at <loc>` | Keep the parameter read-only and use only static member reads or a `const` object pattern; do not pass, alias, return, spread, or mutate it. |
-| `factory <F> escapes as a value at <loc>` | Keep every reference to `F` as a direct call in the scanned modules; do not pass, store, return, bind, apply, or render `F` as JSX. |
-| `factory <F> has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
-| `call site at <loc> passes too few arguments` | Pass the parameter at its declared position. |
-| `call site at <loc> spreads positional arguments` | Spell out positional arguments through the parameter index. |
-| `call site at <loc> passes a non-literal argument` | Pass a plain object literal without any spread, computed key, method, or getter; other plain properties are allowed. |
-| `property <prop> missing at call site <loc>` | Add the selected property exactly once as a static key. |
-| `call site at <loc> selects <prop> conditionally (??, ternary, ||)` | Pass one imported function directly; express alternatives as separate concrete island boundaries or use the composition seam below. |
-| `property <prop> at <loc> is not a function binding` | Pass a value that resolves to one function definition. If value resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
-| `call sites disagree: <loc> passes Counter, <loc> passes Other` | Make every call pass the same function definition, or split the calls into separate fixed-target wrappers. |
+| `parameter &lt;name&gt; has a default value` | Remove the default and pass the object explicitly at every call site. |
+| `destructured parameter &lt;name&gt; uses a rest pattern` | Destructure only the named static property; remove the rest pattern. |
+| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | Keep the parameter read-only and use only static member reads or a `const` object pattern; do not pass, alias, return, spread, or mutate it. |
+| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | Keep every reference to `F` as a direct call in the scanned modules; do not pass, store, return, bind, apply, or render `F` as JSX. |
+| `factory &lt;F&gt; has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
+| `call site at &lt;loc&gt; passes too few arguments` | Pass the parameter at its declared position. |
+| `call site at &lt;loc&gt; spreads positional arguments` | Spell out positional arguments through the parameter index. |
+| `call site at &lt;loc&gt; passes a non-literal argument` | Pass a plain object literal without any spread, computed key, method, or getter; other plain properties are allowed. |
+| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | Add the selected property exactly once as a static key. |
+| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | Pass one imported function directly; express alternatives as separate concrete island boundaries or use the composition seam below. |
+| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | Pass a value that resolves to one function definition. If value resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
+| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | Make every call pass the same function definition, or split the calls into separate fixed-target wrappers. |
 
 The scanner reports the first applicable reason, preserving the diagnostic
 prefix `target Target has unsupported initializer`. See the [Troubleshooting guide](../guides/troubleshooting.mdx)

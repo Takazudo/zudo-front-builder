@@ -98,18 +98,18 @@ export default function Page() {
 | 診断理由 | 修正方法 |
 | --- | --- |
 | `mutable target binding` | `let`／`var` を、値を再代入しない `const` の束縛に変更します。 |
-| `parameter <name> has a default value` | デフォルト値を取り除き、すべての呼び出しでオブジェクトを明示的に渡します。 |
-| `destructured parameter <name> uses a rest pattern` | 名前を指定した静的プロパティだけを分割代入し、rest パターンを取り除きます。 |
-| `parameter <name> is written or escapes at <loc>` | パラメーターを読み取り専用にし、静的メンバーの読み取りか `const` オブジェクトパターンにだけ使います。渡す、別名にする、返す、スプレッドする、変更するといった操作を避けます。 |
-| `factory <F> escapes as a value at <loc>` | スキャン対象モジュール内の `F` への参照をすべて直接呼び出しにします。渡す、保存する、返す、bind/apply する、JSX として描画するといった操作を避けます。 |
-| `factory <F> has no call site in the scanned modules` | 必要なオブジェクトリテラルを使う直接呼び出しをスキャン対象モジュールに追加するか、固定ターゲットを直接使います。 |
-| `call site at <loc> passes too few arguments` | 宣言された位置にパラメーターを渡します。 |
-| `call site at <loc> spreads positional arguments` | パラメーターの位置までの位置引数を明示的に書きます。 |
-| `call site at <loc> passes a non-literal argument` | スプレッド、計算プロパティキー、メソッド、getter のないプレーンなオブジェクトリテラルを渡します。ほかのプレーンなプロパティは含められます。 |
-| `property <prop> missing at call site <loc>` | 選択するプロパティを静的なキーでちょうど 1 回追加します。 |
-| `call site at <loc> selects <prop> conditionally (??, ternary, ||)` | インポートした 1 つの関数を直接渡します。別の候補はそれぞれ具体的な島の境界に分けるか、後述の合成方法を使います。 |
-| `property <prop> at <loc> is not a function binding` | 1 つの関数定義に解決される値を渡します。値の解決自体が `memo(X)` などの未サポート理由を返した場合、その理由も追加されます。 |
-| `call sites disagree: <loc> passes Counter, <loc> passes Other` | すべての呼び出しで同じ関数定義を渡すか、別々の固定ターゲット wrapper に分けます。 |
+| `parameter &lt;name&gt; has a default value` | デフォルト値を取り除き、すべての呼び出しでオブジェクトを明示的に渡します。 |
+| `destructured parameter &lt;name&gt; uses a rest pattern` | 名前を指定した静的プロパティだけを分割代入し、rest パターンを取り除きます。 |
+| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | パラメーターを読み取り専用にし、静的メンバーの読み取りか `const` オブジェクトパターンにだけ使います。渡す、別名にする、返す、スプレッドする、変更するといった操作を避けます。 |
+| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | スキャン対象モジュール内の `F` への参照をすべて直接呼び出しにします。渡す、保存する、返す、bind/apply する、JSX として描画するといった操作を避けます。 |
+| `factory &lt;F&gt; has no call site in the scanned modules` | 必要なオブジェクトリテラルを使う直接呼び出しをスキャン対象モジュールに追加するか、固定ターゲットを直接使います。 |
+| `call site at &lt;loc&gt; passes too few arguments` | 宣言された位置にパラメーターを渡します。 |
+| `call site at &lt;loc&gt; spreads positional arguments` | パラメーターの位置までの位置引数を明示的に書きます。 |
+| `call site at &lt;loc&gt; passes a non-literal argument` | スプレッド、計算プロパティキー、メソッド、getter のないプレーンなオブジェクトリテラルを渡します。ほかのプレーンなプロパティは含められます。 |
+| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | 選択するプロパティを静的なキーでちょうど 1 回追加します。 |
+| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | インポートした 1 つの関数を直接渡します。別の候補はそれぞれ具体的な島の境界に分けるか、後述の合成方法を使います。 |
+| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | 1 つの関数定義に解決される値を渡します。値の解決自体が `memo(X)` などの未サポート理由を返した場合、その理由も追加されます。 |
+| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | すべての呼び出しで同じ関数定義を渡すか、別々の固定ターゲット wrapper に分けます。 |
 
 スキャナーは該当する最初の理由を報告し、診断の接頭辞 `target Target has unsupported initializer` を保ちます。症状と修正方法の一覧は[トラブルシューティング](../guides/troubleshooting.mdx)を参照してください。
 
