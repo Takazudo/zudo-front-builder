@@ -1,19 +1,22 @@
 # First bounded reference admission
 
-## Current state
+## Live state and history
 
-The first reference has **not** been admitted. `accepted.json` and
-`reviewed-through.json` are both null, and the profile remains
-`policy-ratified-evidence-pending`. The generated EN/JA inventory records
-source inspection; it does not assert browser compatibility. Keep that status
-until the checked transition below succeeds and an independent reviewer signs
-off on the evidence.
+The current admission state is recorded in [`accepted.json`](./accepted.json)
+and [`reviewed-through.json`](./reviewed-through.json). Treat those records as
+authoritative; this runbook describes the procedure and dated execution
+history. The generated EN/JA inventory records source inspection and does not
+assert browser compatibility.
 
-Manager-owned run 37409669895 passed the full comparison, production build, four
-Rust build fixtures, and dist proof. Its shipping check failed because the
-`css-initial` warm CSS differed from the clean copy. That run cannot admit the
-reference. Repair the shipping failure, regenerate any affected preview assets,
-and collect a new complete run before considering promotion.
+### 2026-10-06 — run 37409669895
+
+This manager-owned attempt passed the full comparison, production build, four
+Rust build fixtures, and dist proof, then failed shipping: `css-initial` warm
+CSS differed from the clean copy. Diagnosis found that the clean-copy filter
+removed every directory named `dist`, including the shipping fixture's actual
+`node_modules/.../dist/component.js` package asset. This run cannot admit the
+reference. Any affected preview assets and shipping behavior must be rebuilt
+and the complete evidence rerun before promotion.
 
 ## Evidence required
 
