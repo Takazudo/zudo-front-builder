@@ -1,4 +1,4 @@
-# Preparation only. Pin 8f57a2ba78247ffc1d3cff56364974dac488a506 to reviewed child source commit before use.
+# Preparation only. Pin 972408306481ecfe9a19962e0962bbbc2a50dfa1 to reviewed child source commit before use.
 name: Temporary Wind native catalog export
 on:
   pull_request:
@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: 8f57a2ba78247ffc1d3cff56364974dac488a506
+          ref: 972408306481ecfe9a19962e0962bbbc2a50dfa1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: 1.99.0
@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/wind-catalog-export
-          test "$(git rev-parse HEAD)" = 8f57a2ba78247ffc1d3cff56364974dac488a506
+          test "$(git rev-parse HEAD)" = 972408306481ecfe9a19962e0962bbbc2a50dfa1
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
@@ -46,7 +46,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all -- --check
-          cargo test --locked -p zudo-wind 2>&1 | tee /tmp/wind-catalog-export/rust-tests.log
+          cargo test --locked -p zudo-wind --no-fail-fast 2>&1 | tee /tmp/wind-catalog-export/rust-tests.log
+      - name: Focused Wind Clippy
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
           cargo clippy --locked -p zudo-wind --all-targets -- -D warnings 2>&1 | tee /tmp/wind-catalog-export/clippy.log
       - name: Preserve original export and verification logs
         if: always()
