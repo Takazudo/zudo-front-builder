@@ -262,7 +262,21 @@
       "upstreamTest": "display",
       "originalInput": "['block', 'inline-block', 'inline', 'flex', 'inline-flex', 'table', 'inline-table', 'table-caption', 'table-cell', 'table-column', 'table-column-group', 'table-footer-group', 'table-header-group', 'table-row-group', 'table-row', 'flow-root', 'grid', 'inline-grid', 'contents', 'list-item', 'hidden',]",
       "adaptation": "Retain all 13 approved display statics from the upstream display test. Give each candidate a separate element and preserve valid table formatting contexts for table display roles so browser blockification cannot change computed values.",
-      "candidates": ["contents", "flow-root", "list-item", "table", "inline-table", "table-caption", "table-cell", "table-column", "table-column-group", "table-footer-group", "table-header-group", "table-row", "table-row-group"],
+      "candidates": [
+        "contents",
+        "flow-root",
+        "list-item",
+        "table",
+        "inline-table",
+        "table-caption",
+        "table-cell",
+        "table-column",
+        "table-column-group",
+        "table-footer-group",
+        "table-header-group",
+        "table-row",
+        "table-row-group"
+      ],
       "engines": ["chromium"],
       "reviewedDifferenceIds": ["exact-tree-contract"]
     },

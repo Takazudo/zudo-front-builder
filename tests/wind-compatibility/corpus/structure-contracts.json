@@ -310,19 +310,84 @@
     },
     "native-display": {
       "rules": [
-        {"candidate": "contents", "selector": ".contents", "media": null, "writes": [["display", "contents"]]},
-        {"candidate": "flow-root", "selector": ".flow-root", "media": null, "writes": [["display", "flow-root"]]},
-        {"candidate": "inline-table", "selector": ".inline-table", "media": null, "writes": [["display", "inline-table"]]},
-        {"candidate": "list-item", "selector": ".list-item", "media": null, "writes": [["display", "list-item"]]},
-        {"candidate": "table", "selector": ".table", "media": null, "writes": [["display", "table"]]},
-        {"candidate": "table-caption", "selector": ".table-caption", "media": null, "writes": [["display", "table-caption"]]},
-        {"candidate": "table-cell", "selector": ".table-cell", "media": null, "writes": [["display", "table-cell"]]},
-        {"candidate": "table-column", "selector": ".table-column", "media": null, "writes": [["display", "table-column"]]},
-        {"candidate": "table-column-group", "selector": ".table-column-group", "media": null, "writes": [["display", "table-column-group"]]},
-        {"candidate": "table-footer-group", "selector": ".table-footer-group", "media": null, "writes": [["display", "table-footer-group"]]},
-        {"candidate": "table-header-group", "selector": ".table-header-group", "media": null, "writes": [["display", "table-header-group"]]},
-        {"candidate": "table-row", "selector": ".table-row", "media": null, "writes": [["display", "table-row"]]},
-        {"candidate": "table-row-group", "selector": ".table-row-group", "media": null, "writes": [["display", "table-row-group"]]}
+        {
+          "candidate": "contents",
+          "selector": ".contents",
+          "media": null,
+          "writes": [["display", "contents"]]
+        },
+        {
+          "candidate": "flow-root",
+          "selector": ".flow-root",
+          "media": null,
+          "writes": [["display", "flow-root"]]
+        },
+        {
+          "candidate": "inline-table",
+          "selector": ".inline-table",
+          "media": null,
+          "writes": [["display", "inline-table"]]
+        },
+        {
+          "candidate": "list-item",
+          "selector": ".list-item",
+          "media": null,
+          "writes": [["display", "list-item"]]
+        },
+        {
+          "candidate": "table",
+          "selector": ".table",
+          "media": null,
+          "writes": [["display", "table"]]
+        },
+        {
+          "candidate": "table-caption",
+          "selector": ".table-caption",
+          "media": null,
+          "writes": [["display", "table-caption"]]
+        },
+        {
+          "candidate": "table-cell",
+          "selector": ".table-cell",
+          "media": null,
+          "writes": [["display", "table-cell"]]
+        },
+        {
+          "candidate": "table-column",
+          "selector": ".table-column",
+          "media": null,
+          "writes": [["display", "table-column"]]
+        },
+        {
+          "candidate": "table-column-group",
+          "selector": ".table-column-group",
+          "media": null,
+          "writes": [["display", "table-column-group"]]
+        },
+        {
+          "candidate": "table-footer-group",
+          "selector": ".table-footer-group",
+          "media": null,
+          "writes": [["display", "table-footer-group"]]
+        },
+        {
+          "candidate": "table-header-group",
+          "selector": ".table-header-group",
+          "media": null,
+          "writes": [["display", "table-header-group"]]
+        },
+        {
+          "candidate": "table-row",
+          "selector": ".table-row",
+          "media": null,
+          "writes": [["display", "table-row"]]
+        },
+        {
+          "candidate": "table-row-group",
+          "selector": ".table-row-group",
+          "media": null,
+          "writes": [["display", "table-row-group"]]
+        }
       ],
       "tokens": {},
       "registrations": {},
@@ -330,8 +395,18 @@
     },
     "native-appearance": {
       "rules": [
-        {"candidate": "appearance-auto", "selector": ".appearance-auto", "media": null, "writes": [["appearance", "auto"]]},
-        {"candidate": "appearance-none", "selector": ".appearance-none", "media": null, "writes": [["appearance", "none"]]}
+        {
+          "candidate": "appearance-auto",
+          "selector": ".appearance-auto",
+          "media": null,
+          "writes": [["appearance", "auto"]]
+        },
+        {
+          "candidate": "appearance-none",
+          "selector": ".appearance-none",
+          "media": null,
+          "writes": [["appearance", "none"]]
+        }
       ],
       "tokens": {},
       "registrations": {},
