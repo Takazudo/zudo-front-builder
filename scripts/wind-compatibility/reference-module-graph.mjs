@@ -15,7 +15,14 @@ export const referenceModuleNames = Object.freeze([
   "plugin.mjs",
 ]);
 
-export function archivedReferenceModules(archiveBytes) {
+export function verifiedReferenceImport(specifier, parentURL, moduleDirectoryURL, names) {
+  if (!parentURL?.startsWith(moduleDirectoryURL)) return false;
+  if (!/^\.\/[A-Za-z0-9_.-]+\.mjs$/.test(specifier) || !names.has(specifier.slice(2)))
+    throw Error(`Unsupported reference module import: ${specifier}`);
+  return true;
+}
+
+export function archivedReferenceModules(archiveBytes, pinned = false) {
   const tar = gunzipSync(archiveBytes),
     modules = new Map();
   for (let at = 0; at + 512 <= tar.length;) {
@@ -30,6 +37,8 @@ export function archivedReferenceModules(archiveBytes) {
     );
     if (!Number.isFinite(size) || size < 0 || at + 512 + size > tar.length)
       throw Error("Invalid reference archive entry");
+    if (name.startsWith("/") || name.split("/").includes(".."))
+      throw Error(`Unsupported or unsafe reference archive member ${name}`);
     const match = /^package\/dist\/([A-Za-z0-9_.-]+\.mjs)$/.exec(name);
     if (match) {
       const type = tar.toString("ascii", at + 156, at + 157);
@@ -40,13 +49,21 @@ export function archivedReferenceModules(archiveBytes) {
     at += 512 + Math.ceil(size / 512) * 512;
   }
   if (
+    pinned &&
     JSON.stringify([...modules.keys()].sort()) !== JSON.stringify([...referenceModuleNames].sort())
   )
     throw Error("Pinned reference module set differs from reviewed package");
+  if (!modules.has("lib.mjs") || modules.size === 0)
+    throw Error("Reference compiler module graph has no entrypoint");
   return modules;
 }
 
-export async function verifyExtractedReferenceModules(cacheRoot, modulePath, expectedModules) {
+export async function verifyExtractedReferenceModules(
+  cacheRoot,
+  modulePath,
+  expectedModules,
+  pinned = false,
+) {
   if (
     dirname(modulePath) === modulePath ||
     modulePath !== resolve(modulePath) ||
@@ -75,7 +92,7 @@ export async function verifyExtractedReferenceModules(cacheRoot, modulePath, exp
   const expectedNames = [...expectedModules.keys()].sort();
   if (
     JSON.stringify(actualNames) !== JSON.stringify(expectedNames) ||
-    JSON.stringify(expectedNames) !== JSON.stringify([...referenceModuleNames].sort())
+    (pinned && JSON.stringify(expectedNames) !== JSON.stringify([...referenceModuleNames].sort()))
   )
     throw Error("Extracted reference module set differs from pinned package");
   const moduleDigests = {};
@@ -100,6 +117,6 @@ export async function verifyPinnedReferenceModuleGraph(
 ) {
   if (sha256(archiveBytes) !== expectedSha256)
     throw Error("Pinned reference archive hash mismatch");
-  const modules = archivedReferenceModules(archiveBytes);
-  return verifyExtractedReferenceModules(cacheRoot, modulePath, modules);
+  const modules = archivedReferenceModules(archiveBytes, true);
+  return verifyExtractedReferenceModules(cacheRoot, modulePath, modules, true);
 }

@@ -117,6 +117,72 @@ export function validatePilotEnvelope(
   for (const row of report.extraction)
     if (row.outcome !== outcomes.shared)
       throw Error(`Pilot extraction missing or failed: ${row.caseId}`);
+  validatePilotAssessmentEnvelope(
+    report,
+    profile,
+    manifest,
+    observations,
+    extractionManifest,
+    expectedIdentity,
+  );
+  return true;
+}
+
+// An assessment can retain a complete observed mismatch. The same identity,
+// membership and transport envelope is required as for passing admission.
+export function validatePilotAssessmentEnvelope(
+  report,
+  profile,
+  manifest,
+  observations,
+  extractionManifest,
+  expectedIdentity,
+) {
+  if (
+    report?.reportId !== signedPilotReportId(report) ||
+    report.schemaVersion !== 1 ||
+    report.kind !== "wind-differential-pilot" ||
+    report.admission !== "pilot-only" ||
+    ![0, 1].includes(report.exitCode) ||
+    Object.hasOwn(report, "infrastructure") ||
+    Object.hasOwn(report, "browserAdmission")
+  )
+    throw Error("Pilot assessment missing, edited or infrastructure failed");
+  exact(report.identity, expectedIdentity, "identity");
+  const required = validatePilot(profile, manifest, observations);
+  exact(report.pilotCaseIds, manifest.caseIds, "assessment case list");
+  exact(
+    report.cases?.map((row) => row.caseId),
+    manifest.caseIds,
+    "assessment case rows",
+  );
+  exact(
+    report.controls?.map((row) => row.controlId),
+    profile.requiredControls,
+    "assessment control rows",
+  );
+  exact(
+    report.extraction?.map((row) => row.caseId),
+    extractionManifest.caseIds,
+    "assessment extraction rows",
+  );
+  const completeRows =
+    report.cases.every(
+      (row) =>
+        row.disposition === required.get(row.caseId).disposition &&
+        ![outcomes.missing, outcomes.infrastructure].includes(row.outcome) &&
+        digest(Object.keys(row.checks ?? {})) ===
+          digest(["identity", "structure", "observations", "diagnostics"]) &&
+        row.observations?.length === observations[row.caseId].probes.length,
+    ) &&
+    report.controls.every(
+      (row) => ![outcomes.missing, outcomes.infrastructure].includes(row.outcome),
+    ) &&
+    report.extraction.every(
+      (row) => ![outcomes.missing, outcomes.infrastructure].includes(row.outcome),
+    );
+  if (!completeRows || (report.complete === true) !== (report.exitCode === 0))
+    throw Error("Pilot assessment truncated or inconsistent");
   return true;
 }
 
@@ -136,14 +202,16 @@ function validatedObservation(item, engine, name, cssHash, htmlHash, authoredHas
     throw Error(`Pilot browser observation invalid: ${name}`);
 }
 
-function exactControlObservation(item, side, css, candidate, probe) {
+function exactControlObservation(item, side, css, candidate, probe, requirePass = true) {
   const settings = item?.settings;
   const box = item?.observation?.box;
   return (
     item?.engine === side &&
     item.probe === probe.name &&
     item.verified === true &&
-    item.pass === true &&
+    (requirePass
+      ? item.pass === true
+      : item.pass === matchesExpected(item.observation, probe[side])) &&
     item.expected === probe[side] &&
     item.stylesheetSha256 === sha256(css) &&
     item.servedSha256 === sha256(css) &&
@@ -168,18 +236,39 @@ function exactControlObservation(item, side, css, candidate, probe) {
     ["x", "y", "width", "height", "parentX", "parentY", "parentWidth", "parentHeight"].every(
       (key) => Number.isFinite(box[key]),
     ) &&
-    matchesExpected(item.observation, probe[side])
+    (!requirePass || matchesExpected(item.observation, probe[side]))
   );
 }
 
-export function validatePilotControlPairs(pairs, probes, windCss, referenceCss, candidate) {
+export function validatePilotControlPairs(
+  pairs,
+  probes,
+  windCss,
+  referenceCss,
+  candidate,
+  requirePass = true,
+) {
   if (!Array.isArray(pairs) || pairs.length !== probes.length)
     throw Error("Pilot control probe count changed");
   for (let index = 0; index < probes.length; index++) {
     const pair = pairs[index];
     if (
-      !exactControlObservation(pair?.wind, "wind", windCss, candidate, probes[index]) ||
-      !exactControlObservation(pair?.reference, "reference", referenceCss, candidate, probes[index])
+      !exactControlObservation(
+        pair?.wind,
+        "wind",
+        windCss,
+        candidate,
+        probes[index],
+        requirePass,
+      ) ||
+      !exactControlObservation(
+        pair?.reference,
+        "reference",
+        referenceCss,
+        candidate,
+        probes[index],
+        requirePass,
+      )
     )
       throw Error(
         `Pilot control probe identity/artifact/expectation changed: ${probes[index].name}`,
@@ -188,18 +277,32 @@ export function validatePilotControlPairs(pairs, probes, windCss, referenceCss, 
   return true;
 }
 
-export function validatePilotNativeObservations(items, probes, windCss, referenceCss) {
+export function validatePilotNativeObservations(
+  items,
+  probes,
+  windCss,
+  referenceCss,
+  requirePass = true,
+) {
   if (!Array.isArray(items) || items.length !== probes.length * 2)
     throw Error("Pilot native control probe count changed");
   for (let index = 0; index < probes.length; index++) {
     if (
-      !exactControlObservation(items[2 * index], "wind", windCss, "block native", probes[index]) ||
+      !exactControlObservation(
+        items[2 * index],
+        "wind",
+        windCss,
+        "block native",
+        probes[index],
+        requirePass,
+      ) ||
       !exactControlObservation(
         items[2 * index + 1],
         "reference",
         referenceCss,
         "block native",
         probes[index],
+        requirePass,
       )
     )
       throw Error(
@@ -559,6 +662,249 @@ export async function validatePilotArtifacts(
       windReport.sourceBytes !== Buffer.byteLength(source)
     )
       throw Error(`Pilot extraction artifact claim invalid: ${row.caseId}`);
+  }
+  return true;
+}
+
+export async function validatePilotAssessmentCases(
+  report,
+  reportPath,
+  profile,
+  observations,
+  reference,
+) {
+  const output = resolve(reportPath, "..");
+  const pilotRoot = fromRoot("tests/wind-compatibility/pilot");
+  for (const row of report.cases) {
+    const policy = profile.requiredCases.find((item) => item.id === row.caseId);
+    const directory = resolve(pilotRoot, row.caseId);
+    const fixture = await readFile(resolve(directory, "case.json"));
+    expectedWindConfig(policy, JSON.parse(fixture), profile);
+    const html = await readFile(resolve(directory, "index.html"), "utf8");
+    const windCss = await readFile(
+      resolve(output, "wind-compiler", row.caseId, "wind.css"),
+      "utf8",
+    );
+    const windReport = await readJson(resolve(output, "wind-compiler", row.caseId, "report.json"));
+    const referenceCss = await readFile(
+      resolve(output, "reference-compiler", row.caseId, "reference.css"),
+      "utf8",
+    );
+    const compiler = await reference.compile(referenceTheme(profile, policy));
+    if (
+      compiler.build([policy.candidate]) !== referenceCss ||
+      row.wind?.cssSha256 !== sha256(windCss) ||
+      row.wind?.reportSha256 !== sha256(JSON.stringify(windReport)) ||
+      row.reference?.cssSha256 !== sha256(referenceCss) ||
+      row.fixtureDigest !== sha256(fixture) ||
+      row.fixtureTreeDigest !== (await treeDigest(directory)) ||
+      row.configDigest !== digest(profile.configurations[policy.configuration]) ||
+      windReport.inputMode !== "compiler" ||
+      windReport.specCaseId !== row.caseId
+    )
+      throw Error(`Pilot assessment raw case changed: ${row.caseId}`);
+    for (let index = 0; index < row.observations.length; index++) {
+      const pair = row.observations[index],
+        probe = observations[row.caseId].probes[index];
+      for (const [side, css] of [
+        ["wind", windCss],
+        ["reference", referenceCss],
+      ]) {
+        const item = pair?.[side];
+        if (
+          !item ||
+          item.engine !== side ||
+          item.probe !== probe.name ||
+          item.verified !== true ||
+          item.stylesheetSha256 !== sha256(css) ||
+          item.servedSha256 !== sha256(css) ||
+          item.settings?.documentSha256 !== sha256(html) ||
+          item.settings?.authoredCssSha256 !== sha256(probe.authoredCss ?? "") ||
+          digest(item.expected) !== digest(probe[side]) ||
+          item.pass !== matchesExpected(item.observation, item.expected)
+        )
+          throw Error(
+            `Pilot assessment browser evidence invalid: ${row.caseId}/${probe.name}/${side}`,
+          );
+      }
+    }
+  }
+  return true;
+}
+
+export async function validatePilotAssessmentArtifacts(
+  report,
+  reportPath,
+  profile,
+  observations,
+  reference,
+  scanner,
+) {
+  await validatePilotAssessmentCases(report, reportPath, profile, observations, reference);
+  const output = resolve(reportPath, "..");
+  for (const control of report.controls)
+    for (const pair of (control.observations ?? []).flat())
+      for (const item of pair?.wind || pair?.reference ? [pair.wind, pair.reference] : [pair]) {
+        if (
+          !item ||
+          item.verified !== true ||
+          item.stylesheetSha256 !== item.servedSha256 ||
+          item.pass !== matchesExpected(item.observation, item.expected)
+        )
+          throw Error(`Pilot assessment control transport invalid: ${control.controlId}`);
+      }
+  const controls = new Map(report.controls.map((row) => [row.controlId, row]));
+  const blockHtml = await readFile(
+    fromRoot("tests/wind-compatibility/pilot/block/index.html"),
+    "utf8",
+  );
+  const blockWindCss = await readFile(resolve(output, "wind-compiler/block/wind.css"), "utf8");
+  const blockReferenceCss = await readFile(
+    resolve(output, "reference-compiler/block/reference.css"),
+    "utf8",
+  );
+  validatePilotControlPairs(
+    controls.get("specificity-and-authored-cascade")?.observations,
+    [
+      {
+        ...observations.block.probes[0],
+        name: "authored-cascade",
+        authoredCss: ".block { display: inline; }",
+        wind: "inline",
+        reference: "inline",
+        documentHtml: blockHtml,
+      },
+    ],
+    blockWindCss,
+    blockReferenceCss,
+    "block",
+    false,
+  );
+  const spacingHtml = await readFile(
+    fromRoot("tests/wind-compatibility/pilot/named-spacing/index.html"),
+    "utf8",
+  );
+  const spacingWindCss = await readFile(
+    resolve(output, "wind-compiler/named-spacing/wind.css"),
+    "utf8",
+  );
+  const spacingReferenceCss = await readFile(
+    resolve(output, "reference-compiler/named-spacing/reference.css"),
+    "utf8",
+  );
+  validatePilotControlPairs(
+    controls.get("nested-token-scope")?.observations,
+    [
+      {
+        name: "nested-token-scope",
+        property: "padding-top",
+        scopeVars: "--zw-spacing-hsp-sm:31px;--spacing-hsp-sm:31px;",
+        wind: "31px",
+        reference: "31px",
+        documentHtml: spacingHtml,
+      },
+    ],
+    spacingWindCss,
+    spacingReferenceCss,
+    "p-hsp-sm",
+    false,
+  );
+  const native = controls.get("native-reset-controls");
+  const nativeCss = await readFile(resolve(output, "wind-native/native-reset/wind.css"), "utf8");
+  const nativeReferenceCss = await readFile(
+    resolve(output, "reference-native/reference.css"),
+    "utf8",
+  );
+  const nativeAuthored = await readFile(
+    fromRoot("tests/wind-compatibility/native/native-reset/authored.css"),
+    "utf8",
+  );
+  const nativeHtml = await readFile(
+    fromRoot("tests/wind-compatibility/native/native-reset/index.html"),
+    "utf8",
+  );
+  const nativeCompiler = await reference.compile("@theme { --*: initial; } @tailwind utilities;");
+  const expectedNativeReferenceCss = `@layer theme, base, components, utilities;\n@layer base {\n${reference.preflightCss}\n}\n@layer utilities {\n${nativeCompiler.build(["block"])}\n}\n${nativeAuthored}`;
+  if (
+    !native ||
+    native.windCssSha256 !== sha256(nativeCss) ||
+    native.referenceCssSha256 !== sha256(nativeReferenceCss) ||
+    nativeReferenceCss !== expectedNativeReferenceCss ||
+    native.fixtureTreeDigest !== (await treeDigest(fromRoot("tests/wind-compatibility/native")))
+  )
+    throw Error("Pilot assessment native raw evidence changed");
+  const nativeProbes = [
+    {
+      name: "native-reset-box-sizing",
+      property: "box-sizing",
+      wind: "border-box",
+      reference: "border-box",
+    },
+    { name: "native-authored-cascade", property: "display", wind: "inline", reference: "inline" },
+    {
+      name: "native-heading",
+      selector: "#heading",
+      property: "font-size",
+      wind: "32px",
+      reference: "16px",
+    },
+    {
+      name: "native-list",
+      selector: "#list",
+      property: "list-style-type",
+      wind: "disc",
+      reference: "none",
+    },
+    {
+      name: "native-border",
+      selector: "#border",
+      property: "border-top-style",
+      wind: "inset",
+      reference: "solid",
+    },
+    {
+      name: "native-form",
+      selector: "#form",
+      property: "border-top-style",
+      wind: "outset",
+      reference: "solid",
+    },
+  ].map((probe) => ({ ...probe, documentHtml: nativeHtml }));
+  validatePilotNativeObservations(
+    native.observations,
+    nativeProbes,
+    nativeCss,
+    nativeReferenceCss,
+    false,
+  );
+  for (const row of report.extraction) {
+    const directory = fromRoot(`tests/wind-compatibility/extraction/${row.caseId}`);
+    const definition = await readJson(resolve(directory, "case.json"));
+    const source = await readFile(resolve(directory, definition.sourceFile), "utf8");
+    const candidates = scanOriginal(
+      scanner.Scanner,
+      source,
+      definition.sourceFile.split(".").at(-1),
+    );
+    const compiler = await reference.compile("@theme { --*: initial; } @tailwind utilities;");
+    const referenceCss = compiler.build(candidates);
+    const windCss = await readFile(
+      resolve(output, "wind-extraction", row.caseId, "wind.css"),
+      "utf8",
+    );
+    const windReport = await readJson(
+      resolve(output, "wind-extraction", row.caseId, "report.json"),
+    );
+    if (
+      row.sourceInputDigest !== sha256(source) ||
+      row.fixtureTreeDigest !== (await treeDigest(directory)) ||
+      digest(row.referenceCandidates) !== digest(candidates) ||
+      row.referenceCssSha256 !== sha256(referenceCss) ||
+      row.windCssSha256 !== sha256(windCss) ||
+      row.windReportSha256 !== sha256(JSON.stringify(windReport)) ||
+      windReport.inputMode !== "extract"
+    )
+      throw Error(`Pilot assessment extraction raw evidence changed: ${row.caseId}`);
   }
   return true;
 }
