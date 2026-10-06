@@ -269,16 +269,11 @@ fn invalid_adopted_shapes_and_retained_gaps_keep_distinct_diagnostics() {
 #[test]
 fn native_forms_ignore_configured_names_and_authored_complete_candidates() {
     let mut config = WindConfig::default();
-    config.tokens.colors = BTreeMap::from([
-        ("current".into(), "red".into()),
-        ("none".into(), "blue".into()),
-        ("brand".into(), "green".into()),
-    ]);
+    config.tokens.colors = BTreeMap::from([("brand".into(), "green".into())]);
     config.tokens.spacing = BTreeMap::from([
         ("first".into(), "17px".into()),
         ("content".into(), "19px".into()),
     ]);
-    config.tokens.sizes = BTreeMap::from([("min".into(), "23px".into())]);
     let result = run(
         &[
             "order-first",

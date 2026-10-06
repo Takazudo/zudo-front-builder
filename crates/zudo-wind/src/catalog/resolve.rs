@@ -663,14 +663,14 @@ fn resolve_value(
             Some("R15"),
         ));
     }
-    if entry.root == "basis"
-        && modifier.is_some()
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
+    if let Some(denominator) = modifier.filter(|_| {
+        entry.root == "basis"
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    }) {
         let numerator = positive_ratio_part(suffix)?;
-        let denominator = positive_ratio_part(modifier.expect("checked above"))?;
+        let denominator = positive_ratio_part(denominator)?;
         return Ok((
             format!("calc(100% * {numerator} / {denominator})"),
             ValueStatus::Verified,
