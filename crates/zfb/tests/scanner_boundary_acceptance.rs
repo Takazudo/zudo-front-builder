@@ -2,10 +2,11 @@
 //!
 //! This test builds a consumer that installs a real `npm pack` tarball. The
 //! positive graph covers unused duplicate helpers, live helper/resource imports,
-//! SDK and factory aliases, default/named/namespace access, explicit/star/cyclic
-//! barrels, package wrappers, direct calls, packed jsx/jsxs/jsxDEV calls, and
-//! minified runtime identity. Three invalid consumers prove local same-file and
-//! same-package target collisions plus a dynamic child fail the production CLI.
+//! SDK and factory aliases, factory-member targets, the package composition
+//! seam, default/named/namespace access, explicit/star/cyclic barrels, package
+//! wrappers, direct calls, packed jsx/jsxs/jsxDEV calls, and minified runtime
+//! identity. Invalid consumers prove target collisions, dynamic children, and
+//! unsupported factory-member shapes fail the production CLI.
 //!
 //! The positive `dist/` is copied to `target/scanner-boundary-acceptance/` for
 //! the companion Playwright test. Its browser run is a separate guarded step so
@@ -27,7 +28,10 @@ const EXPECTED_MARKERS: &[&str] = &[
     "ConsumerA",
     "ConsumerB",
     "Counter",
+    "DefaultPanel",
     "EqualDisplayName",
+    "FactoryCounter",
+    "HostPanel",
     "InnerName",
     "InferredArrow",
     "LiveCounter",
@@ -258,6 +262,13 @@ fn expected_marker_set() -> BTreeSet<String> {
     EXPECTED_MARKERS
         .iter()
         .map(|marker| marker.to_string())
+        .collect()
+}
+
+fn expected_home_marker_set() -> BTreeSet<String> {
+    expected_marker_set()
+        .into_iter()
+        .filter(|marker| marker != "HostPanel")
         .collect()
 }
 
@@ -524,8 +535,17 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     let actual_html_markers: BTreeSet<_> = extract_html_markers(&html).into_iter().collect();
     assert_eq!(
         actual_html_markers,
-        expected_marker_set(),
-        "SSR must emit exactly the concrete target markers"
+        expected_home_marker_set(),
+        "home SSR must emit exactly the concrete target markers on that route"
+    );
+    let host_override_html = fs::read_to_string(positive.join("dist/host-override/index.html"))
+        .expect("read host-override route HTML");
+    assert_eq!(
+        extract_html_markers(&host_override_html)
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["HostPanel".to_string()]),
+        "host override route must render the host-owned target only"
     );
     for marker in ["Counter", "NamedCounter"] {
         assert_eq!(
@@ -631,6 +651,7 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     copy_dir(&positive.join("dist"), &artifacts.join("dist"));
     let metadata = json!({
         "markers": EXPECTED_MARKERS,
+        "pageMarkers": expected_home_marker_set(),
         "wrapperCount": extract_html_markers(&html).len(),
     });
     fs::write(
@@ -1016,6 +1037,68 @@ export default function Home() {
         "diagnostic must state a static rewrite: {diagnostic}"
     );
     assert_no_published_islands(&dynamic);
+
+    // The bounded factory contract reports the exact unsupported shape and
+    // never leaves a partial islands registry behind.
+    for (name, call, reason) in [
+        (
+            "factory-spread",
+            "const FactoryBoundary = createFactoryBoundary({ ...defaults, FactoryCounter });",
+            "passes a non-literal argument",
+        ),
+        (
+            "factory-nullish",
+            "const FactoryBoundary = createFactoryBoundary({ FactoryCounter: FactoryCounter ?? undefined });",
+            "selects FactoryCounter conditionally (??, ternary, ||)",
+        ),
+        (
+            "factory-escape",
+            "const FactoryBoundary = createFactoryBoundary({ FactoryCounter });\n  retainFactory(createFactoryBoundary);",
+            "factory createFactoryBoundary escapes as a value",
+        ),
+    ] {
+        let rejected_root = scratch.path().join(name);
+        make_minimal_project(&rejected_root);
+        write(
+            &rejected_root,
+            "components/factory-counter.tsx",
+            r#""use client";
+export function FactoryCounter() { return <button>Factory counter</button>; }
+"#,
+        );
+        write(
+            &rejected_root,
+            "pages/index.tsx",
+            &format!(
+                r#"import {{ Island }} from "@takazudo/zfb";
+import {{ FactoryCounter }} from "../components/factory-counter";
+function createFactoryBoundary(deps: {{ FactoryCounter: typeof FactoryCounter }}) {{
+  const Target = deps.FactoryCounter;
+  return function FactoryBoundary() {{
+    return <><Island><Target /></Island></>;
+  }};
+}}
+function retainFactory(value: unknown) {{ return value; }}
+{call}
+export default function Home() {{
+  return <html><body><FactoryBoundary /></body></html>;
+}}
+"#
+            ),
+        );
+        let rejected = run_build(&rejected_root, &esbuild);
+        assert!(
+            !rejected.status.success(),
+            "{name} must fail the production build\n{}",
+            combined_output(&rejected)
+        );
+        let diagnostic = combined_output(&rejected);
+        assert!(
+            diagnostic.contains(reason),
+            "{name} must report {reason:?}: {diagnostic}"
+        );
+        assert_no_published_islands(&rejected_root);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

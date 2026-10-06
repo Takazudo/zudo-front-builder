@@ -588,6 +588,15 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-workspace.xml
           fi
 
+      # scanner_boundary_acceptance preserves its production dist for this
+      # browser companion. Keep hydration and host-override assertions in the
+      # same job so they exercise the exact artifacts built by nextest.
+      - name: Install Chromium for scanner boundary acceptance
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Scanner boundary acceptance (Chromium)
+        run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
+
       # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
       # run` above cannot cover them. This separate step keeps that coverage.
       # Current baseline: 3 doctests execute + pass (zfb-css 1, zfb-islands 2),

@@ -253,6 +253,8 @@ import { components as pageComponents } from "../_mdx-components";
 
 Fragment は DOM 要素を追加しません。`<Island>` が固定ターゲット `Counter` を直接囲む形になるため、本番スキャナーは SSR とブラウザーの両方で同じターゲットを登録できます。スキャナーは固定ターゲットを要求するため、動的に選んだコンポーネントは登録されません。ルートの `mdx-components.tsx` の default map は SSR 用に自動で適用されます。そこに Island ラッパーを置く場合は、例のようにページからも import して `<post.Content components={...} />` に渡し、静的スキャナーから固定ターゲットへ到達できるようにします。サーバー側のマップ自体はシリアライズされず、島の JSON 対応 props だけがクライアントへ渡ります。
 
+この固定ターゲットのコンポーネントマップは [issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824) で扱う形であり、手順は変わりません。別の形である限定的なファクトリ経由のターゲットとホストによる差し替えについては、[ファクトリから渡すターゲット](./islands.mdx#境界ターゲットの検出と移行-ファクトリから渡すターゲット)と[パッケージの島を差し替えるための合成](./islands.mdx#境界ターゲットの検出と移行-パッケージの島を差し替えるための合成)を参照してください。
+
 ## Deferred open item — `wrapper`
 
 MDX supports a special `wrapper` key in the `components` map: a component that wraps the entire rendered output. zfb's emitter does not recognise `wrapper` — the body is wrapped in `<_Fragment>` directly, and no lookup against a `wrapper` key is performed. Support for `wrapper` is a tracked open item and is not implemented in the current release.
