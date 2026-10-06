@@ -22,7 +22,7 @@ jobs:
           cp .github/ci-fixtures/residual-public-cli-check.mjs /tmp/residual-integration-evidence/public-cli-check.mjs
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: cb983180adc156cafabe486c830d6e953cb2eb9e
+          ref: 01313fe07e0d3078af3eeb0a088a093a060b8ad4
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
@@ -41,7 +41,7 @@ jobs:
       - name: Record exact integration source and compiler
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = cb983180adc156cafabe486c830d6e953cb2eb9e
+          test "$(git rev-parse HEAD)" = 01313fe07e0d3078af3eeb0a088a093a060b8ad4
           test -z "$(git status --porcelain)"
           {
             git rev-parse HEAD
