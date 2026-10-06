@@ -13,7 +13,7 @@ const yamlString = (value) => {
 };
 // Complete reviewed upstream-plus-Wind rows, including unmapped registrations.
 export const REVIEWED_INVENTORY_DIGEST =
-  "b90daa49a0a2d8a7ee25310446a975a6b2f87be2ffb4473307b9bb14ea35fc85";
+  "7aba6fccd3b80584ef46aad4b76291d6282ccce86770b088fcda9fc0481562bd";
 const code = (value) => {
   const content = String(value);
   const ticks = "`".repeat(
