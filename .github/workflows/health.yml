@@ -574,6 +574,11 @@ jobs:
       # diagnostics" step below can attach it on failure — the raw stdout
       # (per-test TRY/PASS/FAIL lines, panic messages) that the JUnit report
       # alone doesn't carry.
+      # Proof-only PR #3983: the pre-filter bundler must make this new
+      # regression fail. This branch is never merged into the product base.
+      - name: Negative-control linked identity regression (expected failure)
+        run: cargo test -p zfb --test build_reproducibility_e2e linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_edits_do -- --nocapture
+
       - name: cargo nextest run --workspace --profile ci
         shell: bash
         run: |
