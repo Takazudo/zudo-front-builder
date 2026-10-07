@@ -46,7 +46,7 @@ Intrinsic attributes follow HTML and SVG spelling. Use class, for, readonly, tab
 
 If you use ESLint, see the [v3 migration guide](../guides/migrating-to-v3.mdx) for a file-scoped override: `eslint-plugin-react` can reject or autofix these HTML spellings.
 
-Boolean HTML attributes use presence for true and absence for false. Enumerated attributes such as contenteditable are strings. Null and undefined omit ordinary attributes. A reactive value is allowed for a supported scalar attribute, subject to the form-control rules in the [forms guide](./forms.mdx).
+Boolean HTML attributes use presence for true and absence for false. Enumerated attributes such as contenteditable are strings. Null and undefined omit ordinary attributes. A reactive value is allowed for a supported scalar attribute, subject to the form-control rules in the [forms guide](./forms.mdx), including its display-only exception for text inputs and textarea with static `readonly={true}` or `disabled={true}`.
 
 The hidden attribute accepts booleans only, not until-found, and inert is boolean. The runtime does not add hiding CSS, so the page's authored styles remain responsible for display behavior.
 
