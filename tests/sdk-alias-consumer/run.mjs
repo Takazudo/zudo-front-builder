@@ -27,7 +27,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
 const DOCS_RECIPE = join(REPO_ROOT, "docs/src/content/docs/concepts/mdx-components.mdx");
 const SHIM_SOURCE = join(REPO_ROOT, "crates/zfb/templates/basic-blog/components/zfb-shim.d.ts");
 const TYPESCRIPT_VERSION = "7.0.2";
-const DEV_TIMEOUT_MS = 90_000;
+const DEV_TIMEOUT_MS = 15_000;
 const DEV_PORT = 44992;
 
 function currentSourceSha() {
@@ -172,7 +172,7 @@ function startDev(consumer, zfbBinary, port) {
     ["dev", "--scratch-dir", ".zfb-build/dev", "--host", "127.0.0.1", "--port", String(port)],
     {
       cwd: consumer,
-      env: { ...process.env, ZFB_DEV_EAGER: "1" },
+      env: { ...process.env, ZFB_DEV_TIMING: "1" },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     },
