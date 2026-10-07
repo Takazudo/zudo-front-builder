@@ -602,6 +602,25 @@ jobs:
       - name: Scanner boundary acceptance (Chromium)
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
 
+      # #3931 reproduces the linked-package identity issue from a scratch
+      # workspace while reusing this job's branch-built zfb binary and the
+      # Chromium installation above. The script preserves fixture and
+      # phase/browser evidence under RUNNER_TEMP, including on failure.
+      - name: Linked-package token identity probe and hydration (#3931)
+        if: always()
+        env:
+          ZFB_PROBE_EVIDENCE_DIR: ${{ runner.temp }}/linked-package-token-probe
+        run: node scripts/linked-package-token-probe.mjs
+
+      - name: Upload linked-package token probe evidence (#3931)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linked-package-token-probe
+          path: ${{ runner.temp }}/linked-package-token-probe/
+          if-no-files-found: warn
+          retention-days: 7
+
       # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
       # run` above cannot cover them. This separate step keeps that coverage.
       # Current baseline: 3 doctests execute + pass (zfb-css 1, zfb-islands 2),
