@@ -12,11 +12,13 @@ interface HeaderNavTestItem {
 
 const playgroundPagePaths = [
   "../../../content/docs/playground/index.mdx",
+  "../../../content/docs/playground/design-system.mdx",
   "../../../content/docs/playground/render.mdx",
   "../../../content/docs/playground/compile.mdx",
   "../../../content/docs/playground/parse.mdx",
   "../../../content/docs/playground/highlight.mdx",
   "../../../content/docs-ja/playground/index.mdx",
+  "../../../content/docs-ja/playground/design-system.mdx",
   "../../../content/docs-ja/playground/render.mdx",
   "../../../content/docs-ja/playground/compile.mdx",
   "../../../content/docs-ja/playground/parse.mdx",
@@ -44,6 +46,17 @@ describe("playground page layout", () => {
     expect(frontmatter).toMatch(/^hide_toc:\s*true$/m);
   });
 
+  it("uses the wide layout only for the design tool, preserving the ordinary index cap", () => {
+    for (const locale of ["docs", "docs-ja"]) {
+      expect(readFrontmatter(`../../../content/${locale}/playground/design-system.mdx`)).toMatch(
+        /^wide:\s*true$/m,
+      );
+      expect(readFrontmatter(`../../../content/${locale}/playground/index.mdx`)).not.toMatch(
+        /^wide:\s*true$/m,
+      );
+    }
+  });
+
   it("groups every playground under the parent header item", () => {
     const routesPlugin = zfbConfig.plugins?.find(
       (plugin) => plugin.name === "@takazudo/zudo-doc/plugins/routes",
@@ -59,6 +72,7 @@ describe("playground page layout", () => {
       categoryMatch: "playground",
       children: [
         { label: "Index", path: "/docs/playground" },
+        { label: "Design system", path: "/docs/playground/design-system" },
         { label: "renderHtml", path: "/docs/playground/render" },
         { label: "compile", path: "/docs/playground/compile" },
         { label: "parseToAst", path: "/docs/playground/parse" },
