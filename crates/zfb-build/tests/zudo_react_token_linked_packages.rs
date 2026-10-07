@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use zfb_build::bundler::{
     zudo_react_build_token_with_aliases, zudo_react_build_token_with_inputs_and_output,
+    LinkedPackageIgnoreSnapshot,
 };
 
 struct Fixture {
@@ -70,6 +71,43 @@ impl Fixture {
 fn write(path: &Path, value: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, value).unwrap();
+}
+
+#[test]
+fn linked_package_snapshot_classifies_only_ignored_undeclared_paths() {
+    let f = Fixture::new();
+    write(
+        &f.root.path().join(".gitignore"),
+        "node_modules/\ndist/\ntest-results/\nprivate/\n",
+    );
+    write(&f.widget.join(".gitignore"), "!test-results/negated.json\n");
+    write(&f.widget.join("test-results/.gitignore"), "*.log\n");
+    write(&f.widget.join("private/kept.js"), "export {};");
+    let root = fs::canonicalize(&f.widget).unwrap();
+    let project = fs::canonicalize(&f.app).unwrap();
+    let mut snapshot = LinkedPackageIgnoreSnapshot::capture(&root, &project).unwrap();
+    assert_eq!(snapshot.package_root(), root);
+    for rule in [
+        fs::canonicalize(f.root.path()).unwrap().join(".gitignore"),
+        root.join(".gitignore"),
+        root.join("test-results/.gitignore"),
+        root.join("package.json"),
+    ] {
+        assert!(snapshot.rule_file_paths().contains(&rule));
+        assert!(!snapshot.ignored_and_undeclared(&rule, false));
+    }
+    assert!(snapshot.ignored_and_undeclared(&root.join("test-results/x.json"), false));
+    assert!(snapshot.ignored_and_undeclared(&root.join("private/other.json"), false));
+    assert!(!snapshot.ignored_and_undeclared(&root.join("dist/index.js"), false));
+    assert!(!snapshot.ignored_and_undeclared(&root.join("package.json"), false));
+    assert!(!snapshot.ignored_and_undeclared(&root.join("test-results/negated.json"), false));
+    assert!(!snapshot.ignored_and_undeclared(&f.app.join("outside.json"), false));
+
+    let member = root.join("private/kept.js");
+    snapshot.extend_closure_members([member.clone()]);
+    assert!(snapshot.closure_members().contains(&member));
+    assert!(!snapshot.ignored_and_undeclared(&member, false));
+    assert!(!snapshot.ignored_and_undeclared(&root.join("private"), true));
 }
 
 #[test]
