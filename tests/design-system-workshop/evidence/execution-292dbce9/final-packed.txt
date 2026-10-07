@@ -1,0 +1,80 @@
+Packing tarballs into /tmp/tmp.DiqlZ78d8b ...
+npm notice
+npm notice 📦  @takazudo/zfb-linux-x64-gnu@4.1.0
+npm notice Tarball Contents
+npm notice 1.1kB LICENSE
+npm notice 370B README.md
+npm notice 487B package.json
+npm notice 229.9MB zfb
+npm notice Tarball Details
+npm notice name: @takazudo/zfb-linux-x64-gnu
+npm notice version: 4.1.0
+npm notice filename: takazudo-zfb-linux-x64-gnu-4.1.0.tgz
+npm notice package size: 54.5 MB
+npm notice unpacked size: 229.9 MB
+npm notice shasum: e923a8032117ee82cfa55919955460c4d3ca505d
+npm notice integrity: sha512-MyV53NBr4pPRa[...]Cm6ZgprCSMAfA==
+npm notice total files: 4
+npm notice
+Packed platform binary: /tmp/tmp.DiqlZ78d8b/takazudo-zfb-linux-x64-gnu-4.1.0.tgz
+[PASS] packed zfb binary retains 0755 exec bit in the tarball (-rwxr-xr-x 0/0       229891168 1985-10-26 08:15 package/zfb)
+[PASS] packed zfb, zfb-runtime, zfb-adapter-cloudflare, create-zfb
+Clean room: /tmp/tmp.qzwRuPcHI1
+[WARN] The store at /home/agent/.local/share/pnpm/store/v11 is not used because packages cannot be hard linked from it into this project. Using the store at /tmp/.pnpm-store/v11 instead. Set storeDir to choose the store.
+Downloading file:../tmp.DiqlZ78d8b/takazudo-zfb-linux-x64-gnu-4.1.0.tgz: 0.00 B/54.54 MB
+Progress: resolved 3, reused 0, downloaded 3, added 0
+Packages are copied from the content-addressable store to the virtual store.
+  Content-addressable store is at: /tmp/.pnpm-store/v11
+  Virtual store is at:             node_modules/.pnpm
+Packages: +3
++++
+Progress: resolved 3, reused 0, downloaded 3, added 3, done
+
+dependencies:
++ create-zfb 4.1.0
+
+Done in 1.8s using pnpm v12.9.1
+[PASS] create-zfb + @takazudo/zfb-linux-x64-gnu installed from local tarballs (binary mode 0755)
+[WARN] The store at /home/agent/.local/share/pnpm/store/v11 is not used because packages cannot be hard linked from it into this project. Using the store at /tmp/.pnpm-store/v11 instead. Set storeDir to choose the store.
+Error: ERR_PNPM_NO_MATCHING_VERSION
+
+  × installing dependencies
+  ╰─▶ Failed to resolve dependency tree: No matching version found for
+      @takazudo/zfb@=0.0.0 while fetching it from https://registry.npmjs.org/
+  help: The latest release of @takazudo/zfb is "4.1.0". Published at 10/7/2026
+        12:35:37 PM
+        
+        If you need the full list of all 143 published versions run "pnpm view
+        @takazudo/zfb versions".
+
+⚠ pnpm install failed: pnpm exited with status exit status: 1. Run pnpm install manually before zfb dev.
+✓ Created packed-e2e-site (template: basic-blog). Next: cd packed-e2e-site && zfb dev
+[PASS] scaffold produced /tmp/tmp.qzwRuPcHI1/packed-e2e-site
+[WARN] The store at /home/agent/.local/share/pnpm/store/v11 is not used because packages cannot be hard linked from it into this project. Using the store at /tmp/.pnpm-store/v11 instead. Set storeDir to choose the store.
+Packages are copied from the content-addressable store to the virtual store.
+  Content-addressable store is at: /tmp/.pnpm-store/v11
+  Virtual store is at:             node_modules/.pnpm
+Downloading file:../../tmp.DiqlZ78d8b/takazudo-zfb-linux-x64-gnu-4.1.0.tgz: 0.00 B/54.54 MB
+Progress: resolved 7, reused 4, downloaded 3, added 4
+Packages: +7
++++++++
+Progress: resolved 7, reused 4, downloaded 3, added 7, done
+
+dependencies:
++ @takazudo/zfb 4.1.0
++ @takazudo/zfb-runtime 4.1.0
+
+devDependencies:
++ @types/node 22.20.5
++ typescript 5.9.3
+
+Done in 1.9s using pnpm v12.9.1
+$ zfb build
+✓ 6 pages built in 1.14s
+[PASS] dist/ is populated (first file: /tmp/tmp.qzwRuPcHI1/packed-e2e-site/dist/__zfb/routes.json)
+[PASS] dist/index.html exists
+[PASS] dist/index.html contains expected content (basic-blog)
+[PASS] dist/index.html lists the seed post (Hello, zfb)
+All packed-clean-room smoke assertions passed.
+[PASS] exported dist/ to /tmp/zfb-3990-basic-blog-dist
+heavy-guard: verdict=PASS exit=0 secs=24 min_mem_mb=13669 reason=-

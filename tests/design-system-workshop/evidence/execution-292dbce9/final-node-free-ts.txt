@@ -1,0 +1,29 @@
+==> asserting node is not on PATH
+[PASS] node is not on PATH
+==> zfb new my-site-ts --template node-free (cwd: /tmp)
+✓ Created my-site-ts (template: node-free). Next: cd my-site-ts && zfb dev
+[PASS] scaffold
+[PASS] zfb.config.ts written, zfb.config.json removed
+[PASS] discriminator snippet written
+==> zfb build (cwd: /tmp/my-site-ts)
+info no SDK Island boundary targets found; skipping islands bundle (no islands asset will be emitted)
+✓ 4 pages built in 0.34s
+[PASS] dist/index.html exists
+[PASS] dist/index.html contains expected content
+[PASS] dist/index.html lists the seed post
+[PASS] dist/posts/hello/index.html exists
+[PASS] dist/posts/hello/index.html contains the post title
+[PASS] dist/posts/hello/index.html contains rendered body markup
+[PASS] snippets discriminator collection is present
+==> zfb dev (background, port 3000)
+==> polling http://localhost:3000/ (up to 30 retries)
+curl: (7) Failed to connect to localhost port 3000 after 0 ms: Could not connect to server
+→ ready on http://localhost:3000
+info no SDK Island boundary targets found; skipping islands bundle (no islands asset will be emitted)
+info dev: cold-lazy — no prebuilt dist/ seed required; 3 route(s) render on first request (ZFB_DEV_BOOT_LAZY=cold)
+[PASS] dev server returned expected content
+==> appending edit marker to content/posts/hello.md
+==> polling http://localhost:3000/posts/hello/ for edit marker (deadline 60s)
+[PASS] dev server reflected content edit (marker served after ~1s)
+==> All smoke assertions passed (zfb.config.ts — no plugins).
+heavy-guard: verdict=PASS exit=0 secs=2 min_mem_mb=14288 reason=-

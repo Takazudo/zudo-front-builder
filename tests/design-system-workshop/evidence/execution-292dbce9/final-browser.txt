@@ -1,0 +1,19 @@
+[WebServer] (node:42177) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:42190) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:42205) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 5 tests using 1 worker
+
+(node:42217) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 tests/design-system-workshop/starters.spec.mjs:2:1 › fresh bundled starters retain design, routes and blog theme (1.2s)
+  ✓  2 tests/design-system-workshop/workshop.spec.mjs:21:1 › native EN/JA hydration, exact current exports, local interactions and independent spacing (9.8s)
+  ✓  3 tests/design-system-workshop/workshop.spec.mjs:90:1 › native navigation restores one live workshop and retains editing state (2.9s)
+  ✓  4 tests/design-system-workshop/workshop.spec.mjs:132:1 › desktop and narrow host layout keep seed appearance separate from docs theme (5.8s)
+  ✓  5 tests/design-system-workshop/workshop.spec.mjs:186:1 › native starting points and wide preview visual evidence (1.0s)
+
+  5 passed (22.2s)
+heavy-guard: verdict=PASS exit=0 secs=23 min_mem_mb=12739 reason=-
