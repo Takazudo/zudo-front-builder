@@ -16,7 +16,7 @@ zfb のページはデフォルトで静的 HTML にレンダリングされま�
 ```tsx
 "use client";
 
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -34,16 +34,16 @@ export default function Counter() {
 
 到達可能な `<Island>` 境界の具体的なターゲットだけが公開マーカーを持ちます。クライアントモジュールから関数を export すること、大文字で始まる名前を付けること、JSX を返すことだけでは登録されません。未使用のヘルパーは、複数のモジュールで同じ名前のままにできます。名前を変更する必要はありません。
 
-スキャナーは named/default import、ローカル alias、namespace member、明示的 re-export と star re-export、インストール済みパッケージをたどります。JSX の子と `children` 属性、`Island({ children: h(Counter, props) })` のような直接呼び出し、SDK の `h`・`jsx`・`jsxs`・`jsxDEV` factory と alias 付きの packed 出力を認識します。固定ターゲットまたは子をそのまま転送する wrapper も、動作を静的に解決できれば利用できます。wrapper 自身の名前は登録されません。registry に入るのは境界ターゲットだけです。実際に使われるターゲットの helper と import は bundle に残り、未使用 helper に一意な名前を付ける必要はありません。
+スキャナーは named/default import、ローカル alias、namespace member、明示的 re-export と star re-export、インストール済みパッケージをたどります。JSX の子と `children` 属性、`Island({ children: h(Counter, props) })` のような直接呼び出し、SDK の `h`・`jsx`・`jsxs`・`jsxDEV` factory と alias 付きの packed 出力を認識します。固定ターゲットまたは子をそのまま転送する wrapper も、動作を静的に解決できれば利用できます。読み取り専用のパラメーターを持つファクトリについても、直接呼び出しが閉じた集合をなし、そのすべてがプレーンなオブジェクトリテラルで同じ関数を渡すと証明できれば、パラメーターのプロパティをターゲットにできます。wrapper 自身の名前は登録されません。registry に入るのは境界ターゲットだけです。実際に使われるターゲットの helper と import は bundle に残り、未使用 helper に一意な名前を付ける必要はありません。
 
 スキャナーは plugin の `setup` が登録した edge も解決します。対象は完全一致する `addAlias` の書き換えと `addVirtualModule` の specifier です。同じ specifier に一致する `tsconfig.json` の `compilerOptions.paths` が解決できれば、その設定が優先されます。`paths` の候補がどれも解決できない場合は、完全一致の plugin alias、登録済み virtual module、続いて `baseUrl` と package の検索へ進みます。
 
 virtual module から実ファイルを static import／re-export すると、スキャナーはそのファイルをたどります。`"use client"` を付ける module は実ファイルに置いてください。その module は別の実ファイルで定義された関数を re-export しても構いませんが、export した関数を到達可能な `<Island>` の唯一の子として渡す必要があります。ディレクティブだけでは target は登録されません。virtual source 内に直接書いた `"use client"` ディレクティブや `import.meta.glob` は警告が出てスキップされます。これらは実ファイルに置き、そのファイルを virtual module からたどれるようにしてください。virtual source 内の bare import がインストール済み package、workspace package、または別の virtual module に解決される場合もスキップされます。`setup` の登録方法は [Plugins](./plugins.mdx) を参照してください。
 
-ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。
+ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。`Island` は `zfb` または `@takazudo/zfb` からインポートできます。このガイドではベアの `zfb` エイリアスを使います。
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { Counter } from "./counter";
 
 <Island><Counter /></Island>;
@@ -57,6 +57,120 @@ import { Counter } from "./counter";
   : <Island><Summary /></Island>}
 ```
 
+### ファクトリから渡すターゲット
+
+関数がプレーンなオブジェクトのパラメーターからコンポーネントを受け取り、スキャナーがすべての呼び出しを証明できる場合、そのコンポーネントを島のターゲットにできます。この判定は構文に基づき、zfb がコンポーネントを探すために関数を実行することはありません。メンバーアクセスとオブジェクトパターンによる宣言は `const` を使い、プロパティキーは静的である必要があります。
+
+| 束縛形式 | 使用できる構文 |
+| --- | --- |
+| メンバーアクセス | `const Target = deps.Counter` または `const Target = deps["Counter"]` |
+| オブジェクトパターン | `const { Counter: Target } = deps` または `const { Counter } = deps` |
+| パラメーターの分割代入 | `function render({ Counter: Target })` または `function render({ Counter })` |
+
+メンバーアクセスのパラメーターは、rest パラメーターではない単純な識別子で、デフォルト値を持てません。メンバー式を囲む TypeScript 専用のラッパーは取り除いて判定します。パラメーターの分割代入では、プロパティ名の変更と省略記法は使えますが、rest、デフォルト値、ネストしたパターンは使えません。パラメーターを使えるのは、静的なメンバーアクセスの対象、または `const` のオブジェクトパターンの初期値としてだけです。書き込み、`delete`、別名への束縛、引数として渡すこと、返すこと、スプレッドなど、それ以外の使用は、ネストしたクロージャー内でも証明に失敗します。分割代入したターゲットにも代入できません。`let` と `var` のターゲットは引き続き `mutable target binding` と診断されます。`!Target`、`typeof Target`、島以外のヘルパーへの引き渡しなど、`Target` のほかの読み取りは登録に影響しません。登録に関係するのは `<Island>` の子として使う場合だけです。
+
+そのパラメーターを所有する関数は、名前付き関数か、`const` に束縛した関数／アロー関数である必要があります。スキャンされたモジュールグラフ内では、import と re-export の連鎖も含め、その関数への参照はすべて `renderPanel(...)`、`(0, renderPanel)(...)`、`namespace.renderPanel(...)` のような直接呼び出しの呼び出し対象でなければなりません。値として渡す、保存する、返す、`.call`・`.bind`・`.apply` を使う、JSX として使うといった参照は、関数の escape と判定されます。証明の範囲はスキャナーが発見したモジュールグラフです。実行時に生成された呼び出し元など、発見されなかった呼び出し元は対象になりません。
+
+呼び出し箇所は少なくとも 1 つ必要です。各呼び出しでは、宣言された位置にパラメーターを渡し、その位置以前の位置引数にスプレッドを使えません。引数はプレーンなオブジェクトリテラルとし、リテラルのどこにもスプレッド、計算プロパティキー、メソッド、getter を含められません。選択するプロパティはちょうど 1 回だけ現れる必要がありますが、ほかのプレーンなプロパティは共存できます。その値は関数として解決でき、すべての呼び出し箇所で同じ関数定義を指す必要があります。例:
+
+~~~tsx
+import { Island } from "zfb";
+import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+
+function renderDesignTokenPanel(deps) {
+  const Target = deps.DesignTokenPanelBootstrap;
+  return <Island when="load"><Target /></Island>;
+}
+
+// Page calls the helper directly, so the boundary is reachable.
+export default function Page() {
+  return renderDesignTokenPanel({
+    enabled: true,
+    DesignTokenPanelBootstrap,
+  });
+}
+~~~
+
+これは zudo-doc の design-token panel のファクトリに対応する形です。通常の設定は引き続き注入でき、コンポーネントの束縛だけを静的に選びます。すべての呼び出しで同じ関数を渡す必要があります。`{ DesignTokenPanelBootstrap: ctx.hostBindings.DesignTokenPanelBootstrap ?? (cond ? undefined : ImportedBootstrap) }` のような呼び出しは、この規則の対象外です。診断には `call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)` という理由が残ります。
+
+拒否理由の全一覧と修正方法は次のとおりです。
+
+| 診断理由 | 修正方法 |
+| --- | --- |
+| `mutable target binding` | `let`／`var` を、値を再代入しない `const` の束縛に変更します。 |
+| `parameter &lt;name&gt; has a default value` | デフォルト値を取り除き、すべての呼び出しでオブジェクトを明示的に渡します。 |
+| `destructured parameter &lt;name&gt; uses a rest pattern` | 名前を指定した静的プロパティだけを分割代入し、rest パターンを取り除きます。 |
+| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | パラメーターを読み取り専用にし、静的メンバーの読み取りか `const` オブジェクトパターンにだけ使います。渡す、別名にする、返す、スプレッドする、変更するといった操作を避けます。 |
+| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | スキャン対象モジュール内の `F` への参照をすべて直接呼び出しにします。渡す、保存する、返す、bind/apply する、JSX として描画するといった操作を避けます。 |
+| `factory &lt;F&gt; has no call site in the scanned modules` | 必要なオブジェクトリテラルを使う直接呼び出しをスキャン対象モジュールに追加するか、固定ターゲットを直接使います。 |
+| `call site at &lt;loc&gt; passes too few arguments` | 宣言された位置にパラメーターを渡します。 |
+| `call site at &lt;loc&gt; spreads positional arguments` | パラメーターの位置までの位置引数を明示的に書きます。 |
+| `call site at &lt;loc&gt; passes a non-literal argument` | スプレッド、計算プロパティキー、メソッド、getter のないプレーンなオブジェクトリテラルを渡します。ほかのプレーンなプロパティは含められます。 |
+| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | 選択するプロパティを静的なキーでちょうど 1 回追加します。 |
+| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | インポートした 1 つの関数を直接渡します。別の候補はそれぞれ具体的な島の境界に分けるか、後述の合成方法を使います。 |
+| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | 1 つの関数定義に解決される値を渡します。値の解決自体が `memo(X)` などの未サポート理由を返した場合、その理由も追加されます。 |
+| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | すべての呼び出しで同じ関数定義を渡すか、別々の固定ターゲット wrapper に分けます。 |
+
+スキャナーは該当する最初の理由を報告し、診断の接頭辞 `target Target has unsupported initializer` を保ちます。症状と修正方法の一覧は[トラブルシューティング](../guides/troubleshooting.mdx)を参照してください。
+
+### パッケージの島を差し替えるための合成
+
+ホストによる差し替えが必要なパッケージでは、デフォルトのコンポーネントターゲットを `DefaultPanelIsland` 内に固定し、描画済みの子をそのまま転送する別の `PanelSlot` wrapper を公開できます。`DesignTokenPanelBootstrap` の import 元モジュールには `"use client"` を付けます。
+
+~~~tsx
+// Package island wrappers
+import { Island } from "zfb";
+// This component is exported from a module marked "use client".
+import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+
+export function DefaultPanelIsland() {
+  return (
+    <>
+      <Island when="load">
+        <DesignTokenPanelBootstrap />
+      </Island>
+    </>
+  );
+}
+
+export function PanelSlot({ children }) {
+  return <>{children}</>;
+}
+~~~
+
+ページでは、両方の wrapper を組み合わせてパッケージのデフォルトを使います。
+
+~~~tsx
+<PanelSlot>
+  <DefaultPanelIsland />
+</PanelSlot>
+~~~
+
+ホストは、同じ slot 内に自身の `"use client"` ターゲットを描画することで差し替えられます。`HostPanel` 関数はクライアントモジュールから export します。
+
+~~~tsx
+// host-panel.tsx
+"use client";
+
+export function HostPanel() {
+  return <button type="button">Custom panel</button>;
+}
+~~~
+
+~~~tsx
+import { Island } from "zfb";
+import { PanelSlot } from "@example/package/islands";
+import { HostPanel } from "./host-panel";
+
+<PanelSlot>
+  <Island when="load"><HostPanel /></Island>
+</PanelSlot>
+~~~
+
+パッケージのデフォルトとホストの差し替え先は、それぞれ実際の関数定義で登録されます。ホストが slot に渡すのは描画済みの子であり、コンポーネント関数がクライアント境界を越えることはありません。コンポーネント以外の依存は、引き続きパッケージの通常のファクトリから注入できます。この限定的な合成方法でも `??` で選んだコンポーネントは受け付けられません。zudo-doc の host binding 式に対しては `target Target has unsupported initializer: call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)` と診断されます。
+
+[MDX コンポーネント](./mdx-components.mdx)の固定ターゲットを使うコンポーネントマップの手順は別の形です。wrapper が静的 import を `<Island>` で囲んで返すもので、この手順は変更されません。[issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824)も参照してください。
+
 衝突診断で別々のターゲット関数が示されたら、どちらかの定義元の関数名を変更するか、意図しない定義を解決している import またはパッケージ export を修正します。import と re-export の alias でもマーカーは変わりません。スキャナーは `displayName` ではなく、定義元の関数名を使います。サーバーレンダリング時、`displayName` は未設定か関数名と一致している必要があります。一致しない値でターゲット名を変更することはできず、zfb は `ZR_ISLAND_IDENTITY` で失敗します。default target に安定した名前が必要なら `export default function Counter() { ... }` の形にします。
 
 同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。以下はパターンを示す簡略版です。同梱のテンプレートはアイコンに `Show` を使い、ユーティリティクラスと SVG のマークアップも含みます。
@@ -64,7 +178,7 @@ import { Counter } from "./counter";
 ```tsx
 "use client";
 
-import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
+import { computed, getScope, signal } from "zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
@@ -158,7 +272,7 @@ dist/assets/islands-chunk-<hash>.js
 `data-when` 属性はクライアントエントリの実行タイミングを制御します。常に存在し、デフォルトは `"load"` です。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import MobileMenu from "./MobileMenu";
 
 export default function Header() {
@@ -253,7 +367,7 @@ node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-wo
 ```tsx
 "use client";
 
-import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
+import { getScope, h, signal, type Ref } from "zfb/zudo-react";
 
 type WidgetInstance = { destroy(): void };
 type WidgetModule = { mount(host: Element): WidgetInstance };

@@ -15,11 +15,27 @@ Search the [class compatibility inventory](./compatibility/index.mdx) for exact 
 
 Structural classes such as `block`, `hidden`, `inline-flex`, and `mx-auto` work without tokens. `hidden` sets `display: none`; bare `none` is not its utility class. Spacing, colors, and named typography use project values. The exact class table records source-inspected mappings and differences; read its verification column before treating a row as tested support.
 
+## Default theme variables
+
+Tailwind's default theme namespace includes `--color-*`, `--font-*` (including `--font-sans`, `--font-mono`, and `--font-serif`), `--font-weight-*`, `--text-*`, `--tracking-*`, `--leading-*`, `--breakpoint-*`, `--container-*`, `--spacing` and `--spacing-*`, `--radius-*`, `--shadow-*`, `--inset-shadow-*`, `--drop-shadow-*`, `--blur-*`, `--perspective-*`, `--aspect-*`, `--ease-*`, and `--animate-*`. Those variables leave with Tailwind's import; zudo-wind does not provide them implicitly. A missing variable is not a zudo-wind build error.
+
+To keep an authored `var()` reference, choose one of these remedies:
+
+- Declare the custom property yourself in authored CSS.
+- When its value is a configured token, use the emitted `--zw-<category>-<key>` variable. See the [category-to-prefix table in Tokens](./tokens.mdx#emitted-variables) for the exact variable name.
+- Add a fallback such as `var(--x, <literal>)`.
+
+Where authored CSS formerly referenced `var(--color-neutral-900)`, update it to `var(--zw-color-neutral-900)`, the emitted token variable, when `neutral-900` is configured as a color token. `zfb wind audit` reports ZW016 as audit information for a fallback-less reference to a Tailwind default-theme variable that no scanned stylesheet declares; it is a warning under `wind.strict: true`. This is a heuristic: it scans the entry stylesheet and discovered imports only. CSS Modules, linked stylesheets, inline styles, and unresolved imports are outside that scan; with `wind: false`, ZW016 is not reported. Any declaration of the referenced variable in the scanned set suppresses the row.
+
 ## Migrate in a short pass
 
 The docs site hosting this guide still uses Tailwind for its own chrome. This checklist and its compiled samples describe zudo-wind v1 in your project.
 
-1. Remove Tailwind imports and engine directives from the entry stylesheet and its imports. Keep ordinary authored CSS and <code>@layer</code>.
+1. Remove Tailwind imports and engine directives from the entry stylesheet and its imports. Keep ordinary authored CSS and <code>@layer</code>. Search for affected default-theme references with:
+
+   ```sh
+   grep -rnoE 'var\(--(color|font|text|tracking|leading|breakpoint|container|spacing|radius|shadow|inset-shadow|drop-shadow|blur|perspective|aspect|ease|animate)[-)]' src pages
+   ```
 2. Move engine values into the top-level <code>wind</code> key. Set <code>spec</code>, choose a reset, and configure the tokens and breakpoints your candidates use.
 3. Keep finite candidates in source, use <code>safelist</code> for app candidates absent from source, and publish package candidates through a versioned manifest.
 4. Audit the build plan. Fix supported candidates, reserve exact authored names, and replace or implement foreign utilities before enabling strict mode.
@@ -260,6 +276,7 @@ Wind configuration and candidate discovery live outside CSS. Remove Tailwind-onl
 | `@import "tailwindcss/utilities"` | Remove it. Utilities are generated from complete candidates and the closed catalog; a remaining import is a ZW009 error. |
 | `@tailwind base`, `@tailwind components`, or `@tailwind utilities` | There is no CSS expansion directive. Choose a reset and write component rules in authored CSS; use complete candidates for catalog utilities. A leftover directive is a ZW009 error. |
 | `@theme` | Put validated values in `wind.tokens`. Keep CSS-only properties as ordinary custom properties in authored CSS, then point tokens at those properties when a utility needs them. |
+| <code>var(--&lt;default theme variable&gt;)</code> in authored CSS | Tailwind's default theme variables are not provided by zudo-wind. The namespaces include `--color-*`, `--font-*` (including `--font-sans`, `--font-mono`, and `--font-serif`), `--font-weight-*`, `--text-*`, `--tracking-*`, `--leading-*`, `--breakpoint-*`, `--container-*`, `--spacing` and `--spacing-*`, `--radius-*`, `--shadow-*`, `--inset-shadow-*`, `--drop-shadow-*`, `--blur-*`, `--perspective-*`, `--aspect-*`, `--ease-*`, and `--animate-*`. Declare the property, use a configured token's emitted variable (see the [category-to-prefix table](./tokens.mdx#emitted-variables)), or provide a `var()` fallback. See [Default theme variables](#default-theme-variables). |
 | `@source` | CSS does not select scan roots. zfb's source plan owns scanned files and package roots; see [Sources and candidates](./sources-and-candidates.mdx). |
 | `@source inline(...)` | Use an owner-keyed `wind.safelist` array for app-owned candidates. Put package-owned candidates in an explicit versioned `wind.manifests` file filtered to complete v1 utilities or markers; every manifest entry is strict, so an invalid or unknown entry fails. There is no pattern, brace expansion, or runtime interpolation syntax. |
 | `@source not(...)` | There is no CSS negation directive. Use the source plan's root and exclusion rules; see [Sources and candidates](./sources-and-candidates.mdx). |
@@ -303,6 +320,12 @@ The old opt-out `tailwind: { enabled: false }` becomes `wind: false`. That disab
 
 V1 ships no color palette or spacing scale. It also supplies no named sizes, font families or weights, font sizes, line heights, tracking, radii, shadows, z-index values, easing values, or breakpoints. The constants `0`, `px`, and catalog keywords do not imply a theme.
 
+Tailwind's `--text-<n>` and `--text-<n>--line-height` variables map to a `fontSizes` entry with the same key, `size`, and optional `lineHeight`:
+
+| Tailwind variable pair | zudo-wind token |
+| --- | --- |
+| <code>--text-&lt;n&gt; + --text-&lt;n&gt;--line-height</code> | <code>fontSizes: &lbrace; &lt;n&gt;: &lbrace; size, lineHeight &rbrace; &rbrace;</code> |
+
 Move the values that utilities need into `wind.tokens`. Numeric spacing such as `p-4` multiplies the configured `spacingUnit`; named values come from their family map. For example, this binds both color utilities to a project-owned property:
 
 ~~~json
@@ -325,6 +348,8 @@ Move the values that utilities need into `wind.tokens`. Numeric spacing such as 
 ~~~
 
 Then `bg-panel` and `text-panel` resolve from `colors.panel`. Token entries are validated data, not executable CSS or JavaScript. A referenced custom property remains authored CSS; the generated token variable points to it. Missing tokens and missing numeric spacing units are reported at strict candidate origins instead of being repaired with defaults. See [Tokens](./tokens.mdx) for the supported maps and value rules.
+
+For authored CSS that still references a Tailwind default-theme variable, apply one of the remedies in [Default theme variables](#default-theme-variables).
 
 Uppercase `DEFAULT` is invalid. Use the lowercase key `default` only in maps that define that meaning: `radii.default` supplies bare `rounded`, and `shadows.default` supplies bare `shadow`. It is not a fallback for colors or spacing.
 
@@ -572,7 +597,7 @@ Merge the theme properties into the existing authored base layer, retaining its 
 }
 ~~~
 
-Keep the existing base and component layers; wind's prelude establishes their order. The authored `.prose` class remains in the stylesheet and is entered exactly in `authoredClasses`. Where authored CSS formerly referenced `var(--color-neutral-900)`, update it to `var(--zw-color-neutral-900)`, the emitted token variable. The configured `accent` token points back to the authored `--color-accent` property, so the theme toggle can continue changing that value. The scaffold reset is `owned-v1`; other projects still default to `none`. These are language and stylesheet changes only; the full ordered project upgrade is in [Migrating to v3](../guides/migrating-to-v3.mdx).
+Keep the existing base and component layers; wind's prelude establishes their order. The authored `.prose` class remains in the stylesheet and is entered exactly in `authoredClasses`. As described in [Default theme variables](#default-theme-variables), update the old authored `var(--color-neutral-900)` reference to the emitted `var(--zw-color-neutral-900)` token variable when the color token is configured. The configured `accent` token points back to the authored `--color-accent` property, so the theme toggle can continue changing that value. The scaffold reset is `owned-v1`; other projects still default to `none`. These are language and stylesheet changes only; the full ordered project upgrade is in [Migrating to v3](../guides/migrating-to-v3.mdx).
 
 ## What is not supported, and what to do instead
 

@@ -146,6 +146,19 @@ The separate `spacingUnit` field emits `--zw-spacing-unit`. Breakpoints and dark
 
 `tokens.easings` supplies named values for explicit `ease-*` utilities. The project-wide timing used by transition utilities is configured separately with `wind.defaultTransitionTimingFunction`; its default is `ease`, and it accepts a CSS timing function value rather than a token name. An explicit `ease-*` utility overrides that default in the same variant bucket.
 
+## Font sizes
+
+Configure each font-size token as an object with a required `size` and optional `lineHeight`:
+
+~~~ts
+fontSizes: {
+  sm: { size: "0.875rem", lineHeight: "1.25rem" },
+  caption: { size: "0.75rem" }
+}
+~~~
+
+This emits `--zw-font-size-sm`, `--zw-font-size-sm-leading`, and `--zw-font-size-caption`. The `text-sm` utility emits `font-size` and `line-height`; `text-caption` emits only `font-size` because that token has no `lineHeight`.
+
 ## Names and lookup rules
 
 Names use lowercase ASCII letters and digits, with single hyphens between alphanumeric segments. Names must start and end with an alphanumeric character. Numeric components are allowed, so `neutral-50` and `2xl` are valid. Uppercase `DEFAULT` is rejected; use lowercase `default` where the category allows it.
@@ -170,13 +183,13 @@ Breakpoints are configured separately as positive integer pixel widths. For exam
 
 ## Validating values
 
-Each token value is checked with the CSS parser for the property that consumes it. Examples include color for `colors`, padding length for `spacing`, width for `sizes`, font size for `fontSizes`, and border radius for `radii`. Radius entries must be a single nonnegative length-percentage. Z-index entries are integer strings or `var()` references: for example, use `zIndices: { content: "10" }`; a JSON or TypeScript number such as `zIndices: { content: 10 }` is rejected with `invalid type: integer ..., expected a string`. Easing entries must be a single timing function or keyword.
+Each token value is checked with the CSS parser for the property that consumes it. Examples include color for `colors`, padding length for `spacing`, width for `sizes`, font size for `fontSizes`, and border radius for `radii`. Radius entries must be a single nonnegative length-percentage. Z-index entries are integer strings or `var()` references: for example, use `zIndices: { content: "10" }`; a JSON or TypeScript number such as `zIndices: { content: 10 }` is rejected with `invalid type: integer ..., expected a string`. A bare string in `fontSizes` is rejected with `wind.tokens.fontSizes entries are objects; write { size: "<value>" } (optionally with lineHeight) instead of the bare string "<value>"`; other shapes are rejected with `expected an object { size: string, lineHeight?: string }`. Easing entries must be a single timing function or keyword.
 
 External custom properties may appear in values for categories other than `spacingUnit`. If the CSS parser cannot prove the property's type because the value references `var()`, the binding is marked category-unverified and exposed by `zfb wind explain`; zfb does not verify the variable's type at runtime. The whole value must still parse, and its parts outside `var()` must fit the property, so a token and an arbitrary value with the same spelling are accepted or rejected alike; semicolons, braces, `!important`, URL functions, and keywords such as `inherit` or `revert` are rejected. Token values cannot reference the reserved `--zw-` namespace. Point a token at a project property and override that project property in authored CSS instead.
 
 ## Emitted variables
 
-All configured values are exposed under the `--zw-` namespace inside `@layer zw-tokens`. The category-to-prefix table gives the exact mapping, including `fontSizes` values under `--zw-font-size-` and a paired `-leading` variable when configured. The font-size token key cannot itself end in `-leading`, because that name is reserved for the paired value. No theme namespace is wiped and token values are not substituted inline; a project may override the generated custom properties in authored CSS.
+All configured values are exposed under the `--zw-` namespace inside `@layer zw-tokens`. The category-to-prefix table gives the exact mapping, including `fontSizes` values under `--zw-font-size-` and a paired `-leading` variable when configured. The font-size token key cannot itself end in `-leading`, because that name is reserved for the paired value. No theme namespace is wiped from authored CSS; Tailwind's default namespace is simply not provided (see [Default theme variables](./coming-from-tailwind.mdx#default-theme-variables)). Token values are not substituted inline; a project may override the generated custom properties in authored CSS.
 
 ## See also
 

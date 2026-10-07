@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "882e98eabe7c8d5425e73bdc1a34cea7e3f55f43",
+  "baselineSourceSha": "735e926980b21344a76e808945d11e09801173d4",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 65395,
-        "gzip": 21846
+        "raw": 66327,
+        "gzip": 22087
       },
       "scalar-signal": {
-        "raw": 65403,
-        "gzip": 21842
+        "raw": 66335,
+        "gzip": 22093
       },
       "show-for": {
-        "raw": 65549,
-        "gzip": 21921
+        "raw": 66481,
+        "gzip": 22167
       },
       "model": {
-        "raw": 65394,
-        "gzip": 21846
+        "raw": 66326,
+        "gzip": 22099
       },
       "blog-theme": {
-        "raw": 65744,
-        "gzip": 21990
+        "raw": 66676,
+        "gzip": 22237
       },
       "json-api": {
-        "raw": 65549,
-        "gzip": 21936
+        "raw": 66481,
+        "gzip": 22187
       },
       "multi-island": {
-        "raw": 65671,
-        "gzip": 21948
+        "raw": 66603,
+        "gzip": 22195
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 65457,
-        "gzip": 21870
+        "raw": 66389,
+        "gzip": 22113
       },
       "scalar-signal": {
-        "raw": 65465,
-        "gzip": 21875
+        "raw": 66397,
+        "gzip": 22118
       },
       "show-for": {
-        "raw": 65611,
-        "gzip": 21958
+        "raw": 66543,
+        "gzip": 22196
       },
       "model": {
-        "raw": 65456,
-        "gzip": 21879
+        "raw": 66388,
+        "gzip": 22128
       },
       "blog-theme": {
-        "raw": 65806,
-        "gzip": 22007
+        "raw": 66738,
+        "gzip": 22260
       },
       "json-api": {
-        "raw": 65611,
-        "gzip": 21962
+        "raw": 66543,
+        "gzip": 22219
       },
       "multi-island": {
-        "raw": 65733,
-        "gzip": 21973
+        "raw": 66665,
+        "gzip": 22223
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured on the final versioned candidate after the dynamic root-unmount repair; other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured in health run 37570030684 at PR head 884a5d2b0fc0d0e58aa6f6828c0d246800cdb4c2 and Actions merge checkout 735e926980b21344a76e808945d11e09801173d4. Raw bytes are unchanged from the prior contract; source-identity changes shifted workspace gzip by -2 to +2 bytes. Packed rows are unchanged. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37439127554,
-    "jobId": 112188217080,
-    "sourceSha": "882e98eabe7c8d5425e73bdc1a34cea7e3f55f43",
-    "note": "Complete workspace and packed eight-fixture matrices at lockstep 4.0.0, with two byte-identical full-dist passes each. Original output files, tarballs and provenance were retained and independently rehashed. Every nonempty fixture is 734 raw bytes above the prior exact baseline, including the functional root-unmount repair. Gzip totals include actual versioned build identities without normalization. The original exact budget gate failed on those deltas. These reviewed rows retain zero allowance and no-island 0/0; previous measured contracts remain in git history."
+    "runId": 37570030684,
+    "jobId": 112626347870,
+    "sourceSha": "735e926980b21344a76e808945d11e09801173d4",
+    "note": "PR head 884a5d2b0fc0d0e58aa6f6828c0d246800cdb4c2, measured at Actions merge checkout 735e926980b21344a76e808945d11e09801173d4. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change; workspace gzip deltas ranged from -2 to +2 bytes as source identity changed. Packed rows did not change. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

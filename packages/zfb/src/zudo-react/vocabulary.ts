@@ -169,20 +169,35 @@ export function reactiveModelSuggestion(
   name: string,
   inputType: string,
   custom: boolean,
-): "modelValue" | "modelChecked" | undefined {
+):
+  | "modelValue"
+  | "modelChecked"
+  | "modelValue (or a static readonly/disabled attribute for a display-only binding)"
+  | undefined {
   if (custom) return undefined;
   if (name === "checked" && tag === "input") {
     if (inputType === "radio") return "modelValue";
     if (inputType === "checkbox") return "modelChecked";
   }
   if (name === "value") {
-    if (tag === "textarea" || tag === "select") return "modelValue";
+    if (tag === "textarea")
+      return "modelValue (or a static readonly/disabled attribute for a display-only binding)";
+    if (tag === "select") return "modelValue";
     if (
       tag === "input" &&
       ["text", "search", "email", "url", "tel", "password"].includes(inputType)
     )
-      return "modelValue";
+      return "modelValue (or a static readonly/disabled attribute for a display-only binding)";
   }
   return undefined;
+}
+export function displayOnlyControl(tag: string, props: Readonly<Record<string, unknown>>): boolean {
+  return (
+    (tag === "textarea" ||
+      (tag === "input" &&
+        (props.type === undefined ||
+          ["text", "search", "email", "url", "tel", "password"].includes(props.type as string)))) &&
+    (props.readonly === true || props.disabled === true)
+  );
 }
 export const formProps = words("modelValue modelChecked defaultValue defaultChecked");

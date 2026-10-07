@@ -4,10 +4,11 @@ import { defineConfig } from "zfb/config";
  * The wind configuration owns this starter's palette, scales, reset, and
  * theme binding. Other defaults such as `outDir` and `publicDir` stay implicit.
  *
- * `zfb/config` is a bare specifier the config loader aliases to an
- * internal stub at parse time, so the config is readable without any
- * package installed. `components/zfb-shim.d.ts` gives your editor and
- * `zfb check` the matching types.
+ * The config loader aliases `zfb/config` to an internal stub at parse time,
+ * so this config is readable without any package installed. The `zfb` import
+ * family aliases the installed `@takazudo/zfb` package in zfb's bundlers.
+ * `components/zfb-shim.d.ts` gives editors, `pnpm typecheck`, and `zfb check`
+ * the matching types for every public entry point.
  */
 export default defineConfig({
   // All utility values are project owned; the engine supplies no default palette.

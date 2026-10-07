@@ -50,7 +50,7 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   const ssrMarkers = await islands.evaluateAll((nodes) =>
     [...new Set(nodes.map((node) => node.getAttribute("data-zfb-island")))].sort(),
   );
-  expect(ssrMarkers).toEqual([...expected.markers].sort());
+  expect(ssrMarkers).toEqual([...expected.pageMarkers].sort());
 
   const clientRegistryWrites = await page.evaluate(() =>
     [...globalThis.__zfbBoundaryAcceptanceRegistryKeys].sort(),
@@ -94,6 +94,16 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   await mdxCounter.click();
   await expect(mdxCounter).toHaveText("Counter: 1");
 
+  const factoryCounter = page.locator("#factory-counter");
+  await expect(factoryCounter).toHaveText("Factory counter: 0");
+  await factoryCounter.click();
+  await expect(factoryCounter).toHaveText("Factory counter: 1");
+
+  const defaultPanel = page.locator("#default-panel");
+  await expect(defaultPanel).toHaveText("Default panel: 0");
+  await defaultPanel.click();
+  await expect(defaultPanel).toHaveText("Default panel: 1");
+
   const namedMdxCounter = page.locator("#mdx-named-counter");
   await expect(namedMdxCounter).toHaveText("Named counter: 0");
   const namedMapIsland = page.locator('[data-zfb-island="NamedCounter"]');
@@ -108,6 +118,40 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   ).toEqual({ parentMarker: "NamedCounter", parentElementCount: 1 });
   await namedMdxCounter.click();
   await expect(namedMdxCounter).toHaveText("Named counter: 1");
+
+  const aliasMdxCounter = page.locator("#mdx-alias-counter");
+  await expect(aliasMdxCounter).toHaveText("Alias counter: 0");
+  const aliasMapIsland = page.locator('[data-zfb-island="AliasCounter"]');
+  await expect(aliasMapIsland).toHaveCount(1);
+  await expect(aliasMapIsland).toHaveAttribute("data-zfb-island-mounted", "");
+  await expect(aliasMapIsland).toHaveAttribute("data-props", "{}");
+  expect(await aliasMapIsland.evaluate((island) => island.parentElement?.tagName)).toBe("BODY");
+  expect(
+    await aliasMdxCounter.evaluate((button) => ({
+      parentMarker: button.parentElement?.getAttribute("data-zfb-island"),
+      parentElementCount: button.parentElement?.children.length,
+    })),
+  ).toEqual({ parentMarker: "AliasCounter", parentElementCount: 1 });
+  await aliasMdxCounter.click();
+  await expect(aliasMdxCounter).toHaveText("Alias counter: 1");
+
+  const aliasNamedMdxCounter = page.locator("#mdx-alias-named-counter");
+  await expect(aliasNamedMdxCounter).toHaveText("Alias named counter: 0");
+  const aliasNamedMapIsland = page.locator('[data-zfb-island="AliasNamedCounter"]');
+  await expect(aliasNamedMapIsland).toHaveCount(1);
+  await expect(aliasNamedMapIsland).toHaveAttribute("data-zfb-island-mounted", "");
+  await expect(aliasNamedMapIsland).toHaveAttribute("data-props", "{}");
+  expect(await aliasNamedMapIsland.evaluate((island) => island.parentElement?.tagName)).toBe(
+    "BODY",
+  );
+  expect(
+    await aliasNamedMdxCounter.evaluate((button) => ({
+      parentMarker: button.parentElement?.getAttribute("data-zfb-island"),
+      parentElementCount: button.parentElement?.children.length,
+    })),
+  ).toEqual({ parentMarker: "AliasNamedCounter", parentElementCount: 1 });
+  await aliasNamedMdxCounter.click();
+  await expect(aliasNamedMdxCounter).toHaveText("Alias named counter: 1");
 
   const localHelper = page.locator("#live-counter").first();
   await expect(localHelper).toHaveText("Live helper: LOCAL_LIVE_RESOURCE 0");
@@ -148,6 +192,17 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   await expect(equalDisplayName).toHaveText("Equal displayName: 0");
   await equalDisplayName.click();
   await expect(equalDisplayName).toHaveText("Equal displayName: 1");
+
+  await page.goto("/host-override/index.html");
+  const overrideIslands = page.locator("[data-zfb-island]");
+  await expect(overrideIslands).toHaveCount(1);
+  await expect(overrideIslands).toHaveAttribute("data-zfb-island", "HostPanel");
+  await expect(overrideIslands).toHaveAttribute("data-zfb-island-mounted", "");
+  await expect(page.locator('[data-zfb-island="DefaultPanel"]')).toHaveCount(0);
+  const hostPanel = page.locator("#host-panel");
+  await expect(hostPanel).toHaveText("Host panel: 0");
+  await hostPanel.click();
+  await expect(hostPanel).toHaveText("Host panel: 1");
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

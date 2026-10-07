@@ -184,6 +184,7 @@ An unrelated name such as `site-header` in a class attribute remains ordinary CS
 | ZW013 | Property conflict inside one class-list literal; audit-only information explains the deterministic winner. |
 | ZW014 | Unsupported foreign utility from the versioned migration vocabulary, such as `line-clamp-2` or `container`. No CSS is generated. Warning at a class position, error there under `wind.strict: true`, audit-only information for other literals, and an error from a safelist or manifest. |
 | ZW015 | Audit-only information when a host color or other token value replaces a different preset value. Build remains silent. The config key path and changed old/new values identify the origin. |
+| ZW016 | Audit-only information from `zfb wind audit` when a fallback-less `var()` references a Tailwind default-theme variable that no scanned stylesheet declares; a warning under `wind.strict: true`. This heuristic scans the entry stylesheet and discovered imports only; CSS Modules, linked stylesheets, inline styles, and unresolved imports are outside its scan, and `wind: false` does not report ZW016. Any declaration in the scanned set suppresses the row. Never emitted by `zfb css` or `build`. |
 
 Diagnostic records retain the candidate where available, severity, code, origin, message, optional suggestion, and optional rejection ID. Origins are structured by kind:
 
@@ -238,7 +239,7 @@ The public Rust migration classifier is `foreign_family(candidate, tokens)`: it 
 
 Run `zfb wind explain` to inspect how a candidate is parsed and resolved. Explain exposes the catalog entry, language version and revision, token bindings, any category-unverified value, declarations, selector, conditions, and complete sort tuple. With `wind: false`, it returns a disabled outcome without generating CSS.
 
-Run `zfb wind audit` to inspect ordinary class-position names, missing or dead utilities, dynamic fragments, and property conflicts within an enclosing class-list literal. It excludes markers and exact authored-class allowlist entries. Conflicts are compared within one literal, not between unrelated elements. With `wind: false`, audit reports generation disabled and an empty candidate report.
+Run `zfb wind audit` to inspect ordinary class-position names, missing or dead utilities, dynamic fragments, property conflicts within an enclosing class-list literal, and fallback-less references to undeclared Tailwind default-theme variables (ZW016; see [Default theme variables](./coming-from-tailwind.mdx#default-theme-variables)). It excludes markers and exact authored-class allowlist entries. Conflicts are compared within one literal, not between unrelated elements. With `wind: false`, audit reports generation disabled and an empty candidate report.
 
 `--plan standalone` (the default) audits the same roots as `zfb css` without `--source`: the conventional project roots plus configured `wind.sources.roots`, package roots, and exclusions. `--plan build` audits the plan `zfb build` and `zfb dev` scan. It runs plugin `setup` to discover package-owned routes, sibling mirror roots, and plugin virtual modules, which are audited as `plugin/<specifier>`. It runs no `preBuild` or `postBuild` hook and writes no build output. Either mode first prints `wind audit plan: <mode>` followed by every scanned root, virtual module, manifest, and exclusion with its reason.
 

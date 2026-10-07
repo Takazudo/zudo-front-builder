@@ -312,6 +312,7 @@ fn diagnostic_code_rank(code: DiagnosticCode) -> u8 {
         DiagnosticCode::Zw013 => 13,
         DiagnosticCode::Zw014 => 14,
         DiagnosticCode::Zw015 => 15,
+        DiagnosticCode::Zw016 => 16,
     }
 }
 
@@ -341,6 +342,7 @@ mod tests {
             DiagnosticCode::Zw013,
             DiagnosticCode::Zw014,
             DiagnosticCode::Zw015,
+            DiagnosticCode::Zw016,
         ];
         let ranks = codes.map(super::diagnostic_code_rank);
         let unique = ranks

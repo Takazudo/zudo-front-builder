@@ -173,9 +173,11 @@ function localizedNote(value, locale, field) {
   throw Error(`Missing Japanese ${field} translation: ${value}`);
 }
 
-// Fingerprint of the reviewed 478bbf83 source closure, independent of shallow CI Git history.
+// Fingerprint of the reviewed Wind source closure, independent of shallow CI Git history.
+// The zfb/zudo-react h-import alias changes extraction entry matching without
+// changing the pinned utility compatibility catalog.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "9718c4b433c68701fa3abed20f91db62ca40bdcb7bde53cfe6cec58c0c9a32d2";
+  "6b8dfc0ce7d2b77b9d67ee14279b92c54b959f542f6da782e0877fcce1ba37ad";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

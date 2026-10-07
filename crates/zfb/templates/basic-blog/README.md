@@ -34,7 +34,7 @@ The same commands are available as package scripts (`dev`, `build`,
 ├── components/
 │   ├── callout.tsx      # Note / Tip / Important / Warning / Caution
 │   ├── theme-toggle.tsx # the only "use client" island
-│   └── zfb-shim.d.ts    # types for the bare `zfb/config` specifier
+│   └── zfb-shim.d.ts    # types for the bare `zfb` import family
 ├── content/
 │   └── blog/            # the `blog` collection (.md and .mdx)
 ├── lib/
@@ -42,6 +42,11 @@ The same commands are available as package scripts (`dev`, `build`,
 └── styles/
     └── global.css       # authored CSS, accent values, .prose styles
 ```
+
+The `zfb` import family is an alias for `@takazudo/zfb` in zfb's bundlers.
+`components/zfb-shim.d.ts` maps its public entry points to the installed
+package's types for editors, `pnpm typecheck`, and `zfb check`. Keep this file
+when adding imports such as `zfb` or `zfb/zudo-react`.
 
 ## Markdown features
 

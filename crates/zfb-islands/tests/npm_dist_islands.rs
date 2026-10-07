@@ -25,10 +25,11 @@
 //!    runtime dependency graph (`@takazudo/zfb-runtime`, …) is
 //!    not crawled.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
-use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver};
+use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver, Resolver};
 
 /// Write `body` to `path`, creating parent directories first.
 fn write(path: &Path, body: &str) {
@@ -43,6 +44,141 @@ fn scan_component_names(page: &Path) -> Vec<String> {
     let resolver = FsResolver::new();
     let islands = scan_islands(&[page.to_path_buf()], &resolver).expect("scan");
     islands.iter().map(|i| i.component_name.clone()).collect()
+}
+
+/// The bare `zfb` package alias and its canonical npm spelling must both
+/// reach the same installed source definition through the real resolver.
+#[test]
+fn zfb_alias_and_canonical_subpath_resolve_one_canonical_definition() {
+    struct RecordingResolver {
+        inner: FsResolver,
+        demanded: RefCell<Vec<(std::path::PathBuf, String, Option<std::path::PathBuf>)>>,
+    }
+    impl Resolver for RecordingResolver {
+        fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<std::path::PathBuf> {
+            self.inner.resolve(importer_dir, specifier)
+        }
+
+        fn resolve_demanded(
+            &self,
+            importer_dir: &Path,
+            specifier: &str,
+        ) -> Option<std::path::PathBuf> {
+            let resolved = self.inner.resolve_demanded(importer_dir, specifier);
+            self.demanded.borrow_mut().push((
+                importer_dir.to_path_buf(),
+                specifier.to_owned(),
+                resolved.clone(),
+            ));
+            resolved
+        }
+
+        fn read(&self, path: &Path) -> Result<String, String> {
+            self.inner.read(path)
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let package = root.join("node_modules/@takazudo/zfb");
+    write(
+        &package.join("package.json"),
+        r#"{"name":"@takazudo/zfb","type":"module","exports":{"./components/counter":"./dist/components/counter.js"}}"#,
+    );
+    let counter = package.join("dist/components/counter.js");
+    write(
+        &counter,
+        "'use client'; export function Counter() { return null; }",
+    );
+
+    let first = root.join("components/a/index.tsx");
+    write(&first, "export { Counter } from 'zfb/components/counter';");
+    let second = root.join("components/b/index.tsx");
+    write(
+        &second,
+        "export { Counter } from '@takazudo/zfb/components/counter';",
+    );
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { Island } from 'zfb';
+import { Counter as FromAlias } from '../components/a';
+import { Counter as FromCanonical } from '../components/b';
+export default function Home() {
+  return <><Island><FromAlias /></Island><Island><FromCanonical /></Island></>;
+}"#,
+    );
+
+    let resolver = RecordingResolver {
+        inner: FsResolver::new(),
+        demanded: RefCell::new(Vec::new()),
+    };
+    let islands = scan_islands(&[page], &resolver).expect("scan");
+    let canonical_counter = counter.canonicalize().expect("canonical package file");
+
+    let demanded = resolver.demanded.borrow();
+    for importer in [root.join("components/a"), root.join("components/b")] {
+        assert!(demanded
+            .iter()
+            .any(|(resolved_importer, specifier, resolved)| {
+                resolved_importer == &importer
+                    && specifier == "@takazudo/zfb/components/counter"
+                    && resolved.as_deref() == Some(canonical_counter.as_path())
+            }));
+    }
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].source_path, canonical_counter);
+    assert_eq!(islands[0].marker_name, "Counter");
+}
+
+fn write_factory_dist_fixture(root: &Path, target_declaration: &str) -> std::path::PathBuf {
+    let pkg = root.join("node_modules/@acme/factory-widgets");
+    write(
+        &pkg.join("package.json"),
+        r#"{ "name": "@acme/factory-widgets", "type": "module",
+            "exports": { ".": "./dist/index.js" } }"#,
+    );
+    write(
+        &pkg.join("dist/factory.js"),
+        &format!(
+            r#"import {{ Island }} from "@takazudo/zfb";
+import {{ jsx }} from "@takazudo/zfb/zudo-react/jsx-runtime";
+
+export function createPanelBoundary(deps) {{
+  {target_declaration}
+  return function PanelBoundary() {{
+    return jsx(Island, {{ when: "load", children: jsx(Target, {{}}) }});
+  }};
+}}
+"#
+        ),
+    );
+    write(
+        &pkg.join("dist/panel.js"),
+        r#""use client";
+export function Panel() { return null; }
+"#,
+    );
+    write(
+        &pkg.join("dist/index.js"),
+        r#"import { Panel } from "./panel.js";
+import { createPanelBoundary } from "./factory.js";
+
+const PanelBoundary = (0, createPanelBoundary)({ Panel });
+export { PanelBoundary };
+"#,
+    );
+
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { PanelBoundary } from "@acme/factory-widgets";
+export default function Home() {
+  return <html><body><PanelBoundary /></body></html>;
+}
+"#,
+    );
+    page
 }
 
 /// A regular npm package laid out as a flat `node_modules/<pkg>` directory
@@ -299,6 +435,30 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
     // The named export keys the registry under the same marker the SSR
     // side derives from `displayName`.
     assert_eq!(island.marker_name, "ThemeToggle");
+}
+
+/// Emitted package modules retain the same bounded proof as source factories:
+/// a factory exported from one dist module may be called in another with a
+/// static object literal and a `(0, fn)` callee shape.
+#[test]
+fn dist_cross_module_factory_member_target_is_registered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let page = write_factory_dist_fixture(dir.path(), "const Target = deps.Panel;");
+
+    assert_eq!(scan_component_names(&page), vec!["Panel".to_string()]);
+}
+
+/// The emitted `var` form remains rejected even when its initializer is a
+/// static factory member, pinning the scanner's const-only target rule.
+#[test]
+fn dist_var_factory_member_target_reports_mutable_binding() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let page = write_factory_dist_fixture(dir.path(), "var Target = deps.Panel;");
+
+    let error = scan_islands(&[page], &FsResolver::new())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("mutable target binding Target"), "{error}");
 }
 
 /// A bare import made from INSIDE a package's dist must NOT be followed:

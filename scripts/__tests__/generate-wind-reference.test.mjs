@@ -302,10 +302,10 @@ describe("generate-wind-reference", () => {
 
 // The reader-first contract exercises the committed compiler assets, without
 // invoking Rust or building the docs site in the content worker's unit lane.
-import { readFileSync, mkdtempSync, cpSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, cpSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
-import { WIND_REFERENCE_FAMILIES } from "../../docs/scripts/wind-reference-families.mjs";
+
 import { loadRecords, exampleSource } from "../../docs/scripts/wind-preview-assets.mjs";
 import {
   candidateDeclarations,

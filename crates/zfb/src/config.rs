@@ -1153,12 +1153,66 @@ pub struct WindTokens {
 }
 
 /// A font size token and its optional paired line-height token.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct WindFontSize {
     pub size: String,
-    #[serde(default)]
     pub line_height: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for WindFontSize {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct WindFontSizeFields {
+            size: String,
+            #[serde(default)]
+            line_height: Option<String>,
+        }
+
+        struct WindFontSizeVisitor;
+
+        impl<'de> de::Visitor<'de> for WindFontSizeVisitor {
+            type Value = WindFontSize;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object { size: string, lineHeight?: string }")
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Err(E::custom(format!(
+                    "wind.tokens.fontSizes entries are objects; write {{ size: \"{value}\" }} (optionally with lineHeight) instead of the bare string \"{value}\""
+                )))
+            }
+
+            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+
+            fn visit_map<M>(self, map: M) -> std::result::Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let fields =
+                    WindFontSizeFields::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(WindFontSize {
+                    size: fields.size,
+                    line_height: fields.line_height,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(WindFontSizeVisitor)
+    }
 }
 
 /// The required CSS-pixel width for one configured breakpoint.
@@ -4235,6 +4289,89 @@ mod tests {
         );
         assert!(!context.contains("collection-dump-marker"), "{context}");
         assert!(context.contains(CONFIG_DEBUG_ENV), "{context}");
+    }
+
+    #[test]
+    fn wind_font_sizes_bare_string_explains_the_expected_object_shape() {
+        let value = serde_json::json!({
+            "wind": { "tokens": { "fontSizes": { "caption": "0.75rem" } } }
+        });
+        let error = serde_path_to_error::deserialize::<_, Config>(value.clone()).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("wind.tokens.fontSizes.caption"),
+            "{message}"
+        );
+        assert!(
+            message.contains("wind.tokens.fontSizes entries are objects"),
+            "{message}"
+        );
+        assert!(message.contains("{ size:"), "{message}");
+
+        let context = received_config_context(&value, error.path());
+        assert!(
+            context.contains("--- received at wind.tokens.fontSizes.caption ---\n\"0.75rem\""),
+            "{context}"
+        );
+    }
+
+    #[test]
+    fn wind_font_sizes_other_scalar_shapes_use_the_expected_object_message() {
+        let value = serde_json::json!({
+            "wind": { "tokens": { "fontSizes": { "caption": 12 } } }
+        });
+        let error = serde_path_to_error::deserialize::<_, Config>(value).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("expected an object { size: string, lineHeight?: string }"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn wind_font_sizes_accept_objects_with_or_without_line_height() {
+        let without_line_height = config_with_wind(serde_json::json!({
+            "tokens": { "fontSizes": { "caption": { "size": "0.75rem" } } }
+        }));
+        let Some(WindSetting::Enabled(wind)) = without_line_height.wind else {
+            panic!("wind object should enable the engine")
+        };
+        assert_eq!(wind.tokens.font_sizes["caption"].size, "0.75rem");
+        assert_eq!(wind.tokens.font_sizes["caption"].line_height, None);
+
+        let with_line_height = config_with_wind(serde_json::json!({
+            "tokens": {
+                "fontSizes": {
+                    "caption": { "size": "0.75rem", "lineHeight": "1rem" }
+                }
+            }
+        }));
+        let Some(WindSetting::Enabled(wind)) = with_line_height.wind else {
+            panic!("wind object should enable the engine")
+        };
+        assert_eq!(wind.tokens.font_sizes["caption"].size, "0.75rem");
+        assert_eq!(
+            wind.tokens.font_sizes["caption"].line_height.as_deref(),
+            Some("1rem")
+        );
+    }
+
+    #[test]
+    fn wind_font_sizes_line_height_snake_case_still_names_valid_fields() {
+        let error = serde_path_to_error::deserialize::<_, Config>(serde_json::json!({
+            "wind": {
+                "tokens": {
+                    "fontSizes": {
+                        "caption": { "size": "0.75rem", "line_height": "1rem" }
+                    }
+                }
+            }
+        }))
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("unknown field `line_height`"), "{message}");
+        assert!(message.contains("`size`"), "{message}");
+        assert!(message.contains("`lineHeight`"), "{message}");
     }
 
     #[test]

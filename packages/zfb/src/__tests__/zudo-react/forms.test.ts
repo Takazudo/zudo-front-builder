@@ -19,6 +19,103 @@ beforeEach(() => {
 });
 
 describe("form hydration", () => {
+  it.each(["input", "textarea"] as const)(
+    "binds display-only %s on the mapped node and restores its initial value on reset",
+    async (tag) => {
+      const source = signal("server");
+      const value = computed(() => source.value);
+      function Demo() {
+        const control =
+          tag === "input"
+            ? h("input", { readonly: true, value })
+            : h("textarea", { disabled: true, value });
+        return h("form", { children: control });
+      }
+      const root = host(h(Demo, {}));
+      const node = root.querySelector(tag) as HTMLInputElement | HTMLTextAreaElement;
+      source.value = "initial";
+      const listenerSpy = vi.spyOn(node, "addEventListener");
+      const handle = hydrate(h(Demo, {}), root, options());
+      expect(handle).not.toBeNull();
+      expect(root.querySelector(tag)).toBe(node);
+      expect(node.value).toBe("initial");
+      expect(node.getAttribute("value")).toBe(tag === "input" ? "server" : null);
+      source.value = "updated";
+      await flush();
+      expect(node.value).toBe("updated");
+      expect(node.getAttribute("value")).toBe(tag === "input" ? "server" : null);
+      for (const event of ["input", "change", "compositionstart", "compositionend"])
+        expect(listenerSpy.mock.calls.map(([name]) => name)).not.toContain(event);
+      (root.querySelector("form") as HTMLFormElement).reset();
+      expect(node.value).toBe("server");
+      handle!.dispose();
+      source.value = "after disposal";
+      await flush();
+      expect(node.value).toBe("server");
+      expect(diagnostics).toEqual([]);
+    },
+  );
+  it("sets the initial value on a client-only mount and reports later invalid values", async () => {
+    const value = signal<string | number>("first");
+    function Demo() {
+      return h("form", { children: h("input", { readonly: true, value }) });
+    }
+    const root = host(h(Demo, {}));
+    root.setAttribute("data-zfb-island-skip-ssr", "Demo");
+    root.replaceChildren();
+    const handle = mount(h(Demo, {}), root, options());
+    expect(handle).not.toBeNull();
+    const node = root.querySelector("input")!;
+    expect(node.value).toBe("first");
+    expect(node.getAttribute("value")).toBe("first");
+    value.value = 1;
+    await flush();
+    expect(diagnostics.at(-1)?.code).toBe("ZR_SUBSCRIBER_ERROR");
+    expect(diagnostics.at(-1)?.actual).toContain("ZR_MODEL_VALUE");
+    expect(node.value).toBe("first");
+    handle!.dispose();
+  });
+  it("restores the initial value on a client-only mount after an update", async () => {
+    const value = signal("first");
+    function Demo() {
+      return h("form", { children: h("textarea", { readonly: true, value }) });
+    }
+    const root = host(h(Demo, {}));
+    root.setAttribute("data-zfb-island-skip-ssr", "Demo");
+    root.replaceChildren();
+    const handle = mount(h(Demo, {}), root, options());
+    expect(handle).not.toBeNull();
+    const node = root.querySelector("textarea")!;
+    expect(node.getAttribute("value")).toBe("first");
+    value.value = "updated";
+    await flush();
+    expect(node.value).toBe("updated");
+    expect(node.getAttribute("value")).toBe("first");
+    (root.querySelector("form") as HTMLFormElement).reset();
+    expect(node.value).toBe("first");
+    handle!.dispose();
+  });
+  it("rejects non-string display-only values during client preflight", () => {
+    for (const node of [
+      h("input", { readonly: true, value: signal(1) }),
+      h("textarea", { disabled: true, value: signal(1) }),
+      h("input", { type: "number", readonly: true, value: signal("1") }),
+    ]) {
+      let child = h("div");
+      function Demo() {
+        return child;
+      }
+      const root = host(h(Demo, {}));
+      root.setAttribute("data-zfb-island-skip-ssr", "Demo");
+      child = node;
+      expect(mount(h(Demo, {}), root, options())).toBeNull();
+    }
+    expect(diagnostics.map((item) => item.code)).toEqual([
+      "ZR_MODEL_VALUE",
+      "ZR_MODEL_VALUE",
+      "ZR_MODEL_UNSUPPORTED",
+    ]);
+  });
   it.each([
     ["text", () => h("input", { defaultValue: "a" }), "value", "a"],
     ["checkbox", () => h("input", { type: "checkbox", defaultChecked: true }), "checked", true],

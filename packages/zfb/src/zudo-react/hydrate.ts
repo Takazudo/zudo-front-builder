@@ -22,6 +22,7 @@ import {
   attributeError,
   commonAttrs,
   dialectSuggestion,
+  displayOnlyControl,
   emptyIframeChildren,
   formProps,
   htmlAttrs,
@@ -68,6 +69,7 @@ interface BuildContext {
   readonly formOwners: Map<FormPlan, Owned>;
   readonly opaque: Set<Node>;
   readonly textSlots: Set<Node>;
+  readonly displayOnlyTextareas: Set<Node>;
   readonly dynamicRanges: Array<readonly [Comment, Comment]>;
   collectRootRanges: boolean;
 }
@@ -328,7 +330,9 @@ function element(
   if (
     tag === "textarea" &&
     "children" in props &&
-    ("modelValue" in props || "defaultValue" in props)
+    ("modelValue" in props ||
+      "defaultValue" in props ||
+      (isReactive(props.value) && displayOnlyControl(tag, props)))
   )
     fail(
       "ZR_MODEL_CONFLICT",
@@ -415,6 +419,40 @@ function element(
     }
     if (name === "value" || name === "checked") {
       if (isReactive(original)) {
+        if (name === "value" && displayOnlyControl(tag, props)) {
+          const initial = read(original);
+          if (typeof initial !== "string")
+            fail("ZR_MODEL_VALUE", "preflight", "string", typeof initial, path);
+          if (tag === "textarea") {
+            element.textContent = initial;
+            context.displayOnlyTextareas.add(element);
+          }
+          const bindingScope = context.scope;
+          context.operations.push((map, cleanups) => {
+            const node = map.get(element) as HTMLInputElement | HTMLTextAreaElement;
+            // Keep the server-emitted reset default when hydrating.
+            if (node === element) {
+              if (tag === "textarea") node.textContent = initial;
+              setAttribute(node, "value", initial);
+            }
+            node.value = initial;
+            const subscription = bind(
+              original,
+              bindingScope,
+              context.options,
+              context.container,
+              path,
+              (value) => {
+                if (typeof value !== "string")
+                  throw new TypeError(`ZR_MODEL_VALUE: ${tag} requires string`);
+                node.value = value;
+              },
+              initial,
+            );
+            cleanups.push(() => subscription.dispose());
+          });
+          continue;
+        }
         const suggestion = reactiveModelSuggestion(
           tag,
           name,
@@ -947,7 +985,12 @@ function compare(
           path,
         );
     }
-    if (wanted.localName === "script" || wanted.localName === "style") return;
+    if (
+      wanted.localName === "script" ||
+      wanted.localName === "style" ||
+      context.displayOnlyTextareas.has(wanted)
+    )
+      return;
     compareChildren(wanted, found, map, context, path, pre || wanted.localName === "pre");
   }
 }
@@ -1110,6 +1153,7 @@ function execute(
       formOwners: new Map(),
       opaque: new Set(),
       textSlots: new Set(),
+      displayOnlyTextareas: new Set(),
       dynamicRanges: [],
       collectRootRanges: true,
     };

@@ -941,7 +941,7 @@ fn build_job_resolver_inputs(
         virtual_modules,
         working_dir,
         &user_tsconfig_paths,
-        &[],
+        &["zfb"],
     )
     .context("zfb-islands: failed materializing per-entry plugin resolver inputs")?;
 
@@ -1278,7 +1278,7 @@ impl EsbuildSubprocessBundler {
             &self.config.virtual_modules,
             &self.config.working_dir,
             &user_tsconfig_paths,
-            &[],
+            &["zfb"],
         )
         .context("zfb-islands: failed materializing plugin resolver inputs")?;
 
@@ -2381,6 +2381,14 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
         zfb_types::owned_runtime::JSX_IMPORT_SOURCE
     )));
     args.push(OsString::from("--keep-names"));
+    // Consumer code uses the public SDK through the bare `zfb` namespace
+    // (`zfb/content`, `zfb/config`, `zfb/zudo-react`, …), while the
+    // published npm package is named `@takazudo/zfb`. esbuild's alias
+    // applies to exact imports and subpaths, including imports from
+    // node_modules entries where the synthetic tsconfig paths are ignored.
+    // Both resolver-input call sites reserve `zfb` so a plugin alias cannot
+    // shadow this built-in mapping (#3934).
+    args.push(OsString::from("--alias:zfb=@takazudo/zfb"));
     if config.minify {
         args.push(OsString::from("--minify"));
     }
@@ -5030,6 +5038,72 @@ mod tests {
         assert!(import_idx < entry_idx);
     }
 
+    #[test]
+    fn every_client_esbuild_pass_has_the_sdk_alias_exactly_once() {
+        let cfg = BundleConfig::default();
+        let out_dir = PathBuf::from("/tmp/zfb-client-out");
+        let passes = [
+            (
+                "shared islands entry",
+                build_esbuild_args(
+                    &cfg,
+                    &[],
+                    &out_dir,
+                    Path::new("/tmp/islands.tsx"),
+                    true,
+                    None,
+                ),
+            ),
+            (
+                "module worker",
+                build_esbuild_args_with_entry_name(
+                    &cfg,
+                    &[],
+                    &out_dir,
+                    Path::new("/tmp/worker.ts"),
+                    false,
+                    "worker-src-s-worker-d-ts",
+                    None,
+                ),
+            ),
+            (
+                "client script",
+                build_esbuild_args_with_entry_name(
+                    &cfg,
+                    &[],
+                    &out_dir,
+                    Path::new("/tmp/widget.client.tsx"),
+                    false,
+                    "widget",
+                    None,
+                ),
+            ),
+            (
+                "client-script module worker",
+                build_esbuild_args_with_entry_name(
+                    &cfg,
+                    &[],
+                    &out_dir,
+                    Path::new("/tmp/widget.worker.ts"),
+                    false,
+                    "worker-src-s-widget-d-worker-d-ts",
+                    None,
+                ),
+            ),
+        ];
+
+        for (pass, args) in passes {
+            let aliases = args
+                .iter()
+                .filter(|arg| arg.to_string_lossy() == "--alias:zfb=@takazudo/zfb")
+                .count();
+            assert_eq!(
+                aliases, 1,
+                "{pass} should receive exactly one SDK alias: {args:?}"
+            );
+        }
+    }
+
     /// Regression for issue #287 (zudolab/zzmod#154).
     ///
     /// `--define:import.meta.env.PROD=…` and `--define:import.meta.env.DEV=…`
@@ -5279,11 +5353,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Zero alias/virtual-module registrations → config fields are empty by
-    /// default and no `--alias` flags appear in the subprocess args.
-    /// This is the regression guard: "bundling without registrations is
-    /// byte-identical to today's bundle output."
+    /// default and no plugin-specific aliases appear. The built-in `zfb`
+    /// SDK alias is still present in every real client pass.
     #[test]
-    fn zero_registrations_produce_no_alias_flags_in_config() {
+    fn zero_registrations_produce_no_plugin_aliases_in_config() {
         let cfg = EsbuildSubprocessConfig::default();
         assert!(
             cfg.alias_entries.is_empty(),

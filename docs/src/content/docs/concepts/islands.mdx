@@ -16,7 +16,7 @@ Add the `"use client"` directive at the top of a `.tsx` file:
 ```tsx
 "use client";
 
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -34,16 +34,16 @@ export default function Counter() {
 
 Only concrete targets of reachable `<Island>` boundaries receive public markers. Exporting a function from a client module, capitalizing its name, or returning JSX does not register it by itself. Unused helpers can keep the same name in multiple modules; they do not need renaming.
 
-The scanner follows named/default imports, local aliases, namespace members, explicit and star re-exports, and installed packages. It recognizes JSX children and `children` attributes, direct calls such as `Island({ children: h(Counter, props) })`, and the owned `h`, `jsx`, `jsxs`, and `jsxDEV` factories, including their aliased packed output. Fixed-target and unchanged-child forwarding wrappers are supported when their behavior can be resolved statically. A wrapper's own name is not registered. Only boundary targets occupy registry entries: a helper used by a live target and its imports stay in the bundle, while unused helpers do not need unique names.
+The scanner follows named/default imports, local aliases, namespace members, explicit and star re-exports, and installed packages. It recognizes JSX children and `children` attributes, direct calls such as `Island({ children: h(Counter, props) })`, and the owned `h`, `jsx`, `jsxs`, and `jsxDEV` factories, including their aliased packed output. Fixed-target and unchanged-child forwarding wrappers are supported when their behavior can be resolved statically. A bounded factory-member target is also supported when a read-only parameter has a closed set of direct call sites that all pass the same function in a plain object literal. A wrapper's own name is not registered. Only boundary targets occupy registry entries: a helper used by a live target and its imports stay in the bundle, while unused helpers do not need unique names.
 
 The scanner also resolves edges registered by plugin `setup`: exact `addAlias` rewrites and `addVirtualModule` specifiers. A `tsconfig.json` `compilerOptions.paths` mapping takes priority when it resolves a matching specifier; if every mapped target misses, lookup falls through to the exact plugin alias, then a registered virtual module, followed by `baseUrl` and package lookup.
 
 A virtual module can statically import or re-export a real module, and the scanner follows that file. The module carrying `"use client"` must be a real file, though it may re-export a function defined in another real file. The exported function still needs to be the one child of a reachable `<Island>` boundary; the directive by itself does not register a target. A `"use client"` directive or `import.meta.glob` directly inside a virtual source is warned about and skipped. Put those constructs in real files and reach them through the virtual module. Bare imports from inside a virtual source that resolve to an installed or workspace package, or to another virtual module, are also skipped. See [Plugins](./plugins.mdx) for the `setup` registration details.
 
-For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child:
+For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child. Import `Island` from `zfb` or `@takazudo/zfb`; this guide uses the bare `zfb` alias:
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { Counter } from "./counter";
 
 <Island><Counter /></Island>;
@@ -57,6 +57,165 @@ Dynamic child selection is rejected during a production build. Put the condition
   : <Island><Summary /></Island>}
 ```
 
+### Factory-provided targets
+
+A function can receive a component through a plain object parameter and use that
+component as an island target when the scanner can prove every call. The proof is
+syntactic: zfb never executes the function to discover a component. Member and
+object-pattern declarations use `const`, and property keys are static:
+
+| Binding form | Accepted spelling |
+| --- | --- |
+| Member access | `const Target = deps.Counter` or `const Target = deps["Counter"]` |
+| Object pattern | `const { Counter: Target } = deps` or `const { Counter } = deps` |
+| Parameter destructuring | `function render({ Counter: Target })` or `function render({ Counter })` |
+
+The member parameter must be a plain identifier parameter, not a rest parameter,
+and it must have no default value.
+TypeScript-only wrappers around the member expression are unwrapped.
+Parameter destructuring may use a renamed property or shorthand, but cannot use
+rest, defaults, or nested patterns. The parameter may only be read as the object
+of a static member access or as the initializer of a `const` object pattern. A
+write, `delete`, alias, pass, return, spread, or any other use of the parameter
+(including inside a nested closure) fails the proof. A destructured target is
+never assigned. `let` and `var` targets keep the `mutable target binding`
+diagnostic. Other reads of `Target`—including `!Target`, `typeof Target`, or
+passing it to a non-Island helper—do not affect registration; only its use as an
+`<Island>` child matters.
+
+The function that owns the parameter must be a named function or a `const`
+function/arrow binding. Every reference to that function in the scanned module
+graph, including import and re-export chains, must be the callee of a direct call:
+`renderPanel(...)`, `(0, renderPanel)(...)`, or `namespace.renderPanel(...)`.
+Passing it as a value, storing or returning it, binding it, using `.call`,
+`.bind`, or `.apply`, or using it as JSX is an escape. The proof covers the
+scanner's discovered module graph; it cannot account for runtime-generated or
+otherwise undiscovered callers.
+
+The call-site set must be non-empty. Each call must pass the parameter at its
+declared position with no positional spread at or before that position. The
+argument must be a plain object literal with no spread, computed key, method, or
+getter anywhere in the literal. The selected property must appear exactly once;
+other plain properties are allowed. Its value must resolve to a function, and
+every call site must resolve to the same function definition. For example:
+
+~~~tsx
+import { Island } from "zfb";
+import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+
+function renderDesignTokenPanel(deps) {
+  const Target = deps.DesignTokenPanelBootstrap;
+  return <Island when="load"><Target /></Island>;
+}
+
+// Page calls the helper directly, so the boundary is reachable.
+export default function Page() {
+  return renderDesignTokenPanel({
+    enabled: true,
+    DesignTokenPanelBootstrap,
+  });
+}
+~~~
+
+This mirrors the zudo-doc design-token panel factory: ordinary settings can stay
+injected, while the component binding is statically selected. Every call must
+pass the same function. A call such as
+`{ DesignTokenPanelBootstrap: ctx.hostBindings.DesignTokenPanelBootstrap ?? (cond ? undefined : ImportedBootstrap) }`
+is outside the rule and leaves this residual reason in the diagnostic:
+`call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)`.
+
+The complete rejection set and its rewrites are:
+
+| Diagnostic reason | Rewrite |
+| --- | --- |
+| `mutable target binding` | Change `let`/`var` to a `const` binding whose value is not reassigned. |
+| `parameter &lt;name&gt; has a default value` | Remove the default and pass the object explicitly at every call site. |
+| `destructured parameter &lt;name&gt; uses a rest pattern` | Destructure only the named static property; remove the rest pattern. |
+| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | Keep the parameter read-only and use only static member reads or a `const` object pattern; do not pass, alias, return, spread, or mutate it. |
+| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | Keep every reference to `F` as a direct call in the scanned modules; do not pass, store, return, bind, apply, or render `F` as JSX. |
+| `factory &lt;F&gt; has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
+| `call site at &lt;loc&gt; passes too few arguments` | Pass the parameter at its declared position. |
+| `call site at &lt;loc&gt; spreads positional arguments` | Spell out positional arguments through the parameter index. |
+| `call site at &lt;loc&gt; passes a non-literal argument` | Pass a plain object literal without any spread, computed key, method, or getter; other plain properties are allowed. |
+| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | Add the selected property exactly once as a static key. |
+| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | Pass one imported function directly; express alternatives as separate concrete island boundaries or use the composition seam below. |
+| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | Pass a value that resolves to one function definition. If value resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
+| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | Make every call pass the same function definition, or split the calls into separate fixed-target wrappers. |
+
+The scanner reports the first applicable reason, preserving the diagnostic
+prefix `target Target has unsupported initializer`. See the [Troubleshooting guide](../guides/troubleshooting.mdx)
+for the full symptom and fix list.
+
+### Composition seam for customisable package islands
+
+A package that needs a host override can keep its default component target fixed
+in `DefaultPanelIsland` and expose a separate `PanelSlot` wrapper that forwards
+a rendered child unchanged. The `DesignTokenPanelBootstrap` import comes from a
+module marked `"use client"`:
+
+~~~tsx
+// Package island wrappers
+import { Island } from "zfb";
+// This component is exported from a module marked "use client".
+import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+
+export function DefaultPanelIsland() {
+  return (
+    <>
+      <Island when="load">
+        <DesignTokenPanelBootstrap />
+      </Island>
+    </>
+  );
+}
+
+export function PanelSlot({ children }) {
+  return <>{children}</>;
+}
+~~~
+
+The page uses the package default by composing both wrappers:
+
+~~~tsx
+<PanelSlot>
+  <DefaultPanelIsland />
+</PanelSlot>
+~~~
+
+A host can substitute its own island by rendering its own `"use client"` target
+inside the same slot. The `HostPanel` function is exported from a client module:
+
+~~~tsx
+// host-panel.tsx
+"use client";
+
+export function HostPanel() {
+  return <button type="button">Custom panel</button>;
+}
+~~~
+
+~~~tsx
+import { Island } from "zfb";
+import { PanelSlot } from "@example/package/islands";
+import { HostPanel } from "./host-panel";
+
+<PanelSlot>
+  <Island when="load"><HostPanel /></Island>
+</PanelSlot>
+~~~
+
+Both the package default and host override register their actual function
+definitions. The host passes rendered children through the slot; no component
+function crosses the client boundary. Keep non-component dependencies in the
+package's ordinary factory injection. This bounded seam does not accept a
+`??`-selected component: the scanner reports
+`target Target has unsupported initializer: call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)`
+for the zudo-doc host-binding expression.
+
+The fixed-target component-map recipe in [MDX components](./mdx-components.mdx)
+is a separate shape: its wrapper returns an `<Island>` around a static import.
+It remains unchanged; see [issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824).
+
 If a collision diagnostic identifies two different target functions, rename one defining function, or fix an import or package export that resolves to the wrong definition. Import and re-export aliases do not change the marker: the scanner uses the defining function's own name, not `displayName`. At server render time, `displayName` must be absent or equal to that name; otherwise zfb fails with `ZR_ISLAND_IDENTITY` instead of renaming the target. For a default target that needs a stable name, use `export default function Counter() { ... }`.
 
 `components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state with a signal, and mirrors the active theme to `document.documentElement.dataset.theme`. The setup starts from a deterministic value for both server rendering and client adoption; browser-only reads happen after the DOM has been committed. This shortened illustration shows the pattern; the shipped template also uses `Show` for its icon and includes utility classes and SVG markup:
@@ -64,7 +223,7 @@ If a collision diagnostic identifies two different target functions, rename one 
 ```tsx
 "use client";
 
-import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
+import { computed, getScope, signal } from "zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
@@ -158,7 +317,7 @@ After render, each island's server-rendered HTML is wrapped in a `<div>` that ca
 The `data-when` attribute controls when the client entry runs. It is always present and defaults to `"load"`; the other strategies are `"visible"`, `"idle"`, and `"media"`. The JSX API is the [`<Island>` wrapper](../api/island.mdx); for media-query adoption, pass both `when="media"` and a `media` query:
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import MobileMenu from "./MobileMenu";
 
 export default function Header() {
@@ -271,7 +430,7 @@ This example uses a **hypothetical** adapter module. Its `mount(host)` returns a
 ```tsx
 "use client";
 
-import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
+import { getScope, h, signal, type Ref } from "zfb/zudo-react";
 
 type WidgetInstance = { destroy(): void };
 type WidgetModule = { mount(host: Element): WidgetInstance };

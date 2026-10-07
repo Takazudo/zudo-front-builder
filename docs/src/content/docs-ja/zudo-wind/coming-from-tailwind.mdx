@@ -15,11 +15,27 @@ sidebar_position: 9
 
 `block`、`hidden`、`inline-flex`、`mx-auto` など構造を決めるクラスにトークンは不要です。`display: none` にするクラスは `hidden` であり、単独の `none` ではありません。余白、色、名前付きの書体値はプロジェクトが定義します。クラス一覧はソースで確認した対応と相違を示します。検証済みの対応として扱う前に検証状態の列を確認してください。
 
+## デフォルトテーマ変数
+
+Tailwind のデフォルトテーマの名前空間には、`--color-*`、`--font-*`（`--font-sans`、`--font-mono`、`--font-serif` を含む）、`--font-weight-*`、`--text-*`、`--tracking-*`、`--leading-*`、`--breakpoint-*`、`--container-*`、`--spacing` と `--spacing-*`、`--radius-*`、`--shadow-*`、`--inset-shadow-*`、`--drop-shadow-*`、`--blur-*`、`--perspective-*`、`--aspect-*`、`--ease-*`、`--animate-*` が含まれます。Tailwind の import を削除すると、これらの変数の定義もなくなります。zudo-wind は暗黙には提供しません。変数がなくても zudo-wind のビルドエラーにはなりません。
+
+手書き CSS の `var()` 参照を残すには、次のいずれかを行います。
+
+- 手書き CSS でカスタムプロパティを宣言します。
+- 設定済みのトークンの値なら、出力される `--zw-<category>-<key>` 変数を参照します。正確な名前は[トークンのカテゴリと接頭辞の表](./tokens.mdx#出力される変数)を参照してください。
+- `var(--x, <literal>)` のようにフォールバックを追加します。
+
+手書き CSS が以前 `var(--color-neutral-900)` を参照していた場合、`neutral-900` を色トークンとして設定しているなら、出力されるトークン変数 `var(--zw-color-neutral-900)` に更新します。`zfb wind audit` は、Tailwind のデフォルトテーマ変数をフォールバックなしで参照し、走査したスタイルシートのどこにも宣言がない場合、ZW016 を監査専用情報として報告します。`wind.strict: true` では警告になります。この検査はヒューリスティックで、対象はエントリースタイルシートと発見された import 先だけです。CSS Modules、リンクされたスタイルシート、インラインスタイル、解決できなかった import は対象外です。`wind: false` の場合、ZW016 は報告されません。走査対象のどこかにその変数の宣言があれば、指摘は抑止されます。
+
 ## 短い手順で移行する
 
 このガイドを載せるドキュメントサイトは、独自の chrome に引き続き Tailwind を使います。この手順とコンパイル済みサンプルが説明するのは、利用者のプロジェクトで使う zudo-wind v1 です。
 
-1. エントリーのスタイルシートと import 先から Tailwind の import とエンジンディレクティブを削除します。通常の手書き CSS と <code>@layer</code> は残します。
+1. エントリーのスタイルシートと import 先から Tailwind の import とエンジンディレクティブを削除します。通常の手書き CSS と <code>@layer</code> は残します。影響を受けるデフォルトテーマ変数の参照を次のコマンドで探します。
+
+   ```sh
+   grep -rnoE 'var\(--(color|font|text|tracking|leading|breakpoint|container|spacing|radius|shadow|inset-shadow|drop-shadow|blur|perspective|aspect|ease|animate)[-)]' src pages
+   ```
 2. エンジンの値をトップレベルの <code>wind</code> キーに移します。<code>spec</code> を設定し、リセットを選び、候補が使うトークンとブレークポイントを設定します。
 3. 有限の候補はソースに残します。ソースにないアプリ候補は <code>safelist</code> に、パッケージ候補はバージョン付きマニフェストに置きます。
 4. build プランを監査します。対応候補を直し、手書き名を完全一致で予約し、strict モードの前に外部ユーティリティを置き換えるか実装します。
@@ -260,6 +276,7 @@ wind の設定と候補の発見は CSS の外で行います。スタイルシ�
 | `@import "tailwindcss/utilities"` | 削除します。ユーティリティは完全な候補と有限のカタログから生成されます。残った import は ZW009 です。 |
 | `@tailwind base`、`@tailwind components`、`@tailwind utilities` | CSS を展開するディレクティブはありません。リセットを選び、コンポーネントルールは手書きの CSS に、カタログのユーティリティは完全な候補で記述します。残ったディレクティブは ZW009 です。 |
 | `@theme` | 検証される値を `wind.tokens` に置きます。CSS 専用のプロパティは手書きの CSS の通常のカスタムプロパティとして残し、必要なユーティリティのトークンから参照します。 |
+| <code>var(--&lt;デフォルトテーマ変数&gt;)</code>（手書き CSS 内） | Tailwind のデフォルトテーマ変数は zudo-wind からは提供されません。名前空間には `--color-*`、`--font-*`（`--font-sans`、`--font-mono`、`--font-serif` を含む）、`--font-weight-*`、`--text-*`、`--tracking-*`、`--leading-*`、`--breakpoint-*`、`--container-*`、`--spacing` と `--spacing-*`、`--radius-*`、`--shadow-*`、`--inset-shadow-*`、`--drop-shadow-*`、`--blur-*`、`--perspective-*`、`--aspect-*`、`--ease-*`、`--animate-*` が含まれます。プロパティを宣言するか、設定済みトークンの出力変数（[カテゴリと接頭辞の表](./tokens.mdx#出力される変数)を参照）を使うか、`var()` にフォールバックを指定します。[デフォルトテーマ変数](#デフォルトテーマ変数)も参照してください。 |
 | `@source` | CSS では走査ルートを選べません。走査するファイルとパッケージルートは zfb のソースプランが管理します。[ソースと候補](./sources-and-candidates.mdx)を参照してください。 |
 | `@source inline(...)` | アプリ所有の候補には所有者キー付きの `wind.safelist` 配列を使います。パッケージ所有の候補は、完全な v1 ユーティリティまたはマーカーに絞った、明示的なバージョン付き `wind.manifests` ファイルに入れます。各項目は厳格に検査され、無効または未知なら失敗します。パターン、波括弧展開、実行時補間の構文はありません。 |
 | `@source not(...)` | CSS の否定ディレクティブはありません。ソースプランのルートと除外規則を使います。[ソースと候補](./sources-and-candidates.mdx)を参照してください。 |
@@ -303,6 +320,12 @@ export default defineConfig({
 
 v1 は色パレットや余白スケールを同梱しません。名前付きのサイズ、フォントファミリーやウェイト、文字サイズ、行の高さ、字間、角丸、シャドウ、z-index、イージング、ブレークポイントもありません。定数 `0`、`px`、カタログのキーワードはテーマを意味しません。
 
+Tailwind の `--text-<n>` と `--text-<n>--line-height` は、同じキーと `size`、任意の `lineHeight` を持つ `fontSizes` 項目に対応します。
+
+| Tailwind の変数の組 | zudo-wind のトークン |
+| --- | --- |
+| <code>--text-&lt;n&gt; + --text-&lt;n&gt;--line-height</code> | <code>fontSizes: &lbrace; &lt;n&gt;: &lbrace; size, lineHeight &rbrace; &rbrace;</code> |
+
 ユーティリティが必要とする値を `wind.tokens` に移します。`p-4` のような数値の余白は設定された `spacingUnit` を倍にし、名前付きの値は対応する群のマップから取得します。たとえば次の設定は、2 つの色ユーティリティをプロジェクト所有のプロパティに結び付けます。
 
 ~~~json
@@ -325,6 +348,8 @@ v1 は色パレットや余白スケールを同梱しません。名前付き�
 ~~~
 
 これで `bg-panel` と `text-panel` は `colors.panel` から解決されます。トークンの項目は検証されるデータであり、実行可能な CSS や JavaScript ではありません。参照されるカスタムプロパティは手書きの CSS に残り、生成されたトークン変数がそれを指します。トークンや数値の余白単位がない場合、厳格な候補の発生元で報告され、デフォルトで補われません。マップと値の規則は[トークン](./tokens.mdx)を参照してください。
+
+手書き CSS に Tailwind のデフォルトテーマ変数への参照が残っている場合は、[デフォルトテーマ変数](#デフォルトテーマ変数)に挙げた方法のいずれかで対応してください。
 
 大文字の `DEFAULT` は無効です。小文字の `default` は、その意味が定義されたマップだけで使います。`radii.default` は `rounded`、`shadows.default` は `shadow` の値を与えます。色や余白のフォールバックにはなりません。
 
@@ -572,7 +597,7 @@ export default defineConfig({
 }
 ~~~
 
-既存の base と components レイヤーは残します。wind の前置きが順序を定めます。手書きの `.prose` クラスはスタイルシートに残し、`authoredClasses` に完全な名前を登録します。手書きの CSS が以前 `var(--color-neutral-900)` を参照していた箇所は、出力されるトークン変数 `var(--zw-color-neutral-900)` に更新します。設定済みの `accent` トークンは手書きの `--color-accent` を参照するため、テーマ切り替えでは引き続きその値を変更できます。スキャフォールドは `owned-v1` リセットを使いますが、ほかのプロジェクトのデフォルトは `none` です。ここで扱うのは言語とスタイルシートの変更です。プロジェクト全体の移行順序は[v3 への移行](../guides/migrating-to-v3.mdx)を参照してください。
+既存の base と components レイヤーは残します。wind の前置きが順序を定めます。手書きの `.prose` クラスはスタイルシートに残し、`authoredClasses` に完全な名前を登録します。[デフォルトテーマ変数](#デフォルトテーマ変数)で説明したように、色トークンが設定されているなら、手書き CSS 内の旧 `var(--color-neutral-900)` 参照を出力されるトークン変数 `var(--zw-color-neutral-900)` に更新します。設定済みの `accent` トークンは手書きの `--color-accent` を参照するため、テーマ切り替えでは引き続きその値を変更できます。スキャフォールドは `owned-v1` リセットを使いますが、ほかのプロジェクトのデフォルトは `none` です。ここで扱うのは言語とスタイルシートの変更です。プロジェクト全体の移行順序は[v3 への移行](../guides/migrating-to-v3.mdx)を参照してください。
 
 ## 未対応の機能と代替方法
 

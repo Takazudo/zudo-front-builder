@@ -30,6 +30,8 @@ the tailwind key was removed in zfb 3; utilities are compiled by the built-in zu
 
 エントリーとそのインポート先から、`@import "tailwindcss"`、preflight と utilities のインポート、および `@theme`、`@source`、`@apply`、`@utility`、`@plugin` などの Tailwind ディレクティブを削除します。`wind: false` でも、残ったディレクティブは診断 `ZW009` で失敗します。1 回の実行で、残ったディレクティブをすべて `file:line:column` 付きで列挙します。独自のセレクターと宣言は手書き CSS に、ユーティリティの値は `wind.tokens` に移します。
 
+手書き CSS の `var()` が参照する Tailwind のデフォルトテーマ変数も定義されなくなります。[デフォルトテーマ変数](../zudo-wind/coming-from-tailwind.mdx#デフォルトテーマ変数)を参照してください。
+
 v3 はパレット、間隔の単位、名前付きスケール、ブレークポイントを暗黙には提供しません。`wind.reset` に `none`、`minimal-v1`、`owned-v1` から選んでください。既定は `none` です。新しい basic-blog の雛形は `owned-v1` を選び、パレットと `spacingUnit` を宣言し、記事のリスト表示を手書き CSS で戻しています。リセットを選ぶ際は見出し、リスト、境界線、フォームに加え、`html` と `code`/`pre` のフォントスタック、`sub`/`sup`、`::placeholder`、`::file-selector-button`、`[hidden]` を確認してください。これらを含まないページのピクセル差分では差を検出できません。[Tailwind preflight との違い](../zudo-wind/coming-from-tailwind.mdx#リセット-tailwind-preflight-との違い)も参照してください。
 
 ```ts
