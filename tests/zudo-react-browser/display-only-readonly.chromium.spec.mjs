@@ -18,9 +18,9 @@ test("display-only readonly controls hydrate, follow a computed value, and reset
     await releaseScenario(page, state);
     await expect(input).toHaveValue(initial);
     await expect(textarea).toHaveValue(initial);
-    expect(
-      await page.evaluate(() => window.__zudoReactBrowser.roots[0].result.display.value),
-    ).toBe(initial);
+    expect(await page.evaluate(() => window.__zudoReactBrowser.roots[0].result.display.value)).toBe(
+      initial,
+    );
 
     await page.locator("#display-only-update").click();
     await expect(input).toHaveValue("UPDATED BY BUTTON");
@@ -40,9 +40,9 @@ test("display-only readonly controls hydrate, follow a computed value, and reset
     await page.locator("#display-only-form").evaluate((form) => form.reset());
     await expect(input).toHaveValue(initial);
     await expect(textarea).toHaveValue(initial);
-    expect(
-      await page.evaluate(() => window.__zudoReactBrowser.roots[0].result.source.value),
-    ).toBe("updated by button");
+    expect(await page.evaluate(() => window.__zudoReactBrowser.roots[0].result.source.value)).toBe(
+      "updated by button",
+    );
 
     expectNoBrowserErrors(state.errors);
   } finally {
