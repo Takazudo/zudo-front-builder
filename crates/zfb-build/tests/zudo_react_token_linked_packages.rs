@@ -63,7 +63,9 @@ impl Fixture {
         if entry == "tsconfig" {
             fs::write(self.app.join("tsconfig.json"), serde_json::json!({"compilerOptions":{"baseUrl":".","paths":{"widget":[self.widget.join("dist/index.js").display().to_string()]}}}).to_string()).unwrap();
         }
-        zudo_react_build_token_with_aliases(&self.app, &aliases).unwrap()
+        let token = zudo_react_build_token_with_aliases(&self.app, &aliases).unwrap();
+        eprintln!("BASELINE_TOKEN entry={entry} value={token}");
+        token
     }
 }
 
@@ -234,14 +236,16 @@ fn repeated_alias_target_seeds_ignored_relative_closure() {
         ),
     ];
     let token = || {
-        zudo_react_build_token_with_inputs_and_output(
+        let value = zudo_react_build_token_with_inputs_and_output(
             &f.app,
             &aliases,
             &[],
             &f.app.join("dist"),
             &Default::default(),
         )
-        .unwrap()
+        .unwrap();
+        eprintln!("BASELINE_TOKEN entry=repeated_alias value={value}");
+        value
     };
     let first = token();
     write(&f.widget.join("private/unrelated.json"), "2");
