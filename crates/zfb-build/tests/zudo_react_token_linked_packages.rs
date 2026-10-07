@@ -111,6 +111,17 @@ fn linked_package_snapshot_classifies_only_ignored_undeclared_paths() {
 }
 
 #[test]
+fn manifestless_alias_keeps_token_walk_and_fails_open() {
+    let f = Fixture::new();
+    fs::remove_file(f.widget.join("package.json")).unwrap();
+    let root = fs::canonicalize(&f.widget).unwrap();
+    let project = fs::canonicalize(&f.app).unwrap();
+    let snapshot = LinkedPackageIgnoreSnapshot::capture(&root, &project).unwrap();
+    assert!(!snapshot.ignored_and_undeclared(&root.join("test-results/a.json"), false));
+    assert!(!f.token("alias").is_empty());
+}
+
+#[test]
 fn ignored_artifacts_hidden_files_and_real_sources_across_entry_points() {
     for entry in ["symlink", "alias", "tsconfig"] {
         let f = Fixture::new();
