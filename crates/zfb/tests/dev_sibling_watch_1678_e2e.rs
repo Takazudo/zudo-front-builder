@@ -1876,6 +1876,13 @@ async fn e2e_3926_ignored_undeclared_sibling_writes_do_not_tick() {
     )
     .await;
     wait_for_watch_extra(&session, "widget").await;
+    // The workspace .gitignore is outside the app roots and widget's
+    // recursive mirror root. Its parent needs a separate rule-file watch.
+    wait_for_watch_extra(
+        &session,
+        &fs::canonicalize(ws).unwrap().display().to_string(),
+    )
+    .await;
     let a = widget.join("test-results/a.json");
     let b = widget.join("test-results/b.trace");
     let baseline = session.stderr();
@@ -1947,18 +1954,15 @@ async fn e2e_3926_ignored_undeclared_sibling_writes_do_not_tick() {
     );
 
     // Same burst: the old rule ignores new.json; the appended negations
-    // reopen its directory and file. Intake must refresh rules for the WHOLE
-    // batch before filtering either path.
+    // reopen its directory and file. The workspace rule is the ONLY rule
+    // edited, so its dedicated parent watch must deliver the change before
+    // intake can refresh the whole batch.
     let rules = ws.join(".gitignore");
     let fresh = widget.join("test-results/new.json");
     let before = session.stderr();
     let mut text = fs::read_to_string(&rules).unwrap();
     text.push_str("!widget/test-results/\n!widget/test-results/new.json\n");
     fs::write(&rules, text).unwrap();
-    // The workspace root rule sits outside app's watcher roots. Touch a
-    // package-local rule in the same burst so the watched sibling delivers
-    // a rule event and intake refreshes the workspace-root rules as well.
-    fs::write(widget.join(".gitignore"), "!test-results/new.json\n").unwrap();
     fs::write(&fresh, "new\n").unwrap();
     let started = Instant::now();
     while started.elapsed() < SCENARIO_DEADLINE {

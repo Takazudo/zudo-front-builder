@@ -391,6 +391,20 @@ impl RawImportInvalidation {
         self.linked_packages.read().ok()?.get(root).cloned()
     }
 
+    /// Rule files need parent watches so their edits can refresh snapshots
+    /// before intake suppression. These are watch inputs, not dynamic module
+    /// dependencies; their parent directories must not exempt sibling files.
+    pub fn linked_package_rule_file_paths(&self) -> BTreeSet<PathBuf> {
+        self.linked_packages
+            .read()
+            .map(|slot| {
+                slot.values()
+                    .flat_map(|snapshot| snapshot.rule_file_paths().iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Refresh touched rules before intake filtering. A failed refresh drops
     /// that package's snapshot, so later events pass through.
     pub fn refresh_linked_package_rules(&self, paths: &[PathBuf]) {
