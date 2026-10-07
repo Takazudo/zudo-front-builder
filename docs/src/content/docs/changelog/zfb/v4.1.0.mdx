@@ -1,0 +1,20 @@
+---
+title: v4.1.0
+sidebar_position: 143
+---
+
+# v4.1.0
+
+Released: 2026-10-07
+
+## Features
+
+- Recognize the reserved bare `zfb` SDK import alias in island scanning and client bundles, including JSX pragma and Wind `h()` extraction. The basic-blog TypeScript shim now covers every public `zfb` export (16a03e4f, 279c47ed, 367604e7).
+- Support display-only reactive values in `zudo-react` JSX, server rendering and hydration, while preserving form reset defaults (767f5623, 012126e6, 22401cac).
+- Resolve bounded, statically provable factory-member island targets across same-module and cross-module call sites. Unsupported factory shapes retain source-located diagnostics (7b83d0f7, f75628bb, b6e1600f).
+- Report Wind `ZW016` diagnostics for unsupported default theme variables during `zfb wind audit`, including Unicode variable names (ea981a56, 234e9f48, 3c7ac60d).
+
+## Bug Fixes
+
+- Exclude ignored linked-package files from `zudo-react` build identity inputs while retaining declared entry files and relative-import closures. Writes to ignored files may still trigger a dev reload tick (830fb2d5, 200a8e5a).
+- Diagnose invalid `WindFontSize` configuration values clearly (fd4060f2).

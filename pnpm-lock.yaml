@@ -315,7 +315,7 @@ importers:
   packages/create-zfb:
     dependencies:
       '@takazudo/zfb':
-        specifier: workspace:4.0.0
+        specifier: workspace:4.1.0
         version: link:../zfb
     devDependencies:
       vite-plus:
@@ -344,19 +344,19 @@ importers:
         version: 1.0.0(@types/node@22.19.17)(@vitest/ui@5.0.1)(esbuild@0.28.1)(happy-dom@15.11.7)(tsx@4.23.1)(typescript@7.0.2)(yaml@2.9.0)
     optionalDependencies:
       '@takazudo/zfb-darwin-arm64':
-        specifier: workspace:4.0.0
+        specifier: workspace:4.1.0
         version: link:../zfb-darwin-arm64
       '@takazudo/zfb-darwin-x64':
-        specifier: workspace:4.0.0
+        specifier: workspace:4.1.0
         version: link:../zfb-darwin-x64
       '@takazudo/zfb-linux-arm64-gnu':
-        specifier: workspace:4.0.0
+        specifier: workspace:4.1.0
         version: link:../zfb-linux-arm64-gnu
       '@takazudo/zfb-linux-x64-gnu':
-        specifier: workspace:4.0.0
+        specifier: workspace:4.1.0
         version: link:../zfb-linux-x64-gnu
       '@takazudo/zfb-win32-x64-msvc':
-        specifier: workspace:4.0.0
+        specifier: workspace:4.1.0
         version: link:../zfb-win32-x64-msvc
 
   packages/zfb-adapter-cloudflare:
