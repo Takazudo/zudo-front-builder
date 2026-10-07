@@ -426,7 +426,7 @@ async function main() {
       )}\n`,
     );
 
-    await run("npm", ["install", "--no-audit", "--no-fund", "--omit=optional"], {
+    await run("npm", ["install", "--no-audit", "--no-fund"], {
       cwd: consumer,
       label: "install packed consumer dependencies",
     });
