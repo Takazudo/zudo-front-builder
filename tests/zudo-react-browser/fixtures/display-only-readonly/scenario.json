@@ -1,0 +1,6 @@
+{
+  "page": "display-only-readonly",
+  "component": "component.tsx",
+  "props": {},
+  "mode": "hydrate"
+}

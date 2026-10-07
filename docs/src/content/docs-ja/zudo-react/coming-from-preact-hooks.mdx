@@ -146,7 +146,7 @@ const [name, setName] = useState("Ada");
 <input value={name} onInput={(event) => setName(event.currentTarget.value)} />
 ~~~
 
-zudo-react の input ハンドラーでは `currentTarget` が `HTMLInputElement` 型になるため、`value` を読むための型アサーションは不要です。値を signal と連動させる場合は、次のように `modelValue` を使います。
+zudo-react の input ハンドラーでは `currentTarget` が `HTMLInputElement` 型になるため、`value` を読むための型アサーションは不要です。操作できるコントロールの値を signal と連動させる場合は、次のように `modelValue` を使います。
 
 zudo-react での書き方:
 
@@ -159,7 +159,13 @@ function NameField() {
 }
 ~~~
 
-明示的なモデルは、対応するコントロールを書き込み可能な signal に接続します。モデルには signal を使ってください。computed と読み取り専用の signal は読み取り用のバインディングには使えますが、書き込み可能なモデルにはなりません。島のハイドレーション時にはブラウザの現在値が優先されます。[フォームガイド](./forms.mdx)に対応するコントロールと model prop を示します。
+`<input value={address} readOnly />` のように状態を表示するだけの Preact の input には、静的な HTML の `readonly` または `disabled` 属性を使う表示専用バインディングを指定します。ここで `address` は `computed()` の結果などの `ReadonlySignal<string>` です。
+
+~~~tsx
+<input type="url" value={address} readonly={true} />
+~~~
+
+明示的な `modelValue` は、対応するコントロールを書き込み可能な signal に接続します。モデルには signal を使ってください。computed と読み取り専用の signal は表示専用バインディングには使えますが、書き込み可能なモデルにはなりません。表示専用バインディングは、静的な `readonly={true}` または `disabled={true}` を持つテキスト入力と textarea に適用されます。島のハイドレーション時にはブラウザの現在値が優先されます。[フォームガイド](./forms.mdx)に対応するコントロールと model prop を示します。
 
 数値入力では `modelValue` を使えません。静的な初期 `value` と `on:input` を使います。ハンドラーで値を範囲内に丸める場合は、[フォームガイド](./forms.mdx)のように DOM に明示的に書き戻します。signal の更新だけでは、この input の表示は制御されません。
 

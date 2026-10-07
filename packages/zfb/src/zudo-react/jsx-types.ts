@@ -160,50 +160,91 @@ type IframeProps = Omit<HtmlBaseAttributes<HTMLIFrameElement>, "children" | "raw
 type InputBase = Omit<HtmlBaseAttributes<HTMLInputElement>, "type"> &
   DataAria &
   EventProps<HTMLInputElement, HTMLElementEventMap>;
-export type InputProps = InputBase &
+// Keep the event map explicit: Omit alone loses exact contextual event types in JSX.
+export type InputProps = EventProps<HTMLInputElement, HTMLElementEventMap> &
+  Omit<InputBase, "value"> &
+  (
+    | ({
+        type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
+        defaultChecked?: never;
+        modelChecked?: never;
+      } & (
+        | {
+            readonly: true;
+            disabled?: BooleanAttribute;
+            value?: string | number | null | ReadonlySignal<string>;
+            modelValue?: never;
+            defaultValue?: never;
+          }
+        | {
+            disabled: true;
+            readonly?: BooleanAttribute;
+            value?: string | number | null | ReadonlySignal<string>;
+            modelValue?: never;
+            defaultValue?: never;
+          }
+        | {
+            value?: string | number | null;
+            modelValue?: Signal<string> | undefined;
+            defaultValue?: string | undefined;
+          }
+      ))
+    | (Pick<InputBase, "value"> &
+        (
+          | {
+              type: "checkbox";
+              defaultValue?: never;
+              defaultChecked?: boolean | undefined;
+              modelChecked?: Signal<boolean> | undefined;
+              modelValue?: never;
+            }
+          | {
+              type: "radio";
+              name: string;
+              value: string;
+              defaultValue?: never;
+              defaultChecked?: boolean | undefined;
+              modelValue: Signal<string | null>;
+              modelChecked?: never;
+            }
+          | {
+              type: "radio";
+              defaultValue?: never;
+              defaultChecked?: boolean | undefined;
+              modelValue?: undefined;
+              modelChecked?: never;
+            }
+          | {
+              type: string;
+              defaultValue?: never;
+              defaultChecked?: never;
+              modelValue?: never;
+              modelChecked?: never;
+            }
+        ))
+  );
+export type TextareaProps = Omit<HTMLAttributes<HTMLTextAreaElement>, "value"> &
   (
     | {
-        type?: "text" | "search" | "email" | "url" | "tel" | "password" | undefined;
-        defaultValue?: string | undefined;
-        defaultChecked?: never;
+        readonly: true;
+        disabled?: BooleanAttribute;
+        value?: string | number | null | ReadonlySignal<string>;
+        modelValue?: never;
+        defaultValue?: never;
+      }
+    | {
+        disabled: true;
+        readonly?: BooleanAttribute;
+        value?: string | number | null | ReadonlySignal<string>;
+        modelValue?: never;
+        defaultValue?: never;
+      }
+    | {
+        value?: string | number | null;
         modelValue?: Signal<string> | undefined;
-        modelChecked?: never;
-      }
-    | {
-        type: "checkbox";
-        defaultValue?: never;
-        defaultChecked?: boolean | undefined;
-        modelChecked?: Signal<boolean> | undefined;
-        modelValue?: never;
-      }
-    | {
-        type: "radio";
-        name: string;
-        value: string;
-        defaultValue?: never;
-        defaultChecked?: boolean | undefined;
-        modelValue: Signal<string | null>;
-        modelChecked?: never;
-      }
-    | {
-        type: "radio";
-        defaultValue?: never;
-        defaultChecked?: boolean | undefined;
-        modelValue?: undefined;
-        modelChecked?: never;
-      }
-    | {
-        type: string;
-        defaultValue?: never;
-        defaultChecked?: never;
-        modelValue?: never;
-        modelChecked?: never;
+        defaultValue?: string | undefined;
       }
   );
-export type TextareaProps = HTMLAttributes<HTMLTextAreaElement> & {
-  modelValue?: Signal<string> | undefined;
-  defaultValue?: string | undefined;
-};
 export type SelectProps = HTMLAttributes<HTMLSelectElement> & {
   modelValue?: Signal<string> | undefined;
   defaultValue?: string | undefined;

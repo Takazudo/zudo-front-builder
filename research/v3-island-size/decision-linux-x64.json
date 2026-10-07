@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "2679d6cef812920952d47d60c1301c822123aaf6",
+  "baselineSourceSha": "e4b28d5e15a681d490e09c05408d44059bbbcb08",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 65395,
-        "gzip": 21846
+        "raw": 66327,
+        "gzip": 22087
       },
       "scalar-signal": {
-        "raw": 65403,
-        "gzip": 21841
+        "raw": 66335,
+        "gzip": 22093
       },
       "show-for": {
-        "raw": 65549,
-        "gzip": 21923
+        "raw": 66481,
+        "gzip": 22169
       },
       "model": {
-        "raw": 65394,
-        "gzip": 21850
+        "raw": 66326,
+        "gzip": 22097
       },
       "blog-theme": {
-        "raw": 65744,
-        "gzip": 21989
+        "raw": 66676,
+        "gzip": 22235
       },
       "json-api": {
-        "raw": 65549,
-        "gzip": 21936
+        "raw": 66481,
+        "gzip": 22188
       },
       "multi-island": {
-        "raw": 65671,
-        "gzip": 21951
+        "raw": 66603,
+        "gzip": 22194
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 65457,
-        "gzip": 21871
+        "raw": 66389,
+        "gzip": 22113
       },
       "scalar-signal": {
-        "raw": 65465,
-        "gzip": 21873
+        "raw": 66397,
+        "gzip": 22118
       },
       "show-for": {
-        "raw": 65611,
-        "gzip": 21956
+        "raw": 66543,
+        "gzip": 22196
       },
       "model": {
-        "raw": 65456,
-        "gzip": 21881
+        "raw": 66388,
+        "gzip": 22128
       },
       "blog-theme": {
-        "raw": 65806,
-        "gzip": 22008
+        "raw": 66738,
+        "gzip": 22260
       },
       "json-api": {
-        "raw": 65611,
-        "gzip": 21962
+        "raw": 66543,
+        "gzip": 22219
       },
       "multi-island": {
-        "raw": 65733,
-        "gzip": 21972
+        "raw": 66665,
+        "gzip": 22223
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured after the Wind migration-variable audit additions. Raw island sizes are unchanged; gzip shifts reflect changed versioned build identities. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured in health run 37558742167 at PR head 2277b280c57f2a71e273c78e90e0e46b90706c53 and Actions merge checkout e4b28d5e15a681d490e09c05408d44059bbbcb08. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37551888326,
-    "jobId": 112569200743,
-    "sourceSha": "2679d6cef812920952d47d60c1301c822123aaf6",
-    "note": "PR head 8cd51e16aadd92fb85fefcddcc79e4cedbd134af, measured at its Actions merge checkout. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Every raw total matches the prior reviewed contract; 11 gzip totals shift by 1-4 bytes in either direction while the versioned build identity changes. The parent sweep baseline passed its exact budget in health run 37548315717. New ceilings equal measured bytes with zero allowance; earlier ceilings remain in git history."
+    "runId": 37558742167,
+    "jobId": 112591016412,
+    "sourceSha": "e4b28d5e15a681d490e09c05408d44059bbbcb08",
+    "note": "PR head 2277b280c57f2a71e273c78e90e0e46b90706c53, measured at Actions merge checkout e4b28d5e15a681d490e09c05408d44059bbbcb08. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. The prior exact budget rejected all 14 nonempty rows; raw totals increased by 932 bytes per fixture and gzip deltas ranged from 240 to 257 bytes. No-island remained 0/0. These ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

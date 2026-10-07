@@ -6,10 +6,26 @@ const chosen = signal<string | null>(null);
 const readonlyText: ReadonlySignal<string> = text;
 const readonlyChecked: ReadonlySignal<boolean> = checked;
 const readonlyChosen: ReadonlySignal<string | null> = chosen;
+const shown: ReadonlySignal<string> = computed(() => text.value);
+const flag = signal(true);
 const dynamicType: string = Math.random() > 0.5 ? "text" : "number";
 const textLikeType: "text" | "search" = Math.random() > 0.5 ? "text" : "search";
 export const forms = [
   <input type="text" value="a" />,
+  <input readonly value={computed(() => text.value)} />,
+  <input type={undefined} readonly value={shown} />,
+  <input disabled value={shown} />,
+  <input type="search" readonly value={shown} />,
+  <textarea readonly value={shown} />,
+  <textarea disabled value={shown} />,
+  <input type="checkbox" value="v" />,
+  <input type="radio" value="v" />,
+  <input type="color" value="#fff" />,
+  <select value="a">
+    <option value="a">A</option>
+  </select>,
+  <button value="b" />,
+  <textarea value="static" />,
   <input type="checkbox" checked={true} />,
   <input type="checkbox" checked={null} />,
   <option selected={checked}>Selected reactively</option>,
@@ -39,6 +55,24 @@ export const forms = [
     }}
   />,
   <input type="color" value="#ff0000" />,
+  // @ts-expect-error Reactive text values require a static readonly or disabled attribute.
+  <input value={shown} />,
+  // @ts-expect-error A reactive readonly attribute does not qualify.
+  <input readonly={flag} value={shown} />,
+  // @ts-expect-error A false readonly attribute does not qualify.
+  <input readonly={false} value={shown} />,
+  // @ts-expect-error Number inputs do not qualify for display-only bindings.
+  <input type="number" readonly value={shown} />,
+  // @ts-expect-error Dynamic input types do not qualify for display-only bindings.
+  <input type={dynamicType} readonly value={shown} />,
+  // @ts-expect-error A display-only value cannot coexist with a model.
+  <input readonly value={shown} modelValue={text} />,
+  // @ts-expect-error A display-only value cannot coexist with a default.
+  <input readonly value={shown} defaultValue="x" />,
+  // @ts-expect-error Reactive textarea values require a static readonly or disabled attribute.
+  <textarea value={shown} />,
+  // @ts-expect-error A display-only textarea value cannot coexist with a model.
+  <textarea disabled value={shown} modelValue={text} />,
   // @ts-expect-error Omitted type is text and cannot use defaultChecked.
   <input defaultChecked />,
   // @ts-expect-error Text inputs cannot use defaultChecked.
