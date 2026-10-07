@@ -18,8 +18,9 @@ pub fn append_default_theme_var_diagnostics(
     }
 
     for (path, reference) in undeclared_default_theme_var_references(stylesheets) {
-        let relative = path.strip_prefix(project_root).unwrap_or(&path);
-        let source_id = relative.to_string_lossy().replace('\\', "/");
+        let source_id = project_relative_path(&path, project_root)
+            .to_string_lossy()
+            .replace('\\', "/");
         report.diagnostics.push(DiagnosticView {
             severity: if strict { "warning" } else { "auditInfo" }.to_owned(),
             code: "ZW016".to_owned(),
@@ -42,4 +43,47 @@ pub fn append_default_theme_var_diagnostics(
         });
     }
     zudo_wind::finalize_audit_report(report);
+}
+
+fn project_relative_path(path: &Path, project_root: &Path) -> PathBuf {
+    if let Ok(relative) = path.strip_prefix(project_root) {
+        return relative.to_path_buf();
+    }
+    if path.is_absolute() != project_root.is_absolute() {
+        return path.to_path_buf();
+    }
+    let path_parts: Vec<_> = path.components().collect();
+    let root_parts: Vec<_> = project_root.components().collect();
+    let common = path_parts
+        .iter()
+        .zip(&root_parts)
+        .take_while(|(path, root)| path == root)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..root_parts.len() {
+        relative.push("..");
+    }
+    for part in &path_parts[common..] {
+        relative.push(part.as_os_str());
+    }
+    relative
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_stylesheet_outside_project_root_has_relative_origin() {
+        let root = Path::new("/workspace/site");
+        let stylesheet = Path::new("/workspace/design-system/tokens.css");
+        assert_eq!(
+            project_relative_path(stylesheet, root),
+            PathBuf::from("../design-system/tokens.css")
+        );
+        assert_eq!(
+            project_relative_path(Path::new("/workspace/site/src/main.css"), root),
+            PathBuf::from("src/main.css")
+        );
+    }
 }
