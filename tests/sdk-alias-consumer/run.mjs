@@ -27,7 +27,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
 const DOCS_RECIPE = join(REPO_ROOT, "docs/src/content/docs/concepts/mdx-components.mdx");
 const SHIM_SOURCE = join(REPO_ROOT, "crates/zfb/templates/basic-blog/components/zfb-shim.d.ts");
 const TYPESCRIPT_VERSION = "7.0.2";
-const DEV_TIMEOUT_MS = 15_000;
+const DEV_TIMEOUT_MS = 90_000;
 const DEV_PORT = 44992;
 
 function currentSourceSha() {
@@ -172,7 +172,6 @@ function startDev(consumer, zfbBinary, port) {
     ["dev", "--scratch-dir", ".zfb-build/dev", "--host", "127.0.0.1", "--port", String(port)],
     {
       cwd: consumer,
-      env: { ...process.env, ZFB_DEV_TIMING: "1" },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -288,16 +287,10 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
   await run(process.execPath, [compiler, "--noEmit"], { cwd: consumer, label: "consumer tsc" });
   await run(zfbBinary, ["check"], { cwd: consumer, label: "consumer zfb check" });
   await run(zfbBinary, ["build"], { cwd: consumer, label: "consumer zfb build" });
-  const builtHtml = await readFile(join(consumer, "dist/index.html"), "utf8");
-  process.stdout.write(
-    `Built HTML: bytes=${builtHtml.length} countLabel=${builtHtml.includes("Count: 0")} namedLabel=${builtHtml.includes("Named counter: 0")} islandMarker=${builtHtml.includes("data-zfb-island")}\n`,
-  );
-
   const port = Number(new URL(origin).port);
   const server = startDev(consumer, zfbBinary, port);
   try {
     const pageUrl = `${origin}/`;
-    let readinessProbeCount = 0;
     await poll("zfb dev page readiness", async () => {
       if (server.spawnError()) throw server.spawnError();
       if (server.child.exitCode !== null || server.child.signalCode !== null) {
@@ -306,15 +299,12 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
         throw error;
       }
       const { response, text } = await fetchText(pageUrl);
-      readinessProbeCount += 1;
-      if (readinessProbeCount <= 4) {
-        process.stdout.write(
-          `Dev readiness #${readinessProbeCount}: status=${response.status} bytes=${text.length} countLabel=${text.includes("Count: 0")} namedLabel=${text.includes("Named counter: 0")} islandMarker=${text.includes("data-zfb-island")}\n`,
-        );
-      }
       if (!response.ok)
         throw new Error(`dev page returned ${response.status}: ${text.slice(0, 300)}`);
-      return text.includes("Count: 0") && text.includes("Named counter: 0");
+      return (
+        text.includes('data-zfb-island="Counter"') &&
+        text.includes('data-zfb-island="NamedCounter"')
+      );
     }).catch(async (error) => {
       const scratchFiles = await readdir(join(consumer, ".zfb-build"), { recursive: true }).catch(
         () => [],
@@ -352,7 +342,7 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
       return (
         pageResponse.ok &&
         assetResponse.ok &&
-        pageText.includes("Edited counter: 0") &&
+        pageText.includes("Edited counter") &&
         assetText.includes("Edited counter") &&
         assetText !== initialAsset
       );

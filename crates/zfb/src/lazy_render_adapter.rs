@@ -250,9 +250,8 @@ impl LazyRenderAdapter {
         // `needs_stale_check`: `true` for normal concrete entries (the
         // standard #1025 pre-check), `false` for synthesized dynamic
         // entries whose stale state was already resolved below.
-        let (entry, needs_stale_check, lookup_outcome) = match self.session.lookup_by_url(url_path)
-        {
-            Some(e) => (e, true, "hit"),
+        let (entry, needs_stale_check) = match self.session.lookup_by_url(url_path) {
+            Some(e) => (e, true),
             None => {
                 // Dynamic-injected-route fallback (epic #1228, S4 #1232,
                 // design record §2). `lookup_by_url` misses for dynamic
@@ -300,14 +299,6 @@ impl LazyRenderAdapter {
                         // request, shadowing the requested SSR / no-disk
                         // behaviour (codex review, epic #1228).
                         if rec.prerender == Some(false) {
-                            log_lazy_render_noop(
-                                url_path,
-                                "injected-ssr-only",
-                                "not-checked",
-                                "not-checked",
-                                "no-route",
-                                None,
-                            );
                             return LazyRenderOutcome::NoRoute;
                         }
                         // Re-encode the matched (decoded) URL to the canonical
@@ -365,19 +356,9 @@ impl LazyRenderAdapter {
                             static_html: false,
                             source_path: None,
                         };
-                        (entry, needs_check, "injected-fallback")
+                        (entry, needs_check)
                     }
-                    None => {
-                        log_lazy_render_noop(
-                            url_path,
-                            "miss",
-                            "not-checked",
-                            "not-checked",
-                            "no-route",
-                            None,
-                        );
-                        return LazyRenderOutcome::NoRoute;
-                    }
+                    None => return LazyRenderOutcome::NoRoute,
                 }
             }
         };
@@ -388,14 +369,6 @@ impl LazyRenderAdapter {
         // synthesized absent-file entries (stale state already ensured
         // above — see `needs_stale_check`).
         if needs_stale_check && self.session.claim_stale(&entry.output_path).is_none() {
-            log_lazy_render_noop(
-                url_path,
-                lookup_outcome,
-                "missing",
-                "not-checked",
-                "not-stale",
-                Some(&entry.output_path),
-            );
             return LazyRenderOutcome::NotStale;
         }
 
@@ -427,27 +400,9 @@ impl LazyRenderAdapter {
         let (claim, bytes) = match rendered {
             Ok(RenderUnderLock::Rendered { claim, bytes }) => (claim, bytes),
             Ok(RenderUnderLock::RendererUnavailable) => {
-                log_lazy_render_noop(
-                    url_path,
-                    lookup_outcome,
-                    "present-before-render",
-                    "unavailable",
-                    "renderer-unavailable",
-                    Some(&entry.output_path),
-                );
                 return LazyRenderOutcome::RendererUnavailable;
             }
-            Ok(RenderUnderLock::Raced) => {
-                log_lazy_render_noop(
-                    url_path,
-                    lookup_outcome,
-                    "lost-under-renderer-lock",
-                    "available",
-                    "raced",
-                    Some(&entry.output_path),
-                );
-                return LazyRenderOutcome::Raced;
-            }
+            Ok(RenderUnderLock::Raced) => return LazyRenderOutcome::Raced,
             Err(err) => {
                 // Same per-page tolerance as the tick fan-out: log
                 // verbosely, keep the stale file in place, keep the
@@ -457,14 +412,6 @@ impl LazyRenderAdapter {
                     url_path,
                     entry.output_path.display()
                 ));
-                log_lazy_render_noop(
-                    url_path,
-                    lookup_outcome,
-                    "present-before-render",
-                    "render-error",
-                    "render-failed",
-                    Some(&entry.output_path),
-                );
                 return LazyRenderOutcome::RenderFailed;
             }
         };
@@ -528,14 +475,6 @@ impl LazyRenderAdapter {
                     output = %entry.output_path.display(),
                     "lazy render superseded by a tick mid-gap; write skipped (#1027)"
                 );
-                log_lazy_render_noop(
-                    url_path,
-                    lookup_outcome,
-                    "superseded-before-write",
-                    "rendered",
-                    "write-superseded",
-                    Some(&entry.output_path),
-                );
                 LazyRenderOutcome::WriteSuperseded
             }
             Err(err) => {
@@ -544,14 +483,6 @@ impl LazyRenderAdapter {
                     url_path,
                     entry.output_path.display()
                 ));
-                log_lazy_render_noop(
-                    url_path,
-                    lookup_outcome,
-                    "stale-claim-retained",
-                    "rendered",
-                    "write-failed",
-                    Some(&entry.output_path),
-                );
                 LazyRenderOutcome::WriteFailed
             }
         }
@@ -695,30 +626,6 @@ fn format_lazy_render_timing(
     )
 }
 
-/// Report lazy-render no-ops and failures only when request timing diagnostics
-/// are enabled. These fields distinguish a route-index miss from a missing or
-/// superseded stale claim and an unavailable renderer without changing normal
-/// request logs.
-fn log_lazy_render_noop(
-    url_path: &str,
-    lookup: &str,
-    stale_claim: &str,
-    renderer: &str,
-    outcome: &str,
-    output_path: Option<&Path>,
-) {
-    if !dev_timing_enabled() {
-        return;
-    }
-    let output = output_path
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "-".to_string());
-    eprintln!(
-        "[zfb-timing] lazy-render-noop url={url_path} lookup={lookup} \
-         stale_claim={stale_claim} renderer={renderer} outcome={outcome} output={output}"
-    );
-}
-
 #[async_trait]
 impl RenderOnRequestHook for LazyRenderAdapter {
     async fn render_if_stale(&self, url_path: &str) {
@@ -727,11 +634,7 @@ impl RenderOnRequestHook for LazyRenderAdapter {
         // does — no spawn, no locks, no lookup. The dev boot wiring
         // doesn't even install the hook in that case; this guard is
         // defense in depth.
-        let lazy_enabled = self.session.lazy_render_enabled();
-        if dev_timing_enabled() {
-            eprintln!("[zfb-timing] lazy-render-hook url={url_path} lazy_enabled={lazy_enabled}");
-        }
-        if !lazy_enabled {
+        if !self.session.lazy_render_enabled() {
             return;
         }
         let this = self.clone();
