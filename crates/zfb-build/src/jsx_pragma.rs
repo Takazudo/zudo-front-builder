@@ -158,7 +158,11 @@ pub fn foreign_pragma_warning(file: &Path, pragma: &JsxImportSourcePragma) -> Op
 }
 
 pub fn foreign_pragma_message(pragma: &JsxImportSourcePragma) -> Option<String> {
-    (pragma.value != JSX_IMPORT_SOURCE).then(|| {
+    let import_source = normalize_first_party_jsx_import_source(&pragma.value);
+    let is_first_party = import_source == JSX_IMPORT_SOURCE
+        || import_source == "@takazudo/zfb/zudo-react/jsx-runtime"
+        || import_source == "@takazudo/zfb/zudo-react/jsx-dev-runtime";
+    (!is_first_party).then(|| {
         format!(
             "per-file `@jsxImportSource {}` pragma overrides the project's JSX import source; \
          this file is compiled for the server renderer, which expects `{JSX_IMPORT_SOURCE}`. \
@@ -166,6 +170,17 @@ pub fn foreign_pragma_message(pragma: &JsxImportSourcePragma) -> Option<String> 
             pragma.value,
         )
     })
+}
+
+/// Resolve the public short `zfb/` spellings to their first-party package
+/// names before comparing a pragma with the owned JSX runtime.
+fn normalize_first_party_jsx_import_source(value: &str) -> &str {
+    match value {
+        "zfb/zudo-react" => JSX_IMPORT_SOURCE,
+        "zfb/zudo-react/jsx-runtime" => "@takazudo/zfb/zudo-react/jsx-runtime",
+        "zfb/zudo-react/jsx-dev-runtime" => "@takazudo/zfb/zudo-react/jsx-dev-runtime",
+        _ => value,
+    }
 }
 
 /// Warnings for every foreign pragma among `files` (project-relative paths
@@ -324,6 +339,35 @@ mod tests {
         assert_eq!(pragma(source).unwrap().value, JSX_IMPORT_SOURCE);
         let classic = "/** @jsxRuntime classic @jsxImportSource preact */\nexport {};\n";
         assert_eq!(pragma(classic), None);
+    }
+
+    #[test]
+    fn short_sdk_jsx_import_sources_are_first_party_but_preact_is_foreign() {
+        for value in [
+            "zfb/zudo-react",
+            "zfb/zudo-react/jsx-runtime",
+            "zfb/zudo-react/jsx-dev-runtime",
+        ] {
+            let source = format!("/** @jsxImportSource {value} */\nexport {{}};\n");
+            let pragma = pragma(&source).expect("pragma is parsed");
+            assert_eq!(
+                normalize_first_party_jsx_import_source(&pragma.value),
+                match value {
+                    "zfb/zudo-react" => JSX_IMPORT_SOURCE,
+                    "zfb/zudo-react/jsx-runtime" => {
+                        "@takazudo/zfb/zudo-react/jsx-runtime"
+                    }
+                    "zfb/zudo-react/jsx-dev-runtime" => {
+                        "@takazudo/zfb/zudo-react/jsx-dev-runtime"
+                    }
+                    _ => unreachable!(),
+                }
+            );
+            assert_eq!(foreign_pragma_message(&pragma), None, "{value}");
+        }
+
+        let preact = pragma("/** @jsxImportSource preact */\nexport {};\n").unwrap();
+        assert!(foreign_pragma_message(&preact).is_some());
     }
 
     #[test]
