@@ -603,6 +603,7 @@ jobs:
       # browser companion. Keep hydration and host-override assertions in the
       # same job so they exercise the exact artifacts built by nextest.
       - name: Install Chromium for scanner boundary acceptance
+        if: always()
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Scanner boundary acceptance (Chromium)
@@ -616,6 +617,29 @@ jobs:
           ZFB_BINARY="$PWD/target/debug/zfb" \
           ZFB_BINARY_SOURCE_SHA="$(git rev-parse HEAD)" \
           node tests/sdk-alias-consumer/run.mjs
+
+      # #3931 reproduces the linked-package identity issue from a scratch
+      # workspace while reusing this job's branch-built zfb binary and the
+      # Chromium installation above. The script preserves fixture and
+      # phase/browser evidence under RUNNER_TEMP, including on failure.
+      - name: Linked-package token identity probe and hydration (#3931)
+        if: always()
+        env:
+          ZFB_PROBE_EVIDENCE_DIR: ${{ runner.temp }}/linked-package-token-probe
+        run: node scripts/linked-package-token-probe.mjs
+
+      - name: Upload linked-package token probe evidence (#3931)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linked-package-token-probe
+          path: ${{ runner.temp }}/linked-package-token-probe/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Declared linked dist dev watch row (#3931)
+        if: always()
+        run: cargo test -p zfb --test dev_sibling_watch_1678_e2e e2e_3163_nested_site_compiled_dist_sibling_edit_is_served -- --include-ignored
 
       # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
       # run` above cannot cover them. This separate step keeps that coverage.
