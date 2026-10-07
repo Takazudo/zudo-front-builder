@@ -50,6 +50,14 @@ zfb new my-site --template basic-blog
 
 `basic-blog` がスキャフォールドするのは、`zfb.config.ts`（JSON ではありません）、3 つのシード記事を持つ `blog` コンテンツコレクション、4 つのルート、そして 1 つのクライアント島です。同梱の `README.md` がツリーの案内になっており、[プロジェクト構造](./project-structure.mdx) が同じ範囲をより詳しく扱います。
 
+<Note title="インポート指定子について">
+
+ベアの `zfb` 系指定子（`zfb`、`zfb/content`、`zfb/paginate`、`zfb/zudo-react` などの対応サブパス）は、SSR、島のスキャナー、クライアントバンドル、JSX pragma の判定、zudo-wind のクラス抽出で、それぞれ対応する `@takazudo/zfb` の公開エントリへ解決されます。パッケージを参照するエントリでは、どちらの書き方も同じパッケージを指します。このドキュメントでは短い `zfb` 形式を使います。設定ローダーは `zfb/config` を別扱いし、内部のランタイム専用スタブへエイリアスします。
+
+このビルド時のエイリアスは TypeScript の設定には反映されません。`zfb check` の動作も変わらず、プロジェクトの設定で TypeScript を実行し、`compilerOptions.paths` を注入しません。TypeScript とエディタは `components/zfb-shim.d.ts` の ambient 宣言を使ってベア指定子を解決します。シム全体と既存のシムを拡張する方法は[ベアの `zfb` インポートの型付け](../api/define-config.mdx#typing-bare-zfb-imports)を参照してください。
+
+</Note>
+
 ## 開発サーバーを起動する
 
 ```bash
