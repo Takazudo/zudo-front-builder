@@ -14,3 +14,5 @@ export {
   PackedJsxsBoundary,
   PackedDevBoundary,
 } from "./wrappers.js";
+
+export { createBodyEnd, createChrome } from "./composition.js";

@@ -278,6 +278,21 @@ fn expected_home_marker_set() -> BTreeSet<String> {
         .collect()
 }
 
+const COMPOSITION_ROUTES: &[(&str, &[&str])] = &[
+    ("factory-static-spread", &["FactoryCounter"]),
+    ("factory-composition-default", &["DefaultPanel"]),
+    ("factory-composition-host-override", &["HostPanel"]),
+    ("factory-composition-settings-disabled", &[]),
+    ("factory-composition-default-suppressed", &[]),
+    (
+        "factory-composition-host-with-default-suppressed",
+        &["HostPanel"],
+    ),
+    ("factory-map-default", &["DefaultPanel"]),
+    ("factory-map-host-override", &["HostPanel"]),
+    ("factory-map-settings-disabled", &[]),
+];
+
 fn assert_no_published_islands(root: &Path) {
     let assets = root.join("dist/assets");
     let found = fs::read_dir(&assets)
@@ -553,6 +568,26 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         BTreeSet::from(["HostPanel".to_string()]),
         "host override route must render the host-owned target only"
     );
+    let mut route_expectations = serde_json::Map::new();
+    for (route, markers) in COMPOSITION_ROUTES {
+        let route_html = fs::read_to_string(positive.join(format!("dist/{route}/index.html")))
+            .unwrap_or_else(|error| panic!("read {route} route HTML: {error}"));
+        let actual = extract_html_markers(&route_html);
+        let expected_markers: Vec<String> = markers.iter().map(|marker| (*marker).into()).collect();
+        assert_eq!(
+            actual, expected_markers,
+            "{route} must emit the exact selected markers"
+        );
+        if markers.is_empty() {
+            assert!(!route_html.contains("data-zfb-island-mounted"), "{route}");
+            assert!(!route_html.contains("id=\"default-panel\""), "{route}");
+            assert!(!route_html.contains("id=\"host-panel\""), "{route}");
+        }
+        route_expectations.insert(
+            (*route).to_string(),
+            json!({ "markers": markers, "count": markers.len() }),
+        );
+    }
     for marker in ["Counter", "NamedCounter"] {
         assert_eq!(
             extract_html_markers(&html)
@@ -659,6 +694,8 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         "markers": EXPECTED_MARKERS,
         "pageMarkers": expected_home_marker_set(),
         "wrapperCount": extract_html_markers(&html).len(),
+        "routes": route_expectations,
+        "buildToken": build_token,
     });
     fs::write(
         artifacts.join("acceptance.json"),
@@ -1062,6 +1099,21 @@ export default function Home() {
             "const FactoryBoundary = createFactoryBoundary({ FactoryCounter });\n  retainFactory(createFactoryBoundary);",
             "factory createFactoryBoundary escapes as a value",
         ),
+        (
+            "factory-spread-mutated",
+            "const defaults = { FactoryCounter }; defaults.FactoryCounter = FactoryCounter; const FactoryBoundary = createFactoryBoundary({ ...defaults });",
+            "passes a non-literal argument",
+        ),
+        (
+            "factory-spread-nested",
+            "const inner = { FactoryCounter }; const defaults = { ...inner }; const FactoryBoundary = createFactoryBoundary({ ...defaults });",
+            "passes a non-literal argument",
+        ),
+        (
+            "factory-spread-proto",
+            "const defaults = { '__proto__': {}, FactoryCounter }; const FactoryBoundary = createFactoryBoundary({ ...defaults });",
+            "passes a non-literal argument",
+        ),
     ] {
         let rejected_root = scratch.path().join(name);
         make_minimal_project(&rejected_root);
@@ -1105,6 +1157,83 @@ export default function Home() {{
         );
         assert_no_published_islands(&rejected_root);
     }
+
+    for (name, map, reason) in [
+        (
+            "factory-map-opaque",
+            "const components = { Panel: BarePanelIsland };",
+            "boundary wrapper escapes into an opaque container",
+        ),
+        (
+            "factory-map-forwarding-opaque",
+            "const components = { Island: ForwardBoundary };",
+            "boundary wrapper escapes into an opaque container",
+        ),
+        (
+            "factory-map-opaque-shorthand",
+            "const components = { ForwardBoundary };",
+            "boundary wrapper escapes into an opaque object",
+        ),
+    ] {
+        let rejected_root = scratch.path().join(name);
+        make_minimal_project(&rejected_root);
+        write(
+            &rejected_root,
+            "components/factory-counter.tsx",
+            "\"use client\"; export function FactoryCounter() { return <button>Counter</button>; }",
+        );
+        write(
+            &rejected_root,
+            "pages/index.tsx",
+            &format!(
+                r#"import {{ Island }} from "@takazudo/zfb";
+import {{ FactoryCounter }} from "../components/factory-counter";
+function BarePanelIsland() {{ return <Island><FactoryCounter /></Island>; }}
+function ForwardBoundary({{ children }}) {{ return <Island>{{children}}</Island>; }}
+{map}
+export default function Home() {{ return <html><body><p>map</p></body></html>; }}
+"#
+            ),
+        );
+        let rejected = run_build(&rejected_root, &esbuild);
+        assert!(!rejected.status.success(), "{name} must fail");
+        assert!(
+            combined_output(&rejected).contains(reason),
+            "{name}: {}",
+            combined_output(&rejected)
+        );
+        assert_no_published_islands(&rejected_root);
+    }
+
+    let json_function = scratch.path().join("factory-function-json-prop");
+    make_minimal_project(&json_function);
+    write(
+        &json_function,
+        "components/client.tsx",
+        "\"use client\"; export function FactoryCounter() { return <button>Counter</button>; } export function PropsReceiver({ component }) { return <button>Receiver</button>; }",
+    );
+    write(
+        &json_function,
+        "pages/index.tsx",
+        r#"import { Island } from "@takazudo/zfb";
+import { FactoryCounter, PropsReceiver } from "../components/client";
+export default function Home() { return <html><body><Island><PropsReceiver component={FactoryCounter} /></Island></body></html>; }
+"#,
+    );
+    let rejected = run_build(&json_function, &esbuild);
+    assert!(
+        !rejected.status.success(),
+        "function-valued JSON prop must fail SSR"
+    );
+    let diagnostic = combined_output(&rejected);
+    assert!(
+        diagnostic.contains("ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component"),
+        "{diagnostic}"
+    );
+    assert!(
+        !json_function.join("dist/index.html").exists(),
+        "failed SSR must not publish a page"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
