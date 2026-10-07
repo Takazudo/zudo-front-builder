@@ -67,12 +67,15 @@ parameter named `Island`, `h`, or `Counter` must not match the imported binding 
 shadows. Ignore type-only imports/exports. Erase parentheses and TypeScript-only
 assertions/non-null/satisfies wrappers when resolving a value.
 
-Recognize the SDK `Island` export from `@takazudo/zfb` and the owned description
-factories `h` from `@takazudo/zfb/zudo-react`, `jsx`/`jsxs` from its `jsx-runtime`,
-and `jsxDEV` from its `jsx-dev-runtime`. Treat these as known terminal exports;
-do not inspect SDK internals as application boundary wrappers. Follow their
-named aliases, local immutable aliases, named re-exports, and barrel re-exports.
-A similarly spelled export from another library is not an SDK boundary/factory.
+Recognize the SDK `Island` export from `@takazudo/zfb` (also spelled `zfb`) and
+the owned description factories `h` from `@takazudo/zfb/zudo-react` (also
+`zfb/zudo-react`), `jsx`/`jsxs` from its `jsx-runtime`, and `jsxDEV` from its
+`jsx-dev-runtime`. For every `zfb/<subpath>`, normalize only that exact package
+prefix to `@takazudo/zfb/<subpath>` before SDK classification or demanded
+resolution. Treat the recognized exports as known terminal exports; do not
+inspect SDK internals as application boundary wrappers. Follow their named
+aliases, local immutable aliases, named re-exports, and barrel re-exports. A
+similarly spelled export from another library is not an SDK boundary/factory.
 There is no SDK default `Island` export, but a user barrel may re-export its
 named `Island` as that barrel's default.
 
