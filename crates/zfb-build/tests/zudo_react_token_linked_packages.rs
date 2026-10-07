@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use zfb_build::bundler::{
     zudo_react_build_token_with_aliases, zudo_react_build_token_with_inputs_and_output,
-    LinkedPackageIgnoreSnapshot,
+    zudo_react_build_token_with_snapshots, LinkedPackageIgnoreSnapshot,
 };
 
 struct Fixture {
@@ -119,6 +119,59 @@ fn manifestless_alias_keeps_token_walk_and_fails_open() {
     let snapshot = LinkedPackageIgnoreSnapshot::capture(&root, &project).unwrap();
     assert!(!snapshot.ignored_and_undeclared(&root.join("test-results/a.json"), false));
     assert!(!f.token("alias").is_empty());
+}
+
+#[test]
+fn direct_alias_closure_stays_exempt_after_linked_snapshot_walk() {
+    let f = Fixture::new();
+    write(&f.widget.join(".gitignore"), "target.js\ndep.js\n");
+    write(
+        &f.widget.join("target.js"),
+        "import { dep } from './dep.js'; export const target = dep;\n",
+    );
+    write(&f.widget.join("dep.js"), "export const dep = 1;\n");
+    let aliases = vec![(
+        "ignored-target".into(),
+        f.widget.join("target.js").display().to_string(),
+    )];
+    let (_, snapshots) = zudo_react_build_token_with_snapshots(
+        &f.app,
+        &aliases,
+        &[],
+        &f.app.join("dist"),
+        &Default::default(),
+    )
+    .unwrap();
+    let root = fs::canonicalize(&f.widget).unwrap();
+    let snapshot = snapshots
+        .iter()
+        .find(|snapshot| snapshot.package_root() == root.as_path())
+        .unwrap();
+    for name in ["target.js", "dep.js"] {
+        let path = root.join(name);
+        assert!(snapshot.closure_members().contains(&path));
+        assert!(!snapshot.ignored_and_undeclared(&path, false));
+    }
+}
+
+#[test]
+fn absent_declared_root_file_remains_exempt_until_created() {
+    let f = Fixture::new();
+    write(&f.widget.join(".gitignore"), "*.js\n");
+    write(
+        &f.widget.join("package.json"),
+        r#"{"name":"widget","exports":"./entry.js"}"#,
+    );
+    let root = fs::canonicalize(&f.widget).unwrap();
+    let project = fs::canonicalize(&f.app).unwrap();
+    let entry = root.join("entry.js");
+    assert!(!entry.exists());
+    let snapshot = LinkedPackageIgnoreSnapshot::capture(&root, &project).unwrap();
+    assert!(!snapshot.ignored_and_undeclared(&entry, false));
+    // A missing declaration must not make an otherwise valid token walk fail.
+    assert!(!f.token("alias").is_empty());
+    write(&entry, "export const value = 2;\n");
+    assert!(!snapshot.ignored_and_undeclared(&entry, false));
 }
 
 #[test]

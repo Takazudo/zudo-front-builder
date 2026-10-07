@@ -3045,7 +3045,7 @@ fn collect_zudo_react_external_target(
             }
         }
         if zudo_react_token_source(&canonical) {
-            collect_zudo_react_external_file_closure(
+            let members = collect_zudo_react_external_file_closure(
                 vec![(
                     canonical.clone(),
                     logical.join(canonical.file_name().unwrap()),
@@ -3054,6 +3054,12 @@ fn collect_zudo_react_external_target(
                 files,
                 emitted,
             )?;
+            // The linked-package walk published its snapshot before this
+            // explicitly named alias target and its imports were visited.
+            // Keep them exempt from ignored-file intake suppression too.
+            for snapshot in linked_snapshots.iter_mut() {
+                snapshot.extend_closure_members(members.iter().cloned());
+            }
         }
     } else if canonical.is_dir() && visited_packages.insert(canonical.clone()) {
         collect_zudo_react_token_tree(
@@ -3491,10 +3497,7 @@ fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf
     }
     files.sort();
     files.dedup();
-    Ok(files
-        .into_iter()
-        .filter(|file| package_root.join(file).is_file())
-        .collect())
+    Ok(files)
 }
 
 fn linked_package_entry_ignored(
@@ -3666,7 +3669,11 @@ fn collect_zudo_react_token_tree(
         }
         for file in snapshot.declared_root_files.clone() {
             let path = physical_root.join(&file);
-            let canonical = fs::canonicalize(&path)?;
+            // Retain absent declared names in the snapshot so their future
+            // creation is never mistaken for an undeclared ignored write.
+            let Ok(canonical) = fs::canonicalize(&path) else {
+                continue;
+            };
             if canonical.starts_with(physical_root) && zudo_react_token_source(&path) {
                 snapshot.collect_target_import_closure(
                     vec![(canonical, logical_root.join(&file))],
