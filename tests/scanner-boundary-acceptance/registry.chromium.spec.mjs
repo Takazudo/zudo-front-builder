@@ -218,13 +218,23 @@ test("composition routes mount only the selected fixed targets", async ({ page }
   for (const [route, expectedRoute] of Object.entries(expected.routes)) {
     await page.goto(`/${route}/index.html`);
     const islands = page.locator("[data-zfb-island]");
+    const featureShim = page.locator("script#factory-feature-shim");
     await expect(islands).toHaveCount(expectedRoute.count);
+    await expect(featureShim).toHaveCount(expectedRoute.featureShim ? 1 : 0);
+    if (expectedRoute.featureShim) {
+      await expect(page.locator("html")).toHaveAttribute("data-factory-feature-shim", "active");
+    } else {
+      await expect(page.locator("html")).not.toHaveAttribute("data-factory-feature-shim");
+    }
     const markers = await islands.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-zfb-island")),
     );
     expect(markers).toEqual(expectedRoute.markers);
     if (expectedRoute.count === 0) {
-      await expect(page.locator("[data-zfb-island-mounted]")).toHaveCount(0);
+      await expect(page.locator("[data-zfb-island], [data-zfb-island-skip-ssr]")).toHaveCount(0);
+      await expect(
+        page.locator("[data-zfb-island-mounted], [data-zfb-island-skip-ssr-mounted]"),
+      ).toHaveCount(0);
       await expect(page.locator("#factory-counter, #default-panel, #host-panel")).toHaveCount(0);
       continue;
     }
