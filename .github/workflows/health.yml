@@ -597,6 +597,7 @@ jobs:
       # browser companion. Keep hydration and host-override assertions in the
       # same job so they exercise the exact artifacts built by nextest.
       - name: Install Chromium for scanner boundary acceptance
+        if: always()
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Scanner boundary acceptance (Chromium)
@@ -620,6 +621,10 @@ jobs:
           path: ${{ runner.temp }}/linked-package-token-probe/
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Declared linked dist dev watch row (#3931)
+        if: always()
+        run: cargo test -p zfb --test dev_sibling_watch_1678_e2e e2e_3163_nested_site_compiled_dist_sibling_edit_is_served -- --include-ignored
 
       # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
       # run` above cannot cover them. This separate step keeps that coverage.

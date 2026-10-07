@@ -447,16 +447,16 @@ fn assert_dist_equal(left: &BuildSnapshot, right: &BuildSnapshot, context: &str)
     );
 }
 
-fn assert_project_relative_island_label(snapshot: &BuildSnapshot) {
+fn assert_island_label(snapshot: &BuildSnapshot, component: &str, label: &str) {
     let compact: String = snapshot
         .islands_entry
         .chars()
         .filter(|ch| !ch.is_whitespace())
         .collect();
-    let call_arguments = format!("\"Counter\",\"Counter\",\"{ISLAND_LABEL}\"");
+    let call_arguments = format!("\"{component}\",\"{component}\",\"{label}\"");
     assert!(
         compact.contains(&call_arguments),
-        "the emitted registration arguments must include the fourth-argument label {ISLAND_LABEL:?}; expected suffix {call_arguments:?}"
+        "the emitted registration arguments must include the fourth-argument label {label:?}; expected suffix {call_arguments:?}"
     );
 }
 
@@ -498,7 +498,7 @@ fn assert_no_path_leaks(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Opti
 }
 
 fn assert_clean_build(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Option<&Path>) {
-    assert_project_relative_island_label(snapshot);
+    assert_island_label(snapshot, "Counter", ISLAND_LABEL);
     assert_no_path_leaks(snapshot, root, scratch_dir);
 }
 
@@ -683,8 +683,10 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
         &with_artifacts,
         "ignored sibling widget test-results artifacts",
     );
-    assert_clean_build(&baseline, &app, None);
-    assert_clean_build(&with_artifacts, &app, None);
+    assert_island_label(&baseline, "Probe", "components/probe.tsx");
+    assert_island_label(&with_artifacts, "Probe", "components/probe.tsx");
+    assert_no_path_leaks(&baseline, &app, None);
+    assert_no_path_leaks(&with_artifacts, &app, None);
 
     fs::write(&widget_entry, "export const label = 'Widget changed';\n")
         .expect("edit declared widget dist entry");
@@ -693,7 +695,8 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
         with_artifacts.build_id, with_declared_edit.build_id,
         "edits to the widget's declared dist entry must affect the owned build identity"
     );
-    assert_clean_build(&with_declared_edit, &app, None);
+    assert_island_label(&with_declared_edit, "Probe", "components/probe.tsx");
+    assert_no_path_leaks(&with_declared_edit, &app, None);
 }
 
 #[test]
