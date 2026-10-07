@@ -447,16 +447,16 @@ fn assert_dist_equal(left: &BuildSnapshot, right: &BuildSnapshot, context: &str)
     );
 }
 
-fn assert_project_relative_island_label(snapshot: &BuildSnapshot) {
+fn assert_island_label(snapshot: &BuildSnapshot, component: &str, label: &str) {
     let compact: String = snapshot
         .islands_entry
         .chars()
         .filter(|ch| !ch.is_whitespace())
         .collect();
-    let call_arguments = format!("\"Counter\",\"Counter\",\"{ISLAND_LABEL}\"");
+    let call_arguments = format!("\"{component}\",\"{component}\",\"{label}\"");
     assert!(
         compact.contains(&call_arguments),
-        "the emitted registration arguments must include the fourth-argument label {ISLAND_LABEL:?}; expected suffix {call_arguments:?}"
+        "the emitted registration arguments must include the fourth-argument label {label:?}; expected suffix {call_arguments:?}"
     );
 }
 
@@ -498,7 +498,7 @@ fn assert_no_path_leaks(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Opti
 }
 
 fn assert_clean_build(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Option<&Path>) {
-    assert_project_relative_island_label(snapshot);
+    assert_island_label(snapshot, "Counter", ISLAND_LABEL);
     assert_no_path_leaks(snapshot, root, scratch_dir);
 }
 
@@ -596,6 +596,109 @@ fn gitignored_test_results_do_not_change_dist_or_identity() {
 }
 
 #[test]
+fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_edits_do() {
+    let _guard = BUILD_LOCK.lock().unwrap();
+    let Some(esbuild) = toolchain() else { return };
+    let temp = tempfile::tempdir().expect("create linked-workspace tempdir");
+    let workspace_root = temp.path();
+    let app = workspace_root.join("app");
+    let widget = workspace_root.join("widget");
+
+    fs::write(
+        workspace_root.join(".gitignore"),
+        "node_modules/\n.zfb-build/\ndist/\ntest-results/\n",
+    )
+    .expect("write workspace ignore rules");
+    // This workspace manifest establishes W for the bounded linked-package ignore chain.
+    fs::write(
+        workspace_root.join("pnpm-workspace.yaml"),
+        "packages:\n  - app\n  - widget\nlinkWorkspacePackages: false\n",
+    )
+    .expect("write pnpm workspace manifest");
+    scaffold_project(&app);
+
+    fs::create_dir_all(app.join("plugins")).expect("create app plugin directory");
+    fs::write(
+        app.join("plugins/alias.mjs"),
+        "export default { name: 'widget-alias', setup(ctx) { ctx.addAlias('@sample/widget', '../widget/dist/index.js'); } };\n",
+    )
+    .expect("write linked widget alias plugin");
+    let config_path = app.join("zfb.config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).expect("read fixture zfb config"))
+            .expect("parse fixture zfb config");
+    config["plugins"] = serde_json::json!([{"name": "./plugins/alias.mjs"}]);
+    fs::write(
+        config_path,
+        format!("{}\n", serde_json::to_string_pretty(&config).unwrap()),
+    )
+    .expect("enable linked widget alias plugin");
+    fs::write(
+        app.join("pages/index.tsx"),
+        "import { Island } from '@takazudo/zfb';\nimport { Probe } from '../components/probe';\n\nexport default function Page() {\n  return <html><head><title>Linked identity</title></head><body><Island when=\"load\"><Probe /></Island></body></html>;\n}\n",
+    )
+    .expect("write linked widget island page");
+    fs::write(
+        app.join("components/probe.tsx"),
+        "'use client';\nimport { label } from '@sample/widget';\n\nexport function Probe() {\n  return <div>{label}</div>;\n}\n",
+    )
+    .expect("write linked widget Probe island");
+
+    fs::create_dir_all(widget.join("dist")).expect("create widget dist directory");
+    fs::write(
+        widget.join("package.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "name": "@sample/widget",
+                "type": "module",
+                "version": "1.0.0",
+                "exports": "./dist/index.js",
+                "files": ["dist"],
+            }))
+            .unwrap()
+        ),
+    )
+    .expect("write widget package manifest");
+    let widget_entry = widget.join("dist/index.js");
+    fs::write(&widget_entry, "export const label = 'Widget';\n").expect("write widget entry");
+
+    let baseline = capture_build(&app, &esbuild, None, None);
+    let artifacts = widget.join("test-results");
+    fs::create_dir_all(&artifacts).expect("create ignored widget test-results directory");
+    fs::write(artifacts.join("probe.json"), "{\"run\":\"one\"}\n")
+        .expect("write ignored widget JSON result");
+    fs::write(
+        artifacts.join("report.html"),
+        "<!doctype html><title>test report</title>\n",
+    )
+    .expect("write ignored widget HTML report");
+    let with_artifacts = capture_build(&app, &esbuild, None, None);
+    assert_eq!(
+        baseline.build_id, with_artifacts.build_id,
+        "ignored sibling test-results artifacts must not affect the owned build identity"
+    );
+    assert_dist_equal(
+        &baseline,
+        &with_artifacts,
+        "ignored sibling widget test-results artifacts",
+    );
+    // The dedicated registration-label case below covers emitted source labels;
+    // this fixture checks identity and dist stability for a linked package.
+    assert_no_path_leaks(&baseline, &app, None);
+    assert_no_path_leaks(&with_artifacts, &app, None);
+
+    fs::write(&widget_entry, "export const label = 'Widget changed';\n")
+        .expect("edit declared widget dist entry");
+    let with_declared_edit = capture_build(&app, &esbuild, None, None);
+    assert_ne!(
+        with_artifacts.build_id, with_declared_edit.build_id,
+        "edits to the widget's declared dist entry must affect the owned build identity"
+    );
+    assert_no_path_leaks(&with_declared_edit, &app, None);
+}
+
+#[test]
 fn hidden_wrangler_state_does_not_change_dist_or_identity() {
     let _guard = BUILD_LOCK.lock().unwrap();
     let Some(esbuild) = toolchain() else { return };
@@ -663,6 +766,6 @@ fn remapped_island_registration_uses_project_relative_label() {
     scaffold_project(&root);
 
     let snapshot = capture_build(&root, &esbuild, None, None);
-    assert_project_relative_island_label(&snapshot);
+    assert_island_label(&snapshot, "Counter", ISLAND_LABEL);
     assert_clean_build(&snapshot, &root, None);
 }
