@@ -195,7 +195,7 @@ export function displayOnlyControl(tag: string, props: Readonly<Record<string, u
   return (
     (tag === "textarea" ||
       (tag === "input" &&
-        (!Object.hasOwn(props, "type") ||
+        (props.type === undefined ||
           ["text", "search", "email", "url", "tel", "password"].includes(props.type as string)))) &&
     (props.readonly === true || props.disabled === true)
   );

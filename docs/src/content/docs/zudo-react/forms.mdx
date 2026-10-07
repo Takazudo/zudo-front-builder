@@ -98,7 +98,7 @@ function AddressBar() {
 }
 ~~~
 
-At setup, the initial `value` attribute is set once on the server or during a client-only mount, and the live `value` property is initialized. Later signal updates set only the property, so `form.reset()` restores the initial value for both SSR-hydrated and client-only mounts. Do not combine a reactive `value` with `defaultValue` or `modelValue`; textarea children also conflict with a reactive `value`. For display outside a form control, use `<output>` or `<pre>` instead.
+At setup, the server-emitted input `value` attribute or textarea text content remains the reset default. A client-only mount establishes its initial default once, and both paths initialize the live `value` property. Later signal updates set only the property, so `form.reset()` restores the initial value for both SSR-hydrated and client-only mounts. Do not combine a reactive `value` with `defaultValue` or `modelValue`; textarea children also conflict with a reactive `value`. For display outside a form control, use `<output>` or `<pre>` instead.
 
 ## Static numeric values and input events
 

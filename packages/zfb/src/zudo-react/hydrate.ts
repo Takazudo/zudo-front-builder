@@ -430,8 +430,11 @@ function element(
           const bindingScope = context.scope;
           context.operations.push((map, cleanups) => {
             const node = map.get(element) as HTMLInputElement | HTMLTextAreaElement;
-            if (tag === "textarea") node.textContent = initial;
-            setAttribute(node, "value", initial);
+            // Keep the server-emitted reset default when hydrating.
+            if (node === element) {
+              if (tag === "textarea") node.textContent = initial;
+              setAttribute(node, "value", initial);
+            }
             node.value = initial;
             const subscription = bind(
               original,

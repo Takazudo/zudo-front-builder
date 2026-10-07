@@ -8,6 +8,9 @@ describe("server form representation", () => {
     expect(renderToString(h("input", { readonly: true, value: signal('a&"b') }))).toBe(
       '<input readonly value="a&amp;&quot;b">',
     );
+    expect(
+      renderToString(h("input", { type: undefined, readonly: true, value: signal("a") })),
+    ).toBe('<input readonly value="a">');
     expect(renderToString(h("textarea", { disabled: true, value: signal("\n<a&b") }))).toBe(
       "<textarea disabled>\n\n&lt;a&amp;b</textarea>",
     );

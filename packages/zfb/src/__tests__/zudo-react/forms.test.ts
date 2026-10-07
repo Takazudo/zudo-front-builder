@@ -39,19 +39,19 @@ describe("form hydration", () => {
       expect(handle).not.toBeNull();
       expect(root.querySelector(tag)).toBe(node);
       expect(node.value).toBe("initial");
-      expect(node.getAttribute("value")).toBe("initial");
+      expect(node.getAttribute("value")).toBe(tag === "input" ? "server" : null);
       source.value = "updated";
       await flush();
       expect(node.value).toBe("updated");
-      expect(node.getAttribute("value")).toBe("initial");
+      expect(node.getAttribute("value")).toBe(tag === "input" ? "server" : null);
       for (const event of ["input", "change", "compositionstart", "compositionend"])
         expect(listenerSpy.mock.calls.map(([name]) => name)).not.toContain(event);
       (root.querySelector("form") as HTMLFormElement).reset();
-      expect(node.value).toBe("initial");
+      expect(node.value).toBe("server");
       handle!.dispose();
       source.value = "after disposal";
       await flush();
-      expect(node.value).toBe("initial");
+      expect(node.value).toBe("server");
       expect(diagnostics).toEqual([]);
     },
   );

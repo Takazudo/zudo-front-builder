@@ -13,6 +13,7 @@ const textLikeType: "text" | "search" = Math.random() > 0.5 ? "text" : "search";
 export const forms = [
   <input type="text" value="a" />,
   <input readonly value={computed(() => text.value)} />,
+  <input type={undefined} readonly value={shown} />,
   <input disabled value={shown} />,
   <input type="search" readonly value={shown} />,
   <textarea readonly value={shown} />,
