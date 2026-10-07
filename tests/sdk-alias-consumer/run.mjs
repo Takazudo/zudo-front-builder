@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Confirmation-only fresh-consumer proof for #3937. This script is deliberately
-// not wired into a topic or fast test lane; the confirm runs it under the heavy
-// guard after the SDK alias topics are integrated. It needs `ZFB_BINARY` and
-// `ZFB_BINARY_SOURCE_SHA` for a workspace binary built from that exact checkout.
+// Confirmation-only fresh-consumer proof for #3937. The #3939 health workflow
+// runs it after the Rust and scanner-browser checks, outside the fast workspace
+// test command. It needs `ZFB_BINARY` and `ZFB_BINARY_SOURCE_SHA` for a workspace
+// binary built from that exact checkout.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
