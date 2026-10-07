@@ -20,7 +20,8 @@ export default defineConfig({
     strict: true,
     tokens: {
       spacingUnit: "0.25rem",
-      colors: { panel: "var(--app-panel)" }
+      colors: { panel: "var(--app-panel)" },
+      fontSizes: { sm: { size: "0.875rem", lineHeight: "1.25rem" } }
     },
     breakpoints: { sm: { minWidthPx: 640 } },
     dark: { attribute: "data-theme", value: "dark" },
@@ -190,6 +191,12 @@ JSON でも同じオブジェクトを `wind` プロパティの値として指�
       "spacingUnit": "0.25rem",
       "colors": {
         "panel": "var(--app-panel)"
+      },
+      "fontSizes": {
+        "sm": {
+          "size": "0.875rem",
+          "lineHeight": "1.25rem"
+        }
       }
     },
     "breakpoints": {
@@ -210,7 +217,7 @@ JSON でも同じオブジェクトを `wind` プロパティの値として指�
 | `spec` | 任意の言語バージョン。受け入れる値もデフォルトも `1` です。 |
 | `reset` | `none`、`minimal-v1`、`owned-v1` のいずれか。デフォルトは `none` です。 |
 | `defaultTransitionTimingFunction` | トランジション系ユーティリティが使う CSS タイミング関数またはキーワードです。デフォルトは `ease` で、同じバリアント区画では明示した `ease-*` ユーティリティが優先されます。 |
-| `tokens` | プロジェクトが指定する値。各マップのデフォルトは空です。名前、値の検証、出力される変数は[トークン](./tokens.mdx)を参照してください。 |
+| `tokens` | プロジェクトが指定する値。各マップのデフォルトは空です。文字サイズの項目は `{ size, lineHeight? }` 形式です。名前、値の検証、出力される変数は[文字サイズ](./tokens.mdx#文字サイズ)と[トークン](./tokens.mdx)を参照してください。 |
 | `breakpoints` | 名前から、正の整数 `minWidthPx` を含むオブジェクトへの対応です。同じ幅を複数指定すると設定エラーになります。 |
 | `dark` | `false`（デフォルト）か、必須の文字列 `attribute` と `value` を持つオブジェクトです。 |
 | `safelist` | 所有者 ID から完全な候補の配列への対応です。各所有者が自分の候補一式を指定します。 |
