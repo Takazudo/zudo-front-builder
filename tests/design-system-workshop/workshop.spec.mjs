@@ -143,6 +143,7 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
     .poll(() => root(page).evaluate((el) => getComputedStyle(el).color))
     .not.toBe(controlColor);
   await expect(frame(page).locator("body")).toHaveCSS("background-color", "rgb(250, 248, 242)");
+  await expect(root(page).locator("#toast")).toBeHidden();
   await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({
     path: "/tmp/zfb-workshop-dark.png",
@@ -171,6 +172,7 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
       await expect
         .poll(() => root(page).evaluate((el) => el.getBoundingClientRect().width))
         .toBeGreaterThan(1100);
+    await expect(root(page).locator("#toast")).toBeHidden();
     await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({
       path: `/tmp/zfb-workshop-${width}.png`,
@@ -179,4 +181,22 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
     });
     await root(page).locator('[data-width="full"]').click();
   }
+});
+
+test("native starting points and wide preview visual evidence", async ({ page }) => {
+  await open(page);
+  await page.screenshot({
+    path: "/tmp/zfb-workshop-start.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await edit(page);
+  await root(page).locator('[data-width="full"]').click();
+  await expect(root(page).locator("#toast")).toBeHidden();
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({
+    path: "/tmp/zfb-workshop-wide.png",
+    fullPage: true,
+    animations: "disabled",
+  });
 });
