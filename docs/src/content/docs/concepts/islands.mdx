@@ -16,7 +16,7 @@ Add the `"use client"` directive at the top of a `.tsx` file:
 ```tsx
 "use client";
 
-import { signal } from "zfb/zudo-react";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -34,16 +34,16 @@ export default function Counter() {
 
 Only concrete targets of reachable `<Island>` boundaries receive public markers. Exporting a function from a client module, capitalizing its name, or returning JSX does not register it by itself. Unused helpers can keep the same name in multiple modules; they do not need renaming.
 
-The scanner follows named/default imports, local aliases, namespace members, explicit and star re-exports, and installed packages. It recognizes JSX children and `children` attributes, direct calls such as `Island({ children: h(Counter, props) })`, and the owned `h`, `jsx`, `jsxs`, and `jsxDEV` factories, including their aliased packed output. Fixed-target and unchanged-child forwarding wrappers are supported when their behavior can be resolved statically. A bounded factory-member target is also supported when a read-only parameter has a closed set of direct call sites that all pass the same function in a plain object literal. A wrapper's own name is not registered. Only boundary targets occupy registry entries: a helper used by a live target and its imports stay in the bundle, while unused helpers do not need unique names.
+The scanner follows named/default imports, local aliases, namespace members, explicit and star re-exports, and installed packages. It recognizes JSX children and `children` attributes, direct calls such as `Island({ children: h(Counter, props) })`, and the owned `h`, `jsx`, `jsxs`, and `jsxDEV` factories, including their aliased packed output. Direct fixed-target and unchanged-child forwarding wrappers are supported when their behavior can be resolved statically. For component maps, keep the documented Fragment-wrapped fixed-target shape; bare-return wrappers stored in opaque maps are rejected. A bounded factory-member target is also supported when a read-only parameter has a closed set of direct call sites that pass object literals, including safe one-level spreads from same-module const object literals, and all select the same function definition. A wrapper's own name is not registered. Only boundary targets occupy registry entries: a helper used by a live target and its imports stay in the bundle, while unused helpers do not need unique names.
 
 The scanner also resolves edges registered by plugin `setup`: exact `addAlias` rewrites and `addVirtualModule` specifiers. A `tsconfig.json` `compilerOptions.paths` mapping takes priority when it resolves a matching specifier; if every mapped target misses, lookup falls through to the exact plugin alias, then a registered virtual module, followed by `baseUrl` and package lookup.
 
 A virtual module can statically import or re-export a real module, and the scanner follows that file. The module carrying `"use client"` must be a real file, though it may re-export a function defined in another real file. The exported function still needs to be the one child of a reachable `<Island>` boundary; the directive by itself does not register a target. A `"use client"` directive or `import.meta.glob` directly inside a virtual source is warned about and skipped. Put those constructs in real files and reach them through the virtual module. Bare imports from inside a virtual source that resolve to an installed or workspace package, or to another virtual module, are also skipped. See [Plugins](./plugins.mdx) for the `setup` registration details.
 
-For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child. Import `Island` from `zfb` or `@takazudo/zfb`; this guide uses the bare `zfb` alias:
+For a target, export the function from a module with a `"use client"` directive and pass that function as the boundary's one child. A fresh consumer imports `Island` from `@takazudo/zfb` and zudo-react helpers from `@takazudo/zfb/zudo-react`. Set `jsxImportSource` to `@takazudo/zfb/zudo-react` so JSX uses the owned `@takazudo/zfb/zudo-react/jsx-runtime` and `@takazudo/zfb/zudo-react/jsx-dev-runtime` entrypoints. The existing bare alias may be used when it resolves to these package entrypoints; see [issue #3932](https://github.com/Takazudo/zudo-front-builder/issues/3932):
 
 ```tsx
-import { Island } from "zfb";
+import { Island } from "@takazudo/zfb";
 import { Counter } from "./counter";
 
 <Island><Counter /></Island>;
@@ -59,10 +59,7 @@ Dynamic child selection is rejected during a production build. Put the condition
 
 ### Factory-provided targets
 
-A function can receive a component through a plain object parameter and use that
-component as an island target when the scanner can prove every call. The proof is
-syntactic: zfb never executes the function to discover a component. Member and
-object-pattern declarations use `const`, and property keys are static:
+A factory can receive a component through a plain object parameter and use it as an island target when zfb can prove the parameter and every direct call site. This is a syntactic proof: zfb never executes the factory to discover a component. The existing binding forms remain supported:
 
 | Binding form | Accepted spelling |
 | --- | --- |
@@ -70,37 +67,39 @@ object-pattern declarations use `const`, and property keys are static:
 | Object pattern | `const { Counter: Target } = deps` or `const { Counter } = deps` |
 | Parameter destructuring | `function render({ Counter: Target })` or `function render({ Counter })` |
 
-The member parameter must be a plain identifier parameter, not a rest parameter,
-and it must have no default value.
-TypeScript-only wrappers around the member expression are unwrapped.
-Parameter destructuring may use a renamed property or shorthand, but cannot use
-rest, defaults, or nested patterns. The parameter may only be read as the object
-of a static member access or as the initializer of a `const` object pattern. A
-write, `delete`, alias, pass, return, spread, or any other use of the parameter
-(including inside a nested closure) fails the proof. A destructured target is
-never assigned. `let` and `var` targets keep the `mutable target binding`
-diagnostic. Other reads of `Target`—including `!Target`, `typeof Target`, or
-passing it to a non-Island helper—do not affect registration; only its use as an
-`<Island>` child matters.
+The member parameter must be a plain identifier, not a rest parameter, and it
+must have no default value. TypeScript-only wrappers around the member
+expression are unwrapped. Parameter destructuring may rename a property or use
+shorthand, but cannot use rest, defaults, or nested patterns. The parameter may
+only be read as the object of a static member access or as the initializer of a
+`const` object pattern. A write, `delete`, alias, pass, return, spread, or any other
+use of the parameter (including inside a nested closure) fails the proof. A
+destructured target is never assigned. `let` and `var` targets keep the
+`mutable target binding` diagnostic. Other reads of `Target`—including
+`!Target`, `typeof Target`, or passing it to a non-Island helper—do not
+affect registration; only its use as an `<Island>` child matters.
 
 The function that owns the parameter must be a named function or a `const`
 function/arrow binding. Every reference to that function in the scanned module
-graph, including import and re-export chains, must be the callee of a direct call:
-`renderPanel(...)`, `(0, renderPanel)(...)`, or `namespace.renderPanel(...)`.
-Passing it as a value, storing or returning it, binding it, using `.call`,
-`.bind`, or `.apply`, or using it as JSX is an escape. The proof covers the
-scanner's discovered module graph; it cannot account for runtime-generated or
-otherwise undiscovered callers.
+graph, including import and re-export chains, must be the callee of a direct
+call: `renderPanel(...)`, `(0, renderPanel)(...)`, or
+`namespace.renderPanel(...)`. Passing it as a value, storing or returning
+it, binding it, using `.call`, `.bind`, or `.apply`, or using it as JSX
+is an escape. The proof covers the scanner's discovered module graph; it cannot
+account for runtime-generated or otherwise undiscovered callers.
 
 The call-site set must be non-empty. Each call must pass the parameter at its
 declared position with no positional spread at or before that position. The
-argument must be a plain object literal with no spread, computed key, method, or
-getter anywhere in the literal. The selected property must appear exactly once;
-other plain properties are allowed. Its value must resolve to a function, and
-every call site must resolve to the same function definition. For example:
+outer argument must remain an object literal. For its selected target, every
+call site must resolve to the same function definition. A function passed as
+`renderPanel(deps)` is not made static just because `deps` is a local
+constant.
+
+For example, a target can be read through the existing member form while the
+caller supplies a local static spread:
 
 ~~~tsx
-import { Island } from "zfb";
+import { Island } from "@takazudo/zfb";
 import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
 
 function renderDesignTokenPanel(deps) {
@@ -108,113 +107,263 @@ function renderDesignTokenPanel(deps) {
   return <Island when="load"><Target /></Island>;
 }
 
-// Page calls the helper directly, so the boundary is reachable.
+const defaults = { DesignTokenPanelBootstrap };
 export default function Page() {
-  return renderDesignTokenPanel({
-    enabled: true,
-    DesignTokenPanelBootstrap,
-  });
+  return renderDesignTokenPanel({ ...defaults, enabled: true });
 }
 ~~~
 
-This mirrors the zudo-doc design-token panel factory: ordinary settings can stay
-injected, while the component binding is statically selected. Every call must
-pass the same function. A call such as
-`{ DesignTokenPanelBootstrap: ctx.hostBindings.DesignTokenPanelBootstrap ?? (cond ? undefined : ImportedBootstrap) }`
-is outside the rule and leaves this residual reason in the diagnostic:
-`call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)`.
+#### Static local dependency spreads
 
-The complete rejection set and its rewrites are:
+The object passed at the factory call may use a one-level spread when each
+spread operand is an identifier (with existing TypeScript-only wrappers and
+parentheses unwrapped) that resolves by binding identity to a `const`
+object literal in the same module. Function-local constants are allowed. The source initializer itself has no spread. This is a bounded syntax
+proof, not recursive object evaluation: `createBoundary({ ...defaults })`
+can be accepted, while `createBoundary(deps)` stays rejected even when
+`deps` is a local constant.
 
-| Diagnostic reason | Rewrite |
+The argument and each spread source contain only shorthand or ordinary
+key/value data properties with static, non-computed keys. Numeric and bigint
+keys keep their existing handling. Nested object values for unrelated settings
+are data; they are not recursively expanded. Getters, setters, methods,
+computed keys, nested source spreads, and unsupported spreads reject the whole
+argument even if a later property would hide them. A top-level `__proto__`
+key is rejected in the argument or any source, including quoted and shorthand
+spellings.
+
+The top-level `__proto__` spelling is excluded because `__proto__: value` sets a prototype. Shorthand is excluded too, even though it can create an own data property; this proof does not infer inherited properties, invoke getters, or model prototype construction. The existing initializer reason 8 remains in force.
+
+A spread source is safe only when its binding has no assignment, update,
+delete, member mutation, alias, destructuring read, member read, call argument,
+return, export, JSX spread, array/positional spread, container storage, or other
+value escape. Its only value references may be operands of object-literal
+spreads. This also applies inside nested closures. Even a write that appears
+textually after a call rejects the source; this is not a control-flow or
+call-order proof. Repeated safe spreads are allowed; the proof does not reuse the factory parameter's static-member-read
+exception for a spread source.
+
+Traverse the outer argument from left to right. A collision across spreads, or
+between a spread and an explicit property, is allowed; the last occurrence
+supplies the effective target. Empty or unrelated spreads do not erase an
+earlier target. The same source may be spread more than once. Assume `Counter` and `Other` are distinct client functions. Each line is a
+separate successful build, not a set of calls to one factory with different
+winners:
+
+~~~tsx
+const defaults = { Counter };
+const override = { Counter: Other };
+createBoundary({ Counter });                           // Direct literal control remains valid
+createBoundary({ ...defaults });                       // Counter
+createBoundary({ ...defaults, Counter: Other });       // Other
+createBoundary({ Counter: Other, ...defaults });       // Counter
+createBoundary({ ...defaults, ...override });          // Other
+createBoundary({ ...override, ...defaults });          // Counter
+createBoundary({ ...defaults, ...defaults });          // Counter
+~~~
+
+A selected key explicitly declared twice in one object literal is rejected,
+even when the values are identical or a later spread would overwrite it. This
+rule applies independently to the argument's explicit properties and to each
+source literal. Duplicate nonselected data keys remain allowed; if a later
+boundary selects that key, the duplicate makes that proof fail.
+
+Validate the complete argument and source grammar before resolving the winning
+selected value. Only the final value is resolved and checked for conditional
+selection. An earlier conditional value overwritten by a proven concrete value
+is accepted; a winning `host.Counter ?? Counter`, ternary, or
+`Counter || Other` still fails. Unsupported syntax is never hidden by an
+override, and an overwritten function is not registered by this proof.
+
+Each call to one proven factory must still select the same function definition,
+not merely the same marker spelling. Aliases and re-exports use the existing
+resolver; distinct definitions with the same marker still reach the existing
+marker-collision diagnostic.
+
+The factory keeps the same outer diagnostic prefix,
+`target Target has unsupported initializer:`. These are the reason strings
+for the relevant rejected shapes:
+
+| Rejected shape | Diagnostic reason |
 | --- | --- |
-| `mutable target binding` | Change `let`/`var` to a `const` binding whose value is not reassigned. |
-| `parameter &lt;name&gt; has a default value` | Remove the default and pass the object explicitly at every call site. |
-| `destructured parameter &lt;name&gt; uses a rest pattern` | Destructure only the named static property; remove the rest pattern. |
-| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | Keep the parameter read-only and use only static member reads or a `const` object pattern; do not pass, alias, return, spread, or mutate it. |
-| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | Keep every reference to `F` as a direct call in the scanned modules; do not pass, store, return, bind, apply, or render `F` as JSX. |
-| `factory &lt;F&gt; has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
-| `call site at &lt;loc&gt; passes too few arguments` | Pass the parameter at its declared position. |
-| `call site at &lt;loc&gt; spreads positional arguments` | Spell out positional arguments through the parameter index. |
-| `call site at &lt;loc&gt; passes a non-literal argument` | Pass a plain object literal without any spread, computed key, method, or getter; other plain properties are allowed. |
-| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | Add the selected property exactly once as a static key. |
-| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | Pass one imported function directly; express alternatives as separate concrete island boundaries or use the composition seam below. |
-| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | Pass a value that resolves to one function definition. If value resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
-| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | Make every call pass the same function definition, or split the calls into separate fixed-target wrappers. |
+| `createBoundary(deps)`, unknown spread source, `let` source, imported/parameter/aliased source, nested source spread, direct object-expression spread (`...{ Counter }`), call result, member or conditional operand | `call site at <loc> passes a non-literal argument` |
+| Forbidden source reference/write/export, computed key, method, accessor, `__proto__` key, or selected duplicate in the argument/source | `call site at <loc> passes a non-literal argument` |
+| Safe expansion without selected `Counter` | `property Counter missing at call site <loc>` |
+| Winning `host.Counter ?? Counter`, ternary, or `Counter || Other` | `call site at <loc> selects Counter conditionally (??, ternary, ||)` |
+| Winning `host.Counter` from a runtime/opaque object receiver (not a namespace import) | `property Counter at <loc> is not a function binding` (an existing resolver reason may follow) |
+| Two valid calls select different definitions | `call sites disagree: <loc> passes Counter, <loc> passes Other` |
+| Forward a factory parameter as `inner({ ...deps })` or `inner(deps)` | Existing `parameter deps is written or escapes at <loc>` takes precedence when that parameter's proof is demanded; spreads do not add interprocedural forwarding. |
+| Store a direct-return fixed wrapper as `{ Panel: BarePanelIsland }` or a generic forwarding boundary as `{ Island: ForwardBoundary }` | `boundary wrapper escapes into an opaque container` |
+| Store the generic wrapper with shorthand, `{ ForwardBoundary }` | `boundary wrapper escapes into an opaque object` |
+| Pass a component function as an Island JSON prop, with both functions valid client exports and `PropsReceiver` a fixed target | SSR error: `ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component` |
 
-The scanner reports the first applicable reason, preserving the diagnostic
-prefix `target Target has unsupported initializer`. See the [Troubleshooting guide](../guides/troubleshooting.mdx)
+The first applicable factory reason is reported, with source locations and the
+existing generic rewrite suffix. See [Troubleshooting](../guides/troubleshooting.mdx)
 for the full symptom and fix list.
 
 ### Composition seam for customisable package islands
 
-A package that needs a host override can keep its default component target fixed
-in `DefaultPanelIsland` and expose a separate `PanelSlot` wrapper that forwards
-a rendered child unchanged. The `DesignTokenPanelBootstrap` import comes from a
-module marked `"use client"`:
+A package that needs a host override must expose a public composition seam. Keep
+the default target fixed in one server boundary wrapper, let the host provide its
+own fixed target wrapper, and make the package's server slot forward already
+rendered children unchanged. The caller chooses which boundary description to
+render. Do not send a component function or a rendered server child as an Island
+JSON prop.
+
+#### Nested factories, settings gates, and host overrides
+
+Two ordinary nested server factories can keep the feature settings and gate.
+The composition site owns the host/default selection:
 
 ~~~tsx
-// Package island wrappers
-import { Island } from "zfb";
-// This component is exported from a module marked "use client".
-import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+// components/default-panel.tsx
+"use client";
+import { signal } from "@takazudo/zfb/zudo-react";
 
-export function DefaultPanelIsland() {
-  return (
-    <>
-      <Island when="load">
-        <DesignTokenPanelBootstrap />
-      </Island>
-    </>
-  );
+export function DefaultPanel() {
+  const count = signal(0);
+  return <button on:click={() => { count.value += 1; }}>Default panel: {count}</button>;
 }
 
+// components/host-panel.tsx
+"use client";
+import { signal } from "@takazudo/zfb/zudo-react";
+
+export function HostPanel() {
+  const count = signal(0);
+  return <button on:click={() => { count.value += 1; }}>Host panel: {count}</button>;
+}
+
+// package-islands.tsx (ordinary server slot and nested settings factories)
 export function PanelSlot({ children }) {
   return <>{children}</>;
 }
-~~~
+export function createBodyEnd(settings) {
+  return function BodyEnd({ children }) {
+    if (!settings.enabled) return null;
+    return <PanelSlot>{children}</PanelSlot>;
+  };
+}
+export function createChrome(settings) {
+  const BodyEnd = createBodyEnd(settings);
+  return function Chrome({ children }) {
+    return <BodyEnd>{children}</BodyEnd>;
+  };
+}
 
-The page uses the package default by composing both wrappers:
+// pages/page.tsx (server composition site)
+import { Island } from "@takazudo/zfb";
+import { DefaultPanel } from "../components/default-panel";
+import { HostPanel } from "../components/host-panel";
+import { createChrome } from "../package-islands";
 
-~~~tsx
-<PanelSlot>
-  <DefaultPanelIsland />
-</PanelSlot>
-~~~
+function DefaultPanelIsland() {
+  return <><Island when="load"><DefaultPanel /></Island></>;
+}
+function HostPanelIsland() {
+  return <><Island when="load"><HostPanel /></Island></>;
+}
 
-A host can substitute its own island by rendering its own `"use client"` target
-inside the same slot. The `HostPanel` function is exported from a client module:
+const settings = { enabled: true };
+const Chrome = createChrome(settings);
+const hasHost = true; // A concrete host implementation is installed here.
+const suppressDefault = false;
 
-~~~tsx
-// host-panel.tsx
-"use client";
-
-export function HostPanel() {
-  return <button type="button">Custom panel</button>;
+export default function Page() {
+  return (
+    <Chrome>
+      {hasHost
+        ? <HostPanelIsland />
+        : suppressDefault ? null : <DefaultPanelIsland />}
+    </Chrome>
+  );
 }
 ~~~
 
+When enabled with no host, render `DefaultPanelIsland`. When the host is
+installed, it wins and `HostPanelIsland` renders. When the feature
+setting is disabled, the nested factory returns `null` even if a host
+exists: there is no page marker, mounted attribute, button, activation, or
+package pre-hydration feature shim. With the feature enabled and default
+suppression set, no host means no boundary; an installed host still renders
+because the explicit host override takes precedence over suppression.
+
+The downstream zudo-doc change is a public composition-seam migration: move its
+host/default choice to a caller-owned server composition site while retaining
+settings in its nested factories. This is a consumer source/API migration and
+needs verification in that consumer. This documentation does not claim
+downstream browser parity.
+
+#### Fixed-target component maps
+
+For a map-based migration, replace both bare-return fixed wrappers and generic
+forwarding boundary entries. A bare-return fixed wrapper such as
+`function BarePanelIsland() { return <Island><DefaultPanel /></Island>; }`
+stored in `{ Panel: BarePanelIsland }` is rejected with
+`boundary wrapper escapes into an opaque container`. A generic
+`ForwardBoundary` stored as `{ Island: ForwardBoundary }` has the
+same rejection; shorthand `{ ForwardBoundary }` reports
+`boundary wrapper escapes into an opaque object`.
+
+Keep each target fixed and use the Fragment-wrapped shape:
+
 ~~~tsx
-import { Island } from "zfb";
-import { PanelSlot } from "@example/package/islands";
+// components/panel-components.tsx
+import { Island } from "@takazudo/zfb";
+import { DefaultPanel } from "./default-panel";
 import { HostPanel } from "./host-panel";
 
-<PanelSlot>
-  <Island when="load"><HostPanel /></Island>
-</PanelSlot>
+function DefaultPanelIsland() {
+  return <><Island when="load"><DefaultPanel /></Island></>;
+}
+function HostPanelIsland() {
+  return <><Island when="load"><HostPanel /></Island></>;
+}
+
+export const panelComponents = {
+  DefaultPanel: DefaultPanelIsland,
+  HostPanel: HostPanelIsland,
+};
 ~~~
 
-Both the package default and host override register their actual function
-definitions. The host passes rendered children through the slot; no component
-function crosses the client boundary. Keep non-component dependencies in the
-package's ordinary factory injection. This bounded seam does not accept a
-`??`-selected component: the scanner reports
-`target Target has unsupported initializer: call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)`
-for the zudo-doc host-binding expression.
+Import this server-only map into a page and pass it to the MDX entry:
 
-The fixed-target component-map recipe in [MDX components](./mdx-components.mdx)
-is a separate shape: its wrapper returns an `<Island>` around a static import.
-It remains unchanged; see [issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824).
+~~~tsx
+// pages/blog/[slug].tsx
+import { panelComponents } from "../../components/panel-components";
+
+<post.Content components={panelComponents} />
+~~~
+
+The map module must be reachable from a page. The Fragment adds no DOM element and leaves the
+concrete Island visible to the scanner. A plain SSR passthrough such as
+`function IslandWrapper({ children }) { return children ?? null; }` is
+ordinary server rendering; a map key named `Island` does not make that
+function an SDK Island boundary. Maps and wrappers stay on the server and are
+never serialized as island props.
+
+The locked acceptance fixtures cover the complete migration. Active rows have
+one marker and a working stateful button; suppressed rows have no page marker
+or activation:
+
+| Fixture | Expected page marker and interaction |
+| --- | --- |
+| `factory-static-spread` | `FactoryCounter` once; counter 0 → 1 |
+| `factory-composition-default` | `DefaultPanel` once; default panel 0 → 1 |
+| `factory-composition-host-override` | `HostPanel` once, no default; host panel 0 → 1 |
+| `factory-composition-settings-disabled` | no marker or feature button, mounted attribute, activation, or feature shim |
+| `factory-composition-default-suppressed` | no marker or activation when no host is installed |
+| `factory-composition-host-with-default-suppressed` | `HostPanel` once, no default; host panel 0 → 1 |
+| `factory-map-default` | `DefaultPanel` once; default panel 0 → 1 |
+| `factory-map-host-override` | `HostPanel` once, no default; host panel 0 → 1 |
+| `factory-map-settings-disabled` | no marker or feature button, mounted attribute, activation, or feature shim |
+
+The negative scanner and SSR fixtures keep these names: `factory-spread`, `factory-nullish`, `factory-escape`, `dynamic-child`, `factory-spread-mutated`, `factory-spread-nested`, `factory-spread-proto`, `factory-function-json-prop`, `factory-map-opaque`, `factory-map-forwarding-opaque`, `factory-map-opaque-shorthand`. The first four preserve existing rejection controls; the new spread and map cases cover mutation, nested spread, prototype keys, function JSON props, bare-return wrappers, generic forwarding, and shorthand storage. The JSON-prop case fails during SSR after scanner success.
+
+A statically discovered target can remain in the build-wide registry when
+settings disable it. Page marker assertions describe the rendered route; they
+do not assert that the registry omits a statically discovered target. Keep the
+existing root and `/host-override/` route checks when adding these cases.
 
 If a collision diagnostic identifies two different target functions, rename one defining function, or fix an import or package export that resolves to the wrong definition. Import and re-export aliases do not change the marker: the scanner uses the defining function's own name, not `displayName`. At server render time, `displayName` must be absent or equal to that name; otherwise zfb fails with `ZR_ISLAND_IDENTITY` instead of renaming the target. For a default target that needs a stable name, use `export default function Counter() { ... }`.
 
@@ -223,7 +372,7 @@ If a collision diagnostic identifies two different target functions, rename one 
 ```tsx
 "use client";
 
-import { computed, getScope, signal } from "zfb/zudo-react";
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
@@ -317,7 +466,7 @@ After render, each island's server-rendered HTML is wrapped in a `<div>` that ca
 The `data-when` attribute controls when the client entry runs. It is always present and defaults to `"load"`; the other strategies are `"visible"`, `"idle"`, and `"media"`. The JSX API is the [`<Island>` wrapper](../api/island.mdx); for media-query adoption, pass both `when="media"` and a `media` query:
 
 ```tsx
-import { Island } from "zfb";
+import { Island } from "@takazudo/zfb";
 import MobileMenu from "./MobileMenu";
 
 export default function Header() {
@@ -430,7 +579,7 @@ This example uses a **hypothetical** adapter module. Its `mount(host)` returns a
 ```tsx
 "use client";
 
-import { getScope, h, signal, type Ref } from "zfb/zudo-react";
+import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
 
 type WidgetInstance = { destroy(): void };
 type WidgetModule = { mount(host: Element): WidgetInstance };

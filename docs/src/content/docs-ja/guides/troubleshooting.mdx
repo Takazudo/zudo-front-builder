@@ -12,29 +12,80 @@ sidebar_position: 9
 
 ## unsupported island registration … has unsupported initializer
 
-**症状:** 本番ビルドが非ゼロで終了し、`target Target has unsupported initializer` という接頭辞を持つ未サポートの島登録エラーを報告します。ファクトリのパラメーターから取ったターゲットを使えるのは、スキャンされたモジュールグラフ内のパラメーターとすべての直接呼び出しを zfb が証明できる場合だけです。zfb はコンポーネントを探すためにファクトリを実行しません。
+**症状:** production build が非ゼロで終了し、
+`target Target has unsupported initializer` という接頭辞の未対応 island
+登録を報告します。スキャナーは既存の factory member 形式と、証明済み
+ローカル `const` object literal からの 1 段 spread を受け付けます。
+コンポーネントを探すために factory を実行したり、任意の object を評価したり
+することはありません。
 
-**原因:** 選択するコンポーネントは、読み取り専用のパラメーターから取得し、すべての呼び出し箇所でプレーンなオブジェクトリテラルから渡す必要があります。リテラルにはほかのプレーンなプロパティも含められますが、選択するプロパティはちょうど 1 回だけ指定し、すべての呼び出しで同じ関数定義に解決されなければなりません。`let` または `var` のターゲットは従来どおり `mutable target binding` と診断されます。
+**原因:** factory parameter は読み取り専用に保ち、すべての直接呼び出しで
+object literal を渡す必要があります。spread source は同じ module の
+`const` object literal に束縛された識別子であり、ネストした spread と
+値の escape がない場合に限り使えます。引数と source には静的な data
+property だけを指定できます。選択キーは各 literal 内で 1 回だけ指定でき
+ますが、literal 間の衝突は許可され、左から右へ最後に出た値が勝ちます。
+同じ factory の直接呼び出しは、引き続き同じ関数定義を選ぶ必要があります。
+先行する条件値を後続の具体値で上書きできますが、最終値が
+`host.Counter ?? Counter`、三項演算子、`Counter || Other` なら拒否されます。
 
-**対処:** `const` のメンバーアクセスまたはオブジェクトパターンで束縛し、パラメーターを読み取り専用に保ち、プレーンなオブジェクトリテラルを使って関数を直接呼び出してください。最初に該当する理由の修正方法を適用します。
+**対処:** factory parameter を読み取り専用にし、object literal で直接呼び
+出します。必要ならローカルの静的 spread を使いますが、外側の引数に
+object 変数を渡してはいけません。最初に該当した factory 理由を修正します。
 
 | 診断理由 | 修正方法 |
 | --- | --- |
-| `mutable target binding` | `const` のターゲット束縛を使い、再代入しません。 |
-| `parameter &lt;name&gt; has a default value` | デフォルト値を取り除き、すべての呼び出しでオブジェクトを明示的に渡します。 |
-| `destructured parameter &lt;name&gt; uses a rest pattern` | rest パターンを取り除き、名前を指定した静的プロパティだけを分割代入します。 |
-| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | パラメーターを静的メンバーの読み取りか `const` オブジェクトパターンにだけ使います。書き込み、削除、引き渡し、別名への束縛、返却、スプレッドを避けます。 |
-| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | `F` への参照をすべて直接呼び出しにします。渡す、保存する、返す、bind/apply する、JSX として描画するといった操作を避けます。 |
-| `factory &lt;F&gt; has no call site in the scanned modules` | 必要なオブジェクトリテラルを使う直接呼び出しをスキャン対象モジュールに追加するか、固定ターゲットを直接使います。 |
-| `call site at &lt;loc&gt; passes too few arguments` | 宣言された位置にパラメーターを渡します。 |
-| `call site at &lt;loc&gt; spreads positional arguments` | パラメーターの位置までの位置引数を明示的に書きます。 |
-| `call site at &lt;loc&gt; passes a non-literal argument` | スプレッド、計算プロパティキー、メソッド、getter のないプレーンなオブジェクトリテラルを渡します。ほかのプレーンなプロパティは含められます。 |
-| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | 選択するプロパティを静的なキーでちょうど 1 回追加します。 |
-| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | 1 つの関数を直接渡すか、候補をそれぞれ具体的な島の境界として描画します。パッケージの差し替えには[合成方法](../concepts/islands.mdx#境界ターゲットの検出と移行-パッケージの島を差し替えるための合成)を使います。 |
-| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | 1 つの関数定義に解決される値を渡します。値の解決自体が `memo(X)` などの未サポート理由を返した場合、その理由も追加されます。 |
-| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | すべての呼び出しで同じ関数定義を渡すか、別々の固定ターゲット wrapper に分けます。 |
+| `mutable target binding` | `const` の target 束縛を使い、再代入しません。 |
+| `parameter <name> has a default value` | default を削除し、すべての呼び出しで object を明示します。 |
+| `destructured parameter <name> uses a rest pattern` | rest pattern を削除し、名前付きの静的 property だけを分割代入します。 |
+| `parameter <name> is written or escapes at <loc>` | parameter を静的 member 読み取りか `const` object pattern だけに使い、書き込み、削除、引き渡し、alias、返却、spread をしません。 |
+| `factory <F> escapes as a value at <loc>` | `F` の参照をすべて直接呼び出しにし、渡す、保存する、返す、bind/apply する、JSX として描画する操作を避けます。 |
+| `factory <F> has no call site in the scanned modules` | 必要な object literal を使う直接呼び出しをスキャン対象 module に追加するか、固定 target を使います。 |
+| `call site at <loc> passes too few arguments` | 宣言された位置に parameter を渡します。 |
+| `call site at <loc> spreads positional arguments` | parameter の位置までの位置引数を明示します。 |
+| `call site at <loc> passes a non-literal argument` | 外側の引数を object literal にします。spread には同一 module の `const` object literal を使い、ネストした spread、未対応 property、選択キーの重複、禁止された参照／書き込み／export を含めません。`createBoundary(deps)` は `deps` がローカル定数でも拒否されます。 |
+| `property Counter missing at call site <loc>` | 展開後の object に選択 property を追加します。 |
+| `call site at <loc> selects Counter conditionally (??, ternary, ||)` | 最終値を静的な関数束縛にするか、host/default の選択を公開 server composition seam に移します。 |
+| `property Counter at <loc> is not a function binding` | 1 つの関数束縛に解決できる値を使います。`host.Counter` のような runtime／opaque object receiver は証明できません。既存の resolver 理由が後ろに付く場合があります。 |
+| `call sites disagree: <loc> passes Counter, <loc> passes Other` | すべての呼び出しで同じ関数定義を選ぶか、固定ターゲット wrapper を分けます。 |
+| `parameter deps is written or escapes at <loc>` | `inner({ ...deps })` や `inner(deps)` では既存の読み取り専用契約を守ります。spread は関数間転送を追加しません。 |
+| `boundary wrapper escapes into an opaque container` | bare return の固定 Island wrapper や汎用転送 boundary wrapper を map に保存しません。Fragment で囲んだ固定ターゲット map を使います。 |
+| `boundary wrapper escapes into an opaque object` | 汎用 wrapper を省略記法の object value として保存せず、到達可能な固定ターゲット wrapper に置き換えます。 |
 
-パラメーターの分割代入では、デフォルト値のない単純な識別子パラメーターを使い、rest、デフォルト値、ネストしたオブジェクトパターンを含められません。呼び出し箇所のオブジェクトリテラルには、スプレッド、計算プロパティキー、メソッド、getter を含められません。プロパティの値は関数の束縛である必要があり、`ctx.hostBindings.Panel ?? fallback` のような条件式は使えません。使用できる構文、呼び出し箇所の証明、合成の例は[ファクトリから渡すターゲット](../concepts/islands.mdx#境界ターゲットの検出と移行-ファクトリから渡すターゲット)を参照してください。
+factory の診断には source location 付きの既存接頭辞と一般 rewrite suffix
+が続きます。選択キーを 1 つの literal 内に明示的に 2 回書くと、値が同じ
+でも後続 spread が上書きしても拒否されます。選択しない data key の重複は
+引き続き許可されます。最終値を調べる前に source の構文全体を検証するため、
+勝つ override で未対応構文を隠すことはできません。
+
+downstream の zudo-doc 修正は公開 composition seam migration です。
+機能設定は 2 段のネストした server factory に残し、呼び出し側で
+`DefaultPanelIsland` と `HostPanelIsland` の別々の描画を選び、
+描画済みの子を通常の server `PanelSlot` に渡します。有効で host が
+なければ default を描画し、host があれば host を優先します。機能が無効なら
+どちらも描画しません。default suppression があり host がなければ何も描画せず、
+host があれば host を描画します。コンポーネント関数や描画済み server child は
+Island JSON prop にしません。これは consumer の source/API migration であり、
+consumer 自身で検証が必要です。このドキュメントは downstream browser parity を
+主張しません。
+
+map では MDX components にある Fragment で囲んだ固定ターゲットの手順を
+維持します。map に格納された bare return 固定 wrapper と汎用転送 boundary
+entry は拒否されます。map key が `Island` でも、
+`children ?? null` の SSR passthrough は SDK boundary ではありません。
+
+ロックされた acceptance 行は
+`factory-static-spread`、`factory-composition-default`、
+`factory-composition-host-override`、
+`factory-composition-settings-disabled`、
+`factory-composition-default-suppressed`、
+`factory-composition-host-with-default-suppressed`、
+`factory-map-default`、`factory-map-host-override`、
+`factory-map-settings-disabled` です。[Islands ガイド](../concepts/islands.mdx#境界ターゲットの検出と移行-カスタマイズ可能なパッケージ島の合成境界)
+に各 route marker と操作を記載しています。両方が有効な client export で
+`PropsReceiver` が固定 target の場合、関数を Island JSON prop に渡すと、
+より後の SSR で `ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component`
+になります。
 
 ## `curl | sh` インストールがリリースタグを解決できない
 
