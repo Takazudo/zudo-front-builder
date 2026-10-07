@@ -538,6 +538,17 @@ fn retain_unsuppressed_changes(
     config: &OrchestratorConfig,
     changes: Vec<(PathBuf, ChangeKind)>,
 ) -> Vec<(PathBuf, ChangeKind)> {
+    // Refresh before invoking even the first intake predicate. A rule edit
+    // and a previously ignored path may belong to this same batch.
+    config
+        .policy
+        .raw_import_invalidation
+        .refresh_linked_package_rules(
+            &changes
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>(),
+        );
     let Some(suppress) = config.intake_suppression.as_ref() else {
         return changes;
     };
@@ -6951,6 +6962,41 @@ mod tests {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with(".zfb-esbuild-entry-") && n.ends_with(".tsx"))
         })
+    }
+
+    #[test]
+    fn linked_rule_change_refreshes_before_same_batch_is_filtered() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("app");
+        let package = root.path().join("lib");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), "{\"name\":\"lib\"}").unwrap();
+        let rule = package.join(".gitignore");
+        let ignored = package.join("ignored.ts");
+        std::fs::write(&rule, "ignored.ts\n").unwrap();
+        let snapshot =
+            crate::bundler::LinkedPackageIgnoreSnapshot::capture(&package, &project).unwrap();
+        let registry = crate::policy::RawImportInvalidation::default();
+        registry.replace_linked_package_snapshots([snapshot]);
+        assert!(registry.linked_package_ignored_and_undeclared(&ignored, false));
+
+        let for_predicate = registry.clone();
+        let config = OrchestratorConfig::new(&project, vec![])
+            .with_policy(GranularityPolicy::default().with_raw_import_invalidation(registry))
+            .with_intake_suppression(Arc::new(move |path| {
+                for_predicate.linked_package_ignored_and_undeclared(path, false)
+            }));
+        std::fs::write(&rule, "").unwrap();
+        let kept = retain_unsuppressed_changes(
+            &config,
+            vec![
+                (rule, ChangeKind::Modified),
+                (ignored.clone(), ChangeKind::Modified),
+            ],
+        );
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].0, ignored);
     }
 
     /// The over-suppression guard: a mixed batch carrying temp-entry
