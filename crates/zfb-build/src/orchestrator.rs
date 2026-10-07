@@ -562,31 +562,10 @@ fn retain_unsuppressed_changes(
     let Some(suppress) = config.intake_suppression.as_ref() else {
         return changes;
     };
-    let mut exempt_roots: Vec<PathBuf> = config
-        .watch_roots
-        .iter()
-        .map(|root| config.project_root.join(root))
-        .collect();
-    exempt_roots.extend(config.extra_watch_paths.iter().cloned());
-    changes.into_iter().filter(|(path, _)| {
-        if suppress(path) { return false; }
-        // Intake lacks a reliable file-kind field. A missing/deleted path or
-        // directory must pass through, even when a snapshot says ignored.
-        if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
-            return true;
-        }
-        let registry = &config.policy.raw_import_invalidation;
-        if !registry.linked_package_ignored_and_undeclared(path, false) {
-            return true;
-        }
-        if registry.linked_intake_exempt(path, &exempt_roots) {
-            return true;
-        }
-        if dev_timing_enabled() {
-            eprintln!("[zfb-timing] intake: suppressed linked-ignored {} (ignored-and-undeclared file outside watch claims)", path.display());
-        }
-        false
-    }).collect()
+    changes
+        .into_iter()
+        .filter(|(path, _)| !suppress(path))
+        .collect()
 }
 
 /// What a [`DiscoveryHook`] invocation did for this tick.
