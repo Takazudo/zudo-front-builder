@@ -107,13 +107,13 @@ createBoundary({ ...defaults, ...defaults });          // Counter
 
 | 拒否される形 | 診断理由 |
 | --- | --- |
-| `createBoundary(deps)`、未知の spread source、`let` source、import／parameter／alias の source、ネストした source spread、直接の object-expression spread (`...{ Counter }`)、関数呼び出し結果、member または条件式 operand | `call site at &lt;loc&gt; passes a non-literal argument` |
-| 禁止された source 参照／書き込み／export、計算キー、method、accessor、`__proto__` キー、引数または source における選択対象の重複 | `call site at &lt;loc&gt; passes a non-literal argument` |
-| `Counter` を含まない安全な展開 | `property Counter missing at call site &lt;loc&gt;` |
-| 勝者が `host.Counter ?? Counter`、三項演算子、`Counter || Other` | `call site at &lt;loc&gt; selects Counter conditionally (??, ternary, ||)` |
-| namespace import ではない runtime／opaque object receiver からの `host.Counter` | `property Counter at &lt;loc&gt; is not a function binding`（既存の resolver 理由が後ろに付く場合があります） |
-| 有効な呼び出し間で異なる定義を選択 | `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` |
-| factory parameter を `inner({ ...deps })` または `inner(deps)` に渡す | そのパラメーターの証明が必要な場合、既存の `parameter deps is written or escapes at &lt;loc&gt;` が優先されます。spread は関数間転送を追加しません。 |
+| `createBoundary(deps)`、未知の spread source、`let` source、import／parameter／alias の source、ネストした source spread、直接の object-expression spread (`...{ Counter }`)、関数呼び出し結果、member または条件式 operand | <code>call site at &lt;loc&gt; passes a non-literal argument</code> |
+| 禁止された source 参照／書き込み／export、計算キー、method、accessor、`__proto__` キー、引数または source における選択対象の重複 | <code>call site at &lt;loc&gt; passes a non-literal argument</code> |
+| `Counter` を含まない安全な展開 | <code>property Counter missing at call site &lt;loc&gt;</code> |
+| 勝者が `host.Counter ?? Counter`、三項演算子、<code>Counter &#124;&#124; Other</code> | <code>call site at &lt;loc&gt; selects Counter conditionally (??, ternary, &#124;&#124;)</code> |
+| namespace import ではない runtime／opaque object receiver からの `host.Counter` | <code>property Counter at &lt;loc&gt; is not a function binding</code>（既存の resolver 理由が後ろに付く場合があります） |
+| 有効な呼び出し間で異なる定義を選択 | <code>call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other</code> |
+| factory parameter を `inner({ ...deps })` または `inner(deps)` に渡す | そのパラメーターの証明が必要な場合、既存の <code>parameter deps is written or escapes at &lt;loc&gt;</code> が優先されます。spread は関数間転送を追加しません。 |
 | 直接 return する固定 wrapper を `{ Panel: BarePanelIsland }` に格納、または汎用転送 boundary を `{ Island: ForwardBoundary }` に格納 | `boundary wrapper escapes into an opaque container` |
 | 汎用 wrapper を省略記法 `{ ForwardBoundary }` で格納 | `boundary wrapper escapes into an opaque object` |
 | 関数を Island JSON prop として渡す（両関数が有効な client export で、`PropsReceiver` が固定ターゲットの場合） | SSR error: `ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component` |
