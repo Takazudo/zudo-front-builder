@@ -101,6 +101,8 @@ pub const PACKAGE_ROOT_TRAVERSED_DIR_NAMES: &[&str] = &["node_modules", "dist"];
 
 #[derive(Debug, Clone, Default)]
 pub struct RawImportInvalidation {
+    /// One completed token snapshot per canonical linked package root.
+    linked_packages: Arc<RwLock<BTreeMap<PathBuf, crate::bundler::LinkedPackageIgnoreSnapshot>>>,
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_scripts: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_script_workers: Arc<RwLock<BTreeSet<PathBuf>>>,
@@ -312,6 +314,65 @@ fn coarse_realtime_now() -> Option<SystemTime> {
 }
 
 impl RawImportInvalidation {
+    /// Replace the whole generation after a successful token computation.
+    /// Packages absent from the new closure retire here.
+    pub fn replace_linked_package_snapshots(
+        &self,
+        snapshots: impl IntoIterator<Item = crate::bundler::LinkedPackageIgnoreSnapshot>,
+    ) {
+        if let Ok(mut slot) = self.linked_packages.write() {
+            *slot = snapshots
+                .into_iter()
+                .map(|snapshot| (snapshot.package_root().to_path_buf(), snapshot))
+                .collect();
+        }
+    }
+
+    pub fn linked_package_snapshot(
+        &self,
+        root: &Path,
+    ) -> Option<crate::bundler::LinkedPackageIgnoreSnapshot> {
+        self.linked_packages.read().ok()?.get(root).cloned()
+    }
+
+    /// Refresh touched rules before intake filtering. A failed refresh drops
+    /// that package's snapshot, so later events pass through.
+    pub fn refresh_linked_package_rules(&self, paths: &[PathBuf]) {
+        let Ok(mut slot) = self.linked_packages.write() else {
+            return;
+        };
+        slot.retain(|_, snapshot| {
+            if !paths.iter().any(|path| snapshot.depends_on_rule_file(path)) {
+                return true;
+            }
+            match snapshot.refresh_rules() {
+                Ok(fresh) => {
+                    *snapshot = fresh;
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, package = %snapshot.package_root().display(), "linked package rule refresh failed; disabling suppression");
+                    false
+                }
+            }
+        });
+    }
+
+    /// Missing or invalid registry state always passes through.
+    pub fn linked_package_ignored_and_undeclared(&self, path: &Path, is_dir: bool) -> bool {
+        let Ok(slot) = self.linked_packages.read() else {
+            return false;
+        };
+        let Some(snapshot) = slot
+            .values()
+            .filter(|snapshot| path.starts_with(snapshot.package_root()))
+            .max_by_key(|snapshot| snapshot.package_root().components().count())
+        else {
+            return false;
+        };
+        snapshot.ignored_and_undeclared(path, is_dir)
+    }
+
     fn resolved_alias(path: &Path) -> Option<PathBuf> {
         let mut cursor = path;
         let mut missing_suffix = Vec::new();
@@ -1568,6 +1629,57 @@ fn path_starts_with_segment(path: &Path, segment: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linked_snapshot_replace_refresh_retire_and_fail_open() {
+        use super::RawImportInvalidation;
+        use crate::bundler::LinkedPackageIgnoreSnapshot;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let project = workspace.path().join("app");
+        let package = workspace.path().join("lib");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(package.join("nested")).unwrap();
+        std::fs::write(package.join("package.json"), "{\"name\":\"lib\"}").unwrap();
+        std::fs::write(package.join(".gitignore"), "ignored.ts\n").unwrap();
+        let snapshot = LinkedPackageIgnoreSnapshot::capture(&package, &project).unwrap();
+        let registry = RawImportInvalidation::default();
+        let ignored = package.join("ignored.ts");
+        assert!(!registry.linked_package_ignored_and_undeclared(&ignored, false));
+        registry.replace_linked_package_snapshots([snapshot]);
+        assert!(registry.linked_package_snapshot(&package).is_some());
+        assert!(registry.linked_package_ignored_and_undeclared(&ignored, false));
+
+        // The rule and previously ignored file arrive in one batch. Refresh
+        // first, then the same intake lookup must pass the file through.
+        std::fs::write(package.join(".gitignore"), "").unwrap();
+        registry.refresh_linked_package_rules(&[package.join(".gitignore"), ignored.clone()]);
+        assert!(!registry.linked_package_ignored_and_undeclared(&ignored, false));
+
+        // A nested rule created after the original capture is still noticed.
+        let nested_rule = package.join("nested/.gitignore");
+        let nested_file = package.join("nested/new.ts");
+        std::fs::write(&nested_rule, "new.ts\n").unwrap();
+        registry.refresh_linked_package_rules(&[nested_rule]);
+        assert!(registry.linked_package_ignored_and_undeclared(&nested_file, false));
+
+        // A deleted manifest invalidates this slot instead of applying stale
+        // suppression. A later successful generation can republish it.
+        std::fs::remove_file(package.join("package.json")).unwrap();
+        registry.refresh_linked_package_rules(&[package.join("package.json")]);
+        assert!(!registry.linked_package_ignored_and_undeclared(&nested_file, false));
+        assert!(registry.linked_package_snapshot(&package).is_none());
+
+        std::fs::write(package.join(".gitignore"), "ignored.ts\n").unwrap();
+        std::fs::write(package.join("package.json"), "{\"name\":\"lib\"}").unwrap();
+        registry.replace_linked_package_snapshots([LinkedPackageIgnoreSnapshot::capture(
+            &package, &project,
+        )
+        .unwrap()]);
+        assert!(registry.linked_package_ignored_and_undeclared(&ignored, false));
+        registry.replace_linked_package_snapshots(Vec::new());
+        assert!(registry.linked_package_snapshot(&package).is_none());
+        assert!(!registry.linked_package_ignored_and_undeclared(&ignored, false));
+    }
     use super::*;
 
     #[test]

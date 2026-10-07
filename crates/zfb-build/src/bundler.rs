@@ -849,6 +849,8 @@ pub struct BundlerOutput {
     /// the watcher registers as extra targets for out-of-root (symlinked
     /// workspace) deps.
     pub route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps>,
+    /// Completed linked-package snapshots from this bundle's token walk.
+    pub linked_package_snapshots: Vec<LinkedPackageIgnoreSnapshot>,
     /// Wasm files emitted beside this bundle by esbuild's `.wasm=copy` loader.
     ///
     /// Every path is relative to [`Self::bundle_path`]'s parent directory,
@@ -2876,6 +2878,25 @@ pub fn zudo_react_build_token_with_inputs_and_output(
     output_dir: &Path,
     define: &BTreeMap<String, String>,
 ) -> Result<String> {
+    Ok(zudo_react_build_token_with_snapshots(
+        project_root,
+        plugin_aliases,
+        plugin_virtual_modules,
+        output_dir,
+        define,
+    )?
+    .0)
+}
+
+/// The token walk is the sole producer of linked-package snapshots. Its
+/// completed import closure is returned alongside the token for dev intake.
+pub fn zudo_react_build_token_with_snapshots(
+    project_root: &Path,
+    plugin_aliases: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    output_dir: &Path,
+    define: &BTreeMap<String, String>,
+) -> Result<(String, Vec<LinkedPackageIgnoreSnapshot>)> {
     let project_canonical = fs::canonicalize(project_root)?;
     let output_dir = if output_dir.is_absolute() {
         output_dir.to_path_buf()
@@ -2886,6 +2907,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut emitted = BTreeMap::new();
     let mut visited_packages = BTreeSet::new();
+    let mut linked_snapshots = Vec::new();
     collect_zudo_react_token_tree(
         project_root,
         Path::new(""),
@@ -2893,6 +2915,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
         false,
         Some(&output_dir),
         &mut visited_packages,
+        &mut linked_snapshots,
         (&mut files, &mut emitted),
     )?;
     let mut sorted_aliases = plugin_aliases.to_vec();
@@ -2909,6 +2932,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
             &PathBuf::from(format!("plugin-alias/{name}")),
             &project_canonical,
             &mut visited_packages,
+            &mut linked_snapshots,
             &mut files,
             &mut emitted,
         )?;
@@ -2925,6 +2949,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
                 &PathBuf::from(format!("tsconfig-path/{name}/{index}")),
                 &project_canonical,
                 &mut visited_packages,
+                &mut linked_snapshots,
                 &mut files,
                 &mut emitted,
             )?;
@@ -2957,7 +2982,10 @@ pub fn zudo_react_build_token_with_inputs_and_output(
         digest.update(fs::read(physical)?);
         digest.update([0]);
     }
-    Ok(hex::encode(digest.finalize())[..16].to_string())
+    Ok((
+        hex::encode(digest.finalize())[..16].to_string(),
+        linked_snapshots,
+    ))
 }
 
 fn collect_zudo_react_external_target(
@@ -2965,6 +2993,7 @@ fn collect_zudo_react_external_target(
     logical: &Path,
     project_canonical: &Path,
     visited_packages: &mut BTreeSet<PathBuf>,
+    linked_snapshots: &mut Vec<LinkedPackageIgnoreSnapshot>,
     files: &mut Vec<(PathBuf, PathBuf)>,
     emitted: &mut BTreeMap<PathBuf, usize>,
 ) -> Result<()> {
@@ -3004,6 +3033,7 @@ fn collect_zudo_react_external_target(
                     true,
                     None,
                     visited_packages,
+                    linked_snapshots,
                     (&mut *files, &mut *emitted),
                 )?;
             }
@@ -3027,6 +3057,7 @@ fn collect_zudo_react_external_target(
             true,
             None,
             visited_packages,
+            linked_snapshots,
             (&mut *files, &mut *emitted),
         )?;
     }
@@ -3129,9 +3160,10 @@ fn emit_zudo_react_token_file(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinkedPackageIgnoreSnapshot {
     package_root: PathBuf,
+    project_root: PathBuf,
     // Deepest first. Each matcher keeps the directory-relative meaning of
     // anchored and unanchored patterns in its own .gitignore.
     matchers: Vec<(PathBuf, ignore::gitignore::Gitignore)>,
@@ -3147,6 +3179,12 @@ impl LinkedPackageIgnoreSnapshot {
     /// linked package root. The token walk adds import closure members after
     /// discovery; callers can then use the predicate on that completed state.
     pub fn capture(package_root: &Path, project_root: &Path) -> Result<Self> {
+        if !package_root.join("package.json").is_file() {
+            bail!(
+                "linked package manifest is missing at {}",
+                package_root.display()
+            );
+        }
         let mut snapshot = linked_package_gitignore(package_root, project_root)?;
         snapshot.declared_prefixes = linked_package_declared_prefixes(package_root)?;
         snapshot.declared_root_files = linked_package_declared_root_files(package_root)?;
@@ -3162,6 +3200,22 @@ impl LinkedPackageIgnoreSnapshot {
 
     pub fn rule_file_paths(&self) -> &BTreeSet<PathBuf> {
         &self.rule_files
+    }
+
+    /// A newly created nested `.gitignore` was absent from the last walk,
+    /// but still changes the rules for this package.
+    pub fn depends_on_rule_file(&self, path: &Path) -> bool {
+        self.rule_files.contains(path)
+            || (path.starts_with(&self.package_root)
+                && path.file_name().is_some_and(|name| name == ".gitignore"))
+    }
+
+    /// Re-read rules before filtering a batch that changed them. Preserve the
+    /// old closure as a conservative allowance until the next token walk.
+    pub fn refresh_rules(&self) -> Result<Self> {
+        let mut fresh = Self::capture(&self.package_root, &self.project_root)?;
+        fresh.closure_members = self.closure_members.clone();
+        Ok(fresh)
     }
 
     pub fn closure_members(&self) -> &BTreeSet<PathBuf> {
@@ -3293,6 +3347,10 @@ fn linked_package_gitignore(
         .take_while(|ancestor| ancestor.starts_with(&bound))
         .collect::<Vec<_>>();
     ancestors.reverse();
+    let ancestor_rules = ancestors
+        .iter()
+        .map(|dir| dir.join(".gitignore"))
+        .collect::<Vec<_>>();
     for dir in ancestors {
         let ignore = dir.join(".gitignore");
         if ignore.is_file() {
@@ -3319,6 +3377,7 @@ fn linked_package_gitignore(
     for ignore in nested {
         add(&ignore)?;
     }
+    rule_files.extend(ancestor_rules);
     matchers.sort_by(|left, right| {
         right
             .0
@@ -3329,6 +3388,7 @@ fn linked_package_gitignore(
     });
     Ok(LinkedPackageIgnoreSnapshot {
         package_root: package_root.to_path_buf(),
+        project_root: project_root.to_path_buf(),
         matchers,
         negation_parents,
         rule_files,
@@ -3481,6 +3541,7 @@ fn collect_zudo_react_token_tree(
     linked_package: bool,
     output_dir: Option<&Path>,
     visited_packages: &mut BTreeSet<PathBuf>,
+    linked_snapshots: &mut Vec<LinkedPackageIgnoreSnapshot>,
     outputs: (&mut Vec<(PathBuf, PathBuf)>, &mut BTreeMap<PathBuf, usize>),
 ) -> Result<()> {
     let (files, emitted) = outputs;
@@ -3660,6 +3721,7 @@ fn collect_zudo_react_token_tree(
                             .join(package.file_name()),
                         project_canonical,
                         visited_packages,
+                        linked_snapshots,
                         files,
                         emitted,
                     )?;
@@ -3670,6 +3732,7 @@ fn collect_zudo_react_token_tree(
                     &logical_node_modules.join(entry.file_name()),
                     project_canonical,
                     visited_packages,
+                    linked_snapshots,
                     files,
                     emitted,
                 )?;
@@ -3690,10 +3753,10 @@ fn collect_zudo_react_token_tree(
             })
             .map(|(logical, physical)| (physical.clone(), logical.clone()))
             .collect();
-        linked_snapshot
-            .as_mut()
-            .expect("linked package snapshot was captured before the walk")
-            .collect_target_import_closure(seeds, false, files, emitted)?;
+        let mut snapshot =
+            linked_snapshot.expect("linked package snapshot was captured before the walk");
+        snapshot.collect_target_import_closure(seeds, false, files, emitted)?;
+        linked_snapshots.push(snapshot);
     }
     Ok(())
 }
@@ -3727,6 +3790,7 @@ fn collect_zudo_react_linked_package(
     logical: &Path,
     project_canonical: &Path,
     visited_packages: &mut BTreeSet<PathBuf>,
+    linked_snapshots: &mut Vec<LinkedPackageIgnoreSnapshot>,
     files: &mut Vec<(PathBuf, PathBuf)>,
     emitted: &mut BTreeMap<PathBuf, usize>,
 ) -> Result<()> {
@@ -3753,6 +3817,7 @@ fn collect_zudo_react_linked_package(
         true,
         None,
         visited_packages,
+        linked_snapshots,
         (&mut *files, &mut *emitted),
     )
 }
@@ -5833,7 +5898,7 @@ pub fn bundle_with_session(
         },
     )
     .context("bundler: failed writing entry.mjs")?;
-    let build = zudo_react_build_token_with_inputs_and_output(
+    let (build, linked_package_snapshots) = zudo_react_build_token_with_snapshots(
         &input.project_root,
         &input.plugin_alias_entries,
         &input.plugin_virtual_modules,
@@ -6188,6 +6253,7 @@ pub fn bundle_with_session(
         sourcemap_path,
         manifest,
         route_module_deps,
+        linked_package_snapshots,
         emitted_wasm_assets,
         content_bridge_fallback_pages,
         dropped_plain_css_inputs,
