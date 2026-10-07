@@ -12,24 +12,78 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `defineConfig` is exported from `zfb/config`. The helper is identity-typed: it returns its argument unchanged. Its only job is to give your editor IntelliSense and type-checking against the `ZfbConfig` shape. The actual schema is enforced by Rust serde at config-load time, so the same rules apply whether you author your config in TypeScript or JSON.
 
-## Typing the `zfb/config` import
+<span id="typing-the-zfb-config-import" />
 
-`zfb.config.ts` imports `defineConfig` from the **bare** specifier `zfb/config`. At config-load time zfb aliases that import to a runtime-only stub (so your config parses without the `@takazudo/zfb` package installed), and no real `zfb/config` module exists in `node_modules` — the published types live under the **scoped** subpath `@takazudo/zfb/config`. So a plain `tsc --noEmit` (what `zfb check` runs) has nothing to type the bare import against and reports `Cannot find module 'zfb/config'`.
+## Typing bare `zfb` imports
 
-Bridge the two with a one-line ambient declaration that **re-exports** the
-scoped package's types. Put `zfb-shim.d.ts` in a directory your `tsconfig`
-includes; `components/zfb-shim.d.ts` works with the stock template. If you put
-the file at the project root instead, add `"zfb-shim.d.ts"` to `include`
-explicitly.
+The SDK build tools resolve the supported bare `zfb` specifiers to their matching `@takazudo/zfb` package exports. The config loader handles `zfb/config` specially by mapping it to a runtime-only stub, so config parsing does not require a real `zfb/config` module in `node_modules`. These aliases are not TypeScript `paths` mappings: `zfb check` is unchanged and runs TypeScript with your project's `tsconfig`, without injecting `compilerOptions.paths`.
+
+The template includes `components/zfb-shim.d.ts` so TypeScript and editors can resolve the bare imports. Put the declaration file in a directory included by your `tsconfig`; the stock template includes `components/`. If you put the shim at the project root instead, add `"zfb-shim.d.ts"` to `include`. Existing consumers with a shim should add any missing module declarations to that file.
+
+The shim re-exports the public types for every supported bare entry from the matching scoped package subpath. Keep these declarations aligned with the public exports; do not hand-copy type shapes such as `ZfbConfig`, because that copy can silently fall behind the package.
 
 ```ts
-// components/zfb-shim.d.ts — types the bare `zfb/config` specifier.
+/**
+ * The zfb bundlers resolve bare `zfb` imports to `@takazudo/zfb`, while
+ * TypeScript needs declarations for that separate module name. Keep these
+ * entry points in sync with the package's public exports.
+ */
+declare module "zfb" {
+  export * from "@takazudo/zfb";
+}
+
+declare module "zfb/runtime" {
+  export * from "@takazudo/zfb/runtime";
+}
+
+declare module "zfb/content" {
+  export * from "@takazudo/zfb/content";
+}
+
+declare module "zfb/paginate" {
+  export * from "@takazudo/zfb/paginate";
+}
+
 declare module "zfb/config" {
   export * from "@takazudo/zfb/config";
 }
-```
 
-Re-export — do **not** hand-copy the `ZfbConfig` shape into the shim. A hand-mirrored field list silently lags the engine: every new config field has to be re-added by hand, or `zfb check` rejects a perfectly valid field with `TS2353: Object literal may only specify known properties`. `export *` tracks the published `@takazudo/zfb/config` automatically, so the shim can never fall behind.
+declare module "zfb/plugins" {
+  export * from "@takazudo/zfb/plugins";
+}
+
+declare module "zfb/frontmatter" {
+  export * from "@takazudo/zfb/frontmatter";
+}
+
+declare module "zfb/slugify" {
+  export * from "@takazudo/zfb/slugify";
+}
+
+declare module "zfb/zudo-react" {
+  export * from "@takazudo/zfb/zudo-react";
+}
+
+declare module "zfb/zudo-react/jsx-runtime" {
+  export * from "@takazudo/zfb/zudo-react/jsx-runtime";
+}
+
+declare module "zfb/zudo-react/jsx-dev-runtime" {
+  export * from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
+}
+
+declare module "zfb/zudo-react/server" {
+  export * from "@takazudo/zfb/zudo-react/server";
+}
+
+declare module "zfb/zudo-react/client" {
+  export * from "@takazudo/zfb/zudo-react/client";
+}
+
+declare module "zfb/zudo-react/testing" {
+  export * from "@takazudo/zfb/zudo-react/testing";
+}
+```
 
 ## Config shape
 

@@ -16,7 +16,7 @@ Add the `"use client"` directive at the top of a `.tsx` file:
 ```tsx
 "use client";
 
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -40,10 +40,10 @@ The scanner also resolves edges registered by plugin `setup`: exact `addAlias` r
 
 A virtual module can statically import or re-export a real module, and the scanner follows that file. The module carrying `"use client"` must be a real file, though it may re-export a function defined in another real file. The exported function still needs to be the one child of a reachable `<Island>` boundary; the directive by itself does not register a target. A `"use client"` directive or `import.meta.glob` directly inside a virtual source is warned about and skipped. Put those constructs in real files and reach them through the virtual module. Bare imports from inside a virtual source that resolve to an installed or workspace package, or to another virtual module, are also skipped. See [Plugins](./plugins.mdx) for the `setup` registration details.
 
-For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child:
+For a target, export the function from a module marked `"use client"` and pass that function as the boundary's one child. Import `Island` from `zfb` or `@takazudo/zfb`; this guide uses the bare `zfb` alias:
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { Counter } from "./counter";
 
 <Island><Counter /></Island>;
@@ -100,7 +100,7 @@ other plain properties are allowed. Its value must resolve to a function, and
 every call site must resolve to the same function definition. For example:
 
 ~~~tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
 
 function renderDesignTokenPanel(deps) {
@@ -155,7 +155,7 @@ module marked `"use client"`:
 
 ~~~tsx
 // Package island wrappers
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 // This component is exported from a module marked "use client".
 import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
 
@@ -195,7 +195,7 @@ export function HostPanel() {
 ~~~
 
 ~~~tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { PanelSlot } from "@example/package/islands";
 import { HostPanel } from "./host-panel";
 
@@ -223,7 +223,7 @@ If a collision diagnostic identifies two different target functions, rename one 
 ```tsx
 "use client";
 
-import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
+import { computed, getScope, signal } from "zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
@@ -317,7 +317,7 @@ After render, each island's server-rendered HTML is wrapped in a `<div>` that ca
 The `data-when` attribute controls when the client entry runs. It is always present and defaults to `"load"`; the other strategies are `"visible"`, `"idle"`, and `"media"`. The JSX API is the [`<Island>` wrapper](../api/island.mdx); for media-query adoption, pass both `when="media"` and a `media` query:
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import MobileMenu from "./MobileMenu";
 
 export default function Header() {
@@ -430,7 +430,7 @@ This example uses a **hypothetical** adapter module. Its `mount(host)` returns a
 ```tsx
 "use client";
 
-import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
+import { getScope, h, signal, type Ref } from "zfb/zudo-react";
 
 type WidgetInstance = { destroy(): void };
 type WidgetModule = { mount(host: Element): WidgetInstance };
