@@ -146,6 +146,19 @@ v1 には、色パレット、余白単位、名前付きスケール、ブレ�
 
 `tokens.easings` は明示的な `ease-*` ユーティリティで使う名前付きの値を指定します。トランジション系ユーティリティのプロジェクト共通のタイミングは、別の `wind.defaultTransitionTimingFunction` で設定します。デフォルトは `ease` で、トークン名ではなく CSS のタイミング関数を指定します。同じバリアント区画では、明示的な `ease-*` ユーティリティがこのデフォルトを上書きします。
 
+## 文字サイズ
+
+各文字サイズトークンは、必須の `size` と任意の `lineHeight` を持つオブジェクトで設定します。
+
+~~~ts
+fontSizes: {
+  sm: { size: "0.875rem", lineHeight: "1.25rem" },
+  caption: { size: "0.75rem" }
+}
+~~~
+
+これにより `--zw-font-size-sm`、`--zw-font-size-sm-leading`、`--zw-font-size-caption` が出力されます。`text-sm` ユーティリティは `font-size` と `line-height` を出力します。`caption` トークンには `lineHeight` がないため、`text-caption` は `font-size` だけを出力します。
+
 ## 名前と参照のルール
 
 名前には小文字の ASCII 英字と数字を使い、英数字のまとまりの間を単一のハイフンで区切ります。先頭と末尾は英数字でなければなりません。数字を含む構成要素も使えるため、`neutral-50` と `2xl` は有効です。大文字の `DEFAULT` は拒否されます。許可されるカテゴリでは小文字の `default` を使ってください。
@@ -170,13 +183,13 @@ v1 には、色パレット、余白単位、名前付きスケール、ブレ�
 
 ## 値の検証
 
-各トークン値は、それを使う CSS プロパティのパーサーで検査されます。たとえば `colors` には色、`spacing` には padding の長さ、`sizes` には width、`fontSizes` には font-size、`radii` には border-radius の規則を使います。角丸の項目は単一の非負の長さまたは割合でなければなりません。z-index の項目は整数文字列または `var()` 参照です。たとえば `zIndices: { content: "10" }` と指定します。`zIndices: { content: 10 }` のような JSON/TypeScript の数値は、`invalid type: integer ..., expected a string` という設定エラーで拒否されます。イージングの項目は単一のタイミング関数またはキーワードでなければなりません。
+各トークン値は、それを使う CSS プロパティのパーサーで検査されます。たとえば `colors` には色、`spacing` には padding の長さ、`sizes` には width、`fontSizes` には font-size、`radii` には border-radius の規則を使います。角丸の項目は単一の非負の長さまたは割合でなければなりません。z-index の項目は整数文字列または `var()` 参照です。たとえば `zIndices: { content: "10" }` と指定します。`zIndices: { content: 10 }` のような JSON/TypeScript の数値は、`invalid type: integer ..., expected a string` という設定エラーで拒否されます。裸の文字列を `fontSizes` に指定すると、`wind.tokens.fontSizes entries are objects; write { size: "<value>" } (optionally with lineHeight) instead of the bare string "<value>"` というエラーで拒否されます。ほかの誤った形式は `expected an object { size: string, lineHeight?: string }` で拒否されます。イージングの項目は単一のタイミング関数またはキーワードでなければなりません。
 
 `spacingUnit` 以外のカテゴリの値には外部のカスタムプロパティを含められます。`var()` を参照しているためパーサーがプロパティの型を証明できない場合、結び付けはカテゴリ未検証と記録され、`zfb wind explain` で確認できます。zfb は変数の型を実行時に検証しません。それでも値全体が構文解析でき、`var()` 以外の部分がプロパティに合っている必要があります。そのため、同じ綴りのトークンと任意値は同じように受け付けられるか拒否されます。セミコロン、波括弧、`!important`、URL 関数、`inherit` や `revert` などのキーワードは拒否されます。トークン値から予約済みの `--zw-` 名前空間は参照できません。代わりにプロジェクトのプロパティを参照し、手書きの CSS でそのプロパティを上書きしてください。
 
 ## 出力される変数
 
-設定された値はすべて `@layer zw-tokens` 内の `--zw-` 名前空間に公開されます。上の表が正確な対応を示します。`fontSizes` の値は `--zw-font-size-` に入り、設定されていれば対になる `-leading` 変数も出力されます。この対の名前を予約するため、フォントサイズのトークンキー自体を `-leading` で終わらせることはできません。テーマの名前空間は消去されず、トークン値もインライン展開されません。プロジェクトは生成されたカスタムプロパティを手書きの CSS で上書きできます。
+設定された値はすべて `@layer zw-tokens` 内の `--zw-` 名前空間に公開されます。上の表が正確な対応を示します。`fontSizes` の値は `--zw-font-size-` に入り、設定されていれば対になる `-leading` 変数も出力されます。この対の名前を予約するため、フォントサイズのトークンキー自体を `-leading` で終わらせることはできません。手書き CSS のテーマ名前空間は消去されません。一方、Tailwind のデフォルト名前空間は提供されません（[デフォルトテーマ変数](./coming-from-tailwind.mdx#デフォルトテーマ変数)を参照）。トークン値はインライン展開されません。プロジェクトは生成されたカスタムプロパティを手書きの CSS で上書きできます。
 
 ## 関連項目
 
