@@ -183,6 +183,7 @@ function signalProcessGroup(child, signal) {
 function startDev(consumer, zfbBinary, port) {
   const child = spawn(zfbBinary, ["dev", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: consumer,
+    env: { ...process.env, ZFB_DEV_DEFER_BUNDLE: "0" },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
