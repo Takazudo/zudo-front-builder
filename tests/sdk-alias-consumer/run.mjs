@@ -64,9 +64,13 @@ function parseFencedBlocks(markdown) {
   return blocks;
 }
 
-function recipeBlock(blocks, fileMarker) {
+function recipeBlock(blocks, fileMarker, requiredSource) {
   const matches = blocks.filter(({ language, source }) => {
-    return language === "tsx" && source.trimStart().startsWith(`// ${fileMarker}`);
+    return (
+      language === "tsx" &&
+      source.trimStart().startsWith(`// ${fileMarker}`) &&
+      (!requiredSource || source.includes(requiredSource))
+    );
   });
   assert.equal(
     matches.length,
@@ -208,9 +212,13 @@ function startDev(consumer, zfbBinary, port) {
 
 async function writeConsumer(consumer, docsBlocks) {
   const counter = recipeBlock(docsBlocks, "components/counter.tsx");
-  const rootComponents = recipeBlock(docsBlocks, "mdx-components.tsx (project root)");
+  const rootComponents = recipeBlock(
+    docsBlocks,
+    "mdx-components.tsx (project root)",
+    'import { Island } from "zfb";',
+  );
   const pageComponents = recipeBlock(docsBlocks, "pages/_mdx-components.tsx");
-  const page = recipeBlock(docsBlocks, "pages/blog/[slug].tsx");
+  const page = recipeBlock(docsBlocks, "pages/blog/[slug].tsx", "pageComponents");
   assertBareSdkImports(counter, "components/counter.tsx");
   assertBareSdkImports(rootComponents, "mdx-components.tsx");
   assertBareSdkImports(pageComponents, "pages/_mdx-components.tsx");
