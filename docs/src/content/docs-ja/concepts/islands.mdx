@@ -16,7 +16,7 @@ zfb のページはデフォルトで静的 HTML にレンダリングされま�
 ```tsx
 "use client";
 
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -40,10 +40,10 @@ export default function Counter() {
 
 virtual module から実ファイルを static import／re-export すると、スキャナーはそのファイルをたどります。`"use client"` を付ける module は実ファイルに置いてください。その module は別の実ファイルで定義された関数を re-export しても構いませんが、export した関数を到達可能な `<Island>` の唯一の子として渡す必要があります。ディレクティブだけでは target は登録されません。virtual source 内に直接書いた `"use client"` ディレクティブや `import.meta.glob` は警告が出てスキップされます。これらは実ファイルに置き、そのファイルを virtual module からたどれるようにしてください。virtual source 内の bare import がインストール済み package、workspace package、または別の virtual module に解決される場合もスキップされます。`setup` の登録方法は [Plugins](./plugins.mdx) を参照してください。
 
-ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。
+ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。`Island` は `zfb` または `@takazudo/zfb` からインポートできます。このガイドではベアの `zfb` エイリアスを使います。
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { Counter } from "./counter";
 
 <Island><Counter /></Island>;
@@ -74,7 +74,7 @@ import { Counter } from "./counter";
 呼び出し箇所は少なくとも 1 つ必要です。各呼び出しでは、宣言された位置にパラメーターを渡し、その位置以前の位置引数にスプレッドを使えません。引数はプレーンなオブジェクトリテラルとし、リテラルのどこにもスプレッド、計算プロパティキー、メソッド、getter を含められません。選択するプロパティはちょうど 1 回だけ現れる必要がありますが、ほかのプレーンなプロパティは共存できます。その値は関数として解決でき、すべての呼び出し箇所で同じ関数定義を指す必要があります。例:
 
 ~~~tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
 
 function renderDesignTokenPanel(deps) {
@@ -119,7 +119,7 @@ export default function Page() {
 
 ~~~tsx
 // Package island wrappers
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 // This component is exported from a module marked "use client".
 import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
 
@@ -158,7 +158,7 @@ export function HostPanel() {
 ~~~
 
 ~~~tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { PanelSlot } from "@example/package/islands";
 import { HostPanel } from "./host-panel";
 
@@ -178,7 +178,7 @@ import { HostPanel } from "./host-panel";
 ```tsx
 "use client";
 
-import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
+import { computed, getScope, signal } from "zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
@@ -272,7 +272,7 @@ dist/assets/islands-chunk-<hash>.js
 `data-when` 属性はクライアントエントリの実行タイミングを制御します。常に存在し、デフォルトは `"load"` です。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import MobileMenu from "./MobileMenu";
 
 export default function Header() {
@@ -367,7 +367,7 @@ node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-wo
 ```tsx
 "use client";
 
-import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
+import { getScope, h, signal, type Ref } from "zfb/zudo-react";
 
 type WidgetInstance = { destroy(): void };
 type WidgetModule = { mount(host: Element): WidgetInstance };

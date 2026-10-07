@@ -64,7 +64,7 @@ my-site/
 
 - `components/callout.tsx` は、ベースとなる `Callout` に加えて `Note`・`Tip`・`Important`・`Warning`・`Caution` の 5 つの名前付きラッパーをエクスポートします。この 5 つの名前は [GitHub アラート](../markdown-features/github-alerts.mdx)機能によって固定されています。この機能は `> [!NOTE]` の引用ブロックを、レンダリング前に `<Note>` 要素へ書き換えます。
 - `components/theme-toggle.tsx` はテンプレート唯一の `"use client"` 島です。ダークモードを切り替えるもので、ブラウザへ JavaScript を出力する唯一のコンポーネントでもあります。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされます。考え方の全体像は [Islands](../concepts/islands.mdx) にあります。
-- `components/zfb-shim.d.ts` はコンポーネントではありません。`zfb.config.ts` が `defineConfig` を import する際のベア specifier `zfb/config` を宣言し、`@takazudo/zfb` が実際に提供する型へと対応づけます。設定ローダーはこの specifier をパース時に内部スタブへエイリアスするため、ディスク上でこれを解決するものは何もありません。このシムがないと、TypeScript と `zfb check` はこの import を解決不能として報告します。
+- `components/zfb-shim.d.ts` はコンポーネントではありません。対応するベアの `zfb` インポート群を TypeScript に宣言し、`@takazudo/zfb` の公開エントリからそれぞれの型を再エクスポートします。ビルドツールは SSR、島のスキャン、クライアントバンドル、JSX pragma の判定、zudo-wind のクラス抽出でこれらのエイリアスを解決します。設定ローダーは `zfb/config` を別途、内部のランタイム専用スタブへ対応づけます。ビルド時のエイリアスは TypeScript を設定せず、`zfb check` も `compilerOptions.paths` を注入しません。エディタと `zfb check` は、プロジェクトの `tsconfig` に含まれるこのシムでベア指定子を解決します。標準テンプレートは `components/` を含みます。既存のシムがある場合は、不足しているモジュール宣言を追加してください。宣言ファイル全体は[ベアの `zfb` インポートの型付け](../api/define-config.mdx#typing-bare-zfb-imports)を参照してください。
 
 ## content/
 
