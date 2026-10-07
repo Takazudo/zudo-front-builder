@@ -288,11 +288,16 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
   await run(process.execPath, [compiler, "--noEmit"], { cwd: consumer, label: "consumer tsc" });
   await run(zfbBinary, ["check"], { cwd: consumer, label: "consumer zfb check" });
   await run(zfbBinary, ["build"], { cwd: consumer, label: "consumer zfb build" });
+  const builtHtml = await readFile(join(consumer, "dist/index.html"), "utf8");
+  process.stdout.write(
+    `Built HTML: bytes=${builtHtml.length} countLabel=${builtHtml.includes("Count: 0")} namedLabel=${builtHtml.includes("Named counter: 0")} islandMarker=${builtHtml.includes("data-zfb-island")}\n`,
+  );
 
   const port = Number(new URL(origin).port);
   const server = startDev(consumer, zfbBinary, port);
   try {
     const pageUrl = `${origin}/`;
+    let readinessProbeCount = 0;
     await poll("zfb dev page readiness", async () => {
       if (server.spawnError()) throw server.spawnError();
       if (server.child.exitCode !== null || server.child.signalCode !== null) {
@@ -301,12 +306,21 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
         throw error;
       }
       const { response, text } = await fetchText(pageUrl);
+      readinessProbeCount += 1;
+      if (readinessProbeCount <= 4) {
+        process.stdout.write(
+          `Dev readiness #${readinessProbeCount}: status=${response.status} bytes=${text.length} countLabel=${text.includes("Count: 0")} namedLabel=${text.includes("Named counter: 0")} islandMarker=${text.includes("data-zfb-island")}\n`,
+        );
+      }
       if (!response.ok)
         throw new Error(`dev page returned ${response.status}: ${text.slice(0, 300)}`);
       return text.includes("Count: 0") && text.includes("Named counter: 0");
-    }).catch((error) => {
+    }).catch(async (error) => {
+      const scratchFiles = await readdir(join(consumer, ".zfb-build"), { recursive: true }).catch(
+        () => [],
+      );
       throw new Error(
-        `${error.message}\nDev status: code=${server.child.exitCode} signal=${server.child.signalCode}\nServer log:\n${server.logs()}`,
+        `${error.message}\nDev status: code=${server.child.exitCode} signal=${server.child.signalCode}\nScratch files: ${JSON.stringify(scratchFiles.filter((name) => name.includes("index.html") || name.includes("dev-pages")))}\nServer log:\n${server.logs()}`,
         { cause: error },
       );
     });
