@@ -3173,6 +3173,7 @@ fn emit_zudo_react_token_file(
 pub struct LinkedPackageIgnoreSnapshot {
     package_root: PathBuf,
     project_root: PathBuf,
+    manifest_present: bool,
     // Deepest first. Each matcher keeps the directory-relative meaning of
     // anchored and unanchored patterns in its own .gitignore.
     matchers: Vec<(PathBuf, ignore::gitignore::Gitignore)>,
@@ -3188,13 +3189,8 @@ impl LinkedPackageIgnoreSnapshot {
     /// linked package root. The token walk adds import closure members after
     /// discovery; callers can then use the predicate on that completed state.
     pub fn capture(package_root: &Path, project_root: &Path) -> Result<Self> {
-        if !package_root.join("package.json").is_file() {
-            bail!(
-                "linked package manifest is missing at {}",
-                package_root.display()
-            );
-        }
         let mut snapshot = linked_package_gitignore(package_root, project_root)?;
+        snapshot.manifest_present = package_root.join("package.json").is_file();
         snapshot.declared_prefixes = linked_package_declared_prefixes(package_root)?;
         snapshot.declared_root_files = linked_package_declared_root_files(package_root)?;
         snapshot
@@ -3222,6 +3218,12 @@ impl LinkedPackageIgnoreSnapshot {
     /// Re-read rules before filtering a batch that changed them. Preserve the
     /// old closure as a conservative allowance until the next token walk.
     pub fn refresh_rules(&self) -> Result<Self> {
+        if !self.package_root.join("package.json").is_file() {
+            bail!(
+                "linked package manifest is missing at {}",
+                self.package_root.display()
+            );
+        }
         let mut fresh = Self::capture(&self.package_root, &self.project_root)?;
         fresh.closure_members = self.closure_members.clone();
         Ok(fresh)
@@ -3256,6 +3258,11 @@ impl LinkedPackageIgnoreSnapshot {
     /// Classify a path after the token walk's discovery, declared-subtree,
     /// and target-import closure passes have populated this snapshot.
     pub fn ignored_and_undeclared(&self, path: &Path, is_dir: bool) -> bool {
+        // An alias target need not be an npm package. Its token walk remains
+        // valid, but there is no manifest to establish suppression ownership.
+        if !self.manifest_present {
+            return false;
+        }
         if path == self.package_root || !path.starts_with(&self.package_root) {
             return false;
         }
@@ -3398,6 +3405,7 @@ fn linked_package_gitignore(
     Ok(LinkedPackageIgnoreSnapshot {
         package_root: package_root.to_path_buf(),
         project_root: project_root.to_path_buf(),
+        manifest_present: false,
         matchers,
         negation_parents,
         rule_files,
