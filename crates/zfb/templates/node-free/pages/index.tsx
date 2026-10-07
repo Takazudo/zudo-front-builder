@@ -1,4 +1,4 @@
-import designRules from "../design-rules.json";
+import designRules from "../design-rules.ts";
 
 /**
  * Home page — lists every entry in the `posts` content collection.

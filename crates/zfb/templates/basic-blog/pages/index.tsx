@@ -1,4 +1,4 @@
-import designRules from "../design-rules.json";
+import designRules from "../design-rules.ts";
 
 import DefaultLayout from "~/layouts/default";
 import type { BlogEntry } from "~/lib/types";

@@ -1,6 +1,6 @@
-[
+export default [
   "Use accent for primary actions, selected states and keyboard focus. Keep text, notice borders and supporting content neutral.",
   "Use 8px corners for cards, fields and buttons. Keep surfaces flat.",
   "Use 16px within vertical groups and 40px between sections. Horizontal card padding is 24px; column gutters are independently 16px.",
-  "Use 16px body text with 1.65 line height and a reading measure of 60ch. Headings use sans; the body uses a clear sans-serif."
-]
+  "Use 16px body text with 1.65 line height and a reading measure of 60ch. Headings use sans; the body uses a clear sans-serif.",
+];

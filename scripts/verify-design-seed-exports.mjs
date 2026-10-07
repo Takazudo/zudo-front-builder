@@ -348,7 +348,7 @@ export function verifyDesignSeedExports(env = process.env) {
         const explanations = JSON.parse(
           command(
             binary,
-            ["wind", "explain", "--project-root", ".", "--json"],
+            ["wind", "explain", "--project-root", ".", "--json", "--stdin"],
             project,
             join(root, "explanations.json"),
             candidates.join("\n") + "\n",

@@ -22,7 +22,7 @@ The starter ships the Everyday design as editable project files.
 spacing, a 60ch reading measure and 8px corners. `styles/global.css` imports
 those values and styles the static pages and Markdown. `zfb.config.json`
 contains an explicit Wind section matching `design-tokens.json`; keep both
-in sync when renaming a utility role. `design-rules.json` supplies the home page
+in sync when renaming a utility role. `design-rules.ts` supplies the home page
 explanations; update it and
 `DESIGN-NOTES.md` when changing values. The notes explain usage.
 
@@ -45,7 +45,7 @@ styles/
   design-system.css  owned Everyday design values
   global.css         imports values and styles static Markdown
 design-tokens.json   semantic Wind role reference
-design-rules.json    current rules displayed on the home page
+design-rules.ts    current rules displayed on the home page
 DESIGN-NOTES.md      short usage rules
 pages/
   index.tsx         home page — lists posts from the collection

@@ -22,7 +22,9 @@ describe("bundled starter design boundary", () => {
     const assets = starterAssets();
     expect(assets["styles/design-system.css"]).toBe(getSeedFiles(state)["design-system.css"]);
     expect(JSON.parse(assets["design-tokens.json"])).toEqual(windObject(state.values));
-    expect(JSON.parse(assets["design-rules.json"])).toEqual(currentRules(state));
+    expect(
+      JSON.parse(assets["design-rules.ts"].replace(/^export default /, "").replace(/;\n$/, "")),
+    ).toEqual(currentRules(state));
   });
 
   it("checks fail for stale values, token roles, rules and the actual Node-free config", async () => {
