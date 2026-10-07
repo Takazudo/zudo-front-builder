@@ -3041,7 +3041,7 @@ fn collect_zudo_react_external_file_closure(
     strict_seeds: bool,
     files: &mut Vec<(PathBuf, PathBuf)>,
     emitted: &mut BTreeMap<PathBuf, usize>,
-) -> Result<()> {
+) -> Result<BTreeSet<PathBuf>> {
     seeds.sort_by(|left, right| left.1.cmp(&right.1));
     let mut pending: Vec<_> = seeds
         .into_iter()
@@ -3110,7 +3110,7 @@ fn collect_zudo_react_external_file_closure(
             pending.push((target, next_logical, true));
         }
     }
-    Ok(())
+    Ok(visited)
 }
 
 fn emit_zudo_react_token_file(
@@ -3130,18 +3130,113 @@ fn emit_zudo_react_token_file(
 }
 
 #[derive(Clone)]
-struct LinkedPackageIgnores {
+pub struct LinkedPackageIgnoreSnapshot {
     package_root: PathBuf,
     // Deepest first. Each matcher keeps the directory-relative meaning of
     // anchored and unanchored patterns in its own .gitignore.
     matchers: Vec<(PathBuf, ignore::gitignore::Gitignore)>,
     negation_parents: BTreeSet<PathBuf>,
+    rule_files: BTreeSet<PathBuf>,
+    declared_prefixes: Vec<PathBuf>,
+    declared_root_files: Vec<PathBuf>,
+    closure_members: BTreeSet<PathBuf>,
+}
+
+impl LinkedPackageIgnoreSnapshot {
+    /// Capture the bounded ignore rules and declared entries for a canonical
+    /// linked package root. The token walk adds import closure members after
+    /// discovery; callers can then use the predicate on that completed state.
+    pub fn capture(package_root: &Path, project_root: &Path) -> Result<Self> {
+        let mut snapshot = linked_package_gitignore(package_root, project_root)?;
+        snapshot.declared_prefixes = linked_package_declared_prefixes(package_root)?;
+        snapshot.declared_root_files = linked_package_declared_root_files(package_root)?;
+        snapshot
+            .rule_files
+            .insert(package_root.join("package.json"));
+        Ok(snapshot)
+    }
+
+    pub fn package_root(&self) -> &Path {
+        &self.package_root
+    }
+
+    pub fn rule_file_paths(&self) -> &BTreeSet<PathBuf> {
+        &self.rule_files
+    }
+
+    pub fn closure_members(&self) -> &BTreeSet<PathBuf> {
+        &self.closure_members
+    }
+
+    /// Add the physical files reached by target-import closure expansion.
+    pub fn extend_closure_members(&mut self, members: impl IntoIterator<Item = PathBuf>) {
+        self.closure_members.extend(
+            members
+                .into_iter()
+                .filter(|path| path.starts_with(&self.package_root)),
+        );
+    }
+
+    fn collect_target_import_closure(
+        &mut self,
+        seeds: Vec<(PathBuf, PathBuf)>,
+        strict_seeds: bool,
+        files: &mut Vec<(PathBuf, PathBuf)>,
+        emitted: &mut BTreeMap<PathBuf, usize>,
+    ) -> Result<()> {
+        let members =
+            collect_zudo_react_external_file_closure(seeds, strict_seeds, files, emitted)?;
+        self.extend_closure_members(members);
+        Ok(())
+    }
+
+    /// Classify a path after the token walk's discovery, declared-subtree,
+    /// and target-import closure passes have populated this snapshot.
+    pub fn ignored_and_undeclared(&self, path: &Path, is_dir: bool) -> bool {
+        if path == self.package_root || !path.starts_with(&self.package_root) {
+            return false;
+        }
+        if path.file_name().is_some_and(|name| name == ".gitignore")
+            || path == self.package_root.join("package.json")
+            || self.rule_files.contains(path)
+            || self
+                .declared_prefixes
+                .iter()
+                .any(|prefix| path.starts_with(self.package_root.join(prefix)))
+            || self
+                .declared_root_files
+                .iter()
+                .any(|file| path == self.package_root.join(file))
+            || self.closure_members.contains(path)
+        {
+            return false;
+        }
+        if is_dir
+            && (self.negation_parents.contains(path)
+                || self
+                    .declared_prefixes
+                    .iter()
+                    .any(|prefix| self.package_root.join(prefix).starts_with(path))
+                || self
+                    .declared_root_files
+                    .iter()
+                    .any(|file| self.package_root.join(file).starts_with(path))
+                || self
+                    .closure_members
+                    .iter()
+                    .any(|member| member.starts_with(path))
+                || self.rule_files.iter().any(|rule| rule.starts_with(path)))
+        {
+            return false;
+        }
+        linked_package_entry_ignored(self, path, is_dir)
+    }
 }
 
 fn linked_package_gitignore(
     package_root: &Path,
     project_root: &Path,
-) -> Result<LinkedPackageIgnores> {
+) -> Result<LinkedPackageIgnoreSnapshot> {
     let workspace = fs::canonicalize(zfb_types::first_party_root_for(project_root))?;
     let bound = if package_root.starts_with(&workspace) {
         workspace
@@ -3154,7 +3249,9 @@ fn linked_package_gitignore(
     };
     let mut matchers = Vec::new();
     let mut negation_parents = BTreeSet::new();
+    let mut rule_files = BTreeSet::new();
     let mut add = |ignore: &Path| -> Result<()> {
+        rule_files.insert(ignore.to_path_buf());
         let dir = ignore.parent().expect(".gitignore has a parent");
         let mut builder = ignore::gitignore::GitignoreBuilder::new(dir);
         if let Some(error) = builder.add(ignore) {
@@ -3230,10 +3327,14 @@ fn linked_package_gitignore(
             .cmp(&left.0.components().count())
             .then_with(|| left.0.cmp(&right.0))
     });
-    Ok(LinkedPackageIgnores {
+    Ok(LinkedPackageIgnoreSnapshot {
         package_root: package_root.to_path_buf(),
         matchers,
         negation_parents,
+        rule_files,
+        declared_prefixes: Vec::new(),
+        declared_root_files: Vec::new(),
+        closure_members: BTreeSet::new(),
     })
 }
 
@@ -3319,7 +3420,11 @@ fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf
         .collect())
 }
 
-fn linked_package_entry_ignored(rules: &LinkedPackageIgnores, path: &Path, is_dir: bool) -> bool {
+fn linked_package_entry_ignored(
+    rules: &LinkedPackageIgnoreSnapshot,
+    path: &Path,
+    is_dir: bool,
+) -> bool {
     let mut current = path;
     let mut current_is_dir = is_dir;
     while current != rules.package_root {
@@ -3397,9 +3502,11 @@ fn collect_zudo_react_token_tree(
         }
         Ok(())
     };
+    let mut linked_snapshot = None;
     if linked_package {
-        let ignored = linked_package_gitignore(physical_root, project_canonical)?;
-        let ignored_for_discovery = ignored.clone();
+        let mut snapshot = LinkedPackageIgnoreSnapshot::capture(physical_root, project_canonical)?;
+        let ignored_for_discovery = snapshot.clone();
+        let ignored_for_filter = snapshot.clone();
         let walk_output_dir = output_dir.map(Path::to_path_buf);
         let walker = ignore::WalkBuilder::new(physical_root)
             .hidden(true)
@@ -3418,11 +3525,11 @@ fn collect_zudo_react_token_tree(
                         true,
                         walk_output_dir.as_deref(),
                     ) && (!linked_package_entry_ignored(
-                        &ignored,
+                        &ignored_for_filter,
                         entry.path(),
                         entry.file_type().is_some_and(|kind| kind.is_dir()),
                     ) || (entry.file_type().is_some_and(|kind| kind.is_dir())
-                        && ignored.negation_parents.contains(entry.path()))))
+                        && ignored_for_filter.negation_parents.contains(entry.path()))))
             })
             .build();
         for entry in walker {
@@ -3437,7 +3544,7 @@ fn collect_zudo_react_token_tree(
                 entry.file_type().is_some_and(|kind| kind.is_file()),
             )?;
         }
-        for prefix in linked_package_declared_prefixes(physical_root)? {
+        for prefix in &snapshot.declared_prefixes {
             let subtree = physical_root.join(&prefix);
             let Ok(canonical) = fs::canonicalize(&subtree) else {
                 continue;
@@ -3470,18 +3577,19 @@ fn collect_zudo_react_token_tree(
                 }
             }
         }
-        for file in linked_package_declared_root_files(physical_root)? {
+        for file in snapshot.declared_root_files.clone() {
             let path = physical_root.join(&file);
             let canonical = fs::canonicalize(&path)?;
             if canonical.starts_with(physical_root) && zudo_react_token_source(&path) {
-                collect_zudo_react_external_file_closure(
-                    vec![(canonical, logical_root.join(file))],
+                snapshot.collect_target_import_closure(
+                    vec![(canonical, logical_root.join(&file))],
                     true,
                     files,
                     emitted,
                 )?;
             }
         }
+        linked_snapshot = Some(snapshot);
     } else {
         let walk_output_dir = output_dir.map(Path::to_path_buf);
         let walker = ignore::WalkBuilder::new(physical_root)
@@ -3582,7 +3690,10 @@ fn collect_zudo_react_token_tree(
             })
             .map(|(logical, physical)| (physical.clone(), logical.clone()))
             .collect();
-        collect_zudo_react_external_file_closure(seeds, false, files, emitted)?;
+        linked_snapshot
+            .as_mut()
+            .expect("linked package snapshot was captured before the walk")
+            .collect_target_import_closure(seeds, false, files, emitted)?;
     }
     Ok(())
 }
