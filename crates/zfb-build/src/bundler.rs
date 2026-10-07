@@ -2884,6 +2884,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
     };
     let output_dir = zfb_types::normalize_path_lexical(&output_dir);
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut emitted = BTreeMap::new();
     let mut visited_packages = BTreeSet::new();
     collect_zudo_react_token_tree(
         project_root,
@@ -2893,6 +2894,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
         Some(&output_dir),
         &mut visited_packages,
         &mut files,
+        &mut emitted,
     )?;
     let mut sorted_aliases = plugin_aliases.to_vec();
     sorted_aliases.sort();
@@ -2909,6 +2911,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
             &project_canonical,
             &mut visited_packages,
             &mut files,
+            &mut emitted,
         )?;
     }
     for (name, targets) in zfb_plugin_resolver::read_tsconfig_paths_into_map(project_root) {
@@ -2924,6 +2927,7 @@ pub fn zudo_react_build_token_with_inputs_and_output(
                 &project_canonical,
                 &mut visited_packages,
                 &mut files,
+                &mut emitted,
             )?;
         }
     }
@@ -2963,6 +2967,7 @@ fn collect_zudo_react_external_target(
     project_canonical: &Path,
     visited_packages: &mut BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, PathBuf)>,
+    emitted: &mut BTreeMap<PathBuf, usize>,
 ) -> Result<()> {
     let target = if target.exists() {
         target.to_path_buf()
@@ -3001,16 +3006,19 @@ fn collect_zudo_react_external_target(
                     None,
                     visited_packages,
                     files,
+                    emitted,
                 )?;
             }
-        } else if zudo_react_token_source(&canonical) {
+        }
+        if zudo_react_token_source(&canonical) {
             collect_zudo_react_external_file_closure(
                 vec![(
                     canonical.clone(),
                     logical.join(canonical.file_name().unwrap()),
                 )],
-                None,
+                true,
                 files,
+                emitted,
             )?;
         }
     } else if canonical.is_dir() && visited_packages.insert(canonical.clone()) {
@@ -3022,6 +3030,7 @@ fn collect_zudo_react_external_target(
             None,
             visited_packages,
             files,
+            emitted,
         )?;
     }
     Ok(())
@@ -3032,13 +3041,14 @@ fn collect_zudo_react_external_target(
 /// arbitrary parent directory when an external file has no package manifest.
 fn collect_zudo_react_external_file_closure(
     mut seeds: Vec<(PathBuf, PathBuf)>,
-    already_scanned_root: Option<&Path>,
+    strict_seeds: bool,
     files: &mut Vec<(PathBuf, PathBuf)>,
+    emitted: &mut BTreeMap<PathBuf, usize>,
 ) -> Result<()> {
     seeds.sort_by(|left, right| left.1.cmp(&right.1));
     let mut pending: Vec<_> = seeds
         .into_iter()
-        .map(|(physical, logical)| (physical, logical, already_scanned_root.is_none()))
+        .map(|(physical, logical)| (physical, logical, strict_seeds))
         .collect();
     let mut visited = BTreeSet::new();
     let mut total_bytes = 0_u64;
@@ -3060,11 +3070,7 @@ fn collect_zudo_react_external_file_closure(
                 logical.display()
             );
         }
-        if !already_scanned_root
-            .is_some_and(|root| physical.starts_with(root) && zudo_react_token_source(&physical))
-        {
-            files.push((logical.clone(), physical.clone()));
-        }
+        emit_zudo_react_token_file(logical.clone(), physical.clone(), files, emitted);
         let extension = physical.extension().and_then(|ext| ext.to_str());
         if !matches!(
             extension,
@@ -3110,6 +3116,204 @@ fn collect_zudo_react_external_file_closure(
     Ok(())
 }
 
+fn emit_zudo_react_token_file(
+    logical: PathBuf,
+    physical: PathBuf,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+    emitted: &mut BTreeMap<PathBuf, usize>,
+) {
+    if let Some(&index) = emitted.get(&physical) {
+        if logical < files[index].0 {
+            files[index].0 = logical;
+        }
+    } else {
+        emitted.insert(physical.clone(), files.len());
+        files.push((logical, physical));
+    }
+}
+
+fn linked_package_gitignore(
+    package_root: &Path,
+    project_root: &Path,
+) -> Result<(ignore::gitignore::Gitignore, BTreeSet<PathBuf>)> {
+    let workspace = fs::canonicalize(zfb_types::first_party_root_for(project_root))?;
+    let bound = if package_root.starts_with(&workspace) {
+        workspace
+    } else {
+        package_root
+            .ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+            .unwrap_or(package_root)
+            .to_path_buf()
+    };
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(&bound);
+    let mut negation_parents = BTreeSet::new();
+    let mut add = |ignore: &Path| -> Result<()> {
+        if let Some(error) = builder.add(ignore) {
+            return Err(error).context("bundler: parse linked-package .gitignore");
+        }
+        if let Ok(contents) = fs::read_to_string(ignore) {
+            for line in contents.lines() {
+                let Some(pattern) = line.strip_prefix('!') else {
+                    continue;
+                };
+                let pattern = pattern.trim_start_matches('/').trim_end_matches('/');
+                if pattern
+                    .chars()
+                    .any(|ch| matches!(ch, '*' | '?' | '[' | ']'))
+                {
+                    continue;
+                }
+                let Some(dir) = ignore.parent() else { continue };
+                let path = dir.join(pattern);
+                if path.starts_with(package_root) {
+                    for ancestor in path.ancestors().skip(1) {
+                        if !ancestor.starts_with(package_root) {
+                            break;
+                        }
+                        negation_parents.insert(ancestor.to_path_buf());
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+    let mut ancestors = package_root
+        .ancestors()
+        .take_while(|ancestor| ancestor.starts_with(&bound))
+        .collect::<Vec<_>>();
+    ancestors.reverse();
+    for dir in ancestors {
+        let ignore = dir.join(".gitignore");
+        if ignore.is_file() {
+            add(&ignore)?;
+        }
+    }
+    // Include package-local nested rules in path order so deeper negations win.
+    let mut nested = walkdir::WalkDir::new(package_root)
+        .into_iter()
+        .filter_entry(|entry| {
+            zudo_react_token_entry_allowed(
+                entry.path(),
+                entry.file_type().is_dir(),
+                entry.depth(),
+                true,
+                None,
+            )
+        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.depth() > 0 && entry.file_name() == ".gitignore")
+        .map(|entry| entry.into_path())
+        .collect::<Vec<_>>();
+    nested.sort_by_key(|path| (path.components().count(), path.clone()));
+    for ignore in nested {
+        add(&ignore)?;
+    }
+    Ok((
+        builder
+            .build()
+            .context("bundler: build linked-package gitignore")?,
+        negation_parents,
+    ))
+}
+
+fn linked_package_declared_prefixes(package_root: &Path) -> Result<Vec<PathBuf>> {
+    let Ok(bytes) = fs::read(package_root.join("package.json")) else {
+        return Ok(Vec::new());
+    };
+    let Ok(manifest): std::result::Result<serde_json::Value, _> = serde_json::from_slice(&bytes)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(crate::metafile_deps::declared_entry_dir_prefixes(&manifest)
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| {
+            let mut current = package_root.to_path_buf();
+            path.components().all(|component| match component {
+                Component::Normal(name) => {
+                    current.push(name);
+                    let name = name.to_string_lossy();
+                    !name.starts_with('.')
+                        && !matches!(name.as_ref(), "node_modules" | "target")
+                        && !current.join(OWNED_OUTPUT_MARKER).is_file()
+                }
+                _ => false,
+            })
+        })
+        .collect())
+}
+
+fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf>> {
+    let Ok(bytes) = fs::read(package_root.join("package.json")) else {
+        return Ok(Vec::new());
+    };
+    let Ok(manifest): std::result::Result<serde_json::Value, _> = serde_json::from_slice(&bytes)
+    else {
+        return Ok(Vec::new());
+    };
+    fn gather(value: &serde_json::Value, files: &mut Vec<PathBuf>) {
+        match value {
+            serde_json::Value::String(target) => {
+                let relative = target.strip_prefix("./").unwrap_or(target);
+                let path = Path::new(relative);
+                if path.components().count() == 1
+                    && path
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(_)))
+                {
+                    files.push(path.to_path_buf());
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    gather(value, files);
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for value in values.values() {
+                    gather(value, files);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut files = Vec::new();
+    for field in ["exports", "main", "module", "imports"] {
+        if let Some(value) = manifest.get(field) {
+            gather(value, &mut files);
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files
+        .into_iter()
+        .filter(|file| package_root.join(file).is_file())
+        .collect())
+}
+
+fn linked_package_entry_ignored(
+    matcher: &ignore::gitignore::Gitignore,
+    path: &Path,
+    is_dir: bool,
+    package_root: &Path,
+) -> bool {
+    let mut current = path;
+    let mut current_is_dir = is_dir;
+    while current != package_root {
+        let matched = matcher.matched(current, current_is_dir);
+        if !matched.is_none() {
+            return matched.is_ignore();
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent;
+        current_is_dir = true;
+    }
+    false
+}
+
 fn zudo_react_token_source(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
@@ -3134,10 +3338,9 @@ fn zudo_react_token_source(path: &Path) -> bool {
 }
 
 /// Walk project files with repo-local gitignore and hidden-entry filtering,
-/// except for the known first-party staging dirs; linked packages keep their
-/// unfiltered walk so gitignored build output can be real source. A directly
-/// imported gitignored file outside that allowlist, or a force-added ignored
-/// file, is not hashed. Logical `node_modules/<name>` paths keep the digest
+/// except for the known first-party staging dirs. Linked packages use a
+/// bounded gitignore walk, then re-include declared entry subtrees and direct
+/// target import closures. Logical `node_modules/<name>` paths keep the digest
 /// independent of checkout and symlink target locations.
 fn collect_zudo_react_token_tree(
     physical_root: &Path,
@@ -3147,6 +3350,7 @@ fn collect_zudo_react_token_tree(
     output_dir: Option<&Path>,
     visited_packages: &mut BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, PathBuf)>,
+    emitted: &mut BTreeMap<PathBuf, usize>,
 ) -> Result<()> {
     let first_file = files.len();
     let mut node_modules_dirs = Vec::new();
@@ -3157,32 +3361,109 @@ fn collect_zudo_react_token_tree(
                 node_modules_dirs.push(node_modules);
             }
         } else if is_file && zudo_react_token_source(path) {
-            files.push((
+            emit_zudo_react_token_file(
                 logical_root.join(path.strip_prefix(physical_root)?),
-                path.to_path_buf(),
-            ));
+                fs::canonicalize(path)?,
+                files,
+                emitted,
+            );
         }
         Ok(())
     };
     if linked_package {
-        for entry in walkdir::WalkDir::new(physical_root)
-            .into_iter()
-            .filter_entry(|entry| {
-                zudo_react_token_entry_allowed(
-                    entry.path(),
-                    entry.file_type().is_dir(),
-                    entry.depth(),
-                    true,
-                    output_dir,
-                )
+        let (ignored, negation_parents) =
+            linked_package_gitignore(physical_root, project_canonical)?;
+        let ignored_for_discovery = ignored.clone();
+        let package_root = physical_root.to_path_buf();
+        let walk_output_dir = output_dir.map(Path::to_path_buf);
+        let walker = ignore::WalkBuilder::new(physical_root)
+            .hidden(true)
+            .git_ignore(true)
+            .require_git(false)
+            .parents(false)
+            .git_global(false)
+            .git_exclude(false)
+            .ignore(false)
+            .filter_entry(move |entry| {
+                entry.depth() == 0
+                    || (zudo_react_token_entry_allowed(
+                        entry.path(),
+                        entry.file_type().is_some_and(|kind| kind.is_dir()),
+                        entry.depth(),
+                        true,
+                        walk_output_dir.as_deref(),
+                    ) && (!linked_package_entry_ignored(
+                        &ignored,
+                        entry.path(),
+                        entry.file_type().is_some_and(|kind| kind.is_dir()),
+                        &package_root,
+                    ) || (entry.file_type().is_some_and(|kind| kind.is_dir())
+                        && negation_parents.contains(entry.path()))))
             })
-        {
+            .build();
+        for entry in walker {
             let entry = entry?;
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            if is_dir
+                && linked_package_entry_ignored(
+                    &ignored_for_discovery,
+                    entry.path(),
+                    true,
+                    physical_root,
+                )
+            {
+                continue;
+            }
             record_entry(
                 entry.path(),
-                entry.file_type().is_dir(),
-                entry.file_type().is_file(),
+                is_dir,
+                entry.file_type().is_some_and(|kind| kind.is_file()),
             )?;
+        }
+        for prefix in linked_package_declared_prefixes(physical_root)? {
+            let subtree = physical_root.join(&prefix);
+            let Ok(canonical) = fs::canonicalize(&subtree) else {
+                continue;
+            };
+            if !canonical.starts_with(physical_root) || !canonical.is_dir() {
+                continue;
+            }
+            let walk_output_dir = output_dir.map(Path::to_path_buf);
+            let walker = ignore::WalkBuilder::new(&subtree)
+                .standard_filters(false)
+                .hidden(true)
+                .filter_entry(move |entry| {
+                    // The declared subtree root is allowed; nested infrastructure is not.
+                    entry.depth() == 0
+                        || zudo_react_token_entry_allowed(
+                            entry.path(),
+                            entry.file_type().is_some_and(|kind| kind.is_dir()),
+                            entry.depth(),
+                            true,
+                            walk_output_dir.as_deref(),
+                        )
+                })
+                .build();
+            for entry in walker {
+                let entry = entry?;
+                if entry.file_type().is_some_and(|kind| kind.is_file())
+                    && fs::canonicalize(entry.path())?.starts_with(physical_root)
+                {
+                    record_entry(entry.path(), false, true)?;
+                }
+            }
+        }
+        for file in linked_package_declared_root_files(physical_root)? {
+            let path = physical_root.join(&file);
+            let canonical = fs::canonicalize(&path)?;
+            if canonical.starts_with(physical_root) && zudo_react_token_source(&path) {
+                collect_zudo_react_external_file_closure(
+                    vec![(canonical, logical_root.join(file))],
+                    true,
+                    files,
+                    emitted,
+                )?;
+            }
         }
     } else {
         let walk_output_dir = output_dir.map(Path::to_path_buf);
@@ -3255,6 +3536,7 @@ fn collect_zudo_react_token_tree(
                         project_canonical,
                         visited_packages,
                         files,
+                        emitted,
                     )?;
                 }
             } else {
@@ -3264,6 +3546,7 @@ fn collect_zudo_react_token_tree(
                     project_canonical,
                     visited_packages,
                     files,
+                    emitted,
                 )?;
             }
         }
@@ -3282,7 +3565,7 @@ fn collect_zudo_react_token_tree(
             })
             .map(|(logical, physical)| (physical.clone(), logical.clone()))
             .collect();
-        collect_zudo_react_external_file_closure(seeds, Some(&canonical_root), files)?;
+        collect_zudo_react_external_file_closure(seeds, false, files, emitted)?;
     }
     Ok(())
 }
@@ -3317,6 +3600,7 @@ fn collect_zudo_react_linked_package(
     project_canonical: &Path,
     visited_packages: &mut BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, PathBuf)>,
+    emitted: &mut BTreeMap<PathBuf, usize>,
 ) -> Result<()> {
     if !fs::symlink_metadata(link)?.file_type().is_symlink() {
         return Ok(());
@@ -3342,6 +3626,7 @@ fn collect_zudo_react_linked_package(
         None,
         visited_packages,
         files,
+        emitted,
     )
 }
 
@@ -13989,13 +14274,15 @@ mod framework_esbuild_flags_tests {
 
         let collect = || {
             let mut files = Vec::new();
+            let mut emitted = BTreeMap::new();
             collect_zudo_react_external_file_closure(
                 vec![
                     (declaration.clone(), PathBuf::from("package/index.d.ts")),
                     (runtime.clone(), PathBuf::from("package/index.ts")),
                 ],
-                None,
+                true,
                 &mut files,
+                &mut emitted,
             )
             .unwrap();
             files
