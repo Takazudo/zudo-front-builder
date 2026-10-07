@@ -62,8 +62,9 @@ const fixtureFiles = {
   "app/pages/index.tsx":
     "import {Island} from '@takazudo/zfb';\n" +
     "import {Probe} from '../components/probe';\n" +
-    'export default function Page(){return <html><body><Island when="load"><Probe /></Island></body></html>;}\n',
+    'export default function Page(){return <html><head><title>Linked identity</title></head><body><Island when="load"><Probe /></Island></body></html>;}\n',
   "app/components/probe.tsx":
+    "'use client';\n" +
     "import {signal} from '@takazudo/zfb/zudo-react';\n" +
     "import {label} from '@sample/widget';\n" +
     "export function Probe(){\n" +

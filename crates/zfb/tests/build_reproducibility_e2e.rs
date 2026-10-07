@@ -635,7 +635,7 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
     .expect("enable linked widget alias plugin");
     fs::write(
         app.join("pages/index.tsx"),
-        "import { Island } from '@takazudo/zfb';\nimport { Probe } from '../components/probe';\n\nexport default function Page() {\n  return <html><body><Island when=\"load\"><Probe /></Island></body></html>;\n}\n",
+        "import { Island } from '@takazudo/zfb';\nimport { Probe } from '../components/probe';\n\nexport default function Page() {\n  return <html><head><title>Linked identity</title></head><body><Island when=\"load\"><Probe /></Island></body></html>;\n}\n",
     )
     .expect("write linked widget island page");
     fs::write(
