@@ -167,11 +167,15 @@ function signalProcessGroup(child, signal) {
 }
 
 function startDev(consumer, zfbBinary, port) {
-  const child = spawn(zfbBinary, ["dev", "--host", "127.0.0.1", "--port", String(port)], {
-    cwd: consumer,
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    zfbBinary,
+    ["dev", "--scratch-dir", ".zfb-build/dev", "--host", "127.0.0.1", "--port", String(port)],
+    {
+      cwd: consumer,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let logs = "";
   const capture = (chunk) => {
     const text = chunk.toString();
