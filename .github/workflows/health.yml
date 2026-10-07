@@ -558,6 +558,12 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-only.xml
           fi
 
+      # The SDK-alias confirm must exercise jsx_pragma without zfb-build's
+      # default V8 feature; the normal workspace nextest lane below uses the
+      # default feature set and does not cover this compile configuration.
+      - name: Test jsx_pragma without default features (#3939)
+        run: cargo test -p zfb-build --no-default-features --lib jsx_pragma
+
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
