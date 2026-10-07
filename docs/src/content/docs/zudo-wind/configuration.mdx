@@ -20,7 +20,8 @@ export default defineConfig({
     strict: true,
     tokens: {
       spacingUnit: "0.25rem",
-      colors: { panel: "var(--app-panel)" }
+      colors: { panel: "var(--app-panel)" },
+      fontSizes: { sm: { size: "0.875rem", lineHeight: "1.25rem" } }
     },
     breakpoints: { sm: { minWidthPx: 640 } },
     dark: { attribute: "data-theme", value: "dark" },
@@ -196,6 +197,12 @@ The same object is valid as the value of the `wind` property in JSON:
       "spacingUnit": "0.25rem",
       "colors": {
         "panel": "var(--app-panel)"
+      },
+      "fontSizes": {
+        "sm": {
+          "size": "0.875rem",
+          "lineHeight": "1.25rem"
+        }
       }
     },
     "breakpoints": {
@@ -216,7 +223,7 @@ The same object is valid as the value of the `wind` property in JSON:
 | `spec` | Optional language version. The only accepted value is `1`; the default is `1`. |
 | `reset` | One of `none`, `minimal-v1`, or `owned-v1`. The default is `none`. |
 | `defaultTransitionTimingFunction` | One CSS timing function or keyword used by transition utilities. It defaults to `ease`; an explicit `ease-*` utility takes precedence in the same variant bucket. |
-| `tokens` | Project supplied values. All maps default to empty; see [Tokens](./tokens.mdx) for names, value validation, and emitted variables. |
+| `tokens` | Project supplied values. All maps default to empty; font-size entries use `{ size, lineHeight? }`; see [Font sizes](./tokens.mdx#font-sizes) and [Tokens](./tokens.mdx) for names, value validation, and emitted variables. |
 | `breakpoints` | Names mapped to objects containing a positive integer `minWidthPx`. Equal widths are a configuration error. |
 | `dark` | Either `false` (the default) or an object with required `attribute` and `value` strings. |
 | `safelist` | Owner IDs mapped to arrays of complete candidates. Each owner supplies its full set. |

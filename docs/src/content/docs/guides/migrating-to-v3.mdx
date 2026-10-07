@@ -30,6 +30,8 @@ An absent `wind` key enables an empty v1 configuration with reset `none` and no 
 
 Remove `@import "tailwindcss"`, its preflight and utilities imports, and Tailwind directives such as `@theme`, `@source`, `@apply`, `@utility`, and `@plugin` from the entry sheet and imported sheets. Remaining directives fail with diagnostic `ZW009`, including under `wind: false`; one run lists every remaining directive with its `file:line:column`. Put custom selectors and declarations in authored CSS; put utility values in `wind.tokens`.
 
+Authored `var()` references to Tailwind's default theme variables lose their definitions too; see [Default theme variables](../zudo-wind/coming-from-tailwind.mdx#default-theme-variables).
+
 Version 3 supplies no implicit palette, spacing unit, named scales, or breakpoints. Select `none`, `minimal-v1`, or `owned-v1` explicitly for `wind.reset`; `none` is the default. The new basic-blog scaffold chooses `owned-v1` and defines its palette and `spacingUnit`, then restores prose list styling in authored CSS. Check headings, lists, borders, form controls, font stacks (`html` and `code`/`pre`), `sub`/`sup`, `::placeholder`, `::file-selector-button`, and `[hidden]` when choosing a reset. A pixel diff of a page without those elements cannot catch their differences. See [Differences from Tailwind preflight](../zudo-wind/coming-from-tailwind.mdx#reset-differences-from-tailwind-preflight).
 
 ```ts
