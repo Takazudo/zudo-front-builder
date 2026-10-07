@@ -34,7 +34,7 @@ test("fresh bundled starters retain design, routes and blog theme", async ({ pag
       await page.reload();
       await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
       await page.goto(`http://127.0.0.1:${port}/blog/styling-with-zudo-wind/`);
-      await expect(page.locator("h1")).toContainText("zudo-wind");
+      await expect(page.locator("h1")).toHaveText("How this site is styled");
       await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     } else {
       await expect(page.locator("[data-zfb-island]")).toHaveCount(0);
