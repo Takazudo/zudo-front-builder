@@ -117,6 +117,16 @@ test("native navigation restores one live workshop and retains editing state", a
   await expect(page.locator('[data-zfb-island="DesignSystemPlayground"]')).toHaveCount(1);
   await root(page).locator('[data-action="inspect"]').click();
   await expect(root(page).locator("#inspect-button")).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Language", exact: true }).click();
+  await page
+    .locator(
+      'a[href="/ja/docs/playground/design-system"]:visible,a[href="/ja/docs/playground/design-system/"]:visible',
+    )
+    .click();
+  await expect(page).toHaveURL(/\/ja\/docs\/playground\/design-system\/?$/);
+  await expect(root(page).locator("#accent-hex")).toHaveValue("#963142");
+  expect(await page.evaluate(() => window.__workshopNavigationSentinel)).toBe("alive");
+  await expect(root(page)).toHaveCount(1);
 });
 
 test("desktop and narrow host layout keep seed appearance separate from docs theme", async ({
