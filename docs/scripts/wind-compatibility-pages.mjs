@@ -173,9 +173,10 @@ function localizedNote(value, locale, field) {
   throw Error(`Missing Japanese ${field} translation: ${value}`);
 }
 
-// Fingerprint of the reviewed 478bbf83 source closure, independent of shallow CI Git history.
+// Fingerprint of the reviewed Wind source closure, independent of shallow CI Git history.
+// ZW016 adds audit-only diagnostics without changing the pinned compatibility catalog.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "9718c4b433c68701fa3abed20f91db62ca40bdcb7bde53cfe6cec58c0c9a32d2";
+  "c8d200d4f8c22f19b91724109ece5f097a493a747646e6a5d94d98ca5ca8c2b3";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

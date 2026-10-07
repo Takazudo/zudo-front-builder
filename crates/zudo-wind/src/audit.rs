@@ -262,7 +262,7 @@ pub fn audit_with_token_overrides(
             suggestion: None,
             rejection_id: None,
         }));
-    sort_report_results(&mut report);
+    finalize_audit_report(&mut report);
     report
 }
 
@@ -976,7 +976,9 @@ fn sort_report_inputs(report: &mut AuditReport) {
     });
 }
 
-fn sort_report_results(report: &mut AuditReport) {
+/// Restore deterministic ordering and remove duplicate audit results after
+/// diagnostics have been appended by a caller.
+pub fn finalize_audit_report(report: &mut AuditReport) {
     report.unrecognized_classes.sort_by(|a, b| {
         a.origin
             .source_id

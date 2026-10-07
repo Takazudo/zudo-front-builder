@@ -369,6 +369,11 @@ jobs:
       # integration tests run below.
       - run: cargo build --workspace --all-targets
 
+      # Exercise the built CLI on the reduced Tailwind theme-variable case,
+      # and keep the exact ZW016 lines in CI logs for migration review.
+      - name: ZW016 built-CLI migration spot check
+        run: node scripts/verify-zw016-audit.mjs "$PWD/target/debug/zfb"
+
       # Freshness gate (issue #1871): the custom SyntaxSet dump is a tracked
       # generated artifact. Regenerate it from the checked-in grammar sources
       # and fail on any source-versus-generated drift. The generator changes to

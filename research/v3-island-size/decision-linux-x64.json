@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "882e98eabe7c8d5425e73bdc1a34cea7e3f55f43",
+  "baselineSourceSha": "2679d6cef812920952d47d60c1301c822123aaf6",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -48,19 +48,19 @@
       },
       "scalar-signal": {
         "raw": 65403,
-        "gzip": 21842
+        "gzip": 21841
       },
       "show-for": {
         "raw": 65549,
-        "gzip": 21921
+        "gzip": 21923
       },
       "model": {
         "raw": 65394,
-        "gzip": 21846
+        "gzip": 21850
       },
       "blog-theme": {
         "raw": 65744,
-        "gzip": 21990
+        "gzip": 21989
       },
       "json-api": {
         "raw": 65549,
@@ -68,7 +68,7 @@
       },
       "multi-island": {
         "raw": 65671,
-        "gzip": 21948
+        "gzip": 21951
       }
     },
     "packed": {
@@ -78,23 +78,23 @@
       },
       "event-only": {
         "raw": 65457,
-        "gzip": 21870
+        "gzip": 21871
       },
       "scalar-signal": {
         "raw": 65465,
-        "gzip": 21875
+        "gzip": 21873
       },
       "show-for": {
         "raw": 65611,
-        "gzip": 21958
+        "gzip": 21956
       },
       "model": {
         "raw": 65456,
-        "gzip": 21879
+        "gzip": 21881
       },
       "blog-theme": {
         "raw": 65806,
-        "gzip": 22007
+        "gzip": 22008
       },
       "json-api": {
         "raw": 65611,
@@ -102,17 +102,17 @@
       },
       "multi-island": {
         "raw": 65733,
-        "gzip": 21973
+        "gzip": 21972
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured on the final versioned candidate after the dynamic root-unmount repair; other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.0.0 ceilings measured after the Wind migration-variable audit additions. Raw island sizes are unchanged; gzip shifts reflect changed versioned build identities. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37439127554,
-    "jobId": 112188217080,
-    "sourceSha": "882e98eabe7c8d5425e73bdc1a34cea7e3f55f43",
-    "note": "Complete workspace and packed eight-fixture matrices at lockstep 4.0.0, with two byte-identical full-dist passes each. Original output files, tarballs and provenance were retained and independently rehashed. Every nonempty fixture is 734 raw bytes above the prior exact baseline, including the functional root-unmount repair. Gzip totals include actual versioned build identities without normalization. The original exact budget gate failed on those deltas. These reviewed rows retain zero allowance and no-island 0/0; previous measured contracts remain in git history."
+    "runId": 37551888326,
+    "jobId": 112569200743,
+    "sourceSha": "2679d6cef812920952d47d60c1301c822123aaf6",
+    "note": "PR head 8cd51e16aadd92fb85fefcddcc79e4cedbd134af, measured at its Actions merge checkout. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Every raw total matches the prior reviewed contract; 11 gzip totals shift by 1-4 bytes in either direction while the versioned build identity changes. The parent sweep baseline passed its exact budget in health run 37548315717. New ceilings equal measured bytes with zero allowance; earlier ceilings remain in git history."
   }
 }
