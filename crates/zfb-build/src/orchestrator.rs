@@ -7082,11 +7082,7 @@ mod tests {
             !kept.iter().any(|(path, _)| path == &nested),
             "a dynamic parent claims direct children, not nested descendants"
         );
-        for file in files
-            .iter()
-            .skip(1)
-            .chain([&ignored_dir, &removed].into_iter())
-        {
+        for file in files.iter().skip(1).chain([&ignored_dir, &removed]) {
             assert!(
                 kept.iter().any(|(path, _)| path == file),
                 "must retain {file:?}"
