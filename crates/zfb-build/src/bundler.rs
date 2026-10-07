@@ -3132,10 +3132,19 @@ fn emit_zudo_react_token_file(
     }
 }
 
+#[derive(Clone)]
+struct LinkedPackageIgnores {
+    package_root: PathBuf,
+    // Deepest first. Each matcher keeps the directory-relative meaning of
+    // anchored and unanchored patterns in its own .gitignore.
+    matchers: Vec<(PathBuf, ignore::gitignore::Gitignore)>,
+    negation_parents: BTreeSet<PathBuf>,
+}
+
 fn linked_package_gitignore(
     package_root: &Path,
     project_root: &Path,
-) -> Result<(ignore::gitignore::Gitignore, BTreeSet<PathBuf>)> {
+) -> Result<LinkedPackageIgnores> {
     let workspace = fs::canonicalize(zfb_types::first_party_root_for(project_root))?;
     let bound = if package_root.starts_with(&workspace) {
         workspace
@@ -3146,12 +3155,20 @@ fn linked_package_gitignore(
             .unwrap_or(package_root)
             .to_path_buf()
     };
-    let mut builder = ignore::gitignore::GitignoreBuilder::new(&bound);
+    let mut matchers = Vec::new();
     let mut negation_parents = BTreeSet::new();
     let mut add = |ignore: &Path| -> Result<()> {
+        let dir = ignore.parent().expect(".gitignore has a parent");
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(dir);
         if let Some(error) = builder.add(ignore) {
             return Err(error).context("bundler: parse linked-package .gitignore");
         }
+        matchers.push((
+            dir.to_path_buf(),
+            builder
+                .build()
+                .context("bundler: build linked-package gitignore")?,
+        ));
         if let Ok(contents) = fs::read_to_string(ignore) {
             for line in contents.lines() {
                 let Some(pattern) = line.strip_prefix('!') else {
@@ -3164,7 +3181,6 @@ fn linked_package_gitignore(
                 {
                     continue;
                 }
-                let Some(dir) = ignore.parent() else { continue };
                 let path = dir.join(pattern);
                 if path.starts_with(package_root) {
                     for ancestor in path.ancestors().skip(1) {
@@ -3209,12 +3225,19 @@ fn linked_package_gitignore(
     for ignore in nested {
         add(&ignore)?;
     }
-    Ok((
-        builder
-            .build()
-            .context("bundler: build linked-package gitignore")?,
+    matchers.sort_by(|left, right| {
+        right
+            .0
+            .components()
+            .count()
+            .cmp(&left.0.components().count())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    Ok(LinkedPackageIgnores {
+        package_root: package_root.to_path_buf(),
+        matchers,
         negation_parents,
-    ))
+    })
 }
 
 fn linked_package_declared_prefixes(package_root: &Path) -> Result<Vec<PathBuf>> {
@@ -3252,10 +3275,17 @@ fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf
     else {
         return Ok(Vec::new());
     };
-    fn gather(value: &serde_json::Value, files: &mut Vec<PathBuf>) {
+    fn gather(value: &serde_json::Value, allow_bare: bool, files: &mut Vec<PathBuf>) {
         match value {
             serde_json::Value::String(target) => {
-                let relative = target.strip_prefix("./").unwrap_or(target);
+                let relative = match target.strip_prefix("./") {
+                    Some(relative) => relative,
+                    None if allow_bare => target.as_str(),
+                    None => return,
+                };
+                if relative.contains('*') {
+                    return;
+                }
                 let path = Path::new(relative);
                 if path.components().count() == 1
                     && path
@@ -3267,12 +3297,12 @@ fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf
             }
             serde_json::Value::Array(values) => {
                 for value in values {
-                    gather(value, files);
+                    gather(value, allow_bare, files);
                 }
             }
             serde_json::Value::Object(values) => {
                 for value in values.values() {
-                    gather(value, files);
+                    gather(value, allow_bare, files);
                 }
             }
             _ => {}
@@ -3281,7 +3311,7 @@ fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf
     let mut files = Vec::new();
     for field in ["exports", "main", "module", "imports"] {
         if let Some(value) = manifest.get(field) {
-            gather(value, &mut files);
+            gather(value, matches!(field, "main" | "module"), &mut files);
         }
     }
     files.sort();
@@ -3292,18 +3322,18 @@ fn linked_package_declared_root_files(package_root: &Path) -> Result<Vec<PathBuf
         .collect())
 }
 
-fn linked_package_entry_ignored(
-    matcher: &ignore::gitignore::Gitignore,
-    path: &Path,
-    is_dir: bool,
-    package_root: &Path,
-) -> bool {
+fn linked_package_entry_ignored(rules: &LinkedPackageIgnores, path: &Path, is_dir: bool) -> bool {
     let mut current = path;
     let mut current_is_dir = is_dir;
-    while current != package_root {
-        let matched = matcher.matched(current, current_is_dir);
-        if !matched.is_none() {
-            return matched.is_ignore();
+    while current != rules.package_root {
+        for (dir, matcher) in &rules.matchers {
+            if !current.starts_with(dir) {
+                continue;
+            }
+            let matched = matcher.matched(current, current_is_dir);
+            if !matched.is_none() {
+                return matched.is_ignore();
+            }
         }
         let Some(parent) = current.parent() else {
             break;
@@ -3371,14 +3401,12 @@ fn collect_zudo_react_token_tree(
         Ok(())
     };
     if linked_package {
-        let (ignored, negation_parents) =
-            linked_package_gitignore(physical_root, project_canonical)?;
+        let ignored = linked_package_gitignore(physical_root, project_canonical)?;
         let ignored_for_discovery = ignored.clone();
-        let package_root = physical_root.to_path_buf();
         let walk_output_dir = output_dir.map(Path::to_path_buf);
         let walker = ignore::WalkBuilder::new(physical_root)
             .hidden(true)
-            .git_ignore(true)
+            .git_ignore(false)
             .require_git(false)
             .parents(false)
             .git_global(false)
@@ -3396,22 +3424,14 @@ fn collect_zudo_react_token_tree(
                         &ignored,
                         entry.path(),
                         entry.file_type().is_some_and(|kind| kind.is_dir()),
-                        &package_root,
                     ) || (entry.file_type().is_some_and(|kind| kind.is_dir())
-                        && negation_parents.contains(entry.path()))))
+                        && ignored.negation_parents.contains(entry.path()))))
             })
             .build();
         for entry in walker {
             let entry = entry?;
             let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
-            if is_dir
-                && linked_package_entry_ignored(
-                    &ignored_for_discovery,
-                    entry.path(),
-                    true,
-                    physical_root,
-                )
-            {
+            if is_dir && linked_package_entry_ignored(&ignored_for_discovery, entry.path(), true) {
                 continue;
             }
             record_entry(

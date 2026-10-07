@@ -121,6 +121,52 @@ fn package_ignore_adds_rules_and_negation_reincludes_one_file() {
 }
 
 #[test]
+fn nested_gitignore_patterns_stay_scoped_to_their_directory() {
+    let f = Fixture::new();
+    write(&f.widget.join("sub/.gitignore"), "/x.json\n");
+    let first = f.token("symlink");
+    write(&f.widget.join("sub/x.json"), "1");
+    assert_eq!(first, f.token("symlink"), "anchored nested rule");
+    write(&f.widget.join("x.json"), "1");
+    let outside = f.token("symlink");
+    assert_ne!(first, outside, "nested rule must not ignore package root");
+
+    write(&f.widget.join("sub/.gitignore"), "*.json\n");
+    let second = f.token("symlink");
+    write(&f.widget.join("sub/deep/y.json"), "1");
+    assert_eq!(second, f.token("symlink"), "nested wildcard rule");
+    write(&f.widget.join("other.json"), "1");
+    assert_ne!(
+        second,
+        f.token("symlink"),
+        "nested wildcard must not escape sub"
+    );
+}
+
+#[test]
+fn bare_imports_target_does_not_reinclude_an_ignored_root_file() {
+    let f = Fixture::new();
+    write(
+        &f.root.path().join(".gitignore"),
+        "node_modules/\ndependency.js\n",
+    );
+    write(
+        &f.widget.join("package.json"),
+        r##"{"name":"widget","exports":"./dist/index.js","imports":{"#dep":"dependency.js"}}"##,
+    );
+    write(
+        &f.widget.join("dependency.js"),
+        "export const dependency = 1;",
+    );
+    let first = f.token("symlink");
+    write(
+        &f.widget.join("dependency.js"),
+        "export const dependency = 2;",
+    );
+    assert_eq!(first, f.token("symlink"));
+}
+
+#[test]
 fn git_file_bounds_ignores_and_rules_above_bound_do_not_apply() {
     let outside = tempfile::tempdir().unwrap();
     write(&outside.path().join(".gitignore"), "widget/src/\n");
