@@ -143,12 +143,25 @@ fn identifier(bytes: &[u8], mut i: usize) -> (String, usize) {
                     i += 1;
                 }
             } else {
-                name.push(bytes[i] as char);
-                i += 1;
+                let ch = std::str::from_utf8(&bytes[i..])
+                    .expect("visible CSS remains UTF-8")
+                    .chars()
+                    .next()
+                    .expect("escape has a following character");
+                name.push(ch);
+                i += ch.len_utf8();
             }
         } else if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_' {
             name.push(bytes[i] as char);
             i += 1;
+        } else if bytes[i] >= 0x80 {
+            let ch = std::str::from_utf8(&bytes[i..])
+                .expect("visible CSS remains UTF-8")
+                .chars()
+                .next()
+                .expect("non-ASCII identifier byte has a character");
+            name.push(ch);
+            i += ch.len_utf8();
         } else {
             break;
         }
@@ -243,7 +256,7 @@ fn scan(css: &str) -> (BTreeSet<String>, Vec<DefaultThemeVarReference>) {
 }
 
 fn is_ident_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'\\')
+    byte.is_ascii_alphanumeric() || byte >= 0x80 || matches!(byte, b'-' | b'_' | b'\\')
 }
 
 #[cfg(test)]
@@ -322,5 +335,24 @@ mod tests {
             scan_default_theme_var_references(&css).len(),
             PREFIXES.len()
         );
+    }
+
+    #[test]
+    fn non_ascii_identifiers_preserve_names_and_byte_positions() {
+        let css = ".x { a: var(--color-é); b: var(--color-ø); }";
+        let refs = scan_default_theme_var_references(css);
+        assert_eq!(
+            refs.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["--color-é", "--color-ø"]
+        );
+        assert_eq!(refs[1].offset, css.find("var(--color-ø)").unwrap());
+        assert_eq!(refs[1].column, refs[1].offset + 1);
+        let sheets = [
+            ("entry.css".into(), css.into()),
+            ("tokens.css".into(), ":root { --color-é: red; }".into()),
+        ];
+        let unresolved = undeclared_default_theme_var_references(&sheets);
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].1.name, "--color-ø");
     }
 }
