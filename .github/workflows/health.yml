@@ -602,6 +602,15 @@ jobs:
       - name: Scanner boundary acceptance (Chromium)
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
 
+      # #3939 runs the documented MDX recipe as a packed external consumer.
+      # Its JS packages are packed from this checkout, and the Rust binary
+      # built above must match the exact checked-out source SHA.
+      - name: SDK alias packed consumer and dev rebundle (#3939)
+        run: |
+          ZFB_BINARY="$PWD/target/debug/zfb" \
+          ZFB_BINARY_SOURCE_SHA="$(git rev-parse HEAD)" \
+          node tests/sdk-alias-consumer/run.mjs
+
       # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
       # run` above cannot cover them. This separate step keeps that coverage.
       # Current baseline: 3 doctests execute + pass (zfb-css 1, zfb-islands 2),
