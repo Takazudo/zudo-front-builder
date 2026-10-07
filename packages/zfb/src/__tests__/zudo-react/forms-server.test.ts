@@ -4,6 +4,28 @@ import { h, signal, computed } from "../../zudo-react/index.js";
 import { renderToString } from "../../zudo-react/server.js";
 
 describe("server form representation", () => {
+  it("serializes display-only values without markers or coercion", () => {
+    expect(renderToString(h("input", { readonly: true, value: signal('a&"b') }))).toBe(
+      '<input readonly value="a&amp;&quot;b">',
+    );
+    expect(renderToString(h("textarea", { disabled: true, value: signal("\n<a&b") }))).toBe(
+      "<textarea disabled>\n\n&lt;a&amp;b</textarea>",
+    );
+    expect(() => renderToString(h("input", { readonly: true, value: signal(1) }))).toThrow(
+      "ZR_MODEL_VALUE",
+    );
+    expect(() => renderToString(h("textarea", { disabled: true, value: signal(1) }))).toThrow(
+      "ZR_MODEL_VALUE",
+    );
+  });
+  it("rejects display-only value conflicts", () => {
+    for (const props of [
+      { readonly: true, value: signal("a"), defaultValue: "b" },
+      { readonly: true, value: signal("a"), modelValue: signal("b") },
+      { readonly: true, value: signal("a"), children: "b" },
+    ])
+      expect(() => renderToString(h("textarea", props))).toThrow("ZR_MODEL_CONFLICT");
+  });
   it.each([
     [
       "text",
