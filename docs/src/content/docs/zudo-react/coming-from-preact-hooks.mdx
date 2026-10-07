@@ -146,7 +146,7 @@ const [name, setName] = useState("Ada");
 <input value={name} onInput={(event) => setName(event.currentTarget.value)} />
 ~~~
 
-In zudo-react, an input handler's `currentTarget` is typed as `HTMLInputElement`, so reading its `value` needs no cast. For a controlled value, use `modelValue` as shown below.
+In zudo-react, an input handler's `currentTarget` is typed as `HTMLInputElement`, so reading its `value` needs no cast. For an interactive controlled value, use `modelValue` as shown below.
 
 After:
 
@@ -159,7 +159,13 @@ function NameField() {
 }
 ~~~
 
-An explicit model connects a supported control to a writable signal. Use signal for the model; computed and readonly signals are valid readable bindings, not writable models. The browser's current value wins when an island hydrates. The [Forms guide](./forms.mdx) lists the supported controls and their model props.
+For a Preact input that only displays state, such as `<input value={address} readOnly />`, use a display-only binding with a static HTML `readonly` or `disabled` attribute. Here `address` is a `ReadonlySignal<string>`, such as a `computed()` result:
+
+~~~tsx
+<input type="url" value={address} readonly={true} />
+~~~
+
+An explicit `modelValue` connects a supported control to a writable signal. Use signal for the model; computed and readonly signals are valid for the display-only binding, not writable models. The display-only binding applies to text inputs and textarea with static `readonly={true}` or `disabled={true}`. The browser's current value wins when an island hydrates. The [Forms guide](./forms.mdx) lists the supported controls and their model props.
 
 For numeric inputs, `modelValue` is unsupported. Use a static initial `value` and `on:input`. If the handler clamps the value, write it back to the DOM explicitly, as shown in the [Forms guide](./forms.mdx); a signal update does not control this input.
 

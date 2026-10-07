@@ -6,7 +6,7 @@ sidebar_position: 7
 
 ## Uncontrolled by default
 
-Controls use native browser state unless you provide an explicit model. Static value and checked props set initial defaults. Reactive value and checked props are rejected by TypeScript (`zfb check`) and at render time; use a model prop when the control should stay connected to a signal.
+Controls use native browser state unless you provide an explicit model. Static value and checked props set initial defaults. Reactive value and checked props are rejected by TypeScript (`zfb check`) and at render time, except for the display-only `value` binding below; use a model prop when the control should read and write a signal.
 
 The reserved props are **defaultValue**, **defaultChecked**, **modelValue**, and **modelChecked**. They do not become HTML attributes. Supplying a model together with its default is an error, as is supplying both value and defaultValue or both checked and defaultChecked.
 
@@ -81,6 +81,24 @@ const label = computed(() => name.value.toUpperCase());
 Use computed and readonly signals for text or other readable bindings. They remain valid inputs when a child only reads a signal. A readonly type annotation does not erase the writable brand at runtime, but the TypeScript type itself cannot be supplied as a model. Runtime validation rejects models without that writable brand before any model write.
 
 Multiple selection is unsupported in v1. Multiple selects are rejected in island mode and cannot use model or defaultValue. File and contenteditable models, and models for every input type outside the table above (including color, number, range, date, and time), are unsupported. Select, optgroup, and option structure must be static; option labels and option lists are not reactive. A programmatic model or default with no matching option reports ZR_MODEL_VALUE without a partial update.
+
+## Display-only controls
+
+A one-way reactive `value` is supported only on a `<textarea>` or an `<input>` whose `type` is statically omitted or statically one of `text | search | email | url | tel | password`, and when `readonly` or `disabled` is the literal boolean `true`. Reactive `readonly`, `disabled`, or `type` never qualifies. `readonly={false}`, `disabled={false}`, the empty string, and strings such as `"readonly"` do not qualify. Other input types remain unsupported, and `checked` stays static.
+
+Pass a `ReadonlySignal<string>` to `value`; a `computed()` result is also a `ReadonlySignal<string>`. This binding only displays the signal value: it does not write user edits back, use `modelValue`, or add `input`, `change`, or composition listeners. It is useful for porting a Preact display-only field such as `<input value={address} readOnly />`:
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+function AddressBar() {
+  const address = signal("https://example.test/search?q=ada");
+  const displayedAddress = computed(() => address.value);
+  return <input type="url" value={displayedAddress} readonly={true} />;
+}
+~~~
+
+At setup, the initial `value` attribute is set once on the server or during a client-only mount, and the live `value` property is initialized. Later signal updates set only the property, so `form.reset()` restores the initial value for both SSR-hydrated and client-only mounts. Do not combine a reactive `value` with `defaultValue` or `modelValue`; textarea children also conflict with a reactive `value`. For display outside a form control, use `<output>` or `<pre>` instead.
 
 ## Static numeric values and input events
 
