@@ -78,8 +78,10 @@ rm zfb.config.json
 
 cat > zfb.config.ts << 'EOF'
 import { defineConfig } from "zfb/config";
+import wind from "./design-tokens.json";
 
 export default defineConfig({
+  wind,
   outDir: "dist",
   publicDir: "public",
   collections: [

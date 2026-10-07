@@ -24,7 +24,9 @@ describe("bundled starter design boundary", () => {
     expect(JSON.parse(assets["design-tokens.json"])).toEqual(windObject(state.values));
     expect(
       JSON.parse(
-        assets["components/design-rules.ts"].replace(/^export default /, "").replace(/;\n$/, ""),
+        assets["components/design-rules.ts"]
+          .replace(/^export default /, "")
+          .replace(/,\n\];\n$/, "\n]"),
       ),
     ).toEqual(currentRules(state));
   });
