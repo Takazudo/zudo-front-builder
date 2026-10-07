@@ -2915,7 +2915,11 @@ pub fn zudo_react_build_token_with_snapshots(
         false,
         Some(&output_dir),
         &mut visited_packages,
-        (&mut files, &mut emitted, &mut linked_snapshots),
+        TokenWalkOutputs {
+            files: &mut files,
+            emitted: &mut emitted,
+            linked_snapshots: &mut linked_snapshots,
+        },
     )?;
     let mut sorted_aliases = plugin_aliases.to_vec();
     sorted_aliases.sort();
@@ -3032,7 +3036,11 @@ fn collect_zudo_react_external_target(
                     true,
                     None,
                     visited_packages,
-                    (&mut *files, &mut *emitted, &mut *linked_snapshots),
+                    TokenWalkOutputs {
+                        files: &mut *files,
+                        emitted: &mut *emitted,
+                        linked_snapshots: &mut *linked_snapshots,
+                    },
                 )?;
             }
         }
@@ -3055,7 +3063,11 @@ fn collect_zudo_react_external_target(
             true,
             None,
             visited_packages,
-            (&mut *files, &mut *emitted, &mut *linked_snapshots),
+            TokenWalkOutputs {
+                files: &mut *files,
+                emitted: &mut *emitted,
+                linked_snapshots: &mut *linked_snapshots,
+            },
         )?;
     }
     Ok(())
@@ -3531,6 +3543,12 @@ fn zudo_react_token_source(path: &Path) -> bool {
 /// bounded gitignore walk, then re-include declared entry subtrees and direct
 /// target import closures. Logical `node_modules/<name>` paths keep the digest
 /// independent of checkout and symlink target locations.
+struct TokenWalkOutputs<'a> {
+    files: &'a mut Vec<(PathBuf, PathBuf)>,
+    emitted: &'a mut BTreeMap<PathBuf, usize>,
+    linked_snapshots: &'a mut Vec<LinkedPackageIgnoreSnapshot>,
+}
+
 fn collect_zudo_react_token_tree(
     physical_root: &Path,
     logical_root: &Path,
@@ -3538,13 +3556,13 @@ fn collect_zudo_react_token_tree(
     linked_package: bool,
     output_dir: Option<&Path>,
     visited_packages: &mut BTreeSet<PathBuf>,
-    outputs: (
-        &mut Vec<(PathBuf, PathBuf)>,
-        &mut BTreeMap<PathBuf, usize>,
-        &mut Vec<LinkedPackageIgnoreSnapshot>,
-    ),
+    outputs: TokenWalkOutputs<'_>,
 ) -> Result<()> {
-    let (files, emitted, linked_snapshots) = outputs;
+    let TokenWalkOutputs {
+        files,
+        emitted,
+        linked_snapshots,
+    } = outputs;
     let first_file = files.len();
     let mut node_modules_dirs = Vec::new();
     let mut record_entry = |path: &Path, is_dir: bool, is_file: bool| -> Result<()> {
@@ -3817,7 +3835,11 @@ fn collect_zudo_react_linked_package(
         true,
         None,
         visited_packages,
-        (&mut *files, &mut *emitted, &mut *linked_snapshots),
+        TokenWalkOutputs {
+            files: &mut *files,
+            emitted: &mut *emitted,
+            linked_snapshots: &mut *linked_snapshots,
+        },
     )
 }
 
