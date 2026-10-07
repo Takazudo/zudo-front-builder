@@ -1,0 +1,2022 @@
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 1: Shell-script syntax check (bash -n)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ Shell-script syntax (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 2: Offline shell unit test: check-exam-ignore-parity.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: fixture run: exits non-zero (found the deliberately uncovered test)
+PASS: fixture run: covered_by_exam_test reported COVERED-BY-EXAM
+PASS: fixture run: covered_by_health_test reported COVERED-BY-HEALTH-SCOPE (--test scope)
+PASS: fixture run: lib_covered_test reported COVERED-BY-HEALTH-SCOPE (--lib module-prefix scope)
+PASS: fixture run: covered_by_nextest_binary_test reported COVERED-BY-HEALTH-SCOPE (nextest binary predicate)
+PASS: fixture run: covered_by_nextest_exact_test reported COVERED-BY-HEALTH-SCOPE (nextest test predicate)
+PASS: fixture run: nextest_exact_lib_test reported COVERED-BY-HEALTH-SCOPE (qualified nextest test predicate)
+PASS: fixture run: verification_helper_test reported EXCEPTION(verification)
+PASS: fixture run: uncovered_test reported UNCOVERED (decoy step did not fool the scope parser)
+PASS: fixture run: summary line matches the expected 1/5/1/1 split
+PASS: real-repo run: exits 0 (no drift between crates/ and exam.yml/health.yml)
+PASS: real-repo run: no UNCOVERED lines in output
+
+12 passed, 0 failed
+✅ check-exam-ignore-parity.sh (11s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 3: Offline shell unit test: check-sse-endpoint.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: case 1: compliant source homes + reasoned allowlist pass
+PASS: case 2: forbidden tests/ literal exits non-zero
+PASS: case 2: failure names file and teaches the SSE timeout remedy
+PASS: case 2: restoring the forbidden fixture returns the guard to green
+PASS: case 3: sole reasoned allowlist violation passes
+PASS: case 4: stale allowlist entry exits non-zero
+PASS: case 4: stale failure names the allowlist entry
+
+7 passed, 0 failed
+✅ check-sse-endpoint.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 4: Offline shell unit test: file-exam-issue.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: issue_title: deterministic title format
+PASS: ensure_label: label already present → no gh label create call
+PASS: ensure_label: label already present made no mutating call
+PASS: ensure_label: label absent → gh label create called
+PASS: ensure_label: label absent created 'exam-failure'
+PASS: ensure_label: DRY_RUN=1 + label absent → no gh label create call
+PASS: ensure_label: DRY_RUN=1 made no mutating call
+PASS: find_existing_issue: exact title match → returns issue number
+PASS: find_existing_issue: no title match → empty
+PASS: find_existing_issue: empty issue list → empty
+PASS: file_failure: no existing issue → gh issue create called
+PASS: file_failure: created issue with the deterministic title
+PASS: file_failure: did not call gh issue comment when creating
+PASS: file_failure: existing open issue → gh issue comment on that number
+PASS: file_failure: commented on existing issue #1400
+PASS: file_failure: did not call gh issue create when one already exists
+PASS: file_failure: DRY_RUN=1 → no mutating gh calls
+PASS: file_failure: DRY_RUN=1 made no mutating calls (label create AND issue create both skipped)
+PASS: close_on_green: existing open issue → gh issue close on that number
+PASS: close_on_green: closed issue #1400
+PASS: close_on_green: no existing issue → no-op, exit 0
+PASS: close_on_green: no existing issue made no gh call
+PASS: close_on_green: DRY_RUN=1 → no gh issue close call
+PASS: close_on_green: DRY_RUN=1 made no gh call
+PASS: main: missing workflow-name argument → exit 2
+PASS: main: unrecognized second argument → exit 2
+PASS: main: missing REPO and GITHUB_REPOSITORY → exit 2
+PASS: integration: failure mode end-to-end creates the tracking issue
+PASS: integration: --green mode end-to-end closes the tracking issue
+
+29 passed, 0 failed
+✅ file-exam-issue.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 5: Offline shell unit test: install-default-version.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: resolve_tag (no ZFB_VERSION, no stable release): fails loudly with the expected error
+PASS: resolve_tag (no ZFB_VERSION, stable release exists): resolves the correct tag
+
+2 passed, 0 failed
+✅ install-default-version.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 6: Offline shell unit test: install-prerelease.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: jq path: extracted correct prerelease tag (v0.3.0-beta.1)
+PASS: awk path (clean input): extracted correct prerelease tag (v0.3.0-beta.1)
+PASS: awk path (brace-injected): correctly produces empty output (fail-loud path fires)
+
+3 passed, 0 failed
+✅ install-prerelease.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 7: Offline shell unit test: pnpm-audit-with-retry.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: contract: 4 attempts (MAX_ATTEMPTS=4)
+PASS: contract: default delays are 30s / 2m / 5m
+PASS: finding: wrapper exits non-zero
+PASS: finding: pnpm audit invoked exactly once (no retry)
+PASS: finding: immediate-fail message emitted
+PASS: finding: no retry language present
+PASS: unrecognized error: wrapper exits non-zero
+PASS: unrecognized error: pnpm audit invoked exactly once (no retry)
+PASS: unrecognized error: correctly stayed unclassified as infra
+PASS: infra exhaustion: wrapper exits 0 (non-blocking)
+PASS: infra exhaustion: pnpm audit invoked exactly 4 times (all attempts used)
+PASS: infra exhaustion: backoff sequence observed (3 retry announcements)
+PASS: infra exhaustion: loud ::warning:: annotation emitted, naming the signature
+PASS: infra exhaustion: complete captured output printed on all 4 attempts
+PASS: recovers before exhaustion: wrapper exits 0
+PASS: recovers before exhaustion: pnpm audit invoked exactly 3 times (stopped once it passed)
+PASS: recovers before exhaustion: success recorded on attempt 3/4
+PASS: recovers before exhaustion: the 2 earlier retries are recorded
+PASS: recovers before exhaustion: no exhaustion ::warning:: emitted
+PASS: malformed override: wrapper exits 2
+PASS: malformed override: pnpm audit never invoked
+PASS: malformed override: ::error:: annotation explains the requirement
+PASS: finding+infra-token: wrapper exits non-zero (gate NOT bypassed)
+PASS: finding+infra-token: pnpm audit invoked exactly once (no retry)
+PASS: finding+infra-token: classified as genuine, not infrastructure
+PASS: exhaustion: PNPM_AUDIT_EXHAUSTION_EXIT=0 (PR gate) exits 0
+PASS: exhaustion: default is fail-closed (weekly lane cannot false-green)
+PASS: exhaustion: fail-closed path emits an ::error:: naming the reason
+PASS: delay values: non-numeric override rejected before any audit runs
+
+29 passed, 0 failed
+✅ pnpm-audit-with-retry.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 8: Offline shell unit test: prune-actions-cache.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: identical-key main cache is classified PROTECTED by ref
+PASS: identical-key merged-PR cache is classified PRUNE by ref and PR state
+PASS: open-PR cache is explicitly SKIP
+PASS: dry-run prints before and projected-after totals
+PASS: bare invocation performs no DELETE request
+PASS: custom protect pattern produces an explicit PROTECTED verdict
+PASS: unknown PR state fails closed with an explicit state-query error
+PASS: classification failure prevents all deletion attempts
+PASS: live recheck detects a PR reopening and fails closed
+PASS: race fixture exercised classification, preflight, and immediate recheck
+PASS: reopened-PR candidate receives no DELETE request
+
+11 passed, 0 failed
+✅ prune-actions-cache.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 9: Offline shell unit test: publish-npm-packages.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: is_publish_conflict: "cannot publish over the previously published versions" → match
+PASS: is_publish_conflict: EPUBLISHCONFLICT → match
+PASS: is_publish_conflict: permissions 403 → NO match (not swallowed)
+PASS: is_publish_conflict: generic network error → NO match
+PASS: is_publish_conflict: empty → NO match
+PASS: should_skip_publish: version present → skip (0)
+PASS: should_skip_publish: version absent → do not skip (1)
+PASS: classify: exit 0 → success (0)
+PASS: classify: conflict text → tolerate (0)
+PASS: classify: non-conflict error BUT version landed (lost-ACK) → tolerate (0)
+PASS: classify: real error AND version NOT on registry → fail (1)
+PASS: integration: idempotent re-run publishes ONLY the 2 missing packages
+PASS: integration: fresh registry publishes all 10 packages
+PASS: integration: ALSO_LATEST=1 advances 'latest' even when all publishes are skipped
+PASS: integration: bad mode argument rejected (exit 2)
+PASS: integration: recovery publishes all 10 packages without --provenance
+PASS: advisory: recovery-no-provenance warns for every package
+PASS: advisory: mac-local warns, scoped to zfb-darwin-x64
+PASS: advisory: all-provenance stays silent
+PASS: gate: mac-local WITHOUT the env var is blocked before any publish
+PASS: gate: mac-local with the env var set to a non-1 value is blocked
+PASS: gate: mac-local WITH ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 proceeds
+PASS: gate: recovery-no-provenance WITHOUT the env var is blocked before any publish
+PASS: gate: recovery-no-provenance WITH ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 proceeds
+PASS: gate: all-provenance is unaffected (no env var needed)
+
+25 passed, 0 failed
+✅ publish-npm-packages.sh (9s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 10: Offline shell unit test: release-binary-slot-restore.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: case 1: esbuild slot content restored byte-identical
+PASS: case 1: esbuild slot executable bit restored
+PASS: case 1: backup directory removed after restore (no stale temp copy left behind)
+PASS: case 2: pre-absent esbuild slot restored to absent
+PASS: case 3: EXIT trap preserves the original (non-zero) exit status
+PASS: case 3: EXIT trap restored esbuild slot content on the failure path
+PASS: case 3: EXIT trap restored esbuild slot executable bit on the failure path
+PASS: case 3: backup directory removed by the EXIT trap's restore on the failure path
+PASS: case 4: restore_binary_slots reports failure (non-zero return) when a slot cannot be restored
+PASS: case 4: backup directory RETAINED after a failed restore
+PASS: case 4: retained backup still holds the original esbuild slot bytes
+PASS: case 4: failure report names the retained backup directory path
+PASS: case 4: failure report prints a runnable per-slot recovery command
+PASS: case 4: BINARY_SLOT_BACKUP_DIR left set after a failed restore (a retry is still possible)
+
+14 passed, 0 failed
+✅ release-binary-slot-restore.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 11: Offline shell unit test: report-flaky-tests.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: first run: ::warning:: annotation emitted for zfb-diagnostics::tests::zzz_temp_flaky_capture_for_fixture
+PASS: first run: exactly one 'would create' command, no comment
+PASS: first run: correct test-id extracted into the issue title
+PASS: first run: non-flaky testcases in the fixture are correctly ignored
+PASS: second run: dedups to exactly one comment, no duplicate create
+PASS: clean JUnit report (no flaky testcases): correctly reports none found
+PASS: missing JUnit file: script exits 0 (never breaks the CI run)
+PASS: missing JUnit file: reports no flaky tests instead of erroring
+
+8 passed, 0 failed
+✅ report-flaky-tests.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 12: Offline shell unit test: run-b4push-dispatch.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: explicit override b4push succeeds
+PASS: nextest workspace args preserved
+PASS: nextest doctest args preserved
+PASS: esbuild lane args and env preserved
+PASS: command-layer esbuild lane args and env preserved
+PASS: esbuild environment reaches cargo
+PASS: explicit guard takes precedence over Claude
+PASS: explicit guard takes precedence over Codex
+PASS: lint stays outside the queue
+PASS: no-V8 check stays outside the queue
+PASS: JS skip flag remains effective
+PASS: clippy skip flag remains effective
+PASS: JS suite command remains skipped
+PASS: installed guard discovery b4push succeeds
+PASS: Claude guard discovered first
+PASS: Codex guard is not selected when Claude guard exists
+PASS: plain cargo test fallback preserved
+PASS: fallback does not add redundant doctest command
+PASS: Codex fallback b4push succeeds
+PASS: Codex guard discovered when Claude guard is absent
+PASS: missing guard b4push succeeds directly
+PASS: missing guard executes queued command directly
+PASS: missing guard does not invoke a guard
+PASS: CI bypass b4push succeeds directly
+PASS: CI executes the queued command directly
+PASS: CI does not invoke the configured guard
+PASS: cargo failure returns b4push failure
+PASS: cargo failure appears in failure summary
+PASS: cargo failure is not described as contention
+PASS: unusable explicit guard returns failure
+PASS: guard execution error appears as failure
+PASS: bad explicit override does not fall back to installed guard
+PASS: bad explicit override never runs a heavy command unguarded
+PASS: bad explicit override never runs asset generation unguarded
+PASS: guard execution error is not contention
+PASS: guard contention exit 75 is preserved
+PASS: contention identifies command as not run
+PASS: contention summary is explicit
+PASS: contention is not reported as assertion/check failure
+PASS: contention cannot produce a passing summary
+PASS: contended command is never launched
+PASS: post-command diff failure is ordinary failure
+PASS: syntax asset generation runs through guard
+PASS: syntax asset diff remains outside guard
+PASS: diff failure is in check failure summary
+PASS: post-command diff status is not contention
+
+46 passed, 0 failed
+✅ run-b4push-dispatch.sh (1s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 13: Offline shell unit test: smoke-packed-clean-room-dist-out.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: the ZFB_SMOKE_DIST_OUT export block is the final block of the script (closing 'fi' at line 322 = last content line)
+PASS: the export guard uses the ${ZFB_SMOKE_DIST_OUT:-} form (in code, not just a comment)
+PASS: no line above Stage 6 (line 260) mentions ZFB_SMOKE_DIST_OUT
+PASS: positive copy: the real export block ran without error against a fixture dist/
+PASS: positive copy: exported dir reproduces the fixture dist/ contents
+PASS: positive copy: hidden dotfiles are copied too (cp -R src/. dest/)
+PASS: negative path: the export block exits 0 when ZFB_SMOKE_DIST_OUT is unset
+PASS: negative path: no 'unbound variable' error with ZFB_SMOKE_DIST_OUT unset
+PASS: negative path: the export block is silent and writes nothing when unset
+
+9 passed, 0 failed
+✅ smoke-packed-clean-room-dist-out.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 14: Offline shell unit test: sum-junit-times.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: fixture includes testcase time and nested flakyFailure retry time
+PASS: all nested flakyFailure retry times are included
+PASS: multiple JUnit reports are summed
+PASS: missing JUnit report fails loudly
+
+4 passed, 0 failed
+✅ sum-junit-times.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 15: Offline shell unit test: update-homebrew-formula.sh
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASS: absent tap is cloned and the formula is written into a real git repo
+PASS: non-git stub errors out and the formula file is left untouched
+PASS: no formula is written into a non-git directory (write happens after validation)
+warning: remote HEAD refers to nonexistent ref, unable to checkout
+PASS: --push commits and pushes to the tap remote
+
+4 passed, 0 failed
+✅ update-homebrew-formula.sh (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 16: Dead-dependency check (cargo-machete)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  cargo machete (cargo-machete not installed) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 17: Rust formatting (cargo fmt --check)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ cargo fmt (3s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 18: JS/MDX formatting (pnpm format:check)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+$ pnpm format:check:ts && pnpm format:check:mdx
+$ vp fmt --check "**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}"
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 291ms on 1213 files using 4 threads.
+$ mdx-formatter --check '**/*.{md,mdx}'
+Processing 913 file(s)...
+✓ SECURITY-DEPS.md formatted correctly
+✓ RELEASE_DAY_CHECKLIST.md formatted correctly
+✓ README.md formatted correctly
+✓ DEPENDENCIES.md formatted correctly
+✓ CONTRIBUTING.md formatted correctly
+✓ CLAUDE.md formatted correctly
+✓ BUILDING.md formatted correctly
+✓ research/wind-native-adoption-decision.md formatted correctly
+✓ research/wind-compatibility-profile.md formatted correctly
+✓ research/swc-smartstring-verification.md formatted correctly
+✓ research/README.md formatted correctly
+✓ research/3728-build-diagnostics-contract.md formatted correctly
+✓ research/3648-package-graph-preflight.md formatted correctly
+✓ research/346-embed-as-library-api.md formatted correctly
+✓ research/344-v8-feature-gate.md formatted correctly
+✓ research/3318-scratch-dir-design.md formatted correctly
+✓ research/3242-zudo-wind-v1-spec.md formatted correctly
+✓ research/3242-zudo-react-v1-contract.md formatted correctly
+✓ research/3242-v3-release-notes-material.md formatted correctly
+✓ research/3242-owned-engines-ledger.md formatted correctly
+✓ research/3242-owned-engines-completion-report.md formatted correctly
+✓ research/3242-owned-engines-baseline.md formatted correctly
+✓ research/2036-styled-404-detection-diagnosis.md formatted correctly
+✓ research/2013-request-time-capability-contract.md formatted correctly
+✓ research/1898-parse-to-ast-interoperability-contract.md formatted correctly
+✓ research/1638-resource-delivery-decision.md formatted correctly
+✓ research/1284-dev-dep-invalidation.md formatted correctly
+✓ research/1229-dev-staging-decision.md formatted correctly
+✓ examples/README.md formatted correctly
+✓ docs/CLAUDE.md formatted correctly
+✓ create-zfb-showcase/README.md formatted correctly
+✓ crates/CLAUDE.md formatted correctly
+✓ tests/smoke/sub-452-report.md formatted correctly
+✓ tests/router-chromium/BACK-RACE-FINDINGS.md formatted correctly
+✓ tests/docs-wind-preview/README.md formatted correctly
+✓ scripts/wind-compatibility/README.md formatted correctly
+✓ research/wind-native-adoption-reference/README.md formatted correctly
+✓ research/v3-island-size/swc-74-darwin-report.md formatted correctly
+✓ research/v3-island-size/script-boundary-linux-report.md formatted correctly
+✓ research/v3-island-size/ruby-rb-linux-report.md formatted correctly
+✓ research/v3-island-size/final-sweep-darwin-report.md formatted correctly
+✓ research/v3-island-size/REPORT.md formatted correctly
+✓ research/v3-island-size/README.md formatted correctly
+✓ research/toolchain-modernization/STAGE-5-TS7.md formatted correctly
+✓ research/toolchain-modernization/STAGE-4-OXFMT.md formatted correctly
+✓ research/toolchain-modernization/STAGE-3-VITEST.md formatted correctly
+✓ research/toolchain-modernization/STAGE-2-TS6.md formatted correctly
+✓ research/toolchain-modernization/STAGE-1-PNPM.md formatted correctly
+✓ research/toolchain-modernization/ROOT-SCRIPT-TIMING.md formatted correctly
+✓ research/toolchain-modernization/HANDOFF.md formatted correctly
+✓ research/toolchain-modernization/BASELINE.md formatted correctly
+✓ packages/zfb-win32-x64-msvc/README.md formatted correctly
+✓ packages/zfb-runtime/README.md formatted correctly
+✓ packages/zfb-runtime/CHANGELOG.md formatted correctly
+✓ packages/zfb-linux-x64-gnu/README.md formatted correctly
+✓ packages/zfb-linux-arm64-gnu/README.md formatted correctly
+✓ packages/zfb-darwin-x64/README.md formatted correctly
+✓ packages/zfb-darwin-arm64/README.md formatted correctly
+✓ packages/zfb-adapter-cloudflare/README.md formatted correctly
+✓ packages/zfb-adapter-cloudflare/CHANGELOG.md formatted correctly
+✓ packages/zfb/README.md formatted correctly
+✓ packages/zfb/CONTRIBUTING.md formatted correctly
+✓ packages/zfb/CHANGELOG.md formatted correctly
+✓ packages/create-zfb/README.md formatted correctly
+✓ packages/create-zfb/CHANGELOG.md formatted correctly
+✓ docs/wind-examples/README.md formatted correctly
+✓ crates/zudo-wind/README.md formatted correctly
+✓ crates/zfb-watcher/README.md formatted correctly
+✓ crates/zfb-toolchain-pins/README.md formatted correctly
+✓ crates/zfb-types/README.md formatted correctly
+✓ crates/zfb-test-utils/README.md formatted correctly
+✓ crates/zfb-server/README.md formatted correctly
+✓ crates/zfb-router/README.md formatted correctly
+✓ crates/zfb-render/README.md formatted correctly
+✓ crates/zfb-plugin-resolver/README.md formatted correctly
+✓ crates/zfb-md-extras/README.md formatted correctly
+✓ crates/zfb-md-wasm/SPIKE-FINDINGS.md formatted correctly
+✓ crates/zfb-md-wasm/README.md formatted correctly
+✓ crates/zfb-md-wasm/LOCAL-VS-CI-SIZES.md formatted correctly
+✓ crates/zfb-md-ast/README.md formatted correctly
+✓ crates/zfb-islands/README.md formatted correctly
+✓ crates/zfb-islands/BOUNDARY-DISCOVERY.md formatted correctly
+✓ crates/zfb-graph/README.md formatted correctly
+✓ crates/zfb-diagnostics/README.md formatted correctly
+✓ crates/zfb-css/README.md formatted correctly
+✓ crates/zfb-content/README.md formatted correctly
+✓ crates/zfb-config-loader/README.md formatted correctly
+✓ crates/zfb-build/README.md formatted correctly
+✓ crates/zfb-binfetch/README.md formatted correctly
+✓ crates/zfb/README.md formatted correctly
+✓ tests/wind-compatibility/shipping/README.md formatted correctly
+✓ tests/wind-compatibility/reference/manual-following.md formatted correctly
+✓ tests/wind-compatibility/reference/README.md formatted correctly
+✓ tests/wind-compatibility/corpus/README.md formatted correctly
+✓ tests/wind-compatibility/empty-token/README.md formatted correctly
+✓ docs/scripts/wind-reference-editorial/README.md formatted correctly
+✓ crates/zfb-md-wasm/npm/README.md formatted correctly
+✓ crates/zfb/binaries/README.md formatted correctly
+✓ tests/wind-compatibility/extraction/mdx/index.mdx formatted correctly
+✓ scripts/__tests__/fixtures/tailwind-release/README.md formatted correctly
+✓ packages/zfb-runtime/docs/client-router/port-spec.md formatted correctly
+✓ docs/scripts/__tests__/fixtures/README.md formatted correctly
+✓ crates/zfb-islands/fixtures/two-islands/README.md formatted correctly
+✓ crates/zfb-islands/fixtures/pnpm-workspace-consumer/README.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/09-mdx-lang-fence.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/08-mermaid.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/07-image.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/06-links.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/05-headings.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/04-code-block.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/03-admonitions.mdx formatted correctly
+✓ crates/zfb-content/tests/fixtures/02-frontmatter.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/01-basic.md formatted correctly
+✓ crates/zfb-content/assets/syntaxes/README.md formatted correctly
+✓ crates/zfb/templates/basic-blog/README.md formatted correctly
+✓ crates/zfb/templates/basic-blog/DESIGN-NOTES.md formatted correctly
+✓ crates/zfb/tests/fixtures/token_leak_demo.mdx formatted correctly
+✓ crates/zfb/binaries/esbuild/README.md formatted correctly
+✓ crates/zfb/templates/node-free/README.md formatted correctly
+✓ crates/zfb/templates/node-free/DESIGN-NOTES.md formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/variants.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utility-grammar.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/tokens.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/sources-and-candidates.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/overview.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/diagnostics-and-tools.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/configuration.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/coming-from-tailwind.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/cascade-and-reset.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/vocabulary.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/testing.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/server-rendering.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/scopes-and-lifecycle.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/reactivity.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/overview.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/hydration.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/forms.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/conditionals-and-lists.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/components-and-jsx.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/coming-from-preact-hooks.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-react/api-reference.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/workers-cache.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/webshop.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/reverse-proxy.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/password-gate.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/kv-guestbook.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/json-api.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/enlargeable-images.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/corporate-website.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/blog.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/ai-summarizer.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/agent-conversations.mdx formatted correctly
+✓ docs/src/content/docs-ja/recipes/admonitions.mdx formatted correctly
+✓ docs/src/content/docs-ja/playground/render.mdx formatted correctly
+✓ docs/src/content/docs-ja/playground/parse.mdx formatted correctly
+✓ docs/src/content/docs-ja/playground/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/playground/highlight.mdx formatted correctly
+✓ docs/src/content/docs-ja/playground/design-system.mdx formatted correctly
+✓ docs/src/content/docs-ja/playground/compile.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/transclude.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/toc-export.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/syntax-highlighting.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/strip-md-ext.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/ruby.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/resolve-links.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/reading-time.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/mermaid.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/link-validation.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/image-dimensions.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/heading-marker-toc.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/heading-links.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/hard-breaks.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/github-alerts.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/gfm.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/external-links.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/directives.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/directives-registry.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/code-title.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/code-tabs.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/code-enrichment.mdx formatted correctly
+✓ docs/src/content/docs-ja/markdown-features/cjk-friendly.mdx formatted correctly
+✓ docs/src/content/docs-ja/install/node-free.mdx formatted correctly
+✓ docs/src/content/docs-ja/install/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/troubleshooting.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/syntax-highlighting.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/ssr-and-cloudflare-bindings.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/migrating-to-v3.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/migrating-from-eleventy.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/migrating-from-astro.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/importing-wasm.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/extending-the-markdown-pipeline.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/examples.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/embed-as-library.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/desktop-deployment.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/customizing-markdown.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/client-scripts.mdx formatted correctly
+✓ docs/src/content/docs-ja/guides/browser-markdown-preview.mdx formatted correctly
+✓ docs/src/content/docs-ja/getting-started/your-first-site.mdx formatted correctly
+✓ docs/src/content/docs-ja/getting-started/project-structure.mdx formatted correctly
+✓ docs/src/content/docs-ja/getting-started/introduction.mdx formatted correctly
+✓ docs/src/content/docs-ja/getting-started/installation.mdx formatted correctly
+✓ docs/src/content/docs-ja/getting-started/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/three-ways-to-run-zfb.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/styling.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/static-assets.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/ssr-on-a-worker.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/routing.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/plugins.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/non-html-pages.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/mdx-components.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/md-html-pages.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/islands.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/incremental-rebuild.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/frontmatter.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/engine-vs-framework.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/dynamic-routes.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/dev-mode-lifecycle.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/design-philosophy.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/data.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/custom-directives.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/content-collections.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/client-side-routing.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/choosing-zfb.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/build-pipeline.mdx formatted correctly
+✓ docs/src/content/docs-ja/concepts/architecture-overview.mdx formatted correctly
+✓ docs/src/content/docs-ja/architecture/why-rust.mdx formatted correctly
+✓ docs/src/content/docs-ja/architecture/js-runtime.mdx formatted correctly
+✓ docs/src/content/docs-ja/architecture/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/architecture/framework-adapters.mdx formatted correctly
+✓ docs/src/content/docs-ja/architecture/build-engine.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/paginate.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/meta-export.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/md-wasm.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/island.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/get-collection.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/define-preset.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/define-config.mdx formatted correctly
+✓ docs/src/content/docs-ja/api/cli.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/variants.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utility-grammar.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/tokens.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/sources-and-candidates.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/overview.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/index.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/diagnostics-and-tools.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/configuration.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/coming-from-tailwind.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/cascade-and-reset.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/vocabulary.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/testing.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/server-rendering.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/scopes-and-lifecycle.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/reactivity.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/overview.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/index.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/hydration.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/forms.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/conditionals-and-lists.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/components-and-jsx.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/coming-from-preact-hooks.mdx formatted correctly
+✓ docs/src/content/docs/zudo-react/api-reference.mdx formatted correctly
+✓ docs/src/content/docs/recipes/workers-cache.mdx formatted correctly
+✓ docs/src/content/docs/recipes/webshop.mdx formatted correctly
+✓ docs/src/content/docs/recipes/reverse-proxy.mdx formatted correctly
+✓ docs/src/content/docs/recipes/password-gate.mdx formatted correctly
+✓ docs/src/content/docs/recipes/kv-guestbook.mdx formatted correctly
+✓ docs/src/content/docs/recipes/json-api.mdx formatted correctly
+✓ docs/src/content/docs/recipes/index.mdx formatted correctly
+✓ docs/src/content/docs/recipes/enlargeable-images.mdx formatted correctly
+✓ docs/src/content/docs/recipes/corporate-website.mdx formatted correctly
+✓ docs/src/content/docs/recipes/blog.mdx formatted correctly
+✓ docs/src/content/docs/recipes/ai-summarizer.mdx formatted correctly
+✓ docs/src/content/docs/recipes/agent-conversations.mdx formatted correctly
+✓ docs/src/content/docs/recipes/admonitions.mdx formatted correctly
+✓ docs/src/content/docs/playground/render.mdx formatted correctly
+✓ docs/src/content/docs/playground/parse.mdx formatted correctly
+✓ docs/src/content/docs/playground/index.mdx formatted correctly
+✓ docs/src/content/docs/playground/highlight.mdx formatted correctly
+✓ docs/src/content/docs/playground/design-system.mdx formatted correctly
+✓ docs/src/content/docs/playground/compile.mdx formatted correctly
+✓ docs/src/content/docs/install/node-free.mdx formatted correctly
+✓ docs/src/content/docs/install/index.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/transclude.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/toc-export.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/syntax-highlighting.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/strip-md-ext.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/ruby.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/resolve-links.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/reading-time.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/mermaid.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/link-validation.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/index.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/image-dimensions.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/heading-marker-toc.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/heading-links.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/hard-breaks.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/github-alerts.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/gfm.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/external-links.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/directives.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/directives-registry.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/code-title.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/code-tabs.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/code-enrichment.mdx formatted correctly
+✓ docs/src/content/docs/markdown-features/cjk-friendly.mdx formatted correctly
+✓ docs/src/content/docs/guides/troubleshooting.mdx formatted correctly
+✓ docs/src/content/docs/guides/syntax-highlighting.mdx formatted correctly
+✓ docs/src/content/docs/guides/ssr-and-cloudflare-bindings.mdx formatted correctly
+✓ docs/src/content/docs/guides/migrating-to-v3.mdx formatted correctly
+✓ docs/src/content/docs/guides/migrating-from-eleventy.mdx formatted correctly
+✓ docs/src/content/docs/guides/migrating-from-astro.mdx formatted correctly
+✓ docs/src/content/docs/guides/index.mdx formatted correctly
+✓ docs/src/content/docs/guides/importing-wasm.mdx formatted correctly
+✓ docs/src/content/docs/guides/extending-the-markdown-pipeline.mdx formatted correctly
+✓ docs/src/content/docs/guides/examples.mdx formatted correctly
+✓ docs/src/content/docs/guides/embed-as-library.mdx formatted correctly
+✓ docs/src/content/docs/guides/desktop-deployment.mdx formatted correctly
+✓ docs/src/content/docs/guides/customizing-markdown.mdx formatted correctly
+✓ docs/src/content/docs/guides/client-scripts.mdx formatted correctly
+✓ docs/src/content/docs/guides/browser-markdown-preview.mdx formatted correctly
+✓ docs/src/content/docs/getting-started/your-first-site.mdx formatted correctly
+✓ docs/src/content/docs/getting-started/project-structure.mdx formatted correctly
+✓ docs/src/content/docs/getting-started/introduction.mdx formatted correctly
+✓ docs/src/content/docs/getting-started/installation.mdx formatted correctly
+✓ docs/src/content/docs/getting-started/index.mdx formatted correctly
+✓ docs/src/content/docs/concepts/three-ways-to-run-zfb.mdx formatted correctly
+✓ docs/src/content/docs/concepts/styling.mdx formatted correctly
+✓ docs/src/content/docs/concepts/static-assets.mdx formatted correctly
+✓ docs/src/content/docs/concepts/ssr-on-a-worker.mdx formatted correctly
+✓ docs/src/content/docs/concepts/routing.mdx formatted correctly
+✓ docs/src/content/docs/concepts/render-artifacts.mdx formatted correctly
+✓ docs/src/content/docs/concepts/plugins.mdx formatted correctly
+✓ docs/src/content/docs/concepts/non-html-pages.mdx formatted correctly
+✓ docs/src/content/docs/concepts/mdx-components.mdx formatted correctly
+✓ docs/src/content/docs/concepts/md-html-pages.mdx formatted correctly
+✓ docs/src/content/docs/concepts/islands.mdx formatted correctly
+✓ docs/src/content/docs/concepts/index.mdx formatted correctly
+✓ docs/src/content/docs/concepts/incremental-rebuild.mdx formatted correctly
+✓ docs/src/content/docs/concepts/frontmatter.mdx formatted correctly
+✓ docs/src/content/docs/concepts/engine-vs-framework.mdx formatted correctly
+✓ docs/src/content/docs/concepts/dynamic-routes.mdx formatted correctly
+✓ docs/src/content/docs/concepts/dev-mode-lifecycle.mdx formatted correctly
+✓ docs/src/content/docs/concepts/design-philosophy.mdx formatted correctly
+✓ docs/src/content/docs/concepts/data.mdx formatted correctly
+✓ docs/src/content/docs/concepts/custom-directives.mdx formatted correctly
+✓ docs/src/content/docs/concepts/content-collections.mdx formatted correctly
+✓ docs/src/content/docs/concepts/client-side-routing.mdx formatted correctly
+✓ docs/src/content/docs/concepts/choosing-zfb.mdx formatted correctly
+✓ docs/src/content/docs/concepts/build-pipeline.mdx formatted correctly
+✓ docs/src/content/docs/concepts/architecture-overview.mdx formatted correctly
+✓ docs/src/content/docs/changelog/index.mdx formatted correctly
+✓ docs/src/content/docs/architecture/why-rust.mdx formatted correctly
+✓ docs/src/content/docs/architecture/js-runtime.mdx formatted correctly
+✓ docs/src/content/docs/architecture/index.mdx formatted correctly
+✓ docs/src/content/docs/architecture/framework-adapters.mdx formatted correctly
+✓ docs/src/content/docs/architecture/build-engine.mdx formatted correctly
+✓ docs/src/content/docs/api/slugify.mdx formatted correctly
+✓ docs/src/content/docs/api/paginate.mdx formatted correctly
+✓ docs/src/content/docs/api/meta-export.mdx formatted correctly
+✓ docs/src/content/docs/api/md-wasm.mdx formatted correctly
+✓ docs/src/content/docs/api/island.mdx formatted correctly
+✓ docs/src/content/docs/api/index.mdx formatted correctly
+✓ docs/src/content/docs/api/get-collection.mdx formatted correctly
+✓ docs/src/content/docs/api/define-preset.mdx formatted correctly
+✓ docs/src/content/docs/api/define-plugin.mdx formatted correctly
+✓ docs/src/content/docs/api/define-config.mdx formatted correctly
+✓ docs/src/content/docs/api/cli.mdx formatted correctly
+✓ crates/zudo-wind/tests/fixtures/extract/styling.md formatted correctly
+✓ crates/zudo-wind/tests/fixtures/extract/hello.mdx formatted correctly
+✓ crates/zfb-router/tests/fixtures/pages/README.md formatted correctly
+✓ crates/zfb-render/tests/fixtures/routing-rendering/README.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/mdx-real/introduction.mdx formatted correctly
+✓ crates/zfb-content/tests/fixtures/mdx-real/installation.mdx formatted correctly
+✓ crates/zfb-content/tests/fixtures/mdx-real/components-index.mdx formatted correctly
+✓ crates/zfb-content/tests/fixtures/directives/README.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/blog-collection/03-third.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/blog-collection/02-second.md formatted correctly
+✓ crates/zfb-content/tests/fixtures/blog-collection/01-first.md formatted correctly
+✓ crates/zfb-content/assets/syntaxes/typescript/PROVENANCE.md formatted correctly
+✓ crates/zfb-build/tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/error-ux/mdx-unknown-directive.md formatted correctly
+✓ crates/zfb/tests/fixtures/error-ux/frontmatter-bad-yaml.md formatted correctly
+✓ crates/zfb/tests/fixtures/error-ux/frontmatter-array.md formatted correctly
+✓ crates/zfb/tests/fixtures/collection-seeds-3133/README.md formatted correctly
+✓ crates/zfb/templates/node-free/pages/about.md formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/z-index.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/visibility.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/translate.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/transition.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/tracking.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/text-underline-offset.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/text-style.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/text-layout.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/text-decoration-color.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/svg.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/sizing.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/shadow.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/scroll-margin.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/rotate.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/radius.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/position.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/padding.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/overflow.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/outline-width.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/outline-style.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/outline-color.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/opacity.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/miscellaneous.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/margin.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/list.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/line-height.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/interaction.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/inset.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/grid.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/gap.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/font-weight.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/font-size.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/font-family.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/flex-item.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/flex-container.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/easing.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/duration.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/divide-width.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/divide-color.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/display.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/color.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/child-space.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/border-width.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/border-style.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/border-color.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/background.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/aspect.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/utilities/alignment.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/z.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/w.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/v.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/u.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/t.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/symbols.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/s.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/r.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/p.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/o.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/n.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/m.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/l.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/j.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/index.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/i.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/h.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/g.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/f.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/e.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/d.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/c.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/b.mdx formatted correctly
+✓ docs/src/content/docs-ja/zudo-wind/compatibility/a.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/z-index.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/visibility.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/translate.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/transition.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/tracking.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/text-underline-offset.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/text-style.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/text-layout.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/text-decoration-color.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/svg.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/sizing.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/shadow.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/scroll-margin.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/rotate.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/radius.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/position.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/padding.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/overflow.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/outline-width.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/outline-style.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/outline-color.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/opacity.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/miscellaneous.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/margin.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/list.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/line-height.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/interaction.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/inset.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/index.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/grid.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/gap.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/font-weight.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/font-size.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/font-family.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/flex-item.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/flex-container.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/easing.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/duration.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/divide-width.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/divide-color.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/display.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/color.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/child-space.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/border-width.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/border-style.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/border-color.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/background.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/aspect.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/utilities/alignment.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/z.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/w.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/v.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/u.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/t.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/symbols.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/s.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/r.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/p.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/o.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/n.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/m.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/l.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/j.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/index.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/i.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/h.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/g.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/f.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/e.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/d.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/c.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/b.mdx formatted correctly
+✓ docs/src/content/docs/zudo-wind/compatibility/a.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v4.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v4.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v3.2.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v3.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v3.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.22.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.22.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.21.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.21.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.20.4.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.20.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.20.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.20.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.20.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.19.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.18.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.17.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.16.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.15.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.15.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.14.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.14.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.14.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.14.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.13.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.13.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.12.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.11.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/v2.10.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-runtime/index.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v4.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v4.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v3.2.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v3.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v3.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.22.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.22.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.21.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.21.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.20.4.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.20.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.20.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.20.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.20.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.19.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.18.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.17.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.16.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.15.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.15.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.14.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.14.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.14.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.14.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.13.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.13.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.12.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.11.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/v2.10.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-adapter-cloudflare/index.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v4.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v4.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v3.2.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v3.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v3.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.22.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.22.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.21.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.21.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.20.4.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.20.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.20.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.20.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.20.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.19.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.18.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.17.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.16.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.15.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.15.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.14.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.14.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.14.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.14.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.13.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.13.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.12.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.11.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/v2.10.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/create-zfb/index.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v4.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v4.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v3.2.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v3.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v3.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.22.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.22.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.21.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.21.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.20.4.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.20.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.20.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.20.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.20.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.19.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.18.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.17.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.16.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.15.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.15.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.14.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.14.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.14.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.14.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.13.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.13.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.12.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.11.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/v2.10.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb-md-wasm/index.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v4.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v4.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v3.2.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v3.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v3.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.9.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.8.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.7.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.7.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.6.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.5.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.5.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.5.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.4.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.3.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.3.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.22.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.22.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.21.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.21.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.20.4.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.20.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.20.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.20.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.20.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.2.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.19.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.18.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.17.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.16.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.15.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.15.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.14.3.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.14.2.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.14.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.14.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.13.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.13.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.12.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.11.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.10.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.10.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v2.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v1.1.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v1.1.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v1.1.0-next.1.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v1.0.0.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.99.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.98.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.97.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.96.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.95.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.94.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.93.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.92.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.91.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.90.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.9.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.89.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.88.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.87.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.86.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.85.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.84.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.83.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.82.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.81.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.80.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.8.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.79.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.78.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.77.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.76.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.75.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.74.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.73.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.72.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.71.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.70.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.7.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.69.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.68.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.67.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.66.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.65.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.64.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.63.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.62.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.61.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.60.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.6.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.59.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.58.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.57.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.56.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.55.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.54.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.53.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.52.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.51.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.50.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.5.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.49.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.48.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.47.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.46.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.45.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.44.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.43.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.42.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.41.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.40.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.39.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.38.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.37.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.36.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.35.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.34.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.33.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.32.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.31.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.30.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.29.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.28.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.27.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.26.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.25.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.24.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.23.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.22.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.21.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.20.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.19.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.18.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.17.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.16.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.15.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.14.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.13.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.12.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.11.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/v0.1.0-next.10.mdx formatted correctly
+✓ docs/src/content/docs/changelog/zfb/index.mdx formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/max-depth-1/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/max-depth-1/b.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/max-depth-1/a.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/lines/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/cycle/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/cycle/b.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/cycle/a.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/code-block/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/chain/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/chain/b.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/chain/a.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/basic/snippet.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/transclude/basic/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/toc_export/three-h2s-with-h3s/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/toc_export/special-chars/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/toc_export/no-headings/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/toc_export/max-depth-2/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/toc_export/id-drift-check/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/toc_export/h4-excluded-by-default/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/multiple/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/mixed-text/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/invalid-syntax/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/caret-superscript-guard/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/caret-sentence/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/caret-plain-expr-untouched/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/caret-braced/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/caret-bare/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/caret-adjacent-text/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/basic/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/ruby/adjacent/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/reading_time/short-article/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/reading_time/en-600-words/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/reading_time/en-400-words/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/reading_time/en-200-words/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/reading_time/code-excluded/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/reading_time/cjk-basic/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_tabs/no-lang-fallback/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_tabs/two-tabs-explicit/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_tabs/mixed-titles/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_tabs/lang-fallback/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_tabs/explicit-titles/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/warning/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/unknown-type/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/tip/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/note/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/multiple-paragraphs/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/important/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/caution/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/github_alerts/alert-in-list/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/word-highlight-combined/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/line-highlight-with-title/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/line-highlight-range/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/line-highlight-basic/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/diff-last-line/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/diff-empty-lines/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/diff-del-marker/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/diff-both-markers/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/diff-add-marker/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/class-mode-word-highlight/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/class-mode-combined/input.md formatted correctly
+✓ crates/zfb-md-extras/tests/fixtures/code_enrichment/both-features-combined/input.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/ruby.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/reading-time.mdx formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/mermaid.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/mdx-components-expressions.mdx formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/malformed-mdx-diagnostic.mdx formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/heading-links-toc.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/github-alerts.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/gfm-tables.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/frontmatter-variants.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/directives.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/code-tabs.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/code-enrichment.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/parity/input/cjk-emphasis.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/gfm-parity/input/task-list.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/gfm-parity/input/footnotes.md formatted correctly
+✓ crates/zfb-md-wasm/tests/fixtures/gfm-parity/input/footnotes-jsx.mdx formatted correctly
+✓ crates/zfb/templates/basic-blog/content/blog/styling-with-zudo-wind.md formatted correctly
+✓ crates/zfb/templates/basic-blog/content/blog/markdown-showcase.md formatted correctly
+✓ crates/zfb/templates/basic-blog/content/blog/hello-zfb.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/scanner-boundary-acceptance/content/index.mdx formatted correctly
+✓ crates/zfb/templates/node-free/content/posts/second.md formatted correctly
+✓ crates/zfb/templates/node-free/content/posts/hello.md formatted correctly
+✓ crates/zfb/tests/fixtures/zudo-react-build/md-mdx/pages/about.md formatted correctly
+✓ crates/zfb/tests/fixtures/scratch-dir-concurrent/content/posts/alpha.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/scratch-dir-concurrent/content/posts/__warmup.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/plugin-watch-hook-confirm/content/posts/seed.md formatted correctly
+✓ crates/zfb/tests/fixtures/dev-out-of-root-basic/shared-content/posts/beta.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-out-of-root-basic/shared-content/posts/alpha.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-out-of-root-basic/shared-content/posts/__warmup.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-loop-basic/content/posts/b.md formatted correctly
+✓ crates/zfb/tests/fixtures/dev-loop-basic/content/posts/a.md formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-reload-2063-outofroot/shared-content/posts/alpha.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-reload-2063-outofroot/shared-content/posts/__warmup.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-reload-2063-injected/shared-content/posts/alpha.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-reload-2063-injected/shared-content/posts/__warmup.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-reload-2063/content/posts/alpha.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-reload-2063/content/posts/__warmup.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-aggregate-cold-boot/content/posts/beta.md formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-aggregate-cold-boot/content/posts/alpha.md formatted correctly
+✓ crates/zfb/tests/fixtures/dev-content-aggregate-cold-boot/content/posts/__warmup.md formatted correctly
+✓ crates/zfb/tests/fixtures/collections-outside-root/shared-content/posts/notes.md formatted correctly
+✓ crates/zfb/tests/fixtures/collections-outside-root/shared-content/posts/hello.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/collection-static-getStaticProps/content/posts/hello.md formatted correctly
+✓ crates/zfb/tests/fixtures/check-tsc-fail/content/blog/post.md formatted correctly
+✓ crates/zfb/tests/fixtures/check-good/content/blog/post.md formatted correctly
+✓ crates/zfb/tests/fixtures/check-bad-schema/content/blog/ok.md formatted correctly
+✓ crates/zfb/tests/fixtures/check-bad-schema/content/blog/bad.md formatted correctly
+✓ crates/zfb/tests/fixtures/zudo-react-build/md-mdx/content/posts/entry.mdx formatted correctly
+✓ crates/zfb/tests/fixtures/dev-deletion-sequence/app/src/content/docs/seed.md formatted correctly
+✓ crates/zfb/tests/fixtures/collection-seeds-3133/workspace/packages/ui/src/components/button/button.mdx formatted correctly
+
+✓ All files are formatted correctly
+✅ format:check (4s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 19: MD/Wasm documentation size guard
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OK: 8 md-wasm documentation files match shipped-sizes.json
+✅ MD/Wasm documentation size guard (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 20: SSE endpoint literal guard
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OK: crates/zfb-server/src/embed.rs (allowed source home)
+OK: crates/zfb-server/src/lib.rs (allowed source home)
+OK: crates/zfb-server/src/livereload.rs (allowed source home)
+OK: crates/zfb-server/src/routes.rs (allowed source home)
+OK: crates/zfb-server/tests/embed_lifecycle_smoke.rs (allowlist: bounded Embed-mode 404 probe verifies that the SSE endpoint is not mounted; it does not subscribe to the stream)
+OK: crates/zfb-test-utils/src/sse_client.rs (allowed source home)
+PASS: "__zfb/reload" is confined to its two source homes and the reasoned allowlist (520 .rs file(s) scanned, 6 file(s) containing it).
+✅ SSE endpoint literal guard (0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 21: TypeScript typecheck (pnpm typecheck:workspace)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+$ pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --if-present typecheck
+packages/zfb-adapter-cloudflare typecheck$ tsc --noEmit && pnpm typecheck:consumer
+packages/zfb typecheck$ tsc --noEmit
+packages/zfb-adapter-cloudflare typecheck: $ tsc --project tsconfig.consumer.json --noEmit
+packages/zfb typecheck: Done
+packages/zfb-runtime typecheck$ tsc --noEmit
+packages/zfb-adapter-cloudflare typecheck: Done
+packages/zfb-runtime typecheck: Done
+✅ typecheck (1s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 22: JS test suites (pnpm test:workspace)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+$ pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test
+Scope: 11 of 12 workspace projects
+. test$ vp test run
+docs test$ vp test run
+packages/zfb test$ vp test run && tsc -p tsconfig.zudo-react-fixture.json && tsc -p tsconfig.zudo-react-dev-fixture.json && tsc -p tsconfig.zudo-react-sdk-fixture.json
+packages/zfb-adapter-cloudflare test$ pnpm typecheck:consumer && vp test run && pnpm test:packed-types
+packages/zfb-adapter-cloudflare test: $ tsc --project tsconfig.consumer.json --noEmit
+. test: 
+. test:  RUN  v5.0.1 /workspace/zudo-front-builder
+. test: 
+docs test: 
+docs test:  RUN  v5.0.1 /workspace/zudo-front-builder/docs
+docs test: 
+packages/zfb test: 
+packages/zfb test:  RUN  v5.0.1 /workspace/zudo-front-builder/packages/zfb
+packages/zfb test: 
+packages/zfb-adapter-cloudflare test: 
+packages/zfb-adapter-cloudflare test:  RUN  v5.0.1 /workspace/zudo-front-builder/packages/zfb-adapter-cloudflare
+packages/zfb-adapter-cloudflare test: 
+docs test: 
+docs test:  Test Files  5 passed (5)
+docs test:       Tests  28 passed (28)
+docs test:    Start at  15:00:59
+docs test:    Duration  1.07s (transform 55%, import 33%, tests 8%, worker 4%)
+docs test: 
+docs test: Done
+. test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-OObGWn/v1.0.0.mdx: invalid sidebar_position (missing field)
+. test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-TJnSt0/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "not-a-number")
+. test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-FwBo8S/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "2.5")
+packages/zfb-adapter-cloudflare test: 
+packages/zfb-adapter-cloudflare test:  Test Files  5 passed (5)
+packages/zfb-adapter-cloudflare test:       Tests  40 passed (40)
+packages/zfb-adapter-cloudflare test:    Start at  15:01:00
+packages/zfb-adapter-cloudflare test:    Duration  1.59s (tests 64%, transform 22%, import 11%, worker 2%)
+packages/zfb-adapter-cloudflare test: 
+. test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-0ohdfZ/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "0")
+. test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-Xh1IEv/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "-1")
+packages/zfb-adapter-cloudflare test: $ pnpm build && node scripts/check-packed-types.mjs
+packages/zfb-adapter-cloudflare test: $ tsc && cp src/worker-wrapper.mjs dist/worker-wrapper.mjs && cp src/emit-worker.mjs dist/emit-worker.mjs
+packages/zfb-adapter-cloudflare test: Packed adapter consumer declarations passed strict tsc 7.0.2.
+packages/zfb-adapter-cloudflare test: Packed adapter consumer declarations passed strict tsc 6.0.3.
+. test: $ node print-argv.mjs --allow-over-ceiling
+. test: $ node print-argv.mjs
+packages/zfb-adapter-cloudflare test: Packed adapter consumer declarations passed strict tsc 5.9.3.
+packages/zfb-adapter-cloudflare test: Done
+packages/zfb test: 
+packages/zfb test:  Test Files  50 passed (50)
+packages/zfb test:       Tests  812 passed (812)
+packages/zfb test:    Start at  15:00:59
+packages/zfb test:    Duration  10.49s (environment 63%, tests 13%, transform 12%, import 9%, worker 2%)
+packages/zfb test: 
+packages/zfb test: Environment  happy-dom was created 50 times · 13.66s total, 63% of tracked time
+packages/zfb test:              create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+packages/zfb test:              learn more: https://vitest.dev/guide/improving-performance#test-environments
+packages/zfb test: 
+packages/zfb test: Done
+packages/create-zfb test$ vp test run
+packages/zfb-runtime test$ vp test run
+packages/zfb-runtime test: 
+packages/zfb-runtime test:  RUN  v5.0.1 /workspace/zudo-front-builder/packages/zfb-runtime
+packages/zfb-runtime test: 
+packages/create-zfb test: 
+packages/create-zfb test:  RUN  v5.0.1 /workspace/zudo-front-builder/packages/create-zfb
+packages/create-zfb test: 
+packages/create-zfb test: 
+packages/create-zfb test:  Test Files  2 passed (2)
+packages/create-zfb test:       Tests  24 passed (24)
+packages/create-zfb test:    Start at  15:01:11
+packages/create-zfb test:    Duration  267ms (transform 40%, tests 32%, import 23%, worker 5%)
+packages/create-zfb test: 
+packages/create-zfb test: Done
+packages/zfb-runtime test: 
+packages/zfb-runtime test:  Test Files  17 passed (17)
+packages/zfb-runtime test:       Tests  306 passed (306)
+packages/zfb-runtime test:    Start at  15:01:11
+packages/zfb-runtime test:    Duration  2.59s (environment 51%, tests 20%, transform 18%, import 9%, worker 2%)
+packages/zfb-runtime test: 
+packages/zfb-runtime test:     Isolate  17 workers spawned · ~285ms startup each (spawn + environment, per file)
+packages/zfb-runtime test:              at least ~1.33s faster with isolate: false — reuses workers across files instead of one per file
+packages/zfb-runtime test: 
+packages/zfb-runtime test: Done
+. test:  ❯ |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs (6 tests | 3 failed) 27122ms
+. test:    ❯ docs dev supervisor (6)
+. test:      ❯ supervisor process behaviour (5)
+. test:        × aborts every sibling when a task exits non-zero 16420ms
+. test:        × reaps the whole descendant tree when cleanup runs before any UP line 5410ms
+. test:        × reports outcome=failed and reaps descendants for an unrelated hidden-case error (throw after supervisor exit) 5156ms
+. test: 
+. test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+. test: 
+. test:  FAIL  |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs > docs dev supervisor > supervisor process behaviour > aborts every sibling when a task exits non-zero
+. test: Error: Timed out waiting for sibling-death after 16000ms
+. test: --- supervisor diagnostics ---
+. test: awaiting: sibling-death   elapsed: 16360ms   deadline: 16000ms
+. test: INPUT (captured before spawn)
+. test:   argv: /opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node /workspace/zudo-front-builder/docs/node_modules/@takazudo/zudo-doc/bin/run-parallel.mjs up boom
+. test:   cwd: /tmp/zfb-run-parallel-PyJyom
+. test:   node: v24.19.0
+. test:   runner run-parallel will resolve: pnpm -> /home/agent/.local/share/vite-plus/package_manager/pnpm/12.8.2/pnpm/bin/pnpm
+. test:   npm_execpath vitest itself was launched with: /home/agent/.cache/node/corepack/v1/pnpm/12.8.2/pnpm-native
+. test:   @takazudo/zudo-doc: 5.27.0
+. test:   run-parallel.mjs: 11115 bytes sha256:646f90cc300185cb
+. test:   env: npm_execpath=<unset> npm_config_user_agent=pnpm/11.3.0 node/24.19.0 linux/x64 NODE_OPTIONS=<unset> NODE_ENV=test CI=<unset> PNPM_HOME=<unset> TMPDIR=<unset> VITEST_POOL_ID=3 VITEST_WORKER_ID=30 TINYPOOL_WORKER_ID=<unset>
+. test:   env identity (steering keys; = timeline env=): v1:sha256:8b627240894b83e0 over 7 keys
+. test:   env digest (full environment): sha256:eaab7107cc2e2b88 over 97 vars (2 volatile excluded)
+. test:   fixture package.json: sha256:9c0ba04984ae482e (path-independent shape sha256:2d146d48587c00f5)
+. test:     {
+. test:       "name": "run-parallel-fixture",
+. test:       "private": true,
+. test:       "scripts": {
+. test:         "up": "node -e 'const http = require(\"node:http\"); const fs = require(\"node:fs\"); const server = http.createServer(); server.listen(0, () => { const { port } = server.address(); fs.writeFileSync(\"/tmp/zfb-run-parallel-PyJyom/up.ready\", String(port)); console.log(\"UP up\", port, \"pid=\" + process.pid); }); setInterval(() => {}, 1000);'",
+. test:         "up2": "node -e 'const http = require(\"node:http\"); const fs = require(\"node:fs\"); const server = http.createServer(); server.listen(0, () => { const { port } = server.address();  console.log(\"UP up2\", port, \"pid=\" + process.pid); }); setInterval(() => {}, 1000);'",
+. test:         "boom": "node -e 'const fs = require(\"node:fs\"); const marker = \"/tmp/zfb-run-parallel-PyJyom/up.ready\"; const check = () => { if (fs.existsSync(marker)) process.exit(3); }; const watcher = fs.watch(\"/tmp/zfb-run-parallel-PyJyom\", check); check(); watcher.on(\"error\", () => process.exit(1));'",
+. test:         "hidden": "node -e 'const fs = require(\"node:fs\"); fs.writeFileSync(\"/tmp/zfb-run-parallel-PyJyom/hidden.pid\", String(process.pid)); setInterval(() => {}, 1000);'"
+. test:       }
+. test:     }
+. test: TIMELINE (ms from spawn)
+. test:   supervisor-spawned: 4
+. test:   first-stderr-byte: 156
+. test:   first-stdout-byte: 278
+. test:   first-up-line: 279
+. test:   marker-file-created: 279
+. test:   supervisor-error-line: 312
+. test:   supervisor-closed: 349
+. test: LIVENESS
+. test:   supervisor: pid=34857 alive=false exitCode=3 signalCode=null
+. test:   children: pid=34959 alive=true
+. test: SUPERVISOR STDOUT (last 1500 chars)
+. test:     UP up 44399 pid=34959
+. test: SUPERVISOR STDERR (last 1500 chars)
+. test:     $ node -e 'const http = require("node:http"); const fs = require("node:fs"); const server = http.createServer(); server.listen(0, () => { const { port } = server.address(); fs.writeFileSync("/tmp/zfb-run-parallel-PyJyom/up.ready", String(port)); console.log("UP up", port, "pid=" + process.pid); }); setInterval(() => {}, 1000);'
+. test:     $ node -e 'const fs = require("node:fs"); const marker = "/tmp/zfb-run-parallel-PyJyom/up.ready"; const check = () => { if (fs.existsSync(marker)) process.exit(3); }; const watcher = fs.watch("/tmp/zfb-run-parallel-PyJyom", check); check(); watcher.on("error", () => process.exit(1));'
+. test:     [ELIFECYCLE] Command failed with exit code 3.
+. test:     ERROR: "boom" exited with 3.
+. test:     [ELIFECYCLE] Command failed with signal SIGTERM.
+. test: --- end supervisor diagnostics ---
+. test:  ❯ waitUntil scripts/__tests__/docs-dev-supervisor.test.mjs:554:13
+. test:     552|   while (!predicate()) {
+. test:     553|     if (Date.now() >= deadline) {
+. test:     554|       throw new Error(
+. test:        |             ^
+. test:     555|         `Timed out waiting for ${label} after ${timeoutMs}ms\n${diagno…
+. test:     556|       );
+. test:  ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:853:9
+. test:  ❯ withSupervisor scripts/__tests__/docs-dev-supervisor.test.mjs:797:5
+. test:  ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:842:7
+. test: 
+. test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+. test: 
+. test:  FAIL  |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs > docs dev supervisor > supervisor process behaviour > reaps the whole descendant tree when cleanup runs before any UP line
+. test: AssertionError: expected [ 36075, 36095, 36097, 36096 ] to deeply equal []
+. test: 
+. test: - Expected
+. test: + Received
+. test: 
+. test: - []
+. test: + [
+. test: +   36075,
+. test: +   36095,
+. test: +   36097,
+. test: +   36096,
+. test: + ]
+. test: 
+. test:  ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:927:25
+. test:     925|
+. test:     926|       const survivors = await waitForAllGone([...new Set([...observed.…
+. test:     927|       expect(survivors).toEqual([]);
+. test:        |                         ^
+. test:     928|     });
+. test:     929|
+. test: 
+. test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+. test: 
+. test:  FAIL  |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs > docs dev supervisor > supervisor process behaviour > reports outcome=failed and reaps descendants for an unrelated hidden-case error (throw after supervisor exit)
+. test: AssertionError: expected [ 36112, 36132, 36134, 36133, -36105 ] to deeply equal []
+. test: 
+. test: - Expected
+. test: + Received
+. test: 
+. test: - []
+. test: + [
+. test: +   36112,
+. test: +   36132,
+. test: +   36134,
+. test: +   36133,
+. test: +   -36105,
+. test: + ]
+. test: 
+. test:  ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:1006:27
+. test:     1004|           -observed.supervisor.processGroupId,
+. test:     1005|         ]);
+. test:     1006|         expect(survivors).toEqual([]);
+. test:        |                           ^
+. test:     1007|       },
+. test:     1008|     );
+. test: 
+. test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+. test: 
+. test: 
+. test:  Test Files  1 failed | 32 passed (33)
+. test:       Tests  3 failed | 592 passed (595)
+. test:    Start at  15:00:59
+. test:    Duration  33.34s (tests 90%, transform 5%, import 5%, worker 1%)
+. test: 
+. test:     Isolate  33 workers spawned · ~223ms startup each (spawn + environment, per file)
+. test:              at least ~2.23s faster with isolate: false — reuses workers across files instead of one per file
+. test: 
+. test: Failed
+[ELIFECYCLE] Test failed. See above for more details.
+Error: ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL
+
+  × "pnpm recursive run" failed in /workspace/zudo-front-builder
+
+[ELIFECYCLE] Command failed with exit code 1.
+❌ JS tests (35s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 23: Rust lint (cargo clippy -D warnings)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Downloading crates ...
+  Downloaded tracing-test-macro v0.2.6
+  Downloaded tracing-test v0.2.6
+  Downloaded string_cache_codegen v0.5.4
+  Downloaded mac v0.1.1
+  Downloaded wasm-bindgen-macro v0.2.121
+  Downloaded xml5ever v0.18.1
+  Downloaded markup5ever v0.12.1
+  Downloaded sharded-slab v0.1.7
+  Downloaded thread_local v1.1.9
+  Downloaded markup5ever_rcdom v0.3.0
+  Downloaded wasm-bindgen-shared v0.2.121
+  Downloaded matchers v0.2.0
+  Downloaded fancy-regex v0.16.2
+  Downloaded futf v0.1.5
+  Downloaded utf-8 v0.7.6
+  Downloaded tendril v0.4.3
+  Downloaded nu-ansi-term v0.50.3
+  Downloaded string_cache v0.8.9
+  Downloaded tracing-log v0.2.0
+  Downloaded wasm-bindgen-macro-support v0.2.121
+  Downloaded html5ever v0.27.0
+  Downloaded wasm-bindgen v0.2.121
+  Downloaded tracing-subscriber v0.3.23
+    Checking cfg-if v1.0.4
+    Checking libc v0.2.186
+    Checking serde_core v1.0.228
+    Checking itoa v1.0.18
+    Checking allocator-api2 v0.2.21
+    Checking memchr v2.8.0
+    Checking equivalent v1.0.2
+    Checking foldhash v0.2.0
+    Checking smallvec v1.15.1
+    Checking log v0.4.29
+    Checking once_cell v1.21.4
+    Checking bitflags v2.11.1
+    Checking hashbrown v0.17.1
+    Checking zmij v1.0.21
+    Checking scopeguard v1.2.0
+    Checking lock_api v0.4.14
+    Checking parking_lot_core v0.9.12
+    Checking siphasher v1.0.3
+    Checking rustc-hash v2.1.2
+    Checking pin-project-lite v0.2.17
+    Checking stable_deref_trait v1.2.1
+    Checking phf_shared v0.11.3
+    Checking unicode-id-start v1.4.0
+    Checking getrandom v0.3.4
+    Checking zerocopy v0.8.48
+    Checking phf v0.11.3
+    Checking zerofrom v0.1.8
+    Checking percent-encoding v2.3.2
+    Checking yoke v0.8.2
+    Checking either v1.15.0
+    Checking zerovec v0.11.6
+    Checking writeable v0.6.3
+    Checking bytes v1.11.1
+    Checking serde v1.0.228
+    Checking indexmap v2.14.0
+    Checking parking_lot v0.12.5
+    Checking same-file v1.0.6
+    Checking data-encoding v2.11.0
+    Checking walkdir v2.5.0
+    Checking tinystr v0.8.3
+    Checking potential_utf v0.1.5
+    Checking litemap v0.8.2
+    Checking serde_json v1.0.149
+    Checking tracing-core v0.1.36
+    Checking icu_locale_core v2.2.0
+    Checking zerotrie v0.2.4
+    Checking tracing v0.1.44
+    Checking aho-corasick v1.1.4
+    Checking utf8_iter v1.0.4
+    Checking icu_provider v2.2.0
+    Checking icu_collections v2.2.0
+    Checking linux-raw-sys v0.12.1
+    Checking regex-syntax v0.8.10
+    Checking ryu v1.0.23
+    Checking rustix v1.1.4
+    Checking getrandom v0.4.2
+    Checking fastrand v2.4.1
+    Checking thiserror v2.0.18
+    Checking icu_normalizer_data v2.2.0
+    Checking icu_properties_data v2.2.0
+    Checking icu_properties v2.2.0
+    Checking ahash v0.8.12
+    Checking hashbrown v0.14.5
+    Checking regex-automata v0.4.14
+    Checking tempfile v3.27.0
+    Checking icu_normalizer v2.2.0
+    Checking form_urlencoded v1.2.2
+    Checking new_debug_unreachable v1.0.6
+    Checking num-traits v0.2.19
+    Checking bstr v1.12.1
+    Checking idna_adapter v1.2.2
+    Checking idna v1.1.0
+    Checking typenum v1.20.0
+    Checking url v2.5.8
+    Checking unicode-width v0.2.2
+    Checking anyhow v1.0.103
+    Checking static_assertions v1.1.0
+    Checking castaway v0.2.4
+    Checking cpufeatures v0.2.17
+    Checking rand_core v0.6.4
+    Checking num-integer v0.1.46
+    Checking generic-array v0.14.7
+    Checking rand v0.8.6
+    Checking base64 v0.22.1
+    Checking vsimd v0.8.0
+    Checking num-bigint v0.4.6
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking outref v0.5.2
+    Checking digest v0.10.7
+    Checking base64-simd v0.8.0
+    Checking getrandom v0.2.17
+    Checking bumpalo v3.19.0
+    Checking sha2 v0.10.9
+    Checking tap v1.0.1
+    Checking wyz v0.5.1
+    Checking radium v0.7.0
+    Checking globset v0.4.18
+    Checking uuid v1.23.1
+    Checking funty v2.0.0
+    Checking if_chain v1.0.3
+    Checking triomphe v0.1.15
+    Checking debugid v0.8.0
+    Checking bytes-str v0.2.7
+    Checking libm v0.2.16
+    Checking hex v0.4.3
+    Checking hstr v4.0.2
+    Checking bitvec v1.0.1
+    Checking scoped-tls v1.0.1
+    Checking better_scoped_tls v1.0.1
+    Checking swc_atoms v10.0.0
+    Checking swc_visit v2.0.1
+    Checking siphasher v0.3.11
+    Checking zfb-types v0.0.0 (/workspace/zudo-front-builder/crates/zfb-types)
+    Checking simd-adler32 v0.3.9
+    Checking adler2 v2.0.1
+    Checking miniz_oxide v0.8.9
+    Checking dragonbox_ecma v0.1.12
+    Checking crc32fast v1.5.0
+    Checking sha1 v0.10.6
+    Checking compact_str v0.7.1
+    Checking num_cpus v1.17.0
+    Checking par-core v2.0.0
+    Checking flate2 v1.1.9
+    Checking bit-vec v0.8.0
+    Checking unicode-id v0.3.6
+    Checking powerfmt v0.2.0
+    Checking markdown v1.0.0
+    Checking bit-set v0.8.0
+    Checking deranged v0.5.8
+    Checking swc_config v5.0.0
+    Checking time-core v0.1.8
+    Checking num-conv v0.2.1
+    Checking onig_sys v69.9.3
+    Checking regex v1.12.3
+    Checking swc_allocator v5.0.0
+    Checking bincode v1.3.3
+    Checking quick-xml v0.41.0
+    Checking swc_sourcemap v10.0.2
+    Checking time v0.3.47
+    Checking ascii v1.1.0
+    Checking swc_common v24.0.0
+    Checking onig v6.5.3
+    Checking zfb-md-ast v0.0.0 (/workspace/zudo-front-builder/crates/zfb-md-ast)
+    Checking noyalib v0.0.44
+    Checking plist v1.10.0
+    Checking fancy-regex v0.16.2
+    Checking swc_ecma_ast v26.0.0
+    Checking compact_str v0.8.1
+    Checking imagesize v0.14.0
+    Checking roxmltree v0.20.0
+    Checking fnv v1.0.7
+    Checking syntect v5.3.0
+    Checking zfb-md-extras v0.0.0 (/workspace/zudo-front-builder/crates/zfb-md-extras)
+    Checking garde v0.22.1
+    Checking unicode-general-category v1.1.0
+    Checking noyalib-serde-yaml v0.0.44
+    Checking html-escape v0.2.14
+    Checking precomputed-hash v0.1.1
+    Checking mio v1.2.0
+    Checking errno v0.3.14
+    Checking signal-hook-registry v1.4.8
+    Checking socket2 v0.6.3
+    Checking futures-core v0.3.32
+    Checking futures-sink v0.3.32
+    Checking futures-task v0.3.32
+    Checking futures-channel v0.3.32
+    Checking slab v0.4.12
+    Checking tokio v1.52.3
+    Checking futures-io v0.3.32
+    Checking http v1.4.0
+    Checking futures-util v0.3.32
+    Checking dtoa v1.0.11
+    Checking dtoa-short v0.3.5
+    Checking crossbeam-utils v0.8.21
+    Checking crossbeam-epoch v0.9.20
+    Checking http-body v1.0.1
+    Checking crossbeam-deque v0.8.6
+    Checking swc_ecma_visit v26.0.0
+    Checking swc_ecma_parser v42.0.0
+    Checking httparse v1.10.1
+    Checking zeroize v1.8.2
+    Checking tower-service v0.3.3
+    Checking rustls-pki-types v1.14.1
+    Checking untrusted v0.9.0
+    Checking httpdate v1.0.3
+    Checking try-lock v0.2.5
+    Checking mime v0.3.17
+    Checking want v0.3.1
+    Checking ring v0.17.14
+    Checking sync_wrapper v1.0.2
+    Checking atomic-waker v1.1.2
+    Checking tower-layer v0.3.3
+    Checking hyper v1.9.0
+    Checking rustls-webpki v0.103.15
+    Checking swc_ecma_utils v32.0.0
+    Checking swc_ecma_hooks v0.10.0
+    Checking http-body-util v0.1.3
+    Checking ipnet v2.12.0
+    Checking swc_ecma_codegen v29.0.0
+    Checking subtle v2.6.1
+    Checking rustls v0.23.45
+    Checking hyper-util v0.1.20
+    Checking tower v0.5.3
+    Checking tokio-util v0.7.18
+    Checking unicase v2.9.0
+    Checking mime_guess v2.0.5
+    Checking swc_ecma_transforms_base v46.0.1
+    Checking webpki-roots v1.0.7
+    Checking ignore v0.4.25
+    Checking serde_urlencoded v0.7.1
+    Checking http-range-header v0.4.2
+    Checking tokio-rustls v0.26.4
+    Checking tower-http v0.6.10
+    Checking core_maths v0.1.1
+    Checking calendrical_calculations v0.2.4
+    Checking hyper-rustls v0.27.9
+    Checking icu_locale_data v2.2.0
+    Checking swc_ecma_transforms_react v52.0.0
+    Checking resb v0.1.2
+    Checking icu_locale v2.2.0
+    Checking zoneinfo64 v0.3.0
+    Checking icu_calendar_data v2.2.0
+    Checking timezone_provider v0.2.3
+    Checking swc_ecma_transforms_typescript v52.0.0
+    Checking reqwest v0.12.28
+    Checking ixdtf v0.6.5
+    Checking icu_calendar v2.2.1
+    Checking deno_error v0.7.1
+    Checking swc_core v74.0.2
+    Checking diplomat-runtime v0.15.1
+    Checking zfb-content v0.0.0 (/workspace/zudo-front-builder/crates/zfb-content)
+   Compiling phf_generator v0.13.1
+    Checking sys_traits v0.1.27
+    Checking futures-executor v0.3.32
+    Checking capacity_builder v0.5.0
+    Checking futures v0.3.32
+    Checking pin-project v1.1.12
+    Checking deno_path_util v0.6.4
+    Checking wasm_dep_analyzer v0.4.0
+    Checking deno_unsync v0.4.4
+    Checking sourcemap v9.3.2
+    Checking deno_core_icudata v0.77.0
+    Checking inventory v0.3.24
+    Checking cooked-waker v5.0.0
+    Checking az v1.3.0
+    Checking temporal_rs v0.2.3
+   Compiling phf_macros v0.13.1
+    Checking phf_shared v0.13.1
+    Checking hashbrown v0.16.1
+    Checking temporal_capi v0.2.3
+    Checking phf v0.13.1
+    Checking lazy_static v1.5.0
+    Checking ahash v0.7.8
+   Compiling string_cache_codegen v0.5.4
+    Checking mac v0.1.1
+    Checking outref v0.1.0
+    Checking simd-abstraction v0.7.1
+    Checking futf v0.1.5
+    Checking hashbrown v0.12.3
+    Checking ptr_meta v0.1.4
+    Checking cssparser v0.33.0
+   Compiling markup5ever v0.12.1
+    Checking v8 v147.4.0
+    Checking matches v0.1.10
+    Checking seahash v4.1.0
+    Checking utf-8 v0.7.6
+    Checking rkyv v0.7.46
+    Checking tendril v0.4.3
+    Checking data-url v0.1.1
+    Checking base64-simd v0.7.0
+    Checking rayon-core v1.13.0
+    Checking string_cache v0.8.9
+    Checking compact_str v0.9.0
+    Checking vlq v0.5.1
+    Checking rayon v1.12.0
+    Checking parcel_sourcemap v2.1.1
+    Checking const-str v0.3.2
+    Checking parcel_selectors v0.28.2
+    Checking cssparser-color v0.1.0
+    Checking serde_v8 v0.308.0
+    Checking dashmap v5.5.3
+    Checking deno_core v0.399.0
+    Checking serde-content v0.1.2
+    Checking itertools v0.10.5
+   Compiling html5ever v0.27.0
+    Checking pathdiff v0.2.3
+    Checking xml5ever v0.18.1
+    Checking inotify-sys v0.1.5
+    Checking inotify v0.11.1
+    Checking notify-types v2.1.0
+    Checking lightningcss v1.0.0-alpha.71
+    Checking notify v8.2.0
+    Checking unty v0.0.4
+    Checking bincode v2.0.1
+    Checking markup5ever_rcdom v0.3.0
+    Checking zfb-test-utils v0.0.0 (/workspace/zudo-front-builder/crates/zfb-test-utils)
+    Checking zfb-watcher v0.0.0 (/workspace/zudo-front-builder/crates/zfb-watcher)
+   Compiling phf_codegen v0.13.1
+    Checking self_cell v1.2.2
+   Compiling selectors v0.37.0
+    Checking zfb-graph v0.0.0 (/workspace/zudo-front-builder/crates/zfb-graph)
+    Checking derive_more v2.1.1
+    Checking cssparser v0.36.0
+    Checking servo_arc v0.4.3
+    Checking encoding_rs v0.8.35
+    Checking halfbrown v0.4.0
+    Checking lol_html v2.9.0
+    Checking zfb-plugin-resolver v0.0.0 (/workspace/zudo-front-builder/crates/zfb-plugin-resolver)
+    Checking float-cmp v0.10.0
+    Checking wait-timeout v0.2.1
+    Checking zfb-toolchain-pins v0.0.0 (/workspace/zudo-front-builder/crates/zfb-toolchain-pins)
+    Checking ref-cast v1.0.25
+    Checking value-trait v0.12.1
+    Checking seize v0.5.1
+    Checking zfb-render v0.0.0 (/workspace/zudo-front-builder/crates/zfb-render)
+    Checking simdutf8 v0.1.5
+    Checking arrayvec v0.7.6
+    Checking simd-json v0.17.0
+    Checking fast-glob v1.0.1
+    Checking papaya v0.2.4
+    Checking json-strip-comments v3.1.1
+    Checking nodejs-built-in-modules v1.0.0
+    Checking zfb-router v0.0.0 (/workspace/zudo-front-builder/crates/zfb-router)
+    Checking oxc_resolver v11.19.1
+    Checking is_ci v1.2.0
+    Checking is-terminal v0.4.17
+    Checking supports-color v2.1.0
+    Checking supports-color v3.0.2
+    Checking ppv-lite86 v0.2.21
+    Checking zfb-build v0.0.0 (/workspace/zudo-front-builder/crates/zfb-build)
+    Checking rand_core v0.9.5
+    Checking rand_chacha v0.9.0
+    Checking owo-colors v4.3.0
+    Checking rand v0.9.4
+    Checking unicode-linebreak v0.1.5
+    Checking smawk v0.3.3
+    Checking tungstenite v0.29.0
+    Checking textwrap v0.16.2
+    Checking unicode-segmentation v1.13.2
+    Checking tokio-tungstenite v0.29.0
+    Checking oxc-miette v2.7.1
+    Checking axum-core v0.5.6
+    Checking serde_path_to_error v0.1.20
+    Checking matchit v0.8.4
+    Checking oxc_data_structures v0.95.0
+    Checking oxc_allocator v0.95.0
+    Checking tokio-stream v0.1.18
+    Checking axum v0.8.9
+    Checking oxc_estree v0.95.0
+    Checking cow-utils v0.1.3
+    Checking oxc_span v0.95.0
+    Checking nonmax v0.5.5
+    Checking oxc_index v4.1.0
+    Checking dragonbox_ecma v0.0.5
+    Checking oxc_syntax v0.95.0
+    Checking oxc_diagnostics v0.95.0
+    Checking oxc_regular_expression v0.95.0
+    Checking oxc_ast v0.95.0
+    Checking zfb-islands v0.0.0 (/workspace/zudo-front-builder/crates/zfb-islands)
+    Checking zfb-config-loader v0.0.0 (/workspace/zudo-front-builder/crates/zfb-config-loader)
+    Checking itertools v0.14.0
+    Checking zfb-server v0.0.0 (/workspace/zudo-front-builder/crates/zfb-server)
+    Checking zudo-wind v0.0.0 (/workspace/zudo-front-builder/crates/zudo-wind)
+    Checking cobs v0.3.0
+    Checking postcard v1.1.3
+    Checking json-escape-simd v3.1.0
+    Checking utf8parse v0.2.2
+    Checking anstyle-parse v1.0.0
+    Checking oxc-browserslist v2.3.1
+    Checking oxc_sourcemap v6.1.1
+   Compiling xattr v1.6.1
+    Checking anstyle v1.0.14
+    Checking colorchoice v1.0.5
+    Checking zfb-css v0.0.0 (/workspace/zudo-front-builder/crates/zfb-css)
+    Checking anstyle-query v1.1.5
+    Checking is_terminal_polyfill v1.70.2
+    Checking oxc_compat v0.95.0
+    Checking anstream v1.0.0
+   Compiling tar v0.4.45
+    Checking derive_builder v0.20.2
+   Compiling zfb-binfetch v0.0.0 (/workspace/zudo-front-builder/crates/zfb-binfetch)
+    Checking oxc_ecmascript v0.95.0
+    Checking oxc_ast_visit v0.95.0
+    Checking strsim v0.11.1
+    Checking clap_lex v1.1.0
+    Checking oxc_parser v0.95.0
+    Checking byteorder v1.5.0
+   Compiling zfb v0.0.0 (/workspace/zudo-front-builder/crates/zfb)
+    Checking oxc_semantic v0.95.0
+    Checking neli v0.7.4
+    Checking oxc_codegen v0.95.0
+    Checking oxc_mangler v0.95.0
+    Checking oxc_traverse v0.95.0
+    Checking clap_builder v4.6.0
+    Checking minify-html-common v0.0.3
+    Checking include_dir v0.7.4
+    Checking local-ip-address v0.6.13
+warning: zfb@0.0.0: ZFB_ESBUILD_BIN is set — staging `/tmp/zfb-esbuild/package/bin/esbuild` directly into the vendor snapshot. SHA-256 pinning is skipped for override binaries; verifying the binary is the operator's responsibility (see BUILDING.md).
+    Checking zfb-diagnostics v0.0.0 (/workspace/zudo-front-builder/crates/zfb-diagnostics)
+    Checking sharded-slab v0.1.7
+    Checking matchers v0.2.0
+    Checking tracing-log v0.2.0
+    Checking clap v4.6.1
+    Checking thread_local v1.1.9
+    Checking nu-ansi-term v0.50.3
+   Compiling tracing-test-macro v0.2.6
+    Checking tracing-subscriber v0.3.23
+    Checking oxc_minifier v0.95.0
+   Compiling wasm-bindgen-shared v0.2.121
+   Compiling wasm-bindgen-macro-support v0.2.121
+    Checking tracing-test v0.2.6
+   Compiling wasm-bindgen v0.2.121
+    Checking unicode-ident v1.0.24
+   Compiling zfb-md-wasm v0.0.0 (/workspace/zudo-front-builder/crates/zfb-md-wasm)
+   Compiling wasm-bindgen-macro v0.2.121
+    Checking minify-html v0.18.1
+    Finished `dev` profile [unoptimized] target(s) in 1m 21s
+✅ clippy (82s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 24: Syntect syntax-set.packdump freshness gate
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  Syntect syntax-set.packdump freshness gate (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 25: Full Rust test suite (cargo test --workspace)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  cargo test --workspace (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 26: zfb-md-extras test-utils suite (cargo test -p zfb-md-extras --features test-utils)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  zfb-md-extras test-utils suite (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 27: zfb-md-extras test-utils lint (cargo clippy -p zfb-md-extras --features test-utils)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  zfb-md-extras test-utils lint (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 28: No-V8 cargo check (cargo check --no-default-features -p zfb --tests)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  No-V8 cargo check (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 29: zfb-islands esbuild env-gate suite (cargo test -p zfb-islands --tests -- --ignored)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  zfb-islands esbuild env-gate suite (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 30: zfb client-bundling cross-pipeline acceptance test
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  zfb client-bundling cross-pipeline acceptance test (set B4PUSH_FULL=1 to run; CI runs it on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▶ Step 31: zfb command-layer env-gates (cargo test -p zfb --lib commands::build:: -- --ignored)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏭  zfb command-layer env-gates (set B4PUSH_FULL=1 to run; CI runs them on every PR) (skipped, 0s)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  b4push SUMMARY (146s)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Step durations:
+   0     s  Shell-script syntax check (bash -n)
+   11    s  Offline shell unit test: check-exam-ignore-parity.sh
+   0     s  Offline shell unit test: check-sse-endpoint.sh
+   0     s  Offline shell unit test: file-exam-issue.sh
+   0     s  Offline shell unit test: install-default-version.sh
+   0     s  Offline shell unit test: install-prerelease.sh
+   0     s  Offline shell unit test: pnpm-audit-with-retry.sh
+   0     s  Offline shell unit test: prune-actions-cache.sh
+   9     s  Offline shell unit test: publish-npm-packages.sh
+   0     s  Offline shell unit test: release-binary-slot-restore.sh
+   0     s  Offline shell unit test: report-flaky-tests.sh
+   1     s  Offline shell unit test: run-b4push-dispatch.sh
+   0     s  Offline shell unit test: smoke-packed-clean-room-dist-out.sh
+   0     s  Offline shell unit test: sum-junit-times.sh
+   0     s  Offline shell unit test: update-homebrew-formula.sh
+   0     s  Dead-dependency check (cargo-machete)
+   3     s  Rust formatting (cargo fmt --check)
+   4     s  JS/MDX formatting (pnpm format:check)
+   0     s  MD/Wasm documentation size guard
+   0     s  SSE endpoint literal guard
+   1     s  TypeScript typecheck (pnpm typecheck:workspace)
+   35    s  JS test suites (pnpm test:workspace)
+   82    s  Rust lint (cargo clippy -D warnings)
+   0     s  Syntect syntax-set.packdump freshness gate
+   0     s  Full Rust test suite (cargo test --workspace)
+   0     s  zfb-md-extras test-utils suite (cargo test -p zfb-md-extras --features test-utils)
+   0     s  zfb-md-extras test-utils lint (cargo clippy -p zfb-md-extras --features test-utils)
+   0     s  No-V8 cargo check (cargo check --no-default-features -p zfb --tests)
+   0     s  zfb-islands esbuild env-gate suite (cargo test -p zfb-islands --tests -- --ignored)
+   0     s  zfb client-bundling cross-pipeline acceptance test
+   0     s  zfb command-layer env-gates (cargo test -p zfb --lib commands::build:: -- --ignored)
+
+❌ 1 check(s) failed:
+   - JS tests

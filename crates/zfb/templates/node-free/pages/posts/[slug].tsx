@@ -40,15 +40,17 @@ export default function PostPage({ post }: Props) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{post.data.title} · node-free · zfb</title>
       </head>
-      <body>
+      <body class="font-ui text-body bg-background text-ink">
         <p>
           <a href="/">← Home</a>
         </p>
-        <article>
-          <h1>{post.data.title}</h1>
+        <article class="bg-surface border border-border rounded-panel px-hsp-card py-vsp-stack max-w-reading">
+          <h1 class="font-display text-heading font-strong">{post.data.title}</h1>
           {post.data.date ? (
             <p>
-              <time datetime={post.data.date}>{post.data.date}</time>
+              <time datetime={post.data.date} class="text-caption text-muted">
+                {post.data.date}
+              </time>
             </p>
           ) : null}
           {/*

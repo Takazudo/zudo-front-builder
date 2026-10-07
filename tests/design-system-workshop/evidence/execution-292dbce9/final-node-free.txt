@@ -1,0 +1,34 @@
+==> zfb new my-site --template node-free (cwd: /tmp)
+✓ Created my-site (template: node-free). Next: cd my-site && zfb dev
+[PASS] scaffold
+[PASS] page fixtures written
+==> zfb build (cwd: /tmp/my-site)
+info no SDK Island boundary targets found; skipping islands bundle (no islands asset will be emitted)
+✓ 5 pages built in 0.33s
+[PASS] dist/index.html exists
+[PASS] dist/index.html contains expected content
+[PASS] dist/index.html lists the seed post
+[PASS] dist/posts/hello/index.html exists
+[PASS] dist/posts/hello/index.html contains the post title
+[PASS] dist/posts/hello/index.html contains rendered body markup
+[PASS] dist/about/index.html exists
+[PASS] dist/about/index.html contains <h1>Hello</h1>
+[PASS] dist/about/index.html contains <strong>bold</strong>
+[PASS] dist/about/index.html contains <a href="./other">link</a>
+[PASS] dist/legal/index.html exists
+[PASS] dist/legal/index.html has no raw frontmatter
+[PASS] dist/legal/index.html contains verbatim HTML body
+==> zfb dev (background, port 3000)
+==> polling http://localhost:3000/ (up to 30 retries)
+curl: (7) Failed to connect to localhost port 3000 after 0 ms: Could not connect to server
+→ ready on http://localhost:3000
+info no SDK Island boundary targets found; skipping islands bundle (no islands asset will be emitted)
+info dev: cold-lazy — no prebuilt dist/ seed required; 4 route(s) render on first request (ZFB_DEV_BOOT_LAZY=cold)
+[PASS] dev server returned expected content
+==> curling http://localhost:3000/posts/hello/ (dynamic slug)
+[PASS] dev server served dynamic slug /posts/hello/ with expected post title
+==> appending edit marker to content/posts/hello.md
+==> polling http://localhost:3000/posts/hello/ for edit marker (deadline 60s)
+[PASS] dev server reflected content edit (marker served after ~1s)
+==> All smoke assertions passed.
+heavy-guard: verdict=PASS exit=0 secs=3 min_mem_mb=14258 reason=-

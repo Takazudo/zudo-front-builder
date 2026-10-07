@@ -16,6 +16,22 @@ zfb check      # TypeScript + content-schema validation
 The same commands are available as package scripts (`dev`, `build`,
 `preview`, `typecheck`).
 
+## Own the design
+
+The starter begins with the Everyday design: purpose-based colour, independent
+horizontal and vertical spacing, type roles, a 60ch reading measure and one
+corner rule. Edit `styles/design-system.css` for values, `design-tokens.json`
+for utility roles, and the local dark overrides in `styles/global.css`.
+`zfb.config.ts` merges the design with the Markdown showcase palette;
+`components/design-rules.ts` supplies the home page explanations; update it and
+`DESIGN-NOTES.md` when changing values. The notes explain when to use each role.
+Read the existing
+`content/blog/styling-with-zudo-wind.md` article on the built site.
+
+Try alternatives in the [Design system playground](https://zfb.takazudomodular.com/docs/playground/design-system/)
+and merge the exported Wind token maps deliberately. The initializer does not
+yet select a design seed.
+
 ## Structure
 
 ```
@@ -39,8 +55,12 @@ The same commands are available as package scripts (`dev`, `build`,
 │   └── blog/            # the `blog` collection (.md and .mdx)
 ├── lib/
 │   └── types.ts         # frontmatter + entry types shared by routes
+├── design-tokens.json   # semantic Wind roles merged by zfb.config.ts
+├── components/design-rules.ts    # current rules displayed on the home page
+├── DESIGN-NOTES.md      # short usage rules
 └── styles/
-    └── global.css       # authored CSS, accent values, .prose styles
+    ├── design-system.css # project-owned Everyday values
+    └── global.css       # imports values, local dark treatment, .prose styles
 ```
 
 The `zfb` import family is an alias for `@takazudo/zfb` in zfb's bundlers.

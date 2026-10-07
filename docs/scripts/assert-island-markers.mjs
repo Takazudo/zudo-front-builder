@@ -10,6 +10,7 @@ import { WIND_REFERENCE_FAMILIES } from "./wind-reference-families.mjs";
 // `ja` are expanded below. The wind examples use zudo-doc's installed
 // HtmlPreview island, so a static page marker alone is not enough.
 export const EXPECTED_ISLANDS = Object.freeze([
+  { route: "docs/playground/design-system", marker: "DesignSystemPlayground" },
   { route: "docs/playground/render", marker: "RenderPlayground" },
   { route: "docs/playground/compile", marker: "CompilePlayground" },
   { route: "docs/playground/parse", marker: "ParsePlayground" },
@@ -79,7 +80,7 @@ export function hasIslandManifestEntry(bundleText, marker) {
   const escapedMarker = escapeRegExp(marker);
   const literal = `"${escapedMarker}"`;
   const registrationCall = new RegExp(
-    `\\b[A-Za-z_$][\\w$]*\\(\\s*[^,()]+\\s*,\\s*["'][^"']+["']\\s*,\\s*${literal}\\s*,`,
+    `(?<![\\w$])[A-Za-z_$][\\w$]*\\(\\s*[^,()]+\\s*,\\s*["'][^"']+["']\\s*,\\s*${literal}\\s*,`,
   );
   if (registrationCall.test(bundleText)) return true;
 

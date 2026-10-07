@@ -1,0 +1,20 @@
+$ pnpm --filter docs build
+$ zfb build --strict-broken
+zfb info: [plugin:@takazudo/zudo-doc-claude-resources] claude-resources: 1 CLAUDE.md, 0 commands, 4 skills, 0 agents
+zfb info: [plugin:doc-history] [doc-history-meta] wrote 664 entries → .zfb/doc-history-meta.json
+info package route `/docs/[[...slug]]` (from plugin `@takazudo/zudo-doc/plugins/routes`) is shadowed by a user pages/ route (user wins); skipping
+info package route `/[locale]/docs/[[...slug]]` (from plugin `@takazudo/zudo-doc/plugins/routes`) is shadowed by a user pages/ route (user wins); skipping
+info package route `/404` → pages/404.tsx
+info package route `/sitemap.xml` → pages/sitemap.xml.tsx
+info package route `/robots.txt` → pages/robots.txt.tsx
+info package route `/[locale]` → pages/[locale].tsx
+info adapter `@takazudo/zfb-adapter-cloudflare`:
+info   wrote /workspace/zudo-front-builder/docs/dist/_worker.js
+info   wrote /workspace/zudo-front-builder/docs/dist/_zfb_inner.mjs
+info   wrote /workspace/zudo-front-builder/docs/dist/.assetsignore
+zfb info: [plugin:doc-history] Skipping doc history generation (local default — set GEN_DOC_HISTORY=1 to generate)
+zfb info: [plugin:search-index] Generated search index with 670 entries
+zfb info: [plugin:llms-txt] Generated llms.txt and llms-full.txt (472 pages)
+zfb info: [plugin:llms-txt] Generated ja/llms.txt and ja/llms-full.txt (198 pages)
+✓ 678 pages built in 48.10s
+heavy-guard: verdict=PASS exit=0 secs=49 min_mem_mb=12872 reason=-

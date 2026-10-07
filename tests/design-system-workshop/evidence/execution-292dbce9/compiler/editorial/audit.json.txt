@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "command": "audit",
+  "severity": null,
+  "coverage": {
+    "mode": "standalone",
+    "roots": [
+      {
+        "label": "default/components",
+        "path": "components",
+        "kind": "optional"
+      },
+      {
+        "label": "default/content",
+        "path": "content",
+        "kind": "optional"
+      },
+      {
+        "label": "default/layouts",
+        "path": "layouts",
+        "kind": "optional"
+      },
+      {
+        "label": "default/pages",
+        "path": "pages",
+        "kind": "optional"
+      },
+      {
+        "label": "default/src",
+        "path": "src",
+        "kind": "optional"
+      }
+    ],
+    "virtualModules": [],
+    "manifests": [],
+    "exclusions": [
+      {
+        "pattern": ".zfb",
+        "reason": "outputOrScratch",
+        "origin": null
+      },
+      {
+        "pattern": ".zfb-build",
+        "reason": "outputOrScratch",
+        "origin": null
+      },
+      {
+        "pattern": ".zfb-wind-audit-output.css",
+        "reason": "outputOrScratch",
+        "origin": null
+      },
+      {
+        "pattern": "dist",
+        "reason": "outputOrScratch",
+        "origin": null
+      },
+      {
+        "pattern": "**/*.d.ts",
+        "reason": "declarationFiles",
+        "origin": null
+      }
+    ]
+  },
+  "report": {
+    "outcome": "complete",
+    "specVersion": 1,
+    "specRevision": 14,
+    "diagnostics": [],
+    "unrecognizedClasses": [],
+    "conflicts": [],
+    "deadClasses": [],
+    "dynamicConstructions": [],
+    "adjacentInterpolations": [],
+    "extractionNotes": []
+  }
+}

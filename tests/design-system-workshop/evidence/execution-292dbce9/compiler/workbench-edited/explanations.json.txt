@@ -1,0 +1,1461 @@
+{
+  "schemaVersion": 1,
+  "command": "explain",
+  "explanations": [
+    {
+      "candidate": "font-ui",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "font-ui",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.font.family",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "ui",
+          "category": "fontFamilies",
+          "variable": "--zw-font-family-ui",
+          "configuredValue": "var(--ds-font-ui)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".font-ui",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-family",
+          "value": "var(--zw-font-family-ui)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 15,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "font-ui"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-surface",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-surface",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "surface",
+          "category": "colors",
+          "variable": "--zw-color-surface",
+          "configuredValue": "var(--ds-surface)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-surface",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-surface)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-surface"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "text-ink",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "text-ink",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.text.color",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "ink",
+          "category": "colors",
+          "variable": "--zw-color-ink",
+          "configuredValue": "var(--ds-ink)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".text-ink",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "color",
+          "value": "var(--zw-color-ink)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 22,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "text-ink"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "px-hsp-card",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "px-hsp-card",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.px",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "hsp-card",
+          "category": "spacing",
+          "variable": "--zw-spacing-hsp-card",
+          "configuredValue": "var(--ds-hsp-card)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".px-hsp-card",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "padding-left",
+          "value": "var(--zw-spacing-hsp-card)"
+        },
+        {
+          "property": "padding-right",
+          "value": "var(--zw-spacing-hsp-card)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 9,
+        "scopeRank": 1,
+        "catalogRank": 1,
+        "rawCandidate": "px-hsp-card"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "py-vsp-stack",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "py-vsp-stack",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.py",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "vsp-stack",
+          "category": "spacing",
+          "variable": "--zw-spacing-vsp-stack",
+          "configuredValue": "var(--ds-vsp-stack)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".py-vsp-stack",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "padding-top",
+          "value": "var(--zw-spacing-vsp-stack)"
+        },
+        {
+          "property": "padding-bottom",
+          "value": "var(--zw-spacing-vsp-stack)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 9,
+        "scopeRank": 1,
+        "catalogRank": 2,
+        "rawCandidate": "py-vsp-stack"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "rounded-panel",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "rounded-panel",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.rounded",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "panel",
+          "category": "radii",
+          "variable": "--zw-radius-panel",
+          "configuredValue": "var(--ds-radius-panel)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".rounded-panel",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "border-top-left-radius",
+          "value": "var(--zw-radius-panel)"
+        },
+        {
+          "property": "border-top-right-radius",
+          "value": "var(--zw-radius-panel)"
+        },
+        {
+          "property": "border-bottom-right-radius",
+          "value": "var(--zw-radius-panel)"
+        },
+        {
+          "property": "border-bottom-left-radius",
+          "value": "var(--zw-radius-panel)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 27,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "rounded-panel"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "font-display",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "font-display",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.font.family",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "display",
+          "category": "fontFamilies",
+          "variable": "--zw-font-family-display",
+          "configuredValue": "var(--ds-font-display)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".font-display",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-family",
+          "value": "var(--zw-font-family-display)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 15,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "font-display"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "text-section",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "text-section",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.text.size",
+      "valueStatus": "verified",
+      "tokenResolutions": [
+        {
+          "tokenName": "section",
+          "category": "fontSizes",
+          "variable": "--zw-font-size-section",
+          "configuredValue": "var(--ds-font-section)",
+          "categoryUnverified": true
+        },
+        {
+          "tokenName": "section-leading",
+          "category": "fontSizes.leading",
+          "variable": "--zw-font-size-section-leading",
+          "configuredValue": "1.3",
+          "categoryUnverified": false
+        }
+      ],
+      "selector": ".text-section",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-size",
+          "value": "var(--zw-font-size-section)"
+        },
+        {
+          "property": "line-height",
+          "value": "var(--zw-font-size-section-leading)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 17,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "text-section"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "font-strong",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "font-strong",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.font.weight",
+      "valueStatus": "verified",
+      "tokenResolutions": [
+        {
+          "tokenName": "strong",
+          "category": "fontWeights",
+          "variable": "--zw-font-weight-strong",
+          "configuredValue": "600",
+          "categoryUnverified": false
+        }
+      ],
+      "selector": ".font-strong",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-weight",
+          "value": "var(--zw-font-weight-strong)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 16,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "font-strong"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "text-body",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "text-body",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.text.size",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "body",
+          "category": "fontSizes",
+          "variable": "--zw-font-size-body",
+          "configuredValue": "var(--ds-font-body)",
+          "categoryUnverified": true
+        },
+        {
+          "tokenName": "body-leading",
+          "category": "fontSizes.leading",
+          "variable": "--zw-font-size-body-leading",
+          "configuredValue": "var(--ds-leading-body)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".text-body",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-size",
+          "value": "var(--zw-font-size-body)"
+        },
+        {
+          "property": "line-height",
+          "value": "var(--zw-font-size-body-leading)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 17,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "text-body"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "max-w-reading",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "max-w-reading",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.max-w",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "reading",
+          "category": "sizes",
+          "variable": "--zw-size-reading",
+          "configuredValue": "var(--ds-size-reading)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".max-w-reading",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "max-width",
+          "value": "var(--zw-size-reading)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 8,
+        "scopeRank": 1,
+        "catalogRank": 3,
+        "rawCandidate": "max-w-reading"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "mt-vsp-stack",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "mt-vsp-stack",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.mt",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "vsp-stack",
+          "category": "spacing",
+          "variable": "--zw-spacing-vsp-stack",
+          "configuredValue": "var(--ds-vsp-stack)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".mt-vsp-stack",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "margin-top",
+          "value": "var(--zw-spacing-vsp-stack)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 10,
+        "scopeRank": 2,
+        "catalogRank": 6,
+        "rawCandidate": "mt-vsp-stack"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "flex",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "flex",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.flex",
+      "valueStatus": "verified",
+      "tokenResolutions": [],
+      "selector": ".flex",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "display",
+          "value": "flex"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 1,
+        "scopeRank": 0,
+        "catalogRank": 2,
+        "rawCandidate": "flex"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "flex-wrap",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "flex-wrap",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.flex-wrap",
+      "valueStatus": "verified",
+      "tokenResolutions": [],
+      "selector": ".flex-wrap",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "flex-wrap",
+          "value": "wrap"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 4,
+        "scopeRank": 0,
+        "catalogRank": 5,
+        "rawCandidate": "flex-wrap"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "gap-x-hsp-gutter",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "gap-x-hsp-gutter",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.gap-x",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "hsp-gutter",
+          "category": "spacing",
+          "variable": "--zw-spacing-hsp-gutter",
+          "configuredValue": "var(--ds-hsp-gutter)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".gap-x-hsp-gutter",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "column-gap",
+          "value": "var(--zw-spacing-hsp-gutter)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 11,
+        "scopeRank": 1,
+        "catalogRank": 1,
+        "rawCandidate": "gap-x-hsp-gutter"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "gap-y-vsp-stack",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "gap-y-vsp-stack",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.gap-y",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "vsp-stack",
+          "category": "spacing",
+          "variable": "--zw-spacing-vsp-stack",
+          "configuredValue": "var(--ds-vsp-stack)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".gap-y-vsp-stack",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "row-gap",
+          "value": "var(--zw-spacing-vsp-stack)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 11,
+        "scopeRank": 1,
+        "catalogRank": 2,
+        "rawCandidate": "gap-y-vsp-stack"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "mt-vsp-section",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "mt-vsp-section",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.mt",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "vsp-section",
+          "category": "spacing",
+          "variable": "--zw-spacing-vsp-section",
+          "configuredValue": "var(--ds-vsp-section)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".mt-vsp-section",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "margin-top",
+          "value": "var(--zw-spacing-vsp-section)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 10,
+        "scopeRank": 2,
+        "catalogRank": 6,
+        "rawCandidate": "mt-vsp-section"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-accent",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-accent",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "accent",
+          "category": "colors",
+          "variable": "--zw-color-accent",
+          "configuredValue": "var(--ds-accent)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-accent",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-accent)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-accent"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "text-on-accent",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "text-on-accent",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.text.color",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "on-accent",
+          "category": "colors",
+          "variable": "--zw-color-on-accent",
+          "configuredValue": "var(--ds-on-accent)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".text-on-accent",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "color",
+          "value": "var(--zw-color-on-accent)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 22,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "text-on-accent"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-background",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-background",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "background",
+          "category": "colors",
+          "variable": "--zw-color-background",
+          "configuredValue": "var(--ds-background)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-background",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-background)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-background"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-ink",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-ink",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "ink",
+          "category": "colors",
+          "variable": "--zw-color-ink",
+          "configuredValue": "var(--ds-ink)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-ink",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-ink)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-ink"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-muted",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-muted",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "muted",
+          "category": "colors",
+          "variable": "--zw-color-muted",
+          "configuredValue": "var(--ds-muted)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-muted",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-muted)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-muted"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-border",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-border",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "border",
+          "category": "colors",
+          "variable": "--zw-color-border",
+          "configuredValue": "var(--ds-border)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-border",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-border)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-border"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "bg-on-accent",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "bg-on-accent",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "on-accent",
+          "category": "colors",
+          "variable": "--zw-color-on-accent",
+          "configuredValue": "var(--ds-on-accent)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".bg-on-accent",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-on-accent)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "bg-on-accent"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "px-hsp-page",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "px-hsp-page",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.px",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "hsp-page",
+          "category": "spacing",
+          "variable": "--zw-spacing-hsp-page",
+          "configuredValue": "var(--ds-hsp-page)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".px-hsp-page",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "padding-left",
+          "value": "var(--zw-spacing-hsp-page)"
+        },
+        {
+          "property": "padding-right",
+          "value": "var(--zw-spacing-hsp-page)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 9,
+        "scopeRank": 1,
+        "catalogRank": 1,
+        "rawCandidate": "px-hsp-page"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "px-hsp-gutter",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "px-hsp-gutter",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.px",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "hsp-gutter",
+          "category": "spacing",
+          "variable": "--zw-spacing-hsp-gutter",
+          "configuredValue": "var(--ds-hsp-gutter)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".px-hsp-gutter",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "padding-left",
+          "value": "var(--zw-spacing-hsp-gutter)"
+        },
+        {
+          "property": "padding-right",
+          "value": "var(--zw-spacing-hsp-gutter)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 9,
+        "scopeRank": 1,
+        "catalogRank": 1,
+        "rawCandidate": "px-hsp-gutter"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "gap-y-vsp-section",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "gap-y-vsp-section",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.gap-y",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "vsp-section",
+          "category": "spacing",
+          "variable": "--zw-spacing-vsp-section",
+          "configuredValue": "var(--ds-vsp-section)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".gap-y-vsp-section",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "row-gap",
+          "value": "var(--zw-spacing-vsp-section)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 11,
+        "scopeRank": 1,
+        "catalogRank": 2,
+        "rawCandidate": "gap-y-vsp-section"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "text-heading",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "text-heading",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.text.size",
+      "valueStatus": "verified",
+      "tokenResolutions": [
+        {
+          "tokenName": "heading",
+          "category": "fontSizes",
+          "variable": "--zw-font-size-heading",
+          "configuredValue": "var(--ds-font-heading)",
+          "categoryUnverified": true
+        },
+        {
+          "tokenName": "heading-leading",
+          "category": "fontSizes.leading",
+          "variable": "--zw-font-size-heading-leading",
+          "configuredValue": "1.22",
+          "categoryUnverified": false
+        }
+      ],
+      "selector": ".text-heading",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-size",
+          "value": "var(--zw-font-size-heading)"
+        },
+        {
+          "property": "line-height",
+          "value": "var(--zw-font-size-heading-leading)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 17,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "text-heading"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "text-caption",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "text-caption",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.text.size",
+      "valueStatus": "verified",
+      "tokenResolutions": [
+        {
+          "tokenName": "caption",
+          "category": "fontSizes",
+          "variable": "--zw-font-size-caption",
+          "configuredValue": "var(--ds-font-caption)",
+          "categoryUnverified": true
+        },
+        {
+          "tokenName": "caption-leading",
+          "category": "fontSizes.leading",
+          "variable": "--zw-font-size-caption-leading",
+          "configuredValue": "1.5",
+          "categoryUnverified": false
+        }
+      ],
+      "selector": ".text-caption",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-size",
+          "value": "var(--zw-font-size-caption)"
+        },
+        {
+          "property": "line-height",
+          "value": "var(--zw-font-size-caption-leading)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 17,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "text-caption"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "font-regular",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [],
+        "utility": "font-regular",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.font.weight",
+      "valueStatus": "verified",
+      "tokenResolutions": [
+        {
+          "tokenName": "regular",
+          "category": "fontWeights",
+          "variable": "--zw-font-weight-regular",
+          "configuredValue": "400",
+          "categoryUnverified": false
+        }
+      ],
+      "selector": ".font-regular",
+      "conditions": [],
+      "declarations": [
+        {
+          "property": "font-weight",
+          "value": "var(--zw-font-weight-regular)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 0,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 16,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "font-regular"
+      },
+      "diagnostics": []
+    },
+    {
+      "candidate": "wide:bg-accent",
+      "outcome": "resolved_utility",
+      "specVersion": 1,
+      "specRevision": 14,
+      "parsed": {
+        "variantChain": [
+          "wide"
+        ],
+        "utility": "bg-accent",
+        "negative": false,
+        "arbitraryValue": null,
+        "slashModifier": null
+      },
+      "entryIdentifier": "v1.background",
+      "valueStatus": "categoryUnverified",
+      "tokenResolutions": [
+        {
+          "tokenName": "accent",
+          "category": "colors",
+          "variable": "--zw-color-accent",
+          "configuredValue": "var(--ds-accent)",
+          "categoryUnverified": true
+        }
+      ],
+      "selector": ".wide\\:bg-accent",
+      "conditions": [
+        "(min-width: 960px)"
+      ],
+      "declarations": [
+        {
+          "property": "background-color",
+          "value": "var(--zw-color-accent)"
+        }
+      ],
+      "sortTuple": {
+        "responsiveRank": 1,
+        "darkRank": 0,
+        "pointerRank": 0,
+        "relationRank": 0,
+        "stateRank": 0,
+        "pseudoRank": 0,
+        "conflictGroupRank": 23,
+        "scopeRank": 0,
+        "catalogRank": 0,
+        "rawCandidate": "wide:bg-accent"
+      },
+      "diagnostics": []
+    }
+  ]
+}
