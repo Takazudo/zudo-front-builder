@@ -61,7 +61,7 @@ impl Fixture {
             }
         }
         if entry == "tsconfig" {
-            fs::write(self.app.join("tsconfig.json"), serde_json::json!({"compilerOptions":{"baseUrl":".","paths":{"widget":[self.widget.join("dist/index.js").display().to_string()]}}}).to_string()).unwrap();
+            fs::write(self.app.join("tsconfig.json"), serde_json::json!({"compilerOptions":{"baseUrl":".","paths":{"widget":["../widget/dist/index.js"]}}}).to_string()).unwrap();
         }
         let token = zudo_react_build_token_with_aliases(&self.app, &aliases).unwrap();
         eprintln!("BASELINE_TOKEN entry={entry} value={token}");
