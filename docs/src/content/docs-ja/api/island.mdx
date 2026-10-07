@@ -6,10 +6,10 @@ sidebar_position: 4
 
 ## `<Island>` ラッパー
 
-`@takazudo/zfb` から `Island` をインポートし、ブラウザーで動かすコンポーネント 1 つをラップします。ページとツリーの残りは通常の HTML としてレンダリングされます。
+`zfb` または `@takazudo/zfb` から `Island` をインポートし、ブラウザーで動かすコンポーネント 1 つをラップします。ページとツリーの残りは通常の HTML としてレンダリングされます。以下の例では短い `zfb` 形式を使います。
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import Counter from "./Counter";
 
 export default function Page() {
@@ -34,7 +34,7 @@ import type {
   Component,
   Description,
   ElementType,
-} from "@takazudo/zfb/zudo-react";
+} from "zfb/zudo-react";
 ```
 
 `Description` は `$$zudo` ブランドとともに `type`、`props`、`key` を公開します。ファクトリは props をコピーし、コンポーネントは実行しません。`Child` は同期的なスカラー値、記述、リアクティブなスカラー値、またはそれらを入れ子にした配列です。通常のオブジェクトスプレッドによる記述のコピーはサポートされますが、ブランドのない類似オブジェクトの自作はサポートされません。
@@ -79,7 +79,7 @@ media によるスケジュールには、戦略と空ではないクエリの�
 子をサーバーで実行してはいけない場合は `ssrFallback` を渡します。サーバーは識別子と props を検査し、ハイドレーションマーカーなしでフォールバックをレンダリングします。クライアントのトリガーが発火すると、`mount` は DOM 外で子を構築し、セットアップと検証が成功した後にだけフォールバックを置き換えます。
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import HeavyChart from "./HeavyChart";
 
 export default function Page() {
@@ -118,7 +118,7 @@ export default function Page() {
 ```tsx
 "use client";
 
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);

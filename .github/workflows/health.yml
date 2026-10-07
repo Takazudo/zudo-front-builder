@@ -558,6 +558,12 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-only.xml
           fi
 
+      # The SDK-alias confirm must exercise jsx_pragma without zfb-build's
+      # default V8 feature; the normal workspace nextest lane below uses the
+      # default feature set and does not cover this compile configuration.
+      - name: Test jsx_pragma without default features (#3939)
+        run: cargo test -p zfb-build --no-default-features --lib jsx_pragma
+
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
@@ -602,6 +608,15 @@ jobs:
 
       - name: Scanner boundary acceptance (Chromium)
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
+
+      # #3939 runs the documented MDX recipe as a packed external consumer.
+      # Its JS packages are packed from this checkout, and the Rust binary
+      # built above must match the exact checked-out source SHA.
+      - name: SDK alias packed consumer and dev rebundle (#3939)
+        run: |
+          ZFB_BINARY="$PWD/target/debug/zfb" \
+          ZFB_BINARY_SOURCE_SHA="$(git rev-parse HEAD)" \
+          node tests/sdk-alias-consumer/run.mjs
 
       # #3931 reproduces the linked-package identity issue from a scratch
       # workspace while reusing this job's branch-built zfb binary and the

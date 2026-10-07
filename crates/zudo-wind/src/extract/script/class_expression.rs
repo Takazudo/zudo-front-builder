@@ -511,7 +511,12 @@ impl<'a> Module<'a> {
             if word(close + 1) != Some("from")
                 || !matches!(
                     word(close + 2),
-                    Some("\"@takazudo/zfb/zudo-react\"" | "'@takazudo/zfb/zudo-react'")
+                    Some(
+                        "\"@takazudo/zfb/zudo-react\""
+                            | "'@takazudo/zfb/zudo-react'"
+                            | "\"zfb/zudo-react\""
+                            | "'zfb/zudo-react'"
+                    )
                 )
             {
                 continue;

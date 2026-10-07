@@ -51,6 +51,9 @@
 //! wrapper summaries. Defining module and binding determine internal identity;
 //! the selected export is an importable client route, and the actual function
 //! name is the public marker. Aliases and re-exports preserve that marker.
+//! The SDK specifier aliases `zfb` and `zfb/<subpath>` are normalized to
+//! `@takazudo/zfb` and `@takazudo/zfb/<subpath>` before SDK classification or
+//! demanded source resolution, so both spellings share the same definition.
 //! A conflicting marker or a demanded dynamic/opaque target is an error with
 //! its boundary location and a static rewrite hint.
 //!

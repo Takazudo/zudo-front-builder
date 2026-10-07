@@ -9,6 +9,7 @@
 //! demanded unresolved or opaque child flows become source-located errors.
 
 use super::*;
+use std::borrow::Cow;
 use std::rc::Rc;
 use swc_core::common::{Span, Spanned};
 use swc_core::ecma::ast::{
@@ -804,11 +805,13 @@ impl<'a, R: Resolver> Discovery<'a, R> {
 
     fn resolve_source(&self, from: &Path, specifier: &str) -> Option<PathBuf> {
         let dir = from.parent().unwrap_or_else(|| Path::new("."));
-        self.resolver.resolve_demanded(dir, specifier)
+        let specifier = canonical_sdk_specifier(specifier);
+        self.resolver.resolve_demanded(dir, specifier.as_ref())
     }
 
     fn sdk_export(specifier: &str, export: &str) -> Option<Value> {
-        match (specifier, export) {
+        let specifier = canonical_sdk_specifier(specifier);
+        match (specifier.as_ref(), export) {
             ("@takazudo/zfb", "Island") => Some(Value::Boundary),
             ("@takazudo/zfb/zudo-react", "h") => Some(Value::Factory(FactoryKind::H)),
             ("@takazudo/zfb/zudo-react/jsx-runtime", "jsx" | "jsxs")
@@ -820,8 +823,9 @@ impl<'a, R: Resolver> Discovery<'a, R> {
     }
 
     fn is_sdk_namespace(specifier: &str) -> bool {
+        let specifier = canonical_sdk_specifier(specifier);
         matches!(
-            specifier,
+            specifier.as_ref(),
             "@takazudo/zfb"
                 | "@takazudo/zfb/zudo-react"
                 | "@takazudo/zfb/zudo-react/jsx-runtime"
@@ -3054,6 +3058,19 @@ impl<'a, R: Resolver> Discovery<'a, R> {
     }
 }
 
+/// Accept the short SDK package alias while preserving all other specifiers.
+/// Keep the prefix boundary exact so names such as `zfb-foo` and relative
+/// imports such as `./zfb` retain their ordinary resolver behavior.
+fn canonical_sdk_specifier(spec: &str) -> Cow<'_, str> {
+    if spec == "zfb" {
+        Cow::Borrowed("@takazudo/zfb")
+    } else if let Some(rest) = spec.strip_prefix("zfb/") {
+        Cow::Owned(format!("@takazudo/zfb/{rest}"))
+    } else {
+        Cow::Borrowed(spec)
+    }
+}
+
 fn prop_name(name: &PropName) -> Option<String> {
     match name {
         PropName::Ident(ident) => Some(ident.sym.to_string()),
@@ -4204,12 +4221,126 @@ mod tests {
         assert!(Discovery::<InMemoryResolver>::is_sdk_namespace(
             "@takazudo/zfb"
         ));
+        assert!(Discovery::<InMemoryResolver>::is_sdk_namespace("zfb"));
         assert!(Discovery::<InMemoryResolver>::is_sdk_namespace(
             "@takazudo/zfb/zudo-react/jsx-runtime"
+        ));
+        assert!(Discovery::<InMemoryResolver>::is_sdk_namespace(
+            "zfb/zudo-react/jsx-runtime"
         ));
         assert!(!Discovery::<InMemoryResolver>::is_sdk_namespace(
             "@takazudo/zfb-extra"
         ));
+        assert!(!Discovery::<InMemoryResolver>::is_sdk_namespace("zfb-foo"));
+        assert_eq!(canonical_sdk_specifier("./zfb"), "./zfb");
+        assert_eq!(canonical_sdk_specifier("zfb-extra"), "zfb-extra");
+        assert_eq!(
+            canonical_sdk_specifier("zfb/zudo-react"),
+            "@takazudo/zfb/zudo-react"
+        );
+    }
+
+    #[test]
+    fn bare_sdk_alias_matches_named_boundaries_and_owned_factories() {
+        for (import, factory) in [
+            ("import { h } from 'zfb/zudo-react';", "h"),
+            ("import { jsx } from 'zfb/zudo-react/jsx-runtime';", "jsx"),
+            ("import { jsxs } from 'zfb/zudo-react/jsx-runtime';", "jsxs"),
+            (
+                "import { jsxDEV } from 'zfb/zudo-react/jsx-dev-runtime';",
+                "jsxDEV",
+            ),
+        ] {
+            let source = format!(
+                "import {{ Island }} from 'zfb'; {import} import {{ Counter }} from '../components/counter'; export default function Page() {{ return {factory}(Island, {{ children: {factory}(Counter, {{}}) }}); }}"
+            );
+            let islands = scan(&[
+                ("pages/home.tsx", &source),
+                (
+                    "components/counter.tsx",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            ])
+            .unwrap();
+            assert_eq!(markers(&islands), ["Counter"], "{factory}");
+        }
+    }
+
+    #[test]
+    fn bare_sdk_alias_matches_namespace_import_and_namespace_reexport() {
+        let direct = scan(&[
+            (
+                "pages/home.tsx",
+                "import * as SDK from 'zfb'; import { Counter } from '../components/counter'; export default function Page() { return <SDK.Island><Counter /></SDK.Island>; }",
+            ),
+            (
+                "components/counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(markers(&direct), ["Counter"]);
+
+        let reexport = scan(&[
+            (
+                "pages/home.tsx",
+                "import { UI } from '../sdk-ui'; import { Counter } from '../components/counter'; export default function Page() { return <UI.Island><Counter /></UI.Island>; }",
+            ),
+            ("sdk-ui.ts", "export * as UI from 'zfb';"),
+            (
+                "components/counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(markers(&reexport), ["Counter"]);
+    }
+
+    #[test]
+    fn canonical_and_bare_boundary_aliases_deduplicate_one_target() {
+        let islands = scan(&[
+            (
+                "pages/home.tsx",
+                "import { Island as Short } from 'zfb'; import { Island as Canonical } from '@takazudo/zfb'; import { Counter } from '../components/counter'; export default function Page() { return <><Short><Counter /></Short><Canonical><Counter /></Canonical></>; }",
+            ),
+            (
+                "components/counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(markers(&islands), ["Counter"]);
+        assert_eq!(islands.len(), 1);
+    }
+
+    #[test]
+    fn sdk_alias_does_not_capture_lookalike_or_relative_imports() {
+        let lookalike = scan(&[
+            (
+                "pages/home.tsx",
+                "import { Island } from 'zfb-foo'; import { Counter } from '../components/counter'; export default function Page() { return <Island><Counter /></Island>; }",
+            ),
+            (
+                "components/counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert!(lookalike.is_empty());
+
+        let relative = scan(&[
+            (
+                "pages/home.tsx",
+                "import { Island } from './zfb'; import { Counter } from '../components/counter'; export default function Page() { return <Island><Counter /></Island>; }",
+            ),
+            ("pages/zfb.ts", "export const Island = 1;"),
+            (
+                "components/counter.tsx",
+                "'use client'; export function Counter() { return null; }",
+            ),
+        ])
+        .unwrap();
+        assert!(relative.is_empty());
     }
 
     #[test]

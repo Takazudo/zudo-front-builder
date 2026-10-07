@@ -12,20 +12,82 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `defineConfig` は `zfb/config` からエクスポートされます。このヘルパーは identity 型で、受け取った引数をそのまま返します。唯一の役割は、エディタに `ZfbConfig` 形状に対する IntelliSense と型チェックを提供することです。実際のスキーマは設定ロード時に Rust の serde によって検証されるため、設定を TypeScript で書いても JSON で書いても同じルールが適用されます。
 
-## `zfb/config` インポートの型付け
+<span id="typing-the-zfb-config-import" />
 
-`zfb.config.ts` は **ベア** specifier の `zfb/config` から `defineConfig` をインポートします。zfb は設定ロード時にそのインポートをランタイム専用のスタブにエイリアスし（そのため `@takazudo/zfb` パッケージを入れていなくても設定をパースできます）、`node_modules` に実体としての `zfb/config` モジュールは存在しません。公開されている型は **スコープ付き** のサブパス `@takazudo/zfb/config` 配下にあります。そのため素の `tsc --noEmit`（`zfb check` が実行するもの）にはベアインポートを型付けする対象がなく、`Cannot find module 'zfb/config'` を報告します。
+<span id="zfb-config-インポートの型付け" />
 
-両者を橋渡しするには、スコープ付きパッケージの型を **再エクスポート** する 1 行の ambient 宣言を使います。`zfb-shim.d.ts` は `tsconfig` に含まれるディレクトリへ置いてください。標準テンプレートでは `components/zfb-shim.d.ts` がそのまま使えます。代わりにプロジェクトルートへ置く場合は、`"zfb-shim.d.ts"` を `include` に明示的に追加します。
+<span id="typing-bare-zfb-imports" />
+
+## ベアの `zfb` インポートの型付け
+
+SDK のビルドツールは、対応するベアの `zfb` 指定子をそれぞれ該当する `@takazudo/zfb` パッケージの公開エントリへ解決します。設定ローダーは `zfb/config` を特別扱いしてランタイム専用スタブへ対応づけるため、設定のパース時に `node_modules` 上の実体としての `zfb/config` モジュールは不要です。これらのエイリアスは TypeScript の `paths` 設定ではありません。`zfb check` の動作は変わらず、`compilerOptions.paths` を注入せずにプロジェクトの `tsconfig` で TypeScript を実行します。
+
+標準テンプレートには、TypeScript とエディタがベア指定子を解決するための `components/zfb-shim.d.ts` が含まれます。宣言ファイルは `tsconfig` に含まれるディレクトリへ置いてください。標準テンプレートは `components/` を含みます。プロジェクトルートに置く場合は、`"zfb-shim.d.ts"` を `include` に明示的に追加します。既存のシムを使っている場合は、不足しているモジュール宣言をそのファイルへ追加してください。
+
+シムは、対応するスコープ付きパッケージのサブパスから、サポート対象のベアエントリすべてについて公開型を再エクスポートします。宣言は公開エクスポートに合わせて保ち、`ZfbConfig` などの型の形状を手書きで複製しないでください。手書きのコピーはパッケージの更新に気づかないまま遅れる可能性があります。
 
 ```ts
-// components/zfb-shim.d.ts — ベアの `zfb/config` specifier を型付けする。
+/**
+ * The zfb bundlers resolve bare `zfb` imports to `@takazudo/zfb`, while
+ * TypeScript needs declarations for that separate module name. Keep these
+ * entry points in sync with the package's public exports.
+ */
+declare module "zfb" {
+  export * from "@takazudo/zfb";
+}
+
+declare module "zfb/runtime" {
+  export * from "@takazudo/zfb/runtime";
+}
+
+declare module "zfb/content" {
+  export * from "@takazudo/zfb/content";
+}
+
+declare module "zfb/paginate" {
+  export * from "@takazudo/zfb/paginate";
+}
+
 declare module "zfb/config" {
   export * from "@takazudo/zfb/config";
 }
-```
 
-必ず再エクスポートにしてください — `ZfbConfig` の形状をシムに手書きでコピーしては **いけません**。手で写したフィールドリストは静かにエンジンから遅れていきます。新しい設定フィールドが追加されるたびに手で足さない限り、`zfb check` が妥当なフィールドを `TS2353: Object literal may only specify known properties` で拒否します。`export *` は公開されている `@takazudo/zfb/config` を自動的に追従するため、シムが遅れることはありません。
+declare module "zfb/plugins" {
+  export * from "@takazudo/zfb/plugins";
+}
+
+declare module "zfb/frontmatter" {
+  export * from "@takazudo/zfb/frontmatter";
+}
+
+declare module "zfb/slugify" {
+  export * from "@takazudo/zfb/slugify";
+}
+
+declare module "zfb/zudo-react" {
+  export * from "@takazudo/zfb/zudo-react";
+}
+
+declare module "zfb/zudo-react/jsx-runtime" {
+  export * from "@takazudo/zfb/zudo-react/jsx-runtime";
+}
+
+declare module "zfb/zudo-react/jsx-dev-runtime" {
+  export * from "@takazudo/zfb/zudo-react/jsx-dev-runtime";
+}
+
+declare module "zfb/zudo-react/server" {
+  export * from "@takazudo/zfb/zudo-react/server";
+}
+
+declare module "zfb/zudo-react/client" {
+  export * from "@takazudo/zfb/zudo-react/client";
+}
+
+declare module "zfb/zudo-react/testing" {
+  export * from "@takazudo/zfb/zudo-react/testing";
+}
+```
 
 ## 設定の形状
 

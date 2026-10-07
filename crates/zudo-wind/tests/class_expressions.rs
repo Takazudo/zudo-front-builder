@@ -524,6 +524,16 @@ const view = make("div", {
 }
 
 #[test]
+fn owned_factory_alias_import_extracts_class_candidates() {
+    let source = r#"import { h } from "zfb/zudo-react";
+const View = () => h("div", { class: active ? `flex gap-2` : "p-3" });"#;
+    let result = extract_candidates(source.as_bytes(), SourceKind::Ts);
+    for value in ["flex", "gap-2", "p-3"] {
+        assert_class(&result, value);
+    }
+}
+
+#[test]
 fn unrelated_factory_data_types_and_shadowed_imports_stay_literals() {
     let source = r#"import { h as make } from "@takazudo/zfb/zudo-react";
 import { h as foreign } from "preact";
