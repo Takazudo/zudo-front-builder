@@ -155,7 +155,10 @@ async function poll(description, probe, timeoutMs = DEV_TIMEOUT_MS) {
     }
     await sleep(300);
   }
-  throw new Error(`timed out waiting for ${description}${lastError ? `: ${lastError}` : ""}`);
+  throw new Error(
+    `timed out waiting for ${description}${lastError ? `: ${lastError}${lastError.cause ? ` (cause: ${lastError.cause})` : ""}` : ""}`,
+    { cause: lastError },
+  );
 }
 
 async function fetchText(url) {
@@ -177,7 +180,7 @@ function signalProcessGroup(child, signal) {
 }
 
 function startDev(consumer, zfbBinary, port) {
-  const child = spawn(zfbBinary, ["dev", "--port", String(port)], {
+  const child = spawn(zfbBinary, ["dev", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: consumer,
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
@@ -301,7 +304,11 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
         throw new Error(`zfb dev exited early\n${server.logs()}`);
       }
       const { response, text } = await fetchText(pageUrl);
-      return response.ok && text.includes("Count: 0") && text.includes("Named counter: 0");
+      if (!response.ok)
+        throw new Error(`dev page returned ${response.status}: ${text.slice(0, 300)}`);
+      return text.includes("Count: 0") && text.includes("Named counter: 0");
+    }).catch((error) => {
+      throw new Error(`${error.message}\nServer log:\n${server.logs()}`, { cause: error });
     });
 
     const assetUrl = `${origin}/assets/islands.js`;
