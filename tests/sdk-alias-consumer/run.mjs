@@ -17,7 +17,6 @@ import {
   mkdir,
   writeFile,
 } from "node:fs/promises";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +28,7 @@ const DOCS_RECIPE = join(REPO_ROOT, "docs/src/content/docs/concepts/mdx-componen
 const SHIM_SOURCE = join(REPO_ROOT, "crates/zfb/templates/basic-blog/components/zfb-shim.d.ts");
 const TYPESCRIPT_VERSION = "7.0.2";
 const DEV_TIMEOUT_MS = 90_000;
+const DEV_PORT = 44992;
 
 function currentSourceSha() {
   return execFileSync("git", ["rev-parse", "HEAD"], {
@@ -125,20 +125,6 @@ async function packPackage(packageDir, tarballDir, label) {
   return join(tarballDir, archives[0]);
 }
 
-async function freePort() {
-  const server = net.createServer();
-  await new Promise((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  await new Promise((resolveClose, rejectClose) => {
-    server.close((error) => (error ? rejectClose(error) : resolveClose()));
-  });
-  return address.port;
-}
-
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
@@ -183,7 +169,6 @@ function signalProcessGroup(child, signal) {
 function startDev(consumer, zfbBinary, port) {
   const child = spawn(zfbBinary, ["dev", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: consumer,
-    env: { ...process.env, ZFB_DEV_DEFER_BUNDLE: "0" },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -447,7 +432,7 @@ async function main() {
       cwd: consumer,
       label: "install packed consumer dependencies",
     });
-    await runFreshConsumer(consumer, zfbBinary, `http://127.0.0.1:${await freePort()}`);
+    await runFreshConsumer(consumer, zfbBinary, `http://127.0.0.1:${DEV_PORT}`);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
