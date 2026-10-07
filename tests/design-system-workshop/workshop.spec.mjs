@@ -144,11 +144,19 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
     .not.toBe(controlColor);
   await expect(frame(page).locator("body")).toHaveCSS("background-color", "rgb(250, 248, 242)");
   await page.evaluate(() => scrollTo(0, 0));
-  await page.screenshot({ path: "/tmp/zfb-workshop-dark.png", fullPage: true });
+  await page.screenshot({
+    path: "/tmp/zfb-workshop-dark.png",
+    fullPage: true,
+    animations: "disabled",
+  });
   await page.locator("[data-zd-theme-menu]:visible > button").first().click();
   await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
   for (const width of [1440, 768, 390]) {
     await page.setViewportSize({ width, height: 1000 });
+    if (width === 1440)
+      await expect
+        .poll(() => root(page).evaluate((el) => el.getBoundingClientRect().width))
+        .toBeGreaterThan(1100);
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);
@@ -159,8 +167,16 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
         .locator("#design-preview")
         .evaluate((el) => el.getBoundingClientRect().width),
     ).toBeLessThanOrEqual(390);
+    if (width === 1440)
+      await expect
+        .poll(() => root(page).evaluate((el) => el.getBoundingClientRect().width))
+        .toBeGreaterThan(1100);
     await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({ path: `/tmp/zfb-workshop-${width}.png`, fullPage: true });
+    await page.screenshot({
+      path: `/tmp/zfb-workshop-${width}.png`,
+      fullPage: true,
+      animations: "disabled",
+    });
     await root(page).locator('[data-width="full"]').click();
   }
 });
