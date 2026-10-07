@@ -47,6 +47,32 @@ fn component_names(resolver: &InMemoryResolver, source_rel: &str) -> Vec<String>
 // ---------------------------------------------------------------------------
 
 #[test]
+fn local_const_spread_registers_only_the_selected_client_function() {
+    let resolver = InMemoryResolver::new()
+        .with_file(
+            root().join("pages/home.tsx"),
+            r#"import { Island } from "@takazudo/zfb";
+import { Counter, Helper } from "../components/client";
+function createBoundary(deps) {
+  const Target = deps.Counter;
+  return function Fixed() { return <Island><Target /></Island>; };
+}
+const defaults = { Counter, settings: { enabled: true } };
+const Fixed = createBoundary({ ...defaults });
+export default function Home() { return <Fixed />; }
+"#,
+        )
+        .with_file(
+            root().join("components/client.tsx"),
+            "\"use client\"; export function Counter() { return null; } export function Helper() { return null; }",
+        );
+    assert_eq!(
+        component_names(&resolver, "components/client.tsx"),
+        vec!["Counter"]
+    );
+}
+
+#[test]
 fn string_const_export_alongside_default_component_is_dropped() {
     // The exact repro from issue #998: a `"use client"` component module
     // that also exports a string constant (a localStorage key shared with
