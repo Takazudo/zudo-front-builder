@@ -683,8 +683,8 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
         &with_artifacts,
         "ignored sibling widget test-results artifacts",
     );
-    assert_island_label(&baseline, "Probe", "components/probe.tsx");
-    assert_island_label(&with_artifacts, "Probe", "components/probe.tsx");
+    // The dedicated registration-label case below covers emitted source labels;
+    // this fixture checks identity and dist stability for a linked package.
     assert_no_path_leaks(&baseline, &app, None);
     assert_no_path_leaks(&with_artifacts, &app, None);
 
@@ -695,7 +695,6 @@ fn linked_workspace_ignored_artifacts_do_not_change_identity_but_declared_dist_e
         with_artifacts.build_id, with_declared_edit.build_id,
         "edits to the widget's declared dist entry must affect the owned build identity"
     );
-    assert_island_label(&with_declared_edit, "Probe", "components/probe.tsx");
     assert_no_path_leaks(&with_declared_edit, &app, None);
 }
 
