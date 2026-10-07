@@ -151,6 +151,7 @@ async function poll(description, probe, timeoutMs = DEV_TIMEOUT_MS) {
       const result = await probe();
       if (result) return result;
     } catch (error) {
+      if (error.fatal) throw error;
       lastError = error;
     }
     await sleep(300);
@@ -193,6 +194,9 @@ function startDev(consumer, zfbBinary, port) {
   };
   child.stdout.on("data", capture);
   child.stderr.on("data", capture);
+  child.once("exit", (code, signal) => {
+    capture(`\nzfb dev exited: code=${code} signal=${signal}\n`);
+  });
   let spawnError;
   child.on("error", (error) => {
     spawnError = error;
@@ -301,14 +305,19 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
     await poll("zfb dev page readiness", async () => {
       if (server.spawnError()) throw server.spawnError();
       if (server.child.exitCode !== null || server.child.signalCode !== null) {
-        throw new Error(`zfb dev exited early\n${server.logs()}`);
+        const error = new Error(`zfb dev exited early\n${server.logs()}`);
+        error.fatal = true;
+        throw error;
       }
       const { response, text } = await fetchText(pageUrl);
       if (!response.ok)
         throw new Error(`dev page returned ${response.status}: ${text.slice(0, 300)}`);
       return text.includes("Count: 0") && text.includes("Named counter: 0");
     }).catch((error) => {
-      throw new Error(`${error.message}\nServer log:\n${server.logs()}`, { cause: error });
+      throw new Error(
+        `${error.message}\nDev status: code=${server.child.exitCode} signal=${server.child.signalCode}\nServer log:\n${server.logs()}`,
+        { cause: error },
+      );
     });
 
     const assetUrl = `${origin}/assets/islands.js`;
