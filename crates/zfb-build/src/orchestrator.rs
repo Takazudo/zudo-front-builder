@@ -139,6 +139,9 @@ fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
     policy: &GranularityPolicy,
     css_mirror_skip_dir_names: &[String],
 ) -> Vec<PathBuf> {
+    policy
+        .raw_import_invalidation
+        .retain_dynamic_watch_parents(policy.dynamic_dependency_paths());
     // Only a file's PARENT is ever watched, and the SSR module-dependency set
     // (issue #3162) can hold thousands of files in a few directories, so
     // offer one file per parent rather than paying the watcher's per-path
@@ -552,10 +555,31 @@ fn retain_unsuppressed_changes(
     let Some(suppress) = config.intake_suppression.as_ref() else {
         return changes;
     };
-    changes
-        .into_iter()
-        .filter(|(path, _)| !suppress(path))
-        .collect()
+    let mut exempt_roots: Vec<PathBuf> = config
+        .watch_roots
+        .iter()
+        .map(|root| config.project_root.join(root))
+        .collect();
+    exempt_roots.extend(config.extra_watch_paths.iter().cloned());
+    changes.into_iter().filter(|(path, _)| {
+        if suppress(path) { return false; }
+        // Intake lacks a reliable file-kind field. A missing/deleted path or
+        // directory must pass through, even when a snapshot says ignored.
+        if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+            return true;
+        }
+        let registry = &config.policy.raw_import_invalidation;
+        if !registry.linked_package_ignored_and_undeclared(path, false) {
+            return true;
+        }
+        if registry.linked_intake_exempt(path, &exempt_roots) {
+            return true;
+        }
+        if dev_timing_enabled() {
+            eprintln!("[zfb-timing] intake: suppressed linked-ignored {} (ignored-and-undeclared file outside watch claims)", path.display());
+        }
+        false
+    }).collect()
 }
 
 /// What a [`DiscoveryHook`] invocation did for this tick.
@@ -6975,18 +6999,21 @@ mod tests {
         let rule = package.join(".gitignore");
         let ignored = package.join("ignored.ts");
         std::fs::write(&rule, "ignored.ts\n").unwrap();
+        std::fs::write(&ignored, "export {}\n").unwrap();
         let snapshot =
             crate::bundler::LinkedPackageIgnoreSnapshot::capture(&package, &project).unwrap();
         let registry = crate::policy::RawImportInvalidation::default();
         registry.replace_linked_package_snapshots([snapshot]);
         assert!(registry.linked_package_ignored_and_undeclared(&ignored, false));
 
-        let for_predicate = registry.clone();
         let config = OrchestratorConfig::new(&project, vec![])
             .with_policy(GranularityPolicy::default().with_raw_import_invalidation(registry))
-            .with_intake_suppression(Arc::new(move |path| {
-                for_predicate.linked_package_ignored_and_undeclared(path, false)
-            }));
+            .with_intake_suppression(Arc::new(|_| false));
+        assert!(retain_unsuppressed_changes(
+            &config,
+            vec![(ignored.clone(), ChangeKind::Modified)]
+        )
+        .is_empty());
         std::fs::write(&rule, "").unwrap();
         let kept = retain_unsuppressed_changes(
             &config,
@@ -6997,6 +7024,70 @@ mod tests {
         );
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[1].0, ignored);
+    }
+
+    #[test]
+    fn linked_intake_keeps_overlapping_and_unknown_kind_events() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("app");
+        let package = root.path().join("widget");
+        std::fs::create_dir_all(&project).unwrap();
+        for dir in ["test-results", "dependency", "extra", "boot", "reconcile"] {
+            std::fs::create_dir_all(package.join(dir)).unwrap();
+        }
+        std::fs::create_dir_all(package.join("dependency/nested")).unwrap();
+        std::fs::write(package.join("package.json"), "{\"name\":\"widget\"}").unwrap();
+        std::fs::write(
+            package.join(".gitignore"),
+            "test-results/\ndependency/\nextra/\nboot/\nreconcile/\n",
+        )
+        .unwrap();
+        let files: Vec<_> = [
+            "test-results/a.json",
+            "dependency/a.json",
+            "dependency/b.json",
+            "extra/a.json",
+            "boot/a.json",
+            "reconcile/a.json",
+        ]
+        .into_iter()
+        .map(|name| package.join(name))
+        .collect();
+        for file in &files {
+            std::fs::write(file, "{}\n").unwrap();
+        }
+        let nested = package.join("dependency/nested/deep.json");
+        std::fs::write(&nested, "{}\n").unwrap();
+        let registry = crate::policy::RawImportInvalidation::default();
+        registry.replace_linked_package_snapshots([
+            crate::bundler::LinkedPackageIgnoreSnapshot::capture(&package, &project).unwrap(),
+        ]);
+        registry.retain_dynamic_watch_parents([files[1].clone()]);
+        registry.replace_page_entries([files[5].clone()]);
+        let config = OrchestratorConfig::new(&project, vec![PathBuf::from("../widget/boot")])
+            .with_extra_watch_paths(vec![package.join("extra")])
+            .with_policy(GranularityPolicy::default().with_raw_import_invalidation(registry))
+            .with_intake_suppression(Arc::new(|_| false));
+        let removed = package.join("test-results/removed.json");
+        let ignored_dir = package.join("test-results");
+        let batch: Vec<_> = files
+            .iter()
+            .cloned()
+            .chain([nested.clone(), ignored_dir.clone(), removed.clone()])
+            .map(|path| (path, ChangeKind::Modified))
+            .collect();
+        let kept = retain_unsuppressed_changes(&config, batch);
+        assert!(!kept.iter().any(|(path, _)| path == &files[0]));
+        assert!(
+            !kept.iter().any(|(path, _)| path == &nested),
+            "a dynamic parent claims direct children, not nested descendants"
+        );
+        for file in files.iter().skip(1).chain([&ignored_dir, &removed]) {
+            assert!(
+                kept.iter().any(|(path, _)| path == file),
+                "must retain {file:?}"
+            );
+        }
     }
 
     /// The over-suppression guard: a mixed batch carrying temp-entry
