@@ -36,19 +36,19 @@ object 変数を渡してはいけません。最初に該当した factory 理�
 | 診断理由 | 修正方法 |
 | --- | --- |
 | `mutable target binding` | `const` の target 束縛を使い、再代入しません。 |
-| `parameter <name> has a default value` | default を削除し、すべての呼び出しで object を明示します。 |
-| `destructured parameter <name> uses a rest pattern` | rest pattern を削除し、名前付きの静的 property だけを分割代入します。 |
-| `parameter <name> is written or escapes at <loc>` | parameter を静的 member 読み取りか `const` object pattern だけに使い、書き込み、削除、引き渡し、alias、返却、spread をしません。 |
-| `factory <F> escapes as a value at <loc>` | `F` の参照をすべて直接呼び出しにし、渡す、保存する、返す、bind/apply する、JSX として描画する操作を避けます。 |
-| `factory <F> has no call site in the scanned modules` | 必要な object literal を使う直接呼び出しをスキャン対象 module に追加するか、固定 target を使います。 |
-| `call site at <loc> passes too few arguments` | 宣言された位置に parameter を渡します。 |
-| `call site at <loc> spreads positional arguments` | parameter の位置までの位置引数を明示します。 |
-| `call site at <loc> passes a non-literal argument` | 外側の引数を object literal にします。spread には同一 module の `const` object literal を使い、ネストした spread、未対応 property、選択キーの重複、禁止された参照／書き込み／export を含めません。`createBoundary(deps)` は `deps` がローカル定数でも拒否されます。 |
-| `property Counter missing at call site <loc>` | 展開後の object に選択 property を追加します。 |
-| `call site at <loc> selects Counter conditionally (??, ternary, ||)` | 最終値を静的な関数束縛にするか、host/default の選択を公開 server composition seam に移します。 |
-| `property Counter at <loc> is not a function binding` | 1 つの関数束縛に解決できる値を使います。`host.Counter` のような runtime／opaque object receiver は証明できません。既存の resolver 理由が後ろに付く場合があります。 |
-| `call sites disagree: <loc> passes Counter, <loc> passes Other` | すべての呼び出しで同じ関数定義を選ぶか、固定ターゲット wrapper を分けます。 |
-| `parameter deps is written or escapes at <loc>` | `inner({ ...deps })` や `inner(deps)` では既存の読み取り専用契約を守ります。spread は関数間転送を追加しません。 |
+| `parameter &lt;name&gt; has a default value` | default を削除し、すべての呼び出しで object を明示します。 |
+| `destructured parameter &lt;name&gt; uses a rest pattern` | rest pattern を削除し、名前付きの静的 property だけを分割代入します。 |
+| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | parameter を静的 member 読み取りか `const` object pattern だけに使い、書き込み、削除、引き渡し、alias、返却、spread をしません。 |
+| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | `F` の参照をすべて直接呼び出しにし、渡す、保存する、返す、bind/apply する、JSX として描画する操作を避けます。 |
+| `factory &lt;F&gt; has no call site in the scanned modules` | 必要な object literal を使う直接呼び出しをスキャン対象 module に追加するか、固定 target を使います。 |
+| `call site at &lt;loc&gt; passes too few arguments` | 宣言された位置に parameter を渡します。 |
+| `call site at &lt;loc&gt; spreads positional arguments` | parameter の位置までの位置引数を明示します。 |
+| `call site at &lt;loc&gt; passes a non-literal argument` | 外側の引数を object literal にします。spread には同一 module の `const` object literal を使い、ネストした spread、未対応 property、選択キーの重複、禁止された参照／書き込み／export を含めません。`createBoundary(deps)` は `deps` がローカル定数でも拒否されます。 |
+| `property Counter missing at call site &lt;loc&gt;` | 展開後の object に選択 property を追加します。 |
+| `call site at &lt;loc&gt; selects Counter conditionally (??, ternary, ||)` | 最終値を静的な関数束縛にするか、host/default の選択を公開 server composition seam に移します。 |
+| `property Counter at &lt;loc&gt; is not a function binding` | 1 つの関数束縛に解決できる値を使います。`host.Counter` のような runtime／opaque object receiver は証明できません。既存の resolver 理由が後ろに付く場合があります。 |
+| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | すべての呼び出しで同じ関数定義を選ぶか、固定ターゲット wrapper を分けます。 |
+| `parameter deps is written or escapes at &lt;loc&gt;` | `inner({ ...deps })` や `inner(deps)` では既存の読み取り専用契約を守ります。spread は関数間転送を追加しません。 |
 | `boundary wrapper escapes into an opaque container` | bare return の固定 Island wrapper や汎用転送 boundary wrapper を map に保存しません。Fragment で囲んだ固定ターゲット map を使います。 |
 | `boundary wrapper escapes into an opaque object` | 汎用 wrapper を省略記法の object value として保存せず、到達可能な固定ターゲット wrapper に置き換えます。 |
 

@@ -186,13 +186,13 @@ for the relevant rejected shapes:
 
 | Rejected shape | Diagnostic reason |
 | --- | --- |
-| `createBoundary(deps)`, unknown spread source, `let` source, imported/parameter/aliased source, nested source spread, direct object-expression spread (`...{ Counter }`), call result, member or conditional operand | `call site at <loc> passes a non-literal argument` |
-| Forbidden source reference/write/export, computed key, method, accessor, `__proto__` key, or selected duplicate in the argument/source | `call site at <loc> passes a non-literal argument` |
-| Safe expansion without selected `Counter` | `property Counter missing at call site <loc>` |
-| Winning `host.Counter ?? Counter`, ternary, or `Counter || Other` | `call site at <loc> selects Counter conditionally (??, ternary, ||)` |
-| Winning `host.Counter` from a runtime/opaque object receiver (not a namespace import) | `property Counter at <loc> is not a function binding` (an existing resolver reason may follow) |
-| Two valid calls select different definitions | `call sites disagree: <loc> passes Counter, <loc> passes Other` |
-| Forward a factory parameter as `inner({ ...deps })` or `inner(deps)` | Existing `parameter deps is written or escapes at <loc>` takes precedence when that parameter's proof is demanded; spreads do not add interprocedural forwarding. |
+| `createBoundary(deps)`, unknown spread source, `let` source, imported/parameter/aliased source, nested source spread, direct object-expression spread (`...{ Counter }`), call result, member or conditional operand | `call site at &lt;loc&gt; passes a non-literal argument` |
+| Forbidden source reference/write/export, computed key, method, accessor, `__proto__` key, or selected duplicate in the argument/source | `call site at &lt;loc&gt; passes a non-literal argument` |
+| Safe expansion without selected `Counter` | `property Counter missing at call site &lt;loc&gt;` |
+| Winning `host.Counter ?? Counter`, ternary, or `Counter || Other` | `call site at &lt;loc&gt; selects Counter conditionally (??, ternary, ||)` |
+| Winning `host.Counter` from a runtime/opaque object receiver (not a namespace import) | `property Counter at &lt;loc&gt; is not a function binding` (an existing resolver reason may follow) |
+| Two valid calls select different definitions | `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` |
+| Forward a factory parameter as `inner({ ...deps })` or `inner(deps)` | Existing `parameter deps is written or escapes at &lt;loc&gt;` takes precedence when that parameter's proof is demanded; spreads do not add interprocedural forwarding. |
 | Store a direct-return fixed wrapper as `{ Panel: BarePanelIsland }` or a generic forwarding boundary as `{ Island: ForwardBoundary }` | `boundary wrapper escapes into an opaque container` |
 | Store the generic wrapper with shorthand, `{ ForwardBoundary }` | `boundary wrapper escapes into an opaque object` |
 | Pass a component function as an Island JSON prop, with both functions valid client exports and `PropsReceiver` a fixed target | SSR error: `ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component` |

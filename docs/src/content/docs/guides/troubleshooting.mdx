@@ -39,19 +39,19 @@ object variable as the outer argument. Apply the first matching factory reason:
 | Diagnostic reason | Fix |
 | --- | --- |
 | `mutable target binding` | Use a `const` target binding and do not reassign it. |
-| `parameter <name> has a default value` | Remove the default and pass the object explicitly at every call site. |
-| `destructured parameter <name> uses a rest pattern` | Remove the rest pattern; destructure only the named static property. |
-| `parameter <name> is written or escapes at <loc>` | Use the parameter only for static member reads or a `const` object pattern; do not write, delete, pass, alias, return, or spread it. |
-| `factory <F> escapes as a value at <loc>` | Keep every reference to `F` as a direct call; do not pass, store, return, bind, apply, or render it as JSX. |
-| `factory <F> has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
-| `call site at <loc> passes too few arguments` | Pass the parameter at its declared position. |
-| `call site at <loc> spreads positional arguments` | Spell out positional arguments through the parameter index. |
-| `call site at <loc> passes a non-literal argument` | Keep the outer argument as an object literal. For a spread, use a same-module `const` object literal with no nested spread, unsupported property, selected duplicate, or forbidden reference/write/export. `createBoundary(deps)` remains rejected even if `deps` is a local constant. |
-| `property Counter missing at call site <loc>` | Add the selected property to the expanded object. |
-| `call site at <loc> selects Counter conditionally (??, ternary, ||)` | Make the winning value one static function binding, or move host/default selection to the public server composition seam below. |
-| `property Counter at <loc> is not a function binding` | Use a value that resolves to one function binding; a runtime/opaque object receiver such as `host.Counter` does not prove it. An existing resolver reason may follow. |
-| `call sites disagree: <loc> passes Counter, <loc> passes Other` | Make every call select the same function definition, or use separate fixed-target wrappers. |
-| `parameter deps is written or escapes at <loc>` | For `inner({ ...deps })` or `inner(deps)`, keep `deps` within its existing read-only contract; spreads do not add interprocedural forwarding. |
+| `parameter &lt;name&gt; has a default value` | Remove the default and pass the object explicitly at every call site. |
+| `destructured parameter &lt;name&gt; uses a rest pattern` | Remove the rest pattern; destructure only the named static property. |
+| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | Use the parameter only for static member reads or a `const` object pattern; do not write, delete, pass, alias, return, or spread it. |
+| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | Keep every reference to `F` as a direct call; do not pass, store, return, bind, apply, or render it as JSX. |
+| `factory &lt;F&gt; has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
+| `call site at &lt;loc&gt; passes too few arguments` | Pass the parameter at its declared position. |
+| `call site at &lt;loc&gt; spreads positional arguments` | Spell out positional arguments through the parameter index. |
+| `call site at &lt;loc&gt; passes a non-literal argument` | Keep the outer argument as an object literal. For a spread, use a same-module `const` object literal with no nested spread, unsupported property, selected duplicate, or forbidden reference/write/export. `createBoundary(deps)` remains rejected even if `deps` is a local constant. |
+| `property Counter missing at call site &lt;loc&gt;` | Add the selected property to the expanded object. |
+| `call site at &lt;loc&gt; selects Counter conditionally (??, ternary, ||)` | Make the winning value one static function binding, or move host/default selection to the public server composition seam below. |
+| `property Counter at &lt;loc&gt; is not a function binding` | Use a value that resolves to one function binding; a runtime/opaque object receiver such as `host.Counter` does not prove it. An existing resolver reason may follow. |
+| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | Make every call select the same function definition, or use separate fixed-target wrappers. |
+| `parameter deps is written or escapes at &lt;loc&gt;` | For `inner({ ...deps })` or `inner(deps)`, keep `deps` within its existing read-only contract; spreads do not add interprocedural forwarding. |
 | `boundary wrapper escapes into an opaque container` | Do not store a bare-return fixed Island wrapper or a generic forwarding boundary wrapper in a map. Use the documented Fragment-wrapped fixed-target map. |
 | `boundary wrapper escapes into an opaque object` | Do not store the generic wrapper as a shorthand object value; replace it with reachable fixed-target wrappers. |
 
