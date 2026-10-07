@@ -172,6 +172,7 @@ function startDev(consumer, zfbBinary, port) {
     ["dev", "--scratch-dir", ".zfb-build/dev", "--host", "127.0.0.1", "--port", String(port)],
     {
       cwd: consumer,
+      env: { ...process.env, ZFB_DEV_EAGER: "1" },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     },
