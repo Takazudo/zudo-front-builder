@@ -1733,7 +1733,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             {
                 self.factory_resolver_operations += 1;
             }
-            let function = match self.resolve_expr(&call.path, &expr)? {
+            let function = match self.resolve_expr(&call.path, expr)? {
                 Value::Function(function) => function,
                 Value::Unsupported(reason) => {
                     return Ok(fail(format!(
@@ -1742,7 +1742,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     )))
                 }
                 _ => {
-                    let detail = match unwrap_expr(&expr) {
+                    let detail = match unwrap_expr(expr) {
                         Expr::Call(call) => match &call.callee {
                             Callee::Expr(callee) => match unwrap_expr(callee) {
                                 Expr::Ident(ident) => {
