@@ -767,6 +767,6 @@ fn remapped_island_registration_uses_project_relative_label() {
     scaffold_project(&root);
 
     let snapshot = capture_build(&root, &esbuild, None, None);
-    assert_project_relative_island_label(&snapshot);
+    assert_island_label(&snapshot, "Counter", ISLAND_LABEL);
     assert_clean_build(&snapshot, &root, None);
 }
