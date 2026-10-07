@@ -119,6 +119,40 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   await namedMdxCounter.click();
   await expect(namedMdxCounter).toHaveText("Named counter: 1");
 
+  const aliasMdxCounter = page.locator("#mdx-alias-counter");
+  await expect(aliasMdxCounter).toHaveText("Alias counter: 0");
+  const aliasMapIsland = page.locator('[data-zfb-island="AliasCounter"]');
+  await expect(aliasMapIsland).toHaveCount(1);
+  await expect(aliasMapIsland).toHaveAttribute("data-zfb-island-mounted", "");
+  await expect(aliasMapIsland).toHaveAttribute("data-props", "{}");
+  expect(await aliasMapIsland.evaluate((island) => island.parentElement?.tagName)).toBe("BODY");
+  expect(
+    await aliasMdxCounter.evaluate((button) => ({
+      parentMarker: button.parentElement?.getAttribute("data-zfb-island"),
+      parentElementCount: button.parentElement?.children.length,
+    })),
+  ).toEqual({ parentMarker: "AliasCounter", parentElementCount: 1 });
+  await aliasMdxCounter.click();
+  await expect(aliasMdxCounter).toHaveText("Alias counter: 1");
+
+  const aliasNamedMdxCounter = page.locator("#mdx-alias-named-counter");
+  await expect(aliasNamedMdxCounter).toHaveText("Alias named counter: 0");
+  const aliasNamedMapIsland = page.locator('[data-zfb-island="AliasNamedCounter"]');
+  await expect(aliasNamedMapIsland).toHaveCount(1);
+  await expect(aliasNamedMapIsland).toHaveAttribute("data-zfb-island-mounted", "");
+  await expect(aliasNamedMapIsland).toHaveAttribute("data-props", "{}");
+  expect(await aliasNamedMapIsland.evaluate((island) => island.parentElement?.tagName)).toBe(
+    "BODY",
+  );
+  expect(
+    await aliasNamedMdxCounter.evaluate((button) => ({
+      parentMarker: button.parentElement?.getAttribute("data-zfb-island"),
+      parentElementCount: button.parentElement?.children.length,
+    })),
+  ).toEqual({ parentMarker: "AliasNamedCounter", parentElementCount: 1 });
+  await aliasNamedMdxCounter.click();
+  await expect(aliasNamedMdxCounter).toHaveText("Alias named counter: 1");
+
   const localHelper = page.locator("#live-counter").first();
   await expect(localHelper).toHaveText("Live helper: LOCAL_LIVE_RESOURCE 0");
   await localHelper.click();
