@@ -103,6 +103,9 @@ pub const PACKAGE_ROOT_TRAVERSED_DIR_NAMES: &[&str] = &["node_modules", "dist"];
 pub struct RawImportInvalidation {
     /// One completed token snapshot per canonical linked package root.
     linked_packages: Arc<RwLock<BTreeMap<PathBuf, crate::bundler::LinkedPackageIgnoreSnapshot>>>,
+    /// Parent directories offered to the additive dynamic file watcher. Keep
+    /// them after a closure changes: the watcher retains their registrations.
+    dynamic_watch_parents: Arc<RwLock<BTreeSet<PathBuf>>>,
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_scripts: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_script_workers: Arc<RwLock<BTreeSet<PathBuf>>>,
@@ -314,6 +317,59 @@ fn coarse_realtime_now() -> Option<SystemTime> {
 }
 
 impl RawImportInvalidation {
+    pub fn retain_dynamic_watch_parents(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut parents) = self.dynamic_watch_parents.write() {
+            for path in paths {
+                if let Some(parent) = path.parent() {
+                    parents.extend(Self::aliases(parent.to_path_buf()));
+                }
+            }
+        }
+    }
+
+    /// Intake may discard only known files outside every other delivery or
+    /// reconciliation channel. Ancestor events are retained because notify
+    /// can report a directory in place of its children.
+    pub fn linked_intake_exempt(&self, path: &Path, roots: &[PathBuf]) -> bool {
+        let aliases: Vec<_> = Self::aliases(path.to_path_buf()).collect();
+        let mut exempt: BTreeSet<PathBuf> = roots
+            .iter()
+            .flat_map(|root| Self::aliases(root.clone()))
+            .collect();
+        if let Ok(parents) = self.dynamic_watch_parents.read() {
+            for parent in parents.iter() {
+                if aliases.iter().any(|path| {
+                    path == parent
+                        || path.parent() == Some(parent.as_path())
+                        || parent.starts_with(path)
+                }) {
+                    return true;
+                }
+            }
+        } else {
+            return true;
+        }
+        for set in [
+            &self.islands,
+            &self.client_scripts,
+            &self.client_script_workers,
+            &self.client_script_siblings,
+            &self.plugin_watch_files,
+            &self.ssr_module_deps,
+            &self.css_stylesheets,
+            &self.css_manifests,
+            &self.page_entries,
+            &self.content_files,
+        ] {
+            let Ok(paths) = set.read() else { return true };
+            exempt.extend(paths.iter().cloned());
+        }
+        aliases.iter().any(|path| {
+            exempt
+                .iter()
+                .any(|claim| path == claim || path.starts_with(claim) || claim.starts_with(path))
+        })
+    }
     /// Replace the whole generation after a successful token computation.
     /// Packages absent from the new closure retire here.
     pub fn replace_linked_package_snapshots(
@@ -363,14 +419,23 @@ impl RawImportInvalidation {
         let Ok(slot) = self.linked_packages.read() else {
             return false;
         };
-        let Some(snapshot) = slot
+        if slot.is_empty() {
+            return false;
+        }
+        let direct = slot
             .values()
             .filter(|snapshot| path.starts_with(snapshot.package_root()))
-            .max_by_key(|snapshot| snapshot.package_root().components().count())
-        else {
+            .max_by_key(|snapshot| snapshot.package_root().components().count());
+        if let Some(snapshot) = direct {
+            return snapshot.ignored_and_undeclared(path, is_dir);
+        }
+        let Some(resolved) = Self::resolved_alias(path) else {
             return false;
         };
-        snapshot.ignored_and_undeclared(path, is_dir)
+        slot.values()
+            .filter(|snapshot| resolved.starts_with(snapshot.package_root()))
+            .max_by_key(|snapshot| snapshot.package_root().components().count())
+            .is_some_and(|snapshot| snapshot.ignored_and_undeclared(&resolved, is_dir))
     }
 
     fn resolved_alias(path: &Path) -> Option<PathBuf> {
