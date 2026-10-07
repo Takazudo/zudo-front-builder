@@ -38,6 +38,7 @@ jobs:
           set -o pipefail
           cargo test -p zfb-build linked_intake 2>&1 | tee intake-unit.log
           cargo test -p zfb-build linked_rule_change_refreshes_before_same_batch_is_filtered 2>&1 | tee -a intake-unit.log
+          cargo test -p zfb-build --test zudo_react_token_linked_packages manifestless_alias_keeps_token_walk_and_fails_open 2>&1 | tee -a intake-unit.log
       - name: Scoped clippy
         run: |
           set -o pipefail
@@ -46,6 +47,12 @@ jobs:
         run: |
           set -o pipefail
           cargo nextest run -p zfb --test dev_sibling_watch_1678_e2e --run-ignored all -E 'test(e2e_3926_) | test(e2e_3163_nested_site_compiled_dist_sibling_edit_is_served)' 2>&1 | tee intake-e2e.log
+      - name: Manifestless sibling alias health regression
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: |
+          set -o pipefail
+          cargo nextest run -p zfb --test client_bundling_cross_pipeline --run-ignored ignored-only -E 'test(=real_binary_build_and_dev_expand_sibling_alias_macros_under_workspace)' 2>&1 | tee alias-health.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.4.3
         if: always()
         with:
@@ -54,5 +61,6 @@ jobs:
             intake-unit.log
             intake-clippy.log
             intake-e2e.log
+            alias-health.log
           if-no-files-found: warn
           retention-days: 2
