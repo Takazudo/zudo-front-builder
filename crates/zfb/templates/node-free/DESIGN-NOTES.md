@@ -14,7 +14,7 @@ These are editable project-owned choices, not zudo-wind engine defaults.
 Edit styles/design-system.css for values and design-tokens.json for semantic
 names. Basic blog merges those tokens into zfb.config.ts, retaining its Markdown
 showcase palette. Node-free keeps its explicit Wind section in zfb.config.json;
-update it too if you rename a token. Update design-rules.ts and these notes
+update it too if you rename a token. Update components/design-rules.ts and these notes
 when changing values; the home page reads those rules. Neither starter needs
 the workshop at runtime.
 

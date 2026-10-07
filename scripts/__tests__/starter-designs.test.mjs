@@ -23,7 +23,9 @@ describe("bundled starter design boundary", () => {
     expect(assets["styles/design-system.css"]).toBe(getSeedFiles(state)["design-system.css"]);
     expect(JSON.parse(assets["design-tokens.json"])).toEqual(windObject(state.values));
     expect(
-      JSON.parse(assets["design-rules.ts"].replace(/^export default /, "").replace(/;\n$/, "")),
+      JSON.parse(
+        assets["components/design-rules.ts"].replace(/^export default /, "").replace(/;\n$/, ""),
+      ),
     ).toEqual(currentRules(state));
   });
 

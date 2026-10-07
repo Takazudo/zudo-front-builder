@@ -23,7 +23,7 @@ horizontal and vertical spacing, type roles, a 60ch reading measure and one
 corner rule. Edit `styles/design-system.css` for values, `design-tokens.json`
 for utility roles, and the local dark overrides in `styles/global.css`.
 `zfb.config.ts` merges the design with the Markdown showcase palette;
-`design-rules.ts` supplies the home page explanations; update it and
+`components/design-rules.ts` supplies the home page explanations; update it and
 `DESIGN-NOTES.md` when changing values. The notes explain when to use each role.
 Read the existing
 `content/blog/styling-with-zudo-wind.md` article on the built site.
@@ -56,7 +56,7 @@ yet select a design seed.
 ├── lib/
 │   └── types.ts         # frontmatter + entry types shared by routes
 ├── design-tokens.json   # semantic Wind roles merged by zfb.config.ts
-├── design-rules.ts    # current rules displayed on the home page
+├── components/design-rules.ts    # current rules displayed on the home page
 ├── DESIGN-NOTES.md      # short usage rules
 └── styles/
     ├── design-system.css # project-owned Everyday values

@@ -1,4 +1,4 @@
-import designRules from "../design-rules.ts";
+import designRules from "../components/design-rules";
 
 /**
  * Home page — lists every entry in the `posts` content collection.
