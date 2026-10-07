@@ -478,11 +478,11 @@ describe("island shipped-size budget", () => {
       "no-island": { raw: 0, gzip: 0 },
       "event-only": { raw: 66327, gzip: 22087 },
       "scalar-signal": { raw: 66335, gzip: 22093 },
-      "show-for": { raw: 66481, gzip: 22169 },
-      model: { raw: 66326, gzip: 22097 },
-      "blog-theme": { raw: 66676, gzip: 22235 },
-      "json-api": { raw: 66481, gzip: 22188 },
-      "multi-island": { raw: 66603, gzip: 22194 },
+      "show-for": { raw: 66481, gzip: 22167 },
+      model: { raw: 66326, gzip: 22099 },
+      "blog-theme": { raw: 66676, gzip: 22237 },
+      "json-api": { raw: 66481, gzip: 22187 },
+      "multi-island": { raw: 66603, gzip: 22195 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
