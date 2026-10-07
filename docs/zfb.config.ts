@@ -104,6 +104,7 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
         categoryMatch: "playground",
         children: [
           { label: "Index", path: "/docs/playground" },
+          { label: "Design system", path: "/docs/playground/design-system" },
           { label: "renderHtml", path: "/docs/playground/render" },
           { label: "compile", path: "/docs/playground/compile" },
           { label: "parseToAst", path: "/docs/playground/parse" },

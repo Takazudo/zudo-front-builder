@@ -36,6 +36,29 @@ function fixtureDist({ markerOverrides = {}, omit = [] } = {}) {
   return dist;
 }
 
+test("the native design workshop requires an island marker in both locales", () => {
+  assert.ok(
+    EXPECTED_ISLANDS.some(
+      ({ route, marker }) =>
+        route === "docs/playground/design-system" && marker === "DesignSystemPlayground",
+    ),
+  );
+  const dist = fixtureDist({ omit: ["ja/docs/playground/design-system"] });
+  try {
+    const { findings } = checkIslandMarkers(dist);
+    assert.ok(
+      findings.some(
+        ({ half, route, marker }) =>
+          half === "marker" &&
+          route === "/ja/docs/playground/design-system" &&
+          marker === "DesignSystemPlayground",
+      ),
+    );
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
+});
+
 test("collectIslandMarkers accepts quoted, unquoted, and SSR-skip attributes", () => {
   assert.deepEqual(
     [
