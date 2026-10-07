@@ -1,0 +1,37 @@
+name: Temporary provenance post-fix probe
+
+on:
+  pull_request:
+    branches: [base/sweep-261007-2-provenance-membership-staleness]
+
+permissions:
+  contents: read
+
+jobs:
+  deleted-entry-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      ZFB_DEV_TIMING: "1"
+      ZFB_DELETION_DIAGNOSTIC: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+      - uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: nextest@0.9.138
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: v2-zfb
+          shared-key: workspace-all-targets
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the three deleted-entry regressions
+        run: >-
+          cargo nextest run -p zfb --test dev_content_aggregate_cold_boot_e2e
+          --no-capture -E 'test(cold_lazy_deleted_entry_)'

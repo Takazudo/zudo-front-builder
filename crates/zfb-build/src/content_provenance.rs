@@ -328,7 +328,7 @@ pub enum ContentProvenanceError {
     /// A direct-entry observation did not agree with the current membership
     /// snapshot for its declared collection.
     #[error(
-        "content consumer {consumer:?} read entry {entry:?} outside collection {collection:?}"
+        "content consumer {consumer:?} read entry {entry:?} not in the current membership snapshot of collection {collection:?} (it may have been removed or filtered since the consumer last enumerated the collection)"
     )]
     EntryOutsideCollectionMembership {
         /// Source route that made the read.
@@ -591,13 +591,20 @@ mod tests {
             entry.clone(),
         )]);
 
+        let error = provenance.edge_groups(&membership).unwrap_err();
         assert_eq!(
-            provenance.edge_groups(&membership),
-            Err(ContentProvenanceError::EntryOutsideCollectionMembership {
+            error,
+            ContentProvenanceError::EntryOutsideCollectionMembership {
                 consumer,
                 collection: collection("posts"),
                 entry,
-            })
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("not in the current membership snapshot of collection"),
+            "the hint must describe the observed snapshot without claiming why it changed: {error}"
         );
     }
 }
