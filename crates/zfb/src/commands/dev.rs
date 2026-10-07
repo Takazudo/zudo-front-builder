@@ -7182,8 +7182,31 @@ impl DevRenderSession {
             }
             apply_content_trace_observations(
                 &mut state.reads_by_observation,
-                current_trace.observed,
+                current_trace.observed.clone(),
                 current_trace.reads,
+            );
+            if dev_timing_enabled() {
+                for (observation, reads) in &state.reads_by_observation {
+                    for read in reads {
+                        if let TrackedContentRead::Entry {
+                            collection, entry, ..
+                        } = read
+                        {
+                            if !membership
+                                .membership
+                                .entries(collection)
+                                .is_some_and(|entries| entries.contains(entry))
+                            {
+                                eprintln!("[zfb-timing] provenance stale phase={:?} retained={} consumer={:?} collection={:?} entry={:?} member=false", observation.phase, !current_trace.observed.contains(observation), observation.consumer, collection, entry);
+                            }
+                        }
+                    }
+                }
+            }
+            demote_retained_paths_reads(
+                &mut state.reads_by_observation,
+                &current_trace.observed,
+                &membership.membership,
             );
             let reads: Vec<TrackedContentRead> = state
                 .reads_by_observation
@@ -10481,6 +10504,50 @@ fn apply_content_trace_observations(
     }
     for (observation, reads) in reads {
         reads_by_observation.insert(observation, reads);
+    }
+}
+
+/// A retained `paths()` mapping was verified against an earlier route table.
+/// Once any entry in a consumer/collection pair leaves the current membership,
+/// its whole mapping is stale. Broaden that pair to one collection read until
+/// the next authoritative `Paths` visit replaces the observation.
+#[cfg(feature = "embed_v8")]
+fn demote_retained_paths_reads(
+    reads_by_observation: &mut BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
+    current_visits: &BTreeSet<DevContentTraceObservation>,
+    membership: &ContentCollectionMembership,
+) {
+    for (observation, reads) in reads_by_observation {
+        if observation.phase != DevContentTracePhase::Paths || current_visits.contains(observation)
+        {
+            continue;
+        }
+        let stale_pairs: BTreeSet<ContentCollectionId> = reads
+            .iter()
+            .filter_map(|read| match read {
+                TrackedContentRead::Entry {
+                    collection, entry, ..
+                } if membership
+                    .entries(collection)
+                    .is_some_and(|entries| !entries.contains(entry)) =>
+                {
+                    Some(collection.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if stale_pairs.is_empty() {
+            continue;
+        }
+        reads.retain(|read| {
+            !matches!(read, TrackedContentRead::Entry { collection, .. } if stale_pairs.contains(collection))
+        });
+        for collection in stale_pairs {
+            reads.push(TrackedContentRead::collection(
+                observation.consumer.clone(),
+                collection,
+            ));
+        }
     }
 }
 
@@ -19792,6 +19859,129 @@ mod tests {
                 retained.contains_key(&paths_observation),
                 "a render that makes no collection read must not erase the route's prior paths() evidence",
             );
+        }
+
+        #[test]
+        fn retained_paths_entry_missing_after_render_visit_demotes_only_its_pair() {
+            let consumer = PageId::new("pages/posts/[slug].tsx");
+            let unrelated = PageId::new("pages/docs/index.tsx");
+            let paths = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Paths,
+            };
+            let render = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Render,
+            };
+            let other = DevContentTraceObservation {
+                consumer: unrelated.clone(),
+                phase: DevContentTracePhase::Render,
+            };
+            let alpha = PathBuf::from("/posts/alpha.md");
+            let removed = PathBuf::from("/posts/removed.md");
+            let doc = PathBuf::from("/docs/intro.md");
+            let mut membership = ContentCollectionMembership::new();
+            membership.insert("posts", [alpha.clone()]);
+            membership.insert("docs", [doc.clone()]);
+            let mut retained = BTreeMap::from([
+                (
+                    paths.clone(),
+                    vec![
+                        TrackedContentRead::entry(consumer.clone(), "posts", alpha.clone()),
+                        TrackedContentRead::entry(consumer.clone(), "posts", removed.clone()),
+                    ],
+                ),
+                (
+                    other,
+                    vec![TrackedContentRead::collection(unrelated.clone(), "docs")],
+                ),
+            ]);
+
+            // The worker rendered the detail without reading a collection;
+            // its earlier paths() observation is still needed.
+            let render_visit = BTreeSet::from([render]);
+            apply_content_trace_observations(&mut retained, render_visit.clone(), BTreeMap::new());
+            demote_retained_paths_reads(&mut retained, &render_visit, &membership);
+            assert_eq!(
+                retained.get(&paths),
+                Some(&vec![TrackedContentRead::collection(
+                    consumer.clone(),
+                    "posts"
+                )]),
+                "all direct reads for the stale pair must be replaced, not supplemented"
+            );
+            let groups = ContentProvenance::from_reads(retained.values().flatten().cloned())
+                .edge_groups(&membership)
+                .expect("retained Paths demotion must permit expansion");
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(&mut graph, groups);
+            assert_eq!(graph.consumers_of(&alpha), Some(vec![consumer.clone()]));
+            assert_eq!(graph.consumers_of(&doc), Some(vec![unrelated]));
+
+            // A fresh authoritative paths() execution restores direct-entry
+            // precision and retires the broadened observation.
+            apply_content_trace_observations(
+                &mut retained,
+                BTreeSet::from([paths.clone()]),
+                BTreeMap::from([(
+                    paths.clone(),
+                    vec![TrackedContentRead::entry(
+                        consumer.clone(),
+                        "posts",
+                        alpha.clone(),
+                    )],
+                )]),
+            );
+            demote_retained_paths_reads(
+                &mut retained,
+                &BTreeSet::from([paths.clone()]),
+                &membership,
+            );
+            assert_eq!(
+                retained.get(&paths),
+                Some(&vec![TrackedContentRead::entry(consumer, "posts", alpha)])
+            );
+        }
+
+        #[test]
+        fn paths_demotion_keeps_foreign_and_unavailable_membership_errors() {
+            let consumer = PageId::new("pages/posts/[slug].tsx");
+            let paths = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Paths,
+            };
+            let foreign = PathBuf::from("/elsewhere/foreign.md");
+            let mut membership = ContentCollectionMembership::new();
+            membership.insert("posts", [PathBuf::from("/posts/alpha.md")]);
+            let mut fresh = BTreeMap::from([(
+                paths.clone(),
+                vec![TrackedContentRead::entry(
+                    consumer.clone(),
+                    "posts",
+                    foreign,
+                )],
+            )]);
+            demote_retained_paths_reads(&mut fresh, &BTreeSet::from([paths.clone()]), &membership);
+            assert!(matches!(
+                ContentProvenance::from_reads(fresh.values().flatten().cloned())
+                    .edge_groups(&membership),
+                Err(zfb_build::ContentProvenanceError::EntryOutsideCollectionMembership { .. })
+            ));
+
+            let mut unavailable = BTreeMap::from([(
+                paths,
+                vec![TrackedContentRead::entry(
+                    consumer,
+                    "missing",
+                    "/missing/entry.md",
+                )],
+            )]);
+            demote_retained_paths_reads(&mut unavailable, &BTreeSet::new(), &membership);
+            assert!(matches!(
+                ContentProvenance::from_reads(unavailable.values().flatten().cloned())
+                    .edge_groups(&membership),
+                Err(zfb_build::ContentProvenanceError::MissingCollectionMembership { .. })
+            ));
         }
     }
 

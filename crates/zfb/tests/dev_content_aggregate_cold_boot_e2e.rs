@@ -1548,8 +1548,7 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[deletion-sequence] no esbuild binary available; skipping {sequence:?}");
-        return;
+        panic!("[deletion-sequence] no esbuild binary available for required {sequence:?} case");
     };
 
     let temp = tempfile::tempdir().expect("create deletion-sequence fixture root");
@@ -1559,6 +1558,34 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
         .expect("canonicalize fixture root");
     copy_dir(&deletion_sequence_fixture_dir(), &root).expect("copy deletion-sequence fixture");
     let app_root = root.join("app");
+    // Render markdown bodies in both surviving consumers so a body-only edit
+    // has an observable response, and add an unrelated route for narrowing.
+    let index_page = app_root.join("pages/index.tsx");
+    let index_source = fs::read_to_string(&index_page).expect("read sequence index page");
+    assert!(index_source.contains("<p key={entry.slug}>"));
+    fs::write(
+        &index_page,
+        index_source
+            .replace("<p key={entry.slug}>", "<div key={entry.slug}>")
+            .replace("</p>", "<entry.Content components={{}} /></div>"),
+    )
+    .expect("make sequence index render entry bodies");
+    let detail_page = app_root.join("pages/[slug].tsx");
+    let detail_source = fs::read_to_string(&detail_page).expect("read sequence detail page");
+    assert!(detail_source.contains("{entry ? String(entry.data.title) : \"Not found\"}"));
+    fs::write(
+        &detail_page,
+        detail_source.replace(
+            "{entry ? String(entry.data.title) : \"Not found\"}",
+            "{entry ? <><h1>{String(entry.data.title)}</h1><entry.Content components={{}} /></> : \"Not found\"}",
+        ),
+    )
+    .expect("make sequence detail render entry bodies");
+    fs::write(
+        app_root.join("pages/unrelated.tsx"),
+        "export default function Unrelated() { return <html><body>UNRELATED_ROUTE</body></html>; }\n",
+    )
+    .expect("add unrelated sequence route");
     assert!(
         !app_root.join(".zfb-build").exists(),
         "fixture must start cold"
@@ -1573,7 +1600,10 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
     let body = async {
         let Some((base, client)) = boot_and_handshake_banner_only(&mut session, &probe).await
         else {
-            return ScenarioOutcome::Skipped;
+            panic!(
+                "{sequence:?}: deletion probe was not observed; scenario did not run\n{}",
+                session.logs()
+            );
         };
         let route_count = parse_cold_lazy_route_count(&read_log(&session.stdout_path));
         assert!(
@@ -1682,6 +1712,71 @@ async fn run_deleted_collection_entry_sequence(sequence: DeletionSequence) {
             "{sequence:?}: {}\n{}",
             detail_result.unwrap_err(),
             session.logs()
+        );
+        let seed_url = format!("{base}/seed/");
+        let unrelated_url = format!("{base}/unrelated/");
+        poll_until_response_contains(
+            &client,
+            &seed_url,
+            "Seed body",
+            "surviving detail before body edit",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &unrelated_url,
+            "UNRELATED_ROUTE",
+            "unrelated route before body edit",
+            &session,
+        )
+        .await;
+        drain_ticks_until_quiescent(&base).await;
+        let unrelated_file = session.html_root().join("unrelated/index.html");
+        let unrelated_before = snapshot_file(&unrelated_file);
+        fs::write(
+            session.root.join("src/content/docs/seed.md"),
+            "---\ntitle: Seed\n---\nSURVIVING_BODY_AFTER_DELETE\n",
+        )
+        .expect("make body-only edit to surviving entry");
+        poll_until_response_contains(
+            &client,
+            &seed_url,
+            "SURVIVING_BODY_AFTER_DELETE",
+            "surviving detail after body-only edit",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &index_url,
+            "SURVIVING_BODY_AFTER_DELETE",
+            "aggregate index after body-only edit",
+            &session,
+        )
+        .await;
+        poll_until_response_contains(
+            &client,
+            &unrelated_url,
+            "UNRELATED_ROUTE",
+            "unrelated route after body-only edit",
+            &session,
+        )
+        .await;
+        assert_snapshot_unchanged(
+            &unrelated_file,
+            &unrelated_before,
+            "post-delete body-only edit narrows past unrelated route",
+            &session,
+        );
+        let logs = session.logs();
+        assert!(
+            !logs.contains("outside collection"),
+            "{sequence:?}: stale membership warning\n{logs}"
+        );
+        assert!(
+            !logs.contains("content provenance unavailable after lazy request render"),
+            "{sequence:?}: provenance unavailable\n{logs}"
         );
         ScenarioOutcome::Completed
     };
