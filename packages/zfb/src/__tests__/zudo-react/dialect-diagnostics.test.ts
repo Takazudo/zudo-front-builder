@@ -229,10 +229,22 @@ const cases: readonly Case[] = [
     error: {
       code: "ZR_MODEL_UNSUPPORTED",
       authored: "value",
-      serverDetail: "input.value requires modelValue",
-      clientExpected: "modelValue",
+      serverDetail:
+        "input.value requires modelValue (or a static readonly/disabled attribute for a display-only binding)",
+      clientExpected:
+        "modelValue (or a static readonly/disabled attribute for a display-only binding)",
       clientActual: "value",
     },
+  },
+  {
+    name: "readonly input accepts a reactive value",
+    build: () => h("input", { readonly: true, value: signal("a&b") }),
+    html: '<input readonly value="a&amp;b">',
+  },
+  {
+    name: "disabled textarea accepts a reactive value",
+    build: () => h("textarea", { disabled: true, value: signal("a&b") }),
+    html: "<textarea disabled>a&amp;b</textarea>",
   },
   {
     name: "textarea value uses modelValue",
@@ -240,8 +252,10 @@ const cases: readonly Case[] = [
     error: {
       code: "ZR_MODEL_UNSUPPORTED",
       authored: "value",
-      serverDetail: "textarea.value requires modelValue",
-      clientExpected: "modelValue",
+      serverDetail:
+        "textarea.value requires modelValue (or a static readonly/disabled attribute for a display-only binding)",
+      clientExpected:
+        "modelValue (or a static readonly/disabled attribute for a display-only binding)",
       clientActual: "value",
     },
   },
@@ -276,6 +290,47 @@ const cases: readonly Case[] = [
       serverDetail: "my-el.value requires a static value",
       clientExpected: "static value",
       clientActual: "value",
+    },
+  },
+  ...[
+    ["reactive readonly", { readonly: signal(true) }],
+    ["reactive disabled", { disabled: signal(true) }],
+    ["false readonly", { readonly: false }],
+    ["string disabled", { disabled: "disabled" }],
+    ["reactive type", { type: signal("text"), readonly: true }],
+  ].map(([name, attributes]) => ({
+    name: String(name),
+    build: () => h("input", { value: signal("x"), ...(attributes as Record<string, unknown>) }),
+    error: {
+      code: "ZR_MODEL_UNSUPPORTED",
+      authored: "value",
+      serverDetail:
+        "input.value requires modelValue (or a static readonly/disabled attribute for a display-only binding)",
+      clientExpected:
+        "modelValue (or a static readonly/disabled attribute for a display-only binding)",
+      clientActual: "value",
+    },
+  })),
+  {
+    name: "number input remains unsupported with readonly",
+    build: () => h("input", { type: "number", readonly: true, value: signal("1") }),
+    error: {
+      code: "ZR_MODEL_UNSUPPORTED",
+      authored: "value",
+      serverDetail: "input.value requires a static value",
+      clientExpected: "static value",
+      clientActual: "value",
+    },
+  },
+  {
+    name: "readonly checkbox still rejects reactive checked",
+    build: () => h("input", { type: "checkbox", readonly: true, checked: signal(true) }),
+    error: {
+      code: "ZR_MODEL_UNSUPPORTED",
+      authored: "checked",
+      serverDetail: "input.checked requires modelChecked",
+      clientExpected: "modelChecked",
+      clientActual: "checked",
     },
   },
 ];

@@ -31,6 +31,7 @@ import {
   booleanAttrs,
   commonAttrs,
   dialectSuggestion,
+  displayOnlyControl,
   emptyIframeChildren,
   formProps,
   htmlAttrs,
@@ -186,8 +187,10 @@ function attributes(
       !/^on[a-z]+$/.test(name)
     )
       fail("ZR_ATTRIBUTE", context, `${tag}.${name}`);
+    const displayValue = name === "value" && reactive(original) && displayOnlyControl(tag, props);
+    if (displayValue && tag === "textarea") continue;
     const value = read(original);
-    if ((name === "value" || name === "checked") && reactive(original)) {
+    if ((name === "value" || name === "checked") && reactive(original) && !displayValue) {
       const suggestion = reactiveModelSuggestion(
         tag,
         name,
@@ -200,6 +203,8 @@ function attributes(
         `${tag}.${name} requires ${suggestion ?? "a static value"}`,
       );
     }
+    if (displayValue && typeof value !== "string")
+      fail("ZR_MODEL_VALUE", context, `${tag} requires string`);
     if (/^on[a-z]/.test(name) && typeof value === "function")
       fail("ZR_PROP_DIALECT", context, `${tag}.${name} must use on:${name.slice(2)}`, {
         name,
@@ -416,7 +421,12 @@ function element(
       tag === "option")
   )
     fail("ZR_RAW_HTML", context, tag);
-  if (tag === "textarea" && hasChildren && (hasValue || source.defaultValue !== undefined))
+  const displayValue = reactive(source.value) && displayOnlyControl(tag, source);
+  if (
+    tag === "textarea" &&
+    hasChildren &&
+    (hasValue || source.defaultValue !== undefined || displayValue)
+  )
     fail("ZR_MODEL_CONFLICT", context, tag);
   let content = "";
   if (raw !== undefined) {
@@ -431,8 +441,11 @@ function element(
     )
       fail("ZR_RAW_HTML", context, `closing ${tag} in rawHtml`);
     content = tag === "script" || tag === "style" ? payload : region(context, "h", () => payload);
-  } else if (tag === "textarea" && (hasValue || source.defaultValue !== undefined)) {
-    const value = read(source.modelValue ?? source.defaultValue);
+  } else if (
+    tag === "textarea" &&
+    (hasValue || source.defaultValue !== undefined || displayValue)
+  ) {
+    const value = read(source.modelValue ?? source.defaultValue ?? source.value);
     if (typeof value !== "string") fail("ZR_MODEL_VALUE", context, "textarea requires string");
     content = `${value.startsWith("\n") ? "\n" : ""}${escapeText(value)}`;
   } else if (tag === "iframe") {
