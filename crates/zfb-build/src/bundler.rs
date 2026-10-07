@@ -3545,7 +3545,7 @@ fn collect_zudo_react_token_tree(
             )?;
         }
         for prefix in &snapshot.declared_prefixes {
-            let subtree = physical_root.join(&prefix);
+            let subtree = physical_root.join(prefix);
             let Ok(canonical) = fs::canonicalize(&subtree) else {
                 continue;
             };
