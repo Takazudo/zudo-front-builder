@@ -2915,8 +2915,7 @@ pub fn zudo_react_build_token_with_snapshots(
         false,
         Some(&output_dir),
         &mut visited_packages,
-        &mut linked_snapshots,
-        (&mut files, &mut emitted),
+        (&mut files, &mut emitted, &mut linked_snapshots),
     )?;
     let mut sorted_aliases = plugin_aliases.to_vec();
     sorted_aliases.sort();
@@ -3033,8 +3032,7 @@ fn collect_zudo_react_external_target(
                     true,
                     None,
                     visited_packages,
-                    linked_snapshots,
-                    (&mut *files, &mut *emitted),
+                    (&mut *files, &mut *emitted, &mut *linked_snapshots),
                 )?;
             }
         }
@@ -3057,8 +3055,7 @@ fn collect_zudo_react_external_target(
             true,
             None,
             visited_packages,
-            linked_snapshots,
-            (&mut *files, &mut *emitted),
+            (&mut *files, &mut *emitted, &mut *linked_snapshots),
         )?;
     }
     Ok(())
@@ -3541,10 +3538,13 @@ fn collect_zudo_react_token_tree(
     linked_package: bool,
     output_dir: Option<&Path>,
     visited_packages: &mut BTreeSet<PathBuf>,
-    linked_snapshots: &mut Vec<LinkedPackageIgnoreSnapshot>,
-    outputs: (&mut Vec<(PathBuf, PathBuf)>, &mut BTreeMap<PathBuf, usize>),
+    outputs: (
+        &mut Vec<(PathBuf, PathBuf)>,
+        &mut BTreeMap<PathBuf, usize>,
+        &mut Vec<LinkedPackageIgnoreSnapshot>,
+    ),
 ) -> Result<()> {
-    let (files, emitted) = outputs;
+    let (files, emitted, linked_snapshots) = outputs;
     let first_file = files.len();
     let mut node_modules_dirs = Vec::new();
     let mut record_entry = |path: &Path, is_dir: bool, is_file: bool| -> Result<()> {
@@ -3817,8 +3817,7 @@ fn collect_zudo_react_linked_package(
         true,
         None,
         visited_packages,
-        linked_snapshots,
-        (&mut *files, &mut *emitted),
+        (&mut *files, &mut *emitted, &mut *linked_snapshots),
     )
 }
 
