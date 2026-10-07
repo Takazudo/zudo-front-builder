@@ -33,6 +33,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p zfb-build policy 2>&1 | tee lifecycle-test.log
+          cargo test -p zfb-build linked_rule_change_refreshes_before_same_batch_is_filtered 2>&1 | tee -a lifecycle-test.log
       - name: Scoped clippy
         run: |
           set -o pipefail
