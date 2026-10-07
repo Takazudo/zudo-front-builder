@@ -278,20 +278,66 @@ fn expected_home_marker_set() -> BTreeSet<String> {
         .collect()
 }
 
-const COMPOSITION_ROUTES: &[(&str, &[&str])] = &[
-    ("factory-static-spread", &["FactoryCounter"]),
-    ("factory-composition-default", &["DefaultPanel"]),
-    ("factory-composition-host-override", &["HostPanel"]),
-    ("factory-composition-settings-disabled", &[]),
-    ("factory-composition-default-suppressed", &[]),
+const COMPOSITION_ROUTES: &[(&str, &[&str], bool)] = &[
+    ("factory-static-spread", &["FactoryCounter"], false),
+    ("factory-composition-default", &["DefaultPanel"], true),
+    ("factory-composition-host-override", &["HostPanel"], true),
+    ("factory-composition-settings-disabled", &[], false),
+    ("factory-composition-default-suppressed", &[], false),
     (
         "factory-composition-host-with-default-suppressed",
         &["HostPanel"],
+        true,
     ),
-    ("factory-map-default", &["DefaultPanel"]),
-    ("factory-map-host-override", &["HostPanel"]),
-    ("factory-map-settings-disabled", &[]),
+    ("factory-map-default", &["DefaultPanel"], true),
+    ("factory-map-host-override", &["HostPanel"], true),
+    ("factory-map-settings-disabled", &[], false),
 ];
+
+fn write_factory_override_control_page(root: &Path) {
+    write(
+        root,
+        "pages/factory-target-overrides/index.tsx",
+        r#"import { Island } from "@takazudo/zfb";
+import { FactoryCounter } from "../../components/factory-counter";
+import { HostPanel } from "../../components/host-panel";
+
+const defaults = { FactoryCounter };
+const override = { FactoryCounter: HostPanel };
+
+function createExplicitLast(deps: { FactoryCounter: typeof FactoryCounter }) {
+  const Target = deps.FactoryCounter;
+  return function ExplicitLast() { return <><Island><Target /></Island></>; };
+}
+function createSpreadLast(deps: { FactoryCounter: typeof FactoryCounter }) {
+  const Target = deps.FactoryCounter;
+  return function SpreadLast() { return <><Island><Target /></Island></>; };
+}
+function createSourceOverrideLast(deps: { FactoryCounter: typeof FactoryCounter }) {
+  const Target = deps.FactoryCounter;
+  return function SourceOverrideLast() { return <><Island><Target /></Island></>; };
+}
+function createDefaultsLast(deps: { FactoryCounter: typeof FactoryCounter }) {
+  const Target = deps.FactoryCounter;
+  return function DefaultsLast() { return <><Island><Target /></Island></>; };
+}
+
+const ExplicitLast = createExplicitLast({ ...defaults, FactoryCounter: HostPanel });
+const SpreadLast = createSpreadLast({ FactoryCounter: HostPanel, ...defaults });
+const SourceOverrideLast = createSourceOverrideLast({ ...defaults, ...override });
+const DefaultsLast = createDefaultsLast({ ...override, ...defaults });
+
+export default function Page() {
+  return <html><body>
+    <ExplicitLast />
+    <SpreadLast />
+    <SourceOverrideLast />
+    <DefaultsLast />
+  </body></html>;
+}
+"#,
+    );
+}
 
 fn assert_no_published_islands(root: &Path) {
     let assets = root.join("dist/assets");
@@ -537,6 +583,7 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     copy_dir(&fixture_root(), &positive);
     install_packed_widgets(&positive);
     materialize_embedded_node_modules(&positive);
+    write_factory_override_control_page(&positive);
     let built = run_build(&positive, &esbuild);
     assert!(
         built.status.success(),
@@ -568,8 +615,21 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         BTreeSet::from(["HostPanel".to_string()]),
         "host override route must render the host-owned target only"
     );
+    let override_html =
+        fs::read_to_string(positive.join("dist/factory-target-overrides/index.html"))
+            .expect("read fresh-consumer override control route HTML");
+    assert_eq!(
+        extract_html_markers(&override_html),
+        vec![
+            "HostPanel".to_string(),
+            "FactoryCounter".to_string(),
+            "HostPanel".to_string(),
+            "FactoryCounter".to_string(),
+        ],
+        "explicit/source and source/source override directions must select the rightmost target"
+    );
     let mut route_expectations = serde_json::Map::new();
-    for (route, markers) in COMPOSITION_ROUTES {
+    for (route, markers, feature_shim) in COMPOSITION_ROUTES {
         let route_html = fs::read_to_string(positive.join(format!("dist/{route}/index.html")))
             .unwrap_or_else(|error| panic!("read {route} route HTML: {error}"));
         let actual = extract_html_markers(&route_html);
@@ -578,14 +638,24 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
             actual, expected_markers,
             "{route} must emit the exact selected markers"
         );
+        assert_eq!(
+            route_html.contains("id=\"factory-feature-shim\""),
+            *feature_shim,
+            "{route} must emit the feature shim only when a feature boundary is rendered"
+        );
         if markers.is_empty() {
             assert!(!route_html.contains("data-zfb-island-mounted"), "{route}");
+            assert!(!route_html.contains("data-zfb-island-skip-ssr"), "{route}");
+            assert!(
+                !route_html.contains("data-zfb-island-skip-ssr-mounted"),
+                "{route}"
+            );
             assert!(!route_html.contains("id=\"default-panel\""), "{route}");
             assert!(!route_html.contains("id=\"host-panel\""), "{route}");
         }
         route_expectations.insert(
             (*route).to_string(),
-            json!({ "markers": markers, "count": markers.len() }),
+            json!({ "markers": markers, "count": markers.len(), "featureShim": feature_shim }),
         );
     }
     for marker in ["Counter", "NamedCounter"] {
@@ -1114,6 +1184,21 @@ export default function Home() {
             "const defaults = { '__proto__': {}, FactoryCounter }; const FactoryBoundary = createFactoryBoundary({ ...defaults });",
             "passes a non-literal argument",
         ),
+        (
+            "factory-spread-duplicate-argument",
+            "const FactoryBoundary = createFactoryBoundary({ FactoryCounter, FactoryCounter: Other });",
+            "passes a non-literal argument",
+        ),
+        (
+            "factory-spread-duplicate-source",
+            "const defaults = { FactoryCounter, FactoryCounter: Other }; const FactoryBoundary = createFactoryBoundary({ ...defaults });",
+            "passes a non-literal argument",
+        ),
+        (
+            "factory-spread-missing",
+            "const defaults = { Other }; const FactoryBoundary = createFactoryBoundary({ ...defaults });",
+            "property FactoryCounter missing at call site",
+        ),
     ] {
         let rejected_root = scratch.path().join(name);
         make_minimal_project(&rejected_root);
@@ -1122,6 +1207,7 @@ export default function Home() {
             "components/factory-counter.tsx",
             r#""use client";
 export function FactoryCounter() { return <button>Factory counter</button>; }
+export function Other() { return <button>Other</button>; }
 "#,
         );
         write(
@@ -1129,7 +1215,7 @@ export function FactoryCounter() { return <button>Factory counter</button>; }
             "pages/index.tsx",
             &format!(
                 r#"import {{ Island }} from "@takazudo/zfb";
-import {{ FactoryCounter }} from "../components/factory-counter";
+import {{ FactoryCounter, Other }} from "../components/factory-counter";
 function createFactoryBoundary(deps: {{ FactoryCounter: typeof FactoryCounter }}) {{
   const Target = deps.FactoryCounter;
   return function FactoryBoundary() {{
@@ -1155,6 +1241,17 @@ export default function Home() {{
             diagnostic.contains(reason),
             "{name} must report {reason:?}: {diagnostic}"
         );
+        if name != "factory-escape" {
+            assert!(
+                diagnostic.contains("target FactoryBoundary has unsupported initializer:"),
+                "{name} must keep the source-located outer diagnostic: {diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("pages/index.tsx")
+                    && diagnostic.contains("; see concepts/islands#boundary-discovery-and-migration"),
+                "{name} must retain the source location and migration anchor: {diagnostic}"
+            );
+        }
         assert_no_published_islands(&rejected_root);
     }
 
