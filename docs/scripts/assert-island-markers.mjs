@@ -80,7 +80,7 @@ export function hasIslandManifestEntry(bundleText, marker) {
   const escapedMarker = escapeRegExp(marker);
   const literal = `"${escapedMarker}"`;
   const registrationCall = new RegExp(
-    `\\b[A-Za-z_$][\\w$]*\\(\\s*[^,()]+\\s*,\\s*["'][^"']+["']\\s*,\\s*${literal}\\s*,`,
+    `(?<![\\w$])[A-Za-z_$][\\w$]*\\(\\s*[^,()]+\\s*,\\s*["'][^"']+["']\\s*,\\s*${literal}\\s*,`,
   );
   if (registrationCall.test(bundleText)) return true;
 

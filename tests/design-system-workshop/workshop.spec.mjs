@@ -57,6 +57,18 @@ test("native EN/JA hydration, exact current exports, local interactions and inde
         Buffer.from(zipData(getSeedFiles(expected))),
       );
       await root(page).locator("#export-dialog [data-close]").click();
+      for (const mode of ["components", "foundations", "page"]) {
+        await root(page).locator(`[data-preview="${mode}"]`).click();
+        await expect(frame(page).locator("html")).toHaveCSS("--ds-brand", "#963142");
+        await expect(frame(page).locator("body")).not.toBeEmpty();
+      }
+      await root(page).locator('[data-action="reset"]').click();
+      await expect(root(page).locator("#accent-hex")).toHaveValue(
+        createState(preset).values.accent,
+      );
+      await expect(root(page).locator("#group-gap")).toHaveValue(
+        String(createState(preset).values.groupGap),
+      );
     }
     await root(page).locator('[data-role="body"]').focus();
     await page.keyboard.press("Enter");
@@ -86,7 +98,7 @@ test("native navigation restores one live workshop and retains editing state", a
     window.__oldWorkshopRoot = document.querySelector("#design-workshop");
   });
   const indexLink = page
-    .locator('a[href="/docs/playground/"],a[href="/docs/playground"]')
+    .locator('a[href="/docs/playground/"]:visible,a[href="/docs/playground"]:visible')
     .filter({ hasText: /Playground|Index/ })
     .first();
   await indexLink.click();
@@ -121,6 +133,7 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
     .poll(() => root(page).evaluate((el) => getComputedStyle(el).color))
     .not.toBe(controlColor);
   await expect(frame(page).locator("body")).toHaveCSS("background-color", "rgb(250, 248, 242)");
+  await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({ path: "/tmp/zfb-workshop-dark.png", fullPage: true });
   await page.locator("[data-zd-theme-menu]:visible > button").first().click();
   await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
@@ -136,6 +149,7 @@ test("desktop and narrow host layout keep seed appearance separate from docs the
         .locator("#design-preview")
         .evaluate((el) => el.getBoundingClientRect().width),
     ).toBeLessThanOrEqual(390);
+    await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({ path: `/tmp/zfb-workshop-${width}.png`, fullPage: true });
     await root(page).locator('[data-width="full"]').click();
   }

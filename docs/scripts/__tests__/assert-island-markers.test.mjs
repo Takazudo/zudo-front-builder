@@ -160,3 +160,23 @@ test("renaming a displayName fails the manifest half for the new emitted marker"
     rmSync(dist, { recursive: true, force: true });
   }
 });
+
+// Minification may legally choose `$` as the registration function name.
+test("manifest registration accepts dollar identifiers without accepting stray strings", () => {
+  for (const name of ["$", "$R", "R$", "_R"]) {
+    assert.equal(
+      hasIslandManifestEntry(
+        `${name}(ns, "default", "DesignSystemPlayground", "src");`,
+        "DesignSystemPlayground",
+      ),
+      true,
+    );
+  }
+  assert.equal(
+    hasIslandManifestEntry(
+      '$(ns, "DesignSystemPlayground", "Other", "src");',
+      "DesignSystemPlayground",
+    ),
+    false,
+  );
+});

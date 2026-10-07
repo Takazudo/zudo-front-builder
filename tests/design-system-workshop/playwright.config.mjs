@@ -18,6 +18,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
+    cwd: new URL("../..", import.meta.url).pathname,
     command: "node tests/docs-wind-preview/serve-dist.mjs 4340",
     url: "http://127.0.0.1:4340",
     reuseExistingServer: false,
