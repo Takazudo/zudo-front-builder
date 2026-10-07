@@ -50,6 +50,27 @@ zfb new my-site --template basic-blog
 
 `basic-blog` がスキャフォールドするのは、`zfb.config.ts`（JSON ではありません）、3 つのシード記事を持つ `blog` コンテンツコレクション、4 つのルート、そして 1 つのクライアント島です。同梱の `README.md` がツリーの案内になっており、[プロジェクト構造](./project-structure.mdx) が同じ範囲をより詳しく扱います。
 
+## 最初のデザインを自分のものにする
+
+同梱の両スターターは Everyday デザインから始まります。用途別の色、独立した
+横方向と縦方向の余白、読みやすい文字組み、共通の角丸ルールを持つ、編集可能な
+プロジェクトの選択です。zudo-wind エンジンの暗黙のデフォルトではありません。
+
+- 色・余白・文字組み・読み幅・角丸の値は `styles/design-system.css` で変更します。
+- 使い分けは `DESIGN-NOTES.md` を参照してください。ホームに表示する短いルールは
+  `design-rules.json` にあります。デザインを変えたら説明も更新してください。
+- Basic blog では `zfb.config.ts` が `design-tokens.json` と既存の Markdown 用
+  トークンをマージします。`styles/global.css` のダーク用の値はテーマ切り替えに
+  連動します。既存記事 **How this site is styled** がそのつながりを説明します。
+- Node-free でトークン名を変える場合は `zfb.config.json` と `design-tokens.json`
+  を揃えてください。明示的な Wind スタイルシートはバイナリ内で生成され、Node・
+  パッケージのインストール・クライアント島は不要です。
+
+[デザインシステム Playground](../playground/design-system.mdx) でルールを試し、
+編集可能なファイルを書き出せます。既存ページの値を保持しながら、カテゴリと名前ごとに
+トークンをマージしてください。現在のイニシャライザが選ぶのはサイトテンプレートです。
+デザインシードの選択機能やシード用の CLI フラグはまだありません。
+
 <Note title="インポート指定子について">
 
 ベアの `zfb` 系指定子（`zfb`、`zfb/content`、`zfb/paginate`、`zfb/zudo-react` などの対応サブパス）は、SSR、島のスキャナー、クライアントバンドル、JSX pragma の判定、zudo-wind のクラス抽出で、それぞれ対応する `@takazudo/zfb` の公開エントリへ解決されます。パッケージを参照するエントリでは、どちらの書き方も同じパッケージを指します。このドキュメントでは短い `zfb` 形式を使います。設定ローダーは `zfb/config` を別扱いし、内部のランタイム専用スタブへエイリアスします。

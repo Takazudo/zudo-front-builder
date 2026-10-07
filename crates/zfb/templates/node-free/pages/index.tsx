@@ -1,3 +1,5 @@
+import designRules from "../design-rules.json";
+
 /**
  * Home page — lists every entry in the `posts` content collection.
  *
@@ -31,26 +33,58 @@ export default function HomePage({ posts }: Props) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>node-free · zfb</title>
       </head>
-      <body>
-        <h1>node-free</h1>
+      <body class="font-ui text-body bg-background text-ink">
+        <h1 class="font-display text-heading font-strong">node-free</h1>
         <p>
           A minimal <code>zfb</code> site — no Node, no pnpm required. The <code>zfb</code> binary
           alone scaffolds, builds, and serves this page.
         </p>
-        <h2>Posts</h2>
-        <ul>
+        <p>
+          <a
+            href="#posts"
+            class="inline-block bg-accent text-on-accent px-hsp-card py-vsp-stack rounded-panel font-strong"
+          >
+            Read the posts
+          </a>
+        </p>
+        <h2 id="posts">Posts</h2>
+        <ul class="grid gap-x-hsp-gutter gap-y-vsp-stack p-0 list-none">
           {posts.map((post) => (
-            <li key={post.slug}>
-              <a href={`/posts/${post.slug}`}>{post.data.title}</a>
+            <li
+              key={post.slug}
+              class="bg-surface border border-border rounded-panel px-hsp-card py-vsp-stack"
+            >
+              <a href={`/posts/${post.slug}`} class="font-strong">
+                {post.data.title}
+              </a>
               {post.data.date ? (
                 <>
                   {" — "}
-                  <time datetime={post.data.date}>{post.data.date}</time>
+                  <time datetime={post.data.date} class="text-caption text-muted">
+                    {post.data.date}
+                  </time>
                 </>
               ) : null}
             </li>
           ))}
         </ul>
+        <section class="max-w-reading">
+          <h2>How this site is styled</h2>
+          <ul class="grid gap-y-vsp-stack">
+            {designRules.map((rule) => (
+              <li key={rule}>{rule}</li>
+            ))}
+          </ul>
+          <p>
+            Edit <code>styles/design-system.css</code> for owned values and{" "}
+            <code>zfb.config.json</code> for utility roles. <code>DESIGN-NOTES.md</code> explains
+            the rules. Explore the{" "}
+            <a href="https://zfb.takazudomodular.com/docs/playground/design-system/">
+              Design system playground
+            </a>{" "}
+            for alternatives, then merge the chosen values yourself.
+          </p>
+        </section>
         <h2>Next steps</h2>
         <ul>
           <li>

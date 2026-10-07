@@ -10,10 +10,10 @@ export default function NotFoundPage() {
     <DefaultLayout title="404 · basic-blog">
       <div class="py-16 text-center">
         <p class="font-mono text-sm tracking-[0.2em] text-neutral-400 dark:text-neutral-600">404</p>
-        <h1 class="mt-4 text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
+        <h1 class="mt-vsp-stack text-section font-display font-strong tracking-tight text-ink">
           This page doesn't exist
         </h1>
-        <p class="mt-3 text-neutral-600 dark:text-neutral-400">
+        <p class="mt-3 text-muted">
           The link may be out of date, or the post may have been renamed.
         </p>
         <a

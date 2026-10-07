@@ -6,5 +6,64 @@
       "name": "posts",
       "path": "content/posts"
     }
-  ]
+  ],
+  "wind": {
+    "spec": 1,
+    "reset": "owned-v1",
+    "tokens": {
+      "colors": {
+        "background": "var(--ds-background)",
+        "surface": "var(--ds-surface)",
+        "ink": "var(--ds-ink)",
+        "muted": "var(--ds-muted)",
+        "border": "var(--ds-border)",
+        "accent": "var(--ds-accent)",
+        "on-accent": "var(--ds-on-accent)"
+      },
+      "spacing": {
+        "hsp-page": "var(--ds-hsp-page)",
+        "hsp-card": "var(--ds-hsp-card)",
+        "hsp-gutter": "var(--ds-hsp-gutter)",
+        "vsp-stack": "var(--ds-vsp-stack)",
+        "vsp-section": "var(--ds-vsp-section)"
+      },
+      "sizes": {
+        "reading": "var(--ds-size-reading)"
+      },
+      "fontSizes": {
+        "body": {
+          "size": "var(--ds-font-body)",
+          "lineHeight": "var(--ds-leading-body)"
+        },
+        "heading": {
+          "size": "var(--ds-font-heading)",
+          "lineHeight": "1.22"
+        },
+        "section": {
+          "size": "var(--ds-font-section)",
+          "lineHeight": "1.3"
+        },
+        "caption": {
+          "size": "var(--ds-font-caption)",
+          "lineHeight": "1.5"
+        }
+      },
+      "fontFamilies": {
+        "ui": "var(--ds-font-ui)",
+        "display": "var(--ds-font-display)"
+      },
+      "fontWeights": {
+        "regular": "400",
+        "strong": "600"
+      },
+      "radii": {
+        "panel": "var(--ds-radius-panel)"
+      }
+    },
+    "breakpoints": {
+      "wide": {
+        "minWidthPx": 960
+      }
+    }
+  }
 }

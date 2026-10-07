@@ -1,0 +1,68 @@
+@import "./design-system.css";
+
+/* Project-owned layout for static TSX and plain Markdown page entries. */
+@layer base {
+  body {
+    margin: 0 auto;
+    max-width: calc(var(--ds-size-reading) + 2 * var(--ds-hsp-page));
+    padding: var(--ds-vsp-section) var(--ds-hsp-page);
+    background: var(--ds-background);
+    color: var(--ds-ink);
+    font-family: var(--ds-font-ui);
+    font-size: var(--ds-font-body);
+    line-height: var(--ds-leading-body);
+    overflow-wrap: anywhere;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--ds-font-display);
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  h1 {
+    font-size: clamp(28px, 8vw, var(--ds-font-heading));
+  }
+  h2 {
+    font-size: var(--ds-font-section);
+  }
+  h2,
+  section {
+    margin-block-start: var(--ds-vsp-section);
+  }
+  p,
+  ul {
+    margin-block: var(--ds-vsp-stack);
+  }
+  ul,
+  ol {
+    padding-inline-start: 1.5em;
+  }
+  ul {
+    list-style: disc;
+  }
+  ol {
+    list-style: decimal;
+  }
+  a {
+    color: var(--ds-accent);
+    text-underline-offset: 3px;
+  }
+  :is(a, button, input):focus-visible {
+    outline: 3px solid var(--ds-accent);
+    outline-offset: 3px;
+  }
+  article {
+    max-width: var(--ds-size-reading);
+  }
+  pre {
+    overflow-x: auto;
+  }
+  @media (max-width: 480px) {
+    body {
+      padding-inline: var(--ds-hsp-gutter);
+    }
+  }
+}
