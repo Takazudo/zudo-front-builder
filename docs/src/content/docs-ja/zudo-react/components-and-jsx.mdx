@@ -46,7 +46,7 @@ function ResultsTable({ rows }: { rows: { name: string }[] }) {
 
 ESLint を使う場合は、ファイル単位に適用する設定を [v3 移行ガイド](../guides/migrating-to-v3.mdx)で確認してください。`eslint-plugin-react` は、これらの HTML 表記を拒否したり自動修正したりすることがあります。
 
-真偽値の HTML 属性は true なら存在し、false なら省略されます。contenteditable などの列挙属性は文字列です。通常の属性では null と undefined は省略されます。サポートされるスカラー属性にはリアクティブな値を使えますが、[フォームガイド](./forms.mdx)のフォーム制御の規則に従います。
+真偽値の HTML 属性は true なら存在し、false なら省略されます。contenteditable などの列挙属性は文字列です。通常の属性では null と undefined は省略されます。サポートされるスカラー属性にはリアクティブな値を使えますが、[フォームガイド](./forms.mdx)のフォーム制御の規則に従います。この規則には、静的な `readonly={true}` または `disabled={true}` を持つテキスト入力と textarea の表示専用バインディングも含まれます。
 
 hidden 属性は真偽値だけを受け付け、until-found は使えません。inert も真偽値です。ランタイムは非表示用の CSS を追加しないため、表示の挙動はページ側のスタイルで指定します。
 

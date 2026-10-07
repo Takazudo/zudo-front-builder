@@ -6,7 +6,7 @@ sidebar_position: 7
 
 ## デフォルトでは非制御
 
-明示的なモデルを渡さない限り、コントロールはブラウザのネイティブな状態を使います。静的な value と checked の props は初期値を設定します。リアクティブな value と checked は TypeScript（`zfb check`）でもレンダリング時にも拒否されます。コントロールを signal に接続し続けたい場合は model prop を使います。
+明示的なモデルを渡さない限り、コントロールはブラウザのネイティブな状態を使います。静的な value と checked の props は初期値を設定します。リアクティブな value と checked は、後述する表示専用の `value` バインディングを除き、TypeScript（`zfb check`）でもレンダリング時にも拒否されます。コントロールから signal を読み書きする場合は model prop を使います。
 
 予約済みの props は **defaultValue**、**defaultChecked**、**modelValue**、**modelChecked** です。HTML 属性にはなりません。モデルと対応する default、value と defaultValue、checked と defaultChecked を同時に指定するとエラーになります。
 
@@ -81,6 +81,24 @@ const label = computed(() => name.value.toUpperCase());
 computed と読み取り専用の signal は、テキストなど読み取り用のバインディングに使います。子が signal を読むだけなら有効な入力です。readonly 型注釈を付けても実行時の writable ブランドは消えませんが、その TypeScript 型のままモデルに渡すことはできません。ランタイムはモデルへの書き込み前に、writable ブランドのないモデルを拒否します。
 
 v1 は複数選択に対応しません。multiple の select は島モードで拒否され、model や defaultValue も使えません。file と contenteditable のモデル、および上の表にないすべての input type（color、number、range、date、time など）のモデルには対応しません。select、optgroup、option の構造は静的にし、選択肢のラベルやリストをリアクティブにはできません。一致する選択肢のないプログラムからのモデル値やデフォルト値は、部分的に更新せず ZR_MODEL_VALUE を報告します。
+
+## 表示専用のコントロール
+
+一方向のリアクティブな `value` を使えるのは、`<textarea>`、または `type` を静的に省略するか、`text | search | email | url | tel | password` のいずれかを静的に指定した `<input>` に限られます。さらに、`readonly` または `disabled` に真偽値リテラルの `true` を指定する必要があります。リアクティブな `readonly`、`disabled`、`type` では対象になりません。`readonly={false}`、`disabled={false}`、空文字列、`"readonly"` のような文字列も対象外です。その他の input type は引き続き非対応で、`checked` は静的な値に限られます。
+
+`value` には `ReadonlySignal<string>` を渡します。`computed()` の結果も `ReadonlySignal<string>` です。このバインディングは signal の値を表示するだけで、ユーザーの編集を signal に書き戻さず、`modelValue` も使いません。`input`、`change`、composition のリスナーも追加しません。`<input value={address} readOnly />` のような Preact の表示専用フィールドを移行する際に使えます。
+
+~~~tsx
+import { computed, signal } from "@takazudo/zfb/zudo-react";
+
+function AddressBar() {
+  const address = signal("https://example.test/search?q=ada");
+  const displayedAddress = computed(() => address.value);
+  return <input type="url" value={displayedAddress} readonly={true} />;
+}
+~~~
+
+セットアップ時には、サーバーまたはクライアントのみでのマウント時に初期 `value` 属性を一度設定し、実際の要素の `value` プロパティも初期化します。その後の signal 更新ではプロパティだけを設定するため、SSR 後にハイドレーションした場合もクライアントのみでマウントした場合も、`form.reset()` で初期値に戻ります。リアクティブな `value` と `defaultValue` または `modelValue` を併用しないでください。textarea の子要素もリアクティブな `value` と競合します。フォームコントロール以外に表示するなら、代わりに `<output>` または `<pre>` を使ってください。
 
 ## 数値入力の静的な値と input イベント
 
