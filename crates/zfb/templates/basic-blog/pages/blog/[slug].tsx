@@ -26,11 +26,11 @@ export default function BlogPostPage({ post }: Props) {
   return (
     <DefaultLayout title={post.data.title} description={post.data.description}>
       <article>
-        <header class="border-b border-neutral-200 pb-6 dark:border-neutral-800">
-          <h1 class="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
+        <header class="border-b border-border pb-vsp-stack">
+          <h1 class="text-section font-display font-strong tracking-tight text-ink">
             {post.data.title}
           </h1>
-          <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-neutral-500">
+          <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted">
             <time datetime={post.data.date} class="tabular-nums">
               {post.data.date}
             </time>
@@ -59,11 +59,11 @@ export default function BlogPostPage({ post }: Props) {
           `Content` falls back to a `<pre data-zfb-content-fallback>` block
           printing the raw body with a `[zfb fallback render]` marker.
         */}
-        <div class="prose mt-8">
+        <div class="prose mt-vsp-stack">
           <post.Content components={{ ...defaultComponents }} />
         </div>
       </article>
-      <p class="mt-14 text-sm">
+      <p class="mt-vsp-section text-sm">
         <a href="/#posts" class="text-accent hover:underline">
           ← All posts
         </a>

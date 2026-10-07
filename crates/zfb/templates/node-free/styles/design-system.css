@@ -1,0 +1,29 @@
+/* Everyday — values, roles and usage travel together.
+   Edit these variables in your project's stylesheet.
+   Do not author values in the engine-reserved --zw-* namespace.
+*/
+:root {
+  --ds-brand: #3159d8;
+  --ds-accent: var(--ds-brand);
+  --ds-on-accent: #ffffff;
+  --ds-background: #f4f7fb;
+  --ds-surface: #ffffff;
+  --ds-ink: #17253c;
+  --ds-muted: #586882;
+  --ds-border: #d5deeb;
+  --ds-type-base: 16px;
+  --ds-font-body: var(--ds-type-base);
+  --ds-font-heading: 42px;
+  --ds-font-section: 26px;
+  --ds-font-caption: 0.8125rem;
+  --ds-leading-body: 1.65;
+  --ds-font-ui: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ds-font-display: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ds-vsp-stack: 16px;
+  --ds-vsp-section: 40px;
+  --ds-hsp-gutter: 16px;
+  --ds-hsp-card: 24px;
+  --ds-hsp-page: 32px;
+  --ds-radius-panel: 8px;
+  --ds-size-reading: 60ch;
+}

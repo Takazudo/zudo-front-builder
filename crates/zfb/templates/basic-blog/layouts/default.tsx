@@ -60,18 +60,18 @@ export default function DefaultLayout({
         {/* Apply theme before paint to avoid FOUC. See script doc above. */}
         <script rawHtml={THEME_BOOTSTRAP_SCRIPT} />
       </head>
-      <body class="bg-white text-neutral-700 antialiased dark:bg-neutral-950 dark:text-neutral-300">
-        <div class="mx-auto flex min-h-screen max-w-2xl flex-col px-5 sm:px-6">
-          <header class="flex items-center justify-between gap-4 border-b border-neutral-200 py-5 dark:border-neutral-800">
-            <a href="/" class="font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+      <body class="bg-background text-ink font-ui text-body antialiased">
+        <div class="mx-auto flex min-h-screen max-w-2xl flex-col px-hsp-card">
+          <header class="flex items-center justify-between flex-wrap gap-x-hsp-gutter gap-y-vsp-stack border-b border-border py-vsp-stack">
+            <a href="/" class="font-display font-strong tracking-tight text-ink">
               basic-blog
             </a>
-            <nav class="flex items-center gap-5 text-sm">
+            <nav class="flex flex-wrap items-center gap-x-hsp-gutter gap-y-vsp-stack text-caption">
               {NAV.map((item) => (
                 <a
                   key={item.href}
                   href={item.href}
-                  class="text-neutral-600 transition-colors hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+                  class="text-muted transition-colors hover:text-ink"
                 >
                   {item.label}
                 </a>
@@ -88,8 +88,8 @@ export default function DefaultLayout({
               </Island>
             </nav>
           </header>
-          <main class="grow py-12">{children}</main>
-          <footer class="border-t border-neutral-200 py-6 text-sm text-neutral-500 dark:border-neutral-800 dark:text-neutral-500">
+          <main class="grow py-vsp-section">{children}</main>
+          <footer class="border-t border-border py-vsp-stack text-caption text-muted">
             <p>
               Built with{" "}
               <a href="https://zfb.takazudomodular.com" class="text-accent hover:underline">
