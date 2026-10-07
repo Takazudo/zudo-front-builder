@@ -25,10 +25,11 @@
 //!    runtime dependency graph (`@takazudo/zfb-runtime`, …) is
 //!    not crawled.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
-use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver};
+use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver, Resolver};
 
 /// Write `body` to `path`, creating parent directories first.
 fn write(path: &Path, body: &str) {
@@ -43,6 +44,91 @@ fn scan_component_names(page: &Path) -> Vec<String> {
     let resolver = FsResolver::new();
     let islands = scan_islands(&[page.to_path_buf()], &resolver).expect("scan");
     islands.iter().map(|i| i.component_name.clone()).collect()
+}
+
+/// The bare `zfb` package alias and its canonical npm spelling must both
+/// reach the same installed source definition through the real resolver.
+#[test]
+fn zfb_alias_and_canonical_subpath_resolve_one_canonical_definition() {
+    struct RecordingResolver {
+        inner: FsResolver,
+        demanded: RefCell<Vec<(std::path::PathBuf, String, Option<std::path::PathBuf>)>>,
+    }
+    impl Resolver for RecordingResolver {
+        fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<std::path::PathBuf> {
+            self.inner.resolve(importer_dir, specifier)
+        }
+
+        fn resolve_demanded(
+            &self,
+            importer_dir: &Path,
+            specifier: &str,
+        ) -> Option<std::path::PathBuf> {
+            let resolved = self.inner.resolve_demanded(importer_dir, specifier);
+            self.demanded.borrow_mut().push((
+                importer_dir.to_path_buf(),
+                specifier.to_owned(),
+                resolved.clone(),
+            ));
+            resolved
+        }
+
+        fn read(&self, path: &Path) -> Result<String, String> {
+            self.inner.read(path)
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let package = root.join("node_modules/@takazudo/zfb");
+    write(
+        &package.join("package.json"),
+        r#"{"name":"@takazudo/zfb","type":"module","exports":{"./components/counter":"./dist/components/counter.js"}}"#,
+    );
+    let counter = package.join("dist/components/counter.js");
+    write(
+        &counter,
+        "'use client'; export function Counter() { return null; }",
+    );
+
+    let first = root.join("components/a/index.tsx");
+    write(&first, "export { Counter } from 'zfb/components/counter';");
+    let second = root.join("components/b/index.tsx");
+    write(
+        &second,
+        "export { Counter } from '@takazudo/zfb/components/counter';",
+    );
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { Island } from 'zfb';
+import { Counter as FromAlias } from '../components/a';
+import { Counter as FromCanonical } from '../components/b';
+export default function Home() {
+  return <><Island><FromAlias /></Island><Island><FromCanonical /></Island></>;
+}"#,
+    );
+
+    let resolver = RecordingResolver {
+        inner: FsResolver::new(),
+        demanded: RefCell::new(Vec::new()),
+    };
+    let islands = scan_islands(&[page], &resolver).expect("scan");
+    let canonical_counter = counter.canonicalize().expect("canonical package file");
+
+    let demanded = resolver.demanded.borrow();
+    for importer in [root.join("components/a"), root.join("components/b")] {
+        assert!(demanded
+            .iter()
+            .any(|(resolved_importer, specifier, resolved)| {
+                resolved_importer == &importer
+                    && specifier == "@takazudo/zfb/components/counter"
+                    && resolved.as_deref() == Some(canonical_counter.as_path())
+            }));
+    }
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].source_path, canonical_counter);
+    assert_eq!(islands[0].marker_name, "Counter");
 }
 
 fn write_factory_dist_fixture(root: &Path, target_declaration: &str) -> std::path::PathBuf {
