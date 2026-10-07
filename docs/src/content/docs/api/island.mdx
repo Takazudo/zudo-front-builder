@@ -6,11 +6,12 @@ sidebar_position: 4
 
 ## The `<Island>` wrapper
 
-Import `Island` from `@takazudo/zfb` and wrap one component that should run in
-the browser. The page and the rest of the tree are rendered as ordinary HTML.
+Import `Island` from `zfb` or `@takazudo/zfb` and wrap one component that
+should run in the browser. The page and the rest of the tree are rendered as
+ordinary HTML. The examples use the shorter `zfb` form.
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import Counter from "./Counter";
 
 export default function Page() {
@@ -41,7 +42,7 @@ import type {
   Component,
   Description,
   ElementType,
-} from "@takazudo/zfb/zudo-react";
+} from "zfb/zudo-react";
 ```
 
 `Description` exposes `type`, `props`, and `key` with a `$$zudo` brand. Its
@@ -131,7 +132,7 @@ When the client trigger fires, `mount` builds the child off-DOM and replaces
 the fallback only after setup and validation succeed:
 
 ```tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import HeavyChart from "./HeavyChart";
 
 export default function Page() {
@@ -188,7 +189,7 @@ that component as an island entry.
 ```tsx
 "use client";
 
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
