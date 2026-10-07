@@ -8,6 +8,10 @@
 //! identity. Invalid consumers prove target collisions, dynamic children, and
 //! unsupported factory-member shapes fail the production CLI.
 //!
+//! The `AliasCounter` / `AliasNamedCounter` fixture cases adapt the documented
+//! MDX components-map recipe (they are not verbatim copies) to keep the bare
+//! `zfb` and `zfb/zudo-react` imports visible beside package-name cases.
+//!
 //! The positive `dist/` is copied to `target/scanner-boundary-acceptance/` for
 //! the companion Playwright test. Its browser run is a separate guarded step so
 //! the real build and Chromium never compete for machine resources.
@@ -25,6 +29,8 @@ use serde_json::json;
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 const EXPECTED_MARKERS: &[&str] = &[
+    "AliasCounter",
+    "AliasNamedCounter",
     "ConsumerA",
     "ConsumerB",
     "Counter",

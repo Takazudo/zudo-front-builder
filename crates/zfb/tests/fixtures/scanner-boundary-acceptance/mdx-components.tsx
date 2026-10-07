@@ -1,5 +1,7 @@
 import { Island } from "@takazudo/zfb";
 import Counter from "./components/mdx-counters";
+import { Island as ZfbIsland } from "zfb";
+import AliasCounter from "./components/mdx-alias-counters";
 
 function WrappedCounter() {
   return (
@@ -11,4 +13,14 @@ function WrappedCounter() {
   );
 }
 
-export default { Counter: WrappedCounter };
+function WrappedAliasCounter() {
+  return (
+    <>
+      <ZfbIsland when="load">
+        <AliasCounter />
+      </ZfbIsland>
+    </>
+  );
+}
+
+export default { Counter: WrappedCounter, AliasCounter: WrappedAliasCounter };
