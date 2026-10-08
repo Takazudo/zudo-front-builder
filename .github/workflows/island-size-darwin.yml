@@ -88,8 +88,6 @@ jobs:
       - name: Assert native runner and pinned toolchain
         shell: bash
         run: |
-          # shellcheck disable=SC2016
-          # JavaScript template literals are intentionally shell-single-quoted.
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ steps.context.outputs.source_sha }}"
           test "$(uname -s):$(uname -m)" = "Darwin:arm64"
@@ -97,13 +95,13 @@ jobs:
           test "$(pnpm --version)" = "12.8.2"
           node --input-type=module -e '
             if (process.version !== "v24.14.0") {
-              throw new Error(`expected Node v24.14.0, got ${process.version}`);
+              throw new Error("expected Node v24.14.0, got " + process.version);
             }
             if (process.versions.zlib !== "1.3.1-e00f703") {
-              throw new Error(`expected zlib 1.3.1-e00f703, got ${process.versions.zlib}`);
+              throw new Error("expected zlib 1.3.1-e00f703, got " + process.versions.zlib);
             }
             if (process.platform !== "darwin" || process.arch !== "arm64") {
-              throw new Error(`unsupported platform ${process.platform}:${process.arch}`);
+              throw new Error("unsupported platform " + process.platform + ":" + process.arch);
             }
           '
           out=target/island-size
@@ -246,8 +244,6 @@ jobs:
           ENFORCE: ${{ steps.context.outputs.enforce }}
           SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
-          # shellcheck disable=SC2016
-          # Markdown backticks in printf formats are literal text.
           set -euo pipefail
           out=target/island-size
           if [[ "$CHECK_OUTCOME" == "success" ]]; then
@@ -257,8 +253,8 @@ jobs:
           fi
           {
             printf '## Darwin island-size budget: %s\n\n' "$result"
-            printf -- '- Enforced: `%s`\n' "$ENFORCE"
-            printf -- '- Measured source SHA: `%s`\n\n' "$SOURCE_SHA"
+            printf -- '- Enforced: %s\n' "$ENFORCE"
+            printf -- '- Measured source SHA: %s\n\n' "$SOURCE_SHA"
             printf '```text\n'
             if [[ -f "$out/check-budget.log" ]]; then
               tail -n 80 "$out/check-budget.log"
