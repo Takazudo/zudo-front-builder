@@ -1048,6 +1048,11 @@ fn declared_project_root_symlink_keeps_relative_labels_and_paths() {
         assert!(!source_id.contains(project_link.to_string_lossy().as_ref()));
     }
 
+    fs::write(
+        project.join("widgets/card.tsx"),
+        "export const card = <div />;\n",
+    )
+    .unwrap();
     let manifest = Command::new(zfb_binary!())
         .args([
             "wind",
