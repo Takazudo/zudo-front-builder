@@ -1,4 +1,5 @@
 import { defineConfig } from "zfb/config";
+import design from "./design-tokens.json";
 
 /**
  * The wind configuration owns this starter's palette, scales, reset, and
@@ -17,8 +18,8 @@ export default defineConfig({
     reset: "owned-v1",
     tokens: {
       spacingUnit: "0.25rem",
+      spacing: design.tokens.spacing,
       colors: {
-        accent: "var(--color-accent)",
         white: "#ffffff",
         "neutral-50": "#fafafa",
         "neutral-100": "#f5f5f5",
@@ -56,11 +57,14 @@ export default defineConfig({
         "rose-500": "#f43f5e",
         "rose-700": "#be123c",
         "rose-950": "#4c0519",
+        ...design.tokens.colors,
       },
       sizes: {
         "2xl": "42rem",
+        ...design.tokens.sizes,
       },
       fontSizes: {
+        ...design.tokens.fontSizes,
         xs: {
           size: "0.75rem",
           lineHeight: "1rem",
@@ -83,9 +87,11 @@ export default defineConfig({
         },
       },
       fontFamilies: {
+        ...design.tokens.fontFamilies,
         mono: "ui-monospace, SFMono-Regular, Menlo, monospace",
       },
       fontWeights: {
+        ...design.tokens.fontWeights,
         medium: "500",
         semibold: "600",
       },
@@ -96,10 +102,12 @@ export default defineConfig({
         tight: "-0.025em",
       },
       radii: {
+        ...design.tokens.radii,
         md: "0.375rem",
       },
     },
     breakpoints: {
+      ...design.breakpoints,
       sm: {
         minWidthPx: 640,
       },

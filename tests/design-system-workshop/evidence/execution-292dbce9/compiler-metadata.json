@@ -1,0 +1,292 @@
+{
+  "sourceSha": "292dbce9b7d35ce4f4300c4125b881fac4ccd6c7",
+  "binarySourceSha": "292dbce9b7d35ce4f4300c4125b881fac4ccd6c7",
+  "binaryProvenance": "guarded cargo build -p zfb --locked at final clean292dbce9, dev profile",
+  "binarySource": "/workspace/zudo-front-builder/target/debug/zfb",
+  "binarySha256": "99dace46cff9038833f433e84f94e1c39eb0da9f3d4a26ecaf6307fb16513c8a",
+  "nodeVersion": "v24.19.0",
+  "cases": [
+    {
+      "label": "everyday",
+      "state": {
+        "preset": "everyday",
+        "values": {
+          "accent": "#3159d8",
+          "background": "#f4f7fb",
+          "surface": "#ffffff",
+          "ink": "#17253c",
+          "muted": "#586882",
+          "border": "#d5deeb",
+          "headingFont": "sans",
+          "bodySize": 16,
+          "lineHeight": 1.65,
+          "groupGap": 16,
+          "sectionGap": 40,
+          "horizontalSpace": 24,
+          "horizontalGap": 16,
+          "radius": 8,
+          "readingWidth": 60,
+          "headingSize": 42
+        },
+        "preview": "page",
+        "width": "full",
+        "inspect": false,
+        "role": "accent",
+        "notes": true,
+        "route": "start"
+      },
+      "fileSha256": {
+        "zfb.design.ts": "0019f41702f256b651bc001392ee8639c069790a541877e7bdb737ae5cec5720",
+        "design-system.css": "1e82a96f8957f0ca58713a4812b89aeaacb778e1a9c196bbd44f2d2b0ff46628",
+        "usage.tsx": "4b6853381a08563f99de052cab9a91c00732373ed05b983e86be574d651c50ee",
+        "DESIGN-NOTES.md": "585f35fbc71958fd5eb52137a413390f255ab56e1dfead349b2d99b9e77ee463",
+        "demo.html": "60fdc61dd6f1c8fe500be4f203bf0612129c21319194256d8fd7aa89c80df3b6"
+      },
+      "archiveSha256": "d88c4ce0dd0a019fd30e80f7211b8d003dddefa5143594701d71646c36552d78",
+      "outcome": "passed",
+      "candidateCount": 31,
+      "css": [
+        {
+          "path": "project/dist/assets/styles-c8410362.css",
+          "sha256": "c8410362a156f8075237487a044295e657e7e0bf07ae361cfd00e4fbf41dede4"
+        }
+      ]
+    },
+    {
+      "label": "everyday-edited",
+      "state": {
+        "preset": "everyday",
+        "values": {
+          "accent": "#ef0123",
+          "background": "#f4f7fb",
+          "surface": "#ffffff",
+          "ink": "#17253c",
+          "muted": "#586882",
+          "border": "#d5deeb",
+          "headingFont": "mono",
+          "bodySize": 19,
+          "lineHeight": 1.9,
+          "groupGap": 22,
+          "sectionGap": 60,
+          "horizontalSpace": 34,
+          "horizontalGap": 16,
+          "radius": 15,
+          "readingWidth": 70,
+          "headingSize": 42
+        },
+        "preview": "page",
+        "width": "full",
+        "inspect": false,
+        "role": "accent",
+        "notes": true,
+        "route": "start"
+      },
+      "fileSha256": {
+        "zfb.design.ts": "0019f41702f256b651bc001392ee8639c069790a541877e7bdb737ae5cec5720",
+        "design-system.css": "5f8284b7756ca27d490c753032f9a9533a01b29d4828b8d677de1f8327b63383",
+        "usage.tsx": "4b6853381a08563f99de052cab9a91c00732373ed05b983e86be574d651c50ee",
+        "DESIGN-NOTES.md": "a4cf68ff4a6efa2498615d71272989208513f1b8a01110b57611c10d9523ed33",
+        "demo.html": "697ee2a54e89d99d76b38b0bcebaf93b7b9bba686d0089665b735e9ab70e8761"
+      },
+      "archiveSha256": "2fe80713c8e753c21acb970846da7b03ec762a7af6976e72032e30020629ddd2",
+      "outcome": "passed",
+      "candidateCount": 31,
+      "css": [
+        {
+          "path": "project/dist/assets/styles-9b3d9a97.css",
+          "sha256": "9b3d9a972afdf5865f7bc7389692eb542a33192b49b6f063a2848029d326b187"
+        }
+      ]
+    },
+    {
+      "label": "editorial",
+      "state": {
+        "preset": "editorial",
+        "values": {
+          "accent": "#913b28",
+          "background": "#faf8f2",
+          "surface": "#fffefa",
+          "ink": "#352b26",
+          "muted": "#736457",
+          "border": "#d9cdbd",
+          "headingFont": "serif",
+          "bodySize": 17,
+          "lineHeight": 1.8,
+          "groupGap": 20,
+          "sectionGap": 56,
+          "horizontalSpace": 30,
+          "horizontalGap": 20,
+          "radius": 0,
+          "readingWidth": 56,
+          "headingSize": 47
+        },
+        "preview": "page",
+        "width": "full",
+        "inspect": false,
+        "role": "accent",
+        "notes": true,
+        "route": "start"
+      },
+      "fileSha256": {
+        "zfb.design.ts": "d1e827745c66f87900deeceb87cfb87bc5afef4a8d93ce3d87c38e0d241e3727",
+        "design-system.css": "a904cf48f38469a6d3d17575ca5bceccbb35b8f4587d73117d9a6c0b7a3ff354",
+        "usage.tsx": "4b6853381a08563f99de052cab9a91c00732373ed05b983e86be574d651c50ee",
+        "DESIGN-NOTES.md": "08631a9a234495a496784e6a8832a7c402acf10aa2b58a5ebe48e1b5dcb8f75b",
+        "demo.html": "7b6b95b258c3198c4b1630e54b25c6013a108b4396d1619dc71018ae5fc6b2c9"
+      },
+      "archiveSha256": "752c9a97cd0867ea5f5cbb1102910229adcd1354257418e93efc7d39eab81e7a",
+      "outcome": "passed",
+      "candidateCount": 31,
+      "css": [
+        {
+          "path": "project/dist/assets/styles-da56f929.css",
+          "sha256": "da56f9290b7889cc23f65e2724df878291f6e6c553e1ae32769259677699afbc"
+        }
+      ]
+    },
+    {
+      "label": "editorial-edited",
+      "state": {
+        "preset": "editorial",
+        "values": {
+          "accent": "#ef0123",
+          "background": "#faf8f2",
+          "surface": "#fffefa",
+          "ink": "#352b26",
+          "muted": "#736457",
+          "border": "#d9cdbd",
+          "headingFont": "mono",
+          "bodySize": 19,
+          "lineHeight": 1.9,
+          "groupGap": 22,
+          "sectionGap": 60,
+          "horizontalSpace": 34,
+          "horizontalGap": 20,
+          "radius": 15,
+          "readingWidth": 70,
+          "headingSize": 47
+        },
+        "preview": "page",
+        "width": "full",
+        "inspect": false,
+        "role": "accent",
+        "notes": true,
+        "route": "start"
+      },
+      "fileSha256": {
+        "zfb.design.ts": "d1e827745c66f87900deeceb87cfb87bc5afef4a8d93ce3d87c38e0d241e3727",
+        "design-system.css": "269b39cc0eac81058c25e881bdec03cd05d6cbb1336fa7e9e6931fcdb53a5a1e",
+        "usage.tsx": "4b6853381a08563f99de052cab9a91c00732373ed05b983e86be574d651c50ee",
+        "DESIGN-NOTES.md": "da14e73c54c8ff1b4e7eff56dae27396809f3f4a500f27b4fcb984cbab2b4f3e",
+        "demo.html": "b12d1a5dda6bef1b7d6b6f4ad1c4c9508db0f1a99a74f140b30b68a45a2984af"
+      },
+      "archiveSha256": "a541a26ec998b1164df76602a6f7d549ab18e0d532998d952778a07bc0e7fa45",
+      "outcome": "passed",
+      "candidateCount": 31,
+      "css": [
+        {
+          "path": "project/dist/assets/styles-5bf3db10.css",
+          "sha256": "5bf3db10f65aaaf54194a865b6fd6eb07f5db7ed86f9e9e5abe66240e633725e"
+        }
+      ]
+    },
+    {
+      "label": "workbench",
+      "state": {
+        "preset": "workbench",
+        "values": {
+          "accent": "#cae887",
+          "background": "#171e1b",
+          "surface": "#202a25",
+          "ink": "#e0e9df",
+          "muted": "#acbaac",
+          "border": "#405047",
+          "headingFont": "mono",
+          "bodySize": 16,
+          "lineHeight": 1.55,
+          "groupGap": 12,
+          "sectionGap": 32,
+          "horizontalSpace": 18,
+          "horizontalGap": 12,
+          "radius": 3,
+          "readingWidth": 64,
+          "headingSize": 35
+        },
+        "preview": "page",
+        "width": "full",
+        "inspect": false,
+        "role": "accent",
+        "notes": true,
+        "route": "start"
+      },
+      "fileSha256": {
+        "zfb.design.ts": "b7063459ec8cd7aaabe010f1b9e230a28d04ee29dba83607b64c39f776e13652",
+        "design-system.css": "f87ea156e418e687900ba4628454e58565ce75a146d2cfe25775cb807cd56a64",
+        "usage.tsx": "4b6853381a08563f99de052cab9a91c00732373ed05b983e86be574d651c50ee",
+        "DESIGN-NOTES.md": "f872d515e57c0b4715703d8388345f10b55a907cae09ab0092a47e4f312ea037",
+        "demo.html": "4bd1a641ade58d015b2aae349e11420ab6f0862d28616b8d99041352f9cb6814"
+      },
+      "archiveSha256": "80adfc84e0a7529dc4bf2cc0906774a723dca5c946faab3a501106b6cfad290b",
+      "outcome": "passed",
+      "candidateCount": 31,
+      "css": [
+        {
+          "path": "project/dist/assets/styles-32571aa5.css",
+          "sha256": "32571aa5bc7ae44058c43f7ffa50861eb54745703dca3d932b51240f4ab19354"
+        }
+      ]
+    },
+    {
+      "label": "workbench-edited",
+      "state": {
+        "preset": "workbench",
+        "values": {
+          "accent": "#ef0123",
+          "background": "#171e1b",
+          "surface": "#202a25",
+          "ink": "#e0e9df",
+          "muted": "#acbaac",
+          "border": "#405047",
+          "headingFont": "serif",
+          "bodySize": 19,
+          "lineHeight": 1.9,
+          "groupGap": 22,
+          "sectionGap": 60,
+          "horizontalSpace": 34,
+          "horizontalGap": 12,
+          "radius": 15,
+          "readingWidth": 70,
+          "headingSize": 35
+        },
+        "preview": "page",
+        "width": "full",
+        "inspect": false,
+        "role": "accent",
+        "notes": true,
+        "route": "start"
+      },
+      "fileSha256": {
+        "zfb.design.ts": "b7063459ec8cd7aaabe010f1b9e230a28d04ee29dba83607b64c39f776e13652",
+        "design-system.css": "7cecf81bd1aac00b920c5d360ec2c52ad2ed8dde17bd135c893e49903f829f52",
+        "usage.tsx": "4b6853381a08563f99de052cab9a91c00732373ed05b983e86be574d651c50ee",
+        "DESIGN-NOTES.md": "a5dd97f49aa135579e0e986578467d9730018a3d35fe731fec75fdbd868e49f7",
+        "demo.html": "9c246b6181f004c1b1ec00abebf45ed1eebd35f5cfa7008d936aba5236acdd11"
+      },
+      "archiveSha256": "47d6ac92ecb54e92dc434d6174ed20345d68e851c7c60e6cd8cdfb01ed65d169",
+      "outcome": "passed",
+      "candidateCount": 31,
+      "css": [
+        {
+          "path": "project/dist/assets/styles-d9cab29e.css",
+          "sha256": "d9cab29e3acd7028c1369952d793d7829c99b432ec8a5e892ad0748d4a7c4b84"
+        }
+      ]
+    }
+  ],
+  "outcome": "passed",
+  "binaryVersion": "zfb 0.0.0\nembedded esbuild: 0.25.12",
+  "esbuild": {
+    "path": "/tmp/zfb-esbuild/package/bin/esbuild",
+    "sha256": "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
+  }
+}

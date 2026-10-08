@@ -3,11 +3,15 @@
 
 import { Island } from "@takazudo/zfb";
 import { defineChromeBindings } from "@takazudo/zudo-doc/chrome-bindings";
+import DesignSystemPlayground from "./components/playground/design-system-playground";
 import CompilePlayground from "./components/playground/compile-playground";
 import HighlightPlayground from "./components/playground/highlight-playground";
 import ParsePlayground from "./components/playground/parse-playground";
 import RenderPlayground from "./components/playground/render-playground";
 import WindPreviewEnhancer from "./components/wind-preview-enhancer";
+
+const DesignSystemPlaygroundIsland = () =>
+  Island({ when: "visible", children: <DesignSystemPlayground /> });
 
 const RenderPlaygroundIsland = () => Island({ when: "visible", children: <RenderPlayground /> });
 const CompilePlaygroundIsland = () => Island({ when: "visible", children: <CompilePlayground /> });
@@ -37,6 +41,7 @@ const HomeExtras = ({ locale }: { locale: string }) => {
 
 export const chromeBindings = defineChromeBindings({
   mdxExtras: {
+    DesignSystemPlayground: DesignSystemPlaygroundIsland,
     RenderPlayground: RenderPlaygroundIsland,
     CompilePlayground: CompilePlaygroundIsland,
     ParsePlayground: ParsePlaygroundIsland,

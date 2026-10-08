@@ -15,6 +15,9 @@
 @import "@takazudo/zudo-doc/content.css";
 @import "@takazudo/zudo-doc/page-loading.css";
 @import "@takazudo/zudo-doc/features.css";
+@import "../components/playground/design-workshop/workshop.css";
+@import "../components/playground/design-workshop/host-theme.css";
+@import "../components/playground/design-workshop/discovery.css";
 
 /* Keep the exact highlight API identifier readable on narrow screens. The
    marker scopes this exception to the host-owned playground page; shared

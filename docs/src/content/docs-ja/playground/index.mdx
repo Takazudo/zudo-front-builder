@@ -1,12 +1,29 @@
 ---
 title: Playground
-description: zfb-md-wasm の Rust パイプラインをブラウザで試せるプレイグラウンドです。
+description: デザインのルールと Markdown ツールをブラウザで試せるプレイグラウンドです。
 sidebar_position: 35
 hide_sidebar: true
 hide_toc: true
 ---
 
-zfb-md-wasm をブラウザで試せるインタラクティブなプレイグラウンドです。各ページは `zfb build`
-が使うものと同じ Rust パイプラインをブラウザで実行し、ビルド時の動作とのパリティを保ちます。
+デザインのルールと Markdown ツールをブラウザで試しましょう。
+
+<div class="design-discovery">
+  <div class="design-discovery-copy">
+    <p class="design-discovery-kicker">zudo-wind</p>
+    <h2>デザインシステム プレイグラウンド</h2>
+    <p>出発点を選んでルールを変え、実際のページで結果を確かめます。値、作例、説明を編集可能なファイルとしてプロジェクトへ持ち込めます。</p>
+    <a class="design-discovery-action" href="/ja/docs/playground/design-system/">デザイン プレイグラウンドを開く</a>
+  </div>
+  <div class="design-discovery-miniatures" aria-label="Everyday, Editorial, Workbench">
+    <div class="design-discovery-mini everyday"><span>FIELDNOTES</span><strong>Small<br />ideas.</strong><b>Everyday</b><i></i></div>
+    <div class="design-discovery-mini editorial"><span>FIELDNOTES</span><strong>Small<br />ideas.</strong><b>Editorial</b><i></i></div>
+    <div class="design-discovery-mini workbench"><span>FIELDNOTES</span><strong>Small<br />ideas.</strong><b>Workbench</b><i></i></div>
+  </div>
+</div>
+
+## Markdown パイプライン
+
+以下の4つのツールは `zfb build` と同じ Rust パイプラインをブラウザで実行します。デザイン プレイグラウンドの作例は、編集した値を参照する CSS で描画します。
 
 <CategoryNav category="playground" />

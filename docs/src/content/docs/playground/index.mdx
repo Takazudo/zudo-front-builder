@@ -1,12 +1,29 @@
 ---
 title: Playground
-description: "Interactive browser playgrounds for zfb-md-wasm's Rust pipeline."
+description: Explore design decisions and Markdown tools in your browser.
 sidebar_position: 35
 hide_sidebar: true
 hide_toc: true
 ---
 
-Try zfb-md-wasm in the browser through these interactive playgrounds. Each page runs the same Rust
-pipeline that `zfb build` uses, keeping browser results aligned with build-time behavior.
+Explore design decisions and Markdown tools in your browser.
+
+<div class="design-discovery">
+  <div class="design-discovery-copy">
+    <p class="design-discovery-kicker">zudo-wind</p>
+    <h2>Design system playground</h2>
+    <p>Choose a starting design, change its rules, and see the results on a real page. Take the values, examples, and explanations into your own project.</p>
+    <a class="design-discovery-action" href="/docs/playground/design-system/">Open design playground</a>
+  </div>
+  <div class="design-discovery-miniatures" aria-label="Everyday, Editorial, Workbench">
+    <div class="design-discovery-mini everyday"><span>FIELDNOTES</span><strong>Small<br />ideas.</strong><b>Everyday</b><i></i></div>
+    <div class="design-discovery-mini editorial"><span>FIELDNOTES</span><strong>Small<br />ideas.</strong><b>Editorial</b><i></i></div>
+    <div class="design-discovery-mini workbench"><span>FIELDNOTES</span><strong>Small<br />ideas.</strong><b>Workbench</b><i></i></div>
+  </div>
+</div>
+
+## Markdown pipeline
+
+The four Markdown tools below run the same Rust pipeline as `zfb build`. The design playground uses authored CSS that follows your edited values.
 
 <CategoryNav category="playground" />

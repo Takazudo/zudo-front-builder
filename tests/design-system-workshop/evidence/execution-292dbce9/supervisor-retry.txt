@@ -1,0 +1,126 @@
+note: You are running `vp test` as a Vite+ built-in command. If you meant to run the test npm script, use `vpr test` instead.
+
+ RUN  v5.0.1 /workspace/zudo-front-builder
+
+ ❯ |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs (6 tests | 3 failed) 26944ms
+   ❯ docs dev supervisor (6)
+     ❯ supervisor process behaviour (5)
+       × aborts every sibling when a task exits non-zero 16236ms
+       × reaps the whole descendant tree when cleanup runs before any UP line 5411ms
+       × reports outcome=failed and reaps descendants for an unrelated hidden-case error (throw after supervisor exit) 5156ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs > docs dev supervisor > supervisor process behaviour > aborts every sibling when a task exits non-zero
+Error: Timed out waiting for sibling-death after 16000ms
+--- supervisor diagnostics ---
+awaiting: sibling-death   elapsed: 16174ms   deadline: 16000ms
+INPUT (captured before spawn)
+  argv: /opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node /workspace/zudo-front-builder/docs/node_modules/@takazudo/zudo-doc/bin/run-parallel.mjs up boom
+  cwd: /tmp/zfb-run-parallel-TfRWtt
+  node: v24.19.0
+  runner run-parallel will resolve: pnpm -> /home/agent/.local/share/vite-plus/package_manager/pnpm/12.8.2/pnpm/bin/pnpm
+  npm_execpath vitest itself was launched with: /home/agent/.cache/node/corepack/v1/pnpm/12.8.2/pnpm-native
+  @takazudo/zudo-doc: 5.27.0
+  run-parallel.mjs: 11115 bytes sha256:646f90cc300185cb
+  env: npm_execpath=<unset> npm_config_user_agent=pnpm/11.3.0 node/24.19.0 linux/x64 NODE_OPTIONS=<unset> NODE_ENV=test CI=<unset> PNPM_HOME=<unset> TMPDIR=<unset> VITEST_POOL_ID=1 VITEST_WORKER_ID=1 TINYPOOL_WORKER_ID=<unset>
+  env identity (steering keys; = timeline env=): v1:sha256:8b627240894b83e0 over 7 keys
+  env digest (full environment): sha256:8175d4803857139f over 84 vars (2 volatile excluded)
+  fixture package.json: sha256:08585dc6aecf4971 (path-independent shape sha256:2d146d48587c00f5)
+    {
+      "name": "run-parallel-fixture",
+      "private": true,
+      "scripts": {
+        "up": "node -e 'const http = require(\"node:http\"); const fs = require(\"node:fs\"); const server = http.createServer(); server.listen(0, () => { const { port } = server.address(); fs.writeFileSync(\"/tmp/zfb-run-parallel-TfRWtt/up.ready\", String(port)); console.log(\"UP up\", port, \"pid=\" + process.pid); }); setInterval(() => {}, 1000);'",
+        "up2": "node -e 'const http = require(\"node:http\"); const fs = require(\"node:fs\"); const server = http.createServer(); server.listen(0, () => { const { port } = server.address();  console.log(\"UP up2\", port, \"pid=\" + process.pid); }); setInterval(() => {}, 1000);'",
+        "boom": "node -e 'const fs = require(\"node:fs\"); const marker = \"/tmp/zfb-run-parallel-TfRWtt/up.ready\"; const check = () => { if (fs.existsSync(marker)) process.exit(3); }; const watcher = fs.watch(\"/tmp/zfb-run-parallel-TfRWtt\", check); check(); watcher.on(\"error\", () => process.exit(1));'",
+        "hidden": "node -e 'const fs = require(\"node:fs\"); fs.writeFileSync(\"/tmp/zfb-run-parallel-TfRWtt/hidden.pid\", String(process.pid)); setInterval(() => {}, 1000);'"
+      }
+    }
+TIMELINE (ms from spawn)
+  supervisor-spawned: 3
+  first-stderr-byte: 73
+  first-stdout-byte: 113
+  first-up-line: 113
+  marker-file-created: 125
+  supervisor-error-line: 127
+  supervisor-closed: 160
+LIVENESS
+  supervisor: pid=39523 alive=false exitCode=3 signalCode=null
+  children: pid=39575 alive=true
+SUPERVISOR STDOUT (last 1500 chars)
+    UP up 42745 pid=39575
+SUPERVISOR STDERR (last 1500 chars)
+    $ node -e 'const http = require("node:http"); const fs = require("node:fs"); const server = http.createServer(); server.listen(0, () => { const { port } = server.address(); fs.writeFileSync("/tmp/zfb-run-parallel-TfRWtt/up.ready", String(port)); console.log("UP up", port, "pid=" + process.pid); }); setInterval(() => {}, 1000);'
+    $ node -e 'const fs = require("node:fs"); const marker = "/tmp/zfb-run-parallel-TfRWtt/up.ready"; const check = () => { if (fs.existsSync(marker)) process.exit(3); }; const watcher = fs.watch("/tmp/zfb-run-parallel-TfRWtt", check); check(); watcher.on("error", () => process.exit(1));'
+    [ELIFECYCLE] Command failed with exit code 3.
+    ERROR: "boom" exited with 3.
+    [ELIFECYCLE] Command failed with signal SIGTERM.
+--- end supervisor diagnostics ---
+ ❯ waitUntil scripts/__tests__/docs-dev-supervisor.test.mjs:554:13
+    552|   while (!predicate()) {
+    553|     if (Date.now() >= deadline) {
+    554|       throw new Error(
+       |             ^
+    555|         `Timed out waiting for ${label} after ${timeoutMs}ms\n${diagno…
+    556|       );
+ ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:853:9
+ ❯ withSupervisor scripts/__tests__/docs-dev-supervisor.test.mjs:797:5
+ ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:842:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs > docs dev supervisor > supervisor process behaviour > reaps the whole descendant tree when cleanup runs before any UP line
+AssertionError: expected [ 39900, 39920, 39921 ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   39900,
++   39920,
++   39921,
++ ]
+
+ ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:927:25
+    925|
+    926|       const survivors = await waitForAllGone([...new Set([...observed.…
+    927|       expect(survivors).toEqual([]);
+       |                         ^
+    928|     });
+    929|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  |scripts-subprocess| scripts/__tests__/docs-dev-supervisor.test.mjs > docs dev supervisor > supervisor process behaviour > reports outcome=failed and reaps descendants for an unrelated hidden-case error (throw after supervisor exit)
+AssertionError: expected [ 39937, 39957, 39959, 39958, -39930 ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   39937,
++   39957,
++   39959,
++   39958,
++   -39930,
++ ]
+
+ ❯ scripts/__tests__/docs-dev-supervisor.test.mjs:1006:27
+    1004|           -observed.supervisor.processGroupId,
+    1005|         ]);
+    1006|         expect(survivors).toEqual([]);
+       |                           ^
+    1007|       },
+    1008|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 3 passed (6)
+   Start at  15:04:14
+   Duration  27.20s (tests 100%)
+

@@ -56,10 +56,10 @@ export default function AboutPage() {
       title="About · basic-blog"
       description="What each directory in this zfb starter is for."
     >
-      <h1 class="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
+      <h1 class="text-section font-display font-strong tracking-tight text-ink">
         About this starter
       </h1>
-      <p class="mt-4 leading-relaxed">
+      <p class="mt-vsp-stack leading-relaxed">
         This site is the <code class="text-sm">basic-blog</code> template that ships with{" "}
         <a href="https://zfb.takazudomodular.com" class="text-accent hover:underline">
           zfb
@@ -69,7 +69,7 @@ export default function AboutPage() {
         <code class="text-sm">"use client"</code> component inside an Island boundary.
       </p>
 
-      <h2 class="mt-12 text-xs font-semibold tracking-[0.08em] text-neutral-500 uppercase">
+      <h2 class="mt-vsp-section text-xs font-semibold tracking-[0.08em] text-muted uppercase">
         Where things live
       </h2>
       <dl class="mt-6 space-y-4">
@@ -85,7 +85,7 @@ export default function AboutPage() {
         ))}
       </dl>
 
-      <h2 class="mt-12 text-xs font-semibold tracking-[0.08em] text-neutral-500 uppercase">
+      <h2 class="mt-vsp-section text-xs font-semibold tracking-[0.08em] text-muted uppercase">
         Commands
       </h2>
       <ul class="mt-6 space-y-2 text-sm">
