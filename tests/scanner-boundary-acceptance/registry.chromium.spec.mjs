@@ -208,6 +208,59 @@ test("packed and local targets share exact minified SSR/client identity and hydr
   expect(consoleErrors).toEqual([]);
 });
 
+test("composition routes mount only the selected fixed targets", async ({ page }) => {
+  const pageErrors = [];
+  const consoleErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  for (const [route, expectedRoute] of Object.entries(expected.routes)) {
+    await page.goto(`/${route}/index.html`);
+    const islands = page.locator("[data-zfb-island]");
+    const featureShim = page.locator("script#factory-feature-shim");
+    await expect(islands).toHaveCount(expectedRoute.count);
+    await expect(featureShim).toHaveCount(expectedRoute.featureShim ? 1 : 0);
+    if (expectedRoute.featureShim) {
+      await expect(page.locator("html")).toHaveAttribute("data-factory-feature-shim", "active");
+    } else {
+      await expect(page.locator("html")).not.toHaveAttribute("data-factory-feature-shim");
+    }
+    const markers = await islands.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-zfb-island")),
+    );
+    expect(markers).toEqual(expectedRoute.markers);
+    if (expectedRoute.count === 0) {
+      await expect(page.locator("[data-zfb-island], [data-zfb-island-skip-ssr]")).toHaveCount(0);
+      await expect(
+        page.locator("[data-zfb-island-mounted], [data-zfb-island-skip-ssr-mounted]"),
+      ).toHaveCount(0);
+      await expect(page.locator("#factory-counter, #default-panel, #host-panel")).toHaveCount(0);
+      continue;
+    }
+    await expect(islands).toHaveAttribute("data-zfb-island-mounted", "");
+    await expect(islands).toHaveAttribute("data-when", "load");
+    const props = await islands.getAttribute("data-props");
+    expect(JSON.parse(props)).toEqual({});
+    const build = await islands.getAttribute("data-zfb-build");
+    expect(build).toMatch(/^[0-9a-f]{16}$/);
+    expect(build).toBe(expected.buildToken);
+    const marker = expectedRoute.markers[0];
+    const selector =
+      marker === "FactoryCounter"
+        ? "#factory-counter"
+        : marker === "HostPanel"
+          ? "#host-panel"
+          : "#default-panel";
+    const button = page.locator(selector);
+    await expect(button).toContainText("0");
+    await button.click();
+    await expect(button).toContainText("1");
+  }
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
 async function expectInvalidBuildIdentityToStayUnmounted(page, mutateHtml) {
   const identityErrors = [];
   page.on("console", (message) => {

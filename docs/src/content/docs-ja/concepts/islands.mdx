@@ -16,7 +16,7 @@ zfb のページはデフォルトで静的 HTML にレンダリングされま�
 ```tsx
 "use client";
 
-import { signal } from "zfb/zudo-react";
+import { signal } from "@takazudo/zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -34,16 +34,16 @@ export default function Counter() {
 
 到達可能な `<Island>` 境界の具体的なターゲットだけが公開マーカーを持ちます。クライアントモジュールから関数を export すること、大文字で始まる名前を付けること、JSX を返すことだけでは登録されません。未使用のヘルパーは、複数のモジュールで同じ名前のままにできます。名前を変更する必要はありません。
 
-スキャナーは named/default import、ローカル alias、namespace member、明示的 re-export と star re-export、インストール済みパッケージをたどります。JSX の子と `children` 属性、`Island({ children: h(Counter, props) })` のような直接呼び出し、SDK の `h`・`jsx`・`jsxs`・`jsxDEV` factory と alias 付きの packed 出力を認識します。固定ターゲットまたは子をそのまま転送する wrapper も、動作を静的に解決できれば利用できます。読み取り専用のパラメーターを持つファクトリについても、直接呼び出しが閉じた集合をなし、そのすべてがプレーンなオブジェクトリテラルで同じ関数を渡すと証明できれば、パラメーターのプロパティをターゲットにできます。wrapper 自身の名前は登録されません。registry に入るのは境界ターゲットだけです。実際に使われるターゲットの helper と import は bundle に残り、未使用 helper に一意な名前を付ける必要はありません。
+スキャナーは named/default import、ローカル alias、namespace member、明示的 re-export と star re-export、インストール済みパッケージをたどります。JSX の子と `children` 属性、`Island({ children: h(Counter, props) })` のような直接呼び出し、SDK の `h`・`jsx`・`jsxs`・`jsxDEV` factory と alias 付きの packed 出力を認識します。固定ターゲットまたは子をそのまま転送する wrapper は、動作を静的に解決できれば利用できます。コンポーネント map では Fragment で囲んだ固定ターゲットの形を使います。bare return wrapper を opaque map に保存すると拒否されます。読み取り専用のパラメーターを持つファクトリでは、直接呼び出しが閉じた集合をなし、同一 module の const object literal からの安全な 1 段 spread を含む object literal を各呼び出しで渡し、すべてが同じ関数定義を選ぶと証明できれば、パラメーターのプロパティをターゲットにできます。wrapper 自身の名前は登録されません。registry に入るのは境界ターゲットだけです。実際に使われるターゲットの helper と import は bundle に残り、未使用 helper に一意な名前を付ける必要はありません。
 
 スキャナーは plugin の `setup` が登録した edge も解決します。対象は完全一致する `addAlias` の書き換えと `addVirtualModule` の specifier です。同じ specifier に一致する `tsconfig.json` の `compilerOptions.paths` が解決できれば、その設定が優先されます。`paths` の候補がどれも解決できない場合は、完全一致の plugin alias、登録済み virtual module、続いて `baseUrl` と package の検索へ進みます。
 
 virtual module から実ファイルを static import／re-export すると、スキャナーはそのファイルをたどります。`"use client"` を付ける module は実ファイルに置いてください。その module は別の実ファイルで定義された関数を re-export しても構いませんが、export した関数を到達可能な `<Island>` の唯一の子として渡す必要があります。ディレクティブだけでは target は登録されません。virtual source 内に直接書いた `"use client"` ディレクティブや `import.meta.glob` は警告が出てスキップされます。これらは実ファイルに置き、そのファイルを virtual module からたどれるようにしてください。virtual source 内の bare import がインストール済み package、workspace package、または別の virtual module に解決される場合もスキップされます。`setup` の登録方法は [Plugins](./plugins.mdx) を参照してください。
 
-ターゲット関数は `"use client"` を付けたモジュールから export し、その関数を境界の唯一の子として渡します。`Island` は `zfb` または `@takazudo/zfb` からインポートできます。このガイドではベアの `zfb` エイリアスを使います。
+ターゲット関数は `"use client"` ディレクティブを付けたモジュールから export し、その関数を境界の唯一の子として渡します。新しい consumer は `Island` を `@takazudo/zfb` から、zudo-react helper を `@takazudo/zfb/zudo-react` から import します。`jsxImportSource` に `@takazudo/zfb/zudo-react` を設定すると、zfb が所有する `@takazudo/zfb/zudo-react/jsx-runtime` と `@takazudo/zfb/zudo-react/jsx-dev-runtime` entrypoint で JSX が変換されます。既存の bare alias は同じ package entrypoint を指す場合に使えます。[issue #3932](https://github.com/Takazudo/zudo-front-builder/issues/3932)を参照してください。
 
 ```tsx
-import { Island } from "zfb";
+import { Island } from "@takazudo/zfb";
 import { Counter } from "./counter";
 
 <Island><Counter /></Island>;
@@ -59,7 +59,7 @@ import { Counter } from "./counter";
 
 ### ファクトリから渡すターゲット
 
-関数がプレーンなオブジェクトのパラメーターからコンポーネントを受け取り、スキャナーがすべての呼び出しを証明できる場合、そのコンポーネントを島のターゲットにできます。この判定は構文に基づき、zfb がコンポーネントを探すために関数を実行することはありません。メンバーアクセスとオブジェクトパターンによる宣言は `const` を使い、プロパティキーは静的である必要があります。
+ファクトリはプレーンなオブジェクトのパラメーターからコンポーネントを受け取り、zfb がパラメーターとすべての直接呼び出しを証明できる場合に、そのコンポーネントを島のターゲットとして使えます。これは構文に基づく証明です。zfb がコンポーネントを探すためにファクトリを実行することはありません。既存の束縛形式は引き続き使えます。
 
 | 束縛形式 | 使用できる構文 |
 | --- | --- |
@@ -67,109 +67,189 @@ import { Counter } from "./counter";
 | オブジェクトパターン | `const { Counter: Target } = deps` または `const { Counter } = deps` |
 | パラメーターの分割代入 | `function render({ Counter: Target })` または `function render({ Counter })` |
 
-メンバーアクセスのパラメーターは、rest パラメーターではない単純な識別子で、デフォルト値を持てません。メンバー式を囲む TypeScript 専用のラッパーは取り除いて判定します。パラメーターの分割代入では、プロパティ名の変更と省略記法は使えますが、rest、デフォルト値、ネストしたパターンは使えません。パラメーターを使えるのは、静的なメンバーアクセスの対象、または `const` のオブジェクトパターンの初期値としてだけです。書き込み、`delete`、別名への束縛、引数として渡すこと、返すこと、スプレッドなど、それ以外の使用は、ネストしたクロージャー内でも証明に失敗します。分割代入したターゲットにも代入できません。`let` と `var` のターゲットは引き続き `mutable target binding` と診断されます。`!Target`、`typeof Target`、島以外のヘルパーへの引き渡しなど、`Target` のほかの読み取りは登録に影響しません。登録に関係するのは `<Island>` の子として使う場合だけです。
+メンバーアクセスのパラメーターは、rest ではない単純な識別子で、デフォルト値を持てません。メンバー式を囲む TypeScript 専用のラッパーは取り除いて判定します。パラメーターの分割代入ではプロパティ名の変更と省略記法を使えますが、rest、デフォルト値、ネストしたパターンは使えません。パラメーターを使えるのは、静的メンバーアクセスの対象か、`const` オブジェクトパターンの初期値としてだけです。書き込み、`delete`、別名への束縛、引き渡し、返却、スプレッドなど、それ以外の使用はネストしたクロージャー内でも証明に失敗します。分割代入したターゲットにも代入できません。`let` と `var` のターゲットは引き続き `mutable target binding` と診断されます。`!Target`、`typeof Target`、島以外のヘルパーに渡すといった `Target` の読み取りは登録に影響しません。登録に関係するのは `<Island>` の子として使う場合だけです。
 
-そのパラメーターを所有する関数は、名前付き関数か、`const` に束縛した関数／アロー関数である必要があります。スキャンされたモジュールグラフ内では、import と re-export の連鎖も含め、その関数への参照はすべて `renderPanel(...)`、`(0, renderPanel)(...)`、`namespace.renderPanel(...)` のような直接呼び出しの呼び出し対象でなければなりません。値として渡す、保存する、返す、`.call`・`.bind`・`.apply` を使う、JSX として使うといった参照は、関数の escape と判定されます。証明の範囲はスキャナーが発見したモジュールグラフです。実行時に生成された呼び出し元など、発見されなかった呼び出し元は対象になりません。
+パラメーターを持つ関数は、名前付き関数か、`const` に束縛した関数／アロー関数である必要があります。スキャン対象のモジュールグラフ内では、import と re-export の連鎖も含め、その関数への参照はすべて直接呼び出しの呼び出し対象でなければなりません。`renderPanel(...)`、`(0, renderPanel)(...)`、`namespace.renderPanel(...)` は直接呼び出しです。値として渡す、保存する、返す、bind/apply する、JSX として使う操作は関数の escape です。証明はスキャナーが発見したモジュールグラフを対象とし、実行時に生成される呼び出し元などは対象外です。
 
-呼び出し箇所は少なくとも 1 つ必要です。各呼び出しでは、宣言された位置にパラメーターを渡し、その位置以前の位置引数にスプレッドを使えません。引数はプレーンなオブジェクトリテラルとし、リテラルのどこにもスプレッド、計算プロパティキー、メソッド、getter を含められません。選択するプロパティはちょうど 1 回だけ現れる必要がありますが、ほかのプレーンなプロパティは共存できます。その値は関数として解決でき、すべての呼び出し箇所で同じ関数定義を指す必要があります。例:
+呼び出し箇所は 1 つ以上必要です。各呼び出しで宣言された位置にパラメーターを渡し、その位置以前の位置引数にはスプレッドを使えません。外側の引数はオブジェクトリテラルのままにします。たとえば `renderPanel(deps)` は、`deps` がローカル定数でも静的にはなりません。各呼び出しで選択されるターゲットは、同じ関数定義である必要があります。
+
+#### 静的なローカル依存スプレッド
+
+ファクトリ呼び出しに渡すオブジェクトは、各 spread operand が識別子（既存の TypeScript 専用ラッパーと括弧は取り除いて判定）であり、同じモジュールの `const` オブジェクトリテラルに束縛 ID で解決できる場合、1 段だけスプレッドを使えます。関数内ローカルの定数も使えます。ソース初期化子自身にはスプレッドを含められません。これは範囲を限定した構文証明であり、再帰的なオブジェクト評価ではありません。`createBoundary({ ...defaults })` は受け付けられる形ですが、`createBoundary(deps)` は `deps` がローカル定数でも拒否されます。
+
+引数と各 spread source には、静的で計算されていないキーを持つ省略記法または通常のキー／値データプロパティだけを含められます。数値キーと bigint キーは既存の扱いを維持します。無関係な設定プロパティのネストしたオブジェクト値はデータであり、再帰展開しません。getter、setter、method、計算キー、ネストした source spread、未対応の spread があれば、後続のプロパティで隠れても引数全体が拒否されます。引数またはいずれかの source にあるトップレベルの `__proto__` キーも拒否されます。引用符付きと省略記法の両方が対象です。
+
+トップレベルの `__proto__` は `__proto__: value` が prototype を設定するため除外されます。省略記法も、実行時には own data property になり得ますが、継承 property の推論、getter の呼び出し、prototype 構築のモデル化をしない限定的な証明のため除外します。既存の initializer reason 8 を維持します。
+
+spread source は、その束縛に代入、更新、削除、メンバー変更、alias、分割代入での読み取り、メンバー読み取り、引数への引き渡し、返却、export、JSX spread、配列／位置引数 spread、コンテナ格納、その他の値 escape がない場合にだけ安全です。その値参照はオブジェクトリテラルの spread operand だけにできます。ネストしたクロージャー内も検査されます。呼び出しより後に見える書き込みでも source は拒否されます。これは制御フローや呼び出し順の証明ではありません。安全な source は繰り返し spread できます。source にはファクトリーパラメーター用の静的メンバー読み取り例外を適用しません。
+
+外側の引数を左から右へ調べます。spread 同士、または spread と明示プロパティとの衝突は受け付けられ、最後の出現が有効なターゲットです。空または無関係な spread はそれ以前のターゲットを消しません。同じ source の繰り返しも使えます。`Counter` と `Other` は別々の client function とします。各行は個別の成功例であり、異なるターゲットを選ぶ呼び出しを 1 つのファクトリにまとめる例ではありません。
 
 ~~~tsx
-import { Island } from "zfb";
-import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
-
-function renderDesignTokenPanel(deps) {
-  const Target = deps.DesignTokenPanelBootstrap;
-  return <Island when="load"><Target /></Island>;
-}
-
-// Page calls the helper directly, so the boundary is reachable.
-export default function Page() {
-  return renderDesignTokenPanel({
-    enabled: true,
-    DesignTokenPanelBootstrap,
-  });
-}
+const defaults = { Counter };
+const override = { Counter: Other };
+createBoundary({ Counter });                           // 既存の literal control は引き続き有効
+createBoundary({ ...defaults });                       // Counter
+createBoundary({ ...defaults, Counter: Other });       // Other
+createBoundary({ Counter: Other, ...defaults });       // Counter
+createBoundary({ ...defaults, ...override });          // Other
+createBoundary({ ...override, ...defaults });          // Counter
+createBoundary({ ...defaults, ...defaults });          // Counter
 ~~~
 
-これは zudo-doc の design-token panel のファクトリに対応する形です。通常の設定は引き続き注入でき、コンポーネントの束縛だけを静的に選びます。すべての呼び出しで同じ関数を渡す必要があります。`{ DesignTokenPanelBootstrap: ctx.hostBindings.DesignTokenPanelBootstrap ?? (cond ? undefined : ImportedBootstrap) }` のような呼び出しは、この規則の対象外です。診断には `call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)` という理由が残ります。
+1 つのオブジェクトリテラル内に選択対象のキーを明示的に複数回書くと、値が同じでも、後続の spread が上書きしても拒否されます。これは引数の明示プロパティと各 source literal に個別に適用されます。選択しないデータキーの重複は引き続き許可されますが、別の境界がそのキーを選ぶ場合は証明に失敗します。
 
-拒否理由の全一覧と修正方法は次のとおりです。
+選択対象の最終値を解決する前に、引数とすべての source の構文全体を検証します。条件式かどうかを検査するのも最終値だけです。先行する条件値が証明済みの具体値で上書きされれば受け付けられますが、勝者が `host.Counter ?? Counter`、三項演算子、`Counter || Other` なら拒否されます。上書きで未対応構文を隠すことはできず、上書きされた関数はこの証明で登録されません。
 
-| 診断理由 | 修正方法 |
+同じファクトリの各呼び出しは、マーカー名だけでなく同じ関数定義を選ぶ必要があります。alias と re-export は既存の resolver で解決されます。同じマーカー名を持つ別定義は従来の marker collision 診断に進みます。
+
+ファクトリ診断の接頭辞 `target Target has unsupported initializer:` は変わりません。該当する拒否理由は次のとおりです。
+
+| 拒否される形 | 診断理由 |
 | --- | --- |
-| `mutable target binding` | `let`／`var` を、値を再代入しない `const` の束縛に変更します。 |
-| `parameter &lt;name&gt; has a default value` | デフォルト値を取り除き、すべての呼び出しでオブジェクトを明示的に渡します。 |
-| `destructured parameter &lt;name&gt; uses a rest pattern` | 名前を指定した静的プロパティだけを分割代入し、rest パターンを取り除きます。 |
-| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | パラメーターを読み取り専用にし、静的メンバーの読み取りか `const` オブジェクトパターンにだけ使います。渡す、別名にする、返す、スプレッドする、変更するといった操作を避けます。 |
-| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | スキャン対象モジュール内の `F` への参照をすべて直接呼び出しにします。渡す、保存する、返す、bind/apply する、JSX として描画するといった操作を避けます。 |
-| `factory &lt;F&gt; has no call site in the scanned modules` | 必要なオブジェクトリテラルを使う直接呼び出しをスキャン対象モジュールに追加するか、固定ターゲットを直接使います。 |
-| `call site at &lt;loc&gt; passes too few arguments` | 宣言された位置にパラメーターを渡します。 |
-| `call site at &lt;loc&gt; spreads positional arguments` | パラメーターの位置までの位置引数を明示的に書きます。 |
-| `call site at &lt;loc&gt; passes a non-literal argument` | スプレッド、計算プロパティキー、メソッド、getter のないプレーンなオブジェクトリテラルを渡します。ほかのプレーンなプロパティは含められます。 |
-| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | 選択するプロパティを静的なキーでちょうど 1 回追加します。 |
-| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | インポートした 1 つの関数を直接渡します。別の候補はそれぞれ具体的な島の境界に分けるか、後述の合成方法を使います。 |
-| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | 1 つの関数定義に解決される値を渡します。値の解決自体が `memo(X)` などの未サポート理由を返した場合、その理由も追加されます。 |
-| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | すべての呼び出しで同じ関数定義を渡すか、別々の固定ターゲット wrapper に分けます。 |
+| `createBoundary(deps)`、未知の spread source、`let` source、import／parameter／alias の source、ネストした source spread、直接の object-expression spread (`...{ Counter }`)、関数呼び出し結果、member または条件式 operand | <code>call site at &lt;loc&gt; passes a non-literal argument</code> |
+| 禁止された source 参照／書き込み／export、計算キー、method、accessor、`__proto__` キー、引数または source における選択対象の重複 | <code>call site at &lt;loc&gt; passes a non-literal argument</code> |
+| `Counter` を含まない安全な展開 | <code>property Counter missing at call site &lt;loc&gt;</code> |
+| 勝者が `host.Counter ?? Counter`、三項演算子、<code>Counter &#124;&#124; Other</code> | <code>call site at &lt;loc&gt; selects Counter conditionally (??, ternary, &#124;&#124;)</code> |
+| namespace import ではない runtime／opaque object receiver からの `host.Counter` | <code>property Counter at &lt;loc&gt; is not a function binding</code>（既存の resolver 理由が後ろに付く場合があります） |
+| 有効な呼び出し間で異なる定義を選択 | <code>call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other</code> |
+| factory parameter を `inner({ ...deps })` または `inner(deps)` に渡す | そのパラメーターの証明が必要な場合、既存の <code>parameter deps is written or escapes at &lt;loc&gt;</code> が優先されます。spread は関数間転送を追加しません。 |
+| 直接 return する固定 wrapper を `{ Panel: BarePanelIsland }` に格納、または汎用転送 boundary を `{ Island: ForwardBoundary }` に格納 | `boundary wrapper escapes into an opaque container` |
+| 汎用 wrapper を省略記法 `{ ForwardBoundary }` で格納 | `boundary wrapper escapes into an opaque object` |
+| 関数を Island JSON prop として渡す（両関数が有効な client export で、`PropsReceiver` が固定ターゲットの場合） | SSR error: `ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component` |
 
-スキャナーは該当する最初の理由を報告し、診断の接頭辞 `target Target has unsupported initializer` を保ちます。症状と修正方法の一覧は[トラブルシューティング](../guides/troubleshooting.mdx)を参照してください。
+最初に該当するファクトリ理由が報告され、ソース位置と既存の汎用 rewrite suffix が続きます。[トラブルシューティング](../guides/troubleshooting.mdx)に症状と修正方法をまとめています。
 
-### パッケージの島を差し替えるための合成
+### カスタマイズ可能なパッケージ島の合成境界
 
-ホストによる差し替えが必要なパッケージでは、デフォルトのコンポーネントターゲットを `DefaultPanelIsland` 内に固定し、描画済みの子をそのまま転送する別の `PanelSlot` wrapper を公開できます。`DesignTokenPanelBootstrap` の import 元モジュールには `"use client"` を付けます。
+ホストによる差し替えが必要なパッケージは、公開 composition seam を用意します。デフォルトターゲットは固定した server boundary wrapper に置き、ホストは別の固定ターゲット wrapper を用意し、パッケージの server slot は描画済みの子をそのまま渡します。どの境界記述を描画するかは呼び出し側が選びます。コンポーネント関数や描画済み server child を Island の JSON prop として渡してはいけません。
+
+#### ネストしたファクトリ、設定ゲート、ホスト override
+
+2 段の通常の server factory に機能設定と描画ゲートを残せます。ホスト／デフォルトの選択は composition site が担当します。
 
 ~~~tsx
-// Package island wrappers
-import { Island } from "zfb";
-// This component is exported from a module marked "use client".
-import { DesignTokenPanelBootstrap } from "./design-token-panel-bootstrap";
+// components/default-panel.tsx
+"use client";
+import { signal } from "@takazudo/zfb/zudo-react";
 
-export function DefaultPanelIsland() {
-  return (
-    <>
-      <Island when="load">
-        <DesignTokenPanelBootstrap />
-      </Island>
-    </>
-  );
+export function DefaultPanel() {
+  const count = signal(0);
+  return <button on:click={() => { count.value += 1; }}>Default panel: {count}</button>;
 }
 
+// components/host-panel.tsx
+"use client";
+import { signal } from "@takazudo/zfb/zudo-react";
+
+export function HostPanel() {
+  const count = signal(0);
+  return <button on:click={() => { count.value += 1; }}>Host panel: {count}</button>;
+}
+
+// package-islands.tsx (通常の server slot とネストした設定 factory)
 export function PanelSlot({ children }) {
   return <>{children}</>;
 }
-~~~
+export function createBodyEnd(settings) {
+  return function BodyEnd({ children }) {
+    if (!settings.enabled) return null;
+    return <PanelSlot>{children}</PanelSlot>;
+  };
+}
+export function createChrome(settings) {
+  const BodyEnd = createBodyEnd(settings);
+  return function Chrome({ children }) {
+    return <BodyEnd>{children}</BodyEnd>;
+  };
+}
 
-ページでは、両方の wrapper を組み合わせてパッケージのデフォルトを使います。
+// pages/page.tsx (server composition site)
+import { Island } from "@takazudo/zfb";
+import { DefaultPanel } from "../components/default-panel";
+import { HostPanel } from "../components/host-panel";
+import { createChrome } from "../package-islands";
 
-~~~tsx
-<PanelSlot>
-  <DefaultPanelIsland />
-</PanelSlot>
-~~~
+function DefaultPanelIsland() {
+  return <><Island when="load"><DefaultPanel /></Island></>;
+}
+function HostPanelIsland() {
+  return <><Island when="load"><HostPanel /></Island></>;
+}
 
-ホストは、同じ slot 内に自身の `"use client"` ターゲットを描画することで差し替えられます。`HostPanel` 関数はクライアントモジュールから export します。
+const settings = { enabled: true };
+const Chrome = createChrome(settings);
+const hasHost = true; // ここで具体的な host 実装が提供されています。
+const suppressDefault = false;
 
-~~~tsx
-// host-panel.tsx
-"use client";
-
-export function HostPanel() {
-  return <button type="button">Custom panel</button>;
+export default function Page() {
+  return (
+    <Chrome>
+      {hasHost
+        ? <HostPanelIsland />
+        : suppressDefault ? null : <DefaultPanelIsland />}
+    </Chrome>
+  );
 }
 ~~~
 
+有効で host がなければ `DefaultPanelIsland` を描画します。host が用意されていれば host が優先され、`HostPanelIsland` を描画します。機能設定が無効なら、host があってもネストした factory が `null` を返します。そのページには marker、mounted 属性、ボタン、activation、機能用の pre-hydration shim が現れません。有効でデフォルトを抑制し、host がなければ境界は描画されません。host がある場合は、明示的な host override がデフォルト抑制より優先されます。
+
+zudo-doc に必要な変更は、downstream の公開 composition seam migration です。設定はネストした factory に残し、host／default 選択を呼び出し側が所有する server composition site に移します。これは consumer の source/API migration であり、その consumer で検証が必要です。このドキュメントは downstream browser parity を主張しません。
+
+#### 固定ターゲットを使うコンポーネントマップ
+
+マップを使う移行では、bare return の固定 wrapper と汎用転送 boundary entry の両方を書き換えます。`function BarePanelIsland() { return <Island><DefaultPanel /></Island>; }` を `{ Panel: BarePanelIsland }` に格納すると `boundary wrapper escapes into an opaque container` で拒否されます。`ForwardBoundary` を `{ Island: ForwardBoundary }` に格納しても同じ理由です。省略記法 `{ ForwardBoundary }` では `boundary wrapper escapes into an opaque object` と診断されます。
+
+各ターゲットを固定し、Fragment で囲んだ形を使います。
+
 ~~~tsx
-import { Island } from "zfb";
-import { PanelSlot } from "@example/package/islands";
+// components/panel-components.tsx
+import { Island } from "@takazudo/zfb";
+import { DefaultPanel } from "./default-panel";
 import { HostPanel } from "./host-panel";
 
-<PanelSlot>
-  <Island when="load"><HostPanel /></Island>
-</PanelSlot>
+function DefaultPanelIsland() {
+  return <><Island when="load"><DefaultPanel /></Island></>;
+}
+function HostPanelIsland() {
+  return <><Island when="load"><HostPanel /></Island></>;
+}
+
+export const panelComponents = {
+  DefaultPanel: DefaultPanelIsland,
+  HostPanel: HostPanelIsland,
+};
 ~~~
 
-パッケージのデフォルトとホストの差し替え先は、それぞれ実際の関数定義で登録されます。ホストが slot に渡すのは描画済みの子であり、コンポーネント関数がクライアント境界を越えることはありません。コンポーネント以外の依存は、引き続きパッケージの通常のファクトリから注入できます。この限定的な合成方法でも `??` で選んだコンポーネントは受け付けられません。zudo-doc の host binding 式に対しては `target Target has unsupported initializer: call site at <loc> selects DesignTokenPanelBootstrap conditionally (??, ternary, ||)` と診断されます。
+この server-only map をページから import し、MDX entry に渡します。
 
-[MDX コンポーネント](./mdx-components.mdx)の固定ターゲットを使うコンポーネントマップの手順は別の形です。wrapper が静的 import を `<Island>` で囲んで返すもので、この手順は変更されません。[issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824)も参照してください。
+~~~tsx
+// pages/blog/[slug].tsx
+import { panelComponents } from "../../components/panel-components";
+
+<post.Content components={panelComponents} />
+~~~
+
+map module はページから到達可能である必要があります。Fragment は DOM 要素を追加せず、具体的な Island をスキャナーから見える形にします。`function IslandWrapper({ children }) { return children ?? null; }` のような plain SSR passthrough は通常の server rendering です。map key が `Island` だからといって SDK Island boundary にはなりません。map と wrapper は server 側に留まり、island prop としてシリアライズされません。
+
+ロックされた acceptance fixture で移行全体を確認します。有効な行には marker が 1 つあり、stateful button が動作します。抑制された行にはページ marker と activation がありません。
+
+| Fixture | ページ marker と操作 |
+| --- | --- |
+| `factory-static-spread` | `FactoryCounter` が 1 つ。counter 0 → 1 |
+| `factory-composition-default` | `DefaultPanel` が 1 つ。default panel 0 → 1 |
+| `factory-composition-host-override` | `HostPanel` が 1 つ、default なし。host panel 0 → 1 |
+| `factory-composition-settings-disabled` | marker、feature button、mounted 属性、activation、feature shim なし |
+| `factory-composition-default-suppressed` | host なしで marker と activation なし |
+| `factory-composition-host-with-default-suppressed` | `HostPanel` が 1 つ、default なし。host panel 0 → 1 |
+| `factory-map-default` | `DefaultPanel` が 1 つ。default panel 0 → 1 |
+| `factory-map-host-override` | `HostPanel` が 1 つ、default なし。host panel 0 → 1 |
+| `factory-map-settings-disabled` | marker、feature button、mounted 属性、activation、feature shim なし |
+
+negative scanner／SSR fixture の名前も維持します: `factory-spread`、`factory-nullish`、`factory-escape`、`dynamic-child`、`factory-spread-mutated`、`factory-spread-nested`、`factory-spread-proto`、`factory-function-json-prop`、`factory-map-opaque`、`factory-map-forwarding-opaque`、`factory-map-opaque-shorthand` です。最初の 4 件は既存の拒否 control で、追加した spread／map case は mutation、nested spread、prototype key、function JSON prop、bare-return wrapper、汎用転送、shorthand 格納を扱います。JSON prop の例は scanner 成功後の SSR で失敗します。
+
+設定で描画を無効にしても、静的に発見されたターゲットが build-wide registry に残る場合があります。ページ marker の検査対象は描画された route であり、静的ターゲットが registry から消えることではありません。新しい行を加えても既存の root と `/host-override/` の route check を維持してください。
 
 衝突診断で別々のターゲット関数が示されたら、どちらかの定義元の関数名を変更するか、意図しない定義を解決している import またはパッケージ export を修正します。import と re-export の alias でもマーカーは変わりません。スキャナーは `displayName` ではなく、定義元の関数名を使います。サーバーレンダリング時、`displayName` は未設定か関数名と一致している必要があります。一致しない値でターゲット名を変更することはできず、zfb は `ZR_ISLAND_IDENTITY` で失敗します。default target に安定した名前が必要なら `export default function Counter() { ... }` の形にします。
 
@@ -178,7 +258,7 @@ import { HostPanel } from "./host-panel";
 ```tsx
 "use client";
 
-import { computed, getScope, signal } from "zfb/zudo-react";
+import { computed, getScope, signal } from "@takazudo/zfb/zudo-react";
 
 type Theme = "light" | "dark";
 
@@ -272,7 +352,7 @@ dist/assets/islands-chunk-<hash>.js
 `data-when` 属性はクライアントエントリの実行タイミングを制御します。常に存在し、デフォルトは `"load"` です。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
 
 ```tsx
-import { Island } from "zfb";
+import { Island } from "@takazudo/zfb";
 import MobileMenu from "./MobileMenu";
 
 export default function Header() {
@@ -367,7 +447,7 @@ node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-wo
 ```tsx
 "use client";
 
-import { getScope, h, signal, type Ref } from "zfb/zudo-react";
+import { getScope, h, signal, type Ref } from "@takazudo/zfb/zudo-react";
 
 type WidgetInstance = { destroy(): void };
 type WidgetModule = { mount(host: Element): WidgetInstance };

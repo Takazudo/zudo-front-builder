@@ -33,7 +33,7 @@ MDX が `<p>some text</p>`（Markdown の段落がコンパイルされた結果
 `MDXContent` を自分で組み立てることはありません。コレクション層が各エントリのコンパイル済みモジュールを `Content` コンポーネントでラップし、エントリに付与します。つまり次のようになります。
 
 ```tsx
-import { getCollection } from "zfb/content";
+import { getCollection } from "@takazudo/zfb/content";
 
 const posts = getCollection("blog");
 const post = posts[0];
@@ -51,7 +51,7 @@ const post = posts[0];
 zfb はルートエクスポートから `defaultComponents` マップを提供しています。これは MDX が出力する素の HTML タグを、適切なコンポーネント実装でラップする要素レベルのオーバーライド群（**htmlOverrides** 規約）です。使い方の定石は、まずこれをスプレッドし、その上に自前のオーバーライドを重ねることです。
 
 ```tsx
-import { defaultComponents } from "zfb";
+import { defaultComponents } from "@takazudo/zfb";
 import { Note } from "../../components/callout";
 
 <post.Content components={{ ...defaultComponents, ...mine, Note }} />;
@@ -75,7 +75,7 @@ import { Note } from "../../components/callout";
 | `table`      | `ContentTable`      | `<table>`                                   |
 | `code`       | `ContentCode`       | `<code>` (inline; block code is unaffected) |
 
-それぞれ個別にもエクスポートされており（`import { ContentLink } from "zfb"`）、マップ全体を引き込まずに単一のオーバーライドだけを使いたい場合に利用できます。
+それぞれ個別にもエクスポートされており（`import { ContentLink } from "@takazudo/zfb"`）、マップ全体を引き込まずに単一のオーバーライドだけを使いたい場合に利用できます。
 
 `h1` は意図的に含まれていません。ページタイトルは zudo-doc の規約に従ってフロントマターから `<h1>` をレンダリングします。`h1` をオーバーライドに加えると、タイトルが気付かないうちに二重レンダリングされてしまいます。
 
@@ -177,9 +177,31 @@ export default { h2: MyH2 };
 
 ## Islands の制約
 
-`components` マップは SSR 時に解決される通常の JavaScript オブジェクトです。値は関数参照なので、JSON としてハイドレーション境界を越えることはできません。つまり、マップ内のコンポーネントはサーバー側でレンダリングされ、その HTML が静的マークアップとしてブラウザーへ送られます。
+`components` map は SSR 時に解決される通常の JavaScript object です。
+その関数値は JSON として hydration boundary を越えられません。map と
+wrapper は server 側に置き、対話的な固定 client component を
+`<Island>` に入れます。その境界を越えられるのは JSON に
+シリアライズできる props だけです。
 
-マップ内のコンポーネントでクライアント側の操作（状態、イベントハンドラー、ブラウザー API など）が必要な場合は、マップのラッパーをサーバー側に置いたまま、固定のクライアントコンポーネントを `<Island>` に入れます。島の境界を越えられるのは JSON にシリアライズできる props だけです。
+パッケージ alias を使わない新しい consumer では、公開 entrypoint を使います。
+
+~~~json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+~~~
+
+この設定では JSX 構文が、production では
+`@takazudo/zfb/zudo-react/jsx-runtime`、development では
+`@takazudo/zfb/zudo-react/jsx-dev-runtime` を通ります。runtime helper は
+`@takazudo/zfb/zudo-react` から、`Island` は `@takazudo/zfb`
+から import します。以下の検証済み map recipe は同じパッケージを指す既存の
+bare alias `zfb` を使います。この alias を使う場合は
+`jsxImportSource` を `zfb/zudo-react` に設定します。後続の移行例は
+公開 specifier を使います。
 
 ```tsx
 // components/counter.tsx
@@ -205,6 +227,10 @@ export function NamedCounter() {
 }
 ```
 
+利用できる map の形は、名前付き server wrapper、固定ターゲット、
+Island を囲む Fragment です。Fragment は DOM 要素を追加せず、
+具体的な境界をスキャナーから見える状態にします。
+
 ```tsx
 // mdx-components.tsx (project root)
 import { Island } from "zfb";
@@ -222,6 +248,8 @@ function WrappedCounter() {
 
 export default { Counter: WrappedCounter };
 ```
+
+ページ単位の map も同じ形にします。各ターゲットを固定します。
 
 ```tsx
 // pages/_mdx-components.tsx
@@ -241,19 +269,61 @@ function WrappedNamedCounter() {
 export const components = { NamedCounter: WrappedNamedCounter };
 ```
 
-この named export は `NamedCounter` 用のページ単位マップです。ルートの `mdx-components.tsx` では `Counter` 用に default export `export default { Counter: WrappedCounter };` を使います。MDX 本文で `<Counter />` と `<NamedCounter />` の両方を使う場合は、描画時に両方のマップをコレクションエントリに渡します。
+スキャナーから固定ターゲットへ到達できるよう、map を到達可能な
+ページから import して entry renderer に渡します。
 
 ```tsx
-// pages/blog/[slug].tsx — `post` は選択済みのコレクションエントリ
+// pages/blog/[slug].tsx — post は選択した collection entry
 import defaultComponents from "../../mdx-components";
 import { components as pageComponents } from "../_mdx-components";
 
 <post.Content components={{ ...defaultComponents, ...pageComponents }} />
 ```
 
-Fragment は DOM 要素を追加しません。`<Island>` が固定ターゲット `Counter` を直接囲む形になるため、本番スキャナーは SSR とブラウザーの両方で同じターゲットを登録できます。スキャナーは固定ターゲットを要求するため、動的に選んだコンポーネントは登録されません。ルートの `mdx-components.tsx` の default map は SSR 用に自動で適用されます。そこに Island ラッパーを置く場合は、例のようにページからも import して `<post.Content components={...} />` に渡し、静的スキャナーから固定ターゲットへ到達できるようにします。サーバー側のマップ自体はシリアライズされず、島の JSON 対応 props だけがクライアントへ渡ります。
+map の値は server-only です。map 自体はシリアライズせず、JSON 対応の
+Island props だけを client に渡します。子の関数、server component、
+描画済み server child は Island JSON prop ではありません。
 
-この固定ターゲットのコンポーネントマップは [issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824) で扱う形であり、手順は変わりません。別の形である限定的なファクトリ経由のターゲットとホストによる差し替えについては、[ファクトリから渡すターゲット](./islands.mdx#境界ターゲットの検出と移行-ファクトリから渡すターゲット)と[パッケージの島を差し替えるための合成](./islands.mdx#境界ターゲットの検出と移行-パッケージの島を差し替えるための合成)を参照してください。
+bare return の固定 wrapper や汎用転送 boundary wrapper を opaque map
+に格納しないでください。どちらも scanner の探索対象から escape します。
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import Counter from "./components/counter";
+
+function BareCounterIsland() {
+  return <Island when="load"><Counter /></Island>;
+}
+const rejectedBareMap = { Counter: BareCounterIsland };
+// Build reason: boundary wrapper escapes into an opaque container.
+
+function ForwardBoundary({ component: Target }) {
+  return <Island when="load"><Target /></Island>;
+}
+const rejectedForwardMap = { Island: ForwardBoundary };
+// Build reason: boundary wrapper escapes into an opaque container.
+const rejectedShorthand = { ForwardBoundary };
+// Build reason: boundary wrapper escapes into an opaque object.
+~~~
+
+上記の Fragment で囲んだ固定ターゲット map を使います。
+`function IslandWrapper({ children }) { return children ?? null; }` のような
+wrapper は通常の SSR passthrough です。map key が `Island` でも、
+その関数が SDK Island boundary になるわけではありません。
+
+`<Island>` の内側でコンポーネントを条件選択する形は、条件が
+プレーンな object 内にあっても引き続き未対応です。安全な object 構文でも、
+選択される component が静的になるわけではありません。zudo-doc の
+downstream 修正は公開 composition seam migration です。package の設定を
+ネストした server factory に残しながら、呼び出し側が host/default の
+boundary 選択を所有します。この migration は consumer で検証する必要が
+あり、このドキュメントは downstream browser parity を主張しません。
+[ファクトリから渡すターゲット](./islands.mdx#境界ターゲットの検出と移行-ファクトリから渡すターゲット)、
+[カスタマイズ可能なパッケージ島の合成境界](./islands.mdx#境界ターゲットの検出と移行-カスタマイズ可能なパッケージ島の合成境界)、
+[issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824) を参照してください。
+locked `factory-map-default`、`factory-map-host-override`、
+`factory-map-settings-disabled` の行を含む全 matrix は
+[Islands](./islands.mdx#境界ターゲットの検出と移行-カスタマイズ可能なパッケージ島の合成境界)にあります。
 
 ## Deferred open item — `wrapper`
 

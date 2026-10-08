@@ -33,7 +33,7 @@ When MDX encounters `<p>some text</p>` (which is what a markdown paragraph compi
 You don't construct `MDXContent` yourself. The collection layer wraps every entry's compiled module in a `Content` component and attaches it to the entry. That means:
 
 ```tsx
-import { getCollection } from "zfb/content";
+import { getCollection } from "@takazudo/zfb/content";
 
 const posts = getCollection("blog");
 const post = posts[0];
@@ -51,7 +51,7 @@ The bridge that connects `post.Content` to the actual compiled JSX module lives 
 zfb ships a `defaultComponents` map from its root export — a set of element-level overrides (the **htmlOverrides** convention) that wrap the bare HTML tags MDX emits with sensible component implementations. The recipe is to spread it first, then layer your own overrides on top:
 
 ```tsx
-import { defaultComponents } from "zfb";
+import { defaultComponents } from "@takazudo/zfb";
 import { Note } from "../../components/callout";
 
 <post.Content components={{ ...defaultComponents, ...mine, Note }} />;
@@ -75,7 +75,7 @@ The current `defaultComponents` set covers:
 | `table`      | `ContentTable`      | `<table>`                                   |
 | `code`       | `ContentCode`       | `<code>` (inline; block code is unaffected) |
 
-Each is also exported individually (`import { ContentLink } from "zfb"`) for cases where you want a single override without dragging in the whole map.
+Each is also exported individually (`import { ContentLink } from "@takazudo/zfb"`) for cases where you want a single override without dragging in the whole map.
 
 `h1` is intentionally absent: page titles render `<h1>` from frontmatter, per the zudo-doc convention. Adding `h1` to your overrides would silently double-render the title.
 
@@ -177,10 +177,29 @@ There is a deliberate behavioural difference between lowercase HTML tags and Pas
 
 ## Islands constraint
 
-A `components` map is a plain JavaScript object resolved at SSR time. It cannot cross the hydration boundary as JSON, because the values are function references. This means:
+A `components` map is a plain JavaScript object resolved during SSR. Its
+function values cannot cross the hydration boundary as JSON. Keep the map and
+its wrappers on the server; put an interactive, fixed client component inside
+`<Island>`, and pass only JSON-serializable props across that boundary.
 
-- Components in the map are **server-side only**. They render on the server and their HTML is delivered to the browser as static markup.
-- If a component in your map needs client-side interactivity (state, event handlers, browser APIs), keep the map wrapper on the server and put a fixed client component inside `<Island>`. Only JSON-serializable props can cross the island boundary.
+For a fresh consumer without a package alias, use the public package entrypoints:
+
+~~~json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react"
+  }
+}
+~~~
+
+That setting resolves JSX syntax through
+`@takazudo/zfb/zudo-react/jsx-runtime` in production and
+`@takazudo/zfb/zudo-react/jsx-dev-runtime` in development. Import runtime
+helpers from `@takazudo/zfb/zudo-react` and `Island` from
+`@takazudo/zfb`. The checked map recipe below uses the existing bare `zfb`
+alias for the same package. With that alias, set `jsxImportSource` to
+`zfb/zudo-react`; the later migration example uses the public specifiers.
 
 ```tsx
 // components/counter.tsx
@@ -206,6 +225,10 @@ export function NamedCounter() {
 }
 ```
 
+The supported map recipe uses a named server wrapper, a fixed target, and a
+Fragment around the Island. That Fragment adds no DOM element and keeps the
+concrete boundary visible to the scanner:
+
 ```tsx
 // mdx-components.tsx (project root)
 import { Island } from "zfb";
@@ -223,6 +246,8 @@ function WrappedCounter() {
 
 export default { Counter: WrappedCounter };
 ```
+
+A page-scoped map uses the same shape. Every target remains fixed:
 
 ```tsx
 // pages/_mdx-components.tsx
@@ -242,19 +267,61 @@ function WrappedNamedCounter() {
 export const components = { NamedCounter: WrappedNamedCounter };
 ```
 
-This named export is a page-scoped map for `NamedCounter`. The root `mdx-components.tsx` form uses its default export for `Counter`: `export default { Counter: WrappedCounter };` For an MDX entry that uses both `<Counter />` and `<NamedCounter />`, pass both maps to the collection entry when rendering the body:
+Import the map into a reachable page and pass it to the entry renderer. The
+map module must be reachable from a page for the scanner to find its fixed
+target:
 
 ```tsx
-// pages/blog/[slug].tsx — `post` is the selected collection entry
+// pages/blog/[slug].tsx — post is the selected collection entry
 import defaultComponents from "../../mdx-components";
 import { components as pageComponents } from "../_mdx-components";
 
 <post.Content components={{ ...defaultComponents, ...pageComponents }} />
 ```
 
-The Fragment adds no DOM element. It leaves `<Island>` as the direct boundary around the fixed `Counter` target, which lets the production scanner register the same target for SSR and the browser. The scanner requires a concrete target, so dynamically selecting a component remains unsupported. The root `mdx-components.tsx` default map is installed globally for SSR. If it contains an Island wrapper, import it into a page and pass it to `<post.Content components={...} />` as shown so the static scanner can reach its fixed target. The server-side map itself is never serialized; only the island's JSON-compatible props are sent to the client.
+These map values are server-only. The component map is not serialized; only
+JSON-compatible Island props cross to the client. A child function, server
+component, or rendered server child is not an Island JSON prop.
 
-This fixed-target component-map recipe is the related shape from [issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824), and it remains unchanged. For the separate bounded factory-member form and the host override pattern, see [Factory-provided targets](./islands.mdx#boundary-discovery-and-migration-factory-provided-targets) and [Composition seam for customisable package islands](./islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands).
+Do not store bare-return fixed wrappers or generic forwarding boundary
+wrappers in an opaque map. Both forms escape scanner discovery:
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import Counter from "./components/counter";
+
+function BareCounterIsland() {
+  return <Island when="load"><Counter /></Island>;
+}
+const rejectedBareMap = { Counter: BareCounterIsland };
+// Build reason: boundary wrapper escapes into an opaque container.
+
+function ForwardBoundary({ component: Target }) {
+  return <Island when="load"><Target /></Island>;
+}
+const rejectedForwardMap = { Island: ForwardBoundary };
+// Build reason: boundary wrapper escapes into an opaque container.
+const rejectedShorthand = { ForwardBoundary };
+// Build reason: boundary wrapper escapes into an opaque object.
+~~~
+
+Use the Fragment-wrapped fixed-target map above. A wrapper such as
+`function IslandWrapper({ children }) { return children ?? null; }` is a
+plain SSR passthrough. A map key named `Island` does not make that
+function an SDK Island boundary.
+
+A component value selected conditionally inside `<Island>` remains
+unsupported, including when the condition is written in a plain object. Safe
+object syntax does not make the selected component static. The downstream
+zudo-doc fix is a public composition-seam migration: its caller must own the
+host/default boundary choice while package settings remain in nested server
+factories. This migration needs verification in that consumer; these docs do
+not claim downstream browser parity. See [Factory-provided targets](./islands.mdx#boundary-discovery-and-migration-factory-provided-targets),
+[Composition seam for customisable package islands](./islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands),
+and [issue #3824](https://github.com/Takazudo/zudo-front-builder/issues/3824).
+The locked `factory-map-default`, `factory-map-host-override`, and
+`factory-map-settings-disabled` rows are listed with the full matrix in
+[Islands](./islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands).
 
 ## Deferred open item — `wrapper`
 

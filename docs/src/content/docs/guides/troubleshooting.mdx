@@ -16,43 +16,79 @@ each feature is built on.
 ## unsupported island registration … has unsupported initializer
 
 **Symptom:** a production build exits nonzero and reports an unsupported island
-registration with the prefix `target Target has unsupported initializer`. A
-factory-member target is accepted only when zfb can prove its parameter and
-every direct call site from the scanned module graph. zfb does not execute a
-factory to discover a component.
+registration with the prefix `target Target has unsupported initializer`.
+The scanner accepts existing factory-member forms and one-level spreads from
+proven local `const` object literals. It does not execute a factory or
+evaluate an arbitrary object to discover a component.
 
-**Cause:** the selected component must come from a read-only parameter and a
-plain object literal at every call site. The literal may contain other plain
-properties, but the selected property must occur exactly once and every call
-must resolve it to the same function definition. A `let` or `var` target keeps
-the existing `mutable target binding` diagnostic.
+**Cause:** the factory parameter must be read-only, and every direct call site
+must pass an object literal. A spread source must be an identifier bound to a
+same-module `const` object literal with no nested spread and no value escape.
+Only static data properties are accepted in the argument and sources. The
+selected key may occur only once in each individual literal, but collisions
+between literals are allowed: the last occurrence from left to right wins.
+Every direct call to a factory must still select the same function definition.
+A later concrete value can override an earlier conditional value, but a
+winning `host.Counter ?? Counter`, ternary, or `Counter || Other` remains
+conditional and fails.
 
-**Fix:** use a `const` member or object-pattern binding, keep the parameter
-read-only, and call the function directly with a plain object literal. Apply the
-rewrite for the first matching reason:
+**Fix:** keep the factory parameter read-only and call the factory directly with
+an object literal. Use a local static spread when useful; do not pass a named
+object variable as the outer argument. Apply the first matching factory reason:
 
 | Diagnostic reason | Fix |
 | --- | --- |
 | `mutable target binding` | Use a `const` target binding and do not reassign it. |
-| `parameter &lt;name&gt; has a default value` | Remove the default and pass the object explicitly at every call site. |
-| `destructured parameter &lt;name&gt; uses a rest pattern` | Remove the rest pattern; destructure only the named static property. |
-| `parameter &lt;name&gt; is written or escapes at &lt;loc&gt;` | Use the parameter only for static member reads or a `const` object pattern; do not write, delete, pass, alias, return, or spread it. |
-| `factory &lt;F&gt; escapes as a value at &lt;loc&gt;` | Keep every reference to `F` as a direct call; do not pass, store, return, bind, apply, or render it as JSX. |
-| `factory &lt;F&gt; has no call site in the scanned modules` | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
-| `call site at &lt;loc&gt; passes too few arguments` | Pass the parameter at its declared position. |
-| `call site at &lt;loc&gt; spreads positional arguments` | Spell out the positional arguments through the parameter index. |
-| `call site at &lt;loc&gt; passes a non-literal argument` | Pass a plain object literal with no spread, computed key, method, or getter; other plain properties are allowed. |
-| `property &lt;prop&gt; missing at call site &lt;loc&gt;` | Add the selected property exactly once as a static key. |
-| `call site at &lt;loc&gt; selects &lt;prop&gt; conditionally (??, ternary, ||)` | Pass one function directly, or render alternatives as separate concrete island boundaries. For a package override, use the [composition seam](../concepts/islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands). |
-| `property &lt;prop&gt; at &lt;loc&gt; is not a function binding` | Pass a value that resolves to one function definition. If resolution already has an unsupported reason, such as `memo(X)`, that reason is appended. |
-| `call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other` | Make every call pass the same function definition, or split them into separate fixed-target wrappers. |
+| <code>parameter &lt;name&gt; has a default value</code> | Remove the default and pass the object explicitly at every call site. |
+| <code>destructured parameter &lt;name&gt; uses a rest pattern</code> | Remove the rest pattern; destructure only the named static property. |
+| <code>parameter &lt;name&gt; is written or escapes at &lt;loc&gt;</code> | Use the parameter only for static member reads or a `const` object pattern; do not write, delete, pass, alias, return, or spread it. |
+| <code>factory &lt;F&gt; escapes as a value at &lt;loc&gt;</code> | Keep every reference to `F` as a direct call; do not pass, store, return, bind, apply, or render it as JSX. |
+| <code>factory &lt;F&gt; has no call site in the scanned modules</code> | Add a direct call in a scanned module with the required object literal, or use a fixed target directly. |
+| <code>call site at &lt;loc&gt; passes too few arguments</code> | Pass the parameter at its declared position. |
+| <code>call site at &lt;loc&gt; spreads positional arguments</code> | Spell out positional arguments through the parameter index. |
+| <code>call site at &lt;loc&gt; passes a non-literal argument</code> | Keep the outer argument as an object literal. For a spread, use a same-module `const` object literal with no nested spread, unsupported property, selected duplicate, or forbidden reference/write/export. `createBoundary(deps)` remains rejected even if `deps` is a local constant. |
+| <code>property Counter missing at call site &lt;loc&gt;</code> | Add the selected property to the expanded object. |
+| <code>call site at &lt;loc&gt; selects Counter conditionally (??, ternary, &#124;&#124;)</code> | Make the winning value one static function binding, or move host/default selection to the public server composition seam below. |
+| <code>property Counter at &lt;loc&gt; is not a function binding</code> | Use a value that resolves to one function binding; a runtime/opaque object receiver such as `host.Counter` does not prove it. An existing resolver reason may follow. |
+| <code>call sites disagree: &lt;loc&gt; passes Counter, &lt;loc&gt; passes Other</code> | Make every call select the same function definition, or use separate fixed-target wrappers. |
+| <code>parameter deps is written or escapes at &lt;loc&gt;</code> | For `inner({ ...deps })` or `inner(deps)`, keep `deps` within its existing read-only contract; spreads do not add interprocedural forwarding. |
+| `boundary wrapper escapes into an opaque container` | Do not store a bare-return fixed Island wrapper or a generic forwarding boundary wrapper in a map. Use the documented Fragment-wrapped fixed-target map. |
+| `boundary wrapper escapes into an opaque object` | Do not store the generic wrapper as a shorthand object value; replace it with reachable fixed-target wrappers. |
 
-Parameter destructuring accepts a plain identifier parameter with no default and
-no rest, default, or nested object pattern. Call-site object literals reject any
-spread, computed key, method, or getter. The property value must be a function
-binding, not a conditional such as `ctx.hostBindings.Panel ?? fallback`. See
-[Factory-provided targets](../concepts/islands.mdx#boundary-discovery-and-migration-factory-provided-targets) for
-the accepted spellings, call-site proof, and complete composition example.
+Factory rows retain the source-located prefix and existing generic rewrite
+suffix. The duplicate-key rule applies to a selected key explicitly written
+twice in one literal even if values match or a later spread overwrites it.
+Duplicate nonselected data keys remain allowed. Validate the full source grammar
+before checking the final selected value, so unsupported syntax is never hidden
+by a winning override.
+
+The downstream zudo-doc repair is a public composition-seam migration. Keep
+feature settings in two nested server factories; let the caller choose between
+separate fixed `DefaultPanelIsland` and `HostPanelIsland` renderings, and pass
+the rendered child through an ordinary server `PanelSlot`. An enabled
+feature renders the default without a host, and the host wins when installed.
+A disabled feature renders neither. With default suppression and no host,
+render neither; with a host, render the host. No component function or rendered
+server child is an Island JSON prop. This is a consumer source/API migration;
+verify it in that consumer. These docs do not claim downstream browser parity.
+
+For maps, preserve the Fragment-wrapped fixed-target recipe from
+[MDX components](../concepts/mdx-components.mdx#islands-constraint). Bare-return
+fixed wrappers and generic forwarding boundary entries stored in maps are
+rejected. A plain `children ?? null` SSR passthrough is not an SDK boundary
+because its map key happens to be `Island`.
+
+The locked acceptance rows are `factory-static-spread`,
+`factory-composition-default`, `factory-composition-host-override`,
+`factory-composition-settings-disabled`,
+`factory-composition-default-suppressed`,
+`factory-composition-host-with-default-suppressed`,
+`factory-map-default`, `factory-map-host-override`, and
+`factory-map-settings-disabled`. The [Islands guide](../concepts/islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands)
+lists each expected route marker and interaction. A function passed as an
+Island JSON prop fails later during SSR with
+`ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component` when both
+functions are valid client exports and `PropsReceiver` is a fixed target.
 
 ## `curl | sh` install fails to resolve a release tag
 
