@@ -17,6 +17,10 @@ on:
         description: Run full Wind compatibility and shipping evidence
         type: boolean
         default: true
+      default_layout_checkpoint:
+        description: Run the exact default-layout build-to-dev checkpoint with passing timelines
+        type: boolean
+        default: false
 
 # Default to least privilege; jobs that need more must opt in.
 permissions:
@@ -582,6 +586,8 @@ jobs:
       # alone doesn't carry.
       - name: cargo nextest run --workspace --profile ci
         shell: bash
+        env:
+          ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/default-layout-workspace
         run: |
           mkdir -p target/nextest-logs
           cargo nextest run --workspace --profile ci 2>&1 | tee target/nextest-logs/workspace.log
@@ -599,6 +605,22 @@ jobs:
             mv target/nextest/ci/junit.xml target/nextest/ci/junit-workspace.xml
           fi
 
+      # #4012 needs a named, exact-target run and the passing per-probe output.
+      # The normal PR workspace lane above already runs this binary; this extra
+      # invocation is opt-in for the evidence checkpoint, not a cost on every PR.
+      - name: Default-layout build-to-dev checkpoint (#4012)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
+        env:
+          ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/default-layout-checkpoint
+        run: cargo nextest run -p zfb --test dev_build_then_dev_default_layout_e2e --profile ci --success-output final
+
+      - name: Stash default-layout checkpoint JUnit
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
+        run: |
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/nextest/ci/junit-default-layout-checkpoint.xml
+          fi
+
       # scanner_boundary_acceptance preserves its production dist for this
       # browser companion. Keep hydration and host-override assertions in the
       # same job so they exercise the exact artifacts built by nextest.
@@ -613,10 +635,24 @@ jobs:
       # Its JS packages are packed from this checkout, and the Rust binary
       # built above must match the exact checked-out source SHA.
       - name: SDK alias packed consumer and dev rebundle (#3939)
+        env:
+          ZFB_SDK_ALIAS_EVIDENCE_DIR: ${{ runner.temp }}/sdk-alias-consumer
         run: |
           ZFB_BINARY="$PWD/target/debug/zfb" \
           ZFB_BINARY_SOURCE_SHA="$(git rev-parse HEAD)" \
           node tests/sdk-alias-consumer/run.mjs
+
+      - name: Upload default-layout checkpoint timelines (#4012)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: default-layout-dev-readiness
+          path: |
+            ${{ runner.temp }}/default-layout-workspace/
+            ${{ runner.temp }}/default-layout-checkpoint/
+            ${{ runner.temp }}/sdk-alias-consumer/
+          if-no-files-found: warn
+          retention-days: 7
 
       # #3931 reproduces the linked-package identity issue from a scratch
       # workspace while reusing this job's branch-built zfb binary and the
@@ -694,6 +730,7 @@ jobs:
           path: |
             target/nextest/ci/junit-env-esbuild-only.xml
             target/nextest/ci/junit-workspace.xml
+            target/nextest/ci/junit-default-layout-checkpoint.xml
             target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7
