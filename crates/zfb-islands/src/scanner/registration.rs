@@ -2281,26 +2281,36 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                                         Prop::Shorthand(ident) => {
                                             let value = self.resolve_local(path, ident)?;
                                             if self.is_boundary_value(&value)? {
-                                                let factory = ident.to_id();
-                                                let target = self
-                                                    .nested_bindings(path)?
-                                                    .factory_members
-                                                    .iter()
-                                                    .filter(|(_, member)| member.factory == factory)
-                                                    .map(|(id, _)| id.0.to_string())
-                                                    .min();
-                                                if let Some(target) = target {
-                                                    let reason = Self::factory_failure_reason(
-                                                        &target,
-                                                        format!(
-                                                            "factory {} escapes as a value at {}",
-                                                            ident.sym,
-                                                            self.site_location(path, ident.span)
-                                                        ),
-                                                    );
-                                                    return Err(
-                                                        self.diagnostic(path, ident.span, reason)
-                                                    );
+                                                let forwards_child = match &value {
+                                                    Value::Function(function) => matches!(
+                                                        self.summarize_wrapper(function)?,
+                                                        WrapperSummary::ForwardChild
+                                                    ),
+                                                    _ => false,
+                                                };
+                                                if !forwards_child {
+                                                    let factory = ident.to_id();
+                                                    let target = self
+                                                        .nested_bindings(path)?
+                                                        .factory_members
+                                                        .iter()
+                                                        .filter(|(_, member)| {
+                                                            member.factory == factory
+                                                        })
+                                                        .map(|(id, _)| id.0.to_string())
+                                                        .min();
+                                                    if let Some(target) = target {
+                                                        let reason = Self::factory_failure_reason(
+                                                            &target,
+                                                            format!(
+                                                                "factory {} escapes as a value at {}",
+                                                                ident.sym,
+                                                                self.site_location(path, ident.span)
+                                                            ),
+                                                        );
+                                                        return Err(self
+                                                            .diagnostic(path, ident.span, reason));
+                                                    }
                                                 }
                                                 return Err(self.diagnostic(path, form.span(), "boundary wrapper escapes into an opaque object"));
                                             }
@@ -4490,6 +4500,20 @@ mod tests {
                 "import { Island } from '@takazudo/zfb'; import { Counter } from './counter'; function Wrap() { return <Island><Counter /></Island>; } const stored = { Wrap };",
             ),
             ("counter.tsx", "'use client'; export function Counter() { return null; }"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("boundary wrapper escapes into an opaque object"),
+            "{error}"
+        );
+
+        let error = scan(&[
+            ("pages/home.tsx", "import '../factory';"),
+            (
+                "factory.tsx",
+                "import { Island } from '@takazudo/zfb'; function ForwardBoundary({ children }) { return <Island>{children}</Island>; } const stored = { ForwardBoundary };",
+            ),
         ])
         .unwrap_err()
         .to_string();
