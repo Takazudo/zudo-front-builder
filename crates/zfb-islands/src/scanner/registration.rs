@@ -79,6 +79,8 @@ struct NestedBindings {
     factory_functions: HashMap<swc_core::ecma::ast::Id, FactoryFunction>,
     calls: HashMap<swc_core::ecma::ast::Id, Vec<CallExpr>>,
     references: HashMap<swc_core::ecma::ast::Id, Vec<Span>>,
+    object_spread_reads: HashSet<u32>,
+    exported_bindings: HashSet<BindingId>,
     direct_callees: HashSet<u32>,
     allowed_parameter_reads: HashSet<u32>,
     written_parameters: HashMap<BindingId, Vec<Span>>,
@@ -90,6 +92,7 @@ struct NestedBindings {
 struct NestedVariable {
     kind: swc_core::ecma::ast::VarDeclKind,
     init: Option<NestedInitializer>,
+    object: Option<Rc<ObjectLit>>,
 }
 
 enum NestedInitializer {
@@ -123,6 +126,23 @@ struct FactoryMember {
     invalid_pattern: bool,
 }
 
+/// A source is summarized once, then every selected-property projection is O(1).
+struct SpreadSource {
+    values: HashMap<String, Expr>,
+    duplicates: HashSet<String>,
+}
+
+enum SpreadSourceFact {
+    Valid(SpreadSource),
+    Invalid,
+}
+
+enum FactoryProjection {
+    Invalid,
+    Missing,
+    Selected(Expr),
+}
+
 fn static_member_name(member: &swc_core::ecma::ast::MemberExpr) -> Option<String> {
     match &member.prop {
         MemberProp::Ident(ident) => Some(ident.sym.to_string()),
@@ -140,6 +160,17 @@ fn factory_object_key(name: &PropName) -> Option<String> {
         PropName::BigInt(number) => Some(number.value.to_string()),
         other => prop_name(other),
     }
+}
+
+fn factory_data_property(property: &Prop) -> Option<(String, Expr)> {
+    let (key, value) = match property {
+        Prop::Shorthand(ident) => (ident.sym.to_string(), Expr::Ident(ident.clone())),
+        Prop::KeyValue(pair) if !matches!(pair.key, PropName::Computed(_)) => {
+            (factory_object_key(&pair.key)?, (*pair.value).clone())
+        }
+        _ => return None,
+    };
+    (key != "__proto__").then_some((key, value))
 }
 
 fn object_pattern_members(
@@ -336,6 +367,12 @@ impl Visit for NestedBindings {
                     NestedVariable {
                         kind: node.kind,
                         init,
+                        object: declaration.init.as_deref().and_then(|expr| {
+                            match unwrap_expr(expr) {
+                                Expr::Object(object) => Some(Rc::new(object.clone())),
+                                _ => None,
+                            }
+                        }),
                     },
                 );
             } else if let Pat::Object(pattern) = &declaration.name {
@@ -368,6 +405,7 @@ impl Visit for NestedBindings {
                                 NestedVariable {
                                     kind: node.kind,
                                     init: Some(NestedInitializer::Unsupported),
+                                    object: None,
                                 },
                             );
                         } else {
@@ -463,6 +501,21 @@ impl Visit for NestedBindings {
     }
 
     fn visit_assign_expr(&mut self, node: &swc_core::ecma::ast::AssignExpr) {
+        // Assignment patterns are not expression-identifier visits. Capture
+        // every bound identifier on the left so a destructuring write cannot
+        // leave a supposedly immutable spread source in the safe set.
+        #[derive(Default)]
+        struct WrittenIds(Vec<(BindingId, Span)>);
+        impl Visit for WrittenIds {
+            fn visit_ident(&mut self, ident: &swc_core::ecma::ast::Ident) {
+                self.0.push((ident.to_id(), ident.span));
+            }
+        }
+        let mut written = WrittenIds::default();
+        node.left.visit_with(&mut written);
+        for (id, span) in written.0 {
+            self.written_parameters.entry(id).or_default().push(span);
+        }
         if let Some(ident) = node.left.as_ident() {
             self.written_parameters
                 .entry(ident.id.to_id())
@@ -500,6 +553,47 @@ impl Visit for NestedBindings {
             self.record_reference(ident);
         }
         node.visit_children_with(self);
+    }
+
+    fn visit_object_lit(&mut self, object: &ObjectLit) {
+        for property in &object.props {
+            if let PropOrSpread::Spread(spread) = property {
+                if let Expr::Ident(ident) = unwrap_expr(&spread.expr) {
+                    self.object_spread_reads.insert(ident.span.lo.0);
+                }
+            }
+        }
+        object.visit_children_with(self);
+    }
+
+    fn visit_export_decl(&mut self, export: &swc_core::ecma::ast::ExportDecl) {
+        if let Decl::Var(variable) = &export.decl {
+            for declaration in &variable.decls {
+                if let Pat::Ident(binding) = &declaration.name {
+                    self.exported_bindings.insert(binding.id.to_id());
+                }
+            }
+        }
+        export.visit_children_with(self);
+    }
+
+    fn visit_named_export(&mut self, export: &swc_core::ecma::ast::NamedExport) {
+        if export.src.is_none() {
+            for specifier in &export.specifiers {
+                let local = match specifier {
+                    swc_core::ecma::ast::ExportSpecifier::Named(named) => Some(&named.orig),
+                    swc_core::ecma::ast::ExportSpecifier::Default(default) => {
+                        self.exported_bindings.insert(default.exported.to_id());
+                        None
+                    }
+                    swc_core::ecma::ast::ExportSpecifier::Namespace(_) => None,
+                };
+                if let Some(swc_core::ecma::ast::ModuleExportName::Ident(ident)) = local {
+                    self.exported_bindings.insert(ident.to_id());
+                }
+            }
+        }
+        export.visit_children_with(self);
     }
 }
 
@@ -698,6 +792,7 @@ struct Discovery<'a, R: Resolver> {
     deferred_forward_sites: HashSet<(PathBuf, u32)>,
     owned_factory_sites: HashMap<PathBuf, Rc<HashSet<u32>>>,
     nested_bindings: HashMap<PathBuf, Rc<NestedBindings>>,
+    spread_sources: HashMap<(PathBuf, BindingId), Rc<SpreadSourceFact>>,
     factory_proofs: HashMap<(Definition, usize, String), Value>,
     factory_member_checks: HashMap<(PathBuf, BindingId), Option<Value>>,
     proving_factories: HashSet<Definition>,
@@ -714,6 +809,10 @@ struct Discovery<'a, R: Resolver> {
     factory_proof_evaluations: usize,
     #[cfg(test)]
     factory_resolver_operations: usize,
+    #[cfg(test)]
+    spread_source_evaluations: usize,
+    #[cfg(test)]
+    spread_source_property_scans: usize,
 }
 
 impl<'a, R: Resolver> Discovery<'a, R> {
@@ -730,6 +829,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             deferred_forward_sites: HashSet::new(),
             owned_factory_sites: HashMap::new(),
             nested_bindings: HashMap::new(),
+            spread_sources: HashMap::new(),
             factory_proofs: HashMap::new(),
             factory_member_checks: HashMap::new(),
             proving_factories: HashSet::new(),
@@ -746,6 +846,10 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             factory_proof_evaluations: 0,
             #[cfg(test)]
             factory_resolver_operations: 0,
+            #[cfg(test)]
+            spread_source_evaluations: 0,
+            #[cfg(test)]
+            spread_source_property_scans: 0,
         }
     }
 
@@ -1401,6 +1505,116 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         None
     }
 
+    fn spread_source(
+        &mut self,
+        path: &Path,
+        ident: &swc_core::ecma::ast::Ident,
+    ) -> ScanResult<Rc<SpreadSourceFact>> {
+        let key = (path.to_path_buf(), ident.to_id());
+        if let Some(fact) = self.spread_sources.get(&key) {
+            return Ok(Rc::clone(fact));
+        }
+        #[cfg(test)]
+        {
+            self.spread_source_evaluations += 1;
+        }
+        let bindings = self.nested_bindings(path)?;
+        let source = bindings.variables.get(&ident.to_id()).filter(|variable| {
+            variable.kind == swc_core::ecma::ast::VarDeclKind::Const
+                && variable.object.is_some()
+                && !bindings.exported_bindings.contains(&ident.to_id())
+                && !bindings.written_parameters.contains_key(&ident.to_id())
+                && bindings
+                    .references
+                    .get(&ident.to_id())
+                    .is_some_and(|references| {
+                        references
+                            .iter()
+                            .all(|reference| bindings.object_spread_reads.contains(&reference.lo.0))
+                    })
+        });
+        let fact = if let Some(object) = source.and_then(|variable| variable.object.as_ref()) {
+            let mut values = HashMap::new();
+            let mut duplicates = HashSet::new();
+            let mut valid = true;
+            for property in &object.props {
+                #[cfg(test)]
+                {
+                    self.spread_source_property_scans += 1;
+                }
+                let PropOrSpread::Prop(property) = property else {
+                    valid = false;
+                    break;
+                };
+                let Some((name, value)) = factory_data_property(property) else {
+                    valid = false;
+                    break;
+                };
+                if values.insert(name.clone(), value).is_some() {
+                    duplicates.insert(name);
+                }
+            }
+            if valid {
+                SpreadSourceFact::Valid(SpreadSource { values, duplicates })
+            } else {
+                SpreadSourceFact::Invalid
+            }
+        } else {
+            SpreadSourceFact::Invalid
+        };
+        let fact = Rc::new(fact);
+        self.spread_sources.insert(key, Rc::clone(&fact));
+        Ok(fact)
+    }
+
+    fn project_factory_argument(
+        &mut self,
+        path: &Path,
+        argument: &Expr,
+        property: &str,
+    ) -> ScanResult<FactoryProjection> {
+        let Expr::Object(object) = unwrap_expr(argument) else {
+            return Ok(FactoryProjection::Invalid);
+        };
+        let mut selected = None;
+        let mut explicit_selected = false;
+        for entry in &object.props {
+            match entry {
+                PropOrSpread::Prop(prop) => {
+                    let Some((name, value)) = factory_data_property(prop) else {
+                        return Ok(FactoryProjection::Invalid);
+                    };
+                    if name == property {
+                        if explicit_selected {
+                            return Ok(FactoryProjection::Invalid);
+                        }
+                        explicit_selected = true;
+                        selected = Some(value);
+                    }
+                }
+                PropOrSpread::Spread(spread) => {
+                    let Expr::Ident(ident) = unwrap_expr(&spread.expr) else {
+                        return Ok(FactoryProjection::Invalid);
+                    };
+                    let source = self.spread_source(path, ident)?;
+                    let SpreadSourceFact::Valid(source) = &*source else {
+                        return Ok(FactoryProjection::Invalid);
+                    };
+                    if source.duplicates.contains(property) {
+                        return Ok(FactoryProjection::Invalid);
+                    }
+                    if let Some(value) = source.values.get(property) {
+                        selected = Some(value.clone());
+                    }
+                }
+            }
+        }
+        Ok(match selected {
+            Some(value) => FactoryProjection::Selected(value),
+            None => FactoryProjection::Missing,
+        })
+    }
+
     fn resolve_factory_member_inner(
         &mut self,
         path: &Path,
@@ -1465,161 +1679,36 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                 )));
             }
         }
+        let mut projections = Vec::with_capacity(calls.len());
         for call in &calls {
-            let literal = matches!(unwrap_expr(&call.call.args[member.index].expr), Expr::Object(object)
-            if object.props.iter().all(|prop| match prop {
-                PropOrSpread::Prop(prop) => match &**prop {
-                    Prop::Shorthand(_) => true,
-                    Prop::KeyValue(pair) => !matches!(&pair.key, PropName::Computed(_)) && factory_object_key(&pair.key).is_some(),
-                    _ => false,
-                },
-                _ => false,
-            }));
-            if !literal {
+            let projection = self.project_factory_argument(
+                &call.path,
+                &call.call.args[member.index].expr,
+                &member.property,
+            )?;
+            if matches!(projection, FactoryProjection::Invalid) {
                 return Ok(fail(format!(
                     "call site at {} passes a non-literal argument",
                     self.site_location(&call.path, call.call.span)
                 )));
             }
+            projections.push(projection);
         }
-        for call in &calls {
-            let Expr::Object(object) = unwrap_expr(&call.call.args[member.index].expr) else {
-                unreachable!()
-            };
-            let count = object
-                .props
-                .iter()
-                .filter(|prop| match prop {
-                    PropOrSpread::Prop(prop) => match &**prop {
-                        Prop::Shorthand(ident) => ident.sym.as_ref() == member.property.as_str(),
-                        Prop::KeyValue(pair) => {
-                            factory_object_key(&pair.key).as_deref()
-                                == Some(member.property.as_str())
-                        }
-                        _ => false,
-                    },
-                    _ => false,
-                })
-                .count();
-            if count == 0 {
+        for (call, projection) in calls.iter().zip(&projections) {
+            if matches!(projection, FactoryProjection::Missing) {
                 return Ok(fail(format!(
                     "property {} missing at call site {}",
                     member.property,
                     self.site_location(&call.path, call.call.span)
                 )));
             }
-            if count > 1 {
-                return Ok(fail(format!(
-                    "call site at {} passes a non-literal argument",
-                    self.site_location(&call.path, call.call.span)
-                )));
-            }
         }
-        for call in &calls {
-            let Expr::Object(object) = unwrap_expr(&call.call.args[member.index].expr) else {
+        for (call, projection) in calls.iter().zip(&projections) {
+            let FactoryProjection::Selected(expr) = projection else {
                 unreachable!()
             };
-            let selected = object.props.iter().find_map(|prop| match prop {
-                PropOrSpread::Prop(prop) => match &**prop {
-                    Prop::Shorthand(ident) if ident.sym.as_ref() == member.property.as_str() => {
-                        None
-                    }
-                    Prop::KeyValue(pair)
-                        if factory_object_key(&pair.key).as_deref()
-                            == Some(member.property.as_str()) =>
-                    {
-                        Some(&*pair.value)
-                    }
-                    _ => None,
-                },
-                _ => None,
-            });
-            if selected.is_some_and(|expr| {
-                matches!(
-                    unwrap_expr(expr),
-                    Expr::Cond(_)
-                        | Expr::Bin(swc_core::ecma::ast::BinExpr {
-                            op: swc_core::ecma::ast::BinaryOp::NullishCoalescing
-                                | swc_core::ecma::ast::BinaryOp::LogicalOr,
-                            ..
-                        })
-                )
-            }) {
-                return Ok(fail(format!(
-                    "call site at {} selects {} conditionally (??, ternary, ||)",
-                    self.site_location(&call.path, call.call.span),
-                    member.property
-                )));
-            }
-        }
-        let mut resolved: Vec<(FunctionValue, String)> = Vec::new();
-        for call in &calls {
-            let location = self.site_location(&call.path, call.call.span);
-            if call
-                .call
-                .args
-                .iter()
-                .take(member.index + 1)
-                .any(|arg| arg.spread.is_some())
-            {
-                return Ok(fail(format!(
-                    "call site at {location} spreads positional arguments"
-                )));
-            }
-            let Some(argument) = call.call.args.get(member.index) else {
-                return Ok(fail(format!(
-                    "call site at {location} passes too few arguments"
-                )));
-            };
-            let Expr::Object(object) = unwrap_expr(&argument.expr) else {
-                return Ok(fail(format!(
-                    "call site at {location} passes a non-literal argument"
-                )));
-            };
-            let mut value: Option<Expr> = None;
-            for prop in &object.props {
-                let (name, expr): (String, Expr) = match prop {
-                    PropOrSpread::Prop(prop) => match &**prop {
-                        Prop::Shorthand(ident) => {
-                            (ident.sym.to_string(), Expr::Ident(ident.clone()))
-                        }
-                        Prop::KeyValue(pair) if !matches!(&pair.key, PropName::Computed(_)) => {
-                            let Some(name) = factory_object_key(&pair.key) else {
-                                return Ok(fail(format!(
-                                    "call site at {location} passes a non-literal argument"
-                                )));
-                            };
-                            (name, (*pair.value).clone())
-                        }
-                        _ => {
-                            return Ok(fail(format!(
-                                "call site at {location} passes a non-literal argument"
-                            )))
-                        }
-                    },
-                    _ => {
-                        return Ok(fail(format!(
-                            "call site at {location} passes a non-literal argument"
-                        )))
-                    }
-                };
-                if name == member.property {
-                    if value.is_some() {
-                        return Ok(fail(format!(
-                            "call site at {location} passes a non-literal argument"
-                        )));
-                    }
-                    value = Some(expr);
-                }
-            }
-            let Some(expr) = value else {
-                return Ok(fail(format!(
-                    "property {} missing at call site {location}",
-                    member.property
-                )));
-            };
             if matches!(
-                unwrap_expr(&expr),
+                unwrap_expr(expr),
                 Expr::Cond(_)
                     | Expr::Bin(swc_core::ecma::ast::BinExpr {
                         op: swc_core::ecma::ast::BinaryOp::NullishCoalescing
@@ -1628,15 +1717,23 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     })
             ) {
                 return Ok(fail(format!(
-                    "call site at {location} selects {} conditionally (??, ternary, ||)",
+                    "call site at {} selects {} conditionally (??, ternary, ||)",
+                    self.site_location(&call.path, call.call.span),
                     member.property
                 )));
             }
+        }
+        let mut resolved: Vec<(FunctionValue, String)> = Vec::new();
+        for (call, projection) in calls.iter().zip(&projections) {
+            let location = self.site_location(&call.path, call.call.span);
+            let FactoryProjection::Selected(expr) = projection else {
+                unreachable!()
+            };
             #[cfg(test)]
             {
                 self.factory_resolver_operations += 1;
             }
-            let function = match self.resolve_expr(&call.path, &expr)? {
+            let function = match self.resolve_expr(&call.path, expr)? {
                 Value::Function(function) => function,
                 Value::Unsupported(reason) => {
                     return Ok(fail(format!(
@@ -1645,7 +1742,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                     )))
                 }
                 _ => {
-                    let detail = match unwrap_expr(&expr) {
+                    let detail = match unwrap_expr(expr) {
                         Expr::Call(call) => match &call.callee {
                             Callee::Expr(callee) => match unwrap_expr(callee) {
                                 Expr::Ident(ident) => {
@@ -2184,26 +2281,36 @@ impl<'a, R: Resolver> Discovery<'a, R> {
                                         Prop::Shorthand(ident) => {
                                             let value = self.resolve_local(path, ident)?;
                                             if self.is_boundary_value(&value)? {
-                                                let factory = ident.to_id();
-                                                let target = self
-                                                    .nested_bindings(path)?
-                                                    .factory_members
-                                                    .iter()
-                                                    .filter(|(_, member)| member.factory == factory)
-                                                    .map(|(id, _)| id.0.to_string())
-                                                    .min();
-                                                if let Some(target) = target {
-                                                    let reason = Self::factory_failure_reason(
-                                                        &target,
-                                                        format!(
-                                                            "factory {} escapes as a value at {}",
-                                                            ident.sym,
-                                                            self.site_location(path, ident.span)
-                                                        ),
-                                                    );
-                                                    return Err(
-                                                        self.diagnostic(path, ident.span, reason)
-                                                    );
+                                                let forwards_child = match &value {
+                                                    Value::Function(function) => matches!(
+                                                        self.summarize_wrapper(function)?,
+                                                        WrapperSummary::ForwardChild
+                                                    ),
+                                                    _ => false,
+                                                };
+                                                if !forwards_child {
+                                                    let factory = ident.to_id();
+                                                    let target = self
+                                                        .nested_bindings(path)?
+                                                        .factory_members
+                                                        .iter()
+                                                        .filter(|(_, member)| {
+                                                            member.factory == factory
+                                                        })
+                                                        .map(|(id, _)| id.0.to_string())
+                                                        .min();
+                                                    if let Some(target) = target {
+                                                        let reason = Self::factory_failure_reason(
+                                                            &target,
+                                                            format!(
+                                                                "factory {} escapes as a value at {}",
+                                                                ident.sym,
+                                                                self.site_location(path, ident.span)
+                                                            ),
+                                                        );
+                                                        return Err(self
+                                                            .diagnostic(path, ident.span, reason));
+                                                    }
                                                 }
                                                 return Err(self.diagnostic(path, form.span(), "boundary wrapper escapes into an opaque object"));
                                             }
@@ -3626,6 +3733,274 @@ mod tests {
     }
 
     #[test]
+    fn factory_spreads_select_the_last_own_data_property() {
+        let factory = "function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        for (setup, call, winner) in [
+            (
+                "const defaults = { Counter };",
+                "create({ ...defaults });",
+                "Counter",
+            ),
+            (
+                "const defaults = { Counter };",
+                "create({ ...defaults, Counter: Other });",
+                "Other",
+            ),
+            (
+                "const defaults = { Counter };",
+                "create({ Counter: Other, ...defaults });",
+                "Counter",
+            ),
+            (
+                "const defaults = { Counter }; const override = { Counter: Other };",
+                "create({ ...defaults, ...override });",
+                "Other",
+            ),
+            (
+                "const defaults = { Counter }; const override = { Counter: Other };",
+                "create({ ...override, ...defaults });",
+                "Counter",
+            ),
+            (
+                "const defaults = { Counter };",
+                "create({ ...defaults, ...defaults });",
+                "Counter",
+            ),
+            (
+                "const defaults = { Counter }; const empty = { unrelated: true };",
+                "create({ ...defaults, ...empty });",
+                "Counter",
+            ),
+            (
+                "const defaults = { Counter: host.Counter ?? Other };",
+                "create({ ...defaults, Counter });",
+                "Counter",
+            ),
+            (
+                "const defaults = { Counter, unrelated: 1, unrelated: 2 };",
+                "create({ ...defaults });",
+                "Counter",
+            ),
+        ] {
+            let islands = factory_case(&format!("{factory} {setup}"), call).unwrap();
+            assert_eq!(markers(&islands), [winner], "{setup} {call}");
+        }
+    }
+
+    #[test]
+    fn factory_spread_rejections_keep_the_category_order() {
+        let factory = "function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }";
+        for (setup, calls, reason) in [
+            (
+                "",
+                "const deps = { Counter }; create(deps);",
+                "passes a non-literal argument",
+            ),
+            (
+                "",
+                "create({ ...unknown, Counter });",
+                "passes a non-literal argument",
+            ),
+            (
+                "let deps = { Counter };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const original = { Counter }; const deps = original;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { ...{ Counter } };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter };",
+                "create({ ...{ Counter } });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter };",
+                "create({ ...getDeps() });",
+                "passes a non-literal argument",
+            ),
+            (
+                "function outer(deps) { create({ ...deps }); }",
+                "outer({ Counter });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; deps.Counter = Other;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; function later() { deps.Counter = Other; }",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; function later() { delete deps.Counter; }",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; function later() { deps.Counter++; }",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; function later() { deps = { Counter: Other }; }",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; const alias = deps;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; consume(deps);",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; const read = deps.Counter;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; const attrs = <div {...deps} />;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; const positional = [...deps];",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; const { Counter: read } = deps;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; const stored = { deps };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; function later() { return deps; }",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; export { deps };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter }; export default deps;",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "export const deps = { Counter };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter, Counter };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter };",
+                "create({ Counter, Counter });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { ['Counter']: Counter };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { get Counter() { return Counter; } };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Counter() { return Counter; } };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { '__proto__': {} };",
+                "create({ ...deps });",
+                "passes a non-literal argument",
+            ),
+            (
+                "",
+                "create({ '__proto__': {}, Counter });",
+                "passes a non-literal argument",
+            ),
+            (
+                "",
+                "create({ __proto__, Counter });",
+                "passes a non-literal argument",
+            ),
+            (
+                "const deps = { Other };",
+                "create({ ...deps });",
+                "property Counter missing",
+            ),
+            (
+                "const deps = { Counter: host.Counter ?? Counter };",
+                "create({ ...deps });",
+                "selects Counter conditionally",
+            ),
+        ] {
+            let error = factory_case(&format!("{factory} {setup}"), calls)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(reason), "{setup} {calls}: {error}");
+        }
+        for calls in [
+            "create({ Other }); create({ Counter, Counter });",
+            "create({ Counter, Counter }); create({ Other });",
+        ] {
+            let error = factory_case(factory, calls).unwrap_err().to_string();
+            assert!(error.contains("passes a non-literal argument"), "{error}");
+        }
+        let error = factory_case(
+            &format!("{factory} const defaults = {{ Counter }};"),
+            "create({ ...defaults }); create({ Counter: Other });",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("call sites disagree"), "{error}");
+    }
+
+    #[test]
+    fn imported_spread_source_is_not_a_local_const_proof() {
+        let error = scan(&[
+            ("pages/home.tsx", "import '../factory';"),
+            ("defaults.tsx", "export const defaults = { Counter: null };"),
+            ("counter.tsx", "'use client'; export function Counter() { return null; }"),
+            ("factory.tsx", r#"
+                import { Island } from '@takazudo/zfb';
+                import { Counter } from './counter';
+                import { defaults } from './defaults';
+                function create(deps) { const Target = deps.Counter; return <Island><Target /></Island>; }
+                create({ ...defaults });
+            "#),
+        ]).unwrap_err().to_string();
+        assert!(error.contains("passes a non-literal argument"), "{error}");
+    }
+
+    #[test]
     fn factory_member_binding_forms_keep_counter_identity() {
         for body in [
             "function create(deps) { const Target = deps.Counter; if (!Target) return null; return <Island><Target /></Island>; }",
@@ -3764,6 +4139,165 @@ mod tests {
         assert!(discovery.nested_binding_expression_visits < 200 * 10);
         assert!(discovery.factory_resolver_operations < 200 * 5);
         assert!(resolver.demands.get() < 200 * 4);
+
+        let mut source = String::from("import { Counter } from './counter'; function create(deps) { const Target = deps.Counter; return Target; }\n");
+        source.push_str("const defaults = { Counter");
+        for index in 0..64 {
+            source.push_str(&format!(", unrelated{index}: {index}"));
+        }
+        source.push_str(" }; const override = { Counter };\n");
+        for index in 0..200 {
+            if index % 2 == 0 {
+                source.push_str("create({ ...defaults, ...override });\n");
+            } else {
+                source.push_str("create({ ...override, ...defaults });\n");
+            }
+        }
+        let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+        let resolver = CountingResolver {
+            inner: InMemoryResolver::new()
+                .with_file(path.clone(), source.clone())
+                .with_file(
+                    "/proj/counter.tsx",
+                    "'use client'; export function Counter() { return null; }",
+                ),
+            demands: std::cell::Cell::new(0),
+        };
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                path.clone(),
+                SourceModule {
+                    ast,
+                    source,
+                    client: false,
+                },
+            )]),
+        );
+        discovery.audit_factory_references(&path).unwrap();
+        let target = discovery
+            .nested_bindings(&path)
+            .unwrap()
+            .names
+            .iter()
+            .find(|ident| ident.sym == "Target")
+            .unwrap()
+            .clone();
+        for _ in 0..3 {
+            assert!(matches!(
+                discovery.resolve_local(&path, &target).unwrap(),
+                Value::Function(_)
+            ));
+        }
+        assert_eq!(discovery.factory_proof_evaluations, 1);
+        assert_eq!(discovery.spread_source_evaluations, 2);
+        assert_eq!(discovery.spread_source_property_scans, 66);
+        assert!(discovery.nested_binding_expression_visits <= 200 * 16 + 64);
+        assert!(discovery.factory_resolver_operations < 200 * 5);
+        assert!(resolver.demands.get() < 200 * 4);
+    }
+
+    #[test]
+    fn packed_module_spread_sources_have_a_linear_ast_budget() {
+        fn measure(sites: usize) -> (usize, usize, usize) {
+            let path = PathBuf::from("/proj/packed-factory.tsx");
+            let mut source = String::from("import { Counter } from './counter';\n");
+            for index in 0..sites {
+                source.push_str(&format!(
+                    "function create{index}(deps) {{ const Target{index} = deps.Counter; return Target{index}; }}\nfunction site{index}() {{ const defaults = {{ Counter }}; return create{index}({{ ...defaults }}); }}\n"
+                ));
+            }
+            let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+            let resolver = InMemoryResolver::new()
+                .with_file(path.clone(), source.clone())
+                .with_file(
+                    "/proj/counter.tsx",
+                    "'use client'; export function Counter() { return null; }",
+                );
+            let mut discovery = Discovery::new(
+                &resolver,
+                BTreeMap::from([(
+                    path.clone(),
+                    SourceModule {
+                        ast,
+                        source,
+                        client: false,
+                    },
+                )]),
+            );
+            discovery.audit_factory_references(&path).unwrap();
+            let targets: Vec<_> = discovery
+                .nested_bindings(&path)
+                .unwrap()
+                .names
+                .iter()
+                .filter(|ident| ident.sym.starts_with("Target"))
+                .cloned()
+                .collect();
+            assert_eq!(targets.len(), sites);
+            for target in &targets {
+                assert!(matches!(
+                    discovery.resolve_local(&path, target).unwrap(),
+                    Value::Function(_)
+                ));
+            }
+            let visits = discovery.nested_binding_expression_visits;
+            let summaries = discovery.spread_source_evaluations;
+            let scans = discovery.spread_source_property_scans;
+            for target in &targets {
+                assert!(matches!(
+                    discovery.resolve_local(&path, target).unwrap(),
+                    Value::Function(_)
+                ));
+            }
+            assert_eq!(discovery.nested_binding_expression_visits, visits);
+            assert_eq!(discovery.spread_source_evaluations, summaries);
+            assert_eq!(discovery.spread_source_property_scans, scans);
+            (visits, summaries, scans)
+        }
+        let smaller = measure(96);
+        let larger = measure(192);
+        assert!(larger.0 <= smaller.0 * 2 + 64, "{smaller:?} -> {larger:?}");
+        assert_eq!(smaller.1, 96);
+        assert_eq!(larger.1, 192);
+        assert_eq!(smaller.2, 96);
+        assert_eq!(larger.2, 192);
+    }
+
+    #[test]
+    fn rejected_spread_source_is_summarized_once() {
+        let path = PathBuf::from("/proj/factory.tsx");
+        let source = "import { Counter } from './counter'; function create(deps) { const Target = deps.Counter; return Target; } const defaults = { ...unknown, Counter }; create({ ...defaults }); create({ ...defaults });".to_string();
+        let (ast, _) = resolve_worker_bindings(parse_module(&path, &source).unwrap());
+        let resolver = InMemoryResolver::new().with_file(path.clone(), source.clone());
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                path.clone(),
+                SourceModule {
+                    ast,
+                    source,
+                    client: false,
+                },
+            )]),
+        );
+        discovery.audit_factory_references(&path).unwrap();
+        let target = discovery
+            .nested_bindings(&path)
+            .unwrap()
+            .names
+            .iter()
+            .find(|ident| ident.sym == "Target")
+            .unwrap()
+            .clone();
+        for _ in 0..3 {
+            assert!(matches!(
+                discovery.resolve_local(&path, &target).unwrap(),
+                Value::Unsupported(_)
+            ));
+        }
+        assert_eq!(discovery.spread_source_evaluations, 1);
+        assert_eq!(discovery.spread_source_property_scans, 1);
     }
 
     #[test]
@@ -3908,12 +4442,40 @@ mod tests {
                 "passes a non-literal argument",
             ),
             (
+                "create({}); create({ Counter, Counter });",
+                "passes a non-literal argument",
+            ),
+            (
+                "create({ Counter, Counter }); create({});",
+                "passes a non-literal argument",
+            ),
+            (
+                "create({}); create({ Counter: host.Counter ?? Counter });",
+                "property Counter missing",
+            ),
+            (
+                "create({ Counter: host.Counter ?? Counter }); create({});",
+                "property Counter missing",
+            ),
+            (
                 "create({ Counter }); create({ Counter: Other }); create({ Counter: 1 });",
                 "is not a function binding",
             ),
         ] {
             let error = factory_case(body, calls).unwrap_err().to_string();
             assert!(error.contains(reason), "{calls}: {error}");
+        }
+        for calls in [
+            "create({}); create({ ...duplicates });",
+            "create({ ...duplicates }); create({});",
+        ] {
+            let error = factory_case(
+                &format!("{body} const duplicates = {{ Counter, Counter }};"),
+                calls,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("passes a non-literal argument"), "{error}");
         }
     }
 
@@ -3938,6 +4500,20 @@ mod tests {
                 "import { Island } from '@takazudo/zfb'; import { Counter } from './counter'; function Wrap() { return <Island><Counter /></Island>; } const stored = { Wrap };",
             ),
             ("counter.tsx", "'use client'; export function Counter() { return null; }"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("boundary wrapper escapes into an opaque object"),
+            "{error}"
+        );
+
+        let error = scan(&[
+            ("pages/home.tsx", "import '../factory';"),
+            (
+                "factory.tsx",
+                "import { Island } from '@takazudo/zfb'; function ForwardBoundary({ children }) { return <Island>{children}</Island>; } const stored = { ForwardBoundary };",
+            ),
         ])
         .unwrap_err()
         .to_string();

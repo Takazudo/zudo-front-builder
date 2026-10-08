@@ -24,6 +24,12 @@ set -euo pipefail
 # error). Does NOT catch the #463-class (undeclared esbuild peer-dep) because
 # esbuild reaches the build transitively via @takazudo/zfb-runtime, so a
 # clean-room pnpm install still resolves it through the dependency tree.
+# The v4.1.0 failure was release run 37618923936 (Node 22.23.3 / npm 10.9.9):
+# its Linux-x64 tarball outlasted the old retries; that run does not establish a cached-404 cause.
+# npm 10.9.9 bundles make-fetch-happen 14.0.3, which stores only 200/301/308 responses;
+# stale successful packuments or registry/CDN caching remain plausible propagation causes.
+# Two tiers separate metadata lag from tarball lag: npm view finds the exact URL, then cache-free curl checks HTTP availability.
+# The one-byte probe proves availability only; the later scaffold install remains the tarball integrity check.
 #
 # Usage:
 #   DIST_TAG=next EXPECTED_VERSION=2.20.3 scripts/smoke-clean-room.sh
@@ -31,6 +37,8 @@ set -euo pipefail
 # Required env:
 #   DIST_TAG — npm dist-tag to resolve (e.g. "latest" or "next").
 # Optional EXPECTED_VERSION pins a release smoke to the verified release tag.
+# Optional SMOKE_PROPAGATION_DEADLINE_SECONDS (default 900) bounds version and
+# platform propagation together; SMOKE_NOW_CMD can inject an epoch-seconds clock.
 
 : "${DIST_TAG:?DIST_TAG env var is required (e.g. DIST_TAG=next)}"
 semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
@@ -39,42 +47,82 @@ if [[ -n "${EXPECTED_VERSION:-}" && ! "$EXPECTED_VERSION" =~ $semver_re ]]; then
   exit 1
 fi
 
+# ── Start one deadline for version, metadata, and every platform tarball ──
+
+deadline_raw=${SMOKE_PROPAGATION_DEADLINE_SECONDS-900}
+if [[ ! "$deadline_raw" =~ ^[0-9]+$ || ${#deadline_raw} -gt 18 ]]; then
+  echo "::error::SMOKE_PROPAGATION_DEADLINE_SECONDS must be a positive base-10 integer (1..999999999999999999); got '${deadline_raw}'." >&2
+  exit 1
+fi
+deadline_seconds=$((10#$deadline_raw))
+if (( deadline_seconds <= 0 )); then
+  echo "::error::SMOKE_PROPAGATION_DEADLINE_SECONDS must be greater than 0; got '${deadline_raw}'." >&2
+  exit 1
+fi
+
+SMOKE_NOW_CMD=${SMOKE_NOW_CMD:-date}
+now_seconds() { "$SMOKE_NOW_CMD" +%s; }
+if ! PROPAGATION_STARTED_AT=$(now_seconds) || [[ ! "$PROPAGATION_STARTED_AT" =~ ^[0-9]+$ ]]; then
+  echo "::error::SMOKE_NOW_CMD must print epoch seconds; got '${PROPAGATION_STARTED_AT:-unavailable}'." >&2
+  exit 1
+fi
+PROPAGATION_DEADLINE=$((PROPAGATION_STARTED_AT + deadline_seconds))
+propagation_elapsed() {
+  local now
+  now=$(now_seconds)
+  echo $((now - PROPAGATION_STARTED_AT))
+}
+propagation_remaining() {
+  local now remaining
+  now=$(now_seconds)
+  remaining=$((PROPAGATION_DEADLINE - now))
+  (( remaining > 0 )) || remaining=0
+  echo "$remaining"
+}
+sleep_within_deadline() {
+  local requested=$1 remaining
+  remaining=$(propagation_remaining)
+  (( remaining > 0 )) || return 0
+  (( requested > remaining )) && requested=$remaining
+  echo "  Retrying in ${requested}s..."
+  sleep "$requested"
+}
+
 # ── Wait for registry propagation and verify dist-tag resolves ─────────────
 
 echo "Waiting for create-zfb@${DIST_TAG} to appear on the registry..."
-max_attempts=6
-delay=10
-for attempt in $(seq 1 $max_attempts); do
+while :; do
+  remaining=$(propagation_remaining)
+  if (( remaining == 0 )); then
+    elapsed=$(propagation_elapsed)
+    echo "::error::create-zfb@${DIST_TAG} did not resolve to ${EXPECTED_VERSION:-a valid version} before the shared propagation deadline (elapsed ${elapsed}s, last response: ${RESOLVED:-unavailable})." >&2
+    exit 1
+  fi
   if ! RESOLVED=$(npm view "create-zfb@${DIST_TAG}" version 2>/dev/null); then
     RESOLVED=""
   fi
-  if [[ "$RESOLVED" =~ $semver_re && ( -z "${EXPECTED_VERSION:-}" || "$RESOLVED" == "$EXPECTED_VERSION" ) ]]; then
-    echo "Registry resolved create-zfb@${DIST_TAG} -> ${RESOLVED} (attempt ${attempt})"
-    break
-  fi
-  if [[ "$attempt" -eq "$max_attempts" ]]; then
-    echo "::error::create-zfb@${DIST_TAG} did not resolve to ${EXPECTED_VERSION:-a valid version} after ${max_attempts} attempts (last response: ${RESOLVED:-unavailable})."
+  remaining=$(propagation_remaining)
+  if (( remaining == 0 )); then
+    elapsed=$(propagation_elapsed)
+    echo "::error::create-zfb@${DIST_TAG} version metadata arrived after the shared propagation deadline (elapsed ${elapsed}s, last response: ${RESOLVED:-unavailable})." >&2
     exit 1
   fi
-  echo "  Not at ${EXPECTED_VERSION:-a valid version} (attempt ${attempt}/${max_attempts}, resolved ${RESOLVED:-unavailable}); retrying in ${delay}s..."
-  sleep "$delay"
-  delay=$(( delay * 2 ))
+  if [[ "$RESOLVED" =~ $semver_re && ( -z "${EXPECTED_VERSION:-}" || "$RESOLVED" == "$EXPECTED_VERSION" ) ]]; then
+    echo "Registry resolved create-zfb@${DIST_TAG} -> ${RESOLVED}"
+    break
+  fi
+  version_failure=${RESOLVED:-unavailable}
+  elapsed=$(propagation_elapsed)
+  echo "  Version metadata unavailable (elapsed ${elapsed}s, last: ${version_failure}); waiting within the shared deadline."
+  sleep_within_deadline 10
 done
 VERSION=${EXPECTED_VERSION:-$RESOLVED}
 
-# Wait until EVERY platform's optionalDependency tarball is actually
-# fetchable — not just the tarball the current runner needs. npm metadata
-# propagates faster than the ~78 MB binary tarballs; when a tarball hasn't
-# propagated yet, npm SILENTLY SKIPS the optionalDep install and the `zfb`
-# launcher fails at runtime on THAT platform (the #1325 incident class).
-# `npm pack --dry-run` forces npm to resolve and fetch the actual tarball
-# (not just metadata), confirming it is available.
-#
-# `npm pack --dry-run` only touches the registry (no OS-specific behavior),
-# so this loop probes all 5 platforms from a single runner regardless of
-# which OS is executing this script — that's the whole point: today's job
-# only ever ran on ubuntu-latest, so nothing ever probed whether e.g. the
-# darwin-arm64 or win32 tarball had propagated. This loop closes that gap.
+# Wait until EVERY platform's optionalDependency tarball is available, not
+# only the tarball for the current runner. npm may silently skip an unavailable
+# optionalDependency, leaving that platform with a broken `zfb` launcher.
+# Each platform's metadata lookup yields its exact URL; an uncached ranged
+# curl request probes that URL from this runner regardless of its OS.
 PLATFORM_PACKAGES=(
   "@takazudo/zfb-darwin-arm64"
   "@takazudo/zfb-darwin-x64"
@@ -84,20 +132,69 @@ PLATFORM_PACKAGES=(
 )
 for pkg in "${PLATFORM_PACKAGES[@]}"; do
   echo "Waiting for ${pkg}@${VERSION} tarball to be fetchable..."
-  max_attempts=6
-  delay=10
-  for attempt in $(seq 1 $max_attempts); do
-    if npm pack --dry-run "${pkg}@${VERSION}" > /dev/null 2>&1; then
-      echo "Registry resolved ${pkg}@${VERSION} tarball (attempt ${attempt})"
-      break
-    fi
-    if [[ "$attempt" -eq "$max_attempts" ]]; then
-      echo "::error::${pkg}@${VERSION} tarball did not become fetchable after ${max_attempts} attempts."
+  metadata_url=""
+  last_metadata_failure="npm view failed"
+  while [[ -z "$metadata_url" ]]; do
+    remaining=$(propagation_remaining)
+    if (( remaining == 0 )); then
+      elapsed=$(propagation_elapsed)
+      echo "::error::${pkg}@${VERSION} metadata unavailable (elapsed ${elapsed}s, last: ${last_metadata_failure})." >&2
       exit 1
     fi
-    echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
-    sleep "$delay"
-    delay=$(( delay * 2 ))
+    if metadata_url=$(npm view "${pkg}@${VERSION}" dist.tarball 2>/dev/null); then
+      if [[ -z "${metadata_url//[[:space:]]/}" ]]; then
+        metadata_url=""
+        last_metadata_failure="empty dist.tarball"
+      fi
+    else
+      metadata_url=""
+      last_metadata_failure="npm view failed"
+    fi
+    remaining=$(propagation_remaining)
+    if [[ -n "$metadata_url" ]] && (( remaining == 0 )); then
+      elapsed=$(propagation_elapsed)
+      echo "::error::${pkg}@${VERSION} metadata resolved after the shared propagation deadline (elapsed ${elapsed}s; last: dist.tarball URL returned too late)." >&2
+      exit 1
+    fi
+    if [[ -z "$metadata_url" ]]; then
+      elapsed=$(propagation_elapsed)
+      echo "  ${pkg}@${VERSION} metadata unavailable (elapsed ${elapsed}s, last: ${last_metadata_failure})"
+      if (( remaining == 0 )); then
+        echo "::error::${pkg}@${VERSION} metadata unavailable (elapsed ${elapsed}s, last: ${last_metadata_failure})." >&2
+        exit 1
+      fi
+      sleep_within_deadline 10
+    fi
+  done
+
+  last_http_code=000
+  while :; do
+    remaining=$(propagation_remaining)
+    if (( remaining == 0 )); then
+      elapsed=$(propagation_elapsed)
+      echo "::error::${pkg}@${VERSION} metadata present, tarball unavailable (elapsed ${elapsed}s, last HTTP ${last_http_code})." >&2
+      exit 1
+    fi
+    curl_status=0
+    http_code=$(curl -fsSL --connect-timeout 10 --max-time 60 -r 0-0 -o /dev/null -w '%{http_code}' "$metadata_url" 2>/dev/null) || curl_status=$?
+    remaining=$(propagation_remaining)
+    if (( curl_status == 0 )) && [[ "$http_code" == 200 || "$http_code" == 206 ]]; then
+      if (( remaining == 0 )); then
+        elapsed=$(propagation_elapsed)
+        echo "::error::${pkg}@${VERSION} tarball probe finished after the shared propagation deadline (elapsed ${elapsed}s, last HTTP ${http_code})." >&2
+        exit 1
+      fi
+      echo "Registry tarball probe passed for ${pkg}@${VERSION} (HTTP ${http_code})"
+      break
+    fi
+    last_http_code=${http_code:-000}
+    elapsed=$(propagation_elapsed)
+    echo "  ${pkg}@${VERSION} metadata present, tarball unavailable (elapsed ${elapsed}s, last HTTP ${last_http_code})"
+    if (( remaining == 0 )); then
+      echo "::error::${pkg}@${VERSION} metadata present, tarball unavailable (elapsed ${elapsed}s, last HTTP ${last_http_code})." >&2
+      exit 1
+    fi
+    sleep_within_deadline 10
   done
 done
 

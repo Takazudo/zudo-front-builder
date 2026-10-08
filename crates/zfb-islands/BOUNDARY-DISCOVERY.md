@@ -432,6 +432,25 @@ factory-proof reasons are:
 11. `property <prop> at <loc> is not a function binding`
 12. `call sites disagree: <loc> passes Counter, <loc> passes Other`
 
+The argument is an object literal. Its top-level entries may be ordinary static
+data properties, shorthand properties, or a one-level spread of a same-module
+`const` object literal. The spread source may be function-local, but it cannot
+itself contain spreads, be exported or written, or escape as a value. Its only
+uses may be object-literal spread operands. Imports, aliases, parameter objects,
+and computed operands are outside this proof. Static keys, including numeric
+and bigint keys, remain data keys. Computed keys, methods, accessors, and any
+top-level `__proto__` key fail reason 8 in either literal.
+
+A selected key explicitly declared twice within one literal fails reason 8,
+even if another spread would overwrite it. Collisions between different
+literals follow JavaScript's left-to-right last-writer order. The scanner
+validates every source shape before looking for the selected key, then checks
+only the effective value for conditional selection and function identity.
+Thus an overwritten conditional value is harmless, while a winning conditional
+fails reason 10. Each reason category is checked across all sorted calls before
+the next category, so a malformed later call outranks an earlier missing key.
+Every call to a factory must still select the same defining function.
+
 When resolving a selected value already yields an `Unsupported` result (for
 example, the existing `memo(X)` reason), append that resolver reason to the
 `not a function binding` diagnostic. Do not replace it with a guessed identity.

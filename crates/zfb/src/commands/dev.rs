@@ -6932,7 +6932,26 @@ impl DevRenderSession {
         if let Some(files) = publication.content_files.as_ref() {
             registry.replace_content_files_read_since(files.paths.clone(), files.read_since);
         }
+        if let Some(snapshots) = publication.linked_package_snapshots.as_ref() {
+            registry.replace_linked_package_snapshots(snapshots.clone());
+        }
         publication.registry = Some(registry);
+    }
+
+    #[cfg(feature = "embed_v8")]
+    fn publish_linked_package_snapshots(
+        &self,
+        snapshots: Vec<zfb_build::bundler::LinkedPackageIgnoreSnapshot>,
+    ) {
+        let mut publication = self
+            .inner
+            .ssr_module_deps
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(registry) = publication.registry.as_ref() {
+            registry.replace_linked_package_snapshots(snapshots.clone());
+        }
+        publication.linked_package_snapshots = Some(snapshots);
     }
 
     /// Record and publish a successful bundle's SSR module-dependency set
@@ -7182,8 +7201,31 @@ impl DevRenderSession {
             }
             apply_content_trace_observations(
                 &mut state.reads_by_observation,
-                current_trace.observed,
+                current_trace.observed.clone(),
                 current_trace.reads,
+            );
+            if dev_timing_enabled() {
+                for (observation, reads) in &state.reads_by_observation {
+                    for read in reads {
+                        if let TrackedContentRead::Entry {
+                            collection, entry, ..
+                        } = read
+                        {
+                            if !membership
+                                .membership
+                                .entries(collection)
+                                .is_some_and(|entries| entries.contains(entry))
+                            {
+                                eprintln!("[zfb-timing] provenance stale phase={:?} retained={} consumer={:?} collection={:?} entry={:?} member=false", observation.phase, !current_trace.observed.contains(observation), observation.consumer, collection, entry);
+                            }
+                        }
+                    }
+                }
+            }
+            demote_retained_paths_reads(
+                &mut state.reads_by_observation,
+                &current_trace.observed,
+                &membership.membership,
             );
             let reads: Vec<TrackedContentRead> = state
                 .reads_by_observation
@@ -7842,7 +7884,7 @@ impl DevRenderSession {
                 );
                 p.into_inner()
             });
-            assemble_and_bundle_dev(
+            let result = assemble_and_bundle_dev(
                 project_root,
                 &inputs.bundle_outdir,
                 &inputs.cfg,
@@ -7859,8 +7901,17 @@ impl DevRenderSession {
                 // #3004/#3021 — re-stage the same frozen entrypoint list
                 // every tick; see `DevRebuildInputs::injected_route_entrypoints`.
                 inputs.injected_route_entrypoints(),
-            )
-            .context("dev refresh: re-bundle failed")?
+            );
+            match result {
+                Ok(bundle) => bundle,
+                Err(error) => {
+                    // The previous token snapshot may no longer describe the
+                    // disk after this failed read. Let all edits through until
+                    // a successful bundle publishes a new generation.
+                    self.publish_linked_package_snapshots(Vec::new());
+                    return Err(error).context("dev refresh: re-bundle failed");
+                }
+            }
         };
         let p1_total_ms = p1_snapshot_start.map(|t| t.elapsed().as_millis());
         // Sub-phase split is reported by assemble_and_bundle_dev into the
@@ -7869,6 +7920,7 @@ impl DevRenderSession {
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
         let bundler_out = bundle_result.output;
+        self.publish_linked_package_snapshots(bundler_out.linked_package_snapshots.clone());
         // Issue #3202 — the snapshot is the bundle's first read, so the
         // bundle's read start covers it.
         self.publish_content_reads(bundle_result.content_files, read_since);
@@ -8384,6 +8436,7 @@ struct DevContentTraceState {
 #[derive(Default)]
 struct SsrModuleDepPublication {
     registry: Option<zfb_build::RawImportInvalidation>,
+    linked_package_snapshots: Option<Vec<zfb_build::bundler::LinkedPackageIgnoreSnapshot>>,
     /// `None` until the first publication; `Some(empty)` is a real one.
     last_successful: Option<std::collections::BTreeSet<PathBuf>>,
     /// When the bundle behind `last_successful` started reading (#3190).
@@ -9910,6 +9963,7 @@ fn boot_dev_renderer(
     let mut boot_bundle_read_since: Option<std::time::SystemTime> = None;
     let mut boot_reconcile_page_sources: Vec<PathBuf> = Vec::new();
     let mut boot_content_reads: Option<ReconcileOnlyReads> = None;
+    let mut boot_linked_package_snapshots = None;
     let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
         (
             // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
@@ -9970,6 +10024,7 @@ fn boot_dev_renderer(
             read_since,
         });
         let bundler_out: BundlerOutput = assembled.output;
+        boot_linked_package_snapshots = Some(bundler_out.linked_package_snapshots.clone());
         let (trace_token, trace_wrapper_source) =
             wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
         // #1284/#1287 — capture the boot bundle's per-route Module deps for
@@ -10084,6 +10139,7 @@ fn boot_dev_renderer(
             }),
             ssr_module_deps: Mutex::new(SsrModuleDepPublication {
                 content_files: boot_content_reads,
+                linked_package_snapshots: boot_linked_package_snapshots,
                 ..SsrModuleDepPublication::default()
             }),
             boot_route_module_deps,
@@ -10481,6 +10537,50 @@ fn apply_content_trace_observations(
     }
     for (observation, reads) in reads {
         reads_by_observation.insert(observation, reads);
+    }
+}
+
+/// A retained `paths()` mapping was verified against an earlier route table.
+/// Once any entry in a consumer/collection pair leaves the current membership,
+/// its whole mapping is stale. Broaden that pair to one collection read until
+/// the next authoritative `Paths` visit replaces the observation.
+#[cfg(feature = "embed_v8")]
+fn demote_retained_paths_reads(
+    reads_by_observation: &mut BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
+    current_visits: &BTreeSet<DevContentTraceObservation>,
+    membership: &ContentCollectionMembership,
+) {
+    for (observation, reads) in reads_by_observation {
+        if observation.phase != DevContentTracePhase::Paths || current_visits.contains(observation)
+        {
+            continue;
+        }
+        let stale_pairs: BTreeSet<ContentCollectionId> = reads
+            .iter()
+            .filter_map(|read| match read {
+                TrackedContentRead::Entry {
+                    collection, entry, ..
+                } if membership
+                    .entries(collection)
+                    .is_some_and(|entries| !entries.contains(entry)) =>
+                {
+                    Some(collection.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if stale_pairs.is_empty() {
+            continue;
+        }
+        reads.retain(|read| {
+            !matches!(read, TrackedContentRead::Entry { collection, .. } if stale_pairs.contains(collection))
+        });
+        for collection in stale_pairs {
+            reads.push(TrackedContentRead::collection(
+                observation.consumer.clone(),
+                collection,
+            ));
+        }
     }
 }
 
@@ -19793,6 +19893,129 @@ mod tests {
                 "a render that makes no collection read must not erase the route's prior paths() evidence",
             );
         }
+
+        #[test]
+        fn retained_paths_entry_missing_after_render_visit_demotes_only_its_pair() {
+            let consumer = PageId::new("pages/posts/[slug].tsx");
+            let unrelated = PageId::new("pages/docs/index.tsx");
+            let paths = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Paths,
+            };
+            let render = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Render,
+            };
+            let other = DevContentTraceObservation {
+                consumer: unrelated.clone(),
+                phase: DevContentTracePhase::Render,
+            };
+            let alpha = PathBuf::from("/posts/alpha.md");
+            let removed = PathBuf::from("/posts/removed.md");
+            let doc = PathBuf::from("/docs/intro.md");
+            let mut membership = ContentCollectionMembership::new();
+            membership.insert("posts", [alpha.clone()]);
+            membership.insert("docs", [doc.clone()]);
+            let mut retained = BTreeMap::from([
+                (
+                    paths.clone(),
+                    vec![
+                        TrackedContentRead::entry(consumer.clone(), "posts", alpha.clone()),
+                        TrackedContentRead::entry(consumer.clone(), "posts", removed.clone()),
+                    ],
+                ),
+                (
+                    other,
+                    vec![TrackedContentRead::collection(unrelated.clone(), "docs")],
+                ),
+            ]);
+
+            // The worker rendered the detail without reading a collection;
+            // its earlier paths() observation is still needed.
+            let render_visit = BTreeSet::from([render]);
+            apply_content_trace_observations(&mut retained, render_visit.clone(), BTreeMap::new());
+            demote_retained_paths_reads(&mut retained, &render_visit, &membership);
+            assert_eq!(
+                retained.get(&paths),
+                Some(&vec![TrackedContentRead::collection(
+                    consumer.clone(),
+                    "posts"
+                )]),
+                "all direct reads for the stale pair must be replaced, not supplemented"
+            );
+            let groups = ContentProvenance::from_reads(retained.values().flatten().cloned())
+                .edge_groups(&membership)
+                .expect("retained Paths demotion must permit expansion");
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(&mut graph, groups);
+            assert_eq!(graph.consumers_of(&alpha), Some(vec![consumer.clone()]));
+            assert_eq!(graph.consumers_of(&doc), Some(vec![unrelated]));
+
+            // A fresh authoritative paths() execution restores direct-entry
+            // precision and retires the broadened observation.
+            apply_content_trace_observations(
+                &mut retained,
+                BTreeSet::from([paths.clone()]),
+                BTreeMap::from([(
+                    paths.clone(),
+                    vec![TrackedContentRead::entry(
+                        consumer.clone(),
+                        "posts",
+                        alpha.clone(),
+                    )],
+                )]),
+            );
+            demote_retained_paths_reads(
+                &mut retained,
+                &BTreeSet::from([paths.clone()]),
+                &membership,
+            );
+            assert_eq!(
+                retained.get(&paths),
+                Some(&vec![TrackedContentRead::entry(consumer, "posts", alpha)])
+            );
+        }
+
+        #[test]
+        fn paths_demotion_keeps_foreign_and_unavailable_membership_errors() {
+            let consumer = PageId::new("pages/posts/[slug].tsx");
+            let paths = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Paths,
+            };
+            let foreign = PathBuf::from("/elsewhere/foreign.md");
+            let mut membership = ContentCollectionMembership::new();
+            membership.insert("posts", [PathBuf::from("/posts/alpha.md")]);
+            let mut fresh = BTreeMap::from([(
+                paths.clone(),
+                vec![TrackedContentRead::entry(
+                    consumer.clone(),
+                    "posts",
+                    foreign,
+                )],
+            )]);
+            demote_retained_paths_reads(&mut fresh, &BTreeSet::from([paths.clone()]), &membership);
+            assert!(matches!(
+                ContentProvenance::from_reads(fresh.values().flatten().cloned())
+                    .edge_groups(&membership),
+                Err(zfb_build::ContentProvenanceError::EntryOutsideCollectionMembership { .. })
+            ));
+
+            let mut unavailable = BTreeMap::from([(
+                paths,
+                vec![TrackedContentRead::entry(
+                    consumer,
+                    "missing",
+                    "/missing/entry.md",
+                )],
+            )]);
+            demote_retained_paths_reads(&mut unavailable, &BTreeSet::new(), &membership);
+            assert!(matches!(
+                ContentProvenance::from_reads(unavailable.values().flatten().cloned())
+                    .edge_groups(&membership),
+                Err(zfb_build::ContentProvenanceError::MissingCollectionMembership { .. })
+            ));
+        }
     }
 
     /// Deep-review regression (PR #376): `Route::template()` emits
@@ -20763,6 +20986,7 @@ mod tests {
                 routes: Vec::new(),
             },
             route_module_deps: Vec::new(),
+            linked_package_snapshots: Vec::new(),
             emitted_wasm_assets: Vec::new(),
             content_bridge_fallback_pages: Vec::new(),
             dropped_plain_css_inputs: Vec::new(),

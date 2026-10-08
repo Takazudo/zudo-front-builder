@@ -322,6 +322,24 @@ async fn wait_for_watch_extra(session: &DevSession, dir_suffix: &str) {
     );
 }
 
+/// Wait for one NEW reason-bearing intake line before issuing the next write;
+/// otherwise notify may legitimately coalesce repeated writes into one event.
+async fn wait_for_linked_suppression(session: &DevSession, path: &Path, previous: usize) {
+    let needle = format!("intake: suppressed linked-ignored {} (", path.display());
+    let started = Instant::now();
+    while started.elapsed() < SIGNAL_DEADLINE {
+        if session.stderr().matches(&needle).count() > previous {
+            return;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "no suppression line for write {} after count {previous}\n{}",
+        path.display(),
+        session.logs()
+    );
+}
+
 /// Rewrite `path` with `contents` on a bounded cadence while polling `url` for
 /// `marker`. A newly-registered non-recursive watch has a brief FSEvents
 /// activation window on macOS; re-issuing the (idempotent) edit until the
@@ -1794,4 +1812,180 @@ export default function SlowPage() {
         &session,
     )
     .await;
+}
+
+/// #3926: the tsconfig alias is the sole claim on widget/test-results. The
+/// imported dist/index.js is deliberately an overlapping SSR dependency and
+/// must still reach the tick. No raw/worker/plain client import, plugin watch
+/// file, or extraWatchPaths names test-results.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "heavy: run with --ignored — Level-4 real dev watcher, V8 and esbuild; too slow for T1"]
+async fn e2e_3926_ignored_undeclared_sibling_writes_do_not_tick() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        return;
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let ws = workspace.path();
+    let app = ws.join("app");
+    let widget = ws.join("widget");
+    fs::create_dir_all(widget.join("dist")).unwrap();
+    fs::create_dir_all(widget.join("test-results")).unwrap();
+    fs::write(
+        ws.join("pnpm-workspace.yaml"),
+        "packages:\n  - app\n  - widget\n",
+    )
+    .unwrap();
+    fs::write(ws.join(".gitignore"), "dist/\ntest-results/\nprivate/\n").unwrap();
+    write_zfb_project_shell(&app, "zfb3926-app", &[]);
+    // CSS source planning publishes the alias-only sibling mirror root.
+    fs::write(app.join("zfb.config.json"), "{\"wind\":{}}\n").unwrap();
+    // A tsconfig-only sibling claim, with no node_modules/widget symlink.
+    fs::write(
+        app.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"widget":["../widget/dist/index.js"]}}}"#,
+    )
+    .unwrap();
+    let _runtime = link_embedded_ssr_runtime(&app);
+    fs::write(
+        widget.join("package.json"),
+        r#"{"name":"widget","type":"module","exports":"./dist/index.js"}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(widget.join("private")).unwrap();
+    fs::write(widget.join("private/used.json"), "{\"v\":1}\n").unwrap();
+    let dist = widget.join("dist/index.js");
+    fs::write(&dist, "import used from '../private/used.json';\nexport const value = 'WIDGET_3926_V1_' + used.v;\n").unwrap();
+    fs::write(
+        app.join("pages/index.tsx"),
+        ssr_page("import { value } from 'widget';\n", &["value"]),
+    )
+    .unwrap();
+    let Some((session, url)) = boot_3163(&app, &esbuild, &[], "-3926").await else {
+        return;
+    };
+    let client = loopback_client();
+    poll_body(
+        &client,
+        &url,
+        "WIDGET_3926_V1_1",
+        "#3926 boot",
+        BOOT_CONTENT_DEADLINE,
+        &session,
+    )
+    .await;
+    wait_for_watch_extra(&session, "widget").await;
+    // The workspace .gitignore is outside the app roots and widget's
+    // recursive mirror root. Its parent needs a separate rule-file watch.
+    wait_for_watch_extra(
+        &session,
+        &fs::canonicalize(ws).unwrap().display().to_string(),
+    )
+    .await;
+    let a = widget.join("test-results/a.json");
+    let b = widget.join("test-results/b.trace");
+    let baseline = session.stderr();
+    fs::write(&a, "1\n").unwrap();
+    wait_for_linked_suppression(&session, &a, 0).await;
+    fs::write(&a, "2\n").unwrap();
+    wait_for_linked_suppression(&session, &a, 1).await;
+    fs::write(&b, "trace\n").unwrap();
+    wait_for_linked_suppression(&session, &b, 0).await;
+    // Twice the normal debounce/tick observation window. Directory-only
+    // ticks are forbidden too: they may trigger rebuilds without naming a.json.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let observed = session.stderr();
+    let new_log = &observed[baseline.len()..];
+    assert!(
+        !new_log.lines().any(|line| line.contains("tick(): kinds=")),
+        "ignored writes or directory events caused a tick:\n{new_log}"
+    );
+
+    // private/used.json is a live SSR dep. An ignored, undeclared direct
+    // sibling still belongs to the additive dependency-parent watch and
+    // must tick. This is the overlapping-channel discriminator.
+    let adjacent = widget.join("private/adjacent.json");
+    let before_overlap = session.stderr();
+    fs::write(&adjacent, "adjacent\n").unwrap();
+    let started = Instant::now();
+    while started.elapsed() < SCENARIO_DEADLINE {
+        let now = session.stderr();
+        if now[before_overlap.len()..]
+            .lines()
+            .any(|line| line.contains("tick(): kinds=") && line.contains("adjacent.json"))
+        {
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let overlap_log = session.stderr();
+    assert!(!overlap_log[before_overlap.len()..].contains(&format!(
+        "suppressed linked-ignored {} (",
+        adjacent.display()
+    )));
+    assert!(
+        overlap_log[before_overlap.len()..]
+            .lines()
+            .any(|line| line.contains("tick(): kinds=") && line.contains("adjacent.json")),
+        "registered dependency sibling did not tick:\n{}",
+        session.logs()
+    );
+
+    // This file is ignored by the root rule but declared by exports and an
+    // SSR dependency. A single write must tick and change served HTML.
+    fs::write(&dist, "import used from '../private/used.json';\nexport const value = 'WIDGET_3926_V2_' + used.v;\n").unwrap();
+    poll_body(
+        &client,
+        &url,
+        "WIDGET_3926_V2_1",
+        "#3926 declared dist single write",
+        SCENARIO_DEADLINE,
+        &session,
+    )
+    .await;
+    assert!(
+        session
+            .stderr()
+            .lines()
+            .any(|line| line.contains("tick(): kinds=") && line.contains("index.js")),
+        "overlapping SSR dependency did not tick:\n{}",
+        session.logs()
+    );
+
+    // Same burst: the old rule ignores new.json; the appended negations
+    // reopen its directory and file. The workspace rule is the ONLY rule
+    // edited, so its dedicated parent watch must deliver the change before
+    // intake can refresh the whole batch.
+    let rules = ws.join(".gitignore");
+    let fresh = widget.join("test-results/new.json");
+    let before = session.stderr();
+    let mut text = fs::read_to_string(&rules).unwrap();
+    text.push_str("!widget/test-results/\n!widget/test-results/new.json\n");
+    fs::write(&rules, text).unwrap();
+    fs::write(&fresh, "new\n").unwrap();
+    let started = Instant::now();
+    while started.elapsed() < SCENARIO_DEADLINE {
+        let now = session.stderr();
+        if now[before.len()..]
+            .lines()
+            .any(|line| line.contains("tick(): kinds=") && line.contains("new.json"))
+        {
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let now = session.stderr();
+    let changed = &now[before.len()..];
+    assert!(
+        !changed.contains(&format!("suppressed linked-ignored {} (", fresh.display())),
+        "fresh rule was ignored:\n{changed}"
+    );
+    assert!(
+        changed
+            .lines()
+            .any(|line| line.contains("tick(): kinds=") && line.contains("new.json")),
+        "newly unignored file did not tick:\n{}",
+        session.logs()
+    );
 }
