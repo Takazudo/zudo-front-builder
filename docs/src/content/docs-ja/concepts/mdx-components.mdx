@@ -183,7 +183,7 @@ wrapper は server 側に置き、対話的な固定 client component を
 `<Island>` に入れます。その境界を越えられるのは JSON に
 シリアライズできる props だけです。
 
-新しい consumer では、パッケージの公開 entrypoint を使います。
+パッケージ alias を使わない新しい consumer では、公開 entrypoint を使います。
 
 ~~~json
 {
@@ -198,12 +198,15 @@ wrapper は server 側に置き、対話的な固定 client component を
 `@takazudo/zfb/zudo-react/jsx-runtime`、development では
 `@takazudo/zfb/zudo-react/jsx-dev-runtime` を通ります。runtime helper は
 `@takazudo/zfb/zudo-react` から、`Island` は `@takazudo/zfb`
-から import します。
+から import します。以下の検証済み map recipe は同じパッケージを指す既存の
+bare alias `zfb` を使います。この alias を使う場合は
+`jsxImportSource` を `zfb/zudo-react` に設定します。後続の移行例は
+公開 specifier を使います。
 
-~~~tsx
+```tsx
 // components/counter.tsx
 "use client";
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -222,15 +225,15 @@ export function NamedCounter() {
     </button>
   );
 }
-~~~
+```
 
 利用できる map の形は、名前付き server wrapper、固定ターゲット、
 Island を囲む Fragment です。Fragment は DOM 要素を追加せず、
 具体的な境界をスキャナーから見える状態にします。
 
-~~~tsx
+```tsx
 // mdx-components.tsx (project root)
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import Counter from "./components/counter";
 
 function WrappedCounter() {
@@ -244,13 +247,13 @@ function WrappedCounter() {
 }
 
 export default { Counter: WrappedCounter };
-~~~
+```
 
 ページ単位の map も同じ形にします。各ターゲットを固定します。
 
-~~~tsx
+```tsx
 // pages/_mdx-components.tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { NamedCounter } from "../components/counter";
 
 function WrappedNamedCounter() {
@@ -264,18 +267,18 @@ function WrappedNamedCounter() {
 }
 
 export const components = { NamedCounter: WrappedNamedCounter };
-~~~
+```
 
 スキャナーから固定ターゲットへ到達できるよう、map を到達可能な
 ページから import して entry renderer に渡します。
 
-~~~tsx
+```tsx
 // pages/blog/[slug].tsx — post は選択した collection entry
 import defaultComponents from "../../mdx-components";
 import { components as pageComponents } from "../_mdx-components";
 
 <post.Content components={{ ...defaultComponents, ...pageComponents }} />
-~~~
+```
 
 map の値は server-only です。map 自体はシリアライズせず、JSON 対応の
 Island props だけを client に渡します。子の関数、server component、

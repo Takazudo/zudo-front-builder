@@ -182,7 +182,7 @@ function values cannot cross the hydration boundary as JSON. Keep the map and
 its wrappers on the server; put an interactive, fixed client component inside
 `<Island>`, and pass only JSON-serializable props across that boundary.
 
-For a fresh consumer, import the public entrypoints from the package:
+For a fresh consumer without a package alias, use the public package entrypoints:
 
 ~~~json
 {
@@ -197,12 +197,14 @@ That setting resolves JSX syntax through
 `@takazudo/zfb/zudo-react/jsx-runtime` in production and
 `@takazudo/zfb/zudo-react/jsx-dev-runtime` in development. Import runtime
 helpers from `@takazudo/zfb/zudo-react` and `Island` from
-`@takazudo/zfb`.
+`@takazudo/zfb`. The checked map recipe below uses the existing bare `zfb`
+alias for the same package. With that alias, set `jsxImportSource` to
+`zfb/zudo-react`; the later migration example uses the public specifiers.
 
-~~~tsx
+```tsx
 // components/counter.tsx
 "use client";
-import { signal } from "@takazudo/zfb/zudo-react";
+import { signal } from "zfb/zudo-react";
 
 export default function Counter() {
   const count = signal(0);
@@ -221,15 +223,15 @@ export function NamedCounter() {
     </button>
   );
 }
-~~~
+```
 
 The supported map recipe uses a named server wrapper, a fixed target, and a
 Fragment around the Island. That Fragment adds no DOM element and keeps the
 concrete boundary visible to the scanner:
 
-~~~tsx
+```tsx
 // mdx-components.tsx (project root)
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import Counter from "./components/counter";
 
 function WrappedCounter() {
@@ -243,13 +245,13 @@ function WrappedCounter() {
 }
 
 export default { Counter: WrappedCounter };
-~~~
+```
 
 A page-scoped map uses the same shape. Every target remains fixed:
 
-~~~tsx
+```tsx
 // pages/_mdx-components.tsx
-import { Island } from "@takazudo/zfb";
+import { Island } from "zfb";
 import { NamedCounter } from "../components/counter";
 
 function WrappedNamedCounter() {
@@ -263,19 +265,19 @@ function WrappedNamedCounter() {
 }
 
 export const components = { NamedCounter: WrappedNamedCounter };
-~~~
+```
 
 Import the map into a reachable page and pass it to the entry renderer. The
 map module must be reachable from a page for the scanner to find its fixed
 target:
 
-~~~tsx
+```tsx
 // pages/blog/[slug].tsx — post is the selected collection entry
 import defaultComponents from "../../mdx-components";
 import { components as pageComponents } from "../_mdx-components";
 
 <post.Content components={{ ...defaultComponents, ...pageComponents }} />
-~~~
+```
 
 These map values are server-only. The component map is not serialized; only
 JSON-compatible Island props cross to the client. A child function, server
