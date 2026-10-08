@@ -1,0 +1,4 @@
+{
+  "wind": false,
+  "collections": [{ "name": "blog", "path": "content/blog" }]
+}
