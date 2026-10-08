@@ -11421,7 +11421,8 @@ fn make_render_callback(
 /// [`zfb_build::BuildOrchestrator::run`] (issue #659).
 ///
 /// The orchestrator invokes it with the `Created` subset of a tick's
-/// changed paths. We restrict the expensive re-bundle to files created
+/// changed paths and unregistered `Modified` pages recovering from failed
+/// discovery. We restrict the expensive re-bundle to candidate paths
 /// under `content/`, `pages/`, or any configured collection root (the
 /// roots that feed the SSR bundle and the route table — collections may
 /// live anywhere, e.g. `src/mdx/notes`); a file created elsewhere —
@@ -11495,7 +11496,7 @@ fn make_discovery_hook(
         }
     }
     Arc::new(move |created: &[PathBuf]| {
-        // Only created files under content/, pages/, or a collection
+        // Only candidates under content/, pages/, or a collection
         // root can introduce a new content-collection route; skip the
         // re-bundle otherwise.
         let relevant: Vec<PathBuf> = created
