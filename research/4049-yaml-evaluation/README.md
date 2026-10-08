@@ -177,8 +177,8 @@ stable, which must resolve to one captured version for both pins.
 
 Preparation ran no Rust, build, browser or installation. Cold native work can
 take tens of minutes; prior targets used 8.3–12 GiB, plus two cold wasm targets
-and toolchain/dependency storage. The current filesystem is 32 GiB total, about
-30 GiB free **before** manager installation; the exact Phase 2 gate is likely
+and toolchain/dependency storage. The filesystem's initial rounded display showed
+about 30 GiB free **before** manager installation; the exact Phase 2 gate is likely
 blocked afterwards. No deletion/reconfiguration or reduced gate is authorized.
 Manager can run Phase 1 as resources permit and retain a disk blocker for Phase 2.
 The prior successful timed comparison duration does not estimate a cold host.
