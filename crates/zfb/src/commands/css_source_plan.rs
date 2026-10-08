@@ -98,6 +98,18 @@ fn stable_label(prefix: &str, base: &Path, path: &Path) -> String {
     )
 }
 
+fn relative_label(prefix: &str, relative: &Path) -> String {
+    let suffix = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{prefix}/{suffix}")
+}
+
 fn root(label: String, path: PathBuf, required: bool) -> PositiveRoot {
     PositiveRoot {
         label,
@@ -113,6 +125,8 @@ fn root(label: String, path: PathBuf, required: bool) -> PositiveRoot {
 pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan {
     let project = absolute(&inputs.first_party_root, &inputs.project_root);
     let first_party = absolute(&project, &inputs.first_party_root);
+    let canonical_first_party =
+        fs::canonicalize(&first_party).unwrap_or_else(|_| first_party.clone());
     let mut plan = SourcePlan {
         extraction_options: inputs.extraction_options.clone(),
         ..SourcePlan::default()
@@ -142,8 +156,12 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
     for path in &inputs.declared_project_roots {
         let path = absolute(&project, path);
         if seen.insert(path.clone()) {
-            plan.roots
-                .push(root(stable_label("root", &first_party, &path), path, true));
+            let label = path
+                .strip_prefix(&first_party)
+                .or_else(|_| path.strip_prefix(&canonical_first_party))
+                .map(|relative| relative_label("root", relative))
+                .unwrap_or_else(|_| stable_label("root", &first_party, &path));
+            plan.roots.push(root(label, path, true));
         }
     }
     for path in &inputs.default_content_roots {
