@@ -1429,6 +1429,38 @@ impl KnownContentEntries {
     }
 }
 
+/// Page source paths from the last successful dev router scan. This is only
+/// used to normalize a watcher `Created` for an existing page module.
+#[derive(Debug, Clone, Default)]
+pub struct KnownPageSources {
+    entries: Arc<RwLock<BTreeSet<PathBuf>>>,
+}
+
+impl KnownPageSources {
+    pub fn replace(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        let next = paths
+            .into_iter()
+            .map(|path| zfb_types::normalize_path_lexical(&path))
+            .collect();
+        *self.entries.write().unwrap_or_else(|p| p.into_inner()) = next;
+    }
+
+    pub fn contains(&self, path: &Path) -> bool {
+        self.entries
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&zfb_types::normalize_path_lexical(path))
+    }
+
+    pub fn remove_path_and_descendants(&self, path: &Path) {
+        let prefix = zfb_types::normalize_path_lexical(path);
+        self.entries
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|known| known != &prefix && !known.starts_with(&prefix));
+    }
+}
+
 /// The granularity policy combines a [`PathClass`] with the dependency
 /// graph to decide what sub-pipelines run.
 ///
@@ -1459,6 +1491,8 @@ pub struct GranularityPolicy {
     /// the #1058 normalization keyed on the graph alone, i.e. exactly the
     /// pre-#1581 behaviour.
     pub known_content: KnownContentEntries,
+    /// Published page sources from the last successful dev route scan.
+    pub known_pages: KnownPageSources,
 }
 
 impl Default for GranularityPolicy {
@@ -1468,6 +1502,7 @@ impl Default for GranularityPolicy {
             content_roots: Vec::new(),
             raw_import_invalidation: RawImportInvalidation::default(),
             known_content: KnownContentEntries::default(),
+            known_pages: KnownPageSources::default(),
         }
     }
 }
@@ -1506,6 +1541,15 @@ impl GranularityPolicy {
     pub fn with_known_content(mut self, known_content: KnownContentEntries) -> Self {
         self.known_content = known_content;
         self
+    }
+
+    pub fn with_known_pages(mut self, known_pages: KnownPageSources) -> Self {
+        self.known_pages = known_pages;
+        self
+    }
+
+    pub fn is_known_page_source(&self, path: &Path) -> bool {
+        self.known_pages.contains(path)
     }
 
     /// Whether this changed path is a content-collection entry the dev
@@ -3222,5 +3266,20 @@ mod tests {
             known.contains(Path::new("/proj/content/keep.md")),
             "a sibling outside the removed directory must survive the purge"
         );
+    }
+    #[test]
+    fn known_page_sources_normalize_lexically_and_replace_snapshot() {
+        let known = KnownPageSources::default();
+        known.replace([
+            PathBuf::from("/proj/pages/a/../index.tsx"),
+            PathBuf::from("/proj/pages/nested/child.tsx"),
+        ]);
+        assert!(known.contains(Path::new("/proj/./pages/index.tsx")));
+        known.remove_path_and_descendants(Path::new("/proj/pages/./nested"));
+        assert!(!known.contains(Path::new("/proj/pages/nested/child.tsx")));
+        assert!(known.contains(Path::new("/proj/pages/index.tsx")));
+        known.replace([PathBuf::from("/proj/pages/new.tsx")]);
+        assert!(!known.contains(Path::new("/proj/pages/index.tsx")));
+        assert!(known.contains(Path::new("/proj/pages/new.tsx")));
     }
 }

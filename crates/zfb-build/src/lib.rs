@@ -140,8 +140,8 @@ pub use plugin_runner::{
 };
 pub use policy::{
     classify_change, classify_change_with_content_roots, ssr_read_start, GranularityPolicy,
-    KnownContentEntries, PathClass, RawImportInvalidation, CLIENT_PREPROCESS_DIR_PREFIX,
-    ISLANDS_SHADOW_DIR_PREFIX, PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
+    KnownContentEntries, KnownPageSources, PathClass, RawImportInvalidation,
+    CLIENT_PREPROCESS_DIR_PREFIX, ISLANDS_SHADOW_DIR_PREFIX, PACKAGE_ROOT_TRAVERSED_DIR_NAMES,
 };
 pub use renderer::{
     reload, render_all, render_one, shutdown, start, Backend, EmbeddedV8Host,
