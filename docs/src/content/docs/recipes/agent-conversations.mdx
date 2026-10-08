@@ -26,7 +26,7 @@ account, and no deployment.
 
 - **A static shell with one island.** `apps/showcase/pages/index.tsx` renders a layout around
   `<Island when="load"><ConvosApp /></Island>`. Everything interactive lives in that one
-  `"use client"` component — see [Islands](../concepts/islands.mdx).
+  `"use client"` component — see [Islands](../architecture/islands.mdx).
 - **UI logic outside the renderer.** The island owns signals and DOM refs only. Conversation
   state, event merging, and command retries live in a `ConversationController` that talks to a
   `ConversationClient` interface.
@@ -285,7 +285,7 @@ evidence:
 
 ## Related docs
 
-- [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx): the `"use client"` component model and JSON props
+- [Islands](../architecture/islands.mdx) and [`<Island>`](../api/island.mdx): the `"use client"` component model and JSON props
 - [zudo-react](../zudo-react/overview.mdx): signals, scopes, `Show`, `For`, and refs used by the island
 - [Forms](../zudo-react/forms.mdx): writable models and composition handling for the message composer
 - [AI Summarizer](./ai-summarizer.mdx): a deployed example that calls Workers AI from a `prerender = false` route

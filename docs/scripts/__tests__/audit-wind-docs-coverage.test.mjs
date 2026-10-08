@@ -13,7 +13,9 @@ test("settled bilingual wind docs coverage, source syntax, and asset inventories
     guideRecords: 9,
     historicalWindRoutes: 116,
     negativeExamples: 30,
-    parsedSources: 207,
+    parsedSources: 177,
+    utilityGroups: 7,
+    compatibilityPages: 2,
     positiveExamples: 143,
     utilityFamilies: 48,
   });

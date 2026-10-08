@@ -1,7 +1,7 @@
 ---
 title: zudo-react ランタイム
 description: zfb が単一のランタイムで文書全体をレンダリングし、島の部分ツリーを引き受ける仕組み。
-sidebar_position: 3
+sidebar_position: 32
 ---
 
 zfb が使うレンダリングランタイムは、`@takazudo/zfb` のサブパスとして提供される **zudo-react** だけです。JSX は記述の構文であり、その記述から HTML を作る方法や、ブラウザーで島が既存の HTML を引き受ける方法はランタイムが定めます。フレームワークの選択やアダプターレイヤーはありません。
@@ -34,4 +34,4 @@ import { hydrate, mount } from "@takazudo/zfb/zudo-react/client";
 
 利用側は `jsxImportSource` を `@takazudo/zfb/zudo-react` に設定します。ランタイムは `class` や `for` のような HTML/SVG 属性名、`on:click` のような関数リスナー、呼び出し側がすでに信頼しているコンテンツのための明示的な `rawHtml` prop を使います。signal がレンダリング時の状態 hooks に代わります。コンポーネントは状態を一度作り、レンダラーはそれを使うバインディングを更新します。既存のフレームワーク用コンポーネントは、この API に書き換える必要があります。
 
-スケジュール、永続化されたラッパー、サーバーからクライアントへの props の受け渡しについては[島](../concepts/islands.mdx)を参照してください。記述、prop、ハイドレーションの正確な規則は[Island API](../api/island.mdx)を参照してください。
+スケジュール、永続化されたラッパー、サーバーからクライアントへの props の受け渡しについては[島](../architecture/islands.mdx)を参照してください。記述、prop、ハイドレーションの正確な規則は[Island API](../api/island.mdx)を参照してください。

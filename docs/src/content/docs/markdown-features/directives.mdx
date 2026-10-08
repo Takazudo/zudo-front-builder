@@ -171,7 +171,7 @@ blank-line-separated form as well.
 `directives` is framework-agnostic and ships no JSX components. Registering a directive only tells the pipeline to emit `<ComponentName>` in compiled MDX. You must:
 
 1. Author the component yourself.
-2. Add it to your project's [MDX components map](../concepts/mdx-components.mdx).
+2. Add it to your project's [MDX components map](../architecture/mdx-components.mdx).
 3. Style it with your own CSS.
 
 ## Casing and verbatim emit
@@ -184,4 +184,4 @@ The directive-name key follows the directive grammar `[A-Za-z_][A-Za-z0-9_-]*`. 
 
 - [Directives registry](./directives-registry.mdx) — the underlying Core primitive wired when `markdown.features.directives` is supplied.
 - [Recipe: Admonitions](../recipes/admonitions.mdx) — a worked example registering `note`, `tip`, `info`, `warning`, `danger`, `caution`, and `details` with minimal component stubs and CSS.
-- [Custom Directives](../concepts/custom-directives.mdx) — register directives via the Rust pipeline API.
+- [Custom Directives](../architecture/custom-directives.mdx) — register directives via the Rust pipeline API.

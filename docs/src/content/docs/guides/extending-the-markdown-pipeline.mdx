@@ -25,14 +25,14 @@ feature" change lives.
 If your feature is just a new directive name (`:::callout`,
 `::youtube`, `:badge`), you do not need this page — the directive
 registry handles it without touching Rust beyond a one-line
-`register` call. See [Custom Directives](../concepts/custom-directives.mdx)
+`register` call. See [Custom Directives](../architecture/custom-directives.mdx)
 for that path.
 
 ## Decision: directive, visitor, or AST arm
 
 | You want to … | Path | Where it goes |
 |---|---|---|
-| Add `:::name` / `::name` / `:name` syntax that compiles to a JSX component | Register a directive | `Pipeline::with_defaults` + `DirectiveRegistry` ([Custom Directives](../concepts/custom-directives.mdx)) |
+| Add `:::name` / `::name` / `:name` syntax that compiles to a JSX component | Register a directive | `Pipeline::with_defaults` + `DirectiveRegistry` ([Custom Directives](../architecture/custom-directives.mdx)) |
 | Rewrite existing AST nodes (slugify headings, wrap code blocks, swap `<img>` for a JSX marker, normalise links) | Write a visitor | New file under `crates/zfb-content/src/plugins/` |
 | Surface a Markdown construct that markdown-rs parses but zfb currently drops (tables, footnotes, math, definitions, reference-style links) | Extend the AST converter | `mdast_to_hast` in `crates/zfb-content/src/pipeline.rs` |
 | Add brand-new Markdown syntax that markdown-rs cannot parse | Out of scope | Upstream change against the `markdown` crate, then a converter arm in zfb |
@@ -143,7 +143,7 @@ feature is valuable but not universally needed, or when it requires
 project-specific config (a source map, a feature flag, custom options).
 Examples: all 12 features in `zfb-md-extras`.
 
-The promotion threshold follows the [three-consumer rule](../concepts/design-philosophy.mdx):
+The promotion threshold follows the [three-consumer rule](../architecture/design-philosophy.mdx):
 don't extract until the same pattern has been written by hand in three
 different zfb consumer projects. One project's convenience is a recipe.
 
@@ -325,7 +325,7 @@ changes when the rest of the codebase moves.
 
 - [Markdown Features](../markdown-features/index.mdx) — full catalog of Core and
   Opt-in features, with per-feature ordering notes.
-- [Custom Directives](../concepts/custom-directives.mdx) — author-facing
+- [Custom Directives](../architecture/custom-directives.mdx) — author-facing
   story for `:::name` / `::name` / `:name` syntax, no Rust required.
 - [Customizing Markdown](./customizing-markdown.mdx) — what the
   Markdown rendering pipeline looks like from a content-collection

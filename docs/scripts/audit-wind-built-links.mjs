@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { migratedBuiltRoute } from "../src/config/route-migrations.mjs";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -220,7 +221,11 @@ export function auditBuiltMarkdownLinks(
   base = normalizeBase(base);
   const findings = [];
   const anchorCache = new Map();
-  const scopedRoutes = [...Object.keys(windBaseline), ...Object.keys(adjacentBaseline)];
+  const scopedRoutes = [
+    ...new Set(
+      [...Object.keys(windBaseline), ...Object.keys(adjacentBaseline)].map(migratedBuiltRoute),
+    ),
+  ];
   const scopedFiles = new Set(scopedRoutes.map((route) => routeFile(distDir, route)));
   let checkedScopedLinks = 0;
   let checkedInboundLinks = 0;

@@ -169,7 +169,7 @@ export function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
 
 `methodNotAllowed()` はこの上に `405` を組み立てますし、成功時の経路もすべて同じです。エンドポイントが 404 を返すことにした場合も同様になります。`cache-control: no-store` を既定にしているのも同じ種類の判断で、リクエストごとに内容が変わる API レスポンスは、ルートが明示的に求めないかぎり途中の誰にもキャッシュされるべきではない、ということです。
 
-ルーティング側でこれを支えているのが、zfb の既定である `run_worker_first = false` です。先に走るのはアセットルーターですが、`/api/items` と `/api/search` は `prerender = false` なので `dist/` 配下にファイルとして存在しません。したがってそれらへのリクエストは必ずアセット層で外れ、Worker へ落ちてきます。静的アセットが SSR のコストを払うことはなく、Worker が見るのは動的な部分だけです。全体像は [SSR on a Worker](/ja/docs/concepts/ssr-on-a-worker#ディスパッチフロー) にあります。
+ルーティング側でこれを支えているのが、zfb の既定である `run_worker_first = false` です。先に走るのはアセットルーターですが、`/api/items` と `/api/search` は `prerender = false` なので `dist/` 配下にファイルとして存在しません。したがってそれらへのリクエストは必ずアセット層で外れ、Worker へ落ちてきます。静的アセットが SSR のコストを払うことはなく、Worker が見るのは動的な部分だけです。全体像は [SSR on a Worker](/ja/docs/architecture/ssr-on-a-worker#ディスパッチフロー) にあります。
 
 ## ローカルで動かす
 
@@ -203,7 +203,7 @@ curl -i -X POST 'http://localhost:8787/api/items'
 
 ## 関連
 
-- [SSR on a Worker](/ja/docs/concepts/ssr-on-a-worker) — 2 層構成の Worker 出力、ディスパッチの順序、そして `getCloudflareContext()` がハンドラに `{ env, request, ctx }` を届ける仕組み。
+- [SSR on a Worker](/ja/docs/architecture/ssr-on-a-worker) — 2 層構成の Worker 出力、ディスパッチの順序、そして `getCloudflareContext()` がハンドラに `{ env, request, ctx }` を届ける仕組み。
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — リテラルエクスポートのルール、`Request` ではなく props を受け取るコントラクト、`wrangler.toml` の設定、そしてこのリポジトリが前提にしているスタイル付き 404 の優先順位。
-- [Islands](/ja/docs/concepts/islands) — `"use client"` のアイテムブラウザが、Worker の外側に置かれるブラウザ向けバンドルになる仕組み。
+- [Islands](/ja/docs/architecture/islands) — `"use client"` のアイテムブラウザが、Worker の外側に置かれるブラウザ向けバンドルになる仕組み。
 - [サンプル](/ja/docs/guides/examples) — ほかのスタンドアロンなサンプルリポジトリ一覧。

@@ -189,7 +189,7 @@ the URL is correct.
 ## `import.meta.glob` is not supported
 
 Client scripts do not support Vite's `import.meta.glob(...)` macro — not even
-the eager, string-literal form that [islands support](../concepts/islands.mdx#import-meta-glob-support).
+the eager, string-literal form that [islands support](../architecture/islands.mdx#import-meta-glob-support).
 Client-script graphs that use `?raw`, module workers, or plugin preprocessing
 may be bundled from a temporary mirror, but that stage expands only those
 features — it does not expand `import.meta.glob`. A glob call (in the
@@ -201,7 +201,7 @@ succeeds, and the browser throws when the script runs, because
 If you need a glob-like file list inside a client script, compute it
 yourself (a plugin virtual module, or a small pre-build script that writes a
 real `.ts` file) rather than reaching for `import.meta.glob`. See
-[Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support)
+[Islands: `import.meta.glob` support](../architecture/islands.mdx#import-meta-glob-support)
 for the full support matrix and alternatives.
 
 ## `.html`-source-page limitation

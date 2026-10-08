@@ -94,7 +94,7 @@ committed var, and the deployed behavior then silently disagrees with the source
 **`nodejs_compat` is mandatory**, not optional tuning. The Cloudflare adapter threads the
 per-request `(env, ctx, request)` context through an `AsyncLocalStorage` from
 `node:async_hooks`, which workerd does not expose by default. Without the flag the Worker
-refuses to boot. See [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx).
+refuses to boot. See [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx).
 
 **Works locally with no Cloudflare account:** `pnpm install`, `pnpm build`, `pnpm typecheck`.
 `zfb preview` execs `wrangler dev`, which runs the built Worker locally without deploying
@@ -345,13 +345,13 @@ domain. Point it anywhere: `pnpm smoke http://127.0.0.1:8788`.
 
 ## Related reading
 
-- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — what `dist/_worker.js`
+- [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx) — what `dist/_worker.js`
   contains, how requests are dispatched, and the `AsyncLocalStorage` mechanism behind
   `getCloudflareContext()`.
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — the hands-on
   setup guide: adapter install, `wrangler.toml`, and the local development loop.
-- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `paths()` contract this route gets
+- [Dynamic Routes](../architecture/dynamic-routes.mdx) — the `paths()` contract this route gets
   to skip, and what catchall segments mean for a prerendered page.
-- [Static Assets](../concepts/static-assets.mdx) — how `public/` and the emitted `dist/`
+- [Static Assets](../architecture/static-assets.mdx) — how `public/` and the emitted `dist/`
   relate to the asset layer sitting in front of this Worker.
 - [Examples](../guides/examples.mdx) — the index of every standalone zfb example repository.

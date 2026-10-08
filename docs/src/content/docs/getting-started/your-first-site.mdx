@@ -4,7 +4,11 @@ description: Scaffold, run, and build a zfb project in about five minutes.
 sidebar_position: 3
 ---
 
-This walkthrough takes you from an empty directory to a running dev server and a built site. No global CLI install is required — the scaffold command fetches everything on demand.
+Choose Basic blog for a package-based blog, or Node-free for a starter that runs without Node or a package install. Use either tab below to create, run, build, and preview your site after [Installation](./installation.mdx).
+
+<Tabs>
+
+<TabItem label="Basic blog">
 
 ## Scaffold a new project
 
@@ -45,31 +49,9 @@ If you already have the zfb CLI installed globally (see [Installation](./install
 zfb new my-site --template basic-blog
 ```
 
-`--template basic-blog` is the default, so you can omit it. A `node-free` template is also available for projects that need no Node.js dependency — it ships no `package.json` and relies on `.md`/`.html` page entries alongside `.tsx`; see [Markdown and HTML Pages](../concepts/md-html-pages.mdx) for the authoring surface it uses.
+`--template basic-blog` is the default, so you can omit it. A `node-free` template is also available for projects that need no Node.js dependency — it ships no `package.json` and relies on `.md`/`.html` page entries alongside `.tsx`; see [Markdown and HTML Pages](../architecture/md-html-pages.mdx) for the authoring surface it uses.
 
 `basic-blog` scaffolds a `zfb.config.ts` (not JSON), a `blog` content collection with three seed posts, four routes, and one client island. Its `README.md` is a tour of the tree; [Project structure](./project-structure.mdx) covers the same ground in more depth.
-
-## Own the starting design
-
-Both bundled starters begin with the Everyday design: semantic colour roles,
-independent horizontal and vertical spacing, readable type and one corner rule.
-These are editable project choices, not zudo-wind engine defaults.
-
-- Edit `styles/design-system.css` for colours, spacing, type, measure and radius.
-- Read `DESIGN-NOTES.md` for when to use the roles; `components/design-rules.ts` supplies the
-  same short rules displayed on the home page. Update those explanations when
-  changing the design.
-- In Basic blog, `zfb.config.ts` merges `design-tokens.json` with the existing
-  Markdown showcase tokens. Local dark values in `styles/global.css` follow the
-  theme toggle. The existing **How this site is styled** post explains the chain.
-- In Node-free, keep renamed tokens in `zfb.config.json` and `design-tokens.json`
-  in sync. Its explicit Wind stylesheet builds inside the binary, with no Node,
-  package install or client island required.
-
-Try the [Design system playground](../playground/design-system.mdx), change its
-rules, and export editable files. Merge token maps by category and name so existing
-pages keep their values. The initializer currently selects a site template;
-it has no design-seed selector or seed flag.
 
 <Note title="Import specifiers">
 
@@ -129,9 +111,72 @@ npx zfb check
 
 [zfb-example-blog](https://github.com/Takazudo/zfb-example-blog) is a standalone example site you can read and deploy, with a [live build](https://zfb-example-blog.takazudomodular.com/). It is maintained as its own repository rather than as a copy of the bundled template, so its file layout differs from what `zfb new` scaffolds — read it as a worked example, not as a mirror of your new project. [Blog](../recipes/blog.mdx) walks through it in full, and [Examples](../guides/examples.mdx) lists the rest.
 
+</TabItem>
+
+<TabItem label="Node-free">
+
+## Create a Node-free site
+
+[Install the standalone binary](./installation.mdx#standalone-installation) and add `zfb` to your `PATH`, then run:
+
+```sh
+zfb new my-site --template node-free
+cd my-site
+zfb dev
+```
+
+The `node-free` starter has no `package.json` and needs no `pnpm install` or `npm install`. It uses `zfb.config.json`, Markdown / HTML / TSX pages, and an explicit Wind stylesheet. See [Markdown and HTML Pages](../architecture/md-html-pages.mdx) for its page authoring surface.
+
+Open `http://localhost:3000`, the default dev-server address. Changes to pages and styles trigger live reload. To choose another address, use `zfb dev --port 4000 --host 0.0.0.0`.
+
+## Build and preview without Node
+
+Stop the dev server with Ctrl+C, then run in the same project:
+
+```sh
+zfb build
+zfb preview
+```
+
+The build writes static files to `dist/` by default. Preview serves them at `http://localhost:4321` by default. Both commands honor config `outDir`, with CLI `--outdir` taking precedence. Change preview's port with `zfb preview --port 4000`; build has no `--port` flag.
+
+## Check without Node
+
+```sh
+zfb check --skip-tsc
+```
+
+This runs the non-TypeScript checks without Node. Full TypeScript checking requires Node and `tsc`; deploying with the Cloudflare adapter also requires Node. See [When Node is still needed](./installation.mdx#when-node-is-still-needed).
+
+</TabItem>
+
+</Tabs>
+
+## Own the starting design
+
+Both bundled starters begin with the Everyday design: semantic colour roles,
+independent horizontal and vertical spacing, readable type and one corner rule.
+These are editable project choices, not zudo-wind engine defaults.
+
+- Edit `styles/design-system.css` for colours, spacing, type, measure and radius.
+- Read `DESIGN-NOTES.md` for when to use the roles; `components/design-rules.ts` supplies the
+  same short rules displayed on the home page. Update those explanations when
+  changing the design.
+- In Basic blog, `zfb.config.ts` merges `design-tokens.json` with the existing
+  Markdown showcase tokens. Local dark values in `styles/global.css` follow the
+  theme toggle. The existing **How this site is styled** post explains the chain.
+- In Node-free, keep renamed tokens in `zfb.config.json` and `design-tokens.json`
+  in sync. Its explicit Wind stylesheet builds inside the binary, with no Node,
+  package install or client island required.
+
+Try the [Design system playground](../playground/design-system.mdx), change its
+rules, and export editable files. Merge token maps by category and name so existing
+pages keep their values. The initializer currently selects a site template;
+it has no design-seed selector or seed flag.
+
 ## What to read next
 
 - [Project structure](./project-structure.mdx) — what every directory the template created actually does.
-- [Routing](../concepts/routing.mdx) — how `pages/` becomes URLs, including dynamic and catchall routes.
-- [Islands](../concepts/islands.mdx) — how to opt individual components into client-side hydration.
+- [Routing](../architecture/routing.mdx) — how `pages/` becomes URLs, including dynamic and catchall routes.
+- [Islands](../architecture/islands.mdx) — how to opt individual components into client-side hydration.
 - [Build engine](../architecture/build-engine.mdx) — how the Rust crates fit together under the hood.

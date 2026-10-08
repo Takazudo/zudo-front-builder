@@ -25,7 +25,7 @@ import { poll } from "./poll.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
-const DOCS_RECIPE = join(REPO_ROOT, "docs/src/content/docs/concepts/mdx-components.mdx");
+const DOCS_RECIPE = join(REPO_ROOT, "docs/src/content/docs/architecture/mdx-components.mdx");
 const SHIM_SOURCE = join(REPO_ROOT, "crates/zfb/templates/basic-blog/components/zfb-shim.d.ts");
 const TYPESCRIPT_VERSION = "7.0.2";
 const DEV_TIMEOUT_MS = 90_000;

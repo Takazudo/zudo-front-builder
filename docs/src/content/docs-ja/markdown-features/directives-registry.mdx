@@ -14,7 +14,7 @@ sidebar_position: 57
 - **設定から** — オプトインの [`directives`](./directives.mdx)
   機能を使って、Rust を書かずにディレクティブ名を登録する。`directives: {}` を指定しても、空のレジストリが配線されます。
 - **Rust から** — `DirectiveRegistry` を直接構築してパイプラインに挿入する。
-  [カスタムディレクティブ](../concepts/custom-directives.mdx) を参照。
+  [カスタムディレクティブ](../architecture/custom-directives.mdx) を参照。
 
 ## ディレクティブの形状
 
@@ -77,14 +77,14 @@ registry.register(
 ## カスタムディレクティブ
 
 ディレクティブを追加で登録したり組み込みを上書きしたりするには、
-[カスタムディレクティブ](../concepts/custom-directives.mdx) を参照してください。
+[カスタムディレクティブ](../architecture/custom-directives.mdx) を参照してください。
 これは Rust を書く必要のない、著者向けの手段です。
 
 ## 関連項目
 
 - [`directives` 機能](./directives.mdx) — `zfb.config.ts` から
   レジストリに登録を行うオプトインの設定機能。
-- [カスタムディレクティブ](../concepts/custom-directives.mdx) — Rust API 経由で
+- [カスタムディレクティブ](../architecture/custom-directives.mdx) — Rust API 経由で
   新しい `:::name`／`::name`／`:name` のディレクティブ名を登録する。
 - [Markdown パイプラインを拡張する](../guides/extending-the-markdown-pipeline.mdx)
   — エンジン側の拡張面。

@@ -68,7 +68,7 @@ Hidden content that the reader reveals on demand.
 :::
 ```
 
-The pipeline emits `<Note title="Optional title">`, `<Tip>`, `<Details title="Click to expand">`, etc. You are responsible for making these identifiers available in scope — see [MDX Components](../concepts/mdx-components.mdx).
+The pipeline emits `<Note title="Optional title">`, `<Tip>`, `<Details title="Click to expand">`, etc. You are responsible for making these identifiers available in scope — see [MDX Components](../architecture/mdx-components.mdx).
 
 ## 2. Component stubs
 
@@ -121,7 +121,7 @@ export function Details({ title, children }: DetailsProps) {
 
 ## 3. Register with MDX
 
-Add the components to your [MDX components map](../concepts/mdx-components.mdx) so they are in scope at every page render.
+Add the components to your [MDX components map](../architecture/mdx-components.mdx) so they are in scope at every page render.
 
 ```tsx title="mdx-components.tsx"
 import { defaultComponents } from "zfb";
@@ -191,5 +191,5 @@ The `data-kind` attribute on each admonition wrapper gives you a single CSS hook
 
 - [`directives` feature reference](../markdown-features/directives.mdx) — the Opt-in feature this recipe uses.
 - [Directives registry](../markdown-features/directives-registry.mdx) — the Core primitive underneath.
-- [MDX Components](../concepts/mdx-components.mdx) — how to put the components in scope globally.
-- [Custom Directives](../concepts/custom-directives.mdx) — register directives via the Rust API for framework authors.
+- [MDX Components](../architecture/mdx-components.mdx) — how to put the components in scope globally.
+- [Custom Directives](../architecture/custom-directives.mdx) — register directives via the Rust API for framework authors.

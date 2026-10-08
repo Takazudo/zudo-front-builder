@@ -16,8 +16,9 @@ relaxes the unchanged size gate.
 
 ## Frozen candidate
 
-Registry and actual downloaded archives establish **0.0.55**, the newest complete
-non-yanked released pair at preparation. The older 0.0.54 alert is superseded.
+The 2026-10-08 Mac re-query of registry and actual downloaded archives establishes
+**0.0.56**, the newest complete non-yanked released pair. The earlier 0.0.55
+Linux Phase 1 record is preserved in `report.md` as historical evidence.
 `provenance.json` contains registry timestamps, checksums, license/MSRV and the
 normalized published manifests; `github-provenance.json` records annotated tags,
 dereferenced commits, Releases/checksums and zero open pull requests on both repos.
@@ -25,20 +26,20 @@ These are start observations, not final race evidence.
 
 | Crate | SHA-256 | Archive bytes |
 | --- | --- | --- |
-| noyalib | `0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41` | 1,274,912 |
-| noyalib-serde-yaml | `4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b` | 72,952 |
+| noyalib | `17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77` | 1,278,749 |
+| noyalib-serde-yaml | `bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70` | 73,236 |
 
 Both declare `MIT OR Apache-2.0`, minimum Rust `1.86.0`. The published alias has
 `build = false`, forbids unsafe and re-exports only
-`noyalib::compat::serde_yaml::*`; sole normal dependency exact `=0.0.55`, no default
+`noyalib::compat::serde_yaml::*`; sole normal dependency exact `=0.0.56`, no default
 features, `std` + `compat-serde-yaml`. Archives were read in memory, never executed
-or extracted to a target. Its Release predicts duplicate keys are now refused
-for `Value`, conflicting with our immutable last-wins case. Test that claim;
-never rewrite the expectation to fit it. Upstream tests are predictions only.
+or extracted to a target. The 0.0.56 Release predicts repeated struct fields are refused; the
+immutable last-wins `Value` case is tested unchanged in Phase 1. Never rewrite
+the expectation to fit a release claim. Upstream tests are predictions only.
 
 The published core contract was also read: custom-tag Display still predicts
 column 8 with `(line, column, index) = (1, 8, 7)`; its duplicate-key test still
-predicts last-wins. That conflicts with the 0.0.55 Release wording. Neither
+predicts last-wins. The earlier 0.0.55 Release wording conflicted with that test. Neither
 upstream statement replaces the unchanged local harness result.
 
 ## Ordered manager commands
@@ -63,11 +64,12 @@ stable, which must resolve to one captured version for both pins.
 2. Run Phase 1 under the machine-wide guard, from this checkout:
 
    ```sh
-   export YAML_EVIDENCE=/workspace/scratch/zfb-sweep-261008/yaml-evidence
-   export CARGO_HOME=/workspace/scratch/zfb-sweep-261008/cargo
-   export RUSTUP_HOME=/workspace/scratch/zfb-sweep-261008/rustup
-   export CARGO_TARGET_DIR=/workspace/scratch/zfb-sweep-261008/rust-target
-   # Manager prepends the captured toolchain bin directory to PATH first.
+   export YAML_EVIDENCE="$HOME/.cache/zfb-4049-yaml-evidence/<YYYYMMDD_HHMM>"
+   export CARGO_HOME="$YAML_EVIDENCE/cargo"
+   export RUSTUP_HOME="$HOME/.rustup"
+   export CARGO_TARGET_DIR="$YAML_EVIDENCE/rust-target"
+   # Resolve the active rustup toolchain from the real home, then prepend its
+   # bin directory and $HOME/.cargo/bin to PATH before capturing versions.
    bash "$HOME/.codex/scripts/heavy-guard.sh" -- bash research/4049-yaml-evaluation/phase1.sh
    ```
 
@@ -161,19 +163,24 @@ stable, which must resolve to one captured version for both pins.
    authenticated read access; preserve all deltas/errors/exit (10 is drift, not
    test failure). Never redirect a snapshot onto the committed watcher baseline.
    Record release-race row (a), both registry timestamps/yanks for each skipped
-   0.0.45–0.0.54 release, newer half-pairs, open future release PRs, and disposition
+   0.0.45–0.0.55 release, newer half-pairs, open future release PRs, and disposition
    of any newly complete pair. Newer complete pair means reselect/re-evaluate,
-   not silently bless stale 0.0.55 evidence. Public gh access is forbidden in this
-   environment; the read-only GitHub connector succeeded for initial provenance.
+   not silently bless stale 0.0.56 evidence.
 
 9. Run restoration/hash verification, inspect `git status` and allowed scope.
    Fill `report.md` with observed counts, exact source SHA, commands/logs/status,
    all size columns, blockers, final race and next trigger. Only complete evidence
-   permits KEEP/MIGRATE; MIGRATE additionally requires every Phase 2 gate green.
-   Baseline over budget still cannot permit MIGRATE. Manager alone performs
+   permits KEEP/MIGRATE. A third local outcome, **MIGRATE pending CI validation**,
+   is permitted only when every native gate is green, the only red Phase 2 gates
+   are absolute size ceilings that the same-toolchain control also exceeds on
+   this host, and candidate-minus-control deltas meet the accepted-regression
+   threshold. The default `wasm-md` CI matrix leg can qualify the absolute
+   ceiling gate only; the local same-toolchain/control comparison remains
+   required. Record MIGRATE as final only after that CI evidence passes.
+   Baseline over budget still cannot permit MIGRATE as a local verdict. Manager alone performs
    external comments/integration/CI; this topic commits locally only.
 
-## Feasibility and remaining work
+## Historical 0.0.55 Linux feasibility and remaining work
 
 Preparation ran no Rust, build, browser or installation. Cold native work can
 take tens of minutes; prior targets used 8.3–12 GiB, plus two cold wasm targets

@@ -73,7 +73,7 @@ server child is an Island JSON prop. This is a consumer source/API migration;
 verify it in that consumer. These docs do not claim downstream browser parity.
 
 For maps, preserve the Fragment-wrapped fixed-target recipe from
-[MDX components](../concepts/mdx-components.mdx#islands-constraint). Bare-return
+[MDX components](../architecture/mdx-components.mdx#islands-constraint). Bare-return
 fixed wrappers and generic forwarding boundary entries stored in maps are
 rejected. A plain `children ?? null` SSR passthrough is not an SDK boundary
 because its map key happens to be `Island`.
@@ -84,7 +84,7 @@ The locked acceptance rows are `factory-static-spread`,
 `factory-composition-default-suppressed`,
 `factory-composition-host-with-default-suppressed`,
 `factory-map-default`, `factory-map-host-override`, and
-`factory-map-settings-disabled`. The [Islands guide](../concepts/islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands)
+`factory-map-settings-disabled`. The [Islands guide](../architecture/islands.mdx#boundary-discovery-and-migration-composition-seam-for-customisable-package-islands)
 lists each expected route marker and interaction. A function passed as an
 Island JSON prop fails later during SSR with
 `ZR_ISLAND_PROPS PropsReceiver: ZR_PROPS_FUNCTION at props.component` when both
@@ -92,7 +92,7 @@ functions are valid client exports and `PropsReceiver` is a fixed target.
 
 ## `curl | sh` install fails to resolve a release tag
 
-**Symptom:** the [curl installer](../install/node-free.mdx#install-paths-linux-macos-—-curl) exits with one of:
+**Symptom:** the [curl installer](../getting-started/installation.mdx#install-paths-linux-macos-—-curl) exits with one of:
 
 ```
 error: could not resolve the latest release tag from GitHub API
@@ -104,7 +104,7 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **Cause:** `install.sh` resolves a tag from the GitHub Releases API before downloading anything.
 
-- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. This normally resolves; it fails only if the API is unreachable, rate-limited, or the request is otherwise blocked. See [Install without Node](../install/node-free.mdx#install-paths-linux-macos-—-curl).
+- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. This normally resolves; it fails only if the API is unreachable, rate-limited, or the request is otherwise blocked. See [Install without Node](../getting-started/installation.mdx#install-paths-linux-macos-—-curl).
 - With `ZFB_VERSION=latest-prerelease`, it scans the most recent 30 releases for one flagged `"prerelease": true`. If none of the last 30 is a prerelease (for example, several stable releases have since shipped and prereleases have rolled off that window), resolution fails the same way.
 
 **Fix:**
@@ -123,7 +123,7 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **Cause:** zfb ships prebuilt, glibc-linked platform binaries only — no `@takazudo/zfb-linux-*-musl` package exists. The npm wrapper (`packages/zfb/bin/detect-musl.mjs`) detects a musl runtime (Alpine's `/lib/ld-musl-*` dynamic loader, or the absence of a glibc version in Node's own runtime report) and fails with this friendly message instead of letting the glibc binary crash with an opaque dynamic-loader error. The standalone curl/PowerShell installers can't detect musl this way (they only check OS/CPU) and will download a glibc binary that then fails to execute outright.
 
-**Fix:** use a glibc-based Linux base image (Debian, Ubuntu) instead of Alpine — in a Dockerfile, a CI runner, or any container image. There is no workaround that runs zfb natively on musl today; see [Installation](../getting-started/installation.mdx#supported-platforms) and [Install without Node](../install/node-free.mdx#supported-platforms) for the supported platform matrix.
+**Fix:** use a glibc-based Linux base image (Debian, Ubuntu) instead of Alpine — in a Dockerfile, a CI runner, or any container image. There is no workaround that runs zfb natively on musl today; see [Installation](../getting-started/installation.mdx#supported-platforms) and [Install without Node](../getting-started/installation.mdx#supported-platforms) for the supported platform matrix.
 
 ## GLIBC not found on Linux
 
@@ -234,7 +234,7 @@ and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 
 **Cause:** `import.meta.glob` is a Vite-only build-time macro; esbuild (which bundles islands) has no native understanding of it, so zfb expands the one supported shape itself before esbuild ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported when the glob call is in an island-reachable module that zfb writes as a real expanded shadow-copy file. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected. zfb also rejects a glob inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion, because that file would otherwise ship to the browser unexpanded and throw during hydration.
 
-**Fix:** see [Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives. Use the eager string-literal form where applicable, hoist nested globs into island-reachable modules, move raw-mirrored glob target/subtree files out of the globbed subtree, or replace the glob with explicit static imports. Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
+**Fix:** see [Islands: `import.meta.glob` support](../architecture/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives. Use the eager string-literal form where applicable, hoist nested globs into island-reachable modules, move raw-mirrored glob target/subtree files out of the globbed subtree, or replace the glob with explicit static imports. Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
 
 ## `bundle.loaders` or `bundle.define` is rejected
 
@@ -281,7 +281,7 @@ import text from "./file.ext?raw";
 ```
 
 The extension can be anything and does not need a `bundle.loaders` entry. See
-[Islands: Importing text with `?raw`](../concepts/islands.mdx#importing-text-with-raw)
+[Islands: Importing text with `?raw`](../architecture/islands.mdx#importing-text-with-raw)
 or [Client Scripts](./client-scripts.mdx#importing-text-with-raw).
 
 ## A module worker is not emitted, or `SharedWorker` fails
@@ -311,7 +311,7 @@ Island workers appear under `/assets/worker-*.js`; client-script workers use
 adds an exactly eight-character lowercase hexadecimal `?v=` graph hash. For
 unsupported shapes or third-party transitive workers, bundle them with
 package-specific tooling. See
-[Islands: Module workers](../concepts/islands.mdx#module-workers).
+[Islands: Module workers](../architecture/islands.mdx#module-workers).
 
 ## A relative import "Could not resolve" outside the project root
 

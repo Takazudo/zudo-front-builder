@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3,
-  "checkedAt": "2026-09-24T13:11:22.016Z",
+  "checkedAt": "2026-10-08T15:10:56.693Z",
   "comment": "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.",
   "candidates": {
     "serde_yaml_ng": {
@@ -20,7 +20,7 @@
       "releases": [],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     },
     "serde_yml": {
       "crate": "serde_yml",
@@ -64,7 +64,7 @@
       "releases": ["0.0.8", "v0.0.10", "v0.0.11", "v0.0.12", "v0.0.13", "v0.0.9"],
       "pendingReleasePr": null,
       "archived": true,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     },
     "saphyr": {
       "crate": "saphyr",
@@ -105,7 +105,7 @@
         "custom-tags": "fbe258358508cde9e12c5e3cb1342443c9f1031e",
         "ethiraric/serde_attempt": "3efbe30fe149486b23471fb46d0423ebe11e5e0a",
         "master_before_monorepo": "e6c2c99b5111c3337ff4d6206fb45b8a374721cf",
-        "master": "f32f385bc41499b578ef8fd96fe7455ed3413cc4",
+        "master": "a9c9154b6f183c9041e2c3f257c45d7abcffff22",
         "serde": "368b865f2e583ab93fe5c2f7615696cfe850f7b0"
       },
       "tags": [
@@ -126,7 +126,7 @@
       "releases": ["v0.0.4", "v0.0.5", "v0.0.6"],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     },
     "serde_norway": {
       "crate": "serde_norway",
@@ -254,7 +254,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     },
     "noyalib": {
       "crate": "noyalib",
@@ -306,12 +306,22 @@
         "0.0.5",
         "0.0.50",
         "0.0.51",
+        "0.0.52",
+        "0.0.53",
+        "0.0.54",
+        "0.0.55",
+        "0.0.56",
         "0.0.6",
         "0.0.7",
         "0.0.8"
       ],
       "yanked": [],
       "versionUpdatedAt": {
+        "0.0.56": "2026-10-08T10:12:23.979942Z",
+        "0.0.55": "2026-10-08T06:37:46.465213Z",
+        "0.0.54": "2026-10-07T14:07:29.154401Z",
+        "0.0.53": "2026-10-06T12:41:27.063308Z",
+        "0.0.52": "2026-10-04T14:20:19.747688Z",
         "0.0.51": "2026-09-22T14:47:58.355202Z",
         "0.0.50": "2026-09-22T12:02:45.101054Z",
         "0.0.49": "2026-09-22T09:31:12.915663Z",
@@ -364,9 +374,14 @@
       },
       "branches": {
         "chore/cleanup": "c4f4ef9dba9ffccacd441225156bdbbb4c04adb6",
-        "feat/v0.0.52": "431901f3f5b8f6f3fc7b41c062502b116f0ebabd",
+        "feat/v0.0.56": "648217f10fafb8a1366ed92b515983bff8b27c1f",
         "fix/kani-lint-conflict": "b64327d177489223da055c4224f3a98aaff902ef",
-        "main": "c2646cdc88ae816711f06646020201b50e4cb99b"
+        "fix55/budgets": "28ae10884dffb868eb3f54ec5ed134ee545a6f31",
+        "fix55/cst": "7c35bf59c4b71d51f98311f6a725d6718f5661c8",
+        "fix55/reach": "722fd508ed344eb574eca60c5d4d71ea75cc455c",
+        "fix55/scanner": "0ea29b2a28f1d374449d60c268d87597c3c934e9",
+        "fix55/serializer": "f9f98b43e9b15a77892ca1e780194b670fce1e22",
+        "main": "d39c929a3d98487dea8fe51d42f1675851f6eef6"
       },
       "tags": [
         "v0.0.1",
@@ -415,6 +430,11 @@
         "v0.0.5",
         "v0.0.50",
         "v0.0.51",
+        "v0.0.52",
+        "v0.0.53",
+        "v0.0.54",
+        "v0.0.55",
+        "v0.0.56",
         "v0.0.6",
         "v0.0.7",
         "v0.0.8"
@@ -466,16 +486,18 @@
         "v0.0.5",
         "v0.0.50",
         "v0.0.51",
+        "v0.0.52",
+        "v0.0.53",
+        "v0.0.54",
+        "v0.0.55",
+        "v0.0.56",
         "v0.0.6",
         "v0.0.7",
         "v0.0.8"
       ],
-      "pendingReleasePr": {
-        "number": 459,
-        "state": "OPEN"
-      },
+      "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     },
     "noyalib-serde-yaml": {
       "crate": "noyalib-serde-yaml",
@@ -503,10 +525,20 @@
         "0.0.48",
         "0.0.49",
         "0.0.50",
-        "0.0.51"
+        "0.0.51",
+        "0.0.52",
+        "0.0.53",
+        "0.0.54",
+        "0.0.55",
+        "0.0.56"
       ],
       "yanked": [],
       "versionUpdatedAt": {
+        "0.0.56": "2026-10-08T10:42:11.418941Z",
+        "0.0.55": "2026-10-08T07:10:21.924189Z",
+        "0.0.54": "2026-10-07T14:20:18.633508Z",
+        "0.0.53": "2026-10-06T18:20:53.416765Z",
+        "0.0.52": "2026-10-06T17:23:42.884763Z",
         "0.0.51": "2026-09-22T15:04:44.656167Z",
         "0.0.50": "2026-09-22T12:21:53.235495Z",
         "0.0.49": "2026-09-22T09:49:53.603529Z",
@@ -532,14 +564,8 @@
         "0.0.29": "2026-09-01T23:06:37.477636Z"
       },
       "branches": {
-        "feat/v0.0.46": "99dbd6d60eae99f8e4ba9f3dfd6de6d18fca7af9",
-        "feat/v0.0.47": "db3537bbd3d6fc2e3c8208795e4c3365da9c8d1c",
-        "feat/v0.0.48": "0ba9f315a0fd0a097bd39331cc866327abbb3b69",
-        "feat/v0.0.49": "fa7abf76ee2b9e8247842a39f653bc0577d9e8ba",
-        "feat/v0.0.50": "7b7e044deaf7ff5034426a049dbae7675e30f586",
-        "feat/v0.0.51": "a5a0720a951d807b8b9d501499651ce175178559",
-        "feat/v0.0.52": "95544b9512bcc41b12f71e7b7b15cc9d8befcee3",
-        "main": "3cd031df4365b14fdb4f92aee317495e7de394fc",
+        "feat/v0.0.56": "fa5c90aba297d942aab72a54c87af3aafed652aa",
+        "main": "27b152f0bc5f508178723edb5ea687545efb97db",
         "release/v0.0.44": "707fd753991513753cfc96da97c9d626aeb0f8ab",
         "release/v0.0.45": "d3d343958a5dddc7526e363107292cf3bf537a31"
       },
@@ -566,7 +592,12 @@
         "v0.0.48",
         "v0.0.49",
         "v0.0.50",
-        "v0.0.51"
+        "v0.0.51",
+        "v0.0.52",
+        "v0.0.53",
+        "v0.0.54",
+        "v0.0.55",
+        "v0.0.56"
       ],
       "releases": [
         "v0.0.29",
@@ -591,14 +622,16 @@
         "v0.0.48",
         "v0.0.49",
         "v0.0.50",
-        "v0.0.51"
+        "v0.0.51",
+        "v0.0.52",
+        "v0.0.53",
+        "v0.0.54",
+        "v0.0.55",
+        "v0.0.56"
       ],
-      "pendingReleasePr": {
-        "number": 28,
-        "state": "OPEN"
-      },
+      "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     },
     "serde-saphyr": {
       "crate": "serde-saphyr",
@@ -683,6 +716,7 @@
         "0.0.1": "2025-09-27T20:32:53.691021Z"
       },
       "branches": {
+        "bw/docker_compose": "306847e0eba8bdbeb800c1cddab54e997365eb44",
         "bw/emit_comments": "ea07952417c157c36119a94058dc936b3e9c1839",
         "bw/esnbs": "c829f07b6487855bac5213f06bd511a4c53fe71d",
         "bw/fallible": "dd9b884d09197e5d4da923b22aed14e845ae5760",
@@ -692,17 +726,23 @@
         "bw/match_errors_directly": "7304eff5efb12645df2f54574dd4a2ac7d4edf7c",
         "bw/null": "49c9d2888681218e53fd703807cf6beca39a4efd",
         "bw/nulltilde2": "477639fcddbe65b8f174e850ca901cf121bdfc5d",
+        "bw/nushell": "e7318db404fcc6d6871dd8d68551c9f9b346774c",
+        "bw/parse_scalar": "18e9923b8b76a0ef0842771e017502e488ee2c3e",
         "bw/prop_hardening": "f930f61fcb73797dd14ee7cb708e4c68299878f8",
         "bw/quoted": "d69bbeb2ead1d1b125a0a33253ff42357f9a509a",
         "bw/review": "80f10dccb644820bce403573b09f5d8060621528",
         "bw/split-serde": "bf855554deb1fd2fc5a54655dddbfcd16203449f",
         "bw/sr": "acafda5135179c17c593ec5754868ed99d41d497",
+        "bw/strinct_indentation": "d4fd4da1c47c25f9813cdbc011fab0807c553b76",
         "bw/tagged": "60f2d7014c91b3c525cbfb56f2987a75eabb2433",
         "bw/unsupported_tags": "c7ec2af61d863d1af66ca6fad836a4a840a7e028",
+        "bw/yaml_trim": "dd72ba7aa4512fd16313289dad27c868d7e3534e",
         "bw/ym": "5483a329aa6435d9332abfee6eb2701d4f1c5470",
         "bw/1r1": "6e32b1eefcc8987ded600ef6a5bf9bcdaaf83d4e",
+        "codspeed/setup-benchmarks": "064645d21e3aef58cb1d5ff20163f930292430b5",
+        "fix/alias-keeps-inner-error": "1d9f66b7d76511e88dc16716524b16630a0ac70d",
         "fix/yaml11-underscore-quoting": "dc2d00a5798929d2d0be68bd6aae424617ff1a95",
-        "master": "82e300e1ae8e5d83e5eabe6768985779472e7b3a"
+        "master": "b7bc26c0c1eb508069e14e1c0b894edbc5b0a617"
       },
       "tags": [
         "0.0.10",
@@ -776,7 +816,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-24T13:11:22.016Z"
+      "checkedAt": "2026-10-08T15:10:56.693Z"
     }
   }
 }
