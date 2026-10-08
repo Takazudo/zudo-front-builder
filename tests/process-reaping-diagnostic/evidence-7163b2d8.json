@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "started": {
+    "utc": "2026-10-08T07:38:14.520852+00:00",
+    "monotonic_ns": 3135326422263
+  },
+  "kernel": "6.18.44",
+  "python": "3.12.14",
+  "boot_id": "cdb3a918-8a89-421b-9ca4-b8d569b8e676",
+  "pid1": {
+    "pid": 1,
+    "ppid": 0,
+    "state": "S",
+    "starttime_ticks": 46
+  },
+  "pid1_cmdline": "tail -f /dev/null ",
+  "bounds": {
+    "cases": 2,
+    "processes_per_case": 3,
+    "maximum_orphan_zombies": 2,
+    "readiness_seconds": 3,
+    "observation_seconds": 2,
+    "cleanup_seconds": 2,
+    "worker_lifetime_seconds": 8
+  },
+  "verdict": "orphan-zombies-observed",
+  "finished": {
+    "utc": "2026-10-08T07:38:16.593240+00:00",
+    "monotonic_ns": 3137398801262
+  },
+  "provenance": {
+    "tested_code_commit": "7163b2d8086f44c2b6783359260d18a0bb707c8c",
+    "fixture_sha256": "48ea002d7b20655fdeb6b6034dcf2578e68986bffd6ac9cc8a74f58d5b12c878",
+    "raw_report_sha256": "f5bd160da2570fcbd9ab0eb00a892b98785b694a9d1f9972295b1a92bcf00557",
+    "raw_report_local_path": "/workspace/scratch/zfb-sweep-261008/process-diagnostic.json",
+    "guard_log_local_path": "/workspace/scratch/zfb-sweep-261008/process-guard.log",
+    "guard_verdict_line": "heavy-guard: verdict=PASS exit=0 secs=2 min_mem_mb=16874 reason=-",
+    "execution_count": 1,
+    "extraction": "Original environment, signal events and final snapshots; intermediate polls omitted."
+  },
+  "cases": [
+    {
+      "mode": "cooperative",
+      "events": [
+        {
+          "utc": "2026-10-08T07:38:14.525015+00:00",
+          "monotonic_ns": 3135330581157,
+          "pid": 9034,
+          "signal": "SIGTERM"
+        }
+      ],
+      "root_reaped": true,
+      "live_survivors": [],
+      "ppid1_zombies": [],
+      "all_original_identities_gone": true,
+      "snapshot_count": 5,
+      "final_snapshot": {
+        "utc": "2026-10-08T07:38:14.575643+00:00",
+        "monotonic_ns": 3135381203579,
+        "processes": [
+          {
+            "owned_identity": {
+              "level": 0,
+              "pid": 9034,
+              "ppid": 9026,
+              "state": "R",
+              "starttime_ticks": 313532,
+              "utc": "2026-10-08T07:38:14.523398+00:00",
+              "monotonic_ns": 3135329035557
+            },
+            "current": null,
+            "same_identity": false,
+            "kill_0": "ESRCH",
+            "classification": "gone"
+          },
+          {
+            "owned_identity": {
+              "level": 1,
+              "pid": 9035,
+              "ppid": 9034,
+              "state": "R",
+              "starttime_ticks": 313532,
+              "utc": "2026-10-08T07:38:14.524022+00:00",
+              "monotonic_ns": 3135329664381
+            },
+            "current": null,
+            "same_identity": false,
+            "kill_0": "ESRCH",
+            "classification": "gone"
+          },
+          {
+            "owned_identity": {
+              "level": 2,
+              "pid": 9036,
+              "ppid": 9035,
+              "state": "R",
+              "starttime_ticks": 313532,
+              "utc": "2026-10-08T07:38:14.524029+00:00",
+              "monotonic_ns": 3135329663889
+            },
+            "current": null,
+            "same_identity": false,
+            "kill_0": "ESRCH",
+            "classification": "gone"
+          }
+        ]
+      }
+    },
+    {
+      "mode": "bottom-up-kill",
+      "events": [
+        {
+          "utc": "2026-10-08T07:38:14.578210+00:00",
+          "monotonic_ns": 3135383775148,
+          "pid": 9039,
+          "signal": "SIGKILL"
+        },
+        {
+          "utc": "2026-10-08T07:38:14.578282+00:00",
+          "monotonic_ns": 3135383844347,
+          "pid": 9038,
+          "signal": "SIGKILL"
+        },
+        {
+          "utc": "2026-10-08T07:38:14.578312+00:00",
+          "monotonic_ns": 3135383874407,
+          "pid": 9037,
+          "signal": "SIGKILL"
+        }
+      ],
+      "root_reaped": true,
+      "live_survivors": [],
+      "ppid1_zombies": [9038, 9039],
+      "all_original_identities_gone": false,
+      "snapshot_count": 43,
+      "final_snapshot": {
+        "utc": "2026-10-08T07:38:16.593207+00:00",
+        "monotonic_ns": 3137398768734,
+        "processes": [
+          {
+            "owned_identity": {
+              "level": 0,
+              "pid": 9037,
+              "ppid": 9026,
+              "state": "R",
+              "starttime_ticks": 313538,
+              "utc": "2026-10-08T07:38:14.577138+00:00",
+              "monotonic_ns": 3135382758153
+            },
+            "current": null,
+            "same_identity": false,
+            "kill_0": "ESRCH",
+            "classification": "gone"
+          },
+          {
+            "owned_identity": {
+              "level": 1,
+              "pid": 9038,
+              "ppid": 9037,
+              "state": "R",
+              "starttime_ticks": 313538,
+              "utc": "2026-10-08T07:38:14.577545+00:00",
+              "monotonic_ns": 3135383167495
+            },
+            "current": {
+              "pid": 9038,
+              "ppid": 1,
+              "state": "Z",
+              "starttime_ticks": 313538
+            },
+            "same_identity": true,
+            "kill_0": "exists",
+            "classification": "ppid1-zombie"
+          },
+          {
+            "owned_identity": {
+              "level": 2,
+              "pid": 9039,
+              "ppid": 9038,
+              "state": "R",
+              "starttime_ticks": 313538,
+              "utc": "2026-10-08T07:38:14.577706+00:00",
+              "monotonic_ns": 3135383328429
+            },
+            "current": {
+              "pid": 9039,
+              "ppid": 1,
+              "state": "Z",
+              "starttime_ticks": 313538
+            },
+            "same_identity": true,
+            "kill_0": "exists",
+            "classification": "ppid1-zombie"
+          }
+        ]
+      }
+    }
+  ]
+}
