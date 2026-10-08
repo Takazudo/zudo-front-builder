@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { poll } from "./poll.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
@@ -129,22 +130,54 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-async function poll(description, probe, timeoutMs = DEV_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const result = await probe();
-      if (result) return result;
-    } catch (error) {
-      if (error.fatal) throw error;
-      lastError = error;
-    }
-    await sleep(300);
+function thrownErrorSummary(error) {
+  if (!error) return null;
+  return {
+    class: error.constructor?.name ?? typeof error,
+    message: error.message ?? String(error),
+  };
+}
+
+async function pollWithEvidence(probeEvidence, description, probe, options) {
+  try {
+    const result = await poll(description, probe, {
+      timeoutMs: DEV_TIMEOUT_MS,
+      ...options,
+    });
+    probeEvidence?.push({
+      description,
+      outcome: "passed",
+      status: result.status,
+      markers: result.markers,
+      note: result.note,
+      timeline: result.timeline,
+    });
+    return result;
+  } catch (error) {
+    probeEvidence?.push({
+      description,
+      outcome: "failed",
+      status: error.lastNonOkStatus?.status ?? null,
+      markers: error.lastNonOkStatus?.markers ?? [],
+      note: error.message ?? String(error),
+      lastThrownError: thrownErrorSummary(error.lastThrownError),
+      timeline: error.timeline ?? [],
+    });
+    throw error;
   }
-  throw new Error(
-    `timed out waiting for ${description}${lastError ? `: ${lastError}${lastError.cause ? ` (cause: ${lastError.cause})` : ""}` : ""}`,
-    { cause: lastError },
+}
+
+async function writeProbeEvidence(directory, outcome, probes) {
+  const outputDirectory = resolve(REPO_ROOT, directory);
+  await mkdir(outputDirectory, { recursive: true });
+  const artifact = {
+    outcome,
+    generatedAt: new Date().toISOString(),
+    probes,
+  };
+  await writeFile(
+    join(outputDirectory, "sdk-alias-consumer-evidence.json"),
+    `${JSON.stringify(artifact)}\n`,
   );
 }
 
@@ -282,7 +315,7 @@ async function writeConsumer(consumer, docsBlocks) {
   );
 }
 
-async function runFreshConsumer(consumer, zfbBinary, origin) {
+async function runFreshConsumer(consumer, zfbBinary, origin, probeEvidence) {
   const compiler = join(consumer, "node_modules/typescript/bin/tsc");
   await run(process.execPath, [compiler, "--noEmit"], { cwd: consumer, label: "consumer tsc" });
   await run(zfbBinary, ["check"], { cwd: consumer, label: "consumer zfb check" });
@@ -291,21 +324,36 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
   const server = startDev(consumer, zfbBinary, port);
   try {
     const pageUrl = `${origin}/`;
-    await poll("zfb dev page readiness", async () => {
-      if (server.spawnError()) throw server.spawnError();
-      if (server.child.exitCode !== null || server.child.signalCode !== null) {
-        const error = new Error(`zfb dev exited early\n${server.logs()}`);
-        error.fatal = true;
-        throw error;
-      }
-      const { response, text } = await fetchText(pageUrl);
-      if (!response.ok)
-        throw new Error(`dev page returned ${response.status}: ${text.slice(0, 300)}`);
-      return (
-        text.includes('data-zfb-island="Counter"') &&
-        text.includes('data-zfb-island="NamedCounter"')
-      );
-    }).catch(async (error) => {
+    await pollWithEvidence(
+      probeEvidence,
+      "zfb dev page readiness",
+      async () => {
+        if (server.spawnError()) throw server.spawnError();
+        if (server.child.exitCode !== null || server.child.signalCode !== null) {
+          const error = new Error(`zfb dev exited early\n${server.logs()}`);
+          error.fatal = true;
+          throw error;
+        }
+        const { response, text } = await fetchText(pageUrl);
+        const markers = ["Counter", "NamedCounter"].filter((name) =>
+          text.includes(`data-zfb-island="${name}"`),
+        );
+        const missingMarkers = ["Counter", "NamedCounter"].filter(
+          (name) => !markers.includes(name),
+        );
+        return {
+          ok: response.ok && missingMarkers.length === 0,
+          status: `HTTP ${response.status}`,
+          markers,
+          note: !response.ok
+            ? `response body: ${text.slice(0, 300)}`
+            : missingMarkers.length > 0
+              ? `missing island markers: ${missingMarkers.join(", ")}`
+              : "island markers ready",
+        };
+      },
+      { isFatal: (error) => error?.fatal === true },
+    ).catch(async (error) => {
       const scratchFiles = await readdir(join(consumer, ".zfb-build"), { recursive: true }).catch(
         () => [],
       );
@@ -316,9 +364,21 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
     });
 
     const assetUrl = `${origin}/assets/islands.js`;
-    const initialAsset = await poll("initial dev islands bundle", async () => {
+    let initialAsset;
+    await pollWithEvidence(probeEvidence, "initial dev islands bundle", async () => {
       const { response, text } = await fetchText(assetUrl);
-      return response.ok && text.includes("Named counter") ? text : null;
+      const hasNamedCounter = text.includes("Named counter");
+      if (response.ok && hasNamedCounter) initialAsset = text;
+      return {
+        ok: response.ok && hasNamedCounter,
+        status: `HTTP ${response.status}`,
+        markers: hasNamedCounter ? ["Named counter"] : [],
+        note: !response.ok
+          ? `response body: ${text.slice(0, 300)}`
+          : hasNamedCounter
+            ? "named counter bundle ready"
+            : "waiting for Named counter bundle text",
+      };
     });
     const componentPath = join(consumer, "components/counter.tsx");
     const originalComponent = await readFile(componentPath, "utf8");
@@ -334,18 +394,35 @@ async function runFreshConsumer(consumer, zfbBinary, origin) {
     );
     await writeFile(componentPath, editedComponent);
 
-    await poll("client island rebundle and dev tick", async () => {
+    await pollWithEvidence(probeEvidence, "client island rebundle and dev tick", async () => {
       const [
         { response: pageResponse, text: pageText },
         { response: assetResponse, text: assetText },
       ] = await Promise.all([fetchText(pageUrl), fetchText(assetUrl)]);
-      return (
-        pageResponse.ok &&
-        assetResponse.ok &&
-        pageText.includes("Edited counter") &&
-        assetText.includes("Edited counter") &&
-        assetText !== initialAsset
-      );
+      const pageHasEditedCounter = pageText.includes("Edited counter");
+      const assetHasEditedCounter = assetText.includes("Edited counter");
+      const assetChanged = assetText !== initialAsset;
+      const markers = [
+        ...(pageHasEditedCounter ? ["page: Edited counter"] : []),
+        ...(assetHasEditedCounter ? ["asset: Edited counter"] : []),
+      ];
+      const pending = [];
+      if (!pageResponse.ok) pending.push(`page returned ${pageResponse.status}`);
+      else if (!pageHasEditedCounter) pending.push("page is missing Edited counter");
+      if (!assetResponse.ok) pending.push(`asset returned ${assetResponse.status}`);
+      else if (!assetHasEditedCounter) pending.push("asset is missing Edited counter");
+      if (!assetChanged) pending.push("asset bundle has not changed");
+      return {
+        ok:
+          pageResponse.ok &&
+          assetResponse.ok &&
+          pageHasEditedCounter &&
+          assetHasEditedCounter &&
+          assetChanged,
+        status: `page HTTP ${pageResponse.status}; asset HTTP ${assetResponse.status}`,
+        markers,
+        note: pending.length > 0 ? pending.join("; ") : "edited counter rebundled",
+      };
     });
 
     const browser = await chromium.launch({ headless: true });
@@ -399,6 +476,9 @@ async function main() {
   const tempRoot = await mkdtemp(join(tmpdir(), "zfb-sdk-alias-consumer-"));
   const tarballDir = join(tempRoot, "tarballs");
   const consumer = join(tempRoot, "consumer");
+  const evidenceDirectory = process.env.ZFB_SDK_ALIAS_EVIDENCE_DIR;
+  const probeEvidence = evidenceDirectory ? [] : undefined;
+  let outcome = "failed";
 
   try {
     assert.ok(
@@ -441,9 +521,16 @@ async function main() {
       cwd: consumer,
       label: "install packed consumer dependencies",
     });
-    await runFreshConsumer(consumer, zfbBinary, `http://127.0.0.1:${DEV_PORT}`);
+    await runFreshConsumer(consumer, zfbBinary, `http://127.0.0.1:${DEV_PORT}`, probeEvidence);
+    outcome = "passed";
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    try {
+      if (evidenceDirectory) {
+        await writeProbeEvidence(evidenceDirectory, outcome, probeEvidence);
+      }
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   }
 }
 
