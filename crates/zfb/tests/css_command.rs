@@ -973,6 +973,104 @@ fn declared_project_root_matches_build_css_and_both_audit_plans() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn declared_project_root_symlink_keeps_relative_labels_and_paths() {
+    let temp = tempfile::tempdir().expect("create symlinked CSS command fixture");
+    let copied = copied_fixture("css-build-parity");
+    let project = temp.path().join("project");
+    copy_dir_recursive(copied.path(), &project).expect("copy CSS command fixture into project");
+    let project_link = temp.path().join("project-link");
+    std::os::unix::fs::symlink(&project, &project_link).expect("symlink project root");
+
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{"wind":{"sources":{"roots":["./widgets"]}}}"#,
+    )
+    .unwrap();
+    fs::create_dir(project.join("widgets")).unwrap();
+    fs::write(
+        project.join("widgets/card.tsx"),
+        "export const card = <div class=\"bg-missing\" />;\n",
+    )
+    .unwrap();
+
+    for mode in ["build", "standalone"] {
+        let audit = run_wind_audit(&project_link, &["--plan", mode]);
+        assert_success(&audit, &format!("symlinked declared-root {mode} audit"));
+        let report = process_stdout(&audit);
+        let declared_root_line = report
+            .lines()
+            .find(|line| line.trim_start().starts_with("root root/"))
+            .unwrap_or_else(|| panic!("declared-root line missing from {mode} report:\n{report}"));
+        assert_eq!(
+            declared_root_line.trim(),
+            "root root/widgets widgets (required)",
+            "declared-root line must stay relative:\n{report}"
+        );
+        assert!(!declared_root_line.contains("/../"), "{declared_root_line}");
+        assert!(
+            !declared_root_line.contains(project.to_string_lossy().as_ref()),
+            "{declared_root_line}"
+        );
+        assert!(
+            !declared_root_line.contains(project_link.to_string_lossy().as_ref()),
+            "{declared_root_line}"
+        );
+
+        let json_audit = run_wind_audit(&project_link, &["--plan", mode, "--json"]);
+        assert_success(
+            &json_audit,
+            &format!("symlinked declared-root {mode} JSON audit"),
+        );
+        let document: serde_json::Value = serde_json::from_slice(&json_audit.stdout)
+            .unwrap_or_else(|error| panic!("{error}:\n{}", process_stdout(&json_audit)));
+        let roots = document["coverage"]["roots"]
+            .as_array()
+            .expect("audit JSON coverage roots");
+        let declared_root = roots
+            .iter()
+            .find(|root| root["label"] == "root/widgets")
+            .unwrap_or_else(|| panic!("root/widgets missing from audit JSON:\n{document}"));
+        assert_eq!(declared_root["path"], "widgets");
+
+        let source_id = document["report"]["diagnostics"]
+            .as_array()
+            .expect("audit JSON diagnostics")
+            .iter()
+            .find_map(|diagnostic| diagnostic["origin"]["sourceId"].as_str())
+            .filter(|source_id| source_id.starts_with("root/widgets:"))
+            .unwrap_or_else(|| {
+                panic!("root/widgets source id missing from audit JSON:\n{document}")
+            });
+        assert_eq!(source_id, "root/widgets:card.tsx");
+        assert!(!source_id.contains(project.to_string_lossy().as_ref()));
+        assert!(!source_id.contains(project_link.to_string_lossy().as_ref()));
+    }
+
+    let manifest = Command::new(zfb_binary!())
+        .args([
+            "wind",
+            "manifest",
+            "--producer",
+            "symlink-test",
+            "--output",
+            "wind.json",
+            "--project-root",
+        ])
+        .arg(&project_link)
+        .arg("--no-auto-source")
+        .current_dir(&project_link)
+        .output()
+        .expect("spawn `zfb wind manifest` on symlinked project");
+    assert_success(&manifest, "symlinked declared-root manifest");
+    let manifest_report = process_stdout(&manifest);
+    assert!(
+        manifest_report.contains("root root/widgets widgets (required)"),
+        "{manifest_report}"
+    );
+}
+
 fn root_package_isolation_fixture(root: &Path) -> PathBuf {
     let app = root.join("app");
     fs::create_dir_all(app.join("pages")).unwrap();
