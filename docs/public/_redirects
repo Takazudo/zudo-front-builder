@@ -227,7 +227,6 @@
 /docs/changelog/v2.10.0 /docs/changelog/zfb/v2.10.0/ 301
 /docs/changelog/v2.10.0/ /docs/changelog/zfb/v2.10.0/ 301
 
- # Documentation structure migration (#4079)
 /docs/install /docs/getting-started/installation/ 301
 /docs/install/ /docs/getting-started/installation/ 301
 /docs/install/node-free /docs/getting-started/installation/ 301

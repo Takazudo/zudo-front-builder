@@ -43,6 +43,8 @@ jobs:
 
   deploy-preview:
     name: Upload preview version to Cloudflare Workers
+    # Draft implementation review must not publish a preview. Keep build verification active.
+    if: ${{ !github.event.pull_request.draft }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20

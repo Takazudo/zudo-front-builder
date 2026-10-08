@@ -1,6 +1,6 @@
 # Native documentation restructuring — #4079
 
-Implementation scope: #4079; execution epic #4080 and work items #4081–#4085. This is a draft implementation for review. No merge, release, package publication, or deployment was performed or authorized. The seed issue remains open.
+Implementation scope: #4079; execution epic #4080 and work items #4081–#4085. This is a draft implementation for review. No merge, release, package publication, or manual deployment was performed. An existing automatic PR preview workflow uploaded a preview version before cancellation; see the incident below. Deployment was not authorized. The seed issue remains open.
 
 ## Plan and implementation
 
@@ -25,7 +25,7 @@ PR #4075's Wind root-label/generated-preview changes were reviewed; they are on 
 
 ## Verified revision and commands
 
-Product revision: `cdad876e47e54564888f94f6806e83de8dff3383` (following initial implementation `7293ff28fcc7e22593fb9b60218441641194440d`). The subsequent evidence commit changes only the verification harness/report; the generated site and product source remain this revision.
+Product revision: `cdad876e47e54564888f94f6806e83de8dff3383` (following initial implementation `7293ff28fcc7e22593fb9b60218441641194440d`). Later commits change verification contracts/evidence, remove a nonfunctional redirect-file comment, and prevent draft-PR preview uploads; rendered docs and native chrome remain this revision.
 
 Commands use the repository-pinned pnpm 12.8.2 through `npx --yes pnpm@12.8.2`; the host PATH pnpm 11.19 is incompatible. Commit formatting hooks ran successfully with pinned pnpm, not bypassed.
 
@@ -61,3 +61,13 @@ Workshop measurements: two tracks at 1440 (`280px 986px`), 1280 (`280px 838px`),
 - Local Cloudflare assets runtime is an actual redirect-capable development host, not a production deployment. Production routing/CDN verification remains after authorized deployment. Doc-history generation uses the repository's normal local skip behavior.
 - This configuration has no versioned docs and uses `/` as its base. Native helper calls and hrefs are preserved; alternative configured-version/base-path live builds were not exercised.
 - Broad Rust/workspace and native platform CI remain their existing gates; no engine source or dependency versions changed. This documentation-focused run does not claim those suites passed.
+
+## CI reconciliation and automatic preview incident
+
+Initial CI on `235cdec0b0286786bb384f86a75206a1f06f2be1` found two obsolete acceptance contracts missed by the focused lane: the Playground layout test prohibited the newly required wide index, and two Chromium compatibility cases expected retired alphabet-page links. Both contracts now assert the accepted structure: wide index/tool; one canonical page, 23 tables / 1,288 rows, no TOC, section anchors, existing evidence text, and keyboard navigation to the separate migration guide. The corrected complete docs unit suite passes 28 tests, and both compatibility Chromium cases pass. The initial docs CI already passed its other 116 Chromium cases. The downstream linked-token probe failed because the preceding test failure skipped creation of `target/debug/zfb`.
+
+Broader root-unit checking exposed the changelog test's assumption that it owned the entire redirect file. Its exact two-redirect-per-release checks now explicitly scope to changelog sources; the separate new migration contract owns all 200 docs-structure rules. The corrected changelog/navigation lane passes 26 tests. The broad root run also had three unchanged docs-dev-supervisor subprocess cleanup failures (survivor/time-out assertions); they reproduce in an isolated retry locally and are not reported passed. No supervisor source/test change was made. CI remains the evidence source for that existing platform-dependent lane.
+
+The workspace Wind preview freshness job reports only stale `manifest.json`. This drift is already present on refreshed main: archiving `fd954c85`'s exact Cargo/crates inputs and running the unchanged digest algorithm yields `a7b93afe13c10ae0e63196db48315cc8a8e23966ddb052b84c2f3ca7e67173d7`, equal to this branch. Main's committed manifest instead records `e8b7490734dc1277f4aca0f65563491eeccb50f934d1c1e38cc37ef1a20fc2dd`. PR #4075 separately changes Rust root-label code and regenerates that manifest to `7182e38da65c0a1db396b911a598eaf8045b5eac2c84714a2085ffeb0397b6d5`. Neither its Rust changes nor its manifest are overwritten or transplanted here. This existing baseline/integration failure remains explicit; it is not a successful freshness check.
+
+Creating the draft PR automatically triggered existing workflow run [37804688715](https://github.com/Takazudo/zudo-front-builder/actions/runs/37804688715). Cancellation was requested when the upload job was observed, but `wrangler versions upload --preview-alias` had already uploaded 1,302 assets and preview Worker version `ea336944-5ac7-4133-a378-17b32c6cd374`. The run is cancelled; no production version activation occurred. This unrequested automatic preview upload conflicts with the user's no-deployment intent. No deletion/cleanup was performed. The preview upload job now has `if: ${{ !github.event.pull_request.draft }}`; draft build verification and all ordinary CI/native gates remain enabled. Subsequent pushes must verify the upload job is skipped before completion is reported.
