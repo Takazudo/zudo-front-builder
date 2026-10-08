@@ -17,6 +17,9 @@ const FactoryBoundary = createFactoryBoundary({ ...defaults });
 export default function Page() {
   return (
     <html>
+      <head>
+        <title>Factory acceptance</title>
+      </head>
       <body>
         <FactoryBoundary />
       </body>
