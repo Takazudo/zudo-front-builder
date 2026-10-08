@@ -1243,7 +1243,7 @@ export default function Home() {{
         );
         if name != "factory-escape" {
             assert!(
-                diagnostic.contains("target FactoryBoundary has unsupported initializer:"),
+                diagnostic.contains("target Target has unsupported initializer:"),
                 "{name} must keep the source-located outer diagnostic: {diagnostic}"
             );
             assert!(
