@@ -9,6 +9,7 @@ export default defineConfig({
   retries: 0,
   forbidOnly: true,
   reporter: "list",
+  preserveOutput: "always",
   outputDir: fileURLToPath(
     new URL("../../test-results/cascade-decision-experiment", import.meta.url),
   ),

@@ -116,8 +116,45 @@ Use reporter output for pass/fail status; JSON measurements alone are not a pass
 
 Child validation: `node --check` passed for `fixture.mjs`,
 `cascade.chromium.spec.mjs`, and `playwright.config.mjs`; all twelve synthetic
-fixtures were generated and inspected without a browser. Chromium execution and
-measured outcomes remain manager-owned and pending at handoff. No native compiler
+fixtures were generated and inspected without a browser. The manager's first exact-head run is recorded below; detailed evidence retention
+is pending a manager rerun of the corrected writer. No native compiler
 output, real consumer pages, WebKit/Firefox behavior, product adoption, or release
 readiness is certified by these syntax and fixture checks. #3386 remains open for
 owner interpretation of measured evidence and any separately approved product work.
+
+## Initial manager observation and evidence retention correction
+
+On 2026-10-08 the manager ran the exact implementation commit
+`7ed4ea66364b83103e45bf3f5cf7960a90636a2a` with system Chromium 151:
+**12 passed in 11.4 seconds, zero retries**, heavy guard `verdict=PASS`, exit 0,
+12 seconds. Local log: `/workspace/scratch/zfb-sweep-261008/cascade.log`.
+The selected binary `/usr/bin/chromium` reports `151.0.7922.173` on Debian 13;
+this is a system executable check, not recovered per-test runtime metadata.
+
+Every assertion in the expected-winner table passed in that run, including both
+source orders and both layer orders. Stronger group/peer specificity changed the
+(0,1,1) authored winner to utility, while (0,2,0) authored conflicts became source
+order ties. Named normal utilities lost to unlayered authored rules, and declaring
+components after utilities reversed normal versus important component winners.
+Plain/media/dark behavior stayed unchanged under stronger relation selectors.
+The negative relationship controls passed, preserving ancestor and following-sibling
+semantics in the synthetic sample.
+
+However, inspecting all twelve passing output directories found them empty;
+only `.last-run.json` survived. Body-only attachments were not durable with this
+list-reporter run. Its log proves assertion success; it does not provide retained
+measured JSON, CSS, screenshots or per-test browser metadata. Those missing files
+are not described as recovered observations.
+
+The harness now writes HTML, CSS, measured JSON and screenshots directly to
+`testInfo.outputPath()` and attaches their paths, with `preserveOutput: "always"`.
+This evidence-writing correction does not change CSS or winner assertions. The
+manager must rerun the corrected exact head to verify retention and reconcile
+measured values before calling the evidence collection complete. No child rerun.
+
+Decision inputs: stronger relations reduce normal authored override control for
+(0,1,0)/(0,1,1) rules and turn (0,2,0) conflicts into placement dependencies.
+A named utility layer instead gives all normal unlayered authored declarations
+priority, while introducing declared-layer dependencies and reversed important
+ordering. Neither option is an approved compiler choice; product adoption requires
+separate owner approval and real compiler/consumer evidence.

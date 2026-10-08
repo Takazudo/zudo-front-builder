@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import { colors, createFixture, layerOrders, models, placements } from "./fixture.mjs";
 
@@ -15,14 +16,15 @@ for (const model of models) {
         page.on("console", (message) => {
           if (message.type() === "error") diagnostics.push(message.text());
         });
-        await testInfo.attach("synthetic-fixture.html", {
-          body: fixture.html,
-          contentType: "text/html",
-        });
-        await testInfo.attach("synthetic-styles.css", {
-          body: fixture.css,
-          contentType: "text/css",
-        });
+        // Body-only attachments can be discarded by the list reporter on success.
+        // Keep standalone files as well as reporter attachment references.
+        const retain = async (name, body, contentType) => {
+          const path = testInfo.outputPath(name);
+          await writeFile(path, body);
+          await testInfo.attach(name, { path, contentType });
+        };
+        await retain("synthetic-fixture.html", fixture.html, "text/html");
+        await retain("synthetic-styles.css", fixture.css, "text/css");
         await page.setViewportSize({ width: 800, height: 720 });
         await page.setContent(fixture.html);
         const assertRows = async (phase, rows, active) => {
@@ -93,8 +95,9 @@ for (const model of models) {
           }
           expect(diagnostics).toEqual([]);
         } finally {
-          await testInfo.attach("computed-results.json", {
-            body: JSON.stringify(
+          await retain(
+            "computed-results.json",
+            JSON.stringify(
               {
                 synthetic: true,
                 browser: browser.version(),
@@ -108,12 +111,9 @@ for (const model of models) {
               null,
               2,
             ),
-            contentType: "application/json",
-          });
-          await testInfo.attach("final-state.png", {
-            body: await page.screenshot({ fullPage: true }),
-            contentType: "image/png",
-          });
+            "application/json",
+          );
+          await retain("final-state.png", await page.screenshot({ fullPage: true }), "image/png");
         }
       });
     }
