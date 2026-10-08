@@ -1,0 +1,268 @@
+{
+  "registry": "https://registry.npmjs.org",
+  "versions": {
+    "4.1.0": {
+      "@takazudo/zfb": {
+        "version": "4.1.0",
+        "dist": {
+          "shasum": "9f35b4d82e1aab479d947eeb6ddeb98fdc60950d",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb/-/zfb-4.1.0.tgz",
+          "fileCount": 120,
+          "integrity": "sha512-FyU90814Ons/3qXaoajedTBRvdo/Fu7oSDj94WqenduUuUTgLVSzwWNJmCYKyDusFGEXiUei4RxQY+03ixNCXA==",
+          "signatures": [
+            {
+              "sig": "MEQCIDRNkqftRh/weGCAmfREqYKcZIfP7F5LF/kP9JCz9QdxAiAynX9ptjyZtsk7Tt0gG+3AoflUZhdOFq11dHHQYXsleg==",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEQCICXSaBTbTTITF0tt2YA3ozFRY4wqJuwIysUC5ydsFHSYAiBHK0m76wiDEV3xjpvt/gXWKypjR3krnRbYeHyvj5nqCw==",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb@4.1.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 1013483
+        },
+        "gitHead": null
+      },
+      "@takazudo/zfb-runtime": {
+        "version": "4.1.0",
+        "dist": {
+          "shasum": "48346ade3d76a134d8ae471504b76f61864f0677",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb-runtime/-/zfb-runtime-4.1.0.tgz",
+          "fileCount": 46,
+          "integrity": "sha512-WxgvvA8BO3l+sx5dNd1Jq0LJs73AnYlrZ8YlOb5jlS3NV9xb0z07SSvT61omCb2XdzqP0rCAQv8xE73Rcsqd3w==",
+          "signatures": [
+            {
+              "sig": "MEYCIQDrVH+90I2seDLEwyqXPSirGJ/u6SUBWaoySykpZ2tq1AIhAKa0ZNY4KAji+i5P+yCc0niejbUuTzzjZT6ygAL3UTRZ",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIQCH/iP5ekhk3prOMHGLNzIW9guiF2YGnTHfHpCRItZy5gIgez1gbOkrN/j/JnPzpkejm9iJmbKqo9uBjzbUq8ioUis=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb-runtime@4.1.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 447828
+        },
+        "gitHead": null
+      },
+      "@takazudo/zfb-linux-x64-gnu": {
+        "version": "4.1.0",
+        "dist": {
+          "shasum": "7ce9c8292e887069e3e8da8ce60bee087510c8a7",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb-linux-x64-gnu/-/zfb-linux-x64-gnu-4.1.0.tgz",
+          "fileCount": 4,
+          "integrity": "sha512-84bY3WRCY8x3zrS1DxgrjVcAwPyShP1dWyudDgH2/RbtXdAvoXSr3uB1sM03G9rn8iKoT33VkkGmNG4/uuG1qg==",
+          "signatures": [
+            {
+              "sig": "MEYCIQC2GCMUqZIguMkk3cC83g5ygsVMj5id2WoJ0Cj/JXUt8wIhAOqeLM/aZb0dQWF/Fn4/dIEpEsSToNCMIMob0wNj+RIq",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIQDhTot9qFDQCaPhFkNIYghHF3mnia9JiyTkyI0EdnnX9QIgA+1p51QLWH96fPGPsaT7dMWaVHqwGsL3lkMUU564iLA=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb-linux-x64-gnu@4.1.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 113152747
+        },
+        "gitHead": "09a9f9b38f2aae922ebd32128fcfb9a603ba7318"
+      }
+    },
+    "4.0.0": {
+      "@takazudo/zfb": {
+        "version": "4.0.0",
+        "dist": {
+          "shasum": "83f959d01cd5d931bbbd13735950c70617a7dd16",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb/-/zfb-4.0.0.tgz",
+          "fileCount": 120,
+          "integrity": "sha512-MH8lVyecoq2m3YMzWmCq+dHLHmJLK1RP4SInoKH6/6dECLyMCOurwZwaKG0GKvq3j6eftYqs5R5pt1S4Y56RFA==",
+          "signatures": [
+            {
+              "sig": "MEUCIQDOYtuC3fllNTVirTllGb8JJKRxgceAkTnxBZJ/EIEk+wIgOhcOnUhDruE7UaKynFCHIc0NbFBo1x3NGV7bP7OgWPs=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIQD+AeSJ9vwCwhmZm+5s1ljWYTSR8iF6oI9KjYB2/Z5yFQIgOnBj36W6jyhtD+YbdE71Xdxp7vvKnYdzdwmfQ3g/Mww=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb@4.0.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 1003030
+        },
+        "gitHead": null
+      },
+      "@takazudo/zfb-runtime": {
+        "version": "4.0.0",
+        "dist": {
+          "shasum": "538bb736d5bbebe4c2bb0ea6af0b59f0df33f993",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb-runtime/-/zfb-runtime-4.0.0.tgz",
+          "fileCount": 46,
+          "integrity": "sha512-v0nshDsIKJJv2go1ZiIEEy9Zzv052+bZ7DW7/snac6ayTNccwkE5SbwHtUbogilQBVntXNa+IQuE8ivcOQhb7w==",
+          "signatures": [
+            {
+              "sig": "MEUCIG8b7TjlXOHxPFglzuCC16mvi/gC6gqKQYZmY2ryy6d7AiEA2/EhtvVw5UcsZCFoebjCvbCZekROnPjlJYloSUzpVT0=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIQDsl7toOQ5KJ1GJVJ7jbONnQo9FDEnp4mp9VBRAK8k/ogIgFhB7S4gRv6kBVJJlk43hCHBeXsMC0fwJ8IWycoW2oWI=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb-runtime@4.0.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 447828
+        },
+        "gitHead": null
+      },
+      "@takazudo/zfb-linux-x64-gnu": {
+        "version": "4.0.0",
+        "dist": {
+          "shasum": "d663534f90af888f93b2ede16d0b87248ee99c54",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb-linux-x64-gnu/-/zfb-linux-x64-gnu-4.0.0.tgz",
+          "fileCount": 4,
+          "integrity": "sha512-E0f5yfr2tQMhHo2EfStK7OSZS5aIzi7y4FTXjhHTofAnCcoUopeFSKgP+vS1wmUAOuHuqmdNgudx4uv4ibtC9A==",
+          "signatures": [
+            {
+              "sig": "MEQCIFKlRdqIS5AUeQyzDlV4eX5daN65KTyIHilIfR9ScXY9AiB7HBa/SJIfPcSm74uRtx9YhUZNXrj+Ha0O1gXsHjn0ng==",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIAZQ6U2GlCOWqwaHdYxN4BtjXOUi8uen7+qjDP/hQ3B5AiEAt5XIFAkxws6b+NMyaCpJyBHfV46CuqWAFrCi2jC5Hu8=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb-linux-x64-gnu@4.0.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 112792299
+        },
+        "gitHead": "defda240cd8f51a55a7cde14f761934e3d9ef171"
+      }
+    },
+    "3.2.0": {
+      "@takazudo/zfb": {
+        "version": "3.2.0",
+        "dist": {
+          "shasum": "19a7a19433f7eddf851ae1f8b26d0544cbef3f89",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb/-/zfb-3.2.0.tgz",
+          "fileCount": 120,
+          "integrity": "sha512-+d6RN1QBF4M8VY99vxcqsjxjmqD1i7LINutL1kvgxagg81ab7Qo7qm+BW0LmBD/XgTMx/IkJZu3aV+78L/U2pQ==",
+          "signatures": [
+            {
+              "sig": "MEMCIA5pYdw74m5pCw3qy9Fqdx6UMpZgVOhEiqWUw6tbQs+JAh87HN/0JYgsnmQ+IaHKmn+cr9jIQ4qsZV/ApLNzQ+3x",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEYCIQCHejjVrdFDhYpt5SURrRT5i3gDequmNTFKkP2tVmCcVgIhALZz7y5VF/46EU3qRi5ms4xCqaNWewATO8EGkfQEN0oh",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb@3.2.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 978492
+        },
+        "gitHead": null
+      },
+      "@takazudo/zfb-runtime": {
+        "version": "3.2.0",
+        "dist": {
+          "shasum": "3cd20ef0c543c377562b5575d132b448a5ebb2a5",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb-runtime/-/zfb-runtime-3.2.0.tgz",
+          "fileCount": 46,
+          "integrity": "sha512-0bbDJH3ZXW19mRxHm9LWHrRavyS3lwP0u7WbMiJQf7DKd1x2YSe24DnezJQg3tjafx6Qbgvf0Sw1qSjjYmayQA==",
+          "signatures": [
+            {
+              "sig": "MEUCIFcKKTwvmOaYz5Ma1L/ePkBdJcZCKDaONGpnUsFJlNukAiEA3ZECY1VSNe4syPCWYxuEUN2ZPPpWwFWz6x31zDPer1I=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEYCIQCdwF9/OdpEHXmNsXSxp4F7S6KK3SuWTQ3qnjklkMZN+wIhAL6yRiqUd2BWP3eexUbhlPgH/2wLsEsYq/cQi+7U1qB/",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb-runtime@3.2.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 446281
+        },
+        "gitHead": null
+      },
+      "@takazudo/zfb-linux-x64-gnu": {
+        "version": "3.2.0",
+        "dist": {
+          "shasum": "98951298db3ddd8861a2f2a8b0cce12cfa93d793",
+          "tarball": "https://registry.npmjs.org/@takazudo/zfb-linux-x64-gnu/-/zfb-linux-x64-gnu-3.2.0.tgz",
+          "fileCount": 4,
+          "integrity": "sha512-CUP2A7dW1GXqR+remMJ1wNU5srPaSbAyeyamhLk0j68JjZQPtM/RDQOa+QpalNFfXdapnk5nU/VW/mHDoo5AQA==",
+          "signatures": [
+            {
+              "sig": "MEUCIGkNefd+zuBRI2sxrQm4g/cJ+hjNkGeStxjRf8tWQPmnAiEAnrpTJRg7+I5HJMd4048D5/Yh2SxeZnKTYtGragQyn5Q=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIEjqv5WDbIk7/E1A6AKc1Q2Y+9R/xm9mMWuvhh/zJwYSAiEAnq1Cyh6uduRMyIPdfpN+mjHUBOoCWWjWnTZ+m1ez3YA=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "attestations": {
+            "url": "https://registry.npmjs.org/-/npm/v1/attestations/@takazudo%2fzfb-linux-x64-gnu@3.2.0",
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1"
+            }
+          },
+          "unpackedSize": 112169803
+        },
+        "gitHead": "70699acdf807b85cc19d050ae30f9adf0d904f57"
+      }
+    }
+  },
+  "docs": {
+    "4.1.0": {
+      "tag": "v4.1.0",
+      "commit": "09a9f9b38f2aae922ebd32128fcfb9a603ba7318",
+      "path": "docs/src/content/docs/concepts/mdx-components.mdx",
+      "sha256": "13d3209ebe94f601be1f75034c9a3269b5d615ceb1dc66a26d76baf254f7888a"
+    },
+    "4.0.0": {
+      "tag": "v4.0.0",
+      "commit": "defda240cd8f51a55a7cde14f761934e3d9ef171",
+      "path": "docs/src/content/docs/concepts/mdx-components.mdx",
+      "sha256": "3fbf281270bc5cb138e1447f60c1a868941890d8238a626a38318977fec25079"
+    }
+  }
+}
