@@ -4,6 +4,21 @@ This directory freezes eight small consumer recipes and two measurement paths. `
 
 The recipes are frozen in `fixtures/`: no island; event-only button; scalar signal; Show/For; modelValue binding; a blog menu plus theme toggle; JSON API fetch; and a scalar plus theme-toggle multi-island page. They are controlled current-source recipes, not exact historical #3383 inputs. Do not label their values as reproduced v2/v3 numbers. The multi-island comparison reports the difference from scalar alone, while each page's shipped total deduplicates chunks by filename.
 
+## Darwin measurement on CI
+
+`.github/workflows/island-size-darwin.yml` runs the full native Darwin arm64 real measurement on the pinned `macos-15` runner. It builds `zfb` from the checked-out source, packs both SDK packages, and runs the complete eight-fixture workspace and packed matrices. Each case is measured twice and the guard compares the complete saved `dist` inventories. The workflow retains all files under `target/island-size/` in a 30-day `island-size-darwin-arm64-<source-sha>` artifact, including package tarballs, reports, inventories, checker output, and runner provenance.
+
+The workflow has a temporary path-filtered PR trigger for edits to itself or `research/v3-island-size/**`, because GitHub only offers `workflow_dispatch` after the workflow exists on the default branch. During this epic, the bootstrap job runs only for PRs targeting `base/sweep-261007-2`; the child topic PR into the epic base is skipped. That keeps the epic PR's early measurement and enforced confirmation runs available without spending a Mac runner on the topic PR. The trigger can be removed after the workflow reaches `main` (the bootstrap constraint is tracked in [#3969](https://github.com/Takazudo/zudo-front-builder/issues/3969)). Once it is on `main`, dispatch it with an optional `ref` to select the source SHA and `enforce: false` for a measurement. With no `ref`, dispatch checks out the dispatching ref. The PR trigger always checks out the exact PR head SHA instead of GitHub's synthetic merge ref.
+
+Use the evidence in this order:
+
+1. Measure the display-only bindings source SHA with enforcement off. A mismatch against the stale Darwin contract is expected; the run still writes PASS/FAIL and the checker output tail to the step summary and uploads the complete artifact.
+2. Update `decision.json` from the retained native artifact, recording its measured SHA, totals, and provenance with zero additional allowance. Do not infer Darwin values from the Linux contract.
+3. Commit the contract update at the PR head. For PR runs, the workflow derives `enforce: true` only when `research/v3-island-size/decision.json` changed in `HEAD~1`; other measurement PRs report the checker result without making the budget mismatch fail the run.
+4. Review the enforced remeasurement artifact and summary. A passing strict check on the rebaselined source confirms the exact Darwin contract.
+
+The CI commands use repository-relative paths and run natively on GitHub's macOS runner, so they do not use the local procedure's machine-specific absolute paths or heavy-guard wrapper. CI pins Rust 1.99.0 explicitly because `rust-toolchain.toml` follows stable. Before compiling, it records free disk space, refuses to build below 8 GiB, and disables Rust dev debug info when free space is below 20 GiB; the selected profile and native binary digest are retained in runner provenance. These are execution adaptations; the measured inputs, two real matrix modes, full fixture set, saved passes, and budget checker match the procedure below.
+
 ## Pinned run after the topic merges
 
 Run on the merged source SHA, with one guarded heavyweight command at a time. The pinned esbuild binary comes from the repo's toolchain; the runner verifies version `0.25.12` and records its digest. Use `CARGO_TARGET_DIR` shared with the manager's existing build. `zfb` must be freshly built from the SHA being measured. Install from `pnpm-lock.yaml` with `--frozen-lockfile` if dependencies are absent; avoid changing the lockfile.
