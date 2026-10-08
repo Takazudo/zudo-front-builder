@@ -51,3 +51,11 @@ only describes this observation window and model. A future comparison under
 a proper init belongs to another authorized environment; this probe does not
 replace PID1, install a subreaper, change runtime links or signal unrelated
 processes. Source issue #4019 remains open for manager evidence reconciliation.
+
+Recorded execution: `evidence-7163b2d8.json` contains a compact extract from the
+manager's one guarded run on code commit
+`7163b2d8086f44c2b6783359260d18a0bb707c8c`. The cooperative control reaped all
+three original processes; the abrupt case left two PPID1 zombies and no living
+survivors. See `research/4019-process-reaping-diagnostic.md` for measured times
+and limitations. This container has already received its bounded run; do not
+execute again here to build a larger sample.

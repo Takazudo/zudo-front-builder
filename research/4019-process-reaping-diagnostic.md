@@ -22,8 +22,8 @@ historical acceptance is distinct from container process-reaping acceptance.
 
 The manager reports that current PID1 is `tail`. The installed supervisor
 source path referenced by the test,
-`docs/node_modules/@takazudo/zudo-doc/bin/run-parallel.mjs`, is absent in this
-child worktree. Therefore the new fixture models the test's ancestry and signal
+`docs/node_modules/@takazudo/zudo-doc/bin/run-parallel.mjs`, was absent during
+initial child preparation. Therefore the new fixture models the test's ancestry and signal
 ordering; it is not provenance evidence for the installed package or a replay
 of the full suite.
 
@@ -53,12 +53,44 @@ zero denotes a completed environment observation, never product correctness.
 - Prepared: bounded standalone fixture and usage/interpretation documentation.
 - Child check: Python source compiled in memory with `compile(..., 'exec')`;
   no subprocess diagnostic or supervisor suite execution in the child lane.
-- Manager execution: pending; no environment verdict claimed here.
-- Supporting artifact to retain: `/workspace/scratch/zfb-sweep-261008/process-diagnostic.json`,
-  plus guarded command, exit status and exact tested commit.
+- Manager execution: one guarded run on exact code commit
+  `7163b2d8086f44c2b6783359260d18a0bb707c8c`, 2026-10-08
+  07:38:14.520852–07:38:16.593240 UTC. Guard reports
+  `verdict=PASS exit=0 secs=2 min_mem_mb=16874 reason=-`.
+- Environment: Linux kernel `6.18.44`, Python `3.12.14`, PID1
+  `tail -f /dev/null` (state S), boot ID
+  `cdb3a918-8a89-421b-9ca4-b8d569b8e676`.
+- Cooperative control: original PIDs 9034/9035/9036 all gone (ESRCH), root
+  reaped, no live survivors and no zombies. Five snapshots retained locally.
+- Abrupt case: original root PID 9037 gone (ESRCH) and reaped; no live
+  survivors. Wrapper 9038 and leaf 9039 retained original starttime ticks
+  `313538`, were adopted by PPID1 in state Z and continued answering signal
+  zero. They remained in this state from the first post-adoption observation
+  at 07:38:14.628734 through the final snapshot at 07:38:16.593207 UTC.
+  Forty-three snapshots retained locally. Verdict: `orphan-zombies-observed`.
+- Compact committed evidence:
+  `tests/process-reaping-diagnostic/evidence-7163b2d8.json` retains the
+  environment, signal events, final snapshots, tested code SHA, fixture digest
+  and raw report digest. Intermediate polls are omitted from this extract.
+- Full local evidence: `/workspace/scratch/zfb-sweep-261008/process-diagnostic.json`
+  and `/workspace/scratch/zfb-sweep-261008/process-guard.log`. The entire JSON
+  was parsed and every snapshot checked; original identity records remained
+  consistent throughout. No second probe run was performed.
 - Source tracker #4019 remains open. Existing supervisor tests retain their
   original assertions and require separate evidence when the manager executes
   them. #3991 historical CI acceptance is not relabelled as environment success.
+
+This measured run supports the narrow environment claim: minimal abrupt orphan
+descendants remain as zombies under the current PID1 within the two-second
+observation window. Cooperative parent reaping succeeded in the same environment.
+Neither orphan was a living descendant at the deadline, but both still satisfy
+the existing test's signal-zero presence probe. This distinguishes environmental
+reaping from live-process survival without changing the disappearance invariant.
+It does not prove a zfb defect, run the real supervisor suite, reopen #3991's
+passed CI acceptance or justify a runtime-infrastructure change. The Python
+model and finite window limitations above remain in force. The two PID1 zombies
+cannot be reaped by this observer; the probe must not be repeated in this
+container to accumulate more.
 
 Run instructions, strict bounds and prerequisites are in the fixture README.
 No PID1 replacement, subreaper change, global kill or package installation is
