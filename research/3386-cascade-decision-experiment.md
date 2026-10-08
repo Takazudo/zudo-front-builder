@@ -116,8 +116,8 @@ Use reporter output for pass/fail status; JSON measurements alone are not a pass
 
 Child validation: `node --check` passed for `fixture.mjs`,
 `cascade.chromium.spec.mjs`, and `playwright.config.mjs`; all twelve synthetic
-fixtures were generated and inspected without a browser. The manager's first exact-head run is recorded below; detailed evidence retention
-is pending a manager rerun of the corrected writer. No native compiler
+fixtures were generated and inspected without a browser. The manager's original and retained exact-head runs are recorded below.
+The retained run supplied all twelve measured records and screenshots. No native compiler
 output, real consumer pages, WebKit/Firefox behavior, product adoption, or release
 readiness is certified by these syntax and fixture checks. #3386 remains open for
 owner interpretation of measured evidence and any separately approved product work.
@@ -149,8 +149,7 @@ are not described as recovered observations.
 The harness now writes HTML, CSS, measured JSON and screenshots directly to
 `testInfo.outputPath()` and attaches their paths, with `preserveOutput: "always"`.
 This evidence-writing correction does not change CSS or winner assertions. The
-manager must rerun the corrected exact head to verify retention and reconcile
-measured values before calling the evidence collection complete. No child rerun.
+manager reran the corrected exact head as recorded below; no child browser rerun.
 
 Decision inputs: stronger relations reduce normal authored override control for
 (0,1,0)/(0,1,1) rules and turn (0,2,0) conflicts into placement dependencies.
@@ -158,3 +157,49 @@ A named utility layer instead gives all normal unlayered authored declarations
 priority, while introducing declared-layer dependencies and reversed important
 ordering. Neither option is an approved compiler choice; product adoption requires
 separate owner approval and real compiler/consumer evidence.
+
+## Retained measured results
+
+The manager's justified evidence-retention run on 2026-10-08 tested exact commit
+`60052137cdc9b7fbf41958b9df44dd6324d04dee`: **12 passed in 10.7 seconds,
+zero retries**, heavy guard `verdict=PASS`, exit 0, 11 seconds. It queued behind
+another guarded run before starting. Local log:
+`/workspace/scratch/zfb-sweep-261008/cascade-retained.log`.
+All twelve actual runtime records report Chromium **151.0.7922.173**, executable
+`/usr/bin/chromium`, platform `linux`; Playwright is 1.61.0.
+
+Inspected all twelve `computed-results.json` records, matching retained HTML/CSS,
+and all twelve final screenshots (including a contact sheet visual review).
+The records contain **2,340 measured border-top colors across fifteen phases**;
+every value matches its scenario expectation and every diagnostic array is empty.
+Four negative controls per document plus two repeated peer controls also passed
+browser assertions, though these controls are not included in the JSON phase
+measurements. Screenshots support visual inspection of the final state; the
+computed-style phases supply state-by-state winner evidence.
+
+The compact committed evidence is
+[`results-summary.json`](../tests/cascade-decision-experiment/results-summary.json).
+It includes exact tested SHA, run/browser provenance, hashes of the log and each
+raw measured JSON, and authored/utility winner vectors in an explicit scenario
+order for plain, group-hover, peer-focus, media-boundary and dark-ancestor phases.
+The full raw HTML/CSS/JSON/PNG files remain ignored/local under
+`test-results/cascade-decision-experiment/`; no generated image or large raw
+artifact is committed. An evidence-report-only commit after this run is not a
+claim that its SHA was independently browser-tested.
+
+Measured tradeoffs agree with the table above: with authored CSS after utilities,
+current relation utilities lose to (0,1,0) and (0,1,1) normal authored rules; stronger
+relation utilities win those two cases, but still lose the (0,2,0) tie and ID case.
+With authored CSS before utilities, stronger relations also win the (0,2,0) tie.
+For named-layer normal utilities, every unlayered authored specificity wins under
+either placement. Declaring utilities last makes normal base/components lose;
+putting components after utilities makes normal components win. Both-important
+components reverse that layer result, while both-important unlayered authored
+rules lose to named-layer utilities. Media at 639px was inactive and at 640px
+active; dark matched both the ancestor and subject and deactivated on removal.
+Group/peer inactive and deactivated states returned authored colors.
+
+This completes the synthetic comparison and retention verification. It does not
+approve a compiler redesign, important syntax, consumer migration or CI promotion.
+Real compiler emission, consumer compatibility and other browser engines remain
+outside this experiment; #3386 stays open for an owner decision.
