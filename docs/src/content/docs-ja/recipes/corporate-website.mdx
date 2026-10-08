@@ -7,7 +7,7 @@ category: Recipes
 
 <Info title="このページで扱うこと">
 
-ヒーロー・サービス・会社紹介・問い合わせのセクションを持つコーポレートサイトを、zudo-react で純粋な SSG として構築したサンプルです。CSS Modules のデモでもあり、`zfb.config.ts` で `wind: false` を指定し、各コンポーネントが自分専用の `*.module.css` を隣に持ちます。[スタイリング](/ja/docs/concepts/styling) の実例版として読んでください。
+ヒーロー・サービス・会社紹介・問い合わせのセクションを持つコーポレートサイトを、zudo-react で純粋な SSG として構築したサンプルです。CSS Modules のデモでもあり、`zfb.config.ts` で `wind: false` を指定し、各コンポーネントが自分専用の `*.module.css` を隣に持ちます。[スタイリング](/ja/docs/architecture/styling) の実例版として読んでください。
 
 </Info>
 
@@ -150,7 +150,7 @@ declare module "*.module.css" {
 
 ### 出力は HTML 1 枚とスタイルシート 1 枚
 
-`layouts/default.tsx` は `<html>` から `<head>`、`<title>` までドキュメント全体を、ただのサーバーコンポーネントとしてレンダリングします。[アイランド](/ja/docs/concepts/islands) を使っていないので、`zfb build` が出力するのは `dist/index.html` と `dist/assets/styles-<hash>.css` だけで、JavaScript はまったく出ません。ビルド後のページに `<script>` タグは 1 つもありません。
+`layouts/default.tsx` は `<html>` から `<head>`、`<title>` までドキュメント全体を、ただのサーバーコンポーネントとしてレンダリングします。[アイランド](/ja/docs/architecture/islands) を使っていないので、`zfb build` が出力するのは `dist/index.html` と `dist/assets/styles-<hash>.css` だけで、JavaScript はまったく出ません。ビルド後のページに `<script>` タグは 1 つもありません。
 
 1 ページ構成であることの影響が 1 つだけ見えています。zfb はこのサイトに対して `404.html` を出力しないため、未知のパスは現状そっけない 404 を返します。それでも `not_found_handling = "404-page"` は設定してあります。404 ページが用意された瞬間から実際のページを返すようになりますし、もう一方の選択肢である `"single-page-application"` は未知のパスすべてに `index.html` を HTTP 200 で返してしまうため、いずれにせよこちらが正しい設定です。
 
@@ -169,7 +169,7 @@ pnpm typecheck  # zfb check
 
 ## 関連ドキュメント
 
-- [スタイリング](/ja/docs/concepts/styling) — zudo-wind、手書きのグローバル CSS、このデモが使っている CSS Modules のルール（`:export` や `composes` の非対応、ベア指定子の制限を含む）のリファレンスです。
-- [静的アセット](/ja/docs/concepts/static-assets) — 出力される `dist/assets/` がどう作られ、どう配信されるか。
-- [アイランド](/ja/docs/concepts/islands) — このサイトが意図的に使っていない機能です。
+- [スタイリング](/ja/docs/architecture/styling) — zudo-wind、手書きのグローバル CSS、このデモが使っている CSS Modules のルール（`:export` や `composes` の非対応、ベア指定子の制限を含む）のリファレンスです。
+- [静的アセット](/ja/docs/architecture/static-assets) — 出力される `dist/assets/` がどう作られ、どう配信されるか。
+- [アイランド](/ja/docs/architecture/islands) — このサイトが意図的に使っていない機能です。
 - [サンプル集](/ja/docs/guides/examples) — 他の zfb サンプルサイト。

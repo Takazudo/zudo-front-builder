@@ -22,7 +22,7 @@ endpoint still answers, with no Cloudflare account at all.
 
 - **A zudo-react island as the entire UI.** `pages/index.tsx` is static HTML that wraps one
   `"use client"` component in the `<Island>` wrapper. The island uses signals and `<Show>` for
-  its live form state — see [Islands](../concepts/islands.mdx).
+  its live form state — see [Islands](../architecture/islands.mdx).
 - **A `prerender = false` API route.** `pages/api/summarize.tsx` runs on the emitted
   Worker, reads a `POST` body, and returns JSON.
 - **Reading a Cloudflare binding.** The route gets `request`, `env`, and `ctx` from
@@ -154,7 +154,7 @@ export default async function SummarizeApi(): Promise<Response> {
 pages from an SSG runtime that has none. The `try` turns "wrong runtime" from an exception
 into a `503` whose body names the two commands that do work. For the mechanism underneath —
 the two-layer worker output and the `AsyncLocalStorage` that carries the context — see
-[SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) and
+[SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx) and
 [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
 
 ### Why POST still reaches the Worker
@@ -270,8 +270,8 @@ pnpm exec wrangler deploy --env ai
 
 ## Related docs
 
-- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — the mental model for what `dist/_worker.js` actually is
+- [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx) — the mental model for what `dist/_worker.js` actually is
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — hands-on adapter and `wrangler.toml` setup
-- [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx) — the `"use client"` component model and hydration timing
-- [Styling](../concepts/styling.mdx) — zudo-wind configuration and authored CSS
+- [Islands](../architecture/islands.mdx) and [`<Island>`](../api/island.mdx) — the `"use client"` component model and hydration timing
+- [Styling](../architecture/styling.mdx) — zudo-wind configuration and authored CSS
 - [Examples](../guides/examples.mdx) — the rest of the example sites

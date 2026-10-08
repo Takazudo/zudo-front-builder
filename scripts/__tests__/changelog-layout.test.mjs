@@ -319,7 +319,9 @@ describe("integrated changelog contract", () => {
   });
 
   it("keeps exactly two 301 compatibility redirects per migrated release", () => {
-    const redirects = parseRedirects(readFileSync(REDIRECTS_PATH, "utf8"));
+    const redirects = parseRedirects(readFileSync(REDIRECTS_PATH, "utf8")).filter((redirect) =>
+      redirect.source.startsWith("/docs/changelog/"),
+    );
     const migrated = releaseEntries("zfb").filter((entry) => isHistorical(entry.version));
     const migratedVersions = new Set(migrated.map((entry) => entry.version));
     expect(redirects).toHaveLength(migrated.length * 2);

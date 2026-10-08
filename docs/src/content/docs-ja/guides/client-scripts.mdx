@@ -130,9 +130,9 @@ SSR レンダリング時に `<script src="…">` タグを生成するという
 
 ## `import.meta.glob` はサポートされていません
 
-クライアントスクリプトは Vite の `import.meta.glob(...)` マクロをサポートしていません。[islands がサポートする](../concepts/islands.mdx#import-meta-glob-のサポート) eager な文字列リテラル形式ですらサポートされません。`?raw`、module worker、プラグインの前処理を使うクライアントスクリプトのグラフは一時的なミラーからバンドルされる場合がありますが、その段階が展開するのはそれらの機能だけで、`import.meta.glob` は展開しません。そのため `import.meta.glob(...)` 呼び出しは（`.client.*` ファイル自身の中にあっても、それがインポートする任意のモジュールの中にあっても）展開されないままブラウザへ配信されます。これは **ビルド時には検出されません**。`zfb build` は成功し、スクリプトが実行されるときにブラウザが例外を投げます。`import.meta.glob` は Vite の外では `undefined` だからです。
+クライアントスクリプトは Vite の `import.meta.glob(...)` マクロをサポートしていません。[islands がサポートする](../architecture/islands.mdx#import-meta-glob-のサポート) eager な文字列リテラル形式ですらサポートされません。`?raw`、module worker、プラグインの前処理を使うクライアントスクリプトのグラフは一時的なミラーからバンドルされる場合がありますが、その段階が展開するのはそれらの機能だけで、`import.meta.glob` は展開しません。そのため `import.meta.glob(...)` 呼び出しは（`.client.*` ファイル自身の中にあっても、それがインポートする任意のモジュールの中にあっても）展開されないままブラウザへ配信されます。これは **ビルド時には検出されません**。`zfb build` は成功し、スクリプトが実行されるときにブラウザが例外を投げます。`import.meta.glob` は Vite の外では `undefined` だからです。
 
-クライアントスクリプト内で glob のようなファイル一覧が必要な場合は、`import.meta.glob` に手を伸ばすのではなく、自分で計算してください（プラグインの仮想モジュール、あるいは実際の `.ts` ファイルを書き出す小さなプリビルドスクリプト）。完全なサポートマトリクスと代替手段については [Islands: `import.meta.glob` のサポート](../concepts/islands.mdx#import-meta-glob-のサポート) を参照してください。
+クライアントスクリプト内で glob のようなファイル一覧が必要な場合は、`import.meta.glob` に手を伸ばすのではなく、自分で計算してください（プラグインの仮想モジュール、あるいは実際の `.ts` ファイルを書き出す小さなプリビルドスクリプト）。完全なサポートマトリクスと代替手段については [Islands: `import.meta.glob` のサポート](../architecture/islands.mdx#import-meta-glob-のサポート) を参照してください。
 
 ## `.html` ソースページの制限
 

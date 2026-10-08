@@ -1,12 +1,12 @@
 ---
 title: ビルドエンジン
 description: zfb のクレートがどう組み合わさるか、なぜリビルドがページ単位なのか、そして `dist/` への書き込みを安全にしている仕組み。
-sidebar_position: 1
+sidebar_position: 30
 ---
 
-このページは zfb のビルドエンジンの *構造* についての解説です。ファイルを保存したときに何が起こるかの手順を追いたい場合は [Build pipeline](../concepts/build-pipeline.mdx) を読んでください。このページではなぜこの構造になっているのかを説明します。
+このページは zfb のビルドエンジンの *構造* についての解説です。ファイルを保存したときに何が起こるかの手順を追いたい場合は [Build pipeline](../architecture/build-pipeline.mdx) を読んでください。このページではなぜこの構造になっているのかを説明します。
 
-関連: [Architecture overview](../concepts/architecture-overview.mdx) · [Islands](../concepts/islands.mdx) · [Incremental rebuild](../concepts/incremental-rebuild.mdx)
+関連: [Architecture overview](../architecture/architecture-overview.mdx) · [Islands](../architecture/islands.mdx) · [Incremental rebuild](../architecture/incremental-rebuild.mdx)
 
 ## クレートの分割
 
@@ -52,7 +52,7 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 - **SWC** はモジュールがレンダーホストに到達する前に `zfb-render` の内部で、または esbuild がソースを見る前に `zfb-build/bundler.rs` の内部で実行されます。いずれにせよオーケストレーターからは見えません。
 - **lol_html** は、本物の要素またはコメント認識が必要な HTML 変更ユーティリティで実行されます。`zfb-islands/src/html_tree.rs`、`zfb-build/src/link_base_rewrite.rs`、`zfb-server` の dev HTML 注入パスです。`zfb-build/src/head_inject.rs` は意図的に使いません。このヘルパーは `</head>` だけを探し、安定した CSS / island アセットタグを閉じタグの前に splice します。
 
-この構造により、各ツールのトレイト境界より上のクレートは、ツールが変わっても影響を受けません。`ClientBundler` のコントラクトについては [Islands](../concepts/islands.mdx) を、依存グラフがどのようにページ単位のポリシーへ供給されるかについては [Incremental rebuild](../concepts/incremental-rebuild.mdx) を参照してください。
+この構造により、各ツールのトレイト境界より上のクレートは、ツールが変わっても影響を受けません。`ClientBundler` のコントラクトについては [Islands](../architecture/islands.mdx) を、依存グラフがどのようにページ単位のポリシーへ供給されるかについては [Incremental rebuild](../architecture/incremental-rebuild.mdx) を参照してください。
 
 ## シャドウステージング: バンドラーが esbuild に一貫したツリーを渡す仕組み
 
@@ -120,7 +120,7 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 
 dev サーバー（`zfb-server`）は、オーケストレーターの出力の上に乗る薄い読み手です。`PageCache`（URL パスからレンダリング済み HTML へのマップで、レンダリングごとに更新される）、`ReloadEvent` 値の `tokio::sync::broadcast` チャンネル、そしてキャッシュ・`dist/assets/`・`public/`・`/__zfb/reload` の SSE エンドポイントを配信する `axum` ルーターを所有します。
 
-配線箇所は `zfb-server` の `livereload.rs` にある `outcome_to_events` です。noop でないすべての `BuildOutcome` は `ReloadEvent` の 3 つのバリアントのうち 1 つ以上に変換され、ブロードキャストされます。CSS のみの変更は `Css` イベントを発し、ブラウザはクライアントの状態を失うことなくスタイルシートをインプレースで差し替えます。共有アイランドバンドルが変わった場合は `Islands` イベントを発し、ブラウザは新しいバンドルを動的インポートしてハイドレーションをやり直します。それ以外はすべて `Page` イベントを発し、`location.reload()` をトリガーします。イベント種別の完全な内訳と、どの編集シナリオがどのイベントを発火させるかについては [Dev mode lifecycle](../concepts/dev-mode-lifecycle.mdx#3-つの-sse-イベント種別) を参照してください。
+配線箇所は `zfb-server` の `livereload.rs` にある `outcome_to_events` です。noop でないすべての `BuildOutcome` は `ReloadEvent` の 3 つのバリアントのうち 1 つ以上に変換され、ブロードキャストされます。CSS のみの変更は `Css` イベントを発し、ブラウザはクライアントの状態を失うことなくスタイルシートをインプレースで差し替えます。共有アイランドバンドルが変わった場合は `Islands` イベントを発し、ブラウザは新しいバンドルを動的インポートしてハイドレーションをやり直します。それ以外はすべて `Page` イベントを発し、`location.reload()` をトリガーします。イベント種別の完全な内訳と、どの編集シナリオがどのイベントを発火させるかについては [Dev mode lifecycle](../architecture/dev-mode-lifecycle.mdx#3-つの-sse-イベント種別) を参照してください。
 
 ### `prerender = false` ルート向けのリクエスト時 SSR
 

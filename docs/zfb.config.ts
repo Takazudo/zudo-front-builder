@@ -33,7 +33,7 @@ export default defineConfig(
 
 For developers building content sites or adding content to a desktop app, zfb provides routing, rendering, and content collections as small, composable parts. The engine ships as a single Rust binary.
 
-Read the [introduction](/docs/getting-started/introduction/) or explore the [three ways to run zfb](/docs/concepts/three-ways-to-run-zfb/).`,
+Read the [introduction](/docs/getting-started/introduction/) or explore the [three ways to run zfb](/docs/architecture/three-ways-to-run-zfb/).`,
       sitemapHeading: "",
     },
 
@@ -48,7 +48,7 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
 
 コンテンツサイトを作る人や、デスクトップアプリにコンテンツを組み込みたい人のために、ルーティング、レンダリング、コンテンツコレクションを、小さく組み合わせやすい部品として提供します。エンジンは単一の Rust バイナリとして配布されます。
 
-[はじめに](/ja/docs/getting-started/introduction/)と、[zfb を動かす 3 つの方法](/ja/docs/concepts/three-ways-to-run-zfb/)をご覧ください。`,
+[はじめに](/ja/docs/getting-started/introduction/)と、[zfb を動かす 3 つの方法](/ja/docs/architecture/three-ways-to-run-zfb/)をご覧ください。`,
       },
     },
     cjkFriendly: true,
@@ -89,15 +89,30 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
       ],
       copyright: `Copyright © ${new Date().getFullYear()} <a href="https://x.com/Takazudo">Takazudo</a>. Built with <a href="https://takazudomodular.com/pj/zudo-doc">zudo-doc</a>.`,
     },
+    siteTreeNavSecondary: ["playground", "changelog", "claude"],
     headerNav: [
       { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
-      { label: "Install", path: "/docs/install", categoryMatch: "install" },
-      { label: "Concepts", path: "/docs/concepts", categoryMatch: "concepts" },
-      { label: "zudo-wind", path: "/docs/zudo-wind", categoryMatch: "zudo-wind" },
-      { label: "zudo-react", path: "/docs/zudo-react", categoryMatch: "zudo-react" },
+      { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
       { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
-      { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
+      {
+        label: "Markdown Features",
+        path: "/docs/markdown-features",
+        categoryMatch: "markdown-features",
+      },
+      {
+        label: "zudo-wind",
+        path: "/docs/zudo-wind",
+        categoryMatch: "zudo-wind",
+        children: [
+          { label: "Index", path: "/docs/zudo-wind" },
+          { label: "Learn", path: "/docs/zudo-wind/learn" },
+          { label: "Utility reference", path: "/docs/zudo-wind/utilities" },
+          { label: "Tailwind compatibility", path: "/docs/zudo-wind/compatibility" },
+        ],
+      },
+      { label: "zudo-react", path: "/docs/zudo-react", categoryMatch: "zudo-react" },
       { label: "Reference", path: "/docs/api", categoryMatch: "api" },
+      { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
       {
         label: "Playground",
         path: "/docs/playground",
@@ -110,13 +125,6 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
           { label: "parseToAst", path: "/docs/playground/parse" },
           { label: "highlightCode", path: "/docs/playground/highlight" },
         ],
-      },
-      { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
-      { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },
-      {
-        label: "Markdown Features",
-        path: "/docs/markdown-features",
-        categoryMatch: "markdown-features",
       },
       {
         label: "Changelog",
@@ -133,6 +141,7 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
           { label: "zfb-md-wasm", path: "/docs/changelog/zfb-md-wasm" },
         ],
       },
+      { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },
     ],
     headerRightItems: [
       { type: "component", component: "github-link" },

@@ -40,7 +40,7 @@ zfb new <name> [--template <template>]
 v0 は 2 つのテンプレートを同梱しており、どちらもコンパイル時に `crates/zfb/templates/` からバイナリに焼き込まれています。
 
 - `basic-blog`（デフォルト）— `package.json` を備えたフル機能のブログスキャフォールド。pnpm が `PATH` にある場合、`zfb new` は自動的に `pnpm install` を実行します。
-- `node-free` — `package.json` を同梱せず、スキャフォールド後の `pnpm install` ステップも完全にスキップします。`PATH` に Node / pnpm がない環境で実行するプロジェクト向けです。`.md`/`.html` によるページ作成については [Markdown と HTML ページ](../concepts/md-html-pages.mdx) を、Node なしで `zfb` バイナリ自体をインストールする方法については [Node なしでインストール](../install/node-free.mdx) を参照してください。
+- `node-free` — `package.json` を同梱せず、スキャフォールド後の `pnpm install` ステップも完全にスキップします。`PATH` に Node / pnpm がない環境で実行するプロジェクト向けです。`.md`/`.html` によるページ作成については [Markdown と HTML ページ](../architecture/md-html-pages.mdx) を、Node なしで `zfb` バイナリ自体をインストールする方法については [Node なしでインストール](../getting-started/installation.mdx) を参照してください。
 
 ### 例
 
@@ -403,7 +403,7 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
             [--scratch-dir <path>]
 ```
 
-静的モード（アダプタなし、または `adapter: "none"`）では、`zfb preview` は `zfb dev` と同じ2つのリクエスト時レイヤーを、通常の静的ファイル配信より前段で実行します: プラグインの `previewMiddleware` 登録、続いて `public/_redirects`（[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照）。同じ URL に対してプラグインが `_redirects` のルールより常に優先されます。
+静的モード（アダプタなし、または `adapter: "none"`）では、`zfb preview` は `zfb dev` と同じ2つのリクエスト時レイヤーを、通常の静的ファイル配信より前段で実行します: プラグインの `previewMiddleware` 登録、続いて `public/_redirects`（[Static Assets — `_redirects`](../architecture/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照）。同じ URL に対してプラグインが `_redirects` のルールより常に優先されます。
 
 `_redirects` のマッチャーに到達するのは `GET`/`HEAD` リクエストのみです — これは実際の Workers Static Assets がアセット層（したがって `_redirects`）をこの2つのメソッドに対してしかプローブしない挙動を反映しています。それ以外のメソッドはプラグインハンドラ（すべてのメソッドを受け付けます）に到達するか、405 になります。`GET /old-page` に対して発火するはずのルールが `POST /old-page` では決して発火しません。
 
@@ -561,7 +561,7 @@ zfb はスクラッチディレクトリを削除せず、古いものを自動�
 | `dev-pages/`、`dev-assets/` | `zfb dev`。 |
 | `graph.bin` | `zfb dev`（永続化された依存グラフ。デフォルトレイアウトでは `.zfb/graph.bin` に置かれます）。 |
 | `watcher-liveness-probe/` | `zfb dev`。 |
-| `plugins/` | `ctx.scratchDir` を通じてプラグインが書き込みます。zfb 自身は作成しません。[プラグイン](../concepts/plugins.mdx#中間ファイル用のスクラッチ領域) を参照してください。 |
+| `plugins/` | `ctx.scratchDir` を通じてプラグインが書き込みます。zfb 自身は作成しません。[プラグイン](../architecture/plugins.mdx#中間ファイル用のスクラッチ領域) を参照してください。 |
 
 `zfb check` と `zfb preview` は、スクラッチディレクトリに zfb 自身のファイルを何も書き込みません。検証してロックするだけです。ただし `zfb preview` で動くプラグインも `ctx.scratchDir` を受け取るため、そこに書き込むことはあります。
 
@@ -589,7 +589,7 @@ scratch dir in use (<scratch>): ignoring prebuilt <outDir> — no dist/ fallback
 - **もともとプロセスごとに分かれている一時ファイル。** プロジェクトルートに置かれる esbuild のエントリ、tsconfig、仮想モジュールの一時ファイル、shadow セッション、設定ローダーの一時ディレクトリは、プロセスごとに一意の名前が付くため衝突しません。
 - **ユーザーの tsconfig が出力する `.tsbuildinfo`。** tsconfig で `incremental` や `composite` を有効にしている場合、`zfb check` は設定を変えずに `tsc` を実行するため、tsc は tsconfig の指定どおりの場所にこのファイルを書き込みます。
 - **`.zfb/` ステージングディレクトリ。** プロジェクトのコードがここからインポートするため、移動できません。
-- **プラグインが独自に持つディレクトリ。** プロジェクトルートにある自前のディレクトリ（たとえば `.zudo-doc/`）に書き込むプラグインは、同時に実行するコマンドの間でそれを共有したままです。プラグインまで分離するには、プラグイン側が `ctx.scratchDir` を使うように対応する必要があります。[プラグイン](../concepts/plugins.mdx#中間ファイル用のスクラッチ領域) を参照してください。
+- **プラグインが独自に持つディレクトリ。** プロジェクトルートにある自前のディレクトリ（たとえば `.zudo-doc/`）に書き込むプラグインは、同時に実行するコマンドの間でそれを共有したままです。プラグインまで分離するには、プラグイン側が `ctx.scratchDir` を使うように対応する必要があります。[プラグイン](../architecture/plugins.mdx#中間ファイル用のスクラッチ領域) を参照してください。
 
 ## 呼び出し単位の define
 
@@ -646,7 +646,7 @@ dev サーバーで直近の `zfb build` と異なる `--define` を使うとき
 | `ZFB_DEV_TIMING` | 未設定 | `1` または `true` を設定すると、ファイル変更 tick ごとの dev モードのフェーズタイミングを出力します。 |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120`（秒） | 単一のプラグインフックの応答を待つ最大時間（秒）。これを超えるとプラグインホストが強制終了され、ビルドが失敗します。優先順位: 設定の `pluginHookTimeoutSecs` > この環境変数 > 組み込みのデフォルト 120 秒。 |
 | `ZFB_ESBUILD_BIN` | 未設定 | esbuild バイナリへの絶対パス。埋め込み / staged 済みの esbuild バイナリが利用できない、または上書きしたい場合に、バンドラ、islands コンパイラ、テスト、TypeScript 設定ロード（`zfb.config.ts`）で使用されます。 |
-| `ZFB_DEBUG_SNAPSHOT` | 未設定 | `1` または `true` を設定すると、`zfb build` 実行時にコンテンツスナップショットのエントリ数とシリアライズ後のバイト数を stderr に出力します。大規模サイトでの V8 メモリ負荷の監視に使えます。[インクリメンタルリビルド](../concepts/incremental-rebuild.mdx) を参照してください。 |
+| `ZFB_DEBUG_SNAPSHOT` | 未設定 | `1` または `true` を設定すると、`zfb build` 実行時にコンテンツスナップショットのエントリ数とシリアライズ後のバイト数を stderr に出力します。大規模サイトでの V8 メモリ負荷の監視に使えます。[インクリメンタルリビルド](../architecture/incremental-rebuild.mdx) を参照してください。 |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler 最小バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
 | `ZFB_SCRATCH_DIR` | 未設定 | `--scratch-dir` を渡さなかったときに `zfb dev`、`zfb build`、`zfb check`、`zfb preview` が使うスクラッチディレクトリ。空文字列や空白だけの値は未設定として扱われます。[スクラッチディレクトリ](#スクラッチディレクトリ) を参照してください。 |
 

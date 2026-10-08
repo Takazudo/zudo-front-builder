@@ -22,7 +22,7 @@ Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカ�
 
 - **UI 全体が 1 つの zudo-react アイランド。** `pages/index.tsx` は静的な HTML で、
   `"use client"` なコンポーネントを `<Island>` ラッパーで包みます。アイランドはシグナルと
-  `<Show>` でフォームの状態を描画します。[アイランド](/ja/docs/concepts/islands) を参照してください。
+  `<Show>` でフォームの状態を描画します。[アイランド](/ja/docs/architecture/islands) を参照してください。
 - **`prerender = false` の API ルート。** `pages/api/summarize.tsx` は生成されたワーカー上で動き、
   `POST` のボディを読んで JSON を返します。
 - **Cloudflare バインディングの読み取り。** ルートはハンドラーの引数ではなく
@@ -151,7 +151,7 @@ export default async function SummarizeApi(): Promise<Response> {
 レンダリングします。この `try` によって「ランタイムが違う」は例外ではなく、動くコマンド名を本文に含む
 `503` になります。その下で何が起きているのか — 2 層構造のワーカー出力と、コンテキストを運ぶ
 `AsyncLocalStorage` — は
-[ワーカー上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) と
+[ワーカー上の SSR（アダプターモード）](/ja/docs/architecture/ssr-on-a-worker) と
 [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) を参照してください。
 
 ### POST がワーカーに届く理由
@@ -263,8 +263,8 @@ pnpm exec wrangler deploy --env ai
 
 ## 関連ドキュメント
 
-- [ワーカー上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js` が実際に何であるかのメンタルモデル
+- [ワーカー上の SSR（アダプターモード）](/ja/docs/architecture/ssr-on-a-worker) — `dist/_worker.js` が実際に何であるかのメンタルモデル
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — アダプターと `wrangler.toml` の実践的なセットアップ
-- [アイランド](/ja/docs/concepts/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルとハイドレーションのタイミング
-- [スタイリング](/ja/docs/concepts/styling) — zudo-wind の設定と手書き CSS
+- [アイランド](/ja/docs/architecture/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルとハイドレーションのタイミング
+- [スタイリング](/ja/docs/architecture/styling) — zudo-wind の設定と手書き CSS
 - [サンプル集](/ja/docs/guides/examples) — 他のサンプルサイト

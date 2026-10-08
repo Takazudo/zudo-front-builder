@@ -1,0 +1,135 @@
+---
+title: Engine vs Framework
+description: zfb is the engine — frameworks like zudo-doc sit on top of its primitives.
+sidebar_position: 6
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+How zfb's surface area is split between **engine primitives** (the six
+things zfb commits to) and **framework concerns** (sidebars, search,
+blog conventions, theming) that live outside the engine.
+
+</Info>
+
+zfb is a static site **engine**. It scans `pages/`, walks content
+collections, runs an MDX pipeline, evaluates TSX, reads page-module
+exports such as `paths()`, `getStaticProps()`, `prerender`,
+`contentType`, and `headings`, and writes files to disk. That's the
+engine.
+
+A **framework** — like zudo-doc, or a blog kit, or
+whatever someone publishes downstream — is what turns a pile of engine
+primitives into a finished site experience. Sidebar generation, search,
+versioning UI, theme controls, blog routing, i18n routing: all
+framework concerns.
+
+This page exists because the line between the two is load-bearing.
+Knowing which side a feature lives on tells you where to look for it,
+where to extend it, and what your project's responsibility is when zfb
+itself doesn't ship the answer.
+
+## The six engine primitives
+
+zfb v1 commits to exactly six primitives. Frameworks build on top of
+them; nothing else in zfb is part of the public surface contract.
+
+1. **[Frontmatter](./frontmatter.mdx)** — unified contract across
+   `.md`, `.mdx`, and `.tsx` sources. One JSON shape downstream.
+2. **[Content collections](./content-collections.mdx)** — typed
+   directories of markdown content, walked at build time.
+3. **Build-time content query bridge** — a deterministic Rust→JS
+   snapshot that powers synchronous `getCollection` / `getEntry` calls
+   from your pages. The contract is stable and documented in
+   [Content Collections](./content-collections.mdx).
+4. **[Dynamic routes](./dynamic-routes.mdx)** — `paths()` enumerates
+   the concrete URLs to build for `[slug].tsx` / `[...slug].tsx` pages.
+5. **[Custom directives](./custom-directives.mdx)** — register
+   container, leaf, and text MDX directives that map to your JSX
+   components without writing any Rust.
+6. **[Non-HTML pages](./non-html-pages.mdx)** —
+   `pages/sitemap.xml.tsx`, `pages/llms.txt.tsx`, `pages/feed.rss.tsx`,
+   etc. First-class outputs with their own extension and
+   `Content-Type`.
+
+That's the engine. Stable, named, documented.
+
+## What zfb does NOT do
+
+These are framework concerns. zfb gives you the substrate; you (or a
+framework you depend on) wire it up.
+
+- Sidebar / navigation tree generation.
+- Search index building (Pagefind, Lunr, etc.).
+- Blog conventions (tag pages, archives, RSS feed wiring, pagination).
+- i18n routing — `/ja/...` mirroring `/...`, locale negotiation.
+- Theme controls (light / dark / dim, design tokens, color palette UI).
+- Versioning UI — multi-version docs, version dropdown.
+- Layout components — header, footer, table of contents, card grids.
+- Site-level chrome — skip links, focus management, scroll-to-top.
+
+The principle: if the answer to *"would two frameworks built on zfb do
+this differently?"* is yes, it belongs in a framework, not in zfb.
+
+## A small example: a page module passes head data as props
+
+Head tags and layout composition are framework concerns. zfb does not
+ship an `export const meta` page-module contract. Instead, use the
+engine's data-loading exports to pass whatever a framework/layout needs,
+then render `<head>` in ordinary component code.
+
+```tsx
+// pages/about.tsx
+export function getStaticProps() {
+  return {
+    props: {
+      title: "About",
+      description: "Who we are.",
+    },
+  };
+}
+
+export default function AboutPage({ title, description }) {
+  return (
+    <html lang="en">
+      <head>
+        <title>{title}</title>
+        <meta name="description" content={description} />
+      </head>
+      <body>
+        <h2>{title}</h2>
+      </body>
+    </html>
+  );
+}
+```
+
+Notice what the engine does and doesn't do here. The engine parses
+`getStaticProps()`, calls the page component with those props, and
+renders the result. Whether to render `og:image`, what fallback to use,
+how to format the title, and where layout components live are
+framework-level decisions.
+
+## Opt-in Markdown extras
+
+Not every Markdown capability is a primitive. The `zfb-md-extras` crate
+ships a catalog of opt-in features — Mermaid diagrams, GitHub-style
+alerts, reading-time injection, transclusion, and more. These are
+**framework-flavored**: a blog framework might enable reading time and
+ruby annotation, while a technical-reference framework might want link
+validation and code-block enrichment instead. Neither set is universal.
+
+By keeping them opt-in (enabled per-project in `zfb.config.ts`) rather
+than Core, zfb avoids baking one framework's opinion into the engine.
+The six engine primitives remain the full public contract; the extras
+catalog is additive and independently togglable.
+
+See [Markdown Features](../markdown-features/index.mdx) for the full list.
+
+## Where to look next
+
+- For each engine primitive, the linked concept page above.
+- For the Markdown extras catalog, [Markdown Features](../markdown-features/index.mdx).
+- For the page-module surface specifically, [Page module exports](../api/meta-export.mdx)
+  documents the named exports zfb reads today.

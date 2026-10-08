@@ -1,0 +1,140 @@
+---
+title: スタイリング
+description: zfb のグローバル CSS、zudo-wind ユーティリティ、コンポーネント単位のスタイル。
+sidebar_position: 19
+category: Concepts
+---
+
+zfb のプロジェクトでは、自分で記述するグローバル CSS、zudo-wind が生成するユーティリティ、セレクタをコンポーネント内に閉じたいときの CSS Modules を組み合わせてスタイリングできます。
+
+ユーティリティを使う場合は、[ユーティリティリファレンス](../zudo-wind/utilities/index.mdx)で用途から探せます。[概要](../zudo-wind/overview.mdx)では候補が解決される仕組みを、[設定](../zudo-wind/configuration.mdx)ではプロジェクト側で指定するトークンとリセットを説明しています。
+
+## グローバル CSS
+
+デフォルトテンプレートには `styles/global.css` が付属しています。これはプレーンな CSS で、zfb の CSS パイプラインによって処理され、すべてのページから利用できます。プロジェクトのプロパティ、リセット、ベースとなるタイポグラフィなど、サイト全体に適用すべきものに使ってください。
+
+zfb はグローバルスタイルシートを `styles/global.css` または `src/styles/global.css` のどちらかから解決します。両方が存在する場合はトップレベルの `styles/global.css` が優先されます。`src/styles/` へのフォールバックは、ソースを `src/` 配下にまとめるプロジェクト向けです。
+
+```css
+:root {
+  --color-text: #1a1a1a;
+  --color-bg: #ffffff;
+  --font-body: system-ui, sans-serif;
+}
+
+body {
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: var(--font-body);
+}
+```
+
+CSS 内の import も使えます。スタイルを複数のファイルに分割し、`global.css` からまとめて読み込めます。
+
+`@import "@scope/pkg/theme.css"` のようなパッケージ CSS import は、import 元から最も近い `node_modules` にあるパッケージの `package.json` の `exports` を通じて解決されます。条件付き export では、そのパッケージの `exports` 内に記述された順序で `style` と `default` を確認します。`exports` が公開していないサブパスや `null` に割り当てたサブパスは、物理ファイルが存在してもそのパスからアクセスできません。これは Node のパッケージカプセル化規則に沿った動作です。`exports` を持たないパッケージでは、サブパスを物理パスから解決します。`@import "pkg"` のようにサブパスを指定しない場合は、パッケージの `style` フィールド、`exports["."]`、CSS を指す `main` の順に確認します。
+
+## zudo-wind
+
+zudo-wind は zfb に組み込まれたユーティリティ CSS 言語です。設定には `wind` キーを使います。省略すると `{}` と同じ扱いになり、生成は有効、リセットは `none`、トークンとブレークポイントは暗黙には用意されません。プロジェクトで使う値だけを設定してください。詳しくは [zudo-wind の概要](../zudo-wind/overview.mdx)、[設定](../zudo-wind/configuration.mdx)、[ソース](../zudo-wind/sources-and-candidates.mdx)、[ユーティリティ](../zudo-wind/utilities/index.mdx) を参照してください。
+
+### zfb に組み込まれたエンジン
+
+コンパイラは zfb バイナリの一部です。別の CSS エンジンのプロセスを起動せず、バイナリパスによる上書きもプロジェクトへのインストールも必要ありません。生成されたユーティリティと並行して、手書きの CSS と CSS Modules も利用できます。
+
+### ソースの検出
+
+build と dev は、設定されたソースプランに含まれる `.tsx`、`.ts`、`.jsx`、`.js`、`.mdx`、`.md` ファイルから、完全なクラス候補文字列を読み取ります。ソースプランには、慣例的なプロジェクトルート、宣言されたパッケージルート、ミラールート、明示的なソースを含められます。アプリケーションを実行してクラスを見つけるわけではありません。抽出と拡張については [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
+
+単独の `zfb css --source` コマンドでは、明示的な `.html` と `.mjs` ソースも指定できます。build と dev はこれらの拡張子を自動検出しません。フラグと手書き CSS の扱いは [CLI リファレンス](../api/cli.mdx#zfb-css) を参照してください。
+
+### 手書きの CSS のみを使う
+
+`wind: false` を設定すると、wind の生成、トークン検証、マニフェストの読み込み、クラス候補の走査が無効になります。
+
+```json
+{
+  "wind": false
+}
+```
+
+グローバル CSS、CSS Modules、シンタックスハイライトは引き続き動作します。スタイルシートに残った wind ディレクティブの検査も続きます。`none` 以外のリセットはユーティリティ候補がなくても CSS を出力できます。一方、空の有効設定は、解決されたルールやトークンがなければ wind スタイルシートを出力しません。出力順は [カスケードとリセット](../zudo-wind/cascade-and-reset.mdx) を参照してください。
+
+## コンポーネントスコープなスタイリング
+
+コンパクトなコンポーネントのスタイルには zudo-wind のユーティリティを使い、セレクタ名をコンポーネント内に閉じたい場合は CSS Modules を使います。
+
+### zudo-wind のユーティリティクラス
+
+ソースファイルには完全なクラス候補を記述します。設定されたトークンとブレークポイントによって、どの候補が CSS に解決されるかが決まります。たとえば、静的なレイアウト用ユーティリティを JSX に直接書けます。
+
+```tsx
+export default function Toolbar() {
+  return (
+    <nav class="flex items-center justify-between">
+      <a href="/">Home</a>
+      <a href="/about">About</a>
+    </nav>
+  );
+}
+```
+
+サポートされるクラスは [ユーティリティリファレンス](../zudo-wind/utilities/index.mdx)、プロジェクトで定義する値は [トークン](../zudo-wind/tokens.mdx) を参照してください。
+
+### CSS Modules
+
+コンポーネント間で衝突してはならないクラス名には CSS Modules を使えます。`*.module.css` という名前のファイルでは、クラス名がビルド時にファイルごとに安定したスコープ付き識別子へ書き換えられます。複数のコンポーネントが同じ `.button` クラスを定義しても衝突しません。
+
+スタイルは `.module.css` ファイルに記述します。
+
+```css title="components/card.module.css"
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.title {
+  font-weight: 700;
+}
+```
+
+モジュールを **デフォルトインポート** し、インポートしたオブジェクトからクラス名を読み取ります。
+
+```tsx title="components/Card.tsx"
+import styles from "./card.module.css";
+
+export default function Card() {
+  return (
+    <div class={styles.card}>
+      <h3 class={styles.title}>Hello</h3>
+    </div>
+  );
+}
+```
+
+ビルド時に zfb は `styles.card` をスコープ付きクラス名（例: `KdPA9G_card`）に解決します。HTML にはそのクラスが入り、対応する CSS は他の CSS と同じハッシュ付きの `dist/assets/styles-<hash>.css` に含まれます。モジュールごとの別ファイルやランタイムコストは発生しません。
+
+仕組み:
+
+- `import styles from "./x.module.css"` には **デフォルトインポート** が必要です。`styles` は元のクラス名をスコープ付きクラス名へ対応させるプレーンなオブジェクトです。
+- `styles.card` または `styles["card"]` でクラスを参照できます。動的なキーによるアクセスは、書き換えがビルド時に行われるため動作しません。
+- JavaScript / TypeScript モジュールからのプレーンな `.css` import は出力されません。esbuild が解決すると zfb は警告します。デフォルトは `false` で、`strictPlainCssImports: true` にするとビルドエラーになります。`zfb build --strict-plain-css-imports` / `--no-strict-plain-css-imports` でそのビルドのみ設定を上書きできます。両フラグを同時に渡すとエラーになります。このゲートが影響するのは `zfb build` だけで、`zfb dev` は警告のみです。グローバル CSS は `styles/global.css` とその `@import` に置き、コンポーネント用にはデフォルトインポートした `.module.css` を使ってください。ほかのビルドフラグは [CLI リファレンス](../api/cli.mdx)を参照してください。
+- `.module.css` ファイルは、`pages/`、`components/`、`layouts/`、`content/` 配下の `.tsx`/`.ts`/`.jsx`/`.js` ファイルからインポートされたときに発見されます。
+
+制限:
+
+- `node_modules` から **ベア specifier** でインポートされる CSS Modules（例: `import s from "@org/pkg/x.module.css"`）はスコープ化されません。対象はプロジェクト相対の `./` / `../` インポートだけです。
+- `:export` ブロックと `composes` ディレクティブはサポートされません。プレーンなクラスセレクタを使ってください。
+
+## モノレポとワークスペースの sibling パッケージ
+
+pnpm workspace 形式のモノレポでは、相対 import ではなく tsconfig のパスエイリアス経由でのみ到達する sibling パッケージも CSS パイプラインに拾われます。
+
+- sibling 自身の `*.module.css` ファイルは、プロジェクト内のファイルと同じ CSS Modules 走査に加わり、スコープ付きクラス名が同じように解決されます。
+- sibling のソースファイルも zudo-wind のソースプランに含まれるため、そのパッケージだけで使うクラス候補も生成できます。
+
+エイリアス先は「ミラールート」になります。CSS パイプラインは、対象となるワークスペースの sibling ディレクトリをプロジェクトのソースルートと同じように扱います。ソースプランについては [ソースと候補](../zudo-wind/sources-and-candidates.mdx) を参照してください。
+
+## `dist/` に出力されるもの
+
+ビルドパイプラインは手書きの CSS、生成された wind の出力、CSS Modules の出力をまとめて、`dist/assets/` 配下のハッシュ付きスタイルシートに書き出します。そのうえで、レンダリングした各 HTML ページに `<link rel="stylesheet">` を注入します。スタイルシートの参照は安定しており、内容が変わるまで CDN キャッシュに保持できます。

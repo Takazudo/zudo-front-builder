@@ -98,7 +98,7 @@ export default function DocsLayout({ children }) {
   （Astro の `<ClientRouter />` が提供するのと同じ、ビュートランジションアニメーション付きの
   SPA ルーターです）。
 - **アイランド / クライアントディレクティブ** — `"use client"` と明示的な `<Island>` に
-  置き換えられています。[アイランド](../concepts/islands.mdx)を参照してください。
+  置き換えられています。[アイランド](../architecture/islands.mdx)を参照してください。
 
 現時点で対応物がない機能もあります。インテグレーションのマーケットプレイス、Astro DB、サーバーエンドポイントなどです。サイトがこれらに依存している場合は、移植に踏み切る前に、zfb のプラグインシステムやアダプターがユースケースをカバーできるか評価してください。
 
@@ -142,7 +142,7 @@ export default definePlugin({
 });
 ```
 
-`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は specifier によって合成 ESM モジュールを公開します。`injectRoute` は dev 専用ではありません。`zfb build` 中は package-owned route が build overlay に materialize され、通常の route pipeline で prerender されます。`zfb dev` 中は dev renderer が配信する合成ルートになります。dev だけに存在させたいルートのときだけ、`command === "dev"` でガードしてください。`addClientEntry` は client bundle 向けの package-owned `*.client.{ts,tsx,js,jsx}` side-effect entry を登録します。完全な契約については [プラグイン](../concepts/plugins.mdx) を参照してください。
+`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は specifier によって合成 ESM モジュールを公開します。`injectRoute` は dev 専用ではありません。`zfb build` 中は package-owned route が build overlay に materialize され、通常の route pipeline で prerender されます。`zfb dev` 中は dev renderer が配信する合成ルートになります。dev だけに存在させたいルートのときだけ、`command === "dev"` でガードしてください。`addClientEntry` は client bundle 向けの package-owned `*.client.{ts,tsx,js,jsx}` side-effect entry を登録します。完全な契約については [プラグイン](../architecture/plugins.mdx) を参照してください。
 
 **`postBuild` でのルートマニフェスト（`ctx.routes`）**
 
@@ -155,7 +155,7 @@ postBuild({ outDir, routes }) {
 },
 ```
 
-`ZfbRouteManifest` の完全な形状と、サイトマップの実例については [プラグイン](../concepts/plugins.mdx) のページを参照してください。
+`ZfbRouteManifest` の完全な形状と、サイトマップの実例については [プラグイン](../architecture/plugins.mdx) のページを参照してください。
 
 **Markdown: 目次（Table of Contents）、外部リンク、CJK フレンドリーな強調**
 

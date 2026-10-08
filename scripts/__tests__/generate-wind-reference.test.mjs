@@ -5,6 +5,7 @@ import {
   escapeTableCell,
   renderReferencePages,
   validateCatalogFamilies,
+  validateUtilityGroups,
 } from "../../docs/scripts/generate-wind-reference.mjs";
 import {
   assertCurrentWindSource,
@@ -12,6 +13,11 @@ import {
   validateCompatibilityInventory,
 } from "../../docs/scripts/wind-compatibility-pages.mjs";
 import { WIND_REFERENCE_FAMILIES } from "../../docs/scripts/wind-reference-families.mjs";
+
+import {
+  WIND_UTILITY_GROUPS,
+  COMPATIBILITY_BUCKETS,
+} from "../../docs/src/config/navigation-groups.mjs";
 
 const realJson = (path) =>
   JSON.parse(readFileSync(new URL(`../../${path}`, import.meta.url), "utf8"));
@@ -179,14 +185,9 @@ describe("generate-wind-reference", () => {
       "",
       "Browse generated entries.",
       "",
-      "| Family | Entries |",
-      "| --- | --- |",
-      "| [Display](display.mdx) | `1` |",
-      "| [Margin](margin.mdx) | `1` |",
+      `<CategoryNav categories={${JSON.stringify(WIND_UTILITY_GROUPS.map((group) => group.slug))}} />`,
       "",
       "Catalog spec version: `1`.",
-      "",
-      '<CategoryNav category="zudo-wind/utilities" />',
       "",
     ].join("\n");
     expect(pages.get("index.mdx")).toBe(expectedIndex);
@@ -350,7 +351,9 @@ describe("reader-first wind pages", () => {
         expect(new Set(newIds).size).toBe(newIds.length);
         expect(editorial.has(family.id)).toBe(true);
         for (const entry of family.entries) expect(after.get(name)).toContain(`\`${entry}\``);
-        expect(after.get("index.mdx")).toContain(`](${name})`);
+        expect(WIND_UTILITY_GROUPS.flatMap((group) => group.members)).toContain(
+          `zudo-wind/utilities/${family.id}`,
+        );
       }
     }
   });
@@ -604,12 +607,25 @@ describe("source-pinned compatibility pages", () => {
       "ja",
       WIND_REFERENCE_FAMILIES,
     );
+    expect([...en.keys()]).toEqual(["index.mdx"]);
     expect([...en.keys()]).toEqual([...ja.keys()]);
+    for (const pages of [en, ja]) {
+      const page = pages.get("index.mdx");
+      expect(page).toContain("hide_toc: true");
+      expect([...page.matchAll(/<h2 id="compat-([a-z]+)">/g)].map((match) => match[1])).toEqual(
+        COMPATIBILITY_BUCKETS,
+      );
+      const rows = page.split("\n").filter((line) => line.startsWith("| `"));
+      expect(rows).toHaveLength(1288);
+      for (const row of rows) expect(row.split(/(?<!\\)\|/)).toHaveLength(10);
+      expect(page.match(/accepted\.json/g)).toHaveLength(1);
+      expect(page.match(/coming-from-tailwind\.mdx/g)).toHaveLength(1);
+    }
     expect(en.get("index.mdx")).toContain("`1288`");
     expect(ja.get("index.mdx")).toContain("`219`");
-    expect(en.get("l.mdx")).toContain("`line-clamp-<value>`");
-    expect(en.get("m.mdx")).toContain("`mx-auto`");
-    expect(ja.get("m.mdx")).toContain("`mx-auto`");
+    expect(en.get("index.mdx")).toContain("`line-clamp-<value>`");
+    expect(en.get("index.mdx")).toContain("`mx-auto`");
+    expect(ja.get("index.mdx")).toContain("`mx-auto`");
     expect(en.get("index.mdx")).toContain("`line-clamp-2`");
     expect(en.get("index.mdx")).toContain("`contents`");
   });
@@ -654,6 +670,16 @@ describe("source-pinned compatibility pages", () => {
         realProfile,
       ),
     ).toThrow("Unreviewed compatibility inventory content");
+    const unsupported = structuredClone(inventory);
+    unsupported.rows[0].evidence.browserEnvironment = "Chromium";
+    expect(() => validateCompatibilityInventory(unsupported, compatCatalog, realProfile)).toThrow(
+      "Unsupported verification claim",
+    );
+    const unknownMapping = structuredClone(inventory);
+    unknownMapping.rows[0].windMapping = { catalogId: "v1.missing" };
+    expect(() =>
+      validateCompatibilityInventory(unknownMapping, compatCatalog, realProfile),
+    ).toThrow("Unknown mapping");
     const bounded = inventory.rows.find((row) => row.windMapping?.catalogIds);
     const broken = {
       ...bounded,
@@ -666,5 +692,47 @@ describe("source-pinned compatibility pages", () => {
         realProfile,
       ),
     ).toThrow("bounded mapping");
+  });
+});
+
+describe("utility navigation membership", () => {
+  it("covers all 48 families exactly once without route collisions", () => {
+    expect(() => validateUtilityGroups(WIND_UTILITY_GROUPS, WIND_REFERENCE_FAMILIES)).not.toThrow();
+    for (const mutate of [
+      (groups) => {
+        groups[0].id = "display";
+        groups[0].slug = "zudo-wind/utilities/display";
+      },
+      (groups) => {
+        groups[0].members.push(groups[1].members[0]);
+      },
+      (groups) => {
+        groups[0].members.pop();
+      },
+      (groups) => {
+        groups[0].members[0] = "zudo-wind/utilities/unknown";
+      },
+      (groups) => {
+        groups[0].slug = "wrong";
+      },
+    ]) {
+      const groups = structuredClone(WIND_UTILITY_GROUPS);
+      mutate(groups);
+      expect(() => validateUtilityGroups(groups, WIND_REFERENCE_FAMILIES)).toThrow();
+    }
+  });
+  it("preserves authored group landings when comparing generated outputs", () => {
+    for (const locale of ["docs", "docs-ja"]) {
+      const existing = new Map(
+        WIND_UTILITY_GROUPS.map(({ id }) => [
+          `${id}.mdx`,
+          readFileSync(
+            join(root, `docs/src/content/${locale}/zudo-wind/utilities/${id}.mdx`),
+            "utf8",
+          ),
+        ]),
+      );
+      expect(compareGeneratedPages(new Map(), existing)).toEqual({ changed: [], stale: [] });
+    }
   });
 });

@@ -1,0 +1,152 @@
+---
+title: Content Collections
+description: zfb.config で型付きのコンテンツコレクションを定義し、ページから読み込む。
+sidebar_position: 13
+category: Concepts
+---
+
+**コンテンツコレクション**とは、プロジェクト設定で宣言した `.md`、`.mdx`、または `.tsx` エントリのディレクトリです。zfb はビルド時にそのディレクトリをスキャンし、各エントリの frontmatter をあなたが指定したスキーマに照らしてパースし、ページから呼び出せる `getCollection()` と `getEntry()` ヘルパーを通じてエントリを公開します。
+
+## コレクションを宣言する
+
+コレクションは `zfb.config.ts`（または `zfb.config.json`）の `collections` キーの下で設定します。各エントリは `name` と `path` を持ちます。
+
+```ts
+export default {
+  collections: [
+    {
+      name: "blog",
+      path: "content/blog",
+    },
+  ],
+};
+```
+
+`name` は `getCollection()` または `getEntry()` に渡す識別子です。`path` はエントリを格納するディレクトリ（プロジェクトルートからの相対パス）です。zfb はそのディレクトリを走査し、`.md`、`.mdx`、`.tsx` ファイルを受け付け、得られたエントリを `getCollection("blog")` を通じて公開します。
+
+Markdown と MDX のエントリは YAML frontmatter をパースし、本文を MDX パイプラインでコンパイルします。TSX エントリはリテラルの `export const frontmatter = { ... }` を使い、TSX ソースをエントリモジュールとして保持します。別個の Markdown 本文がないため、`body` フィールドは空です。
+
+加えて、任意の `schema` フィールドを指定できます。これは JSON Schema のサブセットで、`zfb check` を実行したときに各エントリのフロントマターを検証します（ビルド自体はこれを強制しません）。サポートされるキーワード（`type`、`properties`、`items`、`required`、`enum`）は [`defineConfig`](../api/define-config.mdx) のページに記載されています。フィールドごとの検証を必要としないプロジェクト向けに、`[{ name, path }]` の形式も引き続きサポートされます。
+
+## フィルタリングと slug の書き換え
+
+さらに 2 つのフィールドで、どのファイルをエントリとみなすかを絞り込んだり、
+ロケール違いの間で slug を正規化したりできます。
+
+### `include` / `exclude`
+
+どちらも `globset` 方言（Unix スタイル: `*`、`**`、`?`、`[...]`）のグロブの
+配列を取り、各候補ファイルのパスに対して**コレクションの `path` からの
+相対パス**（プロジェクトルートからではありません）でマッチングされます。
+設定した場合の動作は次のとおりです。
+
+- `include` が先に評価されます — いずれかのパターンにマッチしたエントリ
+  だけが残ります。省略する（または空のままにする）とこのステージ自体を
+  スキップし、すべてのファイルが通過します。
+- `exclude` はその後、`include` を通過済みのエントリに対して評価されます
+  — マッチしたエントリは除外されます。
+
+```ts
+export default {
+  collections: [
+    {
+      name: "blog",
+      path: "content/blog",
+      include: ["**/*.mdx"],
+      exclude: ["**/*.draft.mdx"],
+    },
+  ],
+};
+```
+
+これは Astro の `['**/*.mdx', '!**/*.draft.mdx']` という慣習を踏襲した
+ものです — zfb はパターンの前に `!` を付ける代わりに、否定側を
+`exclude` という独立したフィールドに分けています。
+
+### `idStripSuffix`
+
+エントリから導出された slug がこの固定の文字列で終わっている場合、
+その接尾辞をエントリの `slug` **と** `module_specifier` の両方から
+取り除きます。接尾辞で終わっていないエントリはそのまま変更されません。
+主なユースケースは、1 つのディレクトリにデフォルトロケールのファイルと
+ロケール接尾辞付きのオーバーライド（`foo.mdx` と `foo.en.mdx`）の両方が
+置かれているマルチロケール構成です。同じ `path` に対して
+`idStripSuffix: ".en"` を指定した 2 つ目のコレクションを宣言すると、
+そのコレクションの slug は `foo.en` ではなく `foo` として往復します。
+接尾辞の除去は slug だけでなく specifier にも一貫して適用されるため、
+実体のファイルが `foo.en.mdx` であっても `getEntry("blog-en", "foo")`
+は正しく解決されます。
+
+## ページからエントリを読み込む
+
+ページは `getCollection()` を使ってすべてのエントリを列挙します。
+
+```tsx
+import { getCollection } from "zfb/content";
+
+export default function BlogIndex() {
+  const posts = getCollection("blog");
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.slug}>
+          <a href={`/blog/${post.slug}`}>{post.data.title}</a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+すでに slug が分かっている場合は `getEntry(name, slug)` を使います。
+
+```tsx
+import { getEntry } from "zfb/content";
+
+export default function FeaturedPost() {
+  const featured = getEntry("blog", "hello-zfb");
+  if (!featured) return null;
+  return <featured.Content />;
+}
+```
+
+`getCollection()` と `getEntry()` は**同期的**です。コンテンツのスナップショット全体は、いずれかの TSX モジュールが走る前に Rust 側で構築され、`globalThis.__zfb` に埋め込まれます。そのため呼び出し時に I/O は発生せず、引き回すべき `await` もありません。このサーフェスを支える Rust↔JS ブリッジの契約は安定しており、`zfb` パッケージとともにバージョン管理されています。
+
+各エントリには、信頼して利用できる 3 つの要素があります。
+
+- `data` — パース済みで検証済みのフロントマター（スキーマに照らして型付けされています）。
+- `Content` — 本文からコンパイルされたレンダリング可能な zudo-react コンポーネント。`<post.Content components={...} />` のようにレンダリングし、`components` prop を通じて要素レベルのオーバーライドを渡します。これは Astro の `@astrojs/mdx` が公開しているものと同じ契約です。詳細と `defaultComponents` のレシピについては [MDX Components](./mdx-components.mdx) を参照してください。
+- `slug` — ファイル名から導出されます（`my-first-post.md` → `my-first-post`）。ネストしたディレクトリはスラッシュ区切りの slug になります。
+
+この関数のシグネチャは [`getCollection`](../api/get-collection.mdx) に記載されています。
+
+## プロジェクトルート外のコレクション
+
+デフォルトでは、コレクションの `path` はプロジェクトルート内に解決される必要があります。ルートを抜け出す `..` セグメントは設定ロード時に拒否されます。コレクションに `allowOutsideRoot: true` を設定すると、ルートの外へ抜け出す `path` をオプトインできます。これはモノレポで、コンテンツを docs プロジェクトへ複製するのではなく、隣接パッケージと同じ場所に置きたい場合に便利です。
+
+```ts
+export default {
+  collections: [
+    {
+      name: "componentDocs",
+      path: "../packages/ui/src",
+      include: ["**/*.mdx"],
+      allowOutsideRoot: true,
+    },
+  ],
+};
+```
+
+これはプロジェクトルートから隣接する `packages/ui/src` ディレクトリへ上へ辿り、その配下にあるすべての `.mdx` ファイルを収集します。コンポーネントのドキュメントを docs プロジェクトへコピーするのではなく、それが説明するコンポーネントのソースの隣に置いたままにできます。
+
+このフラグを有効にする前に、以下を押さえておいてください。
+
+- **緩和されるのは `..` 相対の脱出だけです。** `allowOutsideRoot` は `..` による脱出チェックだけを緩めます。絶対パスの `path`（例: `/etc/passwd` や Windows のドライブ相対形式 `C:temp`）は、このフラグを設定していても引き続き拒否されます。絶対パスのコレクションをオプトインする方法はありません。
+- **このフラグを設定したプリセットは、読み取り範囲を広げます。** プリセットはバリデーションの前にあなたの設定へマージされるため、プリセットが提供する `collections` エントリも、あなた自身が書いたエントリと同じ `validate` ステップを通ります。インストールしたプリセットが `allowOutsideRoot: true` を持つコレクションを宣言している場合、そのプリセットが `..` 相対パスで到達できる範囲のファイルシステムをどこでも読み取ることを信頼していることになります。プリセットが提供するコレクションは、プリセットが提供するプラグインと同じように確認してください。
+- **ルート外のディレクトリも監視されます。** `zfb dev` はルート外のコレクションのルートを正規の絶対パスへ解決し、`extraWatchPaths` と同じ絶対監視チャンネルを通じて監視します（[プロジェクトルート外のパスを監視する](../api/define-config.mdx#プロジェクトルート外のパスを監視する)を参照）。ルート外のディレクトリでの編集は、ルート内のコレクションと全く同じようにライブリロードをトリガーします。
+
+## パースの仕組み
+
+内部では `zfb-content` クレートが 3 つの仕事をこなします。設定されたディレクトリを走査し、各ファイルの frontmatter をパースし、エントリを JSX ソースへコンパイルして既存の SWC TSX -> JS パイプラインへ渡します。Markdown / MDX エントリは MDX エミッターを使い、`mdx://<collection>/<slug>#<hash>` specifier を持ちます。TSX エントリはソースモジュールを直接使い（別途のコンパイルステップはありません）、`tsx://<collection>/<slug>#<hash>` specifier を持ちます。どちらの場合も末尾のハッシュはコンパイル済み JSX ソースから導出されます。ページレンダラーはそのモジュールを必要に応じて評価し、ページに対して `entry.Content` として公開します。
+
+コンパイルとサーフェスの契約は安定しています。レンダリング側については [MDX Components](./mdx-components.mdx) を参照してください。

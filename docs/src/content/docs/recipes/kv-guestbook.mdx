@@ -218,7 +218,7 @@ Worker.
 
 ### The admin gate is the part worth copying
 
-`DELETE /api/entries/<key>` is a [dynamic route](../concepts/dynamic-routes.mdx) with
+`DELETE /api/entries/<key>` is a [dynamic route](../architecture/dynamic-routes.mdx) with
 `prerender = false`, so `params.key` comes from the URL at request time. It checks
 authentication *before* it touches KV: a missing `ADMIN_TOKEN` is a `503` ("not
 configured"), a missing or wrong bearer token is a `401`. The comparison hashes both
@@ -274,7 +274,7 @@ an entry, because a post-deploy check must not mutate production data.
 
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — the hands-on
   guide to `prerender = false`, the adapter, `wrangler.toml`, and KV bindings.
-- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — the mental model
+- [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx) — the mental model
   behind `dist/_worker.js`, asset dispatch, and `getCloudflareContext()`.
-- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `[key]` bracket syntax.
+- [Dynamic Routes](../architecture/dynamic-routes.mdx) — the `[key]` bracket syntax.
 - [Examples](../guides/examples.mdx) — the index of every standalone example repository.

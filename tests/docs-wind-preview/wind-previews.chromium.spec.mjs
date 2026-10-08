@@ -1127,19 +1127,31 @@ for (const [locale, labels] of Object.entries(LOCALES)) {
     await expect(page.locator("main")).toContainText("line-clamp-2");
     await expect(page.locator("main")).toContainText("contents");
     await expect(page.locator("main")).toContainText("1288");
-    const missing = page.getByRole("link", { name: "L", exact: true });
-    await missing.focus();
-    await expect(missing).toBeFocused();
-    await page.keyboard.press("Enter");
-    await expect(page).toHaveURL(/\/compatibility\/l\/$/);
+    await expect(page.locator("main table")).toHaveCount(23);
+    await expect(page.locator("main tbody tr")).toHaveCount(1288);
+    await expect(page.locator("[data-zd-toc],.zd-desktop-toc-toggle")).toHaveCount(0);
+    await page.goto(
+      `${PREVIEW_ORIGIN}${publicPath(`${labels.segment}docs/zudo-wind/compatibility/`)}#compat-l`,
+    );
+    await expect(page.locator("#compat-l")).toBeInViewport();
     await expect(page.locator("main")).toContainText("line-clamp");
     await expect(page.locator("main")).toContainText("unmapped-upstream-registration");
     await page.goto(
-      `${PREVIEW_ORIGIN}${publicPath(`${labels.segment}docs/zudo-wind/compatibility/m/`)}`,
+      `${PREVIEW_ORIGIN}${publicPath(`${labels.segment}docs/zudo-wind/compatibility/`)}#compat-m`,
     );
+    await expect(page.locator("#compat-m")).toBeInViewport();
     await expect(page.locator("main")).toContainText("mx-auto");
     await expect(page.locator("main")).toContainText("source-inspected");
     const width = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(width).toBeLessThanOrEqual(391);
+    const migration = page
+      .locator(
+        `main a[href="${publicPath(`${labels.segment}docs/zudo-wind/coming-from-tailwind`)}"]`,
+      )
+      .first();
+    await migration.focus();
+    await expect(migration).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/coming-from-tailwind\/?$/);
   });
 }

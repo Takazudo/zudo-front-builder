@@ -21,15 +21,15 @@ smallest realistic shape of a content-driven zfb site.
 
 ## What it demonstrates
 
-- A [content collection](../concepts/content-collections.mdx) named `blog`, mixing `.md` and `.mdx`
+- A [content collection](../architecture/content-collections.mdx) named `blog`, mixing `.md` and `.mdx`
   posts in one directory.
-- Three [dynamic-route](../concepts/dynamic-routes.mdx) shapes from three route files — per-post
+- Three [dynamic-route](../architecture/dynamic-routes.mdx) shapes from three route files — per-post
   (`pages/blog/[slug].tsx`), paginated index (`pages/blog/page/[page].tsx`), and per-tag
   (`pages/tags/[tag].tsx`) — each built by its own `paths()` export.
 - [`paginate()`](../api/paginate.mdx) turning a sorted array into the `paths()` return value directly.
 - A custom MDX component (`<Note>`) reaching the page through the `components` prop on
-  `entry.Content` — see [MDX components](../concepts/mdx-components.mdx).
-- One zudo-react [island](../concepts/islands.mdx) (`ThemeToggle`) whose first render is SSR-safe, paired with
+  `entry.Content` — see [MDX components](../architecture/mdx-components.mdx).
+- One zudo-react [island](../architecture/islands.mdx) (`ThemeToggle`) whose first render is SSR-safe, paired with
   an inline pre-hydration script so the page never paints in the wrong theme.
 - A theme authored entirely in `styles/global.css`, with light and dark CSS custom properties
   selected by `data-theme` rather than `prefers-color-scheme`.
@@ -186,9 +186,9 @@ collection in addition to running `tsc`.
 
 ## See also
 
-- [Content collections](../concepts/content-collections.mdx) — the `blog` collection this site is built on.
-- [Dynamic routes](../concepts/dynamic-routes.mdx) and [Routing](../concepts/routing.mdx) — the `paths()` contract behind all three route shapes.
+- [Content collections](../architecture/content-collections.mdx) — the `blog` collection this site is built on.
+- [Dynamic routes](../architecture/dynamic-routes.mdx) and [Routing](../architecture/routing.mdx) — the `paths()` contract behind all three route shapes.
 - [`paginate()`](../api/paginate.mdx) — the pagination helper used verbatim above.
-- [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx) — the hydration boundary and its scheduling strategies.
+- [Islands](../architecture/islands.mdx) and [`<Island>`](../api/island.mdx) — the hydration boundary and its scheduling strategies.
 - [Coming from Tailwind](../zudo-wind/coming-from-tailwind.mdx) — the measured preflight comparison and authored CSS guidance.
-- [Static assets](../concepts/static-assets.mdx) — what ends up in `dist/` next to the HTML.
+- [Static assets](../architecture/static-assets.mdx) — what ends up in `dist/` next to the HTML.
