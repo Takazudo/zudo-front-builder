@@ -70,7 +70,7 @@ def main():
         text = path.read_text()
         old = 'serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.44" }'
         assert text.count(old) == 1
-        path.write_text(text.replace(old, old.replace('0.0.44', '0.0.55')))
+        path.write_text(text.replace(old, old.replace('0.0.44', FROZEN['candidate'])))
     elif args.action == 'lock':
         before = tomllib.loads((evidence / 'Cargo.lock').read_text())['package']
         after = tomllib.loads((ROOT / 'Cargo.lock').read_text())['package']
@@ -79,7 +79,7 @@ def main():
         for name in PAIR:
             old = next(p for p in before if p['name'] == name)
             new = next(p for p in after if p['name'] == name)
-            assert new['version'] == '0.0.55'
+            assert new['version'] == FROZEN['candidate']
             assert new['checksum'] == FROZEN['crates'][name]['checksum']
             assert {k: v for k, v in old.items() if k not in ['version', 'checksum']} == {k: v for k, v in new.items() if k not in ['version', 'checksum']}
         print('PASS: frozen checksums before build; exact two-entry delta; packages=', len(after))
@@ -97,19 +97,22 @@ def main():
         assert free >= 30 * 1024**3, 'Phase 2 blocked: under unchanged 30 GiB disk gate'
     elif args.action == 'registry':
         result = {'checkedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'crates': {}}
+        candidate = FROZEN['candidate']
+        candidate_parts = tuple(map(int, candidate.split('.')))
         for name in PAIR:
             records = json.loads(fetch('https://crates.io/api/v1/crates/' + name))['versions']
-            record = next(v for v in records if v['num'] == '0.0.55')
+            record = next(v for v in records if v['num'] == candidate)
             assert not record['yanked']
             assert record['checksum'] == FROZEN['crates'][name]['checksum']
-            archive = fetch(f'https://static.crates.io/crates/{name}/{name}-0.0.55.crate')
+            archive = fetch(f'https://static.crates.io/crates/{name}/{name}-{candidate}.crate')
             assert hashlib.sha256(archive).hexdigest() == record['checksum']
+            assert len(archive) == FROZEN['crates'][name]['archiveBytes']
             with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
-                manifest = tomllib.loads(tar.extractfile(f'{name}-0.0.55/Cargo.toml').read().decode())
+                manifest = tomllib.loads(tar.extractfile(f'{name}-{candidate}/Cargo.toml').read().decode())
                 if name == PAIR[1]:
-                    assert manifest['dependencies'] == {'noyalib': {'version': '=0.0.55', 'features': ['std', 'compat-serde-yaml'], 'default-features': False}}
-            newer = [v['num'] for v in records if not v['yanked'] and '-' not in v['num'] and tuple(map(int, v['num'].split('.'))) > (0, 0, 55)]
-            result['crates'][name] = {'record': record, 'newerNonYanked': newer, 'archiveSha256': hashlib.sha256(archive).hexdigest(), 'skipped': [{k: v[k] for k in ['num', 'created_at', 'yanked']} for v in records if '-' not in v['num'] and (0, 0, 44) < tuple(map(int, v['num'].split('.'))) < (0, 0, 55)]}
+                    assert manifest['dependencies'] == {'noyalib': {'version': '=' + candidate, 'features': ['std', 'compat-serde-yaml'], 'default-features': False}}
+            newer = [v['num'] for v in records if not v['yanked'] and '-' not in v['num'] and tuple(map(int, v['num'].split('.'))) > candidate_parts]
+            result['crates'][name] = {'record': record, 'newerNonYanked': newer, 'archiveSha256': hashlib.sha256(archive).hexdigest(), 'skipped': [{k: v[k] for k in ['num', 'created_at', 'yanked']} for v in records if '-' not in v['num'] and (0, 0, 44) < tuple(map(int, v['num'].split('.'))) < candidate_parts]}
             adopted = next(v for v in records if v['num'] == '0.0.44')
             assert not adopted['yanked'], 'adopted baseline yanked: reconcile trigger'
         complete = sorted(set(result['crates'][PAIR[0]]['newerNonYanked']) & set(result['crates'][PAIR[1]]['newerNonYanked']))
