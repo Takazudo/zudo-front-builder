@@ -1,0 +1,303 @@
+{
+  "synthetic": true,
+  "testedSha": "60052137cdc9b7fbf41958b9df44dd6324d04dee",
+  "runDate": "2026-10-08",
+  "playwright": "1.61.0",
+  "testsPassed": 12,
+  "retries": 0,
+  "testSeconds": 10.7,
+  "heavyGuard": {
+    "verdict": "PASS",
+    "exit": 0,
+    "seconds": 11
+  },
+  "measuredColorAssertions": 2340,
+  "negativeControls": "4 per document plus two repeated peer relationship assertions passed; not in raw measurement phases",
+  "log": "/workspace/scratch/zfb-sweep-261008/cascade-retained.log",
+  "logSha256": "448f2ae62a9c31bc5d1aef96b59c5b58a695cab0b71e178b130868569d769479",
+  "documents": [
+    {
+      "model": "current",
+      "placement": "authored-after-utility",
+      "layerOrder": "utility-last",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-current-a-0e635-y-utility-last-verification/computed-results.json",
+      "rawSha256": "697a298d524d56d44332aeafa10736aaf816463181e3459ab6bd3965e55f6bc3",
+      "activeWinnerVectors": {
+        "plain": "AAAAUUAAAUAAA",
+        "group hover": "AAAAUUAAAUAAA",
+        "peer focus": "AAAAUUAAAUAAA",
+        "media boundary": "AAAAUUAAAUAAA",
+        "dark ancestor": "AAAAUUAAAUAAA"
+      }
+    },
+    {
+      "model": "current",
+      "placement": "authored-before-utility",
+      "layerOrder": "utility-last",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-current-a-10b19-y-utility-last-verification/computed-results.json",
+      "rawSha256": "aab57f5530302eddb32e38092aaebc8a0fe561c16b31bca25456b1279d972eb8",
+      "activeWinnerVectors": {
+        "plain": "UAAAUUAAAUUAA",
+        "group hover": "UAAAUUAAAUUAA",
+        "peer focus": "UAAAUUAAAUUAA",
+        "media boundary": "UAAAUUAAAUUAA",
+        "dark ancestor": "UAAAUUAAAUUAA"
+      }
+    },
+    {
+      "model": "current",
+      "placement": "authored-before-utility",
+      "layerOrder": "utility-middle",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-current-a-11330-utility-middle-verification/computed-results.json",
+      "rawSha256": "14eb72e785122cfb77d765f35444f4567a0208fd4c5dd0fcb1795c2f1108c53a",
+      "activeWinnerVectors": {
+        "plain": "UAAAUUAAAUUAA",
+        "group hover": "UAAAUUAAAUUAA",
+        "peer focus": "UAAAUUAAAUUAA",
+        "media boundary": "UAAAUUAAAUUAA",
+        "dark ancestor": "UAAAUUAAAUUAA"
+      }
+    },
+    {
+      "model": "current",
+      "placement": "authored-after-utility",
+      "layerOrder": "utility-middle",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-current-a-b9314-utility-middle-verification/computed-results.json",
+      "rawSha256": "cdeec274d47c2c96f79985a8877e6a09957d0205f3b4b509abacaed13a6e7708",
+      "activeWinnerVectors": {
+        "plain": "AAAAUUAAAUAAA",
+        "group hover": "AAAAUUAAAUAAA",
+        "peer focus": "AAAAUUAAAUAAA",
+        "media boundary": "AAAAUUAAAUAAA",
+        "dark ancestor": "AAAAUUAAAUAAA"
+      }
+    },
+    {
+      "model": "stronger-relations",
+      "placement": "authored-before-utility",
+      "layerOrder": "utility-middle",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-stronger--35e26-utility-middle-verification/computed-results.json",
+      "rawSha256": "9d7dd241d845396ff4c96d9060ddd7fcad0efc5004a958ec906736b374c0cd7b",
+      "activeWinnerVectors": {
+        "plain": "UAAAUUAAAUUAA",
+        "group hover": "UUUAUUAAAUUAA",
+        "peer focus": "UUUAUUAAAUUAA",
+        "media boundary": "UAAAUUAAAUUAA",
+        "dark ancestor": "UAAAUUAAAUUAA"
+      }
+    },
+    {
+      "model": "stronger-relations",
+      "placement": "authored-after-utility",
+      "layerOrder": "utility-middle",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-stronger--50787-utility-middle-verification/computed-results.json",
+      "rawSha256": "4f7c9f77b57de58c8db353571107324ca04906333f57663d6911ea9ee070a658",
+      "activeWinnerVectors": {
+        "plain": "AAAAUUAAAUAAA",
+        "group hover": "UUAAUUAAAUUAA",
+        "peer focus": "UUAAUUAAAUUAA",
+        "media boundary": "AAAAUUAAAUAAA",
+        "dark ancestor": "AAAAUUAAAUAAA"
+      }
+    },
+    {
+      "model": "stronger-relations",
+      "placement": "authored-after-utility",
+      "layerOrder": "utility-last",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-stronger--92008-y-utility-last-verification/computed-results.json",
+      "rawSha256": "87e0eeea64ebfbb96c525e0401ec5696f7c06ed4b1ef0c55bc5b720ce5175629",
+      "activeWinnerVectors": {
+        "plain": "AAAAUUAAAUAAA",
+        "group hover": "UUAAUUAAAUUAA",
+        "peer focus": "UUAAUUAAAUUAA",
+        "media boundary": "AAAAUUAAAUAAA",
+        "dark ancestor": "AAAAUUAAAUAAA"
+      }
+    },
+    {
+      "model": "stronger-relations",
+      "placement": "authored-before-utility",
+      "layerOrder": "utility-last",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-stronger--b8ab8-y-utility-last-verification/computed-results.json",
+      "rawSha256": "d56b865fdbea9168740b110b0254b20243b4ef9adad30dca262646049996cca3",
+      "activeWinnerVectors": {
+        "plain": "UAAAUUAAAUUAA",
+        "group hover": "UUUAUUAAAUUAA",
+        "peer focus": "UUUAUUAAAUUAA",
+        "media boundary": "UAAAUUAAAUUAA",
+        "dark ancestor": "UAAAUUAAAUUAA"
+      }
+    },
+    {
+      "model": "utility-layer",
+      "placement": "authored-before-utility",
+      "layerOrder": "utility-last",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-utility-l-328e9-y-utility-last-verification/computed-results.json",
+      "rawSha256": "1144029b8a6230f7fda492821923f93d6d7bef32f718dedbd8f76bed5ecb6daa",
+      "activeWinnerVectors": {
+        "plain": "AAAAUUAAAUUAA",
+        "group hover": "AAAAUUAAAUUAA",
+        "peer focus": "AAAAUUAAAUUAA",
+        "media boundary": "AAAAUUAAAUUAA",
+        "dark ancestor": "AAAAUUAAAUUAA"
+      }
+    },
+    {
+      "model": "utility-layer",
+      "placement": "authored-after-utility",
+      "layerOrder": "utility-middle",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-utility-l-acdca-utility-middle-verification/computed-results.json",
+      "rawSha256": "9c174cc6939a5cb7e81aab175975d894cf9a834b81c3bdcec45314bfe004307c",
+      "activeWinnerVectors": {
+        "plain": "AAAAUAAAAUUAU",
+        "group hover": "AAAAUAAAAUUAU",
+        "peer focus": "AAAAUAAAAUUAU",
+        "media boundary": "AAAAUAAAAUUAU",
+        "dark ancestor": "AAAAUAAAAUUAU"
+      }
+    },
+    {
+      "model": "utility-layer",
+      "placement": "authored-after-utility",
+      "layerOrder": "utility-last",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-utility-l-d83a2-y-utility-last-verification/computed-results.json",
+      "rawSha256": "32773449e4b9ec12f20022f6caaec9f06af97f7f4623e4bc9a514c526f1f2b22",
+      "activeWinnerVectors": {
+        "plain": "AAAAUUAAAUUAA",
+        "group hover": "AAAAUUAAAUUAA",
+        "peer focus": "AAAAUUAAAUUAA",
+        "media boundary": "AAAAUUAAAUUAA",
+        "dark ancestor": "AAAAUUAAAUUAA"
+      }
+    },
+    {
+      "model": "utility-layer",
+      "placement": "authored-before-utility",
+      "layerOrder": "utility-middle",
+      "measuredAssertions": 195,
+      "diagnostics": [],
+      "screenshotPixels": [640, 1439],
+      "runtime": {
+        "browser": "151.0.7922.173",
+        "executable": "/usr/bin/chromium",
+        "platform": "linux"
+      },
+      "rawRecord": "test-results/cascade-decision-experiment/cascade.chromium-utility-l-f02d1-utility-middle-verification/computed-results.json",
+      "rawSha256": "4bf675e53db1e7af78ca51b8208a7d37d6bdc4fd91914d6d008396320de5ea56",
+      "activeWinnerVectors": {
+        "plain": "AAAAUAAAAUUAU",
+        "group hover": "AAAAUAAAAUUAU",
+        "peer focus": "AAAAUAAAAUUAU",
+        "media boundary": "AAAAUAAAAUUAU",
+        "dark ancestor": "AAAAUAAAAUUAU"
+      }
+    }
+  ],
+  "scenarioOrder": [
+    "equal",
+    "type-strong",
+    "class-strong",
+    "id-strong",
+    "base-normal",
+    "components-normal",
+    "authored-important",
+    "base-important",
+    "components-important",
+    "utility-important",
+    "both-important",
+    "both-base-important",
+    "both-components-important"
+  ],
+  "winnerCodes": {
+    "A": "authored rgb(255, 0, 0)",
+    "U": "utility rgb(0, 170, 0)"
+  }
+}
