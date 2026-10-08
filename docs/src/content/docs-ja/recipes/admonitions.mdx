@@ -68,7 +68,7 @@ Hidden content that the reader reveals on demand.
 :::
 ```
 
-パイプラインは `<Note title="Optional title">`、`<Tip>`、`<Details title="Click to expand">` などを出力します。これらの識別子をスコープ内で利用できるようにするのはあなたの責任です。詳しくは [MDX コンポーネント](../concepts/mdx-components.mdx) を参照してください。
+パイプラインは `<Note title="Optional title">`、`<Tip>`、`<Details title="Click to expand">` などを出力します。これらの識別子をスコープ内で利用できるようにするのはあなたの責任です。詳しくは [MDX コンポーネント](../architecture/mdx-components.mdx) を参照してください。
 
 ## 2. コンポーネントスタブ
 
@@ -121,7 +121,7 @@ export function Details({ title, children }: DetailsProps) {
 
 ## 3. MDX に登録する
 
-これらのコンポーネントを [MDX コンポーネントマップ](../concepts/mdx-components.mdx) に追加して、すべてのページレンダリングでスコープ内に入るようにします。
+これらのコンポーネントを [MDX コンポーネントマップ](../architecture/mdx-components.mdx) に追加して、すべてのページレンダリングでスコープ内に入るようにします。
 
 ```tsx title="mdx-components.tsx"
 import { defaultComponents } from "zfb";
@@ -191,5 +191,5 @@ export default {
 
 - [`directives` 機能リファレンス](/ja/docs/markdown-features/directives) — このレシピが使うオプトイン機能です。
 - [ディレクティブレジストリ](/ja/docs/markdown-features/directives-registry) — その下にある Core プリミティブです。
-- [MDX コンポーネント](../concepts/mdx-components.mdx) — コンポーネントをグローバルにスコープへ入れる方法です。
-- [カスタムディレクティブ](../concepts/custom-directives.mdx) — フレームワーク作者向けに、Rust API でディレクティブを登録します。
+- [MDX コンポーネント](../architecture/mdx-components.mdx) — コンポーネントをグローバルにスコープへ入れる方法です。
+- [カスタムディレクティブ](../architecture/custom-directives.mdx) — フレームワーク作者向けに、Rust API でディレクティブを登録します。

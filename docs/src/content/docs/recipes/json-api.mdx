@@ -240,7 +240,7 @@ first, and `/api/items` and `/api/search` never exist as files under `dist/` —
 `prerender = false` — so every request to them misses the asset layer and falls through to the
 Worker. Static assets never pay the SSR cost, and the Worker only ever sees the dynamic tail.
 The full picture is in
-[SSR on a Worker](../concepts/ssr-on-a-worker.mdx#the-dispatch-flow).
+[SSR on a Worker](../architecture/ssr-on-a-worker.mdx#the-dispatch-flow).
 
 ## Run it locally
 
@@ -286,11 +286,11 @@ search request twice against the same process to watch `indexBuiltAt` hold stead
 
 ## Related
 
-- [SSR on a Worker](../concepts/ssr-on-a-worker.mdx) — the two-layer worker output, the dispatch
+- [SSR on a Worker](../architecture/ssr-on-a-worker.mdx) — the two-layer worker output, the dispatch
   order, and how `getCloudflareContext()` gets `{ env, request, ctx }` to your handler.
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — the literal-export
   rule, the props-not-`Request` contract, `wrangler.toml` setup, and the styled-404 precedence
   rules this repo is configured around.
-- [Islands](../concepts/islands.mdx) — how the `"use client"` item browser becomes a
+- [Islands](../architecture/islands.mdx) — how the `"use client"` item browser becomes a
   browser-shipped bundle that lives outside the Worker.
 - [Examples](../guides/examples.mdx) — the rest of the standalone example repositories.

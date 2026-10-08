@@ -1,6 +1,7 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource preact */
 
+import { createNavigationChrome } from "./navigation-chrome";
 import { Island } from "@takazudo/zfb";
 import { defineChromeBindings } from "@takazudo/zudo-doc/chrome-bindings";
 import DesignSystemPlayground from "./components/playground/design-system-playground";
@@ -39,7 +40,7 @@ const HomeExtras = ({ locale }: { locale: string }) => {
   );
 };
 
-export const chromeBindings = defineChromeBindings({
+const baseBindings = defineChromeBindings({
   mdxExtras: {
     DesignSystemPlayground: DesignSystemPlaygroundIsland,
     RenderPlayground: RenderPlaygroundIsland,
@@ -50,3 +51,8 @@ export const chromeBindings = defineChromeBindings({
   },
   homeExtras: HomeExtras,
 });
+
+export const chromeBindings = {
+  ...baseBindings,
+  ...defineChromeBindings(createNavigationChrome(baseBindings)),
+};

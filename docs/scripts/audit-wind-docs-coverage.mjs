@@ -6,7 +6,11 @@ import { parseToAst } from "@takazudo/zfb-md-wasm/parse";
 import en from "./wind-reference-strings/en.mjs";
 import ja from "./wind-reference-strings/ja.mjs";
 import { WIND_GUIDE_PAGES } from "./generate-wind-guide-previews.mjs";
-import { validateCatalogFamilies, validateLocaleStrings } from "./generate-wind-reference.mjs";
+import {
+  validateCatalogFamilies,
+  validateLocaleStrings,
+  validateUtilityGroups,
+} from "./generate-wind-reference.mjs";
 import { WIND_REFERENCE_FAMILIES } from "./wind-reference-families.mjs";
 import { loadCompatibilityInputs, renderCompatibilityPages } from "./wind-compatibility-pages.mjs";
 import { exampleSource, loadRecords, REPO_ROOT } from "./wind-preview-assets.mjs";
@@ -15,6 +19,14 @@ import {
   loadPreviewContext,
   validateEditorial,
 } from "./wind-reference-editorial.mjs";
+
+import {
+  WIND_UTILITY_GROUPS,
+  WIND_LEARN_SLUGS,
+  WIND_ENTRY_SLUGS,
+} from "../src/config/navigation-groups.mjs";
+
+import { migratedDocSlug } from "../src/config/route-migrations.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPECTED = Object.freeze({
@@ -61,7 +73,9 @@ function sourceForBuiltRoute(root, route) {
   const japanese = route.startsWith("ja/");
   const unprefixed = route.replace(/^ja\//, "");
   if (!unprefixed.startsWith("docs/")) fail(`Unexpected docs route in coverage fixture: ${route}`);
-  const page = unprefixed.slice("docs/".length).replace(/\/index\.html$/, "");
+  const page = migratedDocSlug(
+    unprefixed.slice("docs/".length).replace(/\/index\.html$/, ""),
+  ).split("#")[0];
   const contentRoot = join(root, "docs/src/content", japanese ? "docs-ja" : "docs");
   const candidates = [join(contentRoot, `${page}.mdx`), join(contentRoot, page, "index.mdx")];
   const existing = candidates.filter((path) => {
@@ -152,6 +166,7 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
   );
   if (compatibilityOutputs.en.size !== compatibilityOutputs.ja.size)
     fail("Compatibility locale page parity");
+  validateUtilityGroups(WIND_UTILITY_GROUPS, WIND_REFERENCE_FAMILIES);
   const entriesById = validateCatalogFamilies(catalog, WIND_REFERENCE_FAMILIES);
   validateLocaleStrings(en, WIND_REFERENCE_FAMILIES);
   validateLocaleStrings(ja, WIND_REFERENCE_FAMILIES);
@@ -245,12 +260,16 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
     const windRoot = join(contentRoot, "zudo-wind");
     assertMdxInventory(
       windRoot,
-      WIND_GUIDE_PAGES.map((page) => `${page}.mdx`),
+      [...WIND_GUIDE_PAGES, "learn"].map((page) => `${page}.mdx`),
       `${locale} guide source inventory`,
     );
     assertMdxInventory(
       join(windRoot, "utilities"),
-      ["index.mdx", ...WIND_REFERENCE_FAMILIES.map(({ id }) => `${id}.mdx`)],
+      [
+        "index.mdx",
+        ...WIND_REFERENCE_FAMILIES.map(({ id }) => `${id}.mdx`),
+        ...WIND_UTILITY_GROUPS.map(({ id }) => `${id}.mdx`),
+      ],
       `${locale} utility output inventory`,
     );
     assertMdxInventory(
@@ -265,6 +284,22 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
       await parseSource(path, root);
       await auditReadmeLinks(path, root);
     }
+    const authored = ["learn.mdx", ...WIND_UTILITY_GROUPS.map(({ id }) => `utilities/${id}.mdx`)];
+    for (const name of authored) {
+      const path = join(windRoot, name);
+      const source = readFileSync(path, "utf8");
+      if (/^generated: true$/m.test(source))
+        fail(`${locale}: authored landing marked generated: ${name}`);
+      if (!source.includes("<CategoryNav categories={"))
+        fail(`${locale}: missing native cards: ${name}`);
+      await parseSource(path, root);
+    }
+    for (const slug of [
+      ...WIND_LEARN_SLUGS,
+      ...WIND_ENTRY_SLUGS,
+      ...WIND_UTILITY_GROUPS.flatMap((group) => [group.slug, ...group.members]),
+    ])
+      sourceForBuiltRoute(root, `${locale === "ja" ? "ja/" : ""}docs/${slug}/index.html`);
     const localeMarkers = guideMarkers[locale];
     for (const page of WIND_GUIDE_PAGES) {
       const path = join(windRoot, `${page}.mdx`);
@@ -351,7 +386,10 @@ export async function auditWindDocsCoverage(root = REPO_ROOT) {
     guideRecords: guideIds.size,
     historicalWindRoutes: Object.keys(windBaseline).length,
     negativeExamples: counts.negative,
-    parsedSources: sources.length + compatibilityOutputs.en.size + compatibilityOutputs.ja.size,
+    parsedSources:
+      sources.length + compatibilityOutputs.en.size + compatibilityOutputs.ja.size + 16,
+    utilityGroups: WIND_UTILITY_GROUPS.length,
+    compatibilityPages: compatibilityOutputs.en.size + compatibilityOutputs.ja.size,
     positiveExamples: counts.positive,
     utilityFamilies: WIND_REFERENCE_FAMILIES.length,
   };

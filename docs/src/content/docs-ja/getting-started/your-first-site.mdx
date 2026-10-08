@@ -4,7 +4,11 @@ description: zfb プロジェクトをおよそ 5 分でスキャフォールド
 sidebar_position: 3
 ---
 
-このウォークスルーでは、空のディレクトリから開発サーバーの起動、そしてサイトのビルドまでを案内します。グローバルな CLI インストールは不要です。スキャフォールドコマンドが必要なものをすべてオンデマンドで取得します。
+Basic blog は npm / pnpm を使うブログ、Node-free は Node やパッケージのインストールなしで動くスターターです。[インストール](./installation.mdx)で選んだ方法に合わせて、どちらかのタブで作成・実行・ビルドを進めてください。
+
+<Tabs>
+
+<TabItem label="Basic blog">
 
 ## 新しいプロジェクトをスキャフォールドする
 
@@ -46,30 +50,9 @@ zfb CLI をすでにグローバルインストールしている場合（[Insta
 zfb new my-site --template basic-blog
 ```
 
-`--template basic-blog` はデフォルトなので、省略できます。Node.js 依存を一切必要としないプロジェクト向けに `node-free` テンプレートも利用できます。`package.json` を同梱せず、`.tsx` に加えて `.md`/`.html` のページエントリを使います。このページの書き方については [Markdown and HTML Pages](../concepts/md-html-pages.mdx) を参照してください。
+`--template basic-blog` はデフォルトなので、省略できます。Node.js 依存を一切必要としないプロジェクト向けに `node-free` テンプレートも利用できます。`package.json` を同梱せず、`.tsx` に加えて `.md`/`.html` のページエントリを使います。このページの書き方については [Markdown and HTML Pages](../architecture/md-html-pages.mdx) を参照してください。
 
 `basic-blog` がスキャフォールドするのは、`zfb.config.ts`（JSON ではありません）、3 つのシード記事を持つ `blog` コンテンツコレクション、4 つのルート、そして 1 つのクライアント島です。同梱の `README.md` がツリーの案内になっており、[プロジェクト構造](./project-structure.mdx) が同じ範囲をより詳しく扱います。
-
-## 最初のデザインを自分のものにする
-
-同梱の両スターターは Everyday デザインから始まります。用途別の色、独立した
-横方向と縦方向の余白、読みやすい文字組み、共通の角丸ルールを持つ、編集可能な
-プロジェクトの選択です。zudo-wind エンジンの暗黙のデフォルトではありません。
-
-- 色・余白・文字組み・読み幅・角丸の値は `styles/design-system.css` で変更します。
-- 使い分けは `DESIGN-NOTES.md` を参照してください。ホームに表示する短いルールは
-  `components/design-rules.ts` にあります。デザインを変えたら説明も更新してください。
-- Basic blog では `zfb.config.ts` が `design-tokens.json` と既存の Markdown 用
-  トークンをマージします。`styles/global.css` のダーク用の値はテーマ切り替えに
-  連動します。既存記事 **How this site is styled** がそのつながりを説明します。
-- Node-free でトークン名を変える場合は `zfb.config.json` と `design-tokens.json`
-  を揃えてください。明示的な Wind スタイルシートはバイナリ内で生成され、Node・
-  パッケージのインストール・クライアント島は不要です。
-
-[デザインシステム Playground](../playground/design-system.mdx) でルールを試し、
-編集可能なファイルを書き出せます。既存ページの値を保持しながら、カテゴリと名前ごとに
-トークンをマージしてください。現在のイニシャライザが選ぶのはサイトテンプレートです。
-デザインシードの選択機能やシード用の CLI フラグはまだありません。
 
 <Note title="インポート指定子について">
 
@@ -129,9 +112,71 @@ npx zfb check
 
 [zfb-example-blog](https://github.com/Takazudo/zfb-example-blog) は、読んでそのままデプロイできるスタンドアロンのサンプルサイトです（[ライブビルド](https://zfb-example-blog.takazudomodular.com/)）。同梱テンプレートのコピーではなく独立したリポジトリとして保守されているため、ファイル構成は `zfb new` がスキャフォールドするものとは異なります。手元のプロジェクトの写しではなく、作り込まれた実例として読んでください。この例の詳しい解説は [Blog](/ja/docs/recipes/blog) にあり、その他のサンプルは [サンプル](../guides/examples.mdx) にまとまっています。
 
+</TabItem>
+
+<TabItem label="Node-free">
+
+## Node-free のサイトを作る
+
+[スタンドアロン版をインストール](./installation.mdx#standalone-installation)し、`zfb` を `PATH` に追加してから実行します。
+
+```sh
+zfb new my-site --template node-free
+cd my-site
+zfb dev
+```
+
+`node-free` は `package.json` を持たず、`pnpm install` や `npm install` は不要です。`zfb.config.json`、Markdown / HTML / TSX のページ、明示的な Wind スタイルシートを使います。[Markdown と HTML ページ](../architecture/md-html-pages.mdx)でページの書き方を確認できます。
+
+開発サーバーの既定の URL は `http://localhost:3000` です。ページやスタイルを編集するとライブリロードします。別のアドレスで起動する場合は `zfb dev --port 4000 --host 0.0.0.0` を使います。
+
+## Node-free のビルドとプレビュー
+
+開発サーバーを Ctrl+C で停止してから、同じプロジェクトで実行します。
+
+```sh
+zfb build
+zfb preview
+```
+
+ビルドは既定で `dist/` に静的ファイルを生成します。プレビューの既定の URL は `http://localhost:4321` です。設定の `outDir` は両コマンドに適用され、CLI の `--outdir` が優先します。プレビューのポートは `zfb preview --port 4000` で変更できます。build には `--port` はありません。
+
+## Node-free の検証
+
+```sh
+zfb check --skip-tsc
+```
+
+Node なしで TypeScript 以外のチェックを実行します。完全な TypeScript 型チェックには Node と `tsc` が必要です。Cloudflare アダプタを使うデプロイにも Node が必要です。[Node が依然として必要なケース](./installation.mdx#node-が依然として必要なケース)を参照してください。
+
+</TabItem>
+
+</Tabs>
+
+## 最初のデザインを自分のものにする
+
+同梱の両スターターは Everyday デザインから始まります。用途別の色、独立した
+横方向と縦方向の余白、読みやすい文字組み、共通の角丸ルールを持つ、編集可能な
+プロジェクトの選択です。zudo-wind エンジンの暗黙のデフォルトではありません。
+
+- 色・余白・文字組み・読み幅・角丸の値は `styles/design-system.css` で変更します。
+- 使い分けは `DESIGN-NOTES.md` を参照してください。ホームに表示する短いルールは
+  `components/design-rules.ts` にあります。デザインを変えたら説明も更新してください。
+- Basic blog では `zfb.config.ts` が `design-tokens.json` と既存の Markdown 用
+  トークンをマージします。`styles/global.css` のダーク用の値はテーマ切り替えに
+  連動します。既存記事 **How this site is styled** がそのつながりを説明します。
+- Node-free でトークン名を変える場合は `zfb.config.json` と `design-tokens.json`
+  を揃えてください。明示的な Wind スタイルシートはバイナリ内で生成され、Node・
+  パッケージのインストール・クライアント島は不要です。
+
+[デザインシステム Playground](../playground/design-system.mdx) でルールを試し、
+編集可能なファイルを書き出せます。既存ページの値を保持しながら、カテゴリと名前ごとに
+トークンをマージしてください。現在のイニシャライザが選ぶのはサイトテンプレートです。
+デザインシードの選択機能やシード用の CLI フラグはまだありません。
+
 ## 次に読むもの
 
 - [Project structure](./project-structure.mdx) — テンプレートが作成した各ディレクトリが実際に何をするのか。
-- [Routing](../concepts/routing.mdx) — `pages/` がどのように URL になるか。動的ルートやキャッチオールルートも含みます。
-- [Islands](../concepts/islands.mdx) — 個々のコンポーネントをクライアントサイドのハイドレーションにオプトインする方法。
+- [Routing](../architecture/routing.mdx) — `pages/` がどのように URL になるか。動的ルートやキャッチオールルートも含みます。
+- [Islands](../architecture/islands.mdx) — 個々のコンポーネントをクライアントサイドのハイドレーションにオプトインする方法。
 - [Build engine](../architecture/build-engine.mdx) — Rust クレートが内部でどう組み合わさっているか。

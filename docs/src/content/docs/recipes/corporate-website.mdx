@@ -7,7 +7,7 @@ category: Recipes
 
 <Info title="What this page covers">
 
-A polished corporate marketing site (hero, services, about, contact) built as pure SSG with zudo-react. It is the CSS Modules demo: `zfb.config.ts` sets `wind: false`, and every component owns a scoped `*.module.css` beside it. Read it as the worked companion to [Styling](../concepts/styling.mdx).
+A polished corporate marketing site (hero, services, about, contact) built as pure SSG with zudo-react. It is the CSS Modules demo: `zfb.config.ts` sets `wind: false`, and every component owns a scoped `*.module.css` beside it. Read it as the worked companion to [Styling](../architecture/styling.mdx).
 
 </Info>
 
@@ -150,7 +150,7 @@ declare module "*.module.css" {
 
 ### The output is one HTML file and one stylesheet
 
-`layouts/default.tsx` renders the whole document — `<html>`, `<head>`, the `<title>` — as a plain server component. There are no [islands](../concepts/islands.mdx), so `zfb build` emits `dist/index.html`, `dist/assets/styles-<hash>.css`, and no JavaScript at all. The built page carries zero `<script>` tags.
+`layouts/default.tsx` renders the whole document — `<html>`, `<head>`, the `<title>` — as a plain server component. There are no [islands](../architecture/islands.mdx), so `zfb build` emits `dist/index.html`, `dist/assets/styles-<hash>.css`, and no JavaScript at all. The built page carries zero `<script>` tags.
 
 The single-page shape has one visible edge: zfb emits no `404.html` for this site, so an unmatched path currently returns a bare 404. `not_found_handling = "404-page"` is set anyway — it starts serving a real page the moment one exists, and it is the correct setting regardless, since the alternative (`"single-page-application"`) would answer every unknown path with `index.html` and HTTP 200.
 
@@ -169,7 +169,7 @@ One local-only detail worth knowing: `predev` runs `rm -rf dist .zfb .zfb-build`
 
 ## See also
 
-- [Styling](../concepts/styling.mdx) — the reference for zudo-wind, authored global CSS, and the CSS Modules rules this demo exercises, including the `:export` / `composes` and bare-specifier limitations.
-- [Static assets](../concepts/static-assets.mdx) — how the emitted `dist/assets/` tree is produced and served.
-- [Islands](../concepts/islands.mdx) — what this site deliberately does not use.
+- [Styling](../architecture/styling.mdx) — the reference for zudo-wind, authored global CSS, and the CSS Modules rules this demo exercises, including the `:export` / `composes` and bare-specifier limitations.
+- [Static assets](../architecture/static-assets.mdx) — how the emitted `dist/assets/` tree is produced and served.
+- [Islands](../architecture/islands.mdx) — what this site deliberately does not use.
 - [Examples](../guides/examples.mdx) — the rest of the zfb example sites.

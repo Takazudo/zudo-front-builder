@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { COMPATIBILITY_BUCKETS } from "../src/config/navigation-groups.mjs";
 import { WIND_SOURCE_SHA } from "../../scripts/wind-compatibility/inventory.mjs";
 
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -38,7 +39,7 @@ const labels = {
     title: "Tailwind class compatibility",
     description: "Source-reviewed class and utility-root inventory for zudo-wind.",
     intro:
-      "Find an exact class or bounded utility root using site search or the alphabetical pages below. A mapped registration is a source inspection, not a browser-tested compatibility claim. No Tailwind palette or spacing scale is supplied by Wind.",
+      "Find an exact class or bounded utility root using site search or the alphabetical sections below. A mapped registration is a source inspection, not a browser-tested compatibility claim. No Tailwind palette or spacing scale is supplied by Wind.",
     reference: "Pinned reference",
     source: "Reviewed Wind source",
     published: "Published-release support",
@@ -63,7 +64,7 @@ const labels = {
     title: "Tailwind クラス互換性",
     description: "zudo-wind のソースを確認したクラスとユーティリティ基部の一覧です。",
     intro:
-      "完全なクラス名または有限の基部をサイト内検索か下のアルファベット順ページから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。",
+      "完全なクラス名または有限の基部をサイト内検索か下のアルファベット順のセクションから探せます。対応する登録はソース上の確認であり、ブラウザーで検証した互換性を意味しません。Wind は Tailwind の色や余白スケールを暗黙には提供しません。",
     reference: "固定した参照",
     source: "確認した Wind ソース",
     published: "公開版での対応",
@@ -275,6 +276,8 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
   const sortedBuckets = [...grouped.keys()].sort((a, b) =>
     a === "symbols" ? -1 : b === "symbols" ? 1 : a.localeCompare(b),
   );
+  if (JSON.stringify(sortedBuckets) !== JSON.stringify(COMPATIBILITY_BUCKETS))
+    throw Error("Compatibility bucket membership changed");
   const reference = `${data.upstreamPin.package}@${data.upstreamPin.version} (${data.upstreamPin.tag}, ${data.upstreamPin.observedTagCommit})`;
   const common = [
     `${t.reference}: ${code(reference)}.`,
@@ -296,6 +299,7 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
       `title: ${yamlString(t.title)}`,
       `description: ${yamlString(t.description)}`,
       "sidebar_position: 19",
+      "hide_toc: true",
       "generated: true",
       "---",
       "",
@@ -311,12 +315,6 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
       "",
       `${locale === "ja" ? "未対応の基部の例" : "Examples with unmapped roots"}: ${missingExamples.map(code).join(", ")}. ${locale === "ja" ? "これは上流の基部登録の例で、任意の接尾辞が動作するという主張ではありません。" : "These illustrate upstream root registrations; they do not claim that every suffix works."}`,
       "",
-      `## ${t.browse}`,
-      "",
-      ...sortedBuckets.map(
-        (key) => `- [${key.toUpperCase()}](${key}.mdx) (${grouped.get(key).length})`,
-      ),
-      "",
       `${t.notes} [${locale === "ja" ? "移行ガイド" : "Migration guide"}](../coming-from-tailwind.mdx).`,
       "",
     ].join("\n"),
@@ -324,18 +322,7 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
   for (const key of sortedBuckets) {
     const rows = grouped.get(key);
     const lines = [
-      "---",
-      `title: ${yamlString(`${t.title}: ${key.toUpperCase()}`)}`,
-      `description: ${yamlString(t.description)}`,
-      `sidebar_position: ${20 + sortedBuckets.indexOf(key)}`,
-      "generated: true",
-      "---",
-      "",
-      t.intro,
-      "",
-      `[${locale === "ja" ? "互換性一覧" : "Compatibility index"}](index.mdx) · [${locale === "ja" ? "移行ガイド" : "Migration guide"}](../coming-from-tailwind.mdx)`,
-      "",
-      ...common,
+      `<h2 id="compat-${key}">${key.toUpperCase()}</h2>`,
       "",
       `| ${[t.class, t.wind, t.status, t.config, t.behavior, t.alternative, t.evidence, t.environment].join(" | ")} |`,
       `| ${Array(8).fill("---").join(" | ")} |`,
@@ -361,7 +348,7 @@ export function renderCompatibilityPages(inventory, catalog, profile, locale, fa
         `| ${[code(row.upstream.representation ?? row.upstream.name), mapping, status, prose(localizedNote(row.configurationRequirement, locale, "config")), prose(localizedNote(row.semanticDifference, locale, "behavior")), prose(alt), code(row.evidence.status), row.evidence.browserEnvironment ?? "—"].map(cell).join(" | ")} |`,
       );
     }
-    pages.set(`${key}.mdx`, lines.concat("").join("\n"));
+    pages.set("index.mdx", pages.get("index.mdx") + "\n" + lines.concat("").join("\n"));
   }
   return pages;
 }

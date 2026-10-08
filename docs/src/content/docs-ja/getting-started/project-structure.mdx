@@ -41,14 +41,14 @@ my-site/
 
 ## pages/
 
-ファイルシステムルーティングはここに置かれます。`pages/` 配下のすべてのページファイル（`.tsx`・`.ts`・`.jsx`・`.js`・`.mdx`・`.md`・`.html`）がルートになります。完全なコントラクトは [ルーティング](../concepts/routing.mdx) を参照してください。
+ファイルシステムルーティングはここに置かれます。`pages/` 配下のすべてのページファイル（`.tsx`・`.ts`・`.jsx`・`.js`・`.mdx`・`.md`・`.html`）がルートになります。完全なコントラクトは [ルーティング](../architecture/routing.mdx) を参照してください。
 
 - `pages/index.tsx` → `/`
 - `pages/about.tsx` → `/about`
 - `pages/blog/[slug].tsx` → `/blog/:slug`（動的ルート — 解決された slug ごとに 1 つの HTML ファイル）
 - `pages/docs/[...slug].tsx` → キャッチオール、任意の深さにマッチ
 
-テンプレートには静的ルートが 3 つ、動的ルートが 1 つ含まれます。`index.tsx` は `getStaticProps()` で全記事を新しい順に一覧し、`about.tsx` はデータ取得を一切行わない静的ページ、`blog/[slug].tsx` は `paths()` をエクスポートします。zfb はビルド時にこの `paths()` を呼び出し、`[slug]` をコレクションのエントリごとに 1 つの HTML ファイルへ展開します。完全な API は [動的ルート](../concepts/dynamic-routes.mdx) を参照してください。
+テンプレートには静的ルートが 3 つ、動的ルートが 1 つ含まれます。`index.tsx` は `getStaticProps()` で全記事を新しい順に一覧し、`about.tsx` はデータ取得を一切行わない静的ページ、`blog/[slug].tsx` は `paths()` をエクスポートします。zfb はビルド時にこの `paths()` を呼び出し、`[slug]` をコレクションのエントリごとに 1 つの HTML ファイルへ展開します。完全な API は [動的ルート](../architecture/dynamic-routes.mdx) を参照してください。
 
 特別な意味を持つファイル名は `404.tsx` だけです。トップレベルの `pages/404.tsx` は `dist/404/index.html` ではなく、フラットな `dist/404.html` を出力します。これは `zfb preview` が — そしてたいていの静的ホスティングが — マッチしないリクエストに対して配信するファイルです。
 
@@ -63,7 +63,7 @@ my-site/
 素のコンポーネントと **島** です。テンプレートには 2 つのコンポーネントと 1 つの型宣言が含まれます。
 
 - `components/callout.tsx` は、ベースとなる `Callout` に加えて `Note`・`Tip`・`Important`・`Warning`・`Caution` の 5 つの名前付きラッパーをエクスポートします。この 5 つの名前は [GitHub アラート](../markdown-features/github-alerts.mdx)機能によって固定されています。この機能は `> [!NOTE]` の引用ブロックを、レンダリング前に `<Note>` 要素へ書き換えます。
-- `components/theme-toggle.tsx` はテンプレート唯一の `"use client"` 島です。ダークモードを切り替えるもので、ブラウザへ JavaScript を出力する唯一のコンポーネントでもあります。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされます。考え方の全体像は [Islands](../concepts/islands.mdx) にあります。
+- `components/theme-toggle.tsx` はテンプレート唯一の `"use client"` 島です。ダークモードを切り替えるもので、ブラウザへ JavaScript を出力する唯一のコンポーネントでもあります。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされます。考え方の全体像は [Islands](../architecture/islands.mdx) にあります。
 - `components/zfb-shim.d.ts` はコンポーネントではありません。対応するベアの `zfb` インポート群を TypeScript に宣言し、`@takazudo/zfb` の公開エントリからそれぞれの型を再エクスポートします。ビルドツールは SSR、島のスキャン、クライアントバンドル、JSX pragma の判定、zudo-wind のクラス抽出でこれらのエイリアスを解決します。設定ローダーは `zfb/config` を別途、内部のランタイム専用スタブへ対応づけます。ビルド時のエイリアスは TypeScript を設定せず、`zfb check` も `compilerOptions.paths` を注入しません。エディタと `zfb check` は、プロジェクトの `tsconfig` に含まれるこのシムでベア指定子を解決します。標準テンプレートは `components/` を含みます。既存のシムがある場合は、不足しているモジュール宣言を追加してください。宣言ファイル全体は[ベアの `zfb` インポートの型付け](../api/define-config.mdx#typing-bare-zfb-imports)を参照してください。
 
 ## content/
@@ -74,13 +74,13 @@ my-site/
 - `markdown-showcase.md` — テンプレートが有効にしている markdown 機能（テーブル、打ち消し線、タスクリスト、フットノート、アラート、エンリッチされたコードブロック、見出しマーカー TOC）の実例を、リファレンスページへのリンク付きで掲載。
 - `styling-with-zudo-wind.md` — スターターのユーティリティトークン、手書き CSS、ダークモードの設定を説明します。
 
-コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。クエリ API については [Content Collections](../concepts/content-collections.mdx) を参照してください。
+コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。クエリ API については [Content Collections](../architecture/content-collections.mdx) を参照してください。
 
 ## mdx-components.tsx
 
 レンダリングされる**すべて**のコンテンツエントリに適用される、プロジェクトルートのコンポーネントマップです。zfb はこのファイルを `zfb.config.ts` の隣で検出してビルドに取り込み、ページがレンダリングされる前にその default export をインストールします。そのため `<entry.Content />` は、呼び出しごとの配線なしにこのマップを拾います。
 
-テンプレートのマップは、`components/callout.tsx` の 5 つのアラートコンポーネントをエクスポートします。素の `.md` 記事で `> [!NOTE]` が動くのはこれがあるからです。`githubAlerts` 機能は `<Note>` 要素を生成し、解決できない PascalCase の名前はレンダリング時に例外を投げます。マージ順は `defaultComponents` → このファイル → 呼び出し側の `components` prop なので、個別のページからローカルに上書きすることもできます。[MDX Components](../concepts/mdx-components.mdx) を参照してください。
+テンプレートのマップは、`components/callout.tsx` の 5 つのアラートコンポーネントをエクスポートします。素の `.md` 記事で `> [!NOTE]` が動くのはこれがあるからです。`githubAlerts` 機能は `<Note>` 要素を生成し、解決できない PascalCase の名前はレンダリング時に例外を投げます。マージ順は `defaultComponents` → このファイル → 呼び出し側の `components` prop なので、個別のページからローカルに上書きすることもできます。[MDX Components](../architecture/mdx-components.mdx) を参照してください。
 
 ## lib/
 
@@ -90,7 +90,7 @@ my-site/
 
 グローバル CSS です。`styles/global.css` がエントリポイントで、`layouts/default.tsx` から import します。サイトのベーススタイルと `.prose` ブロックは手書き CSS にあります。`zfb.config.ts` の `wind` オブジェクトはスターターのユーティリティトークン、ブレークポイント、リセット、`data-theme` による dark バリアントを設定します。wind の設定はスタイルシートのディレクティブではなくデータです。
 
-この分割は意図的なものです。`.tsx` ファイル内のページの外枠は zudo-wind のユーティリティをインラインで使いますが、Markdown が生成するのはユーティリティクラスの届かない素のタグです。後者は CSS 側で一度だけスタイルを当て、`class="prose"` でオプトインします。スターターは `wind` を明示的に設定します。他のプロジェクトではキーを省略すると空の有効な設定になり、`wind: false` なら手書き CSS だけを使います。[スタイリング](../concepts/styling.mdx)と [zudo-wind の設定](../zudo-wind/configuration.mdx)を参照してください。
+この分割は意図的なものです。`.tsx` ファイル内のページの外枠は zudo-wind のユーティリティをインラインで使いますが、Markdown が生成するのはユーティリティクラスの届かない素のタグです。後者は CSS 側で一度だけスタイルを当て、`class="prose"` でオプトインします。スターターは `wind` を明示的に設定します。他のプロジェクトではキーを省略すると空の有効な設定になり、`wind: false` なら手書き CSS だけを使います。[スタイリング](../architecture/styling.mdx)と [zudo-wind の設定](../zudo-wind/configuration.mdx)を参照してください。
 
 ## public/
 
@@ -107,7 +107,7 @@ my-site/
 
 `zfb.config.ts` で `base` が設定されている場合（例: `base: "/pj/site/"`）、`public/` 内のファイルもそのプレフィックス配下で配信されます。`public/logo.svg` → `/pj/site/logo.svg` です。同じ前置がビルド時にも行われるため、プレフィックスは dev と prod で一貫します。
 
-`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[静的アセット](../concepts/static-assets.mdx) を参照してください。
+`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[静的アセット](../architecture/static-assets.mdx) を参照してください。
 
 ## zfb.config.ts
 

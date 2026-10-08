@@ -1,0 +1,124 @@
+---
+title: ルーティング
+description: pages/ 配下のファイルシステムルーティングが zfb で URL にどうマッピングされるか。
+sidebar_position: 9
+category: Concepts
+---
+
+zfb は `pages/` ディレクトリ配下で **ファイルシステムルーティング** を採用しています。ルーターはビルド時（および dev では変更のたびに）`pages/` をスキャンし、各ページのソースファイルをルートへと変換します。この規約は Next.js や Astro で見覚えのあるものと一致します。
+
+## ファイルからルートへのマッピング
+
+| File | Route | Notes |
+| ---- | ----- | ----- |
+| `pages/index.tsx` | `/` | |
+| `pages/about.tsx` | `/about` | |
+| `pages/about.md` | `/about` | SSG 専用。MDX パイプライン |
+| `pages/about.html` | `/about` | SSG 専用。静的アセットのコピー |
+| `pages/blog/index.tsx` | `/blog` | |
+| `pages/blog/[slug].tsx` | `/blog/:slug`（動的） | |
+| `pages/docs/[...slug].tsx` | `/docs/:slug{.+}`（catchall） | |
+| `pages/docs/[[...slug]].tsx` | `/docs/:slug{.+}?`（オプショナル catchall） | ベース URL の `/docs` にもマッチ |
+| `pages/[lang]/[slug].tsx` | `/:lang/:slug` | |
+
+この表は `pages/` からスキャンされるユーザー作成ファイルを説明しています。プラグインは
+同じ URL パターン文法で、コンパイル済み ESM `.js` モジュールを含むツリー外のルートを
+注入できます。一致するユーザーページは常に優先されます。注入ルートの詳細は
+[プラグイン](./plugins.mdx) を参照してください。
+
+最初に押さえておきたいルールがいくつかあります。
+
+- `_` で始まるファイル（例: `_app.tsx`）は無視されます。ルートの隣に置きたいが公開はしたくない共有ヘルパーには、このプレフィックスを使ってください。
+- ページとして受け付けられる拡張子は `.tsx`・`.ts`・`.jsx`・`.js`・`.mdx`・`.md`・`.html` です。スクリプトページの形は `.tsx` だけではありません。`.jsx` は TypeScript を使わないだけの同じ形で、`.tsx` と同様に JSX の記述をそのまま書けます。JSX を使わない形が `.ts` と `.js` です。`.ts` では `<…>` が型アサーションの構文として予約されているため JSX は書けず、そうしたページは要素ツリーを`@takazudo/zfb/zudo-react` の `h(...)`を直接呼んで組み立て、その関数を明示的に import します。これは自動 JSX ランタイムと矛盾するものではありません。自動ランタイムが補ってくれるのは JSX **構文** に対するファクトリであり、これらのページにはその構文自体が存在しないからです。4 つのスクリプト形式はいずれも同じ規則でルーティングされます。`pages/` 内のそれ以外の拡張子のファイルはスキップされます（警告がログに出ます）。そのため README やメモを置いても問題ありません。
+- ルーティング対象の拡張子を持っていても、ページになることが決してない次の 2 種類のファイルは警告なしでスキップされます。TypeScript の型定義ファイル（`pages/env.d.ts`）と、隣に置いたテストファイル（`pages/index.test.ts`、`pages/about.spec.tsx`）です。それ以外でページ拡張子を持つファイルは、すべてページとして扱われます。`pages/helpers.ts` のような単なるヘルパーモジュールも例外ではなく、default export が無いためビルドが失敗します。正確な条件とヘルパーの置き場所については、後述の **`pages/` 配下のヘルパーモジュール** を参照してください。
+- 同じルートに解決される 2 つのファイルがあると、ビルド時に `RouterError::AmbiguousRoute` が発生します。ルーターが暗黙のうちに勝者を選ぶことはありません。ルーターはまた、2 つのルートがパラメータ名だけ異なり同じ URL にマッチする場合（例: `docs/[a].tsx` と `docs/[b].tsx`）に `RouterError::AmbiguousShape` を、オプショナル catchall が同じ位置で別のルートと重なる場合に `RouterError::OptionalCatchallConflict` を発生させます。
+- 先頭のルートセグメントが `__paths__` で、その後にもセグメントが続く形は予約済みです。`pages/__paths__/foo.tsx`、`pages/__paths__/[slug].tsx`、`pages/__paths__/a/b.md` などは、ルートのスキャン時に `RouterError::ReservedRoutePrefix` を発生させます。zfb の内部エンドポイント `/__paths__/<route-key>` はユーザーページより先に登録されるため、この形のページでは GET / HEAD リクエストを配信できないからです。ちょうど `/__paths__` になるページ（`pages/__paths__.tsx` または `pages/__paths__/index.tsx`）、`pages/a/__paths__/b.html` のように `__paths__` が先頭ではないページ、ルートの catchall は有効です。このスキャンエラーがあると `zfb build` と `zfb check` は失敗します。`zfb dev` は起動時なら `renderer disabled — falling back to empty page cache` 警告として報告して配信を続け、セッション中の編集で発生した場合は直前の renderer を維持します。
+
+`.md` と `.html` のページエントリの完全なコントラクトと v1 の制限については [Markdown and HTML Pages](./md-html-pages.mdx) を参照してください。
+
+スキャンは `zfb-router` クレートの `Router::scan` が行います。結果は **静的ルートが動的ルートより優先され、動的ルートが catchall より優先される** ようにソートされます。より具体的なルートが先にマッチします。
+
+## `pages/` 配下のヘルパーモジュール
+
+`pages/` はルートテーブルであって、汎用のソースディレクトリではありません。受け付ける拡張子に `.ts` と `.js` が加わった今、ここに置いたモジュールはほとんど何でもページに見えてしまいます。共有ヘルパーは `pages/` の **外**（`src/lib/format.ts` など）に置くか、前述の `_` プレフィックスを使ってください。スキャンは名前が `_` で始まるファイルに加えて、`_` で始まるディレクトリを通るパスのファイルもスキップするので、`pages/_format.ts` も `pages/_lib/format.ts` もルーティングからは見えないままになります。
+
+警告なしでスキップされる慣用的なサイドカーは 2 種類だけで、その条件は見た目より狭くなっています。次のいずれかの名前を持つファイルだけが、ページではないサイドカーとして扱われます。
+
+- `<stem>.test.<ext>` または `<stem>.spec.<ext>`。`<ext>` はスクリプトページの 4 拡張子（`.tsx`・`.ts`・`.jsx`・`.js`）のいずれかで、`<stem>` が空でないものです。`pages/index.test.ts` や `pages/about.spec.tsx` は隣に置いたテストであって、ルートではありません。
+- `<stem>` が空でない `<stem>.d.ts`。`pages/env.d.ts` のような TypeScript の型定義ファイルの形です。
+
+それ以外はすべてルーティングされます。スキップされそうに見えて実際はされない、次の 3 つのケースには注意してください。
+
+- 名前全体が接尾辞そのものになっている、**stem のない** ファイル。`pages/.test.ts` や、前に何も付かない `.d.ts` はサイドカーとは見なされず、名前は奇妙でも通常のページとしてルーティングされます。
+- **コンテンツ系の拡張子** に付いた `.test.*` / `.spec.*`。`pages/api.spec.md` や `pages/about.test.md` はそのままルーティングされます。サイドカーの判定に参加するのはスクリプトページの 4 拡張子だけです。`about.spec.md` はコンテンツページの名前としても十分ありえるからです。
+- `pages/helpers.ts` のような、ただのヘルパーモジュール。
+
+最後のケースこそ覚えておきたいところです。ルーターから見れば `pages/helpers.ts` はページなので、default export が無いことでビルドが失敗します。**この失敗は意図されたものです。** zfb は `pages/` 配下のヘルパーモジュールが何を意味するのかについて立場を取りません。書きかけのページだったかもしれないファイルを黙って捨てるくらいなら、ビルド時に問題をはっきり指摘するほうを選んでいます。ヘルパーを `pages/` の外へ移すか、ファイル名（またはディレクトリ名）に `_` を付ければ、ビルドは通るようになります。
+
+## 静的・動的・catchall ルート
+
+静的ルート（`pages/about.tsx`）は単一の具体的な URL にマッチします。動的ルートはファイル名に `[param]` の角括弧を使って単一のパスセグメントをキャプチャし、catchall ルートは `[...param]` を使って末尾の任意個数のセグメントをキャプチャします。
+
+catchall は **オプショナル** にもできます。二重角括弧の `[[...param]]` はディレクトリ直下のベース URL にもマッチします — `pages/docs/[[...slug]].tsx` は `/docs/a/b` に加えて `/docs`（`slug = []`）も配信します。必須形の `[...param]` は厳密なままで、ゼロセグメントには決してマッチしません。オプショナル catchall はルートの最後のセグメントでなければならず、同じ位置の兄弟 `index.tsx`（または同位置の `[...param]`）とは共存できません — 同じ URL を取り合うため、ルーターはスキャン時にこの組み合わせを拒否します。
+
+```tsx
+// pages/blog/[slug].tsx
+export default function BlogPost({ params }: { params: { slug: string } }) {
+  return <article>Post for {params.slug}</article>;
+}
+```
+
+```tsx
+// pages/docs/[...slug].tsx
+export default function DocsPage({ params }: { params: { slug: string[] } }) {
+  return <main>{params.slug.join("/")}</main>;
+}
+```
+
+上の 2 つのスニペットは、コンポーネントがエクスポートする形だけを
+示しています。実際の動的ルートでは、ビルド時に具体的な URL を列挙
+するための `paths()` エクスポート（次項で解説）も必要です。ただし
+`export const prerender = false` を指定してリクエストごとのレンダ
+リングにオプトインする場合はその限りではありません。いずれの場合も、
+URL パラメータは常に `params` の下に届きます — トップレベルで分割
+代入されることはありません。
+
+## `paths()` エクスポート
+
+動的ルートと catchall ルートは、ビルド時にどの具体的な URL をレンダリングするかを知る必要があります。これは同じファイルから `paths()` 関数をエクスポートすることで実現します。
+
+```tsx
+// pages/blog/[slug].tsx
+export function paths() {
+  const posts = getCollection("blog");
+  return posts.map((p) => ({ params: { slug: p.slug } }));
+}
+
+export default function BlogPost({ params }: { params: { slug: string } }) {
+  return <article>Post {params.slug}</article>;
+}
+```
+
+`zfb build` は静的・動的・catchall ルートを検出し、動的・catchall ルートでは
+`paths()` を使ってレンダリングすべき具体的な URL を列挙します。静的にリテラルな
+結果は、ローカル ESM export clause が `paths` を公開する場合を含め、直接認識できます。
+非リテラルな `paths()` 実装は、列挙中に実行時の ESM export を使います。静的ルートに
+`paths()` export は不要です。ルート列挙はルートごと・ビルドごとに 1 回行われ、結果は
+各出力 URL に再利用されます。完全なコントラクトは
+[動的ルート](./dynamic-routes.mdx) を参照してください。
+
+角かっこの区切りを持たない静的ルートでも、ビルド時データが必要な場合は
+代わりに `getStaticProps()` を使います — [`getStaticProps()`](../api/meta-export.mdx#getstaticprops)
+を参照してください。まとめると、`paths()` は動的・catchall ルートの
+URL を列挙し、`getStaticProps()` は単一の静的ルートの props を計算します。
+
+## エラーページ
+
+`pages/404.tsx` と `pages/500.tsx` は出力レイアウトにおける特別なケース
+です。他の HTML ルートはすべて上の表のとおりディレクトリ形式の
+`<path>/index.html` を書き出しますが、トップレベルの `404.tsx` /
+`500.tsx`（名前がちょうど `404` または `500` である単一の静的セグメント）
+は、`404/index.html` / `500/index.html` ではなく、`dist` ルート直下に
+フラットな `404.html` / `500.html` を書き出します。これが当てはまるのは
+トップレベルだけです。`pages/foo/404.tsx` は通常のディレクトリインデックス
+規則に従い、`foo/404/index.html` を出力します。

@@ -1,16 +1,14 @@
 ---
 title: Installation
-description: Install the zfb CLI from npm.
+description: Install zfb with npm / pnpm or as a standalone binary without Node.
 sidebar_position: 2
 ---
 
 `@takazudo/zfb` ships as an npm package that pulls a prebuilt platform binary via npm optional-deps — no Rust toolchain required.
 
-<Note>
+Choose one of two installation paths: use npm / pnpm for a Node-based project, or [install the standalone binary](#standalone-installation) without Node.
 
-**Don't have Node?** You can install zfb as a standalone binary without npm or Node. See [Install without Node](../install/node-free.mdx) for curl, Homebrew, and Windows install paths.
-
-</Note>
+The following prerequisites apply to the npm / pnpm path.
 
 ## Prerequisites
 
@@ -76,6 +74,8 @@ Install `@takazudo/zfb` as a dev dependency in your project:
 
 ## Verify the install
 
+For a standalone installation, run `zfb --version` and `zfb --help`. For npm / pnpm, use the following command.
+
 ```bash
 npx zfb --help
 ```
@@ -102,3 +102,195 @@ git clone https://github.com/Takazudo/zudo-front-builder.git
 cd zudo-front-builder
 cargo install --path crates/zfb
 ```
+
+<a id="standalone-installation"></a>
+
+## Install without Node
+
+zfb ships as a self-contained Rust binary. **Node.js is not required to
+install or run it.** esbuild is embedded in the `zfb` executable's vendor
+snapshot, extracted at runtime, and invoked as a subprocess; zudo-wind is
+compiled into the zfb binary and runs without a separate CSS-engine process. Neither is
+shipped as a separate release-tarball binary next to `zfb`. You only need Node
+as an opt-in escape hatch for specific features (see
+[When Node is still needed](#when-node-is-still-needed) below).
+
+The Node-free path supports the full feature set for content sites: Markdown,
+MDX, HTML pages, **and islands** — esbuild runs as a standalone native binary
+extracted by `zfb`, while zudo-wind is part of the binary itself. Client-side
+hydration and CSS processing therefore work with zero Node involvement. See
+[Styling](../architecture/styling.mdx#zudo-wind-built-into-zfb) for the CSS engine
+and authored-stylesheet contract.
+
+## Standalone supported platforms
+
+| Platform | Architecture | Target triple |
+| --- | --- | --- |
+| Linux (glibc) | x64 | `x86_64-unknown-linux-gnu` |
+| Linux (glibc) | arm64 | `aarch64-unknown-linux-gnu` |
+| macOS | x64 | `x86_64-apple-darwin` |
+| macOS | arm64 (Apple Silicon) | `aarch64-apple-darwin` |
+| Windows | x64 | `x86_64-pc-windows-msvc` |
+
+<Note title="Linux needs glibc 2.34 or newer">
+
+The two Linux binaries are linked against glibc 2.34: Amazon Linux 2023,
+RHEL / Rocky / AlmaLinux 9, Ubuntu 22.04+, and Debian 12+ all work. On an
+older glibc the binary fails at startup with `` version `GLIBC_2.34' not found ``.
+Releases up to and including 3.1.0 required glibc 2.35 instead — see
+[Troubleshooting](../guides/troubleshooting.mdx#glibc-not-found-on-linux).
+
+</Note>
+
+<Note title="musl/Alpine Linux is not supported">
+
+There is no musl-linked binary. `install.sh` detects OS and CPU architecture
+only — it cannot tell glibc from musl — so on Alpine (or another musl-based
+distro) it downloads the glibc `x86_64-unknown-linux-gnu` binary, which then
+fails to execute with a raw dynamic-loader error rather than a clear message.
+Use a glibc-based Linux image (e.g. Debian/Ubuntu) instead. (The npm install
+path detects musl and fails with a friendlier message — see
+[Installation](../getting-started/installation.mdx#supported-platforms).)
+
+</Note>
+
+## Install paths
+
+### Linux / macOS — curl
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
+```
+
+Installs `zfb` to `$HOME/.local/bin/zfb`. Add that directory to your `PATH`
+if it isn't already:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**Environment variables:**
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ZFB_INSTALL` | `$HOME/.local` | Install prefix. Binary lands at `$ZFB_INSTALL/bin/zfb`. |
+| `ZFB_VERSION` | (latest stable) | Pin a release. Use `v1.0.0` for a specific tag, or `latest-prerelease` to opt into pre-releases. |
+
+### macOS — Homebrew
+
+```sh
+brew install Takazudo/tap/zfb
+```
+
+The tap is hosted at
+[Takazudo/homebrew-tap](https://github.com/Takazudo/homebrew-tap).
+The formula is updated on each **stable** release by
+`scripts/update-homebrew-formula.sh`.
+
+<Note title="Homebrew tracks the stable channel">
+
+Like the npm `latest` tag, the Homebrew formula follows **stable** releases
+only — it has no per-version pin or prerelease opt-in. To install a specific
+version or a prerelease, use the curl installer with `ZFB_VERSION` (e.g.
+`ZFB_VERSION=latest-prerelease`) instead.
+
+</Note>
+
+To update to a newer version later:
+
+```sh
+brew upgrade zfb
+```
+
+### Windows — PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.ps1 | iex
+```
+
+Installs `zfb.exe` to `%LOCALAPPDATA%\zfb\bin\zfb.exe`.
+
+**Environment variables:**
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ZFB_INSTALL` | `%LOCALAPPDATA%\zfb` | Install root. Binary lands at `$ZFB_INSTALL\bin\zfb.exe`. |
+| `ZFB_VERSION` | (latest stable) | Pin a release tag (e.g. `v1.0.0`) or `latest-prerelease`. |
+
+Add the binary to your `PATH` for the current session:
+
+```powershell
+$env:PATH = "$env:LOCALAPPDATA\zfb\bin;$env:PATH"
+```
+
+Or permanently (open a new terminal after running):
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+  'PATH',
+  "$env:LOCALAPPDATA\zfb\bin;" + [System.Environment]::GetEnvironmentVariable('PATH', 'User'),
+  'User'
+)
+```
+
+### Windows — Scoop
+
+<Note title="Not yet available">
+
+A Scoop bucket (`Takazudo/scoop-bucket`) is planned but the bucket
+repository has not been created yet. Use the PowerShell script above in
+the meantime.
+
+</Note>
+
+## Verify the standalone install
+
+```sh
+zfb --version
+```
+
+## Config file: `zfb.config.json` vs `zfb.config.ts`
+
+Both config formats work without Node. `zfb.config.ts` is evaluated
+in-process via the embedded V8 isolate that ships with the default `zfb`
+binary — there is no runtime Node dependency.
+
+`zfb.config.ts` is a **data config** — `node:*` imports, `process.env`, and
+other Node-only APIs are not available inside the evaluator. Use
+`zfb.config.ts` when you want TypeScript types, comments, and computed values.
+Use `zfb.config.json` for a plain JSON alternative.
+
+```jsonc
+// zfb.config.json — also Node-free compatible
+{
+  "outDir": "dist",
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog",
+      "schema": { "type": "object", "properties": { "title": { "type": "string" } } }
+    }
+  ]
+}
+```
+
+If both `zfb.config.ts` and `zfb.config.json` are present, the `.ts` file
+wins.
+
+## When Node is still needed
+
+The following features require Node in `PATH`:
+
+| Feature | Why |
+| --- | --- |
+| `zfb check` without `--skip-tsc` | TypeScript type-checking delegates to `tsc`, which is a Node package. Pass `--skip-tsc` to run the non-TS checks only. |
+| Cloudflare adapter (`@takazudo/zfb-adapter-cloudflare`) | The adapter depends on Wrangler, which is a Node CLI. SSR deployments to Cloudflare Workers always need Node in the deploy environment. |
+
+Everything else — building, dev server, islands, zudo-wind, MDX, content
+collections, and `zfb.config.ts` evaluation — runs Node-free.
+
+## Upgrading zfb
+
+An in-place `zfb upgrade` command is planned for a future release. For now,
+re-run the same install command you used initially — it overwrites the
+existing binary with the latest version.

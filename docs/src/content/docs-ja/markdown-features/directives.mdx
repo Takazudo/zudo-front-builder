@@ -158,7 +158,7 @@ Inner body.
 `directives` はフレームワーク非依存で、JSX コンポーネントは一切同梱しません。ディレクティブを登録しても、コンパイル済み MDX に `<ComponentName>` を出力するようパイプラインに指示するだけです。次の作業が必要です:
 
 1. コンポーネント自体を自分で作成する。
-2. それをプロジェクトの [MDX コンポーネントマップ](../concepts/mdx-components.mdx) に追加する。
+2. それをプロジェクトの [MDX コンポーネントマップ](../architecture/mdx-components.mdx) に追加する。
 3. 自前の CSS でスタイリングする。
 
 ## 大文字小文字とそのままの出力
@@ -171,4 +171,4 @@ Inner body.
 
 - [ディレクティブレジストリ](./directives-registry.mdx) — `markdown.features.directives` が指定されたときに配線される、下層の Core プリミティブ。
 - [レシピ: Admonitions](/ja/docs/recipes/admonitions/) — `note`、`tip`、`info`、`warning`、`danger`、`caution`、`details` を最小限のコンポーネントスタブと CSS とともに登録する実例。
-- [カスタムディレクティブ](../concepts/custom-directives.mdx) — Rust パイプライン API 経由でディレクティブを登録する。
+- [カスタムディレクティブ](../architecture/custom-directives.mdx) — Rust パイプライン API 経由でディレクティブを登録する。

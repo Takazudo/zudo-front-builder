@@ -68,7 +68,7 @@ that function name. A different value fails with `ZR_ISLAND_IDENTITY` instead
 of renaming the target. Anonymous and unregistered names also fail rather than
 guessing which client entry to load. The client verifies the same component
 name and nonempty build identity from the wrapper before setup. For the static
-discovery rules, see [the island guide](../concepts/islands.mdx).
+discovery rules, see [the island guide](../architecture/islands.mdx).
 
 Only JSON data crosses in `data-props`. The top-level value must be a plain
 record; ordinary and null-prototype records are accepted. Nested values may be
@@ -207,7 +207,7 @@ to create a new subtree. A failed preflight returns `null` and leaves the
 server DOM inert. It does not fall back to a destructive client render.
 
 For the broader story on island boundaries and when to use them, see
-[Islands](../concepts/islands.mdx). For the runtime component model, start with
+[Islands](../architecture/islands.mdx). For the runtime component model, start with
 the [zudo-react overview](../zudo-react/overview.mdx).
 
 ## Footgun: do not self-wrap an island

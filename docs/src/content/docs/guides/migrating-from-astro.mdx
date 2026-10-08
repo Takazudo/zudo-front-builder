@@ -123,7 +123,7 @@ A few Astro features have direct zfb equivalents under a different name:
   (the same SPA router with view-transition animations that Astro's
   `<ClientRouter />` provides).
 - **Islands / client directives** — replaced by the `"use client"` file
-  directive and an explicit `<Island>` boundary; see [Islands](../concepts/islands.mdx).
+  directive and an explicit `<Island>` boundary; see [Islands](../architecture/islands.mdx).
 
 Some features have no current equivalent: an integrations marketplace, Astro
 DB, and server endpoints. If your site relies on these, evaluate whether
@@ -186,7 +186,7 @@ renderer. Gate a route on `command === "dev"` only when you intentionally want
 that route to exist in dev but not in production. `addClientEntry` registers a
 package-owned `*.client.{ts,tsx,js,jsx}` side-effect entry for the client
 bundle.
-See [Plugins](../concepts/plugins.mdx) for the full contract.
+See [Plugins](../architecture/plugins.mdx) for the full contract.
 
 **Route manifest in `postBuild` (`ctx.routes`)**
 
@@ -201,7 +201,7 @@ postBuild({ outDir, routes }) {
 },
 ```
 
-See the [Plugins](../concepts/plugins.mdx) page for the full `ZfbRouteManifest`
+See the [Plugins](../architecture/plugins.mdx) page for the full `ZfbRouteManifest`
 shape and a worked sitemap example.
 
 **Markdown: Table of Contents, external links, CJK-friendly emphasis**

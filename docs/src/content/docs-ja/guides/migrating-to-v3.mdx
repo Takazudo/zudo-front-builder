@@ -68,7 +68,7 @@ BEM の `card__title` や snake_case の `card_title` のようにアンダー�
 }
 ```
 
-`/** @jsxImportSource preact */` または `/** @jsxImportSource react */` というファイル単位の pragma が残っていないか、たとえば `grep -rln "@jsxImportSource" src pages components` で探し、zudo-react が描画するコンポーネントから削除します。ファイル単位の pragma は build で使う import source への唯一の上書きですが、React や Preact の指定によってそれらのレンダラーがサポートされるわけではありません。Preact が未インストールなら、Preact の pragma によってビルドが `Could not resolve "preact/jsx-runtime"` で失敗します。Preact がウィジェットの peer dependency などとして残っている場合は、静的描画が `ZR_CHILD` 診断で失敗します。どちらの失敗の前にも、`zfb build` と `zfb dev` は、ページやページが import するモジュールにあるこうした pragma ごとに、プロジェクトのファイル、行、列を示す `zfb warn:` 行を表示します。この警告は表示するだけで、終了ステータスは変わりません。依存パッケージ内のファイルは対象外なので、[サードパーティウィジェットの埋め込み](../concepts/islands.mdx#サードパーティウィジェットの埋め込み)のように DOM ホストの背後へ遅延マウントする Preact のウィジェットパッケージは、警告なしでビルドできます。`zfb check` はページ以外の authored `.tsx` / `.jsx` も調べ、`--skip-tsc` でも ZB005 を警告します。依存パッケージ、生成出力、スクラッチ領域は対象外で、警告だけでは check は失敗しません。
+`/** @jsxImportSource preact */` または `/** @jsxImportSource react */` というファイル単位の pragma が残っていないか、たとえば `grep -rln "@jsxImportSource" src pages components` で探し、zudo-react が描画するコンポーネントから削除します。ファイル単位の pragma は build で使う import source への唯一の上書きですが、React や Preact の指定によってそれらのレンダラーがサポートされるわけではありません。Preact が未インストールなら、Preact の pragma によってビルドが `Could not resolve "preact/jsx-runtime"` で失敗します。Preact がウィジェットの peer dependency などとして残っている場合は、静的描画が `ZR_CHILD` 診断で失敗します。どちらの失敗の前にも、`zfb build` と `zfb dev` は、ページやページが import するモジュールにあるこうした pragma ごとに、プロジェクトのファイル、行、列を示す `zfb warn:` 行を表示します。この警告は表示するだけで、終了ステータスは変わりません。依存パッケージ内のファイルは対象外なので、[サードパーティウィジェットの埋め込み](../architecture/islands.mdx#サードパーティウィジェットの埋め込み)のように DOM ホストの背後へ遅延マウントする Preact のウィジェットパッケージは、警告なしでビルドできます。`zfb check` はページ以外の authored `.tsx` / `.jsx` も調べ、`--skip-tsc` でも ZB005 を警告します。依存パッケージ、生成出力、スクラッチ領域は対象外で、警告だけでは check は失敗しません。
 
 hook を使うコンポーネントは、セットアップ時に一度実行される zudo-react コンポーネントへ書き換えます。書き込み可能な状態とフォームのモデルには `signal()`、読み取り専用の派生値には `computed()`、ライフサイクルには `getScope()` と `scope.effect()`、条件付き領域とキー付き領域には `Show` と `For` を使います。読み取り専用または computed の signal は書き込み可能なモデルにできません。JSX では `class`、`for`、`style={{ "background-color": "red" }}` のような HTML/CSS の表記と、ネイティブの `on:click` リスナーを使います。React 式の props とブランドのない要素オブジェクトは、zudo-react の JSX または `h()` に置き換えます。`rawHtml` は信頼できる内容に限り、children と併用できません。`<script>` と `<style>` のテキストの子は拒否されるため、信頼できる静的文字列を `<style rawHtml={CSS} />` または `<script rawHtml={JS} />` に渡すか、子を持たない外部 `<script src="/assets/app.js" />` を使います。この raw-text の文字列はそのまま出力され、エスケープもサニタイズもされません。この規則は `<title>` と `<textarea>` には当てはまらず、通常のテキストの子を受け取ります。変換例は [Preact hooks からの移行表](../zudo-react/coming-from-preact-hooks.mdx)を参照してください。
 
@@ -99,7 +99,7 @@ Flat config を使う混在プロジェクトでは、React プリセットよ�
 
 zudo-react の契約は TypeScript と renderer で確認します。上記のとおり `tsconfig.json` の JSX 設定を zudo-react に向けて `zfb check` を実行し、`zfb build` または `zfb dev` で renderer が示す表記エラーとソース位置を確認してください。ESLint の提案や自動修正が renderer の契約を変えることはありません。
 
-`<Island>` は引き続きコンポーネントを包むビルド時の要素です。ただし受け渡しは厳密になります。子コンポーネントは 1 つ、props は JSON、識別情報はソーススキャナーと一致する必要があります。手書きのラッパーにも完全で有効なメタデータが必要です。ハイドレーションは一致するサーバーのマークアップを採用し、不一致の島は個別に失敗します。SSR を省略するルートは `data-when` で起動を調整し、クライアントで正常にマウントした後にフォールバックを置き換えます。フォームは明示的な書き込み可能モデルを使い、select は単一選択のみで、ハイドレーション時は DOM の値が優先されるため、動作を確認してください。[島のガイド](../concepts/islands.mdx)も参照してください。
+`<Island>` は引き続きコンポーネントを包むビルド時の要素です。ただし受け渡しは厳密になります。子コンポーネントは 1 つ、props は JSON、識別情報はソーススキャナーと一致する必要があります。手書きのラッパーにも完全で有効なメタデータが必要です。ハイドレーションは一致するサーバーのマークアップを採用し、不一致の島は個別に失敗します。SSR を省略するルートは `data-when` で起動を調整し、クライアントで正常にマウントした後にフォールバックを置き換えます。フォームは明示的な書き込み可能モデルを使い、select は単一選択のみで、ハイドレーション時は DOM の値が優先されるため、動作を確認してください。[島のガイド](../architecture/islands.mdx)も参照してください。
 
 ### 任意の島 prop
 
@@ -157,7 +157,7 @@ export default defineConfig({
 
 `widgets` パッケージは `./wind.json` を export する必要があります。bare specifier はパッケージの exports から解決され、`./` で始まるパスは宣言した config のディレクトリ（プリセット由来ならそのプリセットパッケージ）を基準に解決されます。[マニフェストパスの解決](../zudo-wind/configuration.mdx#wind-キー-マニフェストパスの解決)を参照してください。
 
-配布するコンポーネントは `@takazudo/zfb/zudo-react` からインポートし、同じ JSX import source を使ってください。zudo-react が描画するコンポーネントには Preact や React の JSX runtime import を含めないでください。独自フレームワークを持つ不透明な自己マウント型ウィジェットは、島から遅延読み込みできます。[サードパーティウィジェットの埋め込み](../concepts/islands.mdx#サードパーティウィジェットの埋め込み)を参照してください。マニフェストの検証と探索ルートは [ソースと候補](../zudo-wind/sources-and-candidates.mdx)を参照してください。
+配布するコンポーネントは `@takazudo/zfb/zudo-react` からインポートし、同じ JSX import source を使ってください。zudo-react が描画するコンポーネントには Preact や React の JSX runtime import を含めないでください。独自フレームワークを持つ不透明な自己マウント型ウィジェットは、島から遅延読み込みできます。[サードパーティウィジェットの埋め込み](../architecture/islands.mdx#サードパーティウィジェットの埋め込み)を参照してください。マニフェストの検証と探索ルートは [ソースと候補](../zudo-wind/sources-and-candidates.mdx)を参照してください。
 
 ## チェックリスト
 
