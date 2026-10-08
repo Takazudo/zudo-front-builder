@@ -1561,16 +1561,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 changes
                     .iter()
                     .zip(unknown_modified_page)
-                    .filter_map(|((path, _), unknown)| {
-                        (unknown
+                    .filter(|((path, _), unknown)| {
+                        *unknown
                             && classify_change_with_content_roots(
                                 path,
                                 &self.config.project_root,
                                 &self.config.policy.content_roots,
                                 |p| graph.is_global(p),
-                            ) == PathClass::Page)
-                            .then(|| path.clone())
+                            ) == PathClass::Page
                     })
+                    .map(|((path, _), _)| path.clone())
                     .collect()
             } else {
                 Vec::new()
