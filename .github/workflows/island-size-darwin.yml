@@ -1,0 +1,274 @@
+name: island-size-darwin
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to measure (defaults to the dispatching ref)
+        required: false
+        type: string
+      enforce:
+        description: Fail the run when the measured totals exceed decision.json
+        required: false
+        default: false
+        type: boolean
+  # Temporary PR bootstrap: workflow_dispatch is unavailable until this file
+  # lands on the default branch. Keep the early PR runs available as in #3969.
+  pull_request:
+    paths:
+      - .github/workflows/island-size-darwin.yml
+      - research/v3-island-size/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: island-size-darwin-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    # The temporary bootstrap measures only the epic PR into its recorded parent;
+    # the child topic PR targets the epic base and must not spend a Mac runner.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.base.ref == 'base/sweep-261007-2' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 1
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          # PR runs must measure the branch head, not GitHub's synthetic merge ref.
+          ref: ${{ github.event.pull_request.head.sha || inputs.ref || github.ref }}
+          fetch-depth: 2
+
+      - name: Resolve measured source and enforcement mode
+        id: context
+        shell: bash
+        env:
+          DISPATCH_ENFORCE: ${{ inputs.enforce }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/island-size
+          source_sha="$(git rev-parse HEAD)"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            # The PR checkout is its exact head SHA and fetch-depth 2 provides HEAD~1.
+            if [[ -n "$(git diff --name-only HEAD~1 -- research/v3-island-size/decision.json)" ]]; then
+              enforce=true
+            else
+              enforce=false
+            fi
+          elif [[ "$DISPATCH_ENFORCE" == "true" ]]; then
+            enforce=true
+          else
+            enforce=false
+          fi
+          {
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'enforce=%s\n' "$enforce"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Measured source SHA: %s\nEnforce budget: %s\n' "$source_sha" "$enforce"
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert native runner and pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.context.outputs.source_sha }}"
+          test "$(uname -s):$(uname -m)" = "Darwin:arm64"
+          test "$(rustc --version | awk '{print $2}')" = "1.99.0"
+          test "$(pnpm --version)" = "12.8.2"
+          node --input-type=module -e '
+            if (process.version !== "v24.14.0") {
+              throw new Error(`expected Node v24.14.0, got ${process.version}`);
+            }
+            if (process.versions.zlib !== "1.3.1-e00f703") {
+              throw new Error(`expected zlib 1.3.1-e00f703, got ${process.versions.zlib}`);
+            }
+            if (process.platform !== "darwin" || process.arch !== "arm64") {
+              throw new Error(`unsupported platform ${process.platform}:${process.arch}`);
+            }
+          '
+          out=target/island-size
+          free_kib="$(df -Pk . | awk 'NR == 2 { print $4 }')"
+          if [[ ! "$free_kib" =~ ^[0-9]+$ ]]; then
+            echo "unable to determine available disk space before cargo build" >&2
+            exit 1
+          fi
+          free_bytes=$((free_kib * 1024))
+          free_gib="$(awk -v bytes="$free_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+          {
+            printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'runner=%s %s\n' "$(uname -s)" "$(uname -m)"
+            printf 'sw_vers=%s\n' "$(sw_vers | tr '\n' ';')"
+            printf 'rustc=%s\n' "$(rustc --version --verbose | tr '\n' ';')"
+            printf 'cargo=%s\n' "$(cargo --version)"
+            printf 'node=%s\n' "$(node --version)"
+            printf 'zlib=%s\n' "$(node -p 'process.versions.zlib')"
+            printf 'pnpm=%s\n' "$(pnpm --version)"
+            printf 'disk_free_before_cargo_build_bytes=%s\n' "$free_bytes"
+            printf 'disk_free_before_cargo_build_gib=%s\n' "$free_gib"
+            printf 'cargo_incremental=%s\n' "$CARGO_INCREMENTAL"
+            printf 'cargo_build_jobs=%s\n' "$CARGO_BUILD_JOBS"
+          } | tee "$out/runner-provenance.txt"
+
+          minimum_bytes=$((8 * 1024 * 1024 * 1024))
+          debug_reduction_bytes=$((20 * 1024 * 1024 * 1024))
+          if (( free_bytes < minimum_bytes )); then
+            echo "less than 8 GiB is free; refusing to start the native compile" >&2
+            exit 1
+          fi
+          if (( free_bytes < debug_reduction_bytes )); then
+            echo 'CARGO_PROFILE_DEV_DEBUG=0' >> "$GITHUB_ENV"
+            printf 'cargo_profile_dev_debug=0 (reduced: pre-build free disk below 20 GiB)\n' | tee -a "$out/runner-provenance.txt"
+          else
+            printf 'cargo_profile_dev_debug=default\n' | tee -a "$out/runner-provenance.txt"
+          fi
+
+      # This CI recipe uses checkout-relative paths and runs directly on native
+      # macOS, so it does not use the local procedure's host paths or heavy guard.
+      # Rust 1.99.0 is pinned explicitly here because rust-toolchain.toml tracks stable.
+      - name: Build the native zfb binary from this source SHA
+        run: cargo build --locked -p zfb
+
+      - name: Build and pack SDK and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=target/island-size
+          version="$(node -p "require('./packages/zfb/package.json').version")"
+          mkdir -p "$out/pack" "$out/packed-package" "$out/packed-runtime"
+          pnpm -C packages/zfb build
+          pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb pack --pack-destination "$out/pack"
+          pnpm -C packages/zfb-runtime pack --pack-destination "$out/pack"
+          tar -xzf "$out/pack/takazudo-zfb-$version.tgz" -C "$out/packed-package"
+          tar -xzf "$out/pack/takazudo-zfb-runtime-$version.tgz" -C "$out/packed-runtime"
+
+      - name: Record built binary and package provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=target/island-size
+          version="$(node -p "require('./packages/zfb/package.json').version")"
+          esbuild=crates/zfb/binaries/esbuild/esbuild
+          zfb=target/debug/zfb
+          test -x "$esbuild"
+          test -x "$zfb"
+          test "$("$esbuild" --version)" = "0.25.12"
+          {
+            printf 'zfb_binary='; shasum -a 256 "$zfb"
+            printf 'esbuild_version=%s\n' "$("$esbuild" --version)"
+            printf 'esbuild_binary='; shasum -a 256 "$esbuild"
+            printf 'hono_version=%s\n' "$(node -p "require('./packages/zfb-runtime/node_modules/hono/package.json').version")"
+            printf 'hono_package_json='; shasum -a 256 packages/zfb-runtime/node_modules/hono/package.json
+            printf 'zfb_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-$version.tgz"
+            printf 'runtime_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-runtime-$version.tgz"
+          } | tee -a "$out/runner-provenance.txt"
+
+      - name: Measure complete workspace and packed matrices
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=target/island-size
+          version="$(node -p "require('./packages/zfb/package.json').version")"
+          source_sha="$(git rev-parse HEAD)"
+          zfb=target/debug/zfb
+          esbuild=crates/zfb/binaries/esbuild/esbuild
+          hono=packages/zfb-runtime/node_modules/hono
+          # Both calls use the full eight-fixture matrix and two saved passes;
+          # only the package paths differ between workspace and packed inputs.
+          node research/v3-island-size/measure-real.mjs \
+            --mode workspace \
+            --package packages/zfb \
+            --runtime-package packages/zfb-runtime \
+            --hono-package "$hono" \
+            --zfb-tarball "$out/pack/takazudo-zfb-$version.tgz" \
+            --runtime-tarball "$out/pack/takazudo-zfb-runtime-$version.tgz" \
+            --zfb "$zfb" \
+            --esbuild "$esbuild" \
+            --source-sha "$source_sha" \
+            --out "$out/real-workspace"
+          node research/v3-island-size/measure-real.mjs \
+            --mode packed \
+            --package "$out/packed-package/package" \
+            --runtime-package "$out/packed-runtime/package" \
+            --hono-package "$hono" \
+            --zfb-tarball "$out/pack/takazudo-zfb-$version.tgz" \
+            --runtime-tarball "$out/pack/takazudo-zfb-runtime-$version.tgz" \
+            --zfb "$zfb" \
+            --esbuild "$esbuild" \
+            --source-sha "$source_sha" \
+            --out "$out/real-packed"
+
+      - name: Check recorded Darwin budgets
+        id: budget
+        if: always()
+        continue-on-error: ${{ steps.context.outputs.enforce != 'true' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=target/island-size
+          mkdir -p "$out"
+          set +e
+          node research/v3-island-size/check-budget.mjs \
+            --workspace "$out/real-workspace/measurement.json" \
+            --packed "$out/real-packed/measurement.json" \
+            > "$out/check-budget.log" 2>&1
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$out/check-budget.exit-code"
+          cat "$out/check-budget.log"
+          exit "$status"
+
+      - name: Write budget result to step summary
+        if: always()
+        shell: bash
+        env:
+          CHECK_OUTCOME: ${{ steps.budget.outcome }}
+          ENFORCE: ${{ steps.context.outputs.enforce }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          out=target/island-size
+          if [[ "$CHECK_OUTCOME" == "success" ]]; then
+            result=PASS
+          else
+            result=FAIL
+          fi
+          {
+            printf '## Darwin island-size budget: %s\n\n' "$result"
+            printf -- '- Enforced: `%s`\n' "$ENFORCE"
+            printf -- '- Measured source SHA: `%s`\n\n' "$SOURCE_SHA"
+            printf '```text\n'
+            if [[ -f "$out/check-budget.log" ]]; then
+              tail -n 80 "$out/check-budget.log"
+            else
+              printf 'Budget checker did not produce a log.\n'
+            fi
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload complete Darwin island-size evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: island-size-darwin-arm64-${{ steps.context.outputs.source_sha }}
+          path: target/island-size/
+          if-no-files-found: error
+          retention-days: 30
