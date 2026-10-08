@@ -152,7 +152,7 @@ run_worker_first = ["/", "/api/*"]
 
 ### 管理ゲートこそ真似する価値のある部分
 
-`DELETE /api/entries/<key>` は `prerender = false` な [動的ルート](/ja/docs/concepts/dynamic-routes) なので、`params.key` はリクエスト時に URL から得られます。このルートは KV に触れる *前に* 認証を確認します。`ADMIN_TOKEN` が未設定なら `503`（未設定である旨）、Bearer トークンが無いか誤っていれば `401` です。比較は両方の値を SHA-256 でハッシュしてダイジェストを突き合わせるので、タイミングからトークンの長さや先頭部分が漏れることはありません。
+`DELETE /api/entries/<key>` は `prerender = false` な [動的ルート](/ja/docs/architecture/dynamic-routes) なので、`params.key` はリクエスト時に URL から得られます。このルートは KV に触れる *前に* 認証を確認します。`ADMIN_TOKEN` が未設定なら `503`（未設定である旨）、Bearer トークンが無いか誤っていれば `401` です。比較は両方の値を SHA-256 でハッシュしてダイジェストを突き合わせるので、タイミングからトークンの長さや先頭部分が漏れることはありません。
 
 ページ上の Delete ボタンはこれとは別物です。こちらは隠しフィールド `delete` を持つ普通のフォームとして `/` に POST し、**あえて認証していません**。ライブデモを最後まで試せるようにするためです。ゲストブックのページにもソースコードのコメントにもそう明記されています。開放されたボタンは上に載せたデモ用の仕掛けであって、リファレンスとなるパターンはトークンで保護されたエンドポイントのほうです。
 
@@ -187,6 +187,6 @@ pnpm smoke      # read-only check against the live domain
 ## 関連ドキュメント
 
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — `prerender = false`、アダプター、`wrangler.toml`、KV バインディングの実践ガイド。
-- [Worker 上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js`、アセットのディスパッチ、`getCloudflareContext()` の考え方。
-- [動的ルート](/ja/docs/concepts/dynamic-routes) — `[key]` というブラケット記法について。
+- [Worker 上の SSR（アダプターモード）](/ja/docs/architecture/ssr-on-a-worker) — `dist/_worker.js`、アセットのディスパッチ、`getCloudflareContext()` の考え方。
+- [動的ルート](/ja/docs/architecture/dynamic-routes) — `[key]` というブラケット記法について。
 - [サンプル](/ja/docs/guides/examples) — スタンドアロンのサンプルリポジトリの一覧。

@@ -48,7 +48,7 @@ For an island rendered by zfb, the component name and build identity must match 
 
 A caller-owned client mount may choose its own nonempty, stable build string, provided it matches the wrapper and `RootOptions.identity.build`; see [Mount from a host you own](./hydration.mdx#mount-from-a-host-you-own).
 
-For a zfb-generated server island, the scanner's marker is the defining function's name; it does not read `displayName`. At server render time, `displayName` must be absent or equal to that name. A mismatch fails with `ZR_ISLAND_IDENTITY` rather than renaming the target. Anonymous or unregistered components also cannot be used as island children. Use the existing zfb island integration for scanner registration, scheduling, and persistence; see the [island guide](../concepts/islands.mdx).
+For a zfb-generated server island, the scanner's marker is the defining function's name; it does not read `displayName`. At server render time, `displayName` must be absent or equal to that name. A mismatch fails with `ZR_ISLAND_IDENTITY` rather than renaming the target. Anonymous or unregistered components also cannot be used as island children. Use the existing zfb island integration for scanner registration, scheduling, and persistence; see the [island guide](../architecture/islands.mdx).
 
 The wrapper is retained by zfb. zudo-react markers describe ranges only inside that wrapper, so a surrounding document stays marker-free. Each root owns its local marker numbering; authors do not need a global element ID or a component registry of their own.
 
@@ -114,5 +114,5 @@ Elements written with `h()`, elements created inside a dependency, and code chan
 - [Overview](./overview.mdx)
 - [Hydration](./hydration.mdx)
 - [Forms](./forms.mdx)
-- [Islands](../concepts/islands.mdx)
+- [Islands](../architecture/islands.mdx)
 - [Island API](../api/island.mdx)

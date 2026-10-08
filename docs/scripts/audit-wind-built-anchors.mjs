@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { migratedBuiltRoute } from "../src/config/route-migrations.mjs";
 import { Config, Parser } from "html-validate";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -73,7 +74,7 @@ function auditInventory(distDir, baseline, kind, findings) {
     routeCount += 1;
     idCount += expected.ids.length;
     headingCount += (expected.headings ?? []).length;
-    const filepath = safeRouteFile(distDir, route);
+    const filepath = safeRouteFile(distDir, migratedBuiltRoute(route));
     let html;
     try {
       html = readFileSync(filepath, "utf8");

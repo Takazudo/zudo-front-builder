@@ -92,7 +92,7 @@ PROXY_ORIGIN = "https://httpbingo.org"
 **`nodejs_compat` は必須** であり、任意のチューニングではありません。Cloudflare アダプターは
 リクエストごとの `(env, ctx, request)` を `node:async_hooks` の `AsyncLocalStorage` 経由で
 渡しますが、workerd はこれをデフォルトでは公開していません。フラグがないと Worker は起動に
-失敗します。詳しくは [SSR on a Worker（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker)
+失敗します。詳しくは [SSR on a Worker（アダプターモード）](/ja/docs/architecture/ssr-on-a-worker)
 を参照してください。
 
 **Cloudflare アカウントなしでもローカルで動く範囲:** `pnpm install`、`pnpm build`、
@@ -345,13 +345,13 @@ curl -i "http://127.0.0.1:8788/proxy/response-headers?Content-Security-Policy=de
 
 ## 関連ドキュメント
 
-- [SSR on a Worker（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js`
+- [SSR on a Worker（アダプターモード）](/ja/docs/architecture/ssr-on-a-worker) — `dist/_worker.js`
   の中身、リクエストのディスパッチ、`getCloudflareContext()` を支える `AsyncLocalStorage` の
   仕組み。
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) —
   アダプターの導入、`wrangler.toml`、ローカル開発ループという実践的なセットアップガイド。
-- [動的ルート](/ja/docs/concepts/dynamic-routes) — このルートが省略できた `paths()` の契約と、
+- [動的ルート](/ja/docs/architecture/dynamic-routes) — このルートが省略できた `paths()` の契約と、
   プリレンダリングされるページにとってキャッチオールセグメントが何を意味するか。
-- [静的アセット](/ja/docs/concepts/static-assets) — `public/` と出力される `dist/` が、この
+- [静的アセット](/ja/docs/architecture/static-assets) — `public/` と出力される `dist/` が、この
   Worker の手前に立つアセット層とどう関係するか。
 - [サンプル集](/ja/docs/guides/examples) — 独立した zfb サンプルリポジトリの一覧。

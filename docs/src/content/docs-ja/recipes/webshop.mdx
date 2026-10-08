@@ -10,7 +10,7 @@ category: Recipes
 コンテンツ中心のサイトでは実現できないことをまとめて見せるストアフロントです。**Cloudflare D1**
 から毎リクエスト読み出すカタログ、メールアドレスとパスワードによるアカウントとサーバー側セッション、
 カート、そしてカートの内容を注文として確定させるチェックアウト。全ルートが `prerender = false` なので、
-[Worker 上の SSR](/ja/docs/concepts/ssr-on-a-worker) が単一の動的ページではなくアプリケーション全体を
+[Worker 上の SSR](/ja/docs/architecture/ssr-on-a-worker) が単一の動的ページではなくアプリケーション全体を
 支えている様子を読み取れます。
 
 このデモはクライアント JavaScript を **一切** 出力しません。すべてのボタンは `<form method="post">` です。
@@ -122,7 +122,7 @@ dist/__zfb/routes.json
 `scripts/stable-css.mjs` は 40 行ほどの `copyFileSync` で、`dist/assets/styles-*.css` がちょうど 1 つで
 なければエラー終了します。ハッシュ付きの本体は長期キャッシュ用にそのまま残り、コピーは SSR レイアウトが
 参照するためのハンドルにすぎません。そのスタイルシートがどう作られるかは
-[スタイリング](/ja/docs/concepts/styling) と [静的アセット](/ja/docs/concepts/static-assets) を参照してください。
+[スタイリング](/ja/docs/architecture/styling) と [静的アセット](/ja/docs/architecture/static-assets) を参照してください。
 
 ### ルートは VNode ではなく Response を返す
 
@@ -220,7 +220,7 @@ D1 には対話的トランザクションがないため、`lib/shop.ts` はま
 これはこのデモが選んだ形であって、zfb の制約ではありません。`pages/order.tsx` にはそう読める古い
 コメントが残っており、`[id].tsx` のようなセグメントはビルド時の `paths()` の列挙からしか展開できない、
 と書かれています。列挙できないという部分は事実です。注文 id は購入されるまで存在しないので、
-列挙すべきものがありません。しかし `prerender = false` の [動的ルート](/ja/docs/concepts/dynamic-routes)
+列挙すべきものがありません。しかし `prerender = false` の [動的ルート](/ja/docs/architecture/dynamic-routes)
 はリクエスト時にマッチされ、`paths()` の export をまったく必要としません。ランタイムのルーターが
 コンポーネントに `params` を渡すので、`pages/order/[id].tsx` でも同じように動いたはずです。
 [ページモジュールの export](/ja/docs/api/meta-export) を参照してください。
@@ -270,8 +270,8 @@ pnpm dev:cf
 
 ## 関連ページ
 
-- [Worker 上の SSR](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js` と `dist/_zfb_inner.mjs` の正体、`getCloudflareContext()` の仕組み
+- [Worker 上の SSR](/ja/docs/architecture/ssr-on-a-worker) — `dist/_worker.js` と `dist/_zfb_inner.mjs` の正体、`getCloudflareContext()` の仕組み
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — SSR ハンドラーから D1 や KV を読む方法とバインディングの設定
-- [動的ルート](/ja/docs/concepts/dynamic-routes) — `paths()` の契約と、`prerender = false` の動的ルートがリクエスト時にマッチされる仕組み
-- [ルーティング](/ja/docs/concepts/routing) — `pages/*.tsx` が URL になるまで
+- [動的ルート](/ja/docs/architecture/dynamic-routes) — `paths()` の契約と、`prerender = false` の動的ルートがリクエスト時にマッチされる仕組み
+- [ルーティング](/ja/docs/architecture/routing) — `pages/*.tsx` が URL になるまで
 - [zudo-wind の設定](/ja/docs/zudo-wind/configuration) — トークンやリセットの設定

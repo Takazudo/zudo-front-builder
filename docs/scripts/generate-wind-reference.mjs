@@ -13,6 +13,8 @@ import {
 import { WIND_REFERENCE_FAMILIES } from "./wind-reference-families.mjs";
 import { loadCompatibilityInputs, renderCompatibilityPages } from "./wind-compatibility-pages.mjs";
 
+import { WIND_UTILITY_GROUPS } from "../src/config/navigation-groups.mjs";
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
 const DEFAULT_CATALOG = "crates/zudo-wind/catalog/zudo-wind-catalog.v1.json";
@@ -264,6 +266,35 @@ export function validateCatalogFamilies(catalog, families) {
   return entriesById;
 }
 
+export function validateUtilityGroups(groups, families) {
+  if (groups.length !== 7 || families.length !== 48)
+    throw new Error("Expected seven utility groups and 48 families");
+  const familyIds = new Set(families.map(({ id }) => id));
+  const groupIds = new Set();
+  const members = new Set();
+  for (const group of groups) {
+    if (
+      !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(group.id) ||
+      group.slug !== `zudo-wind/utilities/${group.id}` ||
+      groupIds.has(group.id) ||
+      familyIds.has(group.id) ||
+      group.id === "index"
+    )
+      throw new Error(`Invalid or colliding utility group ${group.id}`);
+    groupIds.add(group.id);
+    if (!Array.isArray(group.members) || !group.members.length)
+      throw new Error(`Empty utility group ${group.id}`);
+    for (const slug of group.members) {
+      const id = slug.replace(/^zudo-wind\/utilities\//, "");
+      if (slug !== `zudo-wind/utilities/${id}` || !familyIds.has(id) || members.has(id))
+        throw new Error(`Unknown or duplicate utility group member ${slug}`);
+      members.add(id);
+    }
+  }
+  if (members.size !== familyIds.size)
+    throw new Error("Every utility family must belong to exactly one group");
+}
+
 export function validateLocaleStrings(strings, families) {
   for (const path of REQUIRED_STRING_PATHS) {
     if (typeof getPath(strings, path) !== "string") {
@@ -454,15 +485,9 @@ export function renderReferencePages(catalog, strings, families, options = {}) {
       if (!editorial.has(family.id)) throw new Error(`Missing editorial family ${family.id}`);
   }
   const output = new Map();
-  const indexRows = [];
   for (const family of families) {
     const localized = strings.families[family.id];
     const familyRank = entriesById.get(family.entries[0]).conflictGroupRank;
-    indexRows.push([
-      `[${escapeMdxText(localized.title)}](${family.id}.mdx)`,
-      codeSpan(family.entries.length),
-    ]);
-
     const entries = family.entries
       .map((entryId) => entriesById.get(entryId))
       .sort(
@@ -509,25 +534,12 @@ export function renderReferencePages(catalog, strings, families, options = {}) {
     escapeMdxText(strings.index.intro),
     "",
     ...(strings.reader ? [`## ${escapeMdxText(strings.reader.browse)}`, ""] : []),
-    table(
-      [
-        strings.index.familyColumn,
-        ...(strings.reader ? [strings.reader.taskColumn] : []),
-        strings.index.entryCountColumn,
-      ].map(escapeMdxText),
-      indexRows.map((row, index) =>
-        strings.reader
-          ? [row[0], escapeMdxText(strings.families[families[index].id].description), row[1]]
-          : row,
-      ),
-    ),
+    `<CategoryNav categories={${JSON.stringify(WIND_UTILITY_GROUPS.map((group) => group.slug))}} />`,
     "",
     `${escapeMdxText(strings.index.specVersionLabel)}: ${codeSpan(catalog.specVersion)}.`,
     ...(catalog.specRevision === undefined
       ? []
       : [`${escapeMdxText(strings.index.specRevisionLabel)}: ${codeSpan(catalog.specRevision)}.`]),
-    "",
-    '<CategoryNav category="zudo-wind/utilities" />',
     "",
   ].join("\n");
   output.set("index.mdx", index);
@@ -603,6 +615,7 @@ async function runCli(args) {
   const catalogPath = resolve(REPO_ROOT, options.catalog);
   const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
   validateCatalogFamilies(catalog, WIND_REFERENCE_FAMILIES);
+  validateUtilityGroups(WIND_UTILITY_GROUPS, WIND_REFERENCE_FAMILIES);
   console.log(`entries=${catalog.entries.length} families=${WIND_REFERENCE_FAMILIES.length}`);
 
   const stringsPath = join(SCRIPT_DIR, "wind-reference-strings", `${options.locale}.mjs`);

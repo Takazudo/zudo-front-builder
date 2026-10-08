@@ -22,7 +22,7 @@ zfb + Cloudflare のプロジェクトでは、どちらも「Worker」と呼ば
 
 </Info>
 
-生成された Worker が実際にどう動くかの概念的なメンタルモデルについては、[SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) を参照してください。
+生成された Worker が実際にどう動くかの概念的なメンタルモデルについては、[SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx) を参照してください。
 
 ## zfb における SSG と SSR
 
@@ -117,7 +117,7 @@ export const prerender = flags.prerender;
 export const prerender = computeFlag();
 ```
 
-同じ制約は `frontmatter` エクスポートにも適用されます。リテラルのみのコントラクトについては [Frontmatter](../concepts/frontmatter.mdx) を参照してください。
+同じ制約は `frontmatter` エクスポートにも適用されます。リテラルのみのコントラクトについては [Frontmatter](../architecture/frontmatter.mdx) を参照してください。
 
 </Warning>
 
@@ -141,7 +141,7 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 - `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Worker エントリ（薄いラッパーと、バンドルされた SSR ルート）、そして
 - SSR バンドルがインポートする Wasm モジュールごとの `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これは esbuild 自身の `--asset-names=[name]-[hash]` の命名規則であり、zfb 固有の仕様ではありません）と `.assetsignore`。この ignore ファイルは `_worker.js`、`_zfb_inner.mjs`、生成された Wasm の basename をすべて列挙し、アセットサーバーがサーバーコードやコンパイル済みモジュールを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
 
-この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべて — プロジェクトにあれば `public/_redirects` ファイルも含めて — を処理します。ルール構文については [Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照してください。
+この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべて — プロジェクトにあれば `public/_redirects` ファイルも含めて — を処理します。ルール構文については [Static Assets — `_redirects`](../architecture/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照してください。
 
 <Warning title="Cloudflare Pages のアドバンストモードは未検証">
 
@@ -170,7 +170,7 @@ not_found_handling = "404-page"
 - `compatibility_date` は Workers ランタイムの挙動を固定します。
 - `compatibility_flags = ["nodejs_compat"]` は**必須**です。下の警告を参照してください。
 - `[assets] directory = "./dist"` は静的な出力を組み込みのアセットサーバーに委ねます。
-- `[assets] binding = "ASSETS"` は**推奨**です。これにより生成された `_worker.js` に `env.ASSETS` が公開され、SSR ルートへフォールスルーする前に GET/HEAD リクエストを自ら探ります（`worker-wrapper.mjs` の `canDelegateToAssets()` は、このバインディングが無いとプローブを no-op にします）。デフォルトの `run_worker_first = false` の下でもプラットフォーム自身のアセットルーターがほとんどのヒットをすでに配信しているのに、なぜこのプローブが重要なのかについては [SSR on a Worker — 内側の `env.ASSETS` プローブはデッドコードではない](../concepts/ssr-on-a-worker.mdx#ディスパッチフロー-内側の-env-assets-プローブはデッドコードではない) を参照してください。
+- `[assets] binding = "ASSETS"` は**推奨**です。これにより生成された `_worker.js` に `env.ASSETS` が公開され、SSR ルートへフォールスルーする前に GET/HEAD リクエストを自ら探ります（`worker-wrapper.mjs` の `canDelegateToAssets()` は、このバインディングが無いとプローブを no-op にします）。デフォルトの `run_worker_first = false` の下でもプラットフォーム自身のアセットルーターがほとんどのヒットをすでに配信しているのに、なぜこのプローブが重要なのかについては [SSR on a Worker — 内側の `env.ASSETS` プローブはデッドコードではない](../architecture/ssr-on-a-worker.mdx#ディスパッチフロー-内側の-env-assets-プローブはデッドコードではない) を参照してください。
 - `not_found_handling = "404-page"` は**推奨**です。マッチしなかったアセットパスは Worker にフォールスルーし、Worker が `pages/404.tsx` と、あらゆる動的な `prerender = false` ルートを配信します。
 
 <Warning title="`not_found_handling = 'single-page-application'` を設定しないこと">
@@ -191,7 +191,7 @@ not_found_handling = "404-page"
 
 ### アセットより先に Worker を実行する（`run_worker_first`）
 
-このページのすべての例は、zfb のデフォルトである `run_worker_first = false` を前提にしています — プラットフォームのエッジアセットルーターが、`_worker.js` が実行される前にマッチする静的ファイルを配信します（全体のメンタルモデルは [SSR on a Worker — ディスパッチフロー](../concepts/ssr-on-a-worker.mdx#ディスパッチフロー) を参照してください）。`run_worker_first = true` を設定するとこれが反転し、プリレンダリング済みの静的ページへのヒットを含む**すべての**リクエストが最初に Worker に到達します:
+このページのすべての例は、zfb のデフォルトである `run_worker_first = false` を前提にしています — プラットフォームのエッジアセットルーターが、`_worker.js` が実行される前にマッチする静的ファイルを配信します（全体のメンタルモデルは [SSR on a Worker — ディスパッチフロー](../architecture/ssr-on-a-worker.mdx#ディスパッチフロー) を参照してください）。`run_worker_first = true` を設定するとこれが反転し、プリレンダリング済みの静的ページへのヒットを含む**すべての**リクエストが最初に Worker に到達します:
 
 ```toml
 [assets]
@@ -211,7 +211,7 @@ run_worker_first = true
 compatibility_flags = ["nodejs_compat"]
 ```
 
-このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx#getcloudflarecontext-のトリック) を参照してください。
+このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx#getcloudflarecontext-のトリック) を参照してください。
 
 </Warning>
 

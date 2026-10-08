@@ -1,7 +1,7 @@
 ---
 title: The zudo-react runtime
 description: How zfb uses one owned runtime to render whole documents and adopt island subtrees.
-sidebar_position: 3
+sidebar_position: 32
 ---
 
 zfb uses one rendering runtime: **zudo-react**, shipped as subpath exports of
@@ -70,5 +70,5 @@ small, owned runtime rather than a compatibility facade; existing framework
 components need to be rewritten to its API.
 
 For the zfb side of scheduling, persisted wrappers, and server-to-client props,
-see [Islands](../concepts/islands.mdx). For the exact description, prop, and
+see [Islands](../architecture/islands.mdx). For the exact description, prop, and
 hydration rules, see the [Island API](../api/island.mdx).

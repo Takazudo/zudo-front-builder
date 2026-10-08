@@ -7,7 +7,7 @@ category: Recipes
 
 <Info title="このページで扱うこと">
 
-削除された組み込み機能 `imageEnlarge` を、ユーザーランドの `EnlargeableImg` コンポーネントを [MDX オーバーライド API](../concepts/mdx-components.mdx) 経由で接続することで置き換える方法です。完全にサーバーサイドで動くバリアント（ページごとに JavaScript を送信しない）と、アイランドバリアント（`<Island>` によるクライアントサイドのインタラクティブ性）の両方を示します。
+削除された組み込み機能 `imageEnlarge` を、ユーザーランドの `EnlargeableImg` コンポーネントを [MDX オーバーライド API](../architecture/mdx-components.mdx) 経由で接続することで置き換える方法です。完全にサーバーサイドで動くバリアント（ページごとに JavaScript を送信しない）と、アイランドバリアント（`<Island>` によるクライアントサイドのインタラクティブ性）の両方を示します。
 
 </Info>
 
@@ -278,5 +278,5 @@ export default function EnlargeableImg({ src, alt, title }: Props) {
 
 ## 関連項目
 
-- [MDX コンポーネント](../concepts/mdx-components.mdx) — `components` prop、`defaultComponents`、そして `mdx-components.tsx` のグローバル規約です。
-- [アイランド](../concepts/islands.mdx) — `<Island>` ラッパー、ハイドレーション戦略、そして `"use client"` ディレクティブです。
+- [MDX コンポーネント](../architecture/mdx-components.mdx) — `components` prop、`defaultComponents`、そして `mdx-components.tsx` のグローバル規約です。
+- [アイランド](../architecture/islands.mdx) — `<Island>` ラッパー、ハイドレーション戦略、そして `"use client"` ディレクティブです。

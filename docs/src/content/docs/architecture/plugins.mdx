@@ -1,0 +1,561 @@
+---
+title: Plugins
+description: Author and consume zfb plugins — the five lifecycle hooks, virtual modules, import aliases, injected routes, and client entries.
+sidebar_position: 23
+category: Concepts
+---
+
+zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. The zfb build, dev, and preview hosts load each plugin module once at boot and dispatch five optional lifecycle hooks to it. A plugin may declare any subset of the five — anything it omits is a silent no-op.
+
+This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](../api/define-config.mdx).
+
+The plugin host boots for every command that can actually run plugin code — `zfb build`, `zfb dev`, and `zfb preview`. `zfb check` never boots it: it is a pure lint command (`tsc --noEmit` plus content-collection schema validation), so a plugin's `setup`/`preBuild`/etc. never runs during `zfb check`.
+
+## When you actually need a plugin
+
+Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-don-t-—-write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](./design-philosophy.mdx).
+
+- **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page. If the loader derives that source from real files, name them in the registration's `watchFiles` option so `zfb dev` re-runs the loader when they change.
+- **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
+- **Injected page route that lives outside `pages/`.** `injectRoute` registers an ESM page module under a URL pattern. Entrypoints can be source TSX/TS modules or compiled ESM `.js` modules published by a package. In build and dev, the page pipeline renders matching static and dynamic injected routes. Gate the call on `command === "dev"` only when the route is truly dev-only.
+- **Package-owned client entry.** `addClientEntry` registers a `*.client.{ts,tsx,js,jsx}` side-effect entry that should be bundled with the project's client scripts.
+
+For responses that are not pages, use the separate `devMiddleware` hook (or its preview counterpart, `previewMiddleware` — see below): a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
+
+## The five hooks
+
+```ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  setup?(ctx) {},            // #255 — runs once at host boot, before preBuild
+  preBuild?(ctx) {},         // file-generation work before the bundler / renderer
+  postBuild?(ctx) {},        // finalisation after dist/ has been written
+  devMiddleware?(ctx) {},    // per-request HTTP handlers in `zfb dev`
+  previewMiddleware?(ctx) {},// per-request HTTP handlers in `zfb preview` (static mode, #1542)
+});
+```
+
+Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev/preview boot) and surfaces the plugin name + the hook that threw in the error banner.
+
+## Logging from a plugin
+
+Both `ctx.logger` (available on every hook context) and the global `console` object render on the `zfb dev` / `zfb build` / `zfb preview` terminal, attributed to the plugin that produced them:
+
+```text
+zfb <level>: ZB010 plugin:<name>: <message>
+```
+
+- `ctx.logger.info(msg)`, `.warn(msg)`, and `.error(msg)` each render at exactly that level.
+- `console.log`, `.info`, `.dir`, `.table`, and the rest of `console`'s stdout-side methods render at level `info`. `console.warn`, `.error`, `.trace`, `.assert`, and the rest of its stderr-side methods render at level `error` — **not** `warn`. This follows Node's own `Console` API, which has only two underlying output streams (stdout and stderr), not one per level; if you need an actual `warn`-level line, call `ctx.logger.warn(...)` instead of `console.warn(...)`.
+- Attribution follows the plugin whose code is actually executing when the call happens — including inside an `await`ed operation — so overlapping hook calls and concurrent `devMiddleware`/`previewMiddleware` request handlers are each attributed to the right plugin, never mixed up. A log line produced outside any plugin's code (host bootstrap) is attributed to `plugin-host`.
+
+A raw write to the plugin-host subprocess's own stderr that bypasses `console` entirely (e.g. from a native dependency), or a line the host could not parse at all, has no plugin to attribute and renders as `zfb warn: ZB006 plugin-host:stderr: <line>` / `zfb warn: ZB006 plugin-host:stdout: <line>` instead.
+
+`ctx.logger.info/warn/error` accept an optional second metadata argument: `{ code, sourceId, file, line, byteColumn }`. For example, `ctx.logger.warn("missing asset", { code: "my-plugin/missing-asset", file: "src/page.mdx", line: 4, byteColumn: 2 })`. The `ZfbPluginDiagnosticMetadata` type is exported from both `@takazudo/zfb/plugins` and the package root. Missing codes default to ZB010; missing source IDs default to `plugin:<name>`. Positions are positive integers, and `byteColumn` is a one-based UTF-8 byte column. Namespace plugin codes; ZB and ZW are reserved for zfb. Raw host output uses ZB006.
+
+## Scratch space for intermediates
+
+Every hook context — `setup`, `preBuild`/`postBuild`, `devMiddleware`, and `previewMiddleware` — carries `ctx.scratchDir`, a directory for the plugin's opaque intermediate files: caches, generated indexes, downloaded data, and similar files that only the plugin itself reads back.
+
+- **Always present and absolute.** It is `<projectRoot>/.zfb-build/plugins` by default. When the command runs with `--scratch-dir` or `ZFB_SCRATCH_DIR`, it is `<scratch dir>/plugins` instead, so concurrent commands get separate plugin directories. See [Scratch dirs](../api/cli.mdx#scratch-dirs).
+- **zfb does not create it.** Create it yourself, and keep your files in a subdirectory named after your plugin so plugins never collide:
+
+  ```ts
+  import { mkdir, writeFile } from "node:fs/promises";
+  import { join } from "node:path";
+  import { definePlugin } from "@takazudo/zfb/plugins";
+
+  export default definePlugin({
+    name: "search-index",
+    async preBuild({ scratchDir }) {
+      const dir = join(scratchDir, "search-index");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "terms.json"), JSON.stringify(terms));
+    },
+  });
+  ```
+
+- **Opaque intermediates only.** `scratchDir` is not an importable location. Route modules or other source files generated there are not staged into the bundle, so do not point `injectRoute`, `addAlias`, or page imports at files there. Keep importable generated source where it is today, and write only files the plugin reads back itself.
+
+<Note title="Plugin isolation requires plugin adoption">
+
+`--scratch-dir` isolates zfb's own artifacts between concurrent commands. A plugin that keeps writing to its own project-root directory (for example `.zudo-doc/`) is still shared between those commands, and two of them can overwrite each other's files there. A plugin becomes safe to run concurrently only once it moves those intermediates under `ctx.scratchDir`.
+
+</Note>
+
+## Plugin entry files — `.ts`, `.tsx`, `.mts`, `.cts` support
+
+A plugin `name` entry with extension `.ts`, `.tsx`, `.mts`, or `.cts` is bundled with zfb's own pinned esbuild before it is loaded, in `zfb build`, `zfb dev`, and `zfb preview` alike. This means a `.ts` plugin entry can:
+
+- **Split across files**, including a `./helper.js` specifier resolving to a sibling `helper.ts` source file.
+- **Use full TypeScript syntax** — `enum`, `namespace`, and constructor parameter properties all bundle and transform correctly.
+- **Import `.tsx` modules**, JSX and all.
+- **Use tsconfig `paths` aliases** — esbuild auto-discovers the plugin project's own `tsconfig.json` by walking up from the entry's real on-disk location, so alias resolution just works.
+
+`.js`, `.mjs`, and `.cjs` entries are unaffected — they load exactly as before, with no bundling step. A bare package specifier (e.g. `name: "@acme/my-plugin"`) is bundled only if that package's `exports`/`main` resolves to a `.ts`-family file, which in practice is almost never the case for a published package.
+
+**The `tsx`/`esm/api` register/unregister-per-hook loader shim workaround is no longer needed** for `.ts` plugin entries — bundling replaces it outright.
+
+### Remaining limits
+
+- A `.js`/`.mjs` entry that itself imports a `.ts` neighbour is **not** bundled — only the entry's own extension gates bundling. That import keeps today's plain-Node behavior: it works only for strip-only-compatible TypeScript syntax on a new enough Node, and never resolves under `node_modules`. If you hit this, rename the entry itself to `.ts`.
+- Inside a bundled plugin, a dynamic `import()` call with a static template prefix (for example `` import(`./mods/${name}.mjs`) ``) is frozen to whatever files exist at boot time — esbuild glob-inlines the matched files into the bundle rather than resolving the import at runtime. The staged bundle's own `import.meta.url` names the staged file, not the original source path, though `dirname()`-relative reads still work correctly (the bundle is staged in the entry's own directory).
+
+### Node version floor
+
+Plugin bundling invokes esbuild with `--target=node22`. As a consequence, `.ts` plugin entries no longer depend on Node's built-in type stripping at all — closing the Node 22.0–22.17 cliff as a type-stripping problem. This was verified on real Node 22.17.0 (all four bundling failure modes — sibling `.js`→`.ts` resolution, `enum`/`namespace`/parameter properties, a `.tsx` import, and a tsconfig `paths` alias — run correctly from the bundled output; a `--target=esnext` alternative was tried and disproven there via a `using`-declaration counterexample). This does not constitute an execution test on Node 22.0 itself — the 22.0 floor rests on esbuild's own `node22` downleveling contract, not on a test run against that exact Node version.
+
+### JSX in `.tsx` plugin entries
+
+The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. When esbuild bundles a `.tsx` plugin entry without a tsconfig, it uses its default classic JSX transform. Page, component, and island JSX instead uses zfb's fixed automatic transform; see [Configure JSX](../zudo-react/overview.mdx). A `.tsx` plugin entry that uses zfb's owned JSX runtime should set `"jsx": "react-jsx"` and `"jsxImportSource": "@takazudo/zfb/zudo-react"` in its own tsconfig, or import a compatible factory explicitly.
+
+### Bundling errors
+
+A **compilation failure** — the entry's own source is invalid, or one of its imports cannot be resolved — surfaces as `` plugin bundling: esbuild failed for plugin `{name}` … `` followed by esbuild's own diagnostics (including file:line:col). Other bundling-setup problems (esbuild itself missing, the entry's directory not writable, the esbuild subprocess failing to spawn or timing out) surface as their own distinct `plugin bundling: …` messages, without esbuild diagnostics. A plugin whose code throws at load or during its `setup`/lifecycle hooks still surfaces as the familiar plugin `init`/hook error — bundling failures and runtime failures are reported distinctly.
+
+### Where the staged bundle lives
+
+A `.ts`/`.tsx`/`.mts`/`.cts` plugin entry is bundled into a temp file named `.zfb-plugin-bundle-<random>.mjs`, staged in the **entry's own directory** — never a shared system tempdir. This placement is load-bearing, not incidental: the bundle is built with esbuild's `--packages=external` flag, so every bare import (`from "some-npm-package"`) is left unresolved at bundle time and instead resolved by Node's own `import()` at load time, walking up ancestor `node_modules` directories from the **staged file's own location** (`import.meta.url`) — exactly the walk the original, un-bundled entry would have done. Staging next to the entry keeps that resolution identical for both a project-local plugin (dependencies hoisted into the project's `node_modules`) and a package plugin (its own nested `node_modules`).
+
+The staged file is deleted automatically when the plugin host that created it shuts down. If a `zfb` process is killed before it gets the chance (`SIGKILL`, an interrupted debugger session), it can leave a stray `.zfb-plugin-bundle-*.mjs` file behind; the next time a `.ts`/`.tsx`/`.mts`/`.cts` plugin bundle is staged in that same directory, zfb sweeps stranded files from previous runs automatically. A candidate is only ever removed once it is **both** older than 60 seconds **and** not still held by a live process's advisory lock — a bundle genuinely in progress, even one older than 60 seconds because its host is paused, is never touched.
+
+<Note title="Existing projects: add the gitignore entry">
+
+New scaffolds ignore staged plugin bundles automatically. If your project predates this glob, add `**/.zfb-plugin-bundle-*.mjs` to your `.gitignore` — plugin sources can live at any depth, so the glob is not root-anchored. For the wind source-plan model, see [Styling — Source discovery](./styling.mdx#zudo-wind-source-discovery).
+
+</Note>
+
+## `setup` — register virtual modules, aliases, injected routes, and client entries
+
+Runs **once** per `zfb build` host boot, once per `zfb dev` host boot, and once per `zfb preview` (static mode) host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run — nothing that runs later can add a registration, drop one, or replace one.
+
+Freezing covers the registrations, not everything they produce. A virtual module whose registration declared `watchFiles` has its **loader re-invoked** when one of those files changes during `zfb dev`; the registry entry it belongs to is still the one `setup` created. See `addVirtualModule` below.
+
+Under `zfb preview`, `setup` fires through a minimal, non-V8 path — `preBuild` never runs there (preview does no rebuild), and `addAlias`/`addVirtualModule`/`injectRoute`/`addClientEntry` calls are accepted for shape-consistency but are **inert**: preview serves an already-built `dist/` verbatim and never re-enters the scan → bundle → render pipeline those registries feed. Only a hook's own side effects (e.g. reading a file to compute config for `previewMiddleware`) and a `previewMiddleware` registration itself do anything meaningful under `"preview"`.
+
+```ts
+setup({
+  command,
+  projectRoot,
+  scratchDir,
+  config,
+  options,
+  logger,
+  addAlias,
+  addVirtualModule,
+  injectRoute,
+  addClientEntry,
+}) {
+  // `command` is "build", "dev", or "preview". Gate dev-only registrations on it.
+  addAlias("@/components/foo", "./src/components/foo.tsx");
+  addVirtualModule("virtual:my-data", () =>
+    `export default ${JSON.stringify(myJson)}`,
+  );
+  injectRoute("/preset-page", "./preset/page.tsx");
+  addClientEntry("./client/analytics.client.ts");
+  if (command === "dev") {
+    injectRoute("/dev/preview", "./scripts/dev-preview.tsx");
+  }
+}
+```
+
+### `addAlias(from, to)` — exact-match import rewrites
+
+Registers a single import specifier that, when matched **exactly**, resolves to `to`. The path is joined against the project root.
+
+```ts
+addAlias("@/components/foo", "./src/components/foo.tsx");
+```
+
+After this, `import Foo from "@/components/foo"` resolves to `./src/components/foo.tsx`.
+
+Subpath imports do NOT match: `import "@/components/foo/bar"` is not rewritten and surfaces as an unresolved-import error at bundle time. All three consumers (the embedded V8 host that drives SSR and `paths()` evaluation, the main page/layout bundler, and the islands esbuild bundler that produces client-side `"use client"` bundles) honor the same exact-match contract.
+
+**Conflict detection.** Two plugins registering the same `from` with different `to` raises `AliasConflict` and aborts the build, naming both offending plugins. Idempotent re-registration (same plugin, same `to`) is allowed.
+
+**`node_modules` importers.** A `to` that resolves to a single existing file is also applied to importers inside `node_modules`, via esbuild's `--alias` flag. A directory-shaped or missing `to` is applied through tsconfig `paths` only, which esbuild does not honor for `node_modules` importers — so a package that needs the alias to work from inside `node_modules` should register one alias per file, or use `addVirtualModule` instead. A `from` that is a slash-prefix of another registered alias, of a virtual module specifier, or of a reserved name such as `zfb` gets no `--alias` flag.
+
+The islands scanner also resolves this exact alias edge during boundary discovery. See [Boundary discovery and migration](./islands.mdx#boundary-discovery-and-migration) for plugin-edge reachability and `tsconfig.json` `paths` precedence.
+
+### `addVirtualModule(specifier, loader, options?)` — synthetic module sources
+
+Registers a bare specifier whose source text is produced on-demand by `loader`. The recommended prefix is `virtual:` but it is not enforced — anything that does not collide with a real module specifier works.
+
+```ts
+addVirtualModule("virtual:metadata-db", () =>
+  `export default ${JSON.stringify(buildMetadataIndex())}`,
+);
+```
+
+`loader` returns the **complete ESM source text** as a string. The bundler / embedded V8 host feeds the returned string in as the module's source verbatim. The loader runs **eagerly, not lazily on import**: exactly once per `zfb build` run and once per `zfb dev` host boot, during the setup phase right after every plugin's `setup` hook has returned — even if the registered specifier is never imported by any page or module. The resulting source is memoised; every subsequent import of that specifier reuses it. (Under `zfb preview`, the registration is accepted for shape-consistency but is inert — see the `setup` section above — so the loader never runs there.)
+
+The islands scanner follows an `addVirtualModule` edge into real files: a virtual source can statically import or re-export a real `"use client"` module, which may itself re-export a function defined in another real file. That exported function must still be a concrete target of a reachable `<Island>` boundary. A `"use client"` directive or `import.meta.glob` directly inside the virtual source is warned about and skipped; bare imports from a virtual source that resolve to installed or workspace packages, or another virtual module, are skipped too. See [Boundary discovery and migration](./islands.mdx#boundary-discovery-and-migration) for the scanner's resolution precedence and limits.
+
+There is **one** loader contract. There is no alternate "loader returns JSON and zfb wraps it" mode — if you want to expose JSON, do `() => "export default " + JSON.stringify(data)` yourself.
+
+**`options.watchFiles` — refresh the memo during `zfb dev`.** That memo is what a loader reading real files off disk runs into under `zfb dev`: the loader ran at boot, so editing one of those files changes nothing your pages import. Naming the files on the registration is the opt-in that fixes it:
+
+```ts
+const dataFile = join(projectRoot, "data/metadata.json");
+
+addVirtualModule(
+  "virtual:metadata-db",
+  () => `export default ${readFileSync(dataFile, "utf-8")}`,
+  { watchFiles: [dataFile] },
+);
+```
+
+`zfb dev` watches those paths. A change to one re-invokes **that loader alone** with the memo bypassed, replaces the memoised source with the fresh result, and re-renders, so live reload delivers a page built from the edited file. Loaders whose declared files did not change are never re-invoked.
+
+- **Absolute paths only.** A relative or empty entry throws during `setup` and aborts the boot. Entries reach the dev watcher verbatim and are never resolved against the project root, so a relative entry has no anchor to resolve against — the same rule, for the same reason, as [`extraWatchPaths`](../api/define-config.mdx).
+- **Entries must be files — a directory is rejected.** zfb watches a `watchFiles` entry by registering a non-recursive watch on its **parent** directory and matching on the exact path, so nothing under a directory entry would ever actually be observed. Rather than silently compile into a no-op, an entry that already exists as a directory throws during `setup` and aborts the boot. An entry naming a path that does **not exist yet** is fine — the directory check only runs once the path exists.
+- **A not-yet-created file is still watched — once its parent directory exists.** `watchFiles` may legitimately name a file your loader will create and read back later. zfb registers the watch on the file's parent directory (not the file itself, so a delete/recreate stays observable); if the parent doesn't exist at the moment zfb tries, the registration is skipped and retried automatically on a later tick, so the file starts being watched as soon as its parent directory shows up on disk — no `zfb dev` restart needed.
+- **Declared at registration, not discovered.** The list is fixed once `setup` returns. A loader that enumerates a directory watches only the files that existed at boot; a file created afterwards is outside the watch set and needs a `zfb dev` restart to enter it. There is no `addWatchFile()` a loader can call while it runs.
+- **Registrations are still frozen.** A refresh replaces a loader's *result*. It cannot add a specifier, remove one, or swap the loader function — the set of virtual modules is whatever `setup` registered.
+- **A failed re-invoke keeps the last good source — and says so on the terminal.** If a re-invoked loader throws — a half-written file, JSON caught mid-save — zfb retains the previously memoised source and prints a warning naming the plugin and the specifier:
+
+  ```text
+  plugin "<name>" failed to reload virtual module "<specifier>": <error>
+    serving the last-good output for now; zfb will retry on the next change to a registered plugin watch file
+  ```
+
+  The refresh is all-or-nothing: when one change re-invokes several loaders and any of them fails, none of the fresh sources are published, so a run never serves a half-updated mix. The next change that loads cleanly replaces the memo, so deleting and recreating a file recovers on its own.
+- **Dev-only.** `zfb build` invokes each loader exactly once and never re-invokes it, so `watchFiles` has no effect on shipped output. Declaring it unconditionally is fine.
+- **Distinct from `extraWatchPaths`.** [`extraWatchPaths`](../api/define-config.mdx) makes the dev watcher *notice* an out-of-root file and rebuild — but a rebuild on its own still replays the memoised loader source. `watchFiles` is the part that invalidates the loader, and it gets the path watched too: a file declared here needs no matching `extraWatchPaths` entry.
+
+**Conflict detection.** Two plugins registering the same `specifier` raises `VirtualModuleConflict` and aborts the build.
+
+### `injectRoute(pattern, entrypoint, opts?)` — synthetic page routes
+
+Registers an ESM page module under a URL pattern routed through the same page-rendering pipeline as `pages/<...>.tsx`. An entrypoint may be source TSX/TS or a compiled ESM `.js` module. A package can inject its published `dist/` route directly; the consuming project does not need a copied original route source. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); relative `entrypoint` values resolve from the project root.
+
+A pattern whose first segment is `__paths__` and which has at least one further segment is reserved for zfb's internal `paths()` endpoint. The route scan rejects it with `RouterError::ReservedRoutePrefix`, and the error identifies the plugin that registered the pattern. Exactly `/__paths__` and patterns with `__paths__` in a later segment remain valid.
+
+```ts
+injectRoute("/preset-page", "./preset/page.tsx");
+injectRoute("/package-docs/[slug]", "./node_modules/@acme/docs/dist/routes/page.js");
+injectRoute("/docs/[slug]", "./preset/doc.tsx", { prerender: true });
+injectRoute("/account", "./preset/account.tsx", { prerender: false });
+```
+
+In **build** mode, injected routes are materialised into a per-build overlay pages root and go through the normal scan -> bundle -> render pipeline. `opts.prerender` controls the build shape: omitted or `true` means the route is prerendered; `false` marks an SSR-shaped route, which `output: "static"` rejects.
+
+In **dev** mode, static and dynamic injected routes are rendered by `zfb dev`. Static routes are seeded into the dev route universe at boot; dynamic routes are rendered on first request. `opts.prerender` is build-only metadata and is ignored in dev.
+
+`injectRoute("/", entrypoint)` is valid in both build and dev. It supplies the site root when the project has no `pages/index`; a user-authored route with the same URL shape, including `pages/index` for `/`, always wins in both modes.
+
+If a route is intended only for local development, gate that registration yourself:
+
+```ts
+setup({ command, injectRoute }) {
+  if (command === "dev") {
+    injectRoute("/dev/preview", "./scripts/dev-preview.tsx");
+  }
+}
+```
+
+**Conflict detection.** Two plugins registering the same `pattern` with different entrypoints raises `InjectRouteConflict` and aborts the build/dev boot.
+
+### `addClientEntry(entrypoint)` — package-owned client scripts
+
+Registers a client-side side-effect entry owned by a plugin or preset:
+
+```ts
+addClientEntry("./client/analytics.client.ts");
+```
+
+`entrypoint` must point to a `*.client.{ts,tsx,js,jsx}` file. The client entry name is derived from the filename stem minus `.client` (`analytics.client.ts` -> `analytics`), and the output follows the normal client-script shape: stable dev URL `/assets/client/<name>.js`, hashed production URL `/assets/client/<name>-<hash>.js`. Relative entrypoints resolve from the project root.
+
+User-authored client entries with the same name win over package-owned entries. Two plugins registering the same derived name with different entrypoints raises `ClientEntryConflict`; a path that does not match the `*.client.*` entry convention raises `InvalidClientEntry`.
+
+### `injectRoute` vs `devMiddleware` — pick the right hook
+
+Both can add URLs during `zfb dev`, but they aim at different problems:
+
+| Hook | Returns | Use when |
+| --- | --- | --- |
+| `injectRoute(pattern, entrypoint, opts?)` | an ESM page module (source TSX/TS or compiled `.js`) that the page renderer evaluates and rasterises to HTML | you want a real, JSX-shaped page that lives outside the on-disk `pages/` tree, including package-owned build routes. |
+| `devMiddleware(ctx)` → `ctx.register(path, handler)` | a JS function that returns `{ status, headers, body }` per request | you want an HTTP handler — JSON API, a hot-reload bridge, an upload endpoint. No page pipeline, no JSX. |
+
+`devMiddleware` is the right answer when the response is not a page; `injectRoute` is the right answer when you want a synthetic page module that lives outside the on-disk `pages/` tree.
+
+The same choice applies to `zfb preview` via `previewMiddleware` — it is `devMiddleware`'s exact per-request-handler counterpart, just gated to preview's static mode instead of dev (see [`previewMiddleware(ctx)`](#previewmiddleware-ctx) below). `injectRoute` has no preview equivalent: preview never re-renders, so a synthetic route registered via `injectRoute` is inert there (see the `setup` section above).
+
+### Closed surface — no markdown extension hooks
+
+`SetupContext` exposes exactly four registration methods: `addAlias`, `addVirtualModule`, `injectRoute`, and `addClientEntry`. The deliberate omissions:
+
+- no `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor`,
+- no `addModuleLoader` / `addModuleTransform`,
+- no `onConfigResolved` / `onModuleLoad`.
+
+`addVirtualModule`'s optional `watchFiles` does not make it five. It is a registration *option* on a method that already exists, and what it buys is deliberately narrow: name the files a loader reads, get that loader re-run. A general hot-update surface — Vite's `handleHotUpdate`/`invalidate`, or an `addWatchFile()` a loader could call while it runs — belongs on the omissions list above, for the same reason as the rest of it.
+
+Markdown extensibility lives **inside** zfb's tree as in-tree Rust visitors (TOC, external links, CJK handling, etc.); future markdown features are added to the engine, not exposed as JS plugin points. This keeps the v1 contract narrow and the build pipeline auditable.
+
+## `preBuild(ctx)` and `postBuild(ctx)`
+
+- `preBuild` runs after `setup` and before the bundler / renderer / CSS / islands work. Use it to emit files the downstream stages will see.
+- `postBuild` runs after `dist/` has been fully written (including any adapter wrapping). Use it for finalisation steps that need a complete tree on disk.
+
+Both hooks receive `{ projectRoot, scratchDir, outDir, config, options, logger }` (see [Scratch space for intermediates](#scratch-space-for-intermediates) for `scratchDir`). `postBuild` additionally receives `ctx.routes` — the complete route manifest for the build. See [`ZfbBuildHookContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the full shape.
+
+### `ctx.routes` — the route manifest (postBuild only)
+
+`postBuild` plugins receive a `ctx.routes` object describing every URL the build emitted. The field is **absent (`undefined`)** during `preBuild` — the manifest is not available until rendering finishes.
+
+```ts
+interface ZfbRouteManifest {
+  routes: ZfbRouteEntry[];
+}
+
+interface ZfbRouteEntry {
+  url: string;         // emitted URL path, e.g. "/blog/hello/"
+  output: string;      // path under outDir, e.g. "blog/hello/index.html"
+  extension: string;   // file extension: "html", "xml", "rss", "txt", "json", …
+  source: string;      // source page module, e.g. "pages/blog/[slug].tsx"
+  prerender: boolean;  // true = SSG (written to disk under outDir);
+                       // false = SSR (no on-disk artifact, served by the adapter)
+  params?: Record<string, string | string[]>; // absent for static routes;
+                       // dynamic params are strings, catchall params are string[]
+}
+```
+
+Routes are sorted by `url` for byte-stable output across runs. Non-HTML routes (`sitemap.xml.tsx`, `feed.rss.tsx`, `llms.txt.tsx`) appear with their actual extension and output path.
+
+The manifest includes **both** SSG routes (`prerender: true`) and SSR routes (`prerender: false`). SSR routes are valid runtime URLs served by the adapter — but they have no on-disk artifact under `outDir`. Indexes that enumerate "URLs the build wrote to disk" (sitemap.xml, search-index.json, …) should filter `r.prerender !== false` to avoid surfacing those.
+
+### On-disk access — `dist/__zfb/routes.json`
+
+The same manifest is also written to `<outDir>/__zfb/routes.json` at the end of every `zfb build` (#347). The on-disk file mirrors the in-memory `ctx.routes` shape one-for-one — same fields, same url-sorted order — so any script wired into `pnpm build` (a sibling sitemap generator, an OGP indexer, a search-shard builder) can read the manifest without writing a zfb plugin.
+
+```json
+{
+  "routes": [
+    { "url": "/", "output": "index.html", "extension": "html",
+      "source": "pages/index.tsx", "prerender": true },
+    { "url": "/blog/hello/", "output": "blog/hello/index.html",
+      "extension": "html", "source": "pages/blog/[slug].tsx",
+      "prerender": true, "params": { "slug": "hello" } }
+  ]
+}
+```
+
+The plugin `ctx.routes` and the on-disk `routes.json` are two access shapes over the same data, not two contracts. Opt out by setting `emitRoutesManifest: false` in `zfb.config.ts` for projects that strip everything but shipped assets out of `dist/` before deploy.
+
+### Worked example: generating a `sitemap.xml` in `postBuild`
+
+A plugin that writes a `sitemap.xml` from every HTML route the build produced. The filter combines `extension === "html"` (skip `.xml` / `.rss` / `.txt` routes) with `prerender !== false` (skip SSR routes that have no on-disk artifact). `siteUrl` comes from `ctx.options` — the plugin-specific block copied verbatim from this plugin's `options` entry in `zfb.config.ts` — so the same plugin module works across projects without editing its source.
+
+```ts
+// plugins/sitemap.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "sitemap",
+  postBuild({ outDir, routes, options }) {
+    if (!routes) return; // guard: absent on preBuild
+    const siteUrl = options.siteUrl as string;
+    const htmlRoutes = routes.routes.filter(
+      (r) => r.extension === "html" && r.prerender !== false,
+    );
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...htmlRoutes.map(
+        (r) => `  <url><loc>${siteUrl}${r.url}</loc></url>`,
+      ),
+      "</urlset>",
+    ].join("\n");
+    writeFileSync(join(outDir, "sitemap.xml"), xml, "utf-8");
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  plugins: [
+    { name: "./plugins/sitemap.ts", options: { siteUrl: "https://example.com" } },
+  ],
+});
+```
+
+`options` is copied verbatim from this `PluginConfig` entry and passed to every hook — `setup`, `preBuild`, `postBuild` — as `ctx.options`. It is untyped (`Record<string, unknown>`), so cast or validate the fields you read from it, as above.
+
+The plugin runs after `dist/` is fully written; any file it creates alongside the emitted HTML pages is served as a static asset in production.
+
+## `devMiddleware(ctx)`
+
+Unchanged from v1. Register one or more HTTP handlers via `ctx.register(path, handler)`; handlers return `{ status, headers, body }` (or `undefined` to fall through to zfb's built-in dev routes).
+
+See [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the shape.
+
+### Request/response contract
+
+`ctx.register(path, handler)` installs one handler per URL path **prefix**. A registration on `/doc-history` matches `/doc-history` and `/doc-history/foo`, but not `/doc-historyx` — the match is prefix-with-boundary, not a raw string prefix. Calling `register` twice with the same `path` **overwrites** the previously registered handler; there is no way to stack two handlers on one path.
+
+The handler receives a request:
+
+```ts
+interface ZfbDevMiddlewareRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>; // lower-cased header names -> first value
+  body?: string;                    // absent for GET/HEAD; UTF-8 only (no binary in v1)
+}
+```
+
+and returns a response (or `undefined`, which falls through to zfb's built-in dev routes — the page cache, `/__zfb/livereload.js`, etc.):
+
+```ts
+interface ZfbDevMiddlewareResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string;
+  bodyEncoding?: "utf8" | "base64"; // set "base64" to return binary content
+}
+```
+
+`body` is a UTF-8 string by default; set `bodyEncoding: "base64"` to return a base64-encoded binary payload instead. This is the same request/response shape `previewMiddleware` uses — see below.
+
+## `previewMiddleware(ctx)`
+
+The `zfb preview` (static mode) counterpart of `devMiddleware` (#1542, epic #1541 Preview Parity). Same shape, same `ctx.register(path, handler)` call, same [request/response contract](#devmiddleware-ctx-request-response-contract) — but it is a **separate, per-mode opt-in**: a plugin that only defines `devMiddleware` gets no request-time handlers at all under `zfb preview`, and vice versa. Register the SAME handler under both hooks if you want it available in both modes:
+
+```ts
+// plugins/api-echo.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+function echo({ method, url }: { method: string; url: string }) {
+  return { status: 200, body: `${method} ${url}` };
+}
+
+export default definePlugin({
+  name: "api-echo",
+  devMiddleware({ register }) {
+    register("/api/echo", echo);
+  },
+  previewMiddleware({ register }) {
+    register("/api/echo", echo);
+  },
+});
+```
+
+Two differences from `devMiddleware` worth knowing:
+
+- **No `preBuild`.** `setup` fires under `"preview"` (see above), but preview does no rebuild, so there is no `preBuild`/`postBuild` step for it to precede.
+- **Static-mode only.** `previewMiddleware` runs when `zfb preview` serves the project's own static router (`adapter: "none"`/omitted). In adapter mode, `wrangler dev` serves the whole site directly — zfb never boots its own router there, so `previewMiddleware` registrations simply do not run. `zfb preview` warns once at startup if the project has plugins configured and adapter mode is active.
+
+`previewMiddleware` takes priority over `public/_redirects` for the same URL, exactly like `devMiddleware` takes priority over it in `zfb dev` — see [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules).
+
+See [`ZfbPreviewMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the shape.
+
+## Worked example: `virtual:metadata-db`
+
+A plugin that builds a metadata index and exposes it as a virtual module. Pages can then `import metadata from "virtual:metadata-db"` without zfb knowing anything about the index format.
+
+```ts
+// plugins/metadata-db.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+export default definePlugin({
+  name: "metadata-db",
+  setup({ projectRoot, addVirtualModule }) {
+    addVirtualModule("virtual:metadata-db", () => {
+      const dir = join(projectRoot, "src/content/docs");
+      const entries = readdirSync(dir, { recursive: true })
+        .filter((p) => typeof p === "string" && p.endsWith(".mdx"))
+        .map((relPath) => {
+          const body = readFileSync(join(dir, relPath as string), "utf-8");
+          // ... parse frontmatter, compute slug, etc.
+          return { slug: relPath, title: "...", description: "..." };
+        });
+      return `export default ${JSON.stringify(entries)}`;
+    });
+  },
+});
+```
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  plugins: [{ name: "./plugins/metadata-db.ts" }],
+});
+```
+
+```tsx
+// pages/index.tsx
+import metadata from "virtual:metadata-db";
+export default function Home() {
+  return (
+    <ul>
+      {metadata.map((m) => (
+        <li key={m.slug}><a href={`/${m.slug}`}>{m.title}</a></li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The loader runs once at the start of `zfb build`; the bundler caches the result and every `import` of `virtual:metadata-db` sees the same source. On the next `zfb build` the loader runs again — there is no on-disk cache between builds.
+
+Under `zfb dev` that same memo means editing one of those `.mdx` files leaves `virtual:metadata-db` exporting the index built at boot. Enumerate the files up front and declare them to make the index track its inputs:
+
+```ts
+setup({ projectRoot, addVirtualModule }) {
+  const dir = join(projectRoot, "src/content/docs");
+  const files = readdirSync(dir, { recursive: true })
+    .filter((p) => typeof p === "string" && p.endsWith(".mdx"))
+    .map((p) => join(dir, p as string));
+
+  addVirtualModule(
+    "virtual:metadata-db",
+    () => {
+      // ... same body as above, reading each entry of `files`
+    },
+    { watchFiles: files },
+  );
+}
+```
+
+Editing any of those files now re-runs the loader. Adding a new one does not: `files` was enumerated while `setup` ran, so a page created afterwards enters the watch set only on the next `zfb dev` restart.
+
+## Conflict-detection summary
+
+When setup registrations clash or are invalid, zfb aborts the build/dev with one of these errors:
+
+- `AliasConflict` — same `from`, different `to`.
+- `VirtualModuleConflict` — same specifier, different plugins.
+- `InjectRouteConflict` — same URL pattern, different plugins.
+- `ClientEntryConflict` — same derived client-entry name, different entrypoints.
+- `InvalidClientEntry` — an `addClientEntry` path is not a valid `*.client.{ts,tsx,js,jsx}` entry.
+
+## When you don't — write a recipe
+
+Not everything that runs at build time needs a plugin. If your task doesn't require `setup`-level capabilities (no virtual module, no alias, no injected route, no client entry) or dev middleware, a plain Node.js script in `scripts/` wired into `pnpm build` is simpler, easier to test in isolation, and less coupled to zfb's internals. The [Design Philosophy](./design-philosophy.mdx) and [Engine vs Framework](./engine-vs-framework.mdx) pages explain the broader principle.
+
+Common candidates that do not need a plugin:
+
+- **Sitemap generation.** `postBuild` gives you `ctx.routes` — but you can read the same `dist/` tree from a standalone script. No module graph access needed; wire it into `pnpm build`.
+- **OGP image emission.** Rendering open-graph images from page metadata is a pure data-in / image-out transform. A standalone script that reads built HTML or a JSON manifest and calls a canvas/puppeteer/satori pipeline needs no plugin hook; wire it into `pnpm build`.
+- **Search-index builds.** Tools like Pagefind or Lunr crawl the finished `dist/` tree. They need no access to zfb internals — just a path to the output directory; wire it into `pnpm build`.
+- **Build-end manifests.** If you need a custom JSON manifest (asset list, version map, route catalog) derived from the emitted files, a script that reads `dist/` after the build is self-contained; wire it into `pnpm build`.
+
+## See also
+
+- [`defineConfig`](../api/define-config.mdx) — wiring `plugins: [{ name: "...", options: {...} }]`.
+- [Build Pipeline](./build-pipeline.mdx) — where each hook lands in the overall sequence.
+- [CLI Reference — Scratch dirs](../api/cli.mdx#scratch-dirs) — running concurrent commands with separate scratch dirs, and where `ctx.scratchDir` points under one.
+- [CLI Reference — `zfb preview`](../api/cli.mdx#zfb-preview) — how `previewMiddleware` and `_redirects` fit into static preview's request pipeline.
+- [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) — the redirect/rewrite rules `previewMiddleware` takes priority over.

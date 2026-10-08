@@ -26,7 +26,7 @@ category: Recipes
 
 - **アイランドが 1 つだけの静的なシェル。** `apps/showcase/pages/index.tsx` はレイアウトで
   `<Island when="load"><ConvosApp /></Island>` を包みます。インタラクティブな部分はすべてこの
-  `"use client"` なコンポーネントにあります。[アイランド](/ja/docs/concepts/islands) を参照してください。
+  `"use client"` なコンポーネントにあります。[アイランド](/ja/docs/architecture/islands) を参照してください。
 - **UI ロジックをレンダラーの外に置く。** アイランドが持つのはシグナルと DOM の ref だけです。
   会話の状態、イベントのマージ、コマンドの再試行は `ConversationController` が持ち、
   `ConversationClient` インターフェースを通じて通信します。
@@ -282,7 +282,7 @@ PYTHON=.venv/bin/python pnpm b4push
 
 ## 関連ドキュメント
 
-- [アイランド](/ja/docs/concepts/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルと JSON の props
+- [アイランド](/ja/docs/architecture/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルと JSON の props
 - [zudo-react](/ja/docs/zudo-react/overview) — アイランドが使うシグナル、スコープ、`Show`、`For`、ref
 - [フォーム](/ja/docs/zudo-react/forms) — メッセージ入力欄の書き込み可能なモデルと変換入力（composition）の扱い
 - [AI Summarizer](/ja/docs/recipes/ai-summarizer) — `prerender = false` のルートから Workers AI を呼ぶ、デプロイ済みのサンプル

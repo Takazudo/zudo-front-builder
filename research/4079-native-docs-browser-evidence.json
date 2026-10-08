@@ -1,0 +1,1478 @@
+{
+  "structure": {
+    "commit": "cdad876e47e54564888f94f6806e83de8dff3383",
+    "origin": "http://127.0.0.1:4333",
+    "checks": [
+      "All authored native card membership resolves in EN/JA",
+      "EN homepage secondary links",
+      "/ja homepage secondary links",
+      "200 explicit EN/JA slash/no-slash redirects return exact targets in local Cloudflare runtime",
+      "Direct/native soft cross-group navigation, unopened/reopened mobile drawer and history scopes",
+      "All six widths EN/JA: compatibility complete/no TOC/table scrolling, wide Playground, workshop first-track/stacked geometry"
+    ],
+    "geometry": [
+      {
+        "width": 1440,
+        "locale": "en",
+        "grid": "280px 986px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 87,
+            "y": 199.171875,
+            "width": 280,
+            "height": 800,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 367,
+            "y": 199.171875,
+            "width": 986,
+            "height": 800,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 1440,
+        "locale": "/ja",
+        "grid": "280px 986px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 87,
+            "y": 199.171875,
+            "width": 280,
+            "height": 800,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 367,
+            "y": 199.171875,
+            "width": 986,
+            "height": 800,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 1280,
+        "locale": "en",
+        "grid": "280px 838px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 81,
+            "y": 199.171875,
+            "width": 280,
+            "height": 800,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 361,
+            "y": 199.171875,
+            "width": 838,
+            "height": 800,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 1280,
+        "locale": "/ja",
+        "grid": "280px 838px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 81,
+            "y": 199.171875,
+            "width": 280,
+            "height": 800,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 361,
+            "y": 199.171875,
+            "width": 838,
+            "height": 800,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 1024,
+        "locale": "en",
+        "grid": "250px 631.188px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 71.40625,
+            "y": 199.171875,
+            "width": 250,
+            "height": 900,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 321.40625,
+            "y": 199.171875,
+            "width": 631.1875,
+            "height": 1005.734375,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 1024,
+        "locale": "/ja",
+        "grid": "250px 631.188px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 71.40625,
+            "y": 199.375,
+            "width": 250,
+            "height": 900,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 321.40625,
+            "y": 199.375,
+            "width": 631.1875,
+            "height": 1005.734375,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 768,
+        "locale": "en",
+        "grid": "235px 483px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 25,
+            "y": 193.390625,
+            "width": 235,
+            "height": 900,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 260,
+            "y": 193.390625,
+            "width": 483,
+            "height": 984.234375,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 768,
+        "locale": "/ja",
+        "grid": "235px 483px",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 25,
+            "y": 193.59375,
+            "width": 235,
+            "height": 900,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 260,
+            "y": 193.59375,
+            "width": 483,
+            "height": 984.234375,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 390,
+        "locale": "en",
+        "grid": "235px minmax(0px, 1fr)",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 25,
+            "y": 265.234375,
+            "width": 340,
+            "height": 400,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 25,
+            "y": 665.234375,
+            "width": 340,
+            "height": 1055.046875,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 390,
+        "locale": "/ja",
+        "grid": "235px minmax(0px, 1fr)",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 25,
+            "y": 265.4375,
+            "width": 340,
+            "height": 400,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 25,
+            "y": 665.4375,
+            "width": 340,
+            "height": 1055.046875,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 360,
+        "locale": "en",
+        "grid": "235px minmax(0px, 1fr)",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 25,
+            "y": 265.640625,
+            "width": 310,
+            "height": 400,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 25,
+            "y": 665.640625,
+            "width": 310,
+            "height": 1055.046875,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      },
+      {
+        "width": 360,
+        "locale": "/ja",
+        "grid": "235px minmax(0px, 1fr)",
+        "children": [
+          {
+            "tag": "ASIDE",
+            "class": "token-editor",
+            "x": 25,
+            "y": 265.4375,
+            "width": 310,
+            "height": 400,
+            "gridColumn": "auto"
+          },
+          {
+            "tag": "DIV",
+            "class": "preview-workspace",
+            "x": 25,
+            "y": 665.4375,
+            "width": 310,
+            "height": 1055.046875,
+            "gridColumn": "auto"
+          }
+        ],
+        "before": "none",
+        "after": "none",
+        "overflow": false
+      }
+    ],
+    "errors": []
+  },
+  "content": {
+    "commit": "cdad876e47e54564888f94f6806e83de8dff3383",
+    "origin": "http://127.0.0.1:4333",
+    "checks": [
+      "EN: eight native homepage blocks in order and four note-tray chapter rows",
+      "EN: numbered flat chapter index, package-manager tabs, full standalone install, both first-site flows",
+      "EN: native pager clicked through Architecture root, four overviews, and all 28 articles",
+      "/ja: eight native homepage blocks in order and four note-tray chapter rows",
+      "/ja: numbered flat chapter index, package-manager tabs, full standalone install, both first-site flows",
+      "/ja: native pager clicked through Architecture root, four overviews, and all 28 articles",
+      "Native search returns and navigates to canonical Installation, Architecture Routing, and Grid",
+      "Native dark/light controls, theme persistence, EN↔JA language links and active state, Japanese-shell English render-artifacts fallback"
+    ],
+    "pager": [
+      {
+        "locale": "en",
+        "slug": "architecture",
+        "links": ["/docs/architecture/fundamentals"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/fundamentals",
+        "links": ["/docs/architecture", "/docs/architecture/architecture-overview"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/architecture-overview",
+        "links": ["/docs/architecture/fundamentals", "/docs/architecture/choosing-zfb"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/choosing-zfb",
+        "links": [
+          "/docs/architecture/architecture-overview",
+          "/docs/architecture/three-ways-to-run-zfb"
+        ]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/three-ways-to-run-zfb",
+        "links": ["/docs/architecture/choosing-zfb", "/docs/architecture/design-philosophy"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/design-philosophy",
+        "links": [
+          "/docs/architecture/three-ways-to-run-zfb",
+          "/docs/architecture/engine-vs-framework"
+        ]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/engine-vs-framework",
+        "links": ["/docs/architecture/design-philosophy", "/docs/architecture/why-rust"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/why-rust",
+        "links": ["/docs/architecture/engine-vs-framework", "/docs/architecture/pages-content"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/pages-content",
+        "links": ["/docs/architecture/why-rust", "/docs/architecture/routing"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/routing",
+        "links": ["/docs/architecture/pages-content", "/docs/architecture/dynamic-routes"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/dynamic-routes",
+        "links": ["/docs/architecture/routing", "/docs/architecture/frontmatter"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/frontmatter",
+        "links": ["/docs/architecture/dynamic-routes", "/docs/architecture/md-html-pages"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/md-html-pages",
+        "links": ["/docs/architecture/frontmatter", "/docs/architecture/content-collections"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/content-collections",
+        "links": ["/docs/architecture/md-html-pages", "/docs/architecture/data"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/data",
+        "links": ["/docs/architecture/content-collections", "/docs/architecture/non-html-pages"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/non-html-pages",
+        "links": ["/docs/architecture/data", "/docs/architecture/rendering"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/rendering",
+        "links": ["/docs/architecture/non-html-pages", "/docs/architecture/mdx-components"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/mdx-components",
+        "links": ["/docs/architecture/rendering", "/docs/architecture/custom-directives"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/custom-directives",
+        "links": ["/docs/architecture/mdx-components", "/docs/architecture/styling"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/styling",
+        "links": ["/docs/architecture/custom-directives", "/docs/architecture/static-assets"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/static-assets",
+        "links": ["/docs/architecture/styling", "/docs/architecture/islands"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/islands",
+        "links": ["/docs/architecture/static-assets", "/docs/architecture/client-side-routing"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/client-side-routing",
+        "links": ["/docs/architecture/islands", "/docs/architecture/plugins"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/plugins",
+        "links": ["/docs/architecture/client-side-routing", "/docs/architecture/build-runtime"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/build-runtime",
+        "links": ["/docs/architecture/plugins", "/docs/architecture/build-pipeline"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/build-pipeline",
+        "links": ["/docs/architecture/build-runtime", "/docs/architecture/render-artifacts"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/render-artifacts",
+        "links": ["/docs/architecture/build-pipeline", "/docs/architecture/incremental-rebuild"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/incremental-rebuild",
+        "links": ["/docs/architecture/render-artifacts", "/docs/architecture/dev-mode-lifecycle"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/dev-mode-lifecycle",
+        "links": ["/docs/architecture/incremental-rebuild", "/docs/architecture/ssr-on-a-worker"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/ssr-on-a-worker",
+        "links": ["/docs/architecture/dev-mode-lifecycle", "/docs/architecture/build-engine"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/build-engine",
+        "links": ["/docs/architecture/ssr-on-a-worker", "/docs/architecture/js-runtime"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/js-runtime",
+        "links": ["/docs/architecture/build-engine", "/docs/architecture/framework-adapters"]
+      },
+      {
+        "locale": "en",
+        "slug": "architecture/framework-adapters",
+        "links": ["/docs/architecture/js-runtime"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture",
+        "links": ["/ja/docs/architecture/fundamentals"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/fundamentals",
+        "links": ["/ja/docs/architecture", "/ja/docs/architecture/architecture-overview"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/architecture-overview",
+        "links": ["/ja/docs/architecture/fundamentals", "/ja/docs/architecture/choosing-zfb"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/choosing-zfb",
+        "links": [
+          "/ja/docs/architecture/architecture-overview",
+          "/ja/docs/architecture/three-ways-to-run-zfb"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/three-ways-to-run-zfb",
+        "links": ["/ja/docs/architecture/choosing-zfb", "/ja/docs/architecture/design-philosophy"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/design-philosophy",
+        "links": [
+          "/ja/docs/architecture/three-ways-to-run-zfb",
+          "/ja/docs/architecture/engine-vs-framework"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/engine-vs-framework",
+        "links": ["/ja/docs/architecture/design-philosophy", "/ja/docs/architecture/why-rust"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/why-rust",
+        "links": [
+          "/ja/docs/architecture/engine-vs-framework",
+          "/ja/docs/architecture/pages-content"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/pages-content",
+        "links": ["/ja/docs/architecture/why-rust", "/ja/docs/architecture/routing"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/routing",
+        "links": ["/ja/docs/architecture/pages-content", "/ja/docs/architecture/dynamic-routes"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/dynamic-routes",
+        "links": ["/ja/docs/architecture/routing", "/ja/docs/architecture/frontmatter"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/frontmatter",
+        "links": ["/ja/docs/architecture/dynamic-routes", "/ja/docs/architecture/md-html-pages"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/md-html-pages",
+        "links": ["/ja/docs/architecture/frontmatter", "/ja/docs/architecture/content-collections"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/content-collections",
+        "links": ["/ja/docs/architecture/md-html-pages", "/ja/docs/architecture/data"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/data",
+        "links": [
+          "/ja/docs/architecture/content-collections",
+          "/ja/docs/architecture/non-html-pages"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/non-html-pages",
+        "links": ["/ja/docs/architecture/data", "/ja/docs/architecture/rendering"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/rendering",
+        "links": ["/ja/docs/architecture/non-html-pages", "/ja/docs/architecture/mdx-components"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/mdx-components",
+        "links": ["/ja/docs/architecture/rendering", "/ja/docs/architecture/custom-directives"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/custom-directives",
+        "links": ["/ja/docs/architecture/mdx-components", "/ja/docs/architecture/styling"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/styling",
+        "links": ["/ja/docs/architecture/custom-directives", "/ja/docs/architecture/static-assets"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/static-assets",
+        "links": ["/ja/docs/architecture/styling", "/ja/docs/architecture/islands"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/islands",
+        "links": [
+          "/ja/docs/architecture/static-assets",
+          "/ja/docs/architecture/client-side-routing"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/client-side-routing",
+        "links": ["/ja/docs/architecture/islands", "/ja/docs/architecture/plugins"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/plugins",
+        "links": [
+          "/ja/docs/architecture/client-side-routing",
+          "/ja/docs/architecture/build-runtime"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/build-runtime",
+        "links": ["/ja/docs/architecture/plugins", "/ja/docs/architecture/build-pipeline"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/build-pipeline",
+        "links": ["/ja/docs/architecture/build-runtime", "/ja/docs/architecture/render-artifacts"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/render-artifacts",
+        "links": [
+          "/ja/docs/architecture/build-pipeline",
+          "/ja/docs/architecture/incremental-rebuild"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/incremental-rebuild",
+        "links": [
+          "/ja/docs/architecture/render-artifacts",
+          "/ja/docs/architecture/dev-mode-lifecycle"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/dev-mode-lifecycle",
+        "links": [
+          "/ja/docs/architecture/incremental-rebuild",
+          "/ja/docs/architecture/ssr-on-a-worker"
+        ]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/ssr-on-a-worker",
+        "links": ["/ja/docs/architecture/dev-mode-lifecycle", "/ja/docs/architecture/build-engine"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/build-engine",
+        "links": ["/ja/docs/architecture/ssr-on-a-worker", "/ja/docs/architecture/js-runtime"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/js-runtime",
+        "links": ["/ja/docs/architecture/build-engine", "/ja/docs/architecture/framework-adapters"]
+      },
+      {
+        "locale": "/ja",
+        "slug": "architecture/framework-adapters",
+        "links": ["/ja/docs/architecture/js-runtime"]
+      }
+    ],
+    "search": [
+      {
+        "query": "Installation",
+        "canonical": "/docs/getting-started/installation",
+        "links": ["/docs/getting-started/installation", "/docs/getting-started/your-first-site"]
+      },
+      {
+        "query": "Routing",
+        "canonical": "/docs/architecture/routing",
+        "links": [
+          "/docs/architecture/routing",
+          "/docs/architecture/client-side-routing",
+          "/docs/architecture/pages-content",
+          "/docs/architecture/md-html-pages",
+          "/docs/claude-skills/zfb-wisdom",
+          "/docs/architecture/dynamic-routes",
+          "/docs/guides/migrating-from-astro",
+          "/docs/guides/migrating-from-eleventy",
+          "/ja/docs/architecture/build-pipeline",
+          "/ja/docs/architecture/dynamic-routes"
+        ]
+      },
+      {
+        "query": "Grid",
+        "canonical": "/docs/zudo-wind/utilities/grid",
+        "links": [
+          "/docs/zudo-wind/utilities/flex-grid",
+          "/docs/zudo-wind/utilities/grid",
+          "/ja/docs/zudo-wind/utilities/flex-grid",
+          "/docs/zudo-wind/utilities/alignment",
+          "/docs/zudo-wind/utilities/display",
+          "/docs/zudo-wind/utilities/gap",
+          "/ja/docs/zudo-wind/utilities/alignment",
+          "/ja/docs/zudo-wind/utilities/display",
+          "/ja/docs/zudo-wind/utilities/grid"
+        ]
+      }
+    ],
+    "errors": [],
+    "status": "passed"
+  },
+  "workshop": {
+    "commit": "cdad876e47e54564888f94f6806e83de8dff3383",
+    "origin": "http://127.0.0.1:4333",
+    "started": "2026-10-08T15:53:17.739Z",
+    "checks": [
+      {
+        "name": "workshop",
+        "width": 1440,
+        "locale": "en",
+        "status": "passed",
+        "details": [
+          {
+            "preset": "everyday",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-everyday-seed.zip",
+            "zipSha256": "6524eb63309b2ef2b6539efca86d672f6c86206d9063811f6758a69c4bf77e4b"
+          },
+          {
+            "preset": "editorial",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-editorial-seed.zip",
+            "zipSha256": "e63c719d06c164a1e8e4aa22abc1768820b42e93aa28bdf8e4a4ccb4251bf8df"
+          },
+          {
+            "preset": "workbench",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-workbench-seed.zip",
+            "zipSha256": "80e64a9fea6046bd57682b1663a4381025110e158aeff4d7e9b1cf0ec393ccd6"
+          },
+          {
+            "themes": [
+              {
+                "mode": "default",
+                "theme": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "dark",
+                "controlColor": "oklch(0.965 0.004 65)"
+              }
+            ]
+          },
+          "Native links restore exactly one live workshop with preset, token, view and width state"
+        ]
+      },
+      {
+        "name": "wind",
+        "width": 1440,
+        "locale": "en",
+        "status": "passed",
+        "details": [
+          {
+            "group": "layout-positioning",
+            "family": "zudo-wind/utilities/display",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/layout-positioning",
+              "/docs/zudo-wind/utilities/display",
+              "/docs/zudo-wind/utilities/position",
+              "/docs/zudo-wind/utilities/inset",
+              "/docs/zudo-wind/utilities/overflow",
+              "/docs/zudo-wind/utilities/z-index",
+              "/docs/zudo-wind/utilities/visibility"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "flex-grid",
+            "family": "zudo-wind/utilities/flex-container",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/flex-grid",
+              "/docs/zudo-wind/utilities/flex-container",
+              "/docs/zudo-wind/utilities/flex-item",
+              "/docs/zudo-wind/utilities/grid",
+              "/docs/zudo-wind/utilities/alignment"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "sizing-spacing",
+            "family": "zudo-wind/utilities/gap",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/sizing-spacing",
+              "/docs/zudo-wind/utilities/sizing",
+              "/docs/zudo-wind/utilities/padding",
+              "/docs/zudo-wind/utilities/margin",
+              "/docs/zudo-wind/utilities/gap",
+              "/docs/zudo-wind/utilities/child-space",
+              "/docs/zudo-wind/utilities/aspect"
+            ],
+            "previewControls": true
+          },
+          {
+            "group": "typography",
+            "family": "zudo-wind/utilities/font-family",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/typography",
+              "/docs/zudo-wind/utilities/font-family",
+              "/docs/zudo-wind/utilities/font-weight",
+              "/docs/zudo-wind/utilities/font-size",
+              "/docs/zudo-wind/utilities/line-height",
+              "/docs/zudo-wind/utilities/tracking",
+              "/docs/zudo-wind/utilities/text-layout",
+              "/docs/zudo-wind/utilities/text-style",
+              "/docs/zudo-wind/utilities/color",
+              "/docs/zudo-wind/utilities/list",
+              "/docs/zudo-wind/utilities/text-decoration-color",
+              "/docs/zudo-wind/utilities/text-underline-offset"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "surfaces-borders",
+            "family": "zudo-wind/utilities/background",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/surfaces-borders",
+              "/docs/zudo-wind/utilities/background",
+              "/docs/zudo-wind/utilities/border-width",
+              "/docs/zudo-wind/utilities/border-color",
+              "/docs/zudo-wind/utilities/border-style",
+              "/docs/zudo-wind/utilities/radius",
+              "/docs/zudo-wind/utilities/divide-width",
+              "/docs/zudo-wind/utilities/divide-color",
+              "/docs/zudo-wind/utilities/outline-width",
+              "/docs/zudo-wind/utilities/outline-color",
+              "/docs/zudo-wind/utilities/outline-style",
+              "/docs/zudo-wind/utilities/shadow",
+              "/docs/zudo-wind/utilities/opacity"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "motion",
+            "family": "zudo-wind/utilities/transition",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/motion",
+              "/docs/zudo-wind/utilities/transition",
+              "/docs/zudo-wind/utilities/duration",
+              "/docs/zudo-wind/utilities/easing",
+              "/docs/zudo-wind/utilities/translate",
+              "/docs/zudo-wind/utilities/rotate"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "interaction-other",
+            "family": "zudo-wind/utilities/interaction",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/interaction-other",
+              "/docs/zudo-wind/utilities/interaction",
+              "/docs/zudo-wind/utilities/scroll-margin",
+              "/docs/zudo-wind/utilities/svg",
+              "/docs/zudo-wind/utilities/miscellaneous"
+            ],
+            "previewControls": false
+          }
+        ]
+      },
+      {
+        "name": "workshop",
+        "width": 1440,
+        "locale": "/ja",
+        "status": "passed",
+        "details": [
+          {
+            "preset": "everyday",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-everyday-seed.zip",
+            "zipSha256": "6524eb63309b2ef2b6539efca86d672f6c86206d9063811f6758a69c4bf77e4b"
+          },
+          {
+            "preset": "editorial",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-editorial-seed.zip",
+            "zipSha256": "e63c719d06c164a1e8e4aa22abc1768820b42e93aa28bdf8e4a4ccb4251bf8df"
+          },
+          {
+            "preset": "workbench",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-workbench-seed.zip",
+            "zipSha256": "80e64a9fea6046bd57682b1663a4381025110e158aeff4d7e9b1cf0ec393ccd6"
+          },
+          {
+            "themes": [
+              {
+                "mode": "default",
+                "theme": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "dark",
+                "controlColor": "oklch(0.965 0.004 65)"
+              }
+            ]
+          },
+          "Native links restore exactly one live workshop with preset, token, view and width state"
+        ]
+      },
+      {
+        "name": "wind",
+        "width": 1440,
+        "locale": "/ja",
+        "status": "passed",
+        "details": [
+          {
+            "group": "layout-positioning",
+            "family": "zudo-wind/utilities/display",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/layout-positioning",
+              "/ja/docs/zudo-wind/utilities/display",
+              "/ja/docs/zudo-wind/utilities/position",
+              "/ja/docs/zudo-wind/utilities/inset",
+              "/ja/docs/zudo-wind/utilities/overflow",
+              "/ja/docs/zudo-wind/utilities/z-index",
+              "/ja/docs/zudo-wind/utilities/visibility"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "flex-grid",
+            "family": "zudo-wind/utilities/flex-container",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/flex-grid",
+              "/ja/docs/zudo-wind/utilities/flex-container",
+              "/ja/docs/zudo-wind/utilities/flex-item",
+              "/ja/docs/zudo-wind/utilities/grid",
+              "/ja/docs/zudo-wind/utilities/alignment"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "sizing-spacing",
+            "family": "zudo-wind/utilities/gap",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/sizing-spacing",
+              "/ja/docs/zudo-wind/utilities/sizing",
+              "/ja/docs/zudo-wind/utilities/padding",
+              "/ja/docs/zudo-wind/utilities/margin",
+              "/ja/docs/zudo-wind/utilities/gap",
+              "/ja/docs/zudo-wind/utilities/child-space",
+              "/ja/docs/zudo-wind/utilities/aspect"
+            ],
+            "previewControls": true
+          },
+          {
+            "group": "typography",
+            "family": "zudo-wind/utilities/font-family",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/typography",
+              "/ja/docs/zudo-wind/utilities/font-family",
+              "/ja/docs/zudo-wind/utilities/font-weight",
+              "/ja/docs/zudo-wind/utilities/font-size",
+              "/ja/docs/zudo-wind/utilities/line-height",
+              "/ja/docs/zudo-wind/utilities/tracking",
+              "/ja/docs/zudo-wind/utilities/text-layout",
+              "/ja/docs/zudo-wind/utilities/text-style",
+              "/ja/docs/zudo-wind/utilities/color",
+              "/ja/docs/zudo-wind/utilities/list",
+              "/ja/docs/zudo-wind/utilities/text-decoration-color",
+              "/ja/docs/zudo-wind/utilities/text-underline-offset"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "surfaces-borders",
+            "family": "zudo-wind/utilities/background",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/surfaces-borders",
+              "/ja/docs/zudo-wind/utilities/background",
+              "/ja/docs/zudo-wind/utilities/border-width",
+              "/ja/docs/zudo-wind/utilities/border-color",
+              "/ja/docs/zudo-wind/utilities/border-style",
+              "/ja/docs/zudo-wind/utilities/radius",
+              "/ja/docs/zudo-wind/utilities/divide-width",
+              "/ja/docs/zudo-wind/utilities/divide-color",
+              "/ja/docs/zudo-wind/utilities/outline-width",
+              "/ja/docs/zudo-wind/utilities/outline-color",
+              "/ja/docs/zudo-wind/utilities/outline-style",
+              "/ja/docs/zudo-wind/utilities/shadow",
+              "/ja/docs/zudo-wind/utilities/opacity"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "motion",
+            "family": "zudo-wind/utilities/transition",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/motion",
+              "/ja/docs/zudo-wind/utilities/transition",
+              "/ja/docs/zudo-wind/utilities/duration",
+              "/ja/docs/zudo-wind/utilities/easing",
+              "/ja/docs/zudo-wind/utilities/translate",
+              "/ja/docs/zudo-wind/utilities/rotate"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "interaction-other",
+            "family": "zudo-wind/utilities/interaction",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/interaction-other",
+              "/ja/docs/zudo-wind/utilities/interaction",
+              "/ja/docs/zudo-wind/utilities/scroll-margin",
+              "/ja/docs/zudo-wind/utilities/svg",
+              "/ja/docs/zudo-wind/utilities/miscellaneous"
+            ],
+            "previewControls": false
+          }
+        ]
+      },
+      {
+        "name": "workshop",
+        "width": 390,
+        "locale": "en",
+        "status": "passed",
+        "details": [
+          {
+            "preset": "everyday",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-everyday-seed.zip",
+            "zipSha256": "6524eb63309b2ef2b6539efca86d672f6c86206d9063811f6758a69c4bf77e4b"
+          },
+          {
+            "preset": "editorial",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-editorial-seed.zip",
+            "zipSha256": "e63c719d06c164a1e8e4aa22abc1768820b42e93aa28bdf8e4a4ccb4251bf8df"
+          },
+          {
+            "preset": "workbench",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-workbench-seed.zip",
+            "zipSha256": "80e64a9fea6046bd57682b1663a4381025110e158aeff4d7e9b1cf0ec393ccd6"
+          },
+          {
+            "themes": [
+              {
+                "mode": "default",
+                "theme": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "dark",
+                "controlColor": "oklch(0.965 0.004 65)"
+              }
+            ]
+          },
+          "Native links restore exactly one live workshop with preset, token, view and width state"
+        ]
+      },
+      {
+        "name": "wind",
+        "width": 390,
+        "locale": "en",
+        "status": "passed",
+        "details": [
+          {
+            "group": "layout-positioning",
+            "family": "zudo-wind/utilities/display",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/layout-positioning",
+              "/docs/zudo-wind/utilities/display",
+              "/docs/zudo-wind/utilities/position",
+              "/docs/zudo-wind/utilities/inset",
+              "/docs/zudo-wind/utilities/overflow",
+              "/docs/zudo-wind/utilities/z-index",
+              "/docs/zudo-wind/utilities/visibility"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "flex-grid",
+            "family": "zudo-wind/utilities/flex-container",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/flex-grid",
+              "/docs/zudo-wind/utilities/flex-container",
+              "/docs/zudo-wind/utilities/flex-item",
+              "/docs/zudo-wind/utilities/grid",
+              "/docs/zudo-wind/utilities/alignment"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "sizing-spacing",
+            "family": "zudo-wind/utilities/gap",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/sizing-spacing",
+              "/docs/zudo-wind/utilities/sizing",
+              "/docs/zudo-wind/utilities/padding",
+              "/docs/zudo-wind/utilities/margin",
+              "/docs/zudo-wind/utilities/gap",
+              "/docs/zudo-wind/utilities/child-space",
+              "/docs/zudo-wind/utilities/aspect"
+            ],
+            "previewControls": true
+          },
+          {
+            "group": "typography",
+            "family": "zudo-wind/utilities/font-family",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/typography",
+              "/docs/zudo-wind/utilities/font-family",
+              "/docs/zudo-wind/utilities/font-weight",
+              "/docs/zudo-wind/utilities/font-size",
+              "/docs/zudo-wind/utilities/line-height",
+              "/docs/zudo-wind/utilities/tracking",
+              "/docs/zudo-wind/utilities/text-layout",
+              "/docs/zudo-wind/utilities/text-style",
+              "/docs/zudo-wind/utilities/color",
+              "/docs/zudo-wind/utilities/list",
+              "/docs/zudo-wind/utilities/text-decoration-color",
+              "/docs/zudo-wind/utilities/text-underline-offset"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "surfaces-borders",
+            "family": "zudo-wind/utilities/background",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/surfaces-borders",
+              "/docs/zudo-wind/utilities/background",
+              "/docs/zudo-wind/utilities/border-width",
+              "/docs/zudo-wind/utilities/border-color",
+              "/docs/zudo-wind/utilities/border-style",
+              "/docs/zudo-wind/utilities/radius",
+              "/docs/zudo-wind/utilities/divide-width",
+              "/docs/zudo-wind/utilities/divide-color",
+              "/docs/zudo-wind/utilities/outline-width",
+              "/docs/zudo-wind/utilities/outline-color",
+              "/docs/zudo-wind/utilities/outline-style",
+              "/docs/zudo-wind/utilities/shadow",
+              "/docs/zudo-wind/utilities/opacity"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "motion",
+            "family": "zudo-wind/utilities/transition",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/motion",
+              "/docs/zudo-wind/utilities/transition",
+              "/docs/zudo-wind/utilities/duration",
+              "/docs/zudo-wind/utilities/easing",
+              "/docs/zudo-wind/utilities/translate",
+              "/docs/zudo-wind/utilities/rotate"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "interaction-other",
+            "family": "zudo-wind/utilities/interaction",
+            "nativeLinks": [
+              "/docs/zudo-wind/utilities/interaction-other",
+              "/docs/zudo-wind/utilities/interaction",
+              "/docs/zudo-wind/utilities/scroll-margin",
+              "/docs/zudo-wind/utilities/svg",
+              "/docs/zudo-wind/utilities/miscellaneous"
+            ],
+            "previewControls": false
+          }
+        ]
+      },
+      {
+        "name": "workshop",
+        "width": 390,
+        "locale": "/ja",
+        "status": "passed",
+        "details": [
+          {
+            "preset": "everyday",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-everyday-seed.zip",
+            "zipSha256": "6524eb63309b2ef2b6539efca86d672f6c86206d9063811f6758a69c4bf77e4b"
+          },
+          {
+            "preset": "editorial",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-editorial-seed.zip",
+            "zipSha256": "e63c719d06c164a1e8e4aa22abc1768820b42e93aa28bdf8e4a4ccb4251bf8df"
+          },
+          {
+            "preset": "workbench",
+            "exportedFiles": [
+              "zfb.design.ts",
+              "design-system.css",
+              "usage.tsx",
+              "DESIGN-NOTES.md",
+              "demo.html"
+            ],
+            "download": "zudo-wind-workbench-seed.zip",
+            "zipSha256": "80e64a9fea6046bd57682b1663a4381025110e158aeff4d7e9b1cf0ec393ccd6"
+          },
+          {
+            "themes": [
+              {
+                "mode": "default",
+                "theme": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "light",
+                "controlColor": "oklch(0.185 0.005 65)"
+              },
+              {
+                "mode": "dark",
+                "controlColor": "oklch(0.965 0.004 65)"
+              }
+            ]
+          },
+          "Native links restore exactly one live workshop with preset, token, view and width state"
+        ]
+      },
+      {
+        "name": "wind",
+        "width": 390,
+        "locale": "/ja",
+        "status": "passed",
+        "details": [
+          {
+            "group": "layout-positioning",
+            "family": "zudo-wind/utilities/display",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/layout-positioning",
+              "/ja/docs/zudo-wind/utilities/display",
+              "/ja/docs/zudo-wind/utilities/position",
+              "/ja/docs/zudo-wind/utilities/inset",
+              "/ja/docs/zudo-wind/utilities/overflow",
+              "/ja/docs/zudo-wind/utilities/z-index",
+              "/ja/docs/zudo-wind/utilities/visibility"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "flex-grid",
+            "family": "zudo-wind/utilities/flex-container",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/flex-grid",
+              "/ja/docs/zudo-wind/utilities/flex-container",
+              "/ja/docs/zudo-wind/utilities/flex-item",
+              "/ja/docs/zudo-wind/utilities/grid",
+              "/ja/docs/zudo-wind/utilities/alignment"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "sizing-spacing",
+            "family": "zudo-wind/utilities/gap",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/sizing-spacing",
+              "/ja/docs/zudo-wind/utilities/sizing",
+              "/ja/docs/zudo-wind/utilities/padding",
+              "/ja/docs/zudo-wind/utilities/margin",
+              "/ja/docs/zudo-wind/utilities/gap",
+              "/ja/docs/zudo-wind/utilities/child-space",
+              "/ja/docs/zudo-wind/utilities/aspect"
+            ],
+            "previewControls": true
+          },
+          {
+            "group": "typography",
+            "family": "zudo-wind/utilities/font-family",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/typography",
+              "/ja/docs/zudo-wind/utilities/font-family",
+              "/ja/docs/zudo-wind/utilities/font-weight",
+              "/ja/docs/zudo-wind/utilities/font-size",
+              "/ja/docs/zudo-wind/utilities/line-height",
+              "/ja/docs/zudo-wind/utilities/tracking",
+              "/ja/docs/zudo-wind/utilities/text-layout",
+              "/ja/docs/zudo-wind/utilities/text-style",
+              "/ja/docs/zudo-wind/utilities/color",
+              "/ja/docs/zudo-wind/utilities/list",
+              "/ja/docs/zudo-wind/utilities/text-decoration-color",
+              "/ja/docs/zudo-wind/utilities/text-underline-offset"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "surfaces-borders",
+            "family": "zudo-wind/utilities/background",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/surfaces-borders",
+              "/ja/docs/zudo-wind/utilities/background",
+              "/ja/docs/zudo-wind/utilities/border-width",
+              "/ja/docs/zudo-wind/utilities/border-color",
+              "/ja/docs/zudo-wind/utilities/border-style",
+              "/ja/docs/zudo-wind/utilities/radius",
+              "/ja/docs/zudo-wind/utilities/divide-width",
+              "/ja/docs/zudo-wind/utilities/divide-color",
+              "/ja/docs/zudo-wind/utilities/outline-width",
+              "/ja/docs/zudo-wind/utilities/outline-color",
+              "/ja/docs/zudo-wind/utilities/outline-style",
+              "/ja/docs/zudo-wind/utilities/shadow",
+              "/ja/docs/zudo-wind/utilities/opacity"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "motion",
+            "family": "zudo-wind/utilities/transition",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/motion",
+              "/ja/docs/zudo-wind/utilities/transition",
+              "/ja/docs/zudo-wind/utilities/duration",
+              "/ja/docs/zudo-wind/utilities/easing",
+              "/ja/docs/zudo-wind/utilities/translate",
+              "/ja/docs/zudo-wind/utilities/rotate"
+            ],
+            "previewControls": false
+          },
+          {
+            "group": "interaction-other",
+            "family": "zudo-wind/utilities/interaction",
+            "nativeLinks": [
+              "/ja/docs/zudo-wind/utilities/interaction-other",
+              "/ja/docs/zudo-wind/utilities/interaction",
+              "/ja/docs/zudo-wind/utilities/scroll-margin",
+              "/ja/docs/zudo-wind/utilities/svg",
+              "/ja/docs/zudo-wind/utilities/miscellaneous"
+            ],
+            "previewControls": false
+          }
+        ]
+      }
+    ],
+    "failures": [],
+    "pageErrors": [],
+    "finished": "2026-10-08T15:53:49.331Z"
+  }
+}

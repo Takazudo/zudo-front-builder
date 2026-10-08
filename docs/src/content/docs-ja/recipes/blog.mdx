@@ -17,11 +17,11 @@ category: Recipes
 
 ## 何を示すか
 
-- `.md` と `.mdx` の記事を 1 つのディレクトリに混在させた `blog` という[コンテンツコレクション](/ja/docs/concepts/content-collections)。
-- 3 つのルートファイルによる 3 種類の[動的ルート](/ja/docs/concepts/dynamic-routes) — 記事個別ページ（`pages/blog/[slug].tsx`）、ページネーション付き一覧（`pages/blog/page/[page].tsx`）、タグ別ページ（`pages/tags/[tag].tsx`）。それぞれが独自の `paths()` を持ちます。
+- `.md` と `.mdx` の記事を 1 つのディレクトリに混在させた `blog` という[コンテンツコレクション](/ja/docs/architecture/content-collections)。
+- 3 つのルートファイルによる 3 種類の[動的ルート](/ja/docs/architecture/dynamic-routes) — 記事個別ページ（`pages/blog/[slug].tsx`）、ページネーション付き一覧（`pages/blog/page/[page].tsx`）、タグ別ページ（`pages/tags/[tag].tsx`）。それぞれが独自の `paths()` を持ちます。
 - ソート済みの配列をそのまま `paths()` の戻り値に変換する [`paginate()`](/ja/docs/api/paginate)。
-- `entry.Content` の `components` プロパティ経由でページに届く独自の MDX コンポーネント（`<Note>`） — [MDX コンポーネント](/ja/docs/concepts/mdx-components)を参照。
-- 初回レンダリングが SSR セーフな zudo-react の[アイランド](/ja/docs/concepts/islands) 1 つ（`ThemeToggle`）と、誤ったテーマで描画されないようにするインラインの事前スクリプト。
+- `entry.Content` の `components` プロパティ経由でページに届く独自の MDX コンポーネント（`<Note>`） — [MDX コンポーネント](/ja/docs/architecture/mdx-components)を参照。
+- 初回レンダリングが SSR セーフな zudo-react の[アイランド](/ja/docs/architecture/islands) 1 つ（`ThemeToggle`）と、誤ったテーマで描画されないようにするインラインの事前スクリプト。
 - `prefers-color-scheme` ではなく `data-theme` 属性で切り替える、`styles/global.css` にすべて記述したテーマ。
 
 ## 使用技術
@@ -134,9 +134,9 @@ pnpm typecheck  # zfb check — collection validation + tsc --noEmit
 
 ## 関連ページ
 
-- [コンテンツコレクション](/ja/docs/concepts/content-collections) — このサイトの土台になっている `blog` コレクション。
-- [動的ルート](/ja/docs/concepts/dynamic-routes)と[ルーティング](/ja/docs/concepts/routing) — 3 種類のルートすべての背後にある `paths()` の契約。
+- [コンテンツコレクション](/ja/docs/architecture/content-collections) — このサイトの土台になっている `blog` コレクション。
+- [動的ルート](/ja/docs/architecture/dynamic-routes)と[ルーティング](/ja/docs/architecture/routing) — 3 種類のルートすべての背後にある `paths()` の契約。
 - [`paginate()`](/ja/docs/api/paginate) — 上で引用したページネーションヘルパー。
-- [アイランド](/ja/docs/concepts/islands)と [`<Island>`](/ja/docs/api/island) — ハイドレーション境界とそのスケジューリング戦略。
+- [アイランド](/ja/docs/architecture/islands)と [`<Island>`](/ja/docs/api/island) — ハイドレーション境界とそのスケジューリング戦略。
 - [Coming from Tailwind](/ja/docs/zudo-wind/coming-from-tailwind) — preflight の測定比較と手書き CSS の説明。
-- [静的アセット](/ja/docs/concepts/static-assets) — HTML と並んで `dist/` に出力されるもの。
+- [静的アセット](/ja/docs/architecture/static-assets) — HTML と並んで `dist/` に出力されるもの。

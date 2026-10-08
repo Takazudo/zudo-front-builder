@@ -18,7 +18,7 @@ interact with it in two ways:
   feature to register directive names without writing Rust. Supplying
   `directives: {}` still wires an empty registry.
 - **From Rust** — populate a `DirectiveRegistry` directly and insert it into
-  the pipeline. See [Custom Directives](../concepts/custom-directives.mdx).
+  the pipeline. See [Custom Directives](../architecture/custom-directives.mdx).
 
 ## Directive shapes
 
@@ -83,14 +83,14 @@ registry.register(
 ## Custom directives
 
 To register additional directives or override built-ins, see
-[Custom Directives](../concepts/custom-directives.mdx) — the author-facing path
+[Custom Directives](../architecture/custom-directives.mdx) — the author-facing path
 that does not require writing Rust.
 
 ## See also
 
 - [`directives` feature](./directives.mdx) — opt-in config feature
   that populates the registry from `zfb.config.ts`.
-- [Custom Directives](../concepts/custom-directives.mdx) — register new
+- [Custom Directives](../architecture/custom-directives.mdx) — register new
   `:::name` / `::name` / `:name` directive names via the Rust API.
 - [Extending the Markdown Pipeline](../guides/extending-the-markdown-pipeline.mdx)
   — engine-side extension surface.

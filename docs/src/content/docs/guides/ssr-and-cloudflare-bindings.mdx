@@ -26,7 +26,7 @@ Why this matters: AI agents and human readers often try to import shared layout 
 
 </Info>
 
-For the conceptual mental model of how the emitted worker actually runs, see [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx).
+For the conceptual mental model of how the emitted worker actually runs, see [SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx).
 
 ## SSG vs SSR in zfb
 
@@ -168,7 +168,7 @@ export const prerender = flags.prerender;
 export const prerender = computeFlag();
 ```
 
-The same restriction applies to the `frontmatter` export — see [Frontmatter](../concepts/frontmatter.mdx) for the literal-only contract.
+The same restriction applies to the `frontmatter` export — see [Frontmatter](../architecture/frontmatter.mdx) for the literal-only contract.
 
 </Warning>
 
@@ -206,7 +206,7 @@ that points `main` at `dist/_worker.js` and hands the rest of `dist/` to
 the built-in asset server. The Worker handles dynamic routes; the asset
 server handles everything else — including a `public/_redirects` file,
 if your project has one; see
-[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-redirect-rewrite-rules)
+[Static Assets — `_redirects`](../architecture/static-assets.mdx#_redirects-—-redirect-rewrite-rules)
 for the supported rule syntax.
 
 <Warning title="Cloudflare Pages advanced mode is unverified">
@@ -247,7 +247,7 @@ not_found_handling = "404-page"
   GET/HEAD requests ahead of your SSR routes (`canDelegateToAssets()` in
   `worker-wrapper.mjs` no-ops the probe when this binding is absent). See
   [SSR on a Worker — the in-Worker `env.ASSETS` probe is not dead
-  code](../concepts/ssr-on-a-worker.mdx#the-dispatch-flow-the-in-worker-env-assets-probe-is-not-dead-code)
+  code](../architecture/ssr-on-a-worker.mdx#the-dispatch-flow-the-in-worker-env-assets-probe-is-not-dead-code)
   for why the probe still matters even though the platform's own asset
   router already serves most hits under the default
   `run_worker_first = false`.
@@ -295,7 +295,7 @@ yields to the styled page. Under `not_found_handling = "none"` the asset
 Every example on this page assumes the zfb default,
 `run_worker_first = false`: the platform's edge asset router serves a
 matching static file before `_worker.js` ever runs (see
-[SSR on a Worker — the dispatch flow](../concepts/ssr-on-a-worker.mdx#the-dispatch-flow)
+[SSR on a Worker — the dispatch flow](../architecture/ssr-on-a-worker.mdx#the-dispatch-flow)
 for the full mental model). Setting `run_worker_first = true` inverts
 that — every request, including hits on prerendered static pages, reaches
 the Worker first:
@@ -331,7 +331,7 @@ compatibility_flags = ["nodejs_compat"]
 
 Without this flag the Worker fails to boot with an error naming `node:async_hooks`
 as the missing module. See
-[SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx#the-getcloudflarecontext-trick)
+[SSR on a Worker (adapter mode)](../architecture/ssr-on-a-worker.mdx#the-getcloudflarecontext-trick)
 for the deeper mechanism.
 
 </Warning>

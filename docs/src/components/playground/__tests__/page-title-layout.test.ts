@@ -46,12 +46,12 @@ describe("playground page layout", () => {
     expect(frontmatter).toMatch(/^hide_toc:\s*true$/m);
   });
 
-  it("uses the wide layout only for the design tool, preserving the ordinary index cap", () => {
+  it("uses the wide native layout for both the index and the design tool", () => {
     for (const locale of ["docs", "docs-ja"]) {
       expect(readFrontmatter(`../../../content/${locale}/playground/design-system.mdx`)).toMatch(
         /^wide:\s*true$/m,
       );
-      expect(readFrontmatter(`../../../content/${locale}/playground/index.mdx`)).not.toMatch(
+      expect(readFrontmatter(`../../../content/${locale}/playground/index.mdx`)).toMatch(
         /^wide:\s*true$/m,
       );
     }
