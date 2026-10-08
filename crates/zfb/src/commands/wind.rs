@@ -471,10 +471,18 @@ fn plan_coverage(
     plugin_virtual_modules: &[(String, String)],
     project_root: &Path,
 ) -> PlanCoverage {
-    let display = |path: &Path| match path.strip_prefix(project_root) {
-        Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
-        Ok(relative) => relative.display().to_string(),
-        Err(_) => path.display().to_string(),
+    let canonical_project_root = std::fs::canonicalize(project_root).ok();
+    let display = |path: &Path| {
+        let relative = path.strip_prefix(project_root).ok().or_else(|| {
+            canonical_project_root
+                .as_deref()
+                .and_then(|canonical| path.strip_prefix(canonical).ok())
+        });
+        match relative {
+            Some(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
+            Some(relative) => relative.display().to_string(),
+            None => path.display().to_string(),
+        }
     };
     let mut roots: Vec<_> = plan
         .roots
