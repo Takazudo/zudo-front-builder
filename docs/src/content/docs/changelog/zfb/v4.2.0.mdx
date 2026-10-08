@@ -1,0 +1,18 @@
+---
+title: v4.2.0
+sidebar_position: 144
+---
+
+# v4.2.0
+
+Released: 2026-10-08
+
+## Features
+
+- The bundled `basic-blog` and `node-free` starters ship project-owned Everyday design values and usage rules: `design-tokens.json`, `styles/design-system.css`, `components/design-rules.ts` and `DESIGN-NOTES.md`, with the starter pages and layouts restyled on those roles. Existing routes, Markdown examples, scaffold contracts and the Node-free no-install operation are preserved (fbaeecc8, 5b2949be, 9d4cbce7).
+- The island scanner resolves factory targets built from bounded one-level local `const` spreads, with last-writer selection and ordered diagnostics. Forwarding-wrapper shorthand is classified as an opaque object rather than a factory target (93e1e034, 1808b5ec).
+
+## Bug Fixes
+
+- The dev server no longer rebuilds on writes to ignored, undeclared files under a linked package. Linked-package ignore rules are snapshotted from the token walk and re-read before watch intake; dynamic dependency, extra-watch, boot, reconcile and import-closure claims stay exempt, and manifestless alias targets and declared closure members remain tracked (22dd8216, 39e1e055, 84a1b8d4, ad87185d, 9b90afd8).
+- After a collection entry is deleted, the dev server reconciles retained content-provenance reads against current membership, so edits to a surviving entry still update its consumers instead of logging a provenance warning (e7a20e7d).

@@ -1,0 +1,12 @@
+---
+title: v4.2.0
+sidebar_position: 30
+---
+
+# v4.2.0
+
+Released: 2026-10-08
+
+## Other Changes
+
+- All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so their SHA-256 digests change for v4.2.0 even where byte sizes stay the same. Re-verify pinned artifact digests after publication. The four release-version sizes were measured in CI run 37738961834.
