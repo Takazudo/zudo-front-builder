@@ -18,18 +18,29 @@ export const NAVIGATION_INDEX_MEMBERS = new Map([
   ...WIND_UTILITY_GROUPS.map((group) => [group.slug, group.members]),
 ]);
 
+export function materializeNavigationIndex(source, members, file = "native index") {
+  if (
+    (source.match(/<CategoryNav\b/g) ?? []).length !== 1 ||
+    (source.match(/<CategoryNav categories=\{[^\n]+\} \/>/g) ?? []).length !== 1
+  ) {
+    throw new Error(`Expected exactly one native CategoryNav in ${file}`);
+  }
+  const next = source
+    .replace(/^import \{[^\n]+\} from "[^"\n]*navigation-groups\.mjs";\n\n/gm, "")
+    .replace(
+      /<CategoryNav categories=\{[^\n]+\} \/>/,
+      `<CategoryNav categories={${JSON.stringify(members)}} />`,
+    );
+  return next;
+}
+
 export function syncNavigationIndexes(check = false) {
   let stale = false;
   for (const locale of ["docs", "docs-ja"])
     for (const [slug, members] of NAVIGATION_INDEX_MEMBERS) {
       const file = fileURLToPath(new URL(`../src/content/${locale}/${slug}.mdx`, import.meta.url));
       const source = readFileSync(file, "utf8");
-      const next = source
-        .replace(/^import \{[^\n]+\} from "[^"\n]*navigation-groups\.mjs";\n\n/gm, "")
-        .replace(
-          /<CategoryNav categories=\{[^\n]+\} \/>/,
-          `<CategoryNav categories={${JSON.stringify(members)}} />`,
-        );
+      const next = materializeNavigationIndex(source, members, file);
       if (next === source) continue;
       if (check) {
         console.error(`Stale native index membership: ${file}`);

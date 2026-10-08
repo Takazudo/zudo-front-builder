@@ -30,9 +30,16 @@ describe("documentation navigation contracts", () => {
     expect([...config.matchAll(/categoryMatch: "([^"]+)"/g)].map((match) => match[1])).toEqual(
       DOCS_CATEGORY_ORDER,
     );
-    const { syncNavigationIndexes } =
+    const { syncNavigationIndexes, materializeNavigationIndex } =
       await import("../../docs/scripts/sync-navigation-indexes.mjs");
     expect(syncNavigationIndexes(true)).toBe(true);
+    expect(() => materializeNavigationIndex("No index", [])).toThrow("exactly one");
+    expect(() =>
+      materializeNavigationIndex(
+        "<CategoryNav categories={[]} /><CategoryNav categories={[]} />",
+        [],
+      ),
+    ).toThrow("exactly one");
   });
   it("assigns every Architecture article and utility family exactly once", () => {
     const architecture = ARCHITECTURE_GROUPS.flatMap((group) => group.members);

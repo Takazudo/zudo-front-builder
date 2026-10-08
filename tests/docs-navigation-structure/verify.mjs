@@ -7,7 +7,8 @@ import {
   ARCHITECTURE_GROUPS,
   WIND_UTILITY_GROUPS,
   COMPATIBILITY_BUCKETS,
-  DOCS_CATEGORY_ORDER,
+  WIND_ENTRY_SLUGS,
+  WIND_LEARN_SLUGS,
 } from "../../docs/src/config/navigation-groups.mjs";
 import { DOCS_ROUTE_MIGRATIONS } from "../../docs/src/config/route-migrations.mjs";
 import { NAVIGATION_INDEX_MEMBERS } from "../../docs/scripts/sync-navigation-indexes.mjs";
@@ -38,17 +39,25 @@ async function assertScope(root, members, mobile = false, prefix = "/docs/") {
     await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/, exact: false }).click();
     await expect(target).not.toHaveAttribute("inert");
   }
-  const hrefs = await target
-    .locator("a[href]")
-    .evaluateAll((nodes) =>
-      nodes
-        .map((n) => n.getAttribute("href"))
-        .filter((h) => h.startsWith("/docs/") || h.startsWith("/ja/docs/")),
+  await expect
+    .poll(async () =>
+      target.locator("a[href]").evaluateAll(
+        (nodes, prefix) =>
+          nodes
+            .map((n) => n.getAttribute("href"))
+            .filter((href) => href.startsWith(prefix))
+            .map((href) => href.replace(/\/$/, "")),
+        prefix,
+      ),
+    )
+    .toEqual([root, ...members].map((slug) => prefix + slug));
+  const current = new URL(page.url()).pathname.replace(/\/$/, "");
+  if ([root, ...members].some((slug) => prefix + slug === current)) {
+    await expect(target.locator(`a[href="${current}"], a[href="${current}/"]`)).toHaveAttribute(
+      "aria-current",
+      "page",
     );
-  assert.deepEqual(
-    hrefs,
-    [root, ...members].map((s) => prefix + s + "/"),
-  );
+  }
   if (mobile) await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
 }
 async function soft(path) {
@@ -57,7 +66,7 @@ async function soft(path) {
     a.href = path;
     a.textContent = "verification navigation";
     a.id = "verification-link";
-    document.body.append(a);
+    document.querySelector("main").prepend(a);
   }, path);
   await page.locator("#verification-link").click();
   await expect(page).toHaveURL(origin + path);
@@ -74,7 +83,7 @@ try {
         .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href")));
       for (const member of members)
         assert(
-          links.includes(`${locale}/docs/${member}/`),
+          links.some((href) => href.replace(/\/$/, "") === `${locale}/docs/${member}`),
           `${locale}/${slug} missing native card ${member}`,
         );
     }
@@ -84,11 +93,7 @@ try {
     const secondary = await page
       .locator("[data-home-secondary-nav] a")
       .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href")));
-    assert.deepEqual(secondary, [
-      `${locale}/docs/playground/`,
-      "/docs/changelog/",
-      "/docs/claude/",
-    ]);
+    assert.deepEqual(secondary, [`${locale}/docs/playground`, "/docs/changelog", "/docs/claude"]);
     evidence.checks.push(`${locale || "EN"} homepage secondary links`);
   }
   // Every actual Cloudflare local redirect, not an emulated mapping.
@@ -142,6 +147,23 @@ try {
     await page.goForward();
     await assertScope(type.slug, type.members, width < 1024);
   }
+  for (const locale of ["", "/ja"])
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const prefix = `${locale}/docs/`;
+      await goto(prefix + "zudo-wind/");
+      // Leave the persisted drawer unopened across several distinct native scopes.
+      await soft(prefix + "zudo-wind/utilities/");
+      await soft(prefix + flex.slug + "/");
+      await soft(prefix + "zudo-wind/utilities/grid/");
+      await assertScope(flex.slug, flex.members, width < 1024, prefix);
+      for (const slug of ["zudo-wind/compatibility", "zudo-wind/coming-from-tailwind"]) {
+        await soft(prefix + slug + "/");
+        await assertScope("zudo-wind", WIND_ENTRY_SLUGS, width < 1024, prefix);
+      }
+      await soft(prefix + "zudo-wind/learn/");
+      await assertScope("zudo-wind/learn", WIND_LEARN_SLUGS, width < 1024, prefix);
+    }
   evidence.checks.push(
     "Direct/native soft cross-group navigation, unopened/reopened mobile drawer and history scopes",
   );
