@@ -128,3 +128,72 @@ The **first and only corrective round** set a single fixed stamp, `ZFB_RELEASE_V
 The 18 unchanged corpus observations all matched; the historical table above lists each case. P3 is not applicable. The lock had **594 packages at both pins**, with exactly two changed entries: `noyalib` and `noyalib-serde-yaml`, each 0.0.44 → 0.0.56 with its frozen checksum; all other lock entries were byte-equivalent. Both `cargo deny list` outputs were byte-identical after normalizing only the two YAML versions: 15 license categories, including Apache-2.0 289 and MIT 432. `cargo deny check` passed advisories/bans/licenses/sources at both pins with existing warnings, and no exception was added. There were **zero production lines changed and zero source corrective rounds**; the runner stamp fix was one corrective round for this evaluation.
 
 Every command log and child `.exit` lives in the evidence directory. Cheap verification passed: Python syntax, Bash syntax, JSON parsing, registry assertion, pnpm lock hash comparison, exact lock delta, `git diff --check`, and final protected-hash check. The original Phase 1 guard and corrected guard verdicts remain distinct. Phase 2 sizes, same-toolchain wasm control, CI ceiling validation, and terminal KEEP/MIGRATE are **NOT RUN** in this sub-issue. The next trigger is the manager's Phase 2 evaluation of this same 0.0.56 pair, with a fresh release-race check before any verdict.
+
+---
+
+# Mac Phase 2 evaluation of 0.0.56 (#4066) — COMPLETE evidence, strict size FAIL
+
+**Phase 2 status: COMPLETE with evidence.** The candidate's strict `pnpm test:md-wasm`, timed production wrapper, and budget assertion all failed at the unchanged render-only gzip-9 ceiling. The same-toolchain 0.0.44 control passed that ceiling. This is a real candidate gate failure on this host, not a Mac/control shared overage. **Verdict: _pending — decided in the decision sub-task_.** No product pin, ceiling, CI size manifest, or documentation size table was changed.
+
+Raw evidence is in `$HOME/.cache/zfb-4049-yaml-evidence/20261008_1404/`; the compact machine-readable result is `phase2-summary.json`. Tested source SHA was the merged Phase 1 base `8d811be3990ca560135f57aaf8705bb36f9bd05f`. This run used rustc/cargo 1.96.0 from `stable-aarch64-apple-darwin`, wasm-bindgen 0.2.121, binaryen wasm-opt 130, Node v24.14.0, and pnpm 12.8.2. Host: macOS 26.6.1, Apple A18 Pro. The same `env.sh`, `CARGO_HOME`, `RUSTUP_HOME`, pinned PATH, `ZFB_RELEASE_VERSION=0.0.0`, and package dependencies were used for both pins. The two timed targets were absent before their builds and were kept separate. All Rust/wasm build commands ran serially inside the machine-wide heavy guard; it reported `verdict=PASS exit=0 secs=599` for the *runner*, not for each child gate.
+
+## Ordered commands and gates
+
+The runner saved every command, log, real child exit, start/end timestamp, disk snapshot, and `/usr/bin/time -l` result as `phase2-<name>.*`. Its EXIT trap restored `Cargo.toml`, `Cargo.lock`, and `shipped-sizes.json` then ran hash verification, both exit 0. `pin` → saved candidate lock copy → `lock` passed with exactly two version/checksum entries, 594 packages; `disk` passed at **73,649,041,408 free bytes** against **32,212,254,720**. The post-restore control disk recheck passed at **71,899,529,216 free bytes**. There was no gate reduction.
+
+| Sequence | Command / evidence name | Actual exit | Result |
+| --- | --- | ---: | --- |
+| 1 | `cargo check --locked --target wasm32-unknown-unknown -p zfb-md-wasm` / `candidate-check` | 0 | PASS |
+| 2 | `pnpm test:md-wasm` / `candidate-strict` | 1 | **FAIL**: `render-only gzip-9 size 1111923 exceeds ceiling 1100000`; composite stopped before its test half |
+| 3 | `CARGO_TARGET_DIR=$YAML_EVIDENCE/wasm-candidate node scripts/run-zfb-md-wasm-build-timed.mjs` / `candidate-build` | 1 | All four artifact passes and twelve subprocess timings emitted; final wrapper total unavailable because production build threw on the same ceiling |
+| 4 | `node scripts/assert-zfb-md-wasm-budgets.mjs --build-log $YAML_EVIDENCE/candidate-build.log --dist crates/zfb-md-wasm/npm/dist --update-manifest` / `candidate-budget` | 1 | **FAIL**, same exact render-only ceiling; no CI manifest update retained |
+| 5 | `evaluate.py restore`, tool identities, and `disk` / `restore`, `control-identities`, `control-disk` | 0 each | Original 0.0.44 pin; unchanged tool versions and disk gate |
+| 6 | `CARGO_TARGET_DIR=$YAML_EVIDENCE/wasm-control node scripts/run-zfb-md-wasm-build-timed.mjs` / `control-build` | 0 | PASS, four artifacts and twelve timings |
+| 7 | Same strict budget assertion on `control-build.log` / `control-budget` | 0 | PASS, all four gzip-9 ceilings |
+| 8 | Final `evaluate.py restore`, `verify`, and EXIT restore/verify | 0 each | All protected hashes byte-identical; production YAML pin still `=0.0.44` |
+
+The independent `pnpm --filter @takazudo/zfb-md-wasm test` on saved candidate dist passed **234/234 in 14 files** (exit 0; `phase2-candidate-tests.log`). It supplies diagnostic test evidence and does not change the strict composite FAIL. Candidate and control `pnpm pack --pack-destination $YAML_EVIDENCE` both exited 0, from their respective saved dist; neither package was published. All tarball outputs remain outside the checkout.
+
+## Actual shipped artifact bytes
+
+Each field was measured from its saved `candidate-dist` or `control-dist` file using Node gzip level 9, independent of the budget script's exit, and final wasm was cross-checked against each build log. `Δ` is candidate minus control in bytes. The gzip-9 ceiling applies to the gzip-9 column; headroom is ceiling minus observed gzip-9 bytes. The glue columns have no separate absolute ceiling.
+
+| Entry | Field | Control 0.0.44 | Candidate 0.0.56 | Δ |
+| --- | --- | ---: | ---: | ---: |
+| root | finalWasm | 3,398,523 | 3,436,050 | +37,527 |
+| root | gzip9 | 1,524,882 | 1,541,225 | +16,343 |
+| root | glue | 14,998 | 14,998 | 0 |
+| root | glueGzip9 | 4,199 | 4,199 | 0 |
+| highlight | finalWasm | 1,537,137 | 1,537,137 | 0 |
+| highlight | gzip9 | 822,289 | 822,285 | −4 |
+| highlight | glue | 8,758 | 8,758 | 0 |
+| highlight | glueGzip9 | 2,637 | 2,637 | 0 |
+| render | finalWasm | 2,204,458 | 2,240,279 | +35,821 |
+| render | gzip9 | 1,098,011 | **1,111,923** | **+13,912** |
+| render | glue | 8,772 | 8,772 | 0 |
+| render | glueGzip9 | 2,661 | 2,661 | 0 |
+| parse | finalWasm | 704,576 | 741,625 | +37,049 |
+| parse | gzip9 | 283,410 | 298,857 | +15,447 |
+| parse | glue | 11,159 | 11,159 | 0 |
+| parse | glueGzip9 | 3,797 | 3,797 | 0 |
+
+| Complete output / gate | Ceiling | Control | Control headroom | Candidate | Candidate headroom | Δ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| root gzip-9 | 1,600,000 | 1,524,882 | +75,118 | 1,541,225 | +58,775 | +16,343 |
+| highlight gzip-9 | 880,000 | 822,289 | +57,711 | 822,285 | +57,715 | −4 |
+| render gzip-9 | 1,100,000 | 1,098,011 | +1,989 | **1,111,923** | **−11,923** | +13,912 |
+| parse gzip-9 | 325,000 | 283,410 | +41,590 | 298,857 | +26,143 | +15,447 |
+| Complete dist bytes | — | 8,133,458 | — | 8,243,855 | — | +110,397 |
+| Packed tarball bytes | 3,900,000 | 3,814,132 | +85,868 | 3,859,716 | +40,284 | +45,584 |
+
+The clean candidate production subprocesses summed to **174.055 s** from the twelve emitted lines; the wrapper did not print its final total because the ceiling threw. Control printed **169.402 s**; summing its rounded twelve lines gives 169.403 s. The difference of the summed lines is **+4.652 s**; the 210-second Apple-M4 reference is informational here. Total timed-command wall time was **176.55 s candidate / 171.49 s control**. Per artifact, the production triplets (cargo rustc / wasm-bindgen / wasm-opt, seconds) were candidate **95.521 / 0.320 / 11.003**, **31.178 / 0.116 / 3.736**, **14.666 / 0.152 / 6.170**, **8.747 / 0.050 / 2.396**; control **95.769 / 0.204 / 10.460**, **27.458 / 0.077 / 3.857**, **13.395 / 0.107 / 6.687**, **8.554 / 0.098 / 2.737** (root, highlight, render, parse order). `/usr/bin/time -l` observed wrapper maximum resident sizes of **615,497,728 / 591,298,560 bytes**. It did not capture a reliable aggregate peak RSS across all child processes, so aggregate peak RSS is **unavailable**. The 28 before/after filesystem snapshots ranged from **73,649,192,960** to a low of **71,342,694,400** available bytes; the latter is a sampled disk high-water point, not a continuous process peak. The two exact disk-gate reads are also in evidence.
+
+## Dependency audit and final release race
+
+The Phase 1 saved normal and feature reverse trees and `cargo deny list` category outputs compare byte-identically after normalizing only `0.0.44`/`0.0.56` YAML version strings; each `cmp` exit was 0. Both-pin `cargo deny check`, tree, and list exits were 0. The shared lock comparison found 594 packages and exactly `noyalib` and `noyalib-serde-yaml` version/checksum changes; no audit exception or source change was introduced. The license list retains 15 categories (Apache-2.0 289, MIT 432), as in Phase 1.
+
+`evaluate.py registry` checked at **2026-10-08T14:46:54Z**, exit 0: both adopted 0.0.44 and candidate 0.0.56 remained non-yanked; actual 0.0.56 archives/checksums and the alias exact dependency matched frozen provenance; no newer complete or half-pair existed. The full 0.0.45–0.0.55 per-crate publication timestamps and non-yanked states are retained in `phase2-final-registry.log` (all 11 intermediate versions non-yanked for both crates). Release-race row (a): **0.0.56 selection still current; no re-selection needed at this observation**.
+
+Authenticated GitHub reads at **2026-10-08T14:47:09Z** rechecked both `v0.0.56` refs, annotated tag objects, dereferenced commits, Release publication/body/checksum assets, archived state, and complete open-PR collections. All matched `github-provenance.json`, neither repo was archived, and both open-PR collections were empty (`phase2-final-github.json`, exit 0). The authenticated drift detector `GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --json` ran at **2026-10-08T14:46:57Z** and returned **exit 10 / `CANDIDATE_DRIFT`**, with no errors. Its deltas compare the committed older watcher baseline with releases 0.0.52–0.0.56, tags, branches, and merged release PRs; they do not contradict the direct frozen 0.0.56 race check. The detector JSON and stderr were saved without writing any snapshot onto the committed baseline.
+
+The final `evaluate.py verify` and EXIT verification passed; `git status` had only this report and `phase2-summary.json` as intended changes. The candidate's strict absolute size gate remains red while the same-toolchain control passes; no local MIGRATE qualification or terminal decision is asserted. The decision sub-task owns the verdict and any CI interpretation.
