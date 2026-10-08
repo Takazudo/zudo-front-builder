@@ -1,120 +1,78 @@
 {
   "noyalib": {
     "tag": {
-      "ref": "refs/tags/v0.0.55",
-      "node_id": "REF_kwDORTUB3bFyZWZzL3RhZ3MvdjAuMC41NQ",
-      "url": "https://api.github.com/repos/sebastienrousseau/noyalib/git/refs/tags/v0.0.55",
+      "ref": "refs/tags/v0.0.56",
+      "node_id": "REF_kwDORTUB3bFyZWZzL3RhZ3MvdjAuMC41Ng",
+      "url": "https://api.github.com/repos/sebastienrousseau/noyalib/git/refs/tags/v0.0.56",
       "object": {
-        "sha": "65c55452c7f419fbb672d67705269583745928a4",
+        "sha": "d292b8f187e2efce2bf008f9edf19eaa44a44618",
         "type": "tag",
-        "url": "https://api.github.com/repos/sebastienrousseau/noyalib/git/tags/65c55452c7f419fbb672d67705269583745928a4"
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib/git/tags/d292b8f187e2efce2bf008f9edf19eaa44a44618"
       }
     },
     "tagObject": {
-      "sha": "65c55452c7f419fbb672d67705269583745928a4",
-      "commit": "8adef27f177e03f07ac0e96ea9a8a774b21bee76",
-      "date": "2026-10-08T06:25:30Z"
+      "sha": "d292b8f187e2efce2bf008f9edf19eaa44a44618",
+      "commit": "d39c929a3d98487dea8fe51d42f1675851f6eef6",
+      "date": "2026-10-08T10:01:50Z"
     },
     "release": {
-      "url": "https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.55",
-      "publishedAt": "2026-10-08T06:37:35Z",
-      "body": "## Highlights ⭐️\n\n* **Every loader enforces every limit**: the borrowed API, the CST, `read_with_config`, the multi-document entry points and skipped values now charge the same budgets as `from_str`, and an alias can no longer build a value deeper than `max_depth`. Hostile input that one path refused and a sibling path accepted is refused everywhere.\n* **Linear-time parsing of long lines**: a single long line of flow entries used to cost quadratic time before any budget could refuse it. It is linear again, and a flow collection at the start of a document is streamed instead of buffered whole.\n* **Output that reads back as written**: flow strings holding `,` `[` `]` `{` `}`, comments with line breaks, `<<` keys and verbatim tags now round-trip, and `cst::format` never changes what a document means. Formatting hints can no longer be smuggled in through tag names.\n* **Breaking parse behaviour**: a verbatim tag `!<x>` now names exactly the tag `x`, and an implicit key holding a flow collection longer than 1024 characters is refused, both as YAML 1.2.2 requires. Schema validation refuses external `$ref`s and compiles patterns with a linear-time engine.\n\n## What's Changed\n* release: v0.0.55, limits on every loader by @sebastienrousseau in https://github.com/sebastienrousseau/noyalib/pull/472\n\n## Checksums\n\nSHA-256 of every asset attached to this release:\n\n```text\nd1a2576a8b11b72db9c90a863e92776aef160be3329e47787529c650cfd6d62c  SBOM.cdx.json\n96ca52c89747fee7b7857cf6427360d0dadda8c7db9cf814719d36141fc7508c  SBOM.cdx.json.asc\nb279166857782a3f73050c08c72e871684c7744e495bfcdc25433484c3c4b456  SBOM.cdx.json.bundle\nf6cf7ee77b71a44a9fead5b098b1e9ef87c32585269988333048c333a7b746f7  SBOM.txt\n510b597aa0b3e97d7222fae0f03e836d8e08788e21eb93c323d88ad6a360ccdb  SBOM.txt.asc\nd13aa0160e37595a4cbf244a581b26e2993f7347f40b9557499919bf2c506d5f  SBOM.txt.bundle\n63fbfa4e40376781423817e77b7c1158c861a7114d751b8dd0f26c7c59554247  SHA256SUMS.txt\nb177bca9ef36a263ffcee387671b33b6713c98c516bfab426f1194898978f334  SHA512SUMS.txt\n0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41  noyalib-0.0.55.crate\n0b7403f4114089b14cfbf3cf590e3ad3f5f3bb0ce0b3dec9ebbafbb9c582f16c  noyalib-0.0.55.crate.asc\n312afee3c456cdac7cf08f3b274d8daf0887e39dae8552ebafa931510b68f5e1  noyalib-0.0.55.crate.bundle\n```\n\n**Full Changelog**: https://github.com/sebastienrousseau/noyalib/compare/v0.0.54...v0.0.55\n",
+      "url": "https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.56",
+      "publishedAt": "2026-10-08T10:12:09Z",
+      "body": "## Highlights \u2b50\ufe0f\n\n* **No value too deep to drop**: nesting is capped at 256 levels on every path, even with `max_depth` raised, and a `Value` read from another serde format stops there too. Dropping, cloning, printing or serializing a value can no longer overflow a 1 MiB stack.\n* **`max_events` holds before buffering**: a long flow-mapping key used to be tokenised whole before the event budget could refuse it. The scanner now gives up as soon as the backlog proves the document is over budget.\n* **serde_yaml shim matches upstream on repeated struct fields**: `compat::serde_yaml::from_str` refuses ``duplicate field `k` `` as serde_yaml 0.9 does, where it used to keep the last entry. `load_comments` now applies the default length and backlog limits.\n* **Breaking parse behaviour**: input nested deeper than 256 levels is refused whatever `max_depth` says, and the shim refuses documents that repeat a struct field.\n\n## What's Changed\n* release: v0.0.56, no value too deep to drop by @sebastienrousseau in https://github.com/sebastienrousseau/noyalib/pull/473\n\n## Checksums\n\nSHA-256 of every asset attached to this release:\n\n```text\n7b7f53799e6d6b49623274fc9992d5c200af55665001ef5c48ce302ac7fd4107  SBOM.cdx.json\n607401de2fafee38ae869fa3e0ec779d48ae7263f2dfc951741a869d2d71c4f0  SBOM.cdx.json.asc\nef0b4483ce59b61863d9a1362d30cd71c765ec4298b03cf3ac6fc80e29f2be40  SBOM.cdx.json.bundle\n57abd1b32b44b40b20c91d355ed0b45eb7d2d4be0a7fabc68d00a4dc29551fe9  SBOM.txt\nb06fc6972a1c187e025f5fb6dd0ffff6884aca535821eceb5cb3277c15441c14  SBOM.txt.asc\ndbb8196458a3095d0903755fd9d3392c2997155092c92d3a3dcda679aa27b8cc  SBOM.txt.bundle\nba67c736e9ff8a629dbba9c5a130ad8320942da7b482e477b7693633a03a40ff  SHA256SUMS.txt\n86ed027cf7073541a3ce28e7a60ad9228dc602cfd55cb53a03bbb9ab1e38101a  SHA512SUMS.txt\n17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77  noyalib-0.0.56.crate\n1bd3996d423e3bdcb41f1d6c3740c584c49d58f7775b09b407639fee4a325243  noyalib-0.0.56.crate.asc\nb660d62c3c8898bdbcb67dd222a2ae3e32cb86ad2a2ad3291a4704371f12babe  noyalib-0.0.56.crate.bundle\n```\n\n**Full Changelog**: https://github.com/sebastienrousseau/noyalib/compare/v0.0.55...v0.0.56\n",
       "archive": {
-        "url": "https://api.github.com/repos/sebastienrousseau/noyalib/releases/assets/620976871",
-        "id": 620976871,
-        "node_id": "RA_kwDORTUB3c4lA1rn",
-        "name": "noyalib-0.0.55.crate",
-        "label": "",
-        "uploader": {
-          "login": "github-actions[bot]",
-          "id": 41898282,
-          "node_id": "MDM6Qm90NDE4OTgyODI=",
-          "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
-          "gravatar_id": "",
-          "url": "https://api.github.com/users/github-actions%5Bbot%5D",
-          "html_url": "https://github.com/apps/github-actions",
-          "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
-          "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
-          "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
-          "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
-          "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
-          "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
-          "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
-          "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
-          "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
-          "type": "Bot",
-          "user_view_type": "public",
-          "site_admin": false
-        },
-        "content_type": "application/octet-stream",
-        "state": "uploaded",
-        "size": 1274912,
-        "digest": "sha256:0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41",
-        "download_count": 0,
-        "created_at": "2026-10-08T06:37:33Z",
-        "updated_at": "2026-10-08T06:37:34Z",
-        "browser_download_url": "https://github.com/sebastienrousseau/noyalib/releases/download/v0.0.55/noyalib-0.0.55.crate"
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib/releases/assets/621456112",
+        "id": 621456112,
+        "name": "noyalib-0.0.56.crate",
+        "size": 1278749,
+        "digest": "sha256:17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77",
+        "browser_download_url": "https://github.com/sebastienrousseau/noyalib/releases/download/v0.0.56/noyalib-0.0.56.crate"
       }
     },
-    "openPulls": []
+    "openPulls": [],
+    "releasePr": {
+      "number": 459,
+      "state": "closed",
+      "merged": true,
+      "mergedAt": "2026-10-04T13:51:53Z",
+      "url": "https://github.com/sebastienrousseau/noyalib/pull/459"
+    }
   },
   "noyalib-serde-yaml": {
     "tag": {
-      "ref": "refs/tags/v0.0.55",
-      "node_id": "REF_kwDOULUTvbFyZWZzL3RhZ3MvdjAuMC41NQ",
-      "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/git/refs/tags/v0.0.55",
+      "ref": "refs/tags/v0.0.56",
+      "node_id": "REF_kwDOULUTvbFyZWZzL3RhZ3MvdjAuMC41Ng",
+      "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/git/refs/tags/v0.0.56",
       "object": {
-        "sha": "3cda03c23b0a2cfe27c1b7e548421494c8bd3a72",
+        "sha": "61c88b9ccc2847ec8b7d8a7d797d8778f4ac34b6",
         "type": "tag",
-        "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/git/tags/3cda03c23b0a2cfe27c1b7e548421494c8bd3a72"
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/git/tags/61c88b9ccc2847ec8b7d8a7d797d8778f4ac34b6"
       }
     },
     "tagObject": {
-      "sha": "3cda03c23b0a2cfe27c1b7e548421494c8bd3a72",
-      "commit": "21a0ff6424367a0b47b5d3110a6990767395114e",
-      "date": "2026-10-08T07:04:00Z"
+      "sha": "61c88b9ccc2847ec8b7d8a7d797d8778f4ac34b6",
+      "commit": "27b152f0bc5f508178723edb5ea687545efb97db",
+      "date": "2026-10-08T10:36:34Z"
     },
     "release": {
-      "url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/tag/v0.0.55",
-      "publishedAt": "2026-10-08T07:10:11Z",
-      "body": "## Highlights ⭐️\n\n* **Duplicate keys refused like upstream**: through the core's compat layer, a `Value` target now refuses a duplicate mapping key with serde_yaml 0.9's `duplicate entry with key` wording.\n* **In lockstep with noyalib 0.0.55**: the exact core pin moves to `=0.0.55`, so this release picks up every core change for that version, including limits enforced on every loader and linear-time parsing of long lines.\n\n## What's Changed\n* release: noyalib-serde-yaml v0.0.55, upstream duplicate-key refusals by @sebastienrousseau in https://github.com/sebastienrousseau/noyalib-serde-yaml/pull/33\n\n## Checksums\n\nSHA-256 of every asset attached to this release:\n\n```text\n7d35e02964dd0dabe3e993d21975bb07d83a1934ded3b9773dbd8c0063ccdab9  SBOM.cdx.json\n7dc052864eb4fb4e7a47e087b98fdbc39db2660316be3baf542d01ceb960c55a  SBOM.cdx.json.bundle\ncd163f6f3882b77b61f6853e202e76c4259b185a634475c1aef3ee48e2cdb498  SBOM.txt\n8899456b08c1c7a637b7eef670308162f1e69a84ce31ede7a3e06e8ff1e6cbac  SBOM.txt.bundle\n98589139e6dc6ceb138b195233d587a897a75ff8263463e5d8f2b239e432e0f6  SHA256SUMS.txt\n8b1d084e98f64969f671f944ee4e39d846e8efd03942e71a8a2265c0ce3792f6  SHA512SUMS.txt\n4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b  noyalib-serde-yaml-0.0.55.crate\n150e9aa886eca9f39c2fa3eb44894734111cb4a3c467efe2ed025ed1cb857ae6  noyalib-serde-yaml-0.0.55.crate.bundle\n```\n\n**Full Changelog**: https://github.com/sebastienrousseau/noyalib-serde-yaml/compare/v0.0.54...v0.0.55\n",
+      "url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/tag/v0.0.56",
+      "publishedAt": "2026-10-08T10:42:00Z",
+      "body": "## Highlights \u2b50\ufe0f\n\n* **Repeated struct fields are refused like upstream**: a struct target now gets ``duplicate field `k` `` from the shim, as serde_yaml 0.9 gives, instead of the last entry.\n* **In lockstep with noyalib 0.0.56**: the exact core pin moves to `=0.0.56`, so this release picks up the core's nesting ceiling and early `max_events` refusal.\n\n## What's Changed\n* release: noyalib-serde-yaml v0.0.56, repeated struct fields refused by @sebastienrousseau in https://github.com/sebastienrousseau/noyalib-serde-yaml/pull/34\n\n## Checksums\n\nSHA-256 of every asset attached to this release:\n\n```text\nb8e0ba4423f01b879d04b0a9e3e086a26cda26771c430afeb26efd6ae99bc1f4  SBOM.cdx.json\nba1b90e828f7a2ca2b9bcfd707d31c81e23c6c056b644f247a8b9d2180932cdb  SBOM.cdx.json.asc\nbd223f472e69551235a233643bde6e164e52099a890c2cb5b8bc95648e20e2a1  SBOM.cdx.json.bundle\n4dc0bd635b72b4186df7d5e2479c36198e3c818f36099b3b3fe1e242dee4ea6c  SBOM.txt\n082c0ee3b3ef2ce776d1b5fecc2d618e9215162c27a83c3d1a70c1cc8632cebc  SBOM.txt.asc\nca54c276e5e50e495cb7b9c1c86a51f7570540a65a805fe4629437a6e3d1496f  SBOM.txt.bundle\n836f4a74df734fb819210707dda667c2eeb101585c2cc8f8c6542291d6b50bd4  SHA256SUMS.txt\n9b0b13a338ac73734ab8b5f4a0a328894fb9f1c945f051e5c59a0f031fd4a067  SHA512SUMS.txt\nbce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70  noyalib-serde-yaml-0.0.56.crate\nafaab2bae4fdef5f069b39f183408dfab7f39630e36887cdee90732752654947  noyalib-serde-yaml-0.0.56.crate.asc\n1cffa90eb857b0497e12ec9d8fe472d029614c4daf2a3c40d345b7a6a2bfb3ca  noyalib-serde-yaml-0.0.56.crate.bundle\n```\n\n**Full Changelog**: https://github.com/sebastienrousseau/noyalib-serde-yaml/compare/v0.0.55...v0.0.56\n",
       "archive": {
-        "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/releases/assets/621049784",
-        "id": 621049784,
-        "node_id": "RA_kwDOULUTvc4lBHe4",
-        "name": "noyalib-serde-yaml-0.0.55.crate",
-        "label": "",
-        "uploader": {
-          "login": "github-actions[bot]",
-          "id": 41898282,
-          "node_id": "MDM6Qm90NDE4OTgyODI=",
-          "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
-          "gravatar_id": "",
-          "url": "https://api.github.com/users/github-actions%5Bbot%5D",
-          "html_url": "https://github.com/apps/github-actions",
-          "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
-          "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
-          "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
-          "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
-          "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
-          "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
-          "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
-          "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
-          "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
-          "type": "Bot",
-          "user_view_type": "public",
-          "site_admin": false
-        },
-        "content_type": "application/octet-stream",
-        "state": "uploaded",
-        "size": 72952,
-        "digest": "sha256:4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b",
-        "download_count": 0,
-        "created_at": "2026-10-08T07:10:09Z",
-        "updated_at": "2026-10-08T07:10:10Z",
-        "browser_download_url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/download/v0.0.55/noyalib-serde-yaml-0.0.55.crate"
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/releases/assets/621522785",
+        "id": 621522785,
+        "name": "noyalib-serde-yaml-0.0.56.crate",
+        "size": 73236,
+        "digest": "sha256:bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70",
+        "browser_download_url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/download/v0.0.56/noyalib-serde-yaml-0.0.56.crate"
       }
     },
-    "openPulls": []
+    "openPulls": [],
+    "releasePr": {
+      "number": 28,
+      "state": "closed",
+      "merged": true,
+      "mergedAt": "2026-10-06T17:17:46Z",
+      "url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/pull/28"
+    }
   }
 }

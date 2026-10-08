@@ -1,19 +1,24 @@
 {
-  "checkedAt": "2026-10-08T07:32:50.998150+00:00",
-  "candidate": "0.0.55",
+  "checkedAt": "2026-10-08T14:05:32.222852+00:00",
+  "candidate": "0.0.56",
   "baseline": "0.0.44",
   "crates": {
     "noyalib": {
       "registryUrl": "https://crates.io/api/v1/crates/noyalib",
-      "num": "0.0.55",
-      "checksum": "0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41",
-      "created_at": "2026-10-08T06:37:46.465213Z",
+      "num": "0.0.56",
+      "checksum": "17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77",
+      "created_at": "2026-10-08T10:12:23.979942Z",
       "yanked": false,
       "rust_version": "1.86.0",
       "license": "MIT OR Apache-2.0",
-      "archiveBytes": 1274912,
+      "archiveBytes": 1278749,
       "newerNonYanked": [],
       "skippedReleased": [
+        {
+          "num": "0.0.55",
+          "created_at": "2026-10-08T06:37:46.465213Z",
+          "yanked": false
+        },
         {
           "num": "0.0.54",
           "created_at": "2026-10-07T14:07:29.154401Z",
@@ -68,7 +73,7 @@
       "manifest": {
         "package": {
           "name": "noyalib",
-          "version": "0.0.55",
+          "version": "0.0.56",
           "build": "build.rs",
           "rust-version": "1.86.0",
           "license": "MIT OR Apache-2.0"
@@ -195,15 +200,20 @@
     },
     "noyalib-serde-yaml": {
       "registryUrl": "https://crates.io/api/v1/crates/noyalib-serde-yaml",
-      "num": "0.0.55",
-      "checksum": "4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b",
-      "created_at": "2026-10-08T07:10:21.924189Z",
+      "num": "0.0.56",
+      "checksum": "bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70",
+      "created_at": "2026-10-08T10:42:11.418941Z",
       "yanked": false,
       "rust_version": "1.86.0",
       "license": "MIT OR Apache-2.0",
-      "archiveBytes": 72952,
+      "archiveBytes": 73236,
       "newerNonYanked": [],
       "skippedReleased": [
+        {
+          "num": "0.0.55",
+          "created_at": "2026-10-08T07:10:21.924189Z",
+          "yanked": false
+        },
         {
           "num": "0.0.54",
           "created_at": "2026-10-07T14:20:18.633508Z",
@@ -258,14 +268,14 @@
       "manifest": {
         "package": {
           "name": "noyalib-serde-yaml",
-          "version": "0.0.55",
+          "version": "0.0.56",
           "build": false,
           "rust-version": "1.86.0",
           "license": "MIT OR Apache-2.0"
         },
         "dependencies": {
           "noyalib": {
-            "version": "=0.0.55",
+            "version": "=0.0.56",
             "features": ["std", "compat-serde-yaml"],
             "default-features": false
           }
@@ -274,7 +284,7 @@
     }
   },
   "upstreamContractPaths": [
-    "noyalib-0.0.55/tests/fixtures/serde_yaml_contract/corpus.json",
-    "noyalib-0.0.55/tests/integrations/serde_yaml_contract.rs"
+    "noyalib-0.0.56/tests/fixtures/serde_yaml_contract/corpus.json",
+    "noyalib-0.0.56/tests/integrations/serde_yaml_contract.rs"
   ]
 }

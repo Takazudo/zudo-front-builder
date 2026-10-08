@@ -1,3 +1,5 @@
+<!-- Historical #4055 Linux Phase 1 record; content below preserved verbatim. -->
+
 # YAML 0.0.55 differential evaluation #4049 — BLOCKED
 
 **Phase 1 compatibility passed; Phase 2 is blocked by the unchanged 30 GiB free-disk gate. No terminal KEEP/MIGRATE verdict is supported.** Both pins remain production-compatible across the existing tested surface. The production dependency remains `=0.0.44`; no baseline refresh, ceiling change, source adaptation or release is authorized by this record.
@@ -86,3 +88,43 @@ At **2026-10-08T07:52:25.793254Z**, the exact disk check observed **14,959,755,2
 | Tarball | 3,900,000 B | NOT RUN: disk gate |
 
 The prior 0.0.51 KEEP's same-toolchain 0.0.44 control also exceeded render-only; that cannot permit MIGRATE here. Resume the exact ordered commands in `README.md` on a host clearing the gate, keep both compiler/control identities identical, preserve every ceiling, and repeat final release-race checks immediately before any terminal verdict. Until then the status is **BLOCKED**, with production 0.0.44 retained operationally and no unsupported KEEP/MIGRATE decision.
+
+---
+
+# Mac Phase 1 evaluation of 0.0.56 (#4065) — GREEN native gates, no terminal verdict
+
+This section follows the preserved #4055 Linux 0.0.55 record above. It evaluates source `9375431ab81a95f480063f392b61444b9b5d892d` on macOS aarch64. The production `Cargo.toml` and `Cargo.lock` are restored to `=0.0.44`; no product source, harness, fixture, size ceiling, or watcher baseline changed. Phase 2 and a final KEEP/MIGRATE decision belong to subsequent work and are **NOT RUN / not established** here.
+
+## Selection and provenance
+
+A live crates.io re-query at **2026-10-08T14:05:32Z** selected **0.0.56**, the newest version published for both crates and yanked for neither. It supersedes the historical 0.0.55 run. Downloaded archives matched registry SHA-256; GitHub Release body checksums, asset digests, and asset sizes matched those same archives. Both declare `MIT OR Apache-2.0` and Rust minimum `1.86.0`. The published alias has exact core `=0.0.56`, no default features, and `std` plus `compat-serde-yaml`. `provenance.json` records publication timestamps, checksums, bytes, skipped versions, and published manifests; `github-provenance.json` records annotated tags, dereferenced commits, Releases with checksum bodies, open PR collections, and merged states for PRs 459/28.
+
+| Crate | Registry published UTC | SHA-256 | Archive bytes | Annotated tag / commit |
+| --- | --- | --- | ---: | --- |
+| noyalib | 2026-10-08T10:12:23.979942Z | `17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77` | 1,278,749 | `d292b8f187e2efce2bf008f9edf19eaa44a44618` / `d39c929a3d98487dea8fe51d42f1675851f6eef6` |
+| noyalib-serde-yaml | 2026-10-08T10:42:11.418941Z | `bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70` | 73,236 | `61c88b9ccc2847ec8b7d8a7d797d8778f4ac34b6` / `27b152f0bc5f508178723edb5ea687545efb97db` |
+
+The final registry/archive check at **2026-10-08T14:30:21.773110Z** passed: adopted 0.0.44 and candidate 0.0.56 were not yanked, and no newer complete pair or half-pair was present (`final-registry.log`, exit 0). This is a point-in-time observation.
+
+## Host and controlled execution
+
+Raw evidence: `$HOME/.cache/zfb-4049-yaml-evidence/20261008_1404/` (outside the checkout and Dropbox). `env.sh` fixes `RUSTUP_HOME=$HOME/.rustup`, a task-local `CARGO_HOME`, one shared `CARGO_TARGET_DIR`, and the rustup stable compiler bin before Homebrew. The resolved compiler was **rustc 1.96.0** (`ac68faa20`, LLVM 22.1.2) and **cargo 1.96.0** (`30a34c682`), both aarch64-apple-darwin. Homebrew's shadowing rustc/cargo 1.94.0 were not used. `preflight.log` records executable paths, rustup active toolchain, installed targets including wasm32, wasm-bindgen **0.2.121**, package binaryen wasm-opt **130**, Node **v24.14.0**, pnpm **12.8.2**, cargo-deny **0.19.9**, and Python **3.12.13**. `pnpm install --frozen-lockfile` passed (exit 0); `pnpm-lock-before.sha` and `pnpm-lock-after.sha` are identical. Initial `df` reported 78,530,760 available 1 KiB blocks; after Phase 1 the exact free-byte read was 71,490,424,832. Peak RSS was not sampled, so no peak claim is made.
+
+The first guarded attempt used a fixed but incorrect `ZFB_RELEASE_VERSION=0.0.0-yaml-eval`. The API test `version_falls_back_to_cargo_pkg_version_in_dev_builds` correctly rejected that stamp (observed `0.0.0-yaml-eval`, expected `0.0.0`): **FAIL exit 101**, with 32/33 API tests passing before stop. This was a runner configuration error, not a candidate YAML incompatibility. The first run completed baseline normal/feature graphs, registry, exact lock verification, candidate harness 4/4, and full content 1,081 before the failure. Diagnostics, the separate checks, and candidate audit were **NOT RUN** in that attempt. The failure is preserved verbatim in `candidate-md-pins.log`, `candidate-md-pins.exit`, and `phase1-guard.log`; the guard verdict is FAIL. Its EXIT trap restored all protected hashes.
+
+The **first and only corrective round** set a single fixed stamp, `ZFB_RELEASE_VERSION=0.0.0`, matching the development test. It used the original immutable `snapshot.json` and saved candidate lock: `resumed-pin`, `resumed-lock`, then all candidate tests/checks/graphs and `audit.sh` under one guarded `resume-phase1.sh`. It did not rerun `snapshot` or overwrite first-attempt logs. Both baseline and candidate native work used the same rustup compiler/cargo and shared target. The documented `ZFB_ESBUILD_BIN` input used an externally staged macOS arm64 esbuild 0.25.12 binary, SHA-256 `3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5`, equal to `crates/zfb/build.rs`; see `esbuild-provenance.txt`. The resumed guard verdict was **PASS exit 0**, and its EXIT trap again restored and verified protected files. No test assertion was weakened.
+
+| Candidate check at 0.0.56 | Result | Evidence file prefix |
+| --- | --- | --- |
+| 18-case differential equality, 4/4 harness tests | PASS | `resumed-harness` |
+| `cargo test --locked -p zfb-content` | PASS 1,081, zero failures | `resumed-content` |
+| `cargo test --locked -p zfb-md-wasm --test api --test parse_to_ast` | PASS 58/58 (33 + 25) | `resumed-md-pins` |
+| `cargo test --locked -p zfb --no-default-features --lib diagnostics::tests` | PASS 11/11 | `resumed-diagnostics` |
+| Separate `cargo check --locked` for zfb-content, zfb-md-wasm, and zfb without default features | PASS 0/0/0; CLI emitted 29 feature-gated warnings | `resumed-content-check`, `resumed-md-check`, `resumed-cli-check` |
+| Normal and feature reverse dependency trees | PASS; identical to baseline after normalizing only the two YAML versions | `baseline-*-tree`, `resumed-*-tree` |
+| Both-pin `cargo deny list` and `cargo deny check` | PASS/0 at both pins; advisories, bans, licenses, sources all okay | `baseline-*`, `candidate-*` audit files |
+| Snapshot restoration and all protected hashes | PASS after first and resumed attempts | `phase1-guard.log`, `resume-guard.log`, final `evaluate.py verify` |
+
+The 18 unchanged corpus observations all matched; the historical table above lists each case. P3 is not applicable. The lock had **594 packages at both pins**, with exactly two changed entries: `noyalib` and `noyalib-serde-yaml`, each 0.0.44 → 0.0.56 with its frozen checksum; all other lock entries were byte-equivalent. Both `cargo deny list` outputs were byte-identical after normalizing only the two YAML versions: 15 license categories, including Apache-2.0 289 and MIT 432. `cargo deny check` passed advisories/bans/licenses/sources at both pins with existing warnings, and no exception was added. There were **zero production lines changed and zero source corrective rounds**; the runner stamp fix was one corrective round for this evaluation.
+
+Every command log and child `.exit` lives in the evidence directory. Cheap verification passed: Python syntax, Bash syntax, JSON parsing, registry assertion, pnpm lock hash comparison, exact lock delta, `git diff --check`, and final protected-hash check. The original Phase 1 guard and corrected guard verdicts remain distinct. Phase 2 sizes, same-toolchain wasm control, CI ceiling validation, and terminal KEEP/MIGRATE are **NOT RUN** in this sub-issue. The next trigger is the manager's Phase 2 evaluation of this same 0.0.56 pair, with a fresh release-race check before any verdict.
