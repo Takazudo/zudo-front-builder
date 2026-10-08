@@ -47,8 +47,12 @@ Assertions:
   and clicks each real counter from 0 to 1. All browser errors/warnings fail.
 - Removing only the root map's Fragment delimiters must reject its opaque map
   with a boundary/opaque diagnostic in 4.1.0.
-- 4.0.0 builds its own exact release docs recipe and must fail resolving the bare
-  `zfb/zudo-react` alias. A generic unrelated build failure cannot satisfy it.
+- 4.0.0 builds its own exact release docs recipe and must report both no SDK boundary
+  targets/skipped islands bundle and `ZR_ISLAND_IDENTITY: Counter is not registered
+  by the scanner`. This is [#3917 variant A](https://github.com/Takazudo/zudo-front-builder/issues/3917).
+  The unresolved client import belongs to variant C, which changes only the
+  `Island` import; this harness preserves both bare imports. A generic unrelated
+  build failure cannot satisfy the control.
 
 3.2.0 scoped-import Fragment behavior is deliberately not a negative control:
 that shape historically passed. Downstream consumer migration, WebKit, pixel

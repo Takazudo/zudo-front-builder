@@ -31,3 +31,28 @@ Manager run: follow the README commands, retain `/tmp/zfb-published-browser-2610
 and lockfiles. Record tested commit, OS, browser and all named controls' actual
 results before calling #3879 verified. Browser installation/build/execution,
 required CI and current-base revalidation remain manager-owned and pending.
+
+Manager first run on `75e51f810214d3c850bd2280b08e747dea5c2067` used Linux x64
+and Chromium `151.0.7922.173` at `/usr/bin/chromium`. Candidate late-Show mount
+and hydrate, both intrinsic-wrapper controls, 3.2.0 leak reproduction, candidate
+Fragment recipe hydration/clicks, and non-Fragment rejection passed. The overall
+run **failed** because the final negative assertion incorrectly expected an
+unresolved `zfb/zudo-react` import. Its actual 4.0.0 output reproduced the
+verbatim-import defect: no scanner targets, skipped islands bundle, then
+`ZR_ISLAND_IDENTITY: Counter is not registered by the scanner`.
+
+[#3917's variant A](https://github.com/Takazudo/zudo-front-builder/issues/3917)
+records exactly that failure. Its variant C changes only the Island import and
+then exposes the unresolved client import. The
+[corrected diagnosis](https://github.com/Takazudo/zudo-front-builder/issues/3917#issuecomment-6022639657)
+confirms scanner and client alias parity were separate gaps. The `v4.0.0` scanner
+source (`crates/zfb-islands/src/scanner/registration.rs`, `sdk_export` and
+`is_sdk_namespace`) recognizes scoped specifiers only. The corrected assertion
+requires both missing-target/skipped-bundle evidence and the exact Counter
+identity diagnostic, while preserving all recipe imports and candidate checks.
+
+The first failed run is retained at
+`/workspace/scratch/zfb-sweep-261008/published.log` and
+`/workspace/scratch/zfb-sweep-261008/published-evidence/evidence.json`.
+It remains failed; the corrected commit needs a fresh manager run and exact-head
+CI evidence. No old artifact is rewritten or retroactively labeled passed.

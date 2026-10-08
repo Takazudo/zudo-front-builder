@@ -302,8 +302,10 @@ async function recipe(version) {
   const built = await command(binary, ["build"], root, `release docs recipe ${version}`);
   if (version === "4.0.0") {
     assert.notEqual(built.code, 0, "4.0.0 bare alias must fail");
-    assert.match(built.output, /zfb\/zudo-react/);
-    assert.match(built.output, /resolve|not found|unable|Could not/i);
+    // #3917 variant A copies both bare imports verbatim: scanner identity failure.
+    // The unresolved client import belongs to variant C, which rewrites Island only.
+    assert.match(built.output, /no SDK Island boundary targets found; skipping islands bundle/);
+    assert.match(built.output, /ZR_ISLAND_IDENTITY: Counter is not registered by the scanner/);
     evidence.cases.push({
       name: "4.0.0 bare alias negative control",
       outcome: "passed",
