@@ -104,7 +104,7 @@ jobs:
               throw new Error("unsupported platform " + process.platform + ":" + process.arch);
             }
           '
-          out=target/island-size
+          out="$GITHUB_WORKSPACE/target/island-size"
           free_kib="$(df -Pk . | awk 'NR == 2 { print $4 }')"
           if [[ ! "$free_kib" =~ ^[0-9]+$ ]]; then
             echo "unable to determine available disk space before cargo build" >&2
@@ -150,7 +150,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=target/island-size
+          out="$GITHUB_WORKSPACE/target/island-size"
           version="$(node -p "require('./packages/zfb/package.json').version")"
           mkdir -p "$out/pack" "$out/packed-package" "$out/packed-runtime"
           pnpm -C packages/zfb build
@@ -164,7 +164,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=target/island-size
+          out="$GITHUB_WORKSPACE/target/island-size"
           version="$(node -p "require('./packages/zfb/package.json').version")"
           esbuild=crates/zfb/binaries/esbuild/esbuild
           zfb=target/debug/zfb
@@ -185,7 +185,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=target/island-size
+          out="$GITHUB_WORKSPACE/target/island-size"
           version="$(node -p "require('./packages/zfb/package.json').version")"
           source_sha="$(git rev-parse HEAD)"
           zfb=target/debug/zfb
@@ -223,7 +223,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          out=target/island-size
+          out="$GITHUB_WORKSPACE/target/island-size"
           mkdir -p "$out"
           set +e
           node research/v3-island-size/check-budget.mjs \
@@ -245,7 +245,7 @@ jobs:
           SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
           set -euo pipefail
-          out=target/island-size
+          out="$GITHUB_WORKSPACE/target/island-size"
           if [[ "$CHECK_OUTCOME" == "success" ]]; then
             result=PASS
           else
