@@ -113,6 +113,6 @@
     "runId": 37722926877,
     "jobId": 113134501986,
     "sourceSha": "bd1edc1bc6fee22f06f1d323f5a253ac3f2fb6ee",
-    "note": "PR #4047 measurement at v4.1.0 on the native macOS 15.7.9 arm64 runner; downloaded artifact 11526986390 contains both complete matrices, saved passes, package tarballs, and runner provenance. The initial checker exited 1 only because it compared the valid measurement with the prior v4.0.0 ceilings. These ceilings match every measured raw/gzip total with zero allowance."
+    "note": "PR #4047 measurement at v4.1.0 on the native macOS 15.7.9 arm64 runner; downloaded artifact 11527282895 contains both complete matrices, saved passes, package tarballs, and runner provenance. The initial checker exited 1 only because it compared the valid measurement with the prior v4.0.0 ceilings. These ceilings match every measured raw/gzip total with zero allowance."
   }
 }
