@@ -341,7 +341,9 @@ async fn recv_with_stop_deadline(
 ///
 /// Invoked from [`BuildOrchestrator::tick_with_kinds`] /
 /// [`BuildOrchestrator::run`] with the subset of a tick's changed paths
-/// whose [`ChangeKind`] is [`ChangeKind::Created`]. The implementation
+/// whose [`ChangeKind`] is [`ChangeKind::Created`], plus `Modified` page
+/// sources absent from the last successful route scan (failed-discovery
+/// recovery). The implementation
 /// (in the `zfb dev` command layer) is responsible for the side-effecting
 /// "the running renderer cannot see a file created after boot" fix:
 /// recompute the content snapshot, re-bundle the SSR worker, reload the
@@ -1424,11 +1426,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// file **created** after dev-server boot can be discovered and
     /// rendered without a restart. The path classification / dirty-page
     /// fold is unchanged — it reuses [`plan_for_changes`] verbatim, so
-    /// the EDIT path ([`ChangeKind::Modified`]) behaves exactly as
-    /// [`tick`] does (the discovery hook is never consulted for it).
+    /// the known-page EDIT path ([`ChangeKind::Modified`]) behaves exactly
+    /// as [`tick`] does. An unregistered page's Modified edit retries
+    /// discovery after a failed Created attempt.
     ///
-    /// When `discover` is `Some`, the [`ChangeKind::Created`] subset of
-    /// `changes` is handed to the hook; any source [`PageId`]s it returns
+    /// When `discover` is `Some`, the [`ChangeKind::Created`] subset plus
+    /// unregistered Modified pages are handed to the hook; any source
+    /// [`PageId`]s it returns
     /// are merged into the plan's page set so the new page renders through
     /// the same render→write boundary an edit traverses. The hook is
     /// responsible for the side effects (rebundle / reload-in-place /
@@ -1533,6 +1537,45 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 .collect()
         };
 
+        // A page whose first discovery failed is still absent from the last
+        // successful route scan. Linux commonly reports the correcting
+        // in-place write as Modified, so it must retry discovery just as a
+        // Created would. Membership is the oracle even when a warm graph
+        // still has a consumer for the path. Snapshot it outside the graph
+        // lock; neither lock is held while calling the discovery hook.
+        let unknown_modified_page: Vec<bool> = changes
+            .iter()
+            .map(|(path, kind)| {
+                *kind == ChangeKind::Modified && !self.config.policy.is_known_page_source(path)
+            })
+            .collect();
+        let rediscover_modified: Vec<PathBuf> =
+            if discover.is_some() && unknown_modified_page.iter().any(|unknown| *unknown) {
+                let graph = self.graph.lock().unwrap_or_else(|p| {
+                    warn!(
+                        site = "tick_with_kinds::modified_page_discovery",
+                        "graph mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                });
+                changes
+                    .iter()
+                    .zip(unknown_modified_page)
+                    .filter_map(|((path, _), unknown)| {
+                        (unknown
+                            && classify_change_with_content_roots(
+                                path,
+                                &self.config.project_root,
+                                &self.config.policy.content_roots,
+                                |p| graph.is_global(p),
+                            ) == PathClass::Page)
+                            .then(|| path.clone())
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
         // Removal: drop graph edges for deleted files before planning and
         // collect the former consumers so they can be added to the plan.
         //
@@ -1605,11 +1648,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // #659 symptom).
         let discovered: DiscoveryOutcome = match discover {
             Some(hook) => {
-                let created: Vec<PathBuf> = changes
+                let mut created: Vec<PathBuf> = changes
                     .iter()
                     .filter(|(_, kind)| *kind == ChangeKind::Created)
                     .map(|(p, _)| p.clone())
                     .collect();
+                for path in rediscover_modified {
+                    if !created.contains(&path) {
+                        created.push(path);
+                    }
+                }
                 if created.is_empty() {
                     DiscoveryOutcome::default()
                 } else {
@@ -3713,7 +3761,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_created_discovery_error_preserves_unknown_then_recovers() {
+    fn failed_unknown_created_rediscovers_on_modified_without_graph_consumer() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let registry = crate::policy::KnownPageSources::default();
         let page = PathBuf::from("/proj/pages/new.tsx");
@@ -3745,12 +3793,81 @@ mod tests {
         assert!(!registry.contains(&page));
         assert!(orch
             .tick_with_kinds(
-                vec![(page, ChangeKind::Created)],
+                vec![(page, ChangeKind::Modified)],
                 &noop_ctx(dist.path()),
                 Some(&discover)
             )
             .is_ok());
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unknown_modified_page_with_graph_consumer_rediscovers_then_becomes_known() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // make_graph() already contains this PageId. A graph consumer does
+        // not prove publication into the live route-table page_sources set.
+        let page = PathBuf::from("/proj/pages/a.tsx");
+        let registry = crate::policy::KnownPageSources::default();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+                .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let published = registry.clone();
+        let page_for_hook = page.clone();
+        let discover: DiscoveryHook = Arc::new(move |paths| {
+            assert_eq!(paths, std::slice::from_ref(&page_for_hook));
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("candidate route scan failed");
+            }
+            // Model the last-successful route-table publication. The real
+            // publication seam is exercised by the process regression.
+            published.replace([page_for_hook.clone()]);
+            Ok(DiscoveryOutcome {
+                renderer_reloaded: true,
+                ..DiscoveryOutcome::default()
+            })
+        });
+        let dist = tempfile::tempdir().unwrap();
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page.clone(), ChangeKind::Modified)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_err());
+        assert!(!registry.contains(&page));
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page.clone(), ChangeKind::Modified)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_ok());
+        assert!(registry.contains(&page));
+        orch.tick_with_kinds(
+            vec![(page, ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            Some(&discover),
+        )
+        .unwrap();
+        orch.tick_with_kinds(
+            vec![(
+                PathBuf::from("/proj/components/Header.tsx"),
+                ChangeKind::Modified,
+            )],
+            &noop_ctx(dist.path()),
+            Some(&discover),
+        )
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "known pages and non-page edits do not rediscover"
+        );
     }
 
     #[test]
