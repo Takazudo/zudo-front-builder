@@ -62,6 +62,14 @@ async function assertScope(root, members, mobile = false, prefix = "/docs/") {
 }
 async function soft(path) {
   await page.evaluate((path) => {
+    window.__structureSwap = false;
+    document.addEventListener(
+      "zfb:after-swap",
+      () => {
+        window.__structureSwap = true;
+      },
+      { once: true },
+    );
     const a = document.createElement("a");
     a.href = path;
     a.textContent = "verification navigation";
@@ -70,6 +78,7 @@ async function soft(path) {
   }, path);
   await page.locator("#verification-link").click();
   await expect(page).toHaveURL(origin + path);
+  await page.waitForFunction(() => window.__structureSwap === true);
   await page.locator("#verification-link").evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
   await page.locator("main").waitFor();
 }

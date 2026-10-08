@@ -175,6 +175,10 @@ async function workshop(page, record, locale) {
     window.__workshopNavigationSentinel = "alive";
     window.__oldWorkshopRoot = document.querySelector("#design-workshop");
   });
+  if (record.width < 1024) {
+    await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
+    await expect(page.locator("[data-zd-mobile-sidebar]")).not.toHaveAttribute("inert");
+  }
   await page
     .locator(
       `a[href="${locale}/docs/playground/"]:visible,a[href="${locale}/docs/playground"]:visible`,
