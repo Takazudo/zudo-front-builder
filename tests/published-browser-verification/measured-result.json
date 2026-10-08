@@ -1,0 +1,289 @@
+{
+  "testedCommit": "e7349f3928f2f9e9b163281b976ed1f2b7ad6983",
+  "started": "2026-10-08T07:42:37.987Z",
+  "outcome": "passed",
+  "heavyGuard": {
+    "verdict": "PASS",
+    "exit": 0,
+    "seconds": 11
+  },
+  "host": {
+    "platform": "linux",
+    "release": "6.18.44",
+    "arch": "x64",
+    "node": "v24.19.0"
+  },
+  "browser": {
+    "version": "151.0.7922.173",
+    "executablePath": "/usr/bin/chromium"
+  },
+  "registry": "https://registry.npmjs.org",
+  "pinManifest": "tests/published-browser-verification/pins.json",
+  "pinManifestSha256": "f1de3893fd9b9d7857081a0ba7a1e30e14859695dd18351c43936cd039f07eaa",
+  "docs": {
+    "4.1.0": {
+      "tag": "v4.1.0",
+      "commit": "09a9f9b38f2aae922ebd32128fcfb9a603ba7318",
+      "path": "docs/src/content/docs/concepts/mdx-components.mdx",
+      "sha256": "13d3209ebe94f601be1f75034c9a3269b5d615ceb1dc66a26d76baf254f7888a"
+    },
+    "4.0.0": {
+      "tag": "v4.0.0",
+      "commit": "defda240cd8f51a55a7cde14f761934e3d9ef171",
+      "path": "docs/src/content/docs/concepts/mdx-components.mdx",
+      "sha256": "3fbf281270bc5cb138e1447f60c1a868941890d8238a626a38318977fec25079"
+    }
+  },
+  "installedConsumers": [
+    {
+      "version": "4.1.0",
+      "directory": "/workspace/scratch/zfb-sweep-261008/published-confirmed/late-show-4.1.0",
+      "binarySha256": "b24bde67064a634f103fb1cc49e37163b1a36a94576cada53c00138aec9c1a58",
+      "lockfileSha256": "e7f5f22817510678342f7d89970cdedde48fdffa748a9cd67bb408763b0f5ebe"
+    },
+    {
+      "version": "3.2.0",
+      "directory": "/workspace/scratch/zfb-sweep-261008/published-confirmed/late-show-3.2.0",
+      "binarySha256": "7b0b1283a4efa0d0b052c8aacb645a54c232d07583c98c90983f6bf24ed692b3",
+      "lockfileSha256": "abd5f95977075cba0e767974d580b5ef35fd6ec93f96d4756e560faef19c31af"
+    },
+    {
+      "version": "4.1.0",
+      "directory": "/workspace/scratch/zfb-sweep-261008/published-confirmed/mdx-4.1.0",
+      "binarySha256": "b24bde67064a634f103fb1cc49e37163b1a36a94576cada53c00138aec9c1a58",
+      "lockfileSha256": "df7e8803d3d28357bb63e4923119231804a9bb494bbe3f3167e0b4059d0851a8"
+    },
+    {
+      "version": "4.0.0",
+      "directory": "/workspace/scratch/zfb-sweep-261008/published-confirmed/mdx-4.0.0",
+      "binarySha256": "079235d0d5035a89a61efe501dfaaa774a9606ab4da9119b94ea65e345b81351",
+      "lockfileSha256": "600d2ee3fa22f306117618fc195c3ed9ce0ac7209428307b089a3e2e4088cc53"
+    }
+  ],
+  "results": [
+    {
+      "name": "late Show 4.1.0",
+      "outcome": "passed",
+      "unexpectedBrowserDiagnostics": 0,
+      "lifecycles": [
+        {
+          "attach": "mount",
+          "wrapped": false,
+          "after": "",
+          "childNodes": 0,
+          "disposed": true,
+          "diagnostics": []
+        },
+        {
+          "attach": "mount",
+          "wrapped": true,
+          "after": "",
+          "childNodes": 0,
+          "disposed": true,
+          "diagnostics": []
+        },
+        {
+          "attach": "hydrate",
+          "wrapped": false,
+          "after": "",
+          "childNodes": 0,
+          "disposed": true,
+          "diagnostics": []
+        },
+        {
+          "attach": "hydrate",
+          "wrapped": true,
+          "after": "",
+          "childNodes": 0,
+          "disposed": true,
+          "diagnostics": []
+        }
+      ]
+    },
+    {
+      "name": "late Show 3.2.0",
+      "outcome": "passed",
+      "unexpectedBrowserDiagnostics": 0,
+      "lifecycles": [
+        {
+          "attach": "mount",
+          "wrapped": false,
+          "after": "<p>later</p>",
+          "childNodes": 1,
+          "disposed": true,
+          "diagnostics": []
+        },
+        {
+          "attach": "mount",
+          "wrapped": true,
+          "after": "",
+          "childNodes": 0,
+          "disposed": true,
+          "diagnostics": []
+        },
+        {
+          "attach": "hydrate",
+          "wrapped": false,
+          "after": "<p>later</p>",
+          "childNodes": 1,
+          "disposed": true,
+          "diagnostics": []
+        },
+        {
+          "attach": "hydrate",
+          "wrapped": true,
+          "after": "",
+          "childNodes": 0,
+          "disposed": true,
+          "diagnostics": []
+        }
+      ]
+    },
+    {
+      "name": "4.1.0 release Fragment MDX recipe",
+      "outcome": "passed",
+      "unexpectedBrowserDiagnostics": 0,
+      "registration": ["Counter", "NamedCounter"],
+      "clicked": ["Count: 1", "Named counter: 1"]
+    },
+    {
+      "name": "4.1.0 non-Fragment opaque map",
+      "outcome": "passed",
+      "buildExit": 1,
+      "expectedDiagnostic": "boundary wrapper escapes into an opaque container"
+    },
+    {
+      "name": "4.0.0 bare alias negative control",
+      "outcome": "passed",
+      "buildExit": 1,
+      "expectedDiagnostic": [
+        "no SDK Island boundary targets found; skipping islands bundle",
+        "ZR_ISLAND_IDENTITY: Counter is not registered by the scanner"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "label": "install 4.1.0",
+      "args": [
+        "install",
+        "--registry=https://registry.npmjs.org",
+        "--include=optional",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "native version 4.1.0",
+      "args": ["--version"],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "install 3.2.0",
+      "args": [
+        "install",
+        "--registry=https://registry.npmjs.org",
+        "--include=optional",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "native version 3.2.0",
+      "args": ["--version"],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "install 4.1.0",
+      "args": [
+        "install",
+        "--registry=https://registry.npmjs.org",
+        "--include=optional",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "native version 4.1.0",
+      "args": ["--version"],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "release docs recipe 4.1.0",
+      "args": ["build"],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "4.1.0 non-Fragment opaque map control",
+      "args": ["build"],
+      "code": 1,
+      "signal": null
+    },
+    {
+      "label": "install 4.0.0",
+      "args": [
+        "install",
+        "--registry=https://registry.npmjs.org",
+        "--include=optional",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "native version 4.0.0",
+      "args": ["--version"],
+      "code": 0,
+      "signal": null
+    },
+    {
+      "label": "release docs recipe 4.0.0",
+      "args": ["build"],
+      "code": 1,
+      "signal": null
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "successful full run evidence",
+      "path": "/workspace/scratch/zfb-sweep-261008/published-confirmed/evidence.json",
+      "sha256": "7a76dcdf46a38867503f802d36a4742f9c6fa31d8efb8c2d0dbcc3c78faaad4f"
+    },
+    {
+      "kind": "successful full run log",
+      "path": "/workspace/scratch/zfb-sweep-261008/published-confirmed.log",
+      "sha256": "72bf9c16cafbda6b9bc6a0d2069711c1a3fe7a9264c0f71b2e1aa5f8c052ee42"
+    },
+    {
+      "kind": "original failed harness evidence",
+      "path": "/workspace/scratch/zfb-sweep-261008/published-evidence/evidence.json",
+      "sha256": "960be99c70da341e3b768cd944626aafd9a93a2a094b68b688d09242f99152af"
+    },
+    {
+      "kind": "original failed harness log",
+      "path": "/workspace/scratch/zfb-sweep-261008/published.log",
+      "sha256": "025761ad825b38a5fb91be0602dccb7b36d04dc6674f9f4b94be9a5e662b6f38"
+    }
+  ],
+  "remaining": [
+    "Independent review and exact-head required CI/current-base revalidation remain manager-owned.",
+    "No downstream migration, WebKit, pixels or non-Linux-x64 platform verification.",
+    "Registry attestation metadata recorded, not cryptographically verified."
+  ],
+  "originalFailure": {
+    "testedCommit": "75e51f810214d3c850bd2280b08e747dea5c2067",
+    "outcome": "failed",
+    "cause": "Harness expected variant-C unresolved client import for variant-A verbatim bare-import fixture; corrected after reading #3917 historical evidence. Original failed artifacts preserved."
+  }
+}
