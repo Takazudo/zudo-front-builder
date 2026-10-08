@@ -2247,6 +2247,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         session.set_ssr_module_dep_registry(raw_import_invalidation.clone());
     }
 
+    let known_pages = zfb_build::KnownPageSources::default();
+    #[cfg(feature = "embed_v8")]
+    if let Some(session) = dev_session.as_ref() {
+        session.set_known_page_registry(known_pages.clone());
+    }
+
     // #1581 — seed the session-live known-content registry from the boot
     // collection MEMBERSHIP walk (not the frontmatter-hash map, which drops
     // unparseable entries). This is what lets the #1058 spurious-`Created`
@@ -2279,7 +2285,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             zfb_build::GranularityPolicy::default()
                 .with_content_roots(content_roots)
                 .with_raw_import_invalidation(raw_import_invalidation.clone())
-                .with_known_content(known_content.clone()),
+                .with_known_content(known_content.clone())
+                .with_known_pages(known_pages.clone()),
         )
         // Issue #1802 — the same skip-dir names the CSS-scan sibling walk
         // already excludes (`CSS_SIBLING_MIRROR_SKIP_DIRS`), threaded down
@@ -2437,7 +2444,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 alias_entries: plugin_alias_entries_for_islands.clone(),
                 virtual_modules: plugin_virtual_module_store_for_islands.snapshot_pairs(),
             };
-            let result = rebundle_islands(
+            rebundle_islands(
                 &project_root,
                 &dev_assets_root_for_islands,
                 bundle_config.as_ref(),
@@ -2447,20 +2454,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &companion_ledger,
                 &raw_invalidation,
                 &package_route_entrypoints,
-            );
-            if let Err(error) = &result {
-                // The orchestrator intentionally keeps running after a
-                // failed rebuild, but reports tick errors through
-                // `tracing::warn!` only. A normal `zfb dev` session has no
-                // tracing subscriber, so registration failures were
-                // invisible even though the previous published registry
-                // remained intact. The deferred boot caller has its own
-                // visible warning; this is the watcher-tick diagnostic.
-                output::warn(format!(
-                    "islands rebuild failed; keeping the last successful registry: {error:#}"
-                ));
-            }
-            result
+            )
         }))
     };
 
@@ -6264,6 +6258,7 @@ struct DevRenderInner {
     /// Source→route + SSR route tables (issue #659 — interior-mutable so
     /// a watch-ADD rebuilds them in place; see [`DevRouteTables`]).
     routes: std::sync::RwLock<DevRouteTables>,
+    known_page_sources: Mutex<Option<zfb_build::KnownPageSources>>,
     /// Mutex-wrapped renderer state. The orchestrator's callback runs
     /// on the watcher's thread; render_one is sync and short, so a
     /// global lock is fine here.
@@ -6907,6 +6902,50 @@ impl DevRenderSession {
             &self.inner.boot_reconcile_page_sources,
             self.inner.boot_bundle_read_since,
         );
+    }
+
+    /// Attach the normalization registry and replay the live route-table
+    /// sources. Deferred boot reuses this same handle at its first publish.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn set_known_page_registry(&self, registry: zfb_build::KnownPageSources) {
+        let sources = self
+            .inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .page_sources
+            .clone();
+        registry.replace(sources.into_iter().map(|source| {
+            if source.is_absolute() {
+                source
+            } else {
+                self.inner.project_root.join(source)
+            }
+        }));
+        *self
+            .inner
+            .known_page_sources
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(registry);
+    }
+
+    #[cfg(feature = "embed_v8")]
+    fn publish_known_page_sources(&self, sources: &HashSet<PathBuf>) {
+        if let Some(registry) = self
+            .inner
+            .known_page_sources
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            registry.replace(sources.iter().map(|source| {
+                if source.is_absolute() {
+                    source.clone()
+                } else {
+                    self.inner.project_root.join(source)
+                }
+            }));
+        }
     }
 
     /// Install the dev SSR module-dependency registry (issue #3162) and
@@ -7971,6 +8010,16 @@ impl DevRenderSession {
             // Early return — the live host and route tables were left
             // untouched. The skip key is already stored from the last
             // successful tick; no update needed.
+            // The validated skip key confirms the retained page namespace.
+            // Re-add a byte-identical delete/recreate purged by the watcher.
+            let sources = self
+                .inner
+                .routes
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .page_sources
+                .clone();
+            self.publish_known_page_sources(&sources);
             return Ok(BundleRefresh::Skipped);
         }
 
@@ -8111,6 +8160,7 @@ impl DevRenderSession {
             let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
             diff_route_tables(&old.routes_by_source, &new_routes_by_source)
         };
+        let published_page_sources = collect_page_sources(&router);
         {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
             tables.routes_by_source = new_routes_by_source;
@@ -8120,8 +8170,9 @@ impl DevRenderSession {
             // Issue #2064 — the page-module oracle moves with the tables it
             // qualifies: a page added/removed by this scan must not be
             // judged against the previous generation's set.
-            tables.page_sources = collect_page_sources(&router);
+            tables.page_sources = published_page_sources.clone();
         }
+        self.publish_known_page_sources(&published_page_sources);
         // Issue #1025 — the route tables just moved: advance the stale
         // tick generation and evict stale entries whose output routes
         // vanished from the live route set (#804). Runs on EVERY full
@@ -10121,6 +10172,7 @@ fn boot_dev_renderer(
                 url_index,
                 page_sources,
             }),
+            known_page_sources: Mutex::new(None),
             renderer,
             project_root: project_root.to_path_buf(),
             rebuild_inputs,
@@ -11692,6 +11744,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 ssr_routes: Vec::new(),
                 url_index,
             }),
+            known_page_sources: Mutex::new(None),
             renderer,
             project_root,
             rebuild_inputs: DevRebuildInputs {
@@ -14574,6 +14627,7 @@ mod tests {
                 ssr_routes,
                 url_index,
             }),
+            known_page_sources: Mutex::new(None),
             renderer: Arc::new(Mutex::new(None)),
             project_root,
             rebuild_inputs: DevRebuildInputs {
@@ -15385,6 +15439,7 @@ mod tests {
                 ssr_routes,
                 url_index,
             }),
+            known_page_sources: Mutex::new(None),
             renderer: Arc::new(Mutex::new(None)),
             project_root: PathBuf::new(),
             stale: Mutex::new(StaleRoutes::default()),
@@ -19703,6 +19758,64 @@ mod tests {
                 "the scan knows a dynamic page module before `paths()` ever runs; got {sources:?}"
             );
             assert!(sources.contains(&pages.join("index.tsx")));
+        }
+
+        /// The normalization handle replays the actual scan's page modules,
+        /// including the SSR-only root and a dynamic module with zero paths.
+        #[cfg(feature = "embed_v8")]
+        #[test]
+        fn known_page_registry_replays_scan_and_observes_later_publication() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            let pages = root.join("pages");
+            std::fs::create_dir_all(pages.join("photos/tag")).unwrap();
+            std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+            std::fs::write(
+                pages.join("photos/tag/[tag].tsx"),
+                "export function paths() { return []; }\nexport default () => null;\n",
+            )
+            .unwrap();
+            let router = zfb_router::Router::scan(&pages).unwrap();
+            let scanned = collect_page_sources(&router);
+            let eager = ssr_dep_session(&root, Vec::new());
+            eager.inner.routes.write().unwrap().page_sources = scanned.clone();
+            let eager_registry = zfb_build::KnownPageSources::default();
+            eager.set_known_page_registry(eager_registry.clone());
+            assert!(eager_registry.contains(&pages.join("index.tsx")));
+            assert!(eager_registry.contains(&pages.join("photos/tag/[tag].tsx")));
+            let session = ssr_dep_session(&root, Vec::new());
+            let registry = zfb_build::KnownPageSources::default();
+            session.set_known_page_registry(registry.clone());
+            assert!(
+                !registry.contains(&pages.join("index.tsx")),
+                "deferred scaffold starts empty"
+            );
+            {
+                let mut tables = session.inner.routes.write().unwrap();
+                tables.page_sources = scanned.clone();
+            }
+            session.publish_known_page_sources(&scanned);
+            assert!(registry.contains(&pages.join("index.tsx")));
+            assert!(registry.contains(&pages.join("photos/tag/[tag].tsx")));
+            registry.remove_path_and_descendants(&pages.join("photos"));
+            assert!(!registry.contains(&pages.join("photos/tag/[tag].tsx")));
+            assert!(registry.contains(&pages.join("index.tsx")));
+            session.publish_known_page_sources(&scanned);
+            assert!(
+                registry.contains(&pages.join("photos/tag/[tag].tsx")),
+                "successful validated skip restores membership"
+            );
+            let only_root = HashSet::from([pages.join("index.tsx")]);
+            session.publish_known_page_sources(&only_root);
+            assert!(
+                !registry.contains(&pages.join("photos/tag/[tag].tsx")),
+                "full refresh replaces removed page sources"
+            );
+            session.publish_known_page_sources(&HashSet::from([PathBuf::from("pages/index.tsx")]));
+            assert!(
+                registry.contains(&pages.join("index.tsx")),
+                "relative helper inputs resolve from project root"
+            );
         }
 
         /// The other half of the #2064 discrimination: a traced source the

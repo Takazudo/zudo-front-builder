@@ -1456,6 +1456,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     .policy
                     .known_content
                     .remove_path_and_descendants(path);
+                self.config
+                    .policy
+                    .known_pages
+                    .remove_path_and_descendants(path);
             }
         }
 
@@ -1512,7 +1516,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                             &self.config.policy.content_roots,
                             |p| graph.is_global(p),
                         ) == PathClass::Content;
-                    if spurious_created {
+                    let known_page_created = kind == ChangeKind::Created
+                        && self.config.policy.is_known_page_source(&path)
+                        && classify_change_with_content_roots(
+                            &path,
+                            &self.config.project_root,
+                            &self.config.policy.content_roots,
+                            |p| graph.is_global(p),
+                        ) == PathClass::Page;
+                    if spurious_created || known_page_created {
                         (path, ChangeKind::Modified)
                     } else {
                         (path, kind)
@@ -2261,6 +2273,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 Err(e) => {
                     warn!(error = %e, "rebuild tick failed; watcher staying alive");
+                    eprintln!("[zfb] rebuild tick failed; watcher staying alive: {e:#}");
                 }
             }
         }
@@ -3565,6 +3578,248 @@ mod tests {
             pipeline,
         );
         (orch, registry)
+    }
+
+    #[test]
+    fn known_page_created_uses_modified_plan_and_unknown_created_discovers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let registry = crate::policy::KnownPageSources::default();
+        let known = PathBuf::from("/proj/pages/known.tsx");
+        registry.replace([known.clone()]);
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+                .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
+            make_graph(),
+            pipeline,
+        );
+        let discoveries = Arc::new(AtomicUsize::new(0));
+        let count = discoveries.clone();
+        let discover: DiscoveryHook = Arc::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(DiscoveryOutcome::default())
+        });
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(known.clone(), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            Some(&discover),
+        )
+        .unwrap();
+        assert_eq!(
+            discoveries.load(Ordering::SeqCst),
+            0,
+            "a known page must bypass discovery"
+        );
+        assert!(
+            applies.lock().unwrap()[0].content_narrowing.is_none(),
+            "page edits never enter content narrowing"
+        );
+        orch.tick_with_kinds(
+            vec![(known.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            Some(&discover),
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(
+            plans[0].pages, plans[1].pages,
+            "normalized Created follows the Modified page selection"
+        );
+        assert_eq!(plans[0].ssr_reload_needed, plans[1].ssr_reload_needed);
+        drop(plans);
+        orch.tick_with_kinds(
+            vec![(PathBuf::from("/proj/pages/new.tsx"), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            Some(&discover),
+        )
+        .unwrap();
+        assert_eq!(
+            discoveries.load(Ordering::SeqCst),
+            1,
+            "unknown page must enter discovery"
+        );
+    }
+
+    #[test]
+    fn failed_known_page_created_can_recover_on_created_without_discovery() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Clone)]
+        struct FailOnce(Arc<AtomicUsize>);
+        impl AssetPipeline for FailOnce {
+            fn apply(&self, _: &RebuildPlan, _: &BuildContext) -> Result<BuildOutcome> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("invalid page scanner candidate");
+                }
+                Ok(BuildOutcome::default())
+            }
+        }
+        let page = PathBuf::from("/proj/pages/known.tsx");
+        let registry = crate::policy::KnownPageSources::default();
+        registry.replace([page.clone()]);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+                .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
+            make_graph(),
+            FailOnce(attempts.clone()),
+        );
+        let discoveries = Arc::new(AtomicUsize::new(0));
+        let count = discoveries.clone();
+        let discover: DiscoveryHook = Arc::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(DiscoveryOutcome::default())
+        });
+        let dist = tempfile::tempdir().unwrap();
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page.clone(), ChangeKind::Created)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_err());
+        assert!(
+            registry.contains(&page),
+            "failure retains last successful page membership"
+        );
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page, ChangeKind::Created)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_ok());
+        assert_eq!(discoveries.load(Ordering::SeqCst), 0);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unknown_created_discovery_error_preserves_unknown_then_recovers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let registry = crate::policy::KnownPageSources::default();
+        let page = PathBuf::from("/proj/pages/new.tsx");
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+                .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let discover: DiscoveryHook = Arc::new(move |_| {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("discovery scanner candidate failed");
+            }
+            Ok(DiscoveryOutcome {
+                renderer_reloaded: true,
+                ..DiscoveryOutcome::default()
+            })
+        });
+        let dist = tempfile::tempdir().unwrap();
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page.clone(), ChangeKind::Created)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_err());
+        assert!(!registry.contains(&page));
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page, ChangeKind::Created)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn removed_page_purges_before_created_in_either_order() {
+        for reverse in [false, true] {
+            let registry = crate::policy::KnownPageSources::default();
+            let known = PathBuf::from("/proj/pages/nested/known.tsx");
+            let unrelated = PathBuf::from("/proj/pages/other.tsx");
+            registry.replace([known.clone(), unrelated.clone()]);
+            let orch = BuildOrchestrator::new(
+                OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+                    .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
+                make_graph(),
+                CountingPipeline::default(),
+            );
+            let discoveries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = discoveries.clone();
+            let discover: DiscoveryHook = Arc::new(move |_| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(DiscoveryOutcome::default())
+            });
+            let mut changes = vec![
+                (PathBuf::from("/proj/pages/nested"), ChangeKind::Removed),
+                (known.clone(), ChangeKind::Created),
+            ];
+            if reverse {
+                changes.reverse();
+            }
+            let dist = tempfile::tempdir().unwrap();
+            orch.tick_with_kinds(changes, &noop_ctx(dist.path()), Some(&discover))
+                .unwrap();
+            assert_eq!(discoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(!registry.contains(&known));
+            assert!(registry.contains(&unrelated));
+        }
+    }
+
+    #[test]
+    fn removed_page_failed_discovery_keeps_purge_until_successful_publication() {
+        let page = PathBuf::from("/proj/pages/known.tsx");
+        let other = PathBuf::from("/proj/pages/other.tsx");
+        let registry = crate::policy::KnownPageSources::default();
+        registry.replace([page.clone(), other.clone()]);
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+                .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+        let discover: DiscoveryHook = Arc::new(|_| anyhow::bail!("candidate scanner failed"));
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(page.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        assert!(!registry.contains(&page));
+        assert!(registry.contains(&other));
+        assert!(orch
+            .tick_with_kinds(
+                vec![(page.clone(), ChangeKind::Created)],
+                &noop_ctx(dist.path()),
+                Some(&discover)
+            )
+            .is_err());
+        assert!(
+            !registry.contains(&page),
+            "a failed candidate cannot restore removed membership"
+        );
+        assert!(registry.contains(&other), "unrelated known pages survive");
+        let success: DiscoveryHook = Arc::new(|_| {
+            Ok(DiscoveryOutcome {
+                renderer_reloaded: true,
+                ..DiscoveryOutcome::default()
+            })
+        });
+        orch.tick_with_kinds(
+            vec![(page.clone(), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            Some(&success),
+        )
+        .unwrap();
+        // Publication is owned by DevRenderSession, not raw event paths.
+        assert!(!registry.contains(&page));
+        registry.replace([page.clone(), other]);
+        assert!(registry.contains(&page));
     }
 
     /// #1581 — the regression this issue is about. `other.md` is a content
