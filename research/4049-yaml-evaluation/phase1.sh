@@ -29,7 +29,7 @@ run baseline-normal-tree cargo tree --locked -e normal -i noyalib
 run baseline-feature-tree cargo tree --locked -e features -i noyalib
 python3 "$helper" registry --evidence "$YAML_EVIDENCE" > "$YAML_EVIDENCE/start-registry.json"
 python3 "$helper" pin --evidence "$YAML_EVIDENCE"
-run candidate-resolve cargo update -p noyalib-serde-yaml --precise 0.0.55
+run candidate-resolve cargo update -p noyalib-serde-yaml --precise "$(python3 -c 'import json; print(json.load(open("research/4049-yaml-evaluation/provenance.json"))["candidate"])')"
 run candidate-lock python3 "$helper" lock --evidence "$YAML_EVIDENCE"
 cp Cargo.lock "$YAML_EVIDENCE/candidate-Cargo.lock"
 run candidate-harness cargo test --locked -p zfb-content --test yaml_differential_harness
