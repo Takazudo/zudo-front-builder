@@ -1,0 +1,280 @@
+{
+  "checkedAt": "2026-10-08T07:32:50.998150+00:00",
+  "candidate": "0.0.55",
+  "baseline": "0.0.44",
+  "crates": {
+    "noyalib": {
+      "registryUrl": "https://crates.io/api/v1/crates/noyalib",
+      "num": "0.0.55",
+      "checksum": "0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41",
+      "created_at": "2026-10-08T06:37:46.465213Z",
+      "yanked": false,
+      "rust_version": "1.86.0",
+      "license": "MIT OR Apache-2.0",
+      "archiveBytes": 1274912,
+      "newerNonYanked": [],
+      "skippedReleased": [
+        {
+          "num": "0.0.54",
+          "created_at": "2026-10-07T14:07:29.154401Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.53",
+          "created_at": "2026-10-06T12:41:27.063308Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.52",
+          "created_at": "2026-10-04T14:20:19.747688Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.51",
+          "created_at": "2026-09-22T14:47:58.355202Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.50",
+          "created_at": "2026-09-22T12:02:45.101054Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.49",
+          "created_at": "2026-09-22T09:31:12.915663Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.48",
+          "created_at": "2026-09-22T00:59:43.932787Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.47",
+          "created_at": "2026-09-21T22:54:39.552783Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.46",
+          "created_at": "2026-09-21T15:04:50.854459Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.45",
+          "created_at": "2026-09-18T18:05:28.349263Z",
+          "yanked": false
+        }
+      ],
+      "manifest": {
+        "package": {
+          "name": "noyalib",
+          "version": "0.0.55",
+          "build": "build.rs",
+          "rust-version": "1.86.0",
+          "license": "MIT OR Apache-2.0"
+        },
+        "dependencies": {
+          "arbitrary": {
+            "version": "1",
+            "optional": true
+          },
+          "ariadne": {
+            "version": "0.6",
+            "optional": true,
+            "default-features": false
+          },
+          "bytes": {
+            "version": "1",
+            "optional": true,
+            "default-features": false
+          },
+          "figment": {
+            "version": "0.10",
+            "features": ["env"],
+            "optional": true
+          },
+          "garde": {
+            "version": "0.23",
+            "features": ["derive"],
+            "optional": true,
+            "default-features": false
+          },
+          "hashbrown": {
+            "version": "0.17",
+            "default-features": false
+          },
+          "indexmap": {
+            "version": ">=2, <3",
+            "features": ["serde"],
+            "default-features": false
+          },
+          "itoa": {
+            "version": "1",
+            "optional": true
+          },
+          "jsonschema": {
+            "version": "0.58",
+            "optional": true,
+            "default-features": false
+          },
+          "libm": {
+            "version": "0.2",
+            "default-features": false
+          },
+          "memchr": {
+            "version": "2.7",
+            "default-features": false
+          },
+          "miette": {
+            "version": "7",
+            "optional": true
+          },
+          "rayon": {
+            "version": "1.10",
+            "optional": true
+          },
+          "rustc-hash": {
+            "version": ">=2, <3",
+            "default-features": false
+          },
+          "ryu": {
+            "version": "1",
+            "optional": true
+          },
+          "schemars": {
+            "version": "1.2",
+            "features": ["derive", "std"],
+            "optional": true,
+            "default-features": false
+          },
+          "serde-saphyr": {
+            "version": "1.1",
+            "optional": true
+          },
+          "serde_core": {
+            "version": "1.0",
+            "features": ["alloc"],
+            "default-features": false
+          },
+          "serde_ignored": {
+            "version": "0.1",
+            "optional": true
+          },
+          "serde_json": {
+            "version": "1.0",
+            "optional": true
+          },
+          "smallvec": {
+            "version": "1.13",
+            "default-features": false
+          },
+          "sval": {
+            "version": "2",
+            "optional": true,
+            "default-features": false
+          },
+          "tokio": {
+            "version": "1",
+            "features": ["io-util"],
+            "optional": true,
+            "default-features": false
+          },
+          "tokio-util": {
+            "version": "0.7",
+            "features": ["codec"],
+            "optional": true,
+            "default-features": false
+          },
+          "validator": {
+            "version": "0.21",
+            "features": ["derive"],
+            "optional": true
+          }
+        }
+      }
+    },
+    "noyalib-serde-yaml": {
+      "registryUrl": "https://crates.io/api/v1/crates/noyalib-serde-yaml",
+      "num": "0.0.55",
+      "checksum": "4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b",
+      "created_at": "2026-10-08T07:10:21.924189Z",
+      "yanked": false,
+      "rust_version": "1.86.0",
+      "license": "MIT OR Apache-2.0",
+      "archiveBytes": 72952,
+      "newerNonYanked": [],
+      "skippedReleased": [
+        {
+          "num": "0.0.54",
+          "created_at": "2026-10-07T14:20:18.633508Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.53",
+          "created_at": "2026-10-06T18:20:53.416765Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.52",
+          "created_at": "2026-10-06T17:23:42.884763Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.51",
+          "created_at": "2026-09-22T15:04:44.656167Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.50",
+          "created_at": "2026-09-22T12:21:53.235495Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.49",
+          "created_at": "2026-09-22T09:49:53.603529Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.48",
+          "created_at": "2026-09-22T07:23:53.360055Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.47",
+          "created_at": "2026-09-21T23:10:08.420790Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.46",
+          "created_at": "2026-09-21T22:31:50.381115Z",
+          "yanked": false
+        },
+        {
+          "num": "0.0.45",
+          "created_at": "2026-09-19T07:41:27.464727Z",
+          "yanked": false
+        }
+      ],
+      "manifest": {
+        "package": {
+          "name": "noyalib-serde-yaml",
+          "version": "0.0.55",
+          "build": false,
+          "rust-version": "1.86.0",
+          "license": "MIT OR Apache-2.0"
+        },
+        "dependencies": {
+          "noyalib": {
+            "version": "=0.0.55",
+            "features": ["std", "compat-serde-yaml"],
+            "default-features": false
+          }
+        }
+      }
+    }
+  },
+  "upstreamContractPaths": [
+    "noyalib-0.0.55/tests/fixtures/serde_yaml_contract/corpus.json",
+    "noyalib-0.0.55/tests/integrations/serde_yaml_contract.rs"
+  ]
+}

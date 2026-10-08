@@ -1,0 +1,120 @@
+{
+  "noyalib": {
+    "tag": {
+      "ref": "refs/tags/v0.0.55",
+      "node_id": "REF_kwDORTUB3bFyZWZzL3RhZ3MvdjAuMC41NQ",
+      "url": "https://api.github.com/repos/sebastienrousseau/noyalib/git/refs/tags/v0.0.55",
+      "object": {
+        "sha": "65c55452c7f419fbb672d67705269583745928a4",
+        "type": "tag",
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib/git/tags/65c55452c7f419fbb672d67705269583745928a4"
+      }
+    },
+    "tagObject": {
+      "sha": "65c55452c7f419fbb672d67705269583745928a4",
+      "commit": "8adef27f177e03f07ac0e96ea9a8a774b21bee76",
+      "date": "2026-10-08T06:25:30Z"
+    },
+    "release": {
+      "url": "https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.55",
+      "publishedAt": "2026-10-08T06:37:35Z",
+      "body": "## Highlights ⭐️\n\n* **Every loader enforces every limit**: the borrowed API, the CST, `read_with_config`, the multi-document entry points and skipped values now charge the same budgets as `from_str`, and an alias can no longer build a value deeper than `max_depth`. Hostile input that one path refused and a sibling path accepted is refused everywhere.\n* **Linear-time parsing of long lines**: a single long line of flow entries used to cost quadratic time before any budget could refuse it. It is linear again, and a flow collection at the start of a document is streamed instead of buffered whole.\n* **Output that reads back as written**: flow strings holding `,` `[` `]` `{` `}`, comments with line breaks, `<<` keys and verbatim tags now round-trip, and `cst::format` never changes what a document means. Formatting hints can no longer be smuggled in through tag names.\n* **Breaking parse behaviour**: a verbatim tag `!<x>` now names exactly the tag `x`, and an implicit key holding a flow collection longer than 1024 characters is refused, both as YAML 1.2.2 requires. Schema validation refuses external `$ref`s and compiles patterns with a linear-time engine.\n\n## What's Changed\n* release: v0.0.55, limits on every loader by @sebastienrousseau in https://github.com/sebastienrousseau/noyalib/pull/472\n\n## Checksums\n\nSHA-256 of every asset attached to this release:\n\n```text\nd1a2576a8b11b72db9c90a863e92776aef160be3329e47787529c650cfd6d62c  SBOM.cdx.json\n96ca52c89747fee7b7857cf6427360d0dadda8c7db9cf814719d36141fc7508c  SBOM.cdx.json.asc\nb279166857782a3f73050c08c72e871684c7744e495bfcdc25433484c3c4b456  SBOM.cdx.json.bundle\nf6cf7ee77b71a44a9fead5b098b1e9ef87c32585269988333048c333a7b746f7  SBOM.txt\n510b597aa0b3e97d7222fae0f03e836d8e08788e21eb93c323d88ad6a360ccdb  SBOM.txt.asc\nd13aa0160e37595a4cbf244a581b26e2993f7347f40b9557499919bf2c506d5f  SBOM.txt.bundle\n63fbfa4e40376781423817e77b7c1158c861a7114d751b8dd0f26c7c59554247  SHA256SUMS.txt\nb177bca9ef36a263ffcee387671b33b6713c98c516bfab426f1194898978f334  SHA512SUMS.txt\n0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41  noyalib-0.0.55.crate\n0b7403f4114089b14cfbf3cf590e3ad3f5f3bb0ce0b3dec9ebbafbb9c582f16c  noyalib-0.0.55.crate.asc\n312afee3c456cdac7cf08f3b274d8daf0887e39dae8552ebafa931510b68f5e1  noyalib-0.0.55.crate.bundle\n```\n\n**Full Changelog**: https://github.com/sebastienrousseau/noyalib/compare/v0.0.54...v0.0.55\n",
+      "archive": {
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib/releases/assets/620976871",
+        "id": 620976871,
+        "node_id": "RA_kwDORTUB3c4lA1rn",
+        "name": "noyalib-0.0.55.crate",
+        "label": "",
+        "uploader": {
+          "login": "github-actions[bot]",
+          "id": 41898282,
+          "node_id": "MDM6Qm90NDE4OTgyODI=",
+          "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+          "html_url": "https://github.com/apps/github-actions",
+          "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+          "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+          "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+          "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+          "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+          "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+          "type": "Bot",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "content_type": "application/octet-stream",
+        "state": "uploaded",
+        "size": 1274912,
+        "digest": "sha256:0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41",
+        "download_count": 0,
+        "created_at": "2026-10-08T06:37:33Z",
+        "updated_at": "2026-10-08T06:37:34Z",
+        "browser_download_url": "https://github.com/sebastienrousseau/noyalib/releases/download/v0.0.55/noyalib-0.0.55.crate"
+      }
+    },
+    "openPulls": []
+  },
+  "noyalib-serde-yaml": {
+    "tag": {
+      "ref": "refs/tags/v0.0.55",
+      "node_id": "REF_kwDOULUTvbFyZWZzL3RhZ3MvdjAuMC41NQ",
+      "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/git/refs/tags/v0.0.55",
+      "object": {
+        "sha": "3cda03c23b0a2cfe27c1b7e548421494c8bd3a72",
+        "type": "tag",
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/git/tags/3cda03c23b0a2cfe27c1b7e548421494c8bd3a72"
+      }
+    },
+    "tagObject": {
+      "sha": "3cda03c23b0a2cfe27c1b7e548421494c8bd3a72",
+      "commit": "21a0ff6424367a0b47b5d3110a6990767395114e",
+      "date": "2026-10-08T07:04:00Z"
+    },
+    "release": {
+      "url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/tag/v0.0.55",
+      "publishedAt": "2026-10-08T07:10:11Z",
+      "body": "## Highlights ⭐️\n\n* **Duplicate keys refused like upstream**: through the core's compat layer, a `Value` target now refuses a duplicate mapping key with serde_yaml 0.9's `duplicate entry with key` wording.\n* **In lockstep with noyalib 0.0.55**: the exact core pin moves to `=0.0.55`, so this release picks up every core change for that version, including limits enforced on every loader and linear-time parsing of long lines.\n\n## What's Changed\n* release: noyalib-serde-yaml v0.0.55, upstream duplicate-key refusals by @sebastienrousseau in https://github.com/sebastienrousseau/noyalib-serde-yaml/pull/33\n\n## Checksums\n\nSHA-256 of every asset attached to this release:\n\n```text\n7d35e02964dd0dabe3e993d21975bb07d83a1934ded3b9773dbd8c0063ccdab9  SBOM.cdx.json\n7dc052864eb4fb4e7a47e087b98fdbc39db2660316be3baf542d01ceb960c55a  SBOM.cdx.json.bundle\ncd163f6f3882b77b61f6853e202e76c4259b185a634475c1aef3ee48e2cdb498  SBOM.txt\n8899456b08c1c7a637b7eef670308162f1e69a84ce31ede7a3e06e8ff1e6cbac  SBOM.txt.bundle\n98589139e6dc6ceb138b195233d587a897a75ff8263463e5d8f2b239e432e0f6  SHA256SUMS.txt\n8b1d084e98f64969f671f944ee4e39d846e8efd03942e71a8a2265c0ce3792f6  SHA512SUMS.txt\n4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b  noyalib-serde-yaml-0.0.55.crate\n150e9aa886eca9f39c2fa3eb44894734111cb4a3c467efe2ed025ed1cb857ae6  noyalib-serde-yaml-0.0.55.crate.bundle\n```\n\n**Full Changelog**: https://github.com/sebastienrousseau/noyalib-serde-yaml/compare/v0.0.54...v0.0.55\n",
+      "archive": {
+        "url": "https://api.github.com/repos/sebastienrousseau/noyalib-serde-yaml/releases/assets/621049784",
+        "id": 621049784,
+        "node_id": "RA_kwDOULUTvc4lBHe4",
+        "name": "noyalib-serde-yaml-0.0.55.crate",
+        "label": "",
+        "uploader": {
+          "login": "github-actions[bot]",
+          "id": 41898282,
+          "node_id": "MDM6Qm90NDE4OTgyODI=",
+          "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+          "html_url": "https://github.com/apps/github-actions",
+          "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+          "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+          "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+          "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+          "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+          "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+          "type": "Bot",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "content_type": "application/octet-stream",
+        "state": "uploaded",
+        "size": 72952,
+        "digest": "sha256:4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b",
+        "download_count": 0,
+        "created_at": "2026-10-08T07:10:09Z",
+        "updated_at": "2026-10-08T07:10:10Z",
+        "browser_download_url": "https://github.com/sebastienrousseau/noyalib-serde-yaml/releases/download/v0.0.55/noyalib-serde-yaml-0.0.55.crate"
+      }
+    },
+    "openPulls": []
+  }
+}
