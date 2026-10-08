@@ -373,6 +373,16 @@ jobs:
       # integration tests run below.
       - run: cargo build --workspace --all-targets
 
+      - name: Record default-layout binary provenance (#4012)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/default-layout-checkpoint"
+          {
+            printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'binary_version='; target/debug/zfb --version
+            printf 'binary_sha256='; sha256sum target/debug/zfb
+          } | tee "$RUNNER_TEMP/default-layout-checkpoint/binary-provenance.txt"
+
       # Exercise the built CLI on the reduced Tailwind theme-variable case,
       # and keep the exact ZW016 lines in CI logs for migration review.
       - name: ZW016 built-CLI migration spot check
