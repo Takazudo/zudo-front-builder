@@ -106,7 +106,7 @@
       }
     }
   },
-  "proposedCiLane": "No permanent Darwin size lane; Linux x64 enforcement remains in .github/workflows/health.yml jobs.health.",
+  "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml once it reaches main; its path-filtered pull_request trigger is a temporary bootstrap. Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
   "platformStatus": "Darwin arm64 has exact zero-allowance v4.1.0 ceilings measured in macOS 15.7.9 CI run 37722926877, job 113134501986, at source bd1edc1bc6fee22f06f1d323f5a253ac3f2fb6ee. Each fixture in both eight-fixture matrices has two identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "pull_request",
