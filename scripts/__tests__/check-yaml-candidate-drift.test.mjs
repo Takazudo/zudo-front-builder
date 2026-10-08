@@ -984,7 +984,7 @@ describe("observation and CLI", () => {
     });
   });
 
-  it("observes the evidence-backed open core and alias release-preparation PRs", async () => {
+  it("does not query retired release PRs when both adopted pointers are null", async () => {
     const requests = [];
     const observed = await observeSnapshot({
       clients: completeClients({
@@ -994,18 +994,46 @@ describe("observation and CLI", () => {
         },
       }),
     });
-    expect(requests).toContainEqual({ repo: "sebastienrousseau/noyalib", number: 459 });
-    expect(requests).toContainEqual({ repo: "sebastienrousseau/noyalib-serde-yaml", number: 28 });
-    expect(observed.candidates.noyalib.pendingReleasePr).toEqual({ number: 459, state: "OPEN" });
-    expect(observed.candidates["noyalib-serde-yaml"].pendingReleasePr).toEqual({
-      number: 28,
-      state: "OPEN",
-    });
+    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBeNull();
+    expect(CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr).toBeNull();
+    expect(requests).toEqual([]);
+    expect(observed.candidates.noyalib.pendingReleasePr).toBeNull();
+    expect(observed.candidates["noyalib-serde-yaml"].pendingReleasePr).toBeNull();
+  });
+
+  it("observes explicitly configured core and alias release PRs", async () => {
+    const originalCorePendingReleasePr = CANDIDATE_CONFIG.noyalib.pendingReleasePr;
+    const originalAliasPendingReleasePr = CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr;
+    const requests = [];
+    try {
+      CANDIDATE_CONFIG.noyalib.pendingReleasePr = 999;
+      CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr = 1000;
+      const observed = await observeSnapshot({
+        clients: completeClients({
+          pullRequest: async (repo, number) => {
+            requests.push({ repo, number });
+            return { state: "open", merged_at: null };
+          },
+        }),
+      });
+      expect(requests).toEqual([
+        { repo: "sebastienrousseau/noyalib", number: 999 },
+        { repo: "sebastienrousseau/noyalib-serde-yaml", number: 1000 },
+      ]);
+      expect(observed.candidates.noyalib.pendingReleasePr).toEqual({ number: 999, state: "OPEN" });
+      expect(observed.candidates["noyalib-serde-yaml"].pendingReleasePr).toEqual({
+        number: 1000,
+        state: "OPEN",
+      });
+    } finally {
+      CANDIDATE_CONFIG.noyalib.pendingReleasePr = originalCorePendingReleasePr;
+      CANDIDATE_CONFIG["noyalib-serde-yaml"].pendingReleasePr = originalAliasPendingReleasePr;
+    }
   });
 
   it("treats a malformed pending-release PR response as operational failure", async () => {
-    // Temporarily point at an invalidly-shaped response to keep exercising this
-    // validation branch while both adopted candidates have real tracked PRs.
+    // A synthetic pointer exercises response validation while both adopted
+    // release PR pointers are retired.
     const originalPendingReleasePr = CANDIDATE_CONFIG.noyalib.pendingReleasePr;
     CANDIDATE_CONFIG.noyalib.pendingReleasePr = 999;
     try {
@@ -1170,9 +1198,9 @@ describe("committed baseline guard", () => {
       crate: "noyalib-serde-yaml",
       repo: "sebastienrousseau/noyalib-serde-yaml",
       role: "adopted",
-      pendingReleasePr: 28,
+      pendingReleasePr: null,
     });
-    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBe(459);
+    expect(CANDIDATE_CONFIG.noyalib.pendingReleasePr).toBeNull();
   });
 
   it("is a valid, self-consistent schemaVersion 3 baseline with no drift against itself", async () => {

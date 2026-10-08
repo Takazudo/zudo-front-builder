@@ -1,6 +1,10 @@
-<!-- Historical #4055 Linux Phase 1 record; content below preserved verbatim. -->
+<!-- Historical #4055 Linux Phase 1 evidence; recorded gate outcomes are preserved, with timeline context added. -->
 
-# YAML 0.0.55 differential evaluation #4049 — BLOCKED
+# Historical Linux YAML 0.0.55 differential evaluation #4049 — BLOCKED at that observation
+
+This preserves the earlier Linux 0.0.55 record. Its Phase 2 disk gate was checked at
+2026-10-08T07:52:25.793254Z; the later 0.0.56 macOS evaluation and final KEEP decision below
+supersede its status as the latest evaluation.
 
 **Phase 1 compatibility passed; Phase 2 is blocked by the unchanged 30 GiB free-disk gate. No terminal KEEP/MIGRATE verdict is supported.** Both pins remain production-compatible across the existing tested surface. The production dependency remains `=0.0.44`; no baseline refresh, ceiling change, source adaptation or release is authorized by this record.
 
@@ -91,9 +95,9 @@ The prior 0.0.51 KEEP's same-toolchain 0.0.44 control also exceeded render-only;
 
 ---
 
-# Mac Phase 1 evaluation of 0.0.56 (#4065) — GREEN native gates, no terminal verdict
+# Mac Phase 1 evaluation of 0.0.56 (#4065) — GREEN native gates; verdict not yet available at Phase 1 completion
 
-This section follows the preserved #4055 Linux 0.0.55 record above. It evaluates source `9375431ab81a95f480063f392b61444b9b5d892d` on macOS aarch64. The production `Cargo.toml` and `Cargo.lock` are restored to `=0.0.44`; no product source, harness, fixture, size ceiling, or watcher baseline changed. Phase 2 and a final KEEP/MIGRATE decision belong to subsequent work and are **NOT RUN / not established** here.
+This Phase 1 record follows the preserved #4055 Linux 0.0.55 record above. It evaluates source `9375431ab81a95f480063f392b61444b9b5d892d` on macOS aarch64. The production `Cargo.toml` and `Cargo.lock` are restored to `=0.0.44`; no product source, harness, fixture, size ceiling, or watcher baseline changed. At Phase 1 completion, Phase 2 and the final KEEP/MIGRATE decision were **NOT RUN / not established**; the completed Phase 2 and decision records below supersede that point-in-time status.
 
 ## Selection and provenance
 
@@ -127,13 +131,13 @@ The **first and only corrective round** set a single fixed stamp, `ZFB_RELEASE_V
 
 The 18 unchanged corpus observations all matched; the historical table above lists each case. P3 is not applicable. The lock had **594 packages at both pins**, with exactly two changed entries: `noyalib` and `noyalib-serde-yaml`, each 0.0.44 → 0.0.56 with its frozen checksum; all other lock entries were byte-equivalent. Both `cargo deny list` outputs were byte-identical after normalizing only the two YAML versions: 15 license categories, including Apache-2.0 289 and MIT 432. `cargo deny check` passed advisories/bans/licenses/sources at both pins with existing warnings, and no exception was added. There were **zero production lines changed and zero source corrective rounds**; the runner stamp fix was one corrective round for this evaluation.
 
-Every command log and child `.exit` lives in the evidence directory. Cheap verification passed: Python syntax, Bash syntax, JSON parsing, registry assertion, pnpm lock hash comparison, exact lock delta, `git diff --check`, and final protected-hash check. The original Phase 1 guard and corrected guard verdicts remain distinct. Phase 2 sizes, same-toolchain wasm control, CI ceiling validation, and terminal KEEP/MIGRATE are **NOT RUN** in this sub-issue. The next trigger is the manager's Phase 2 evaluation of this same 0.0.56 pair, with a fresh release-race check before any verdict.
+Every command log and child `.exit` lives in the evidence directory. Cheap verification passed: Python syntax, Bash syntax, JSON parsing, registry assertion, pnpm lock hash comparison, exact lock delta, `git diff --check`, and final protected-hash check. The original Phase 1 guard and corrected guard verdicts remain distinct. At Phase 1 completion, Phase 2 sizes, the same-toolchain wasm control, CI ceiling validation, and terminal KEEP/MIGRATE were **NOT RUN**; the Phase 2 record below subsequently completed the local measurements, and the decision record below resolves the verdict.
 
 ---
 
 # Mac Phase 2 evaluation of 0.0.56 (#4066) — COMPLETE evidence, strict size FAIL
 
-**Phase 2 status: COMPLETE with evidence.** The candidate's strict `pnpm test:md-wasm`, timed production wrapper, and budget assertion all failed at the unchanged render-only gzip-9 ceiling. The same-toolchain 0.0.44 control passed that ceiling. This is a real candidate gate failure on this host, not a Mac/control shared overage. **Verdict: _pending — decided in the decision sub-task_.** No product pin, ceiling, CI size manifest, or documentation size table was changed.
+**Phase 2 status: COMPLETE with evidence.** The candidate's strict `pnpm test:md-wasm`, timed production wrapper, and budget assertion all failed at the unchanged render-only gzip-9 ceiling. The same-toolchain 0.0.44 control passed that ceiling. This is a real candidate gate failure on this host, not a Mac/control shared overage. **Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.44; evaluated 0.0.56 is rejected for same-toolchain size growth.** No product pin, ceiling, CI size manifest, or documentation size table was changed.
 
 Raw evidence is in `$HOME/.cache/zfb-4049-yaml-evidence/20261008_1404/`; the compact machine-readable result is `phase2-summary.json`. Tested source SHA was the merged Phase 1 base `8d811be3990ca560135f57aaf8705bb36f9bd05f`. This run used rustc/cargo 1.96.0 from `stable-aarch64-apple-darwin`, wasm-bindgen 0.2.121, binaryen wasm-opt 130, Node v24.14.0, and pnpm 12.8.2. Host: macOS 26.6.1, Apple A18 Pro. The same `env.sh`, `CARGO_HOME`, `RUSTUP_HOME`, pinned PATH, `ZFB_RELEASE_VERSION=0.0.0`, and package dependencies were used for both pins. The two timed targets were absent before their builds and were kept separate. All Rust/wasm build commands ran serially inside the machine-wide heavy guard; it reported `verdict=PASS exit=0 secs=599` for the *runner*, not for each child gate.
 
@@ -196,4 +200,42 @@ The Phase 1 saved normal and feature reverse trees and `cargo deny list` categor
 
 Authenticated GitHub reads at **2026-10-08T14:47:09Z** rechecked both `v0.0.56` refs, annotated tag objects, dereferenced commits, Release publication/body/checksum assets, archived state, and complete open-PR collections. All matched `github-provenance.json`, neither repo was archived, and both open-PR collections were empty (`phase2-final-github.json`, exit 0). The authenticated drift detector `GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --json` ran at **2026-10-08T14:46:57Z** and returned **exit 10 / `CANDIDATE_DRIFT`**, with no errors. Its deltas compare the committed older watcher baseline with releases 0.0.52–0.0.56, tags, branches, and merged release PRs; they do not contradict the direct frozen 0.0.56 race check. The detector JSON and stderr were saved without writing any snapshot onto the committed baseline.
 
-The final `evaluate.py verify` and EXIT verification passed; `git status` had only this report and `phase2-summary.json` as intended changes. The candidate's strict absolute size gate remains red while the same-toolchain control passes; no local MIGRATE qualification or terminal decision is asserted. The decision sub-task owns the verdict and any CI interpretation.
+The final `evaluate.py verify` and EXIT verification passed; `git status` had only this report and `phase2-summary.json` as intended changes. The candidate's strict absolute size gate remains red while the same-toolchain control passes. The terminal KEEP decision is recorded below; no local MIGRATE qualification is asserted.
+
+## Final decision, race check, and KEEP application (#4067/#4068)
+
+**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.44; evaluated 0.0.56 is rejected for same-toolchain size growth.** Issue #4067 recorded the reviewed decision on merged evidence SHA `9d1b92e225a1904bf74f87940f9c6c5559570f39`; #4068 applies that verdict. This is a final rejection of 0.0.56, not a pending-CI migration or a blocked evaluation.
+
+The strict render-only gzip-9 ceiling is 1,100,000 B. The 0.0.44 same-toolchain control measured 1,098,011 B and passed; 0.0.56 measured 1,111,923 B and failed by 11,923 B. The accepted growth limit is at most 1,024 B for each artifact's `finalWasm` and `gzip9`, with zero render growth. Root, render, and parse growth exceed 1,024 B; render also violates zero growth. CI's 6,027 B headroom does not permit projecting these Mac deltas onto CI. The complete artifact and ceiling tables above remain the source of the byte counts. Diagnostic wasm tests passed 234/234 separately and do not convert the strict composite FAIL to PASS.
+
+**GHSA-4xcc-23fx-w2wj non-exposure:** zfb does not use `ParserConfig` or YAML budget setters in `crates/`; its YAML path deserializes with `serde_yaml::from_str` into `Value` (explicit `::<Value>` in the differential harness). This call-path observation is not a claim that the upstream advisory is fixed.
+
+The instructed call-site search, `rg -n 'ParserConfig|set_.*budget|with_.*budget|serde_yaml::from_str' crates --glob '*.rs'`, returned two matches, both inspected: `crates/zfb-content/src/frontmatter.rs:254` calls `serde_yaml::from_str(yaml_str)`; `crates/zfb-content/tests/yaml_differential_harness.rs:112` calls `serde_yaml::from_str::<Value>(yaml)`. No `ParserConfig` or budget-setter call site matched.
+
+### Final registry and GitHub race check
+
+The fresh `evaluate.py registry --evidence` read started at **2026-10-08T15:06:38Z**, reported `checkedAt = 2026-10-08T15:06:38.359015+00:00`, and exited 0. Both the adopted 0.0.44 versions and candidate 0.0.56 versions remained non-yanked. The 0.0.56 downloaded archive SHA-256 values matched the registry checksums and frozen provenance: core `17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77`, alias `bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70`. The published alias manifest still requires exact core `=0.0.56`, default features false, with `std` and `compat-serde-yaml`. Neither crate had a newer non-yanked version; `newerCompletePairs` was empty. All passed-over 0.0.45–0.0.55 versions were non-yanked at this observation:
+
+| Pair | Core published UTC | Alias published UTC | Yank state |
+| --- | --- | --- | --- |
+| 0.0.45 | 2026-09-18T18:05:28.349263Z | 2026-09-19T07:41:27.464727Z | both non-yanked |
+| 0.0.46 | 2026-09-21T15:04:50.854459Z | 2026-09-21T22:31:50.381115Z | both non-yanked |
+| 0.0.47 | 2026-09-21T22:54:39.552783Z | 2026-09-21T23:10:08.420790Z | both non-yanked |
+| 0.0.48 | 2026-09-22T00:59:43.932787Z | 2026-09-22T07:23:53.360055Z | both non-yanked |
+| 0.0.49 | 2026-09-22T09:31:12.915663Z | 2026-09-22T09:49:53.603529Z | both non-yanked |
+| 0.0.50 | 2026-09-22T12:02:45.101054Z | 2026-09-22T12:21:53.235495Z | both non-yanked |
+| 0.0.51 | 2026-09-22T14:47:58.355202Z | 2026-09-22T15:04:44.656167Z | both non-yanked |
+| 0.0.52 | 2026-10-04T14:20:19.747688Z | 2026-10-06T17:23:42.884763Z | both non-yanked |
+| 0.0.53 | 2026-10-06T12:41:27.063308Z | 2026-10-06T18:20:53.416765Z | both non-yanked |
+| 0.0.54 | 2026-10-07T14:07:29.154401Z | 2026-10-07T14:20:18.633508Z | both non-yanked |
+| 0.0.55 | 2026-10-08T06:37:46.465213Z | 2026-10-08T07:10:21.924189Z | both non-yanked |
+
+Authenticated complete open-PR collections were read at **2026-10-08T15:06:48Z–15:06:49Z**, both exit 0 and both `[]`: `sebastienrousseau/noyalib` and `sebastienrousseau/noyalib-serde-yaml`. No open release PR needs a watcher pointer. The subsequent authenticated pre-refresh detector at `2026-10-08T15:06:55.654Z` exited **10**, `CANDIDATE_DRIFT`, with `errors: []`. Its 32 adopted-pair triage deltas are the 30 already-evaluated publish/tag/Release deltas for 0.0.52–0.0.56 plus the merged-state transitions for core PR #459 and alias PR #28. The remaining branch movement, including fallback-candidate movement, is informational. Exit 10 is this expected old-baseline drift report, not a compatibility-test failure.
+
+The complete captured stdout, stderr, timestamps, actual exit files, and registry result are outside the checkout at `/tmp/zfb-4068.jxyFRM/`. The watcher pointers are therefore both `null`; this is supported by the complete fresh open-PR results, not inferred from branch names. One snapshot refresh was performed: authenticated `--snapshot` started at **2026-10-08T15:10:55Z**, exited 0, wrote `/tmp/zfb-4068-baseline.M6xsW4/snap.json`, and was copied once to `scripts/yaml-candidate-baseline.json`; the targeted formatter exited 0. The formatted baseline has `checkedAt = 2026-10-08T15:10:56.693Z`, and both release-PR pointers are `null`. The authenticated post-refresh detector at **2026-10-08T15:11:09.004Z** exited 0 with status `no-drift` and `errors: []`; all seven candidates had no deltas, including no informational deltas. No second snapshot was made.
+
+### Detector regression-test correction and final verification
+
+The exact focused command was `pnpm exec vp test run --project scripts scripts/__tests__/check-yaml-candidate-drift.test.mjs`. Its initial pre-refresh run had **75/77 passing and 2 failing**; that invocation was diagnostic while the old baseline still held OPEN PR pointers and the updated detector config held null. The failures were the obsolete expectation that PR #459/#28 would be queried and an expected temporary baseline/config pointer mismatch. After the single refresh, the unchanged tests still had **75/77 passing and the same 2 stale assumptions**: hardcoded PR #459/#28 requests and hardcoded non-null config values.
+
+The test correction now asserts null pointers, zero PR requests, and null observations against the actual current configuration; an adjacent positive test exercises both PR fetches with synthetic pointers 999/1000 and restores both pointers in `finally`. The canonical baseline/config equality assertion remains intact, as do OPEN → MERGED/CLOSED detection, malformed-response handling, and operational-failure coverage. The final suite passed **78/78**. `node --check scripts/__tests__/check-yaml-candidate-drift.test.mjs`, `node --check scripts/check-yaml-candidate-drift.mjs`, `pnpm format:check`, and `git diff --check` all exited 0. The diff contains only the five authorized files; Cargo pins/lock, harness and corpus, fixtures, size manifest, size documentation, and ceilings match the incoming base. No browser or visual check applies.
