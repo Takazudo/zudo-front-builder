@@ -191,10 +191,9 @@ guard PASS in 64 seconds; log at
 `/workspace/scratch/zfb-sweep-261008/yaml-baseline-harness.log`. That baseline
 evidence proves no candidate result.
 
-Manager targeted candidate evidence: the unchanged 0.0.55 harness passed 4/4,
-including all 18 observations, guard PASS in 52 seconds. Logs:
-`/workspace/scratch/zfb-sweep-261008/yaml-candidate.log` and
-`/workspace/scratch/zfb-sweep-261008/yaml-candidate/harness.log`. This resolves
-the Release wording contradiction for the consumed Value path. Full Phase 1
-and audit remain pending; current disk is below 30 GiB after install, so
-Phase 2 is blocked. Temporary Cargo files and protected hashes were restored.
+Manager completed broader Phase 1 compatibility and both dependency/license audits.
+See `report.md` for exact counts, initial esbuild failure/recovery, tested SHAs,
+restoration and final release-race evidence. The unchanged disk gate observed
+14,959,755,264 free bytes on 2026-10-08, so every Phase 2 artifact/check remains
+NOT RUN. No terminal verdict is established; resume this protocol on a host
+clearing the gate and repeat the release-race check before deciding.
