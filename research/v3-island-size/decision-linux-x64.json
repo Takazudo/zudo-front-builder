@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "622246ca0ea5cf4655929a27cb3cbabe1cda8e2b",
+  "baselineSourceSha": "40ed7563d5e9132cae81a141622e7c8a57d41266",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -23,12 +23,12 @@
     "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
   },
   "toolchain": {
-    "packageVersion": "4.1.0",
+    "packageVersion": "4.2.0",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "4b2f292d905dbdbc49326cdc89aba724878cb12c06c258dd4d194c78a3d7d9b0",
+    "pnpmLockSha256": "9e5fda89f66678709cf9d9c19d8d813b80416fc6469d8e4d926ce086d0426401",
     "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -48,27 +48,27 @@
       },
       "scalar-signal": {
         "raw": 66335,
-        "gzip": 22093
+        "gzip": 22091
       },
       "show-for": {
         "raw": 66481,
-        "gzip": 22165
+        "gzip": 22169
       },
       "model": {
         "raw": 66326,
-        "gzip": 22097
+        "gzip": 22101
       },
       "blog-theme": {
         "raw": 66676,
-        "gzip": 22232
+        "gzip": 22234
       },
       "json-api": {
         "raw": 66481,
-        "gzip": 22187
+        "gzip": 22185
       },
       "multi-island": {
         "raw": 66603,
-        "gzip": 22196
+        "gzip": 22194
       }
     },
     "packed": {
@@ -78,7 +78,7 @@
       },
       "event-only": {
         "raw": 66389,
-        "gzip": 22111
+        "gzip": 22112
       },
       "scalar-signal": {
         "raw": 66397,
@@ -86,33 +86,33 @@
       },
       "show-for": {
         "raw": 66543,
-        "gzip": 22199
+        "gzip": 22201
       },
       "model": {
         "raw": 66388,
-        "gzip": 22129
+        "gzip": 22126
       },
       "blog-theme": {
         "raw": 66738,
-        "gzip": 22262
+        "gzip": 22260
       },
       "json-api": {
         "raw": 66543,
-        "gzip": 22216
+        "gzip": 22215
       },
       "multi-island": {
         "raw": 66665,
-        "gzip": 22224
+        "gzip": 22223
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.1.0 ceilings measured in health run 37612006587 at source 622246ca0ea5cf4655929a27cb3cbabe1cda8e2b. All 16 raw totals are unchanged from the v4.0.0 contract; gzip totals shifted by -5 to +3 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.2.0 ceilings measured in health run 37758141882 at source 40ed7563d5e9132cae81a141622e7c8a57d41266. All 16 raw totals are unchanged from the v4.1.0 contract; 12 gzip totals shifted by -3 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37612006587,
-    "jobId": 112761214811,
-    "sourceSha": "622246ca0ea5cf4655929a27cb3cbabe1cda8e2b",
-    "note": "Push run on the v4.1.0 bump commit. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the v4.0.0 contract; gzip deltas range from -5 to +3 bytes. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history. The run failed only because the old exact gzip ceilings rejected six rows."
+    "runId": 37758141882,
+    "jobId": 113247705456,
+    "sourceSha": "40ed7563d5e9132cae81a141622e7c8a57d41266",
+    "note": "Push run on the v4.2.0 bump commit. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the v4.1.0 contract; gzip deltas range from -3 to +4 bytes across 12 rows. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history. The run failed only because the old exact gzip ceilings rejected five rows."
   }
 }
