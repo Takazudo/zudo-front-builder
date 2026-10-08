@@ -1601,7 +1601,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 if created.is_empty() {
                     DiscoveryOutcome::default()
                 } else {
-                    hook(&created)?
+                    if dev_timing_enabled() {
+                        eprintln!("[zfb-timing] discovery: created={created:?}");
+                    }
+                    let result = hook(&created);
+                    if dev_timing_enabled() {
+                        match &result {
+                            Ok(_) => eprintln!("[zfb-timing] discovery: ok"),
+                            Err(error) => eprintln!("[zfb-timing] discovery: err={error:#}"),
+                        }
+                    }
+                    result?
                 }
             }
             None => DiscoveryOutcome::default(),
@@ -2153,6 +2163,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                         batch.len()
                     );
                 }
+                let paths = batch
+                    .iter()
+                    .map(|change| format!("{}:{:?}", change.path.display(), change.kind))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!("[zfb-timing] intake paths: {paths}");
             }
 
             let changes: Vec<(PathBuf, ChangeKind)> =
