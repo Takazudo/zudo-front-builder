@@ -411,11 +411,17 @@ impl DevSession {
     }
 }
 
-fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
-    spawn_dev_with_timing(root, esbuild, true)
+fn spawn_dev_with_timing(root: &Path, esbuild: &Path, timing: bool) -> DevSession {
+    spawn_dev_with_forced_created(root, esbuild, timing, None, false)
 }
 
-fn spawn_dev_with_timing(root: &Path, esbuild: &Path, timing: bool) -> DevSession {
+fn spawn_dev_with_forced_created(
+    root: &Path,
+    esbuild: &Path,
+    timing: bool,
+    force_created_page: Option<&Path>,
+    deferred: bool,
+) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout = fs::File::create(&stdout_path).expect("create dev stdout log");
@@ -437,8 +443,19 @@ fn spawn_dev_with_timing(root: &Path, esbuild: &Path, timing: bool) -> DevSessio
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK")
         .env_remove("ZFB_DEV_TEST_ORCH_STOP_MS")
+        .env_remove("ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE")
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    if let Some(path) = force_created_page {
+        command.env("ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE", path);
+    }
+    if deferred {
+        command
+            .env_remove("ZFB_DEV_EAGER")
+            .env("ZFB_LAZY_DEV_RENDER", "1")
+            .env("ZFB_DEV_BOOT_LAZY", "cold")
+            .env("ZFB_DEV_DEFER_BUNDLE", "1");
+    }
     if timing {
         command.env("ZFB_DEV_TIMING", "1");
     } else {
@@ -1595,6 +1612,13 @@ export default function New() {
             appended.contains("ambiguous owned island marker"),
             "{appended}"
         );
+        assert_eq!(
+            appended
+                .matches("[zfb] rebuild tick failed; watcher staying alive:")
+                .count(),
+            1,
+            "one user-facing discovery failure diagnostic per failed tick: {appended}"
+        );
         assert_eq!(fs::read(&asset_path).unwrap(), recovered_asset.as_bytes());
         assert!(session.guard.try_exit_status().is_none());
 
@@ -1613,8 +1637,42 @@ export default function New() {
     }
 }
 
+/// Dev HTML is written under a process-owned session directory, not directly
+/// beneath `.zfb-build/dev-pages` (#534/#3663). Locate this child's sole
+/// active directory so disk-prune assertions inspect the actual served tree.
+fn dev_session_output(root: &Path, session: &DevSession, relative: &str) -> PathBuf {
+    let parent = root.join(".zfb-build/dev-pages");
+    let prefix = format!("session-{}-", session.guard.child.id());
+    let matches: Vec<PathBuf> = fs::read_dir(&parent)
+        .unwrap_or_else(|error| panic!("read dev HTML parent {}: {error}", parent.display()))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&prefix)
+        })
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected this dev process's HTML session under {}: {matches:?}",
+        parent.display()
+    );
+    matches[0].join(relative)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_dynamic_page_edit_reexpands_and_prunes_routes() {
+    dynamic_page_route_rebuild(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_dynamic_page_forced_created_reexpands_and_prunes_routes() {
+    dynamic_page_route_rebuild(true).await;
+}
+
+async fn dynamic_page_route_rebuild(force_created: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let esbuild = locate_esbuild().expect("scanner dev acceptance requires pinned esbuild");
     let project = tempfile::tempdir().unwrap();
@@ -1635,10 +1693,17 @@ async fn dev_dynamic_page_edit_reexpands_and_prunes_routes() {
     }
     };
     write(&root, dynamic, &source(Some("alpha")));
-    let mut session = spawn_dev(&root, &esbuild);
+    let forced_path = root.join(dynamic);
+    let mut session = spawn_dev_with_forced_created(
+        &root,
+        &esbuild,
+        true,
+        force_created.then_some(forced_path.as_path()),
+        false,
+    );
     let port = wait_for_dev_ready(&mut session).await;
     wait_for_dev_page_marker_at(&mut session, port, "/posts/alpha", "dynamic alpha").await;
-    let alpha_output = root.join(".zfb-build/dev-pages/posts/alpha/index.html");
+    let alpha_output = dev_session_output(&root, &session, "posts/alpha/index.html");
     assert!(
         alpha_output.exists(),
         "initial dynamic output must be on disk"
@@ -1646,8 +1711,25 @@ async fn dev_dynamic_page_edit_reexpands_and_prunes_routes() {
 
     // Ordinary Modified must use reload_renderer, rebuild route tables, and
     // prune both served/cache state and the globally vanished HTML file.
+    let before_beta_stdout = session.stdout();
+    let before_beta_stderr = session.stderr();
     write(&root, dynamic, &source(Some("beta")));
     wait_for_dev_page_marker_at(&mut session, port, "/posts/beta", "dynamic beta").await;
+    if force_created {
+        let tick_logs = appended_logs(&session, &before_beta_stdout, &before_beta_stderr);
+        assert!(
+            tick_logs.contains("[zfb-timing] test-forced Created:"),
+            "{tick_logs}"
+        );
+        assert!(
+            tick_logs.contains("[slug].tsx:Modified"),
+            "the forced Created must normalize before planning: {tick_logs}"
+        );
+        assert!(
+            !tick_logs.contains(&format!("discovery: created=[{:?}]", forced_path)),
+            "known page must bypass discovery: {tick_logs}"
+        );
+    }
     assert!(
         !alpha_output.exists(),
         "vanished alpha output must be pruned"
@@ -1677,15 +1759,65 @@ async fn dev_dynamic_page_edit_reexpands_and_prunes_routes() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(!root
-        .join(".zfb-build/dev-pages/posts/beta/index.html")
-        .exists());
+    assert!(!dev_session_output(&root, &session, "posts/beta/index.html").exists());
 
     // A module that currently expands to zero routes is still a known page
     // source, and a later edit can publish routes again.
+    let before_gamma_stdout = session.stdout();
+    let before_gamma_stderr = session.stderr();
     write(&root, dynamic, &source(Some("gamma")));
     wait_for_dev_page_marker_at(&mut session, port, "/posts/gamma", "dynamic gamma").await;
-    assert!(root
-        .join(".zfb-build/dev-pages/posts/gamma/index.html")
-        .exists());
+    if force_created {
+        let tick_logs = appended_logs(&session, &before_gamma_stdout, &before_gamma_stderr);
+        assert!(
+            tick_logs.contains("[zfb-timing] test-forced Created:"),
+            "{tick_logs}"
+        );
+        assert!(
+            tick_logs.contains("[slug].tsx:Modified"),
+            "zero-output page must remain known: {tick_logs}"
+        );
+        assert!(
+            !tick_logs.contains(&format!("discovery: created=[{:?}]", forced_path)),
+            "zero-output known page bypasses discovery: {tick_logs}"
+        );
+    }
+    assert!(dev_session_output(&root, &session, "posts/gamma/index.html").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_deferred_boot_publishes_known_page_before_forced_created_tick() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let esbuild = locate_esbuild().expect("scanner dev acceptance requires pinned esbuild");
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().canonicalize().unwrap();
+    make_minimal_project(&root);
+    let page = root.join("pages/index.tsx");
+    write(&root, "pages/index.tsx", "export default function Home() { return <html><body>deferred boot initial</body></html>; }\n");
+    let mut session = spawn_dev_with_forced_created(&root, &esbuild, true, Some(&page), true);
+    let port = wait_for_dev_ready(&mut session).await;
+    wait_for_dev_page_marker(&mut session, port, "deferred boot initial").await;
+    assert!(
+        session.logs().contains("cold-lazy"),
+        "fixture must use deferred cold boot: {}",
+        session.logs()
+    );
+
+    let before_stdout = session.stdout();
+    let before_stderr = session.stderr();
+    write(&root, "pages/index.tsx", "export default function Home() { return <html><body>deferred boot recovered</body></html>; }\n");
+    wait_for_dev_page_marker(&mut session, port, "deferred boot recovered").await;
+    let tick_logs = appended_logs(&session, &before_stdout, &before_stderr);
+    assert!(
+        tick_logs.contains("[zfb-timing] test-forced Created:"),
+        "{tick_logs}"
+    );
+    assert!(
+        tick_logs.contains("index.tsx:Modified"),
+        "deferred publication must reach the orchestrator's live policy: {tick_logs}"
+    );
+    assert!(
+        !tick_logs.contains(&format!("discovery: created=[{:?}]", page)),
+        "known page bypasses discovery after deferred publication: {tick_logs}"
+    );
 }

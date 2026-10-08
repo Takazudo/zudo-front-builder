@@ -2102,6 +2102,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // before the watcher has performed its live handshake. See
         // `orch_panic_on_tick_armed` / `orch_stop_ms_decision` for the pure
         // parse/decision logic and the exact marker-line wording.
+        // Opt-in process-test seam for the macOS FSEvents Created shape.
+        // Match one exact source path and never rewrite Removed, so genuine
+        // deletion invalidation and every other watcher input stay intact.
+        let force_created_page =
+            std::env::var_os("ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE").map(PathBuf::from);
         let panic_on_tick_armed = orch_panic_on_tick_armed(
             std::env::var("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK")
                 .ok()
@@ -2194,7 +2199,20 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // that skip is what lets the dev loop go idle after a CSS pass
             // instead of ticking on the pass's own temp-entry write.
             let unfiltered_len = changes.len();
-            let changes = retain_unsuppressed_changes(&this.config, changes);
+            let mut changes = retain_unsuppressed_changes(&this.config, changes);
+            if let Some(target) = force_created_page.as_ref() {
+                for (path, kind) in &mut changes {
+                    if path == target && *kind != ChangeKind::Removed {
+                        if dev_timing_enabled() {
+                            eprintln!(
+                                "[zfb-timing] test-forced Created: {} (from {kind:?})",
+                                path.display()
+                            );
+                        }
+                        *kind = ChangeKind::Created;
+                    }
+                }
+            }
             let suppressed = unfiltered_len - changes.len();
             if suppressed > 0 && dev_timing_enabled() {
                 eprintln!("[zfb-timing] intake: suppressed {suppressed} watch event(s)");
@@ -3737,36 +3755,44 @@ mod tests {
 
     #[test]
     fn removed_page_purges_before_created_in_either_order() {
-        for reverse in [false, true] {
-            let registry = crate::policy::KnownPageSources::default();
-            let known = PathBuf::from("/proj/pages/nested/known.tsx");
-            let unrelated = PathBuf::from("/proj/pages/other.tsx");
-            registry.replace([known.clone(), unrelated.clone()]);
-            let orch = BuildOrchestrator::new(
-                OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
-                    .with_policy(GranularityPolicy::default().with_known_pages(registry.clone())),
-                make_graph(),
-                CountingPipeline::default(),
-            );
-            let discoveries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let count = discoveries.clone();
-            let discover: DiscoveryHook = Arc::new(move |_| {
-                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(DiscoveryOutcome::default())
-            });
-            let mut changes = vec![
-                (PathBuf::from("/proj/pages/nested"), ChangeKind::Removed),
-                (known.clone(), ChangeKind::Created),
-            ];
-            if reverse {
-                changes.reverse();
+        for remove_ancestor in [false, true] {
+            for reverse in [false, true] {
+                let registry = crate::policy::KnownPageSources::default();
+                let known = PathBuf::from("/proj/pages/nested/known.tsx");
+                let unrelated = PathBuf::from("/proj/pages/other.tsx");
+                registry.replace([known.clone(), unrelated.clone()]);
+                let orch = BuildOrchestrator::new(
+                    OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]).with_policy(
+                        GranularityPolicy::default().with_known_pages(registry.clone()),
+                    ),
+                    make_graph(),
+                    CountingPipeline::default(),
+                );
+                let discoveries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let count = discoveries.clone();
+                let discover: DiscoveryHook = Arc::new(move |_| {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(DiscoveryOutcome::default())
+                });
+                let removed = if remove_ancestor {
+                    PathBuf::from("/proj/pages/nested")
+                } else {
+                    known.clone()
+                };
+                let mut changes = vec![
+                    (removed, ChangeKind::Removed),
+                    (known.clone(), ChangeKind::Created),
+                ];
+                if reverse {
+                    changes.reverse();
+                }
+                let dist = tempfile::tempdir().unwrap();
+                orch.tick_with_kinds(changes, &noop_ctx(dist.path()), Some(&discover))
+                    .unwrap();
+                assert_eq!(discoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+                assert!(!registry.contains(&known));
+                assert!(registry.contains(&unrelated));
             }
-            let dist = tempfile::tempdir().unwrap();
-            orch.tick_with_kinds(changes, &noop_ctx(dist.path()), Some(&discover))
-                .unwrap();
-            assert_eq!(discoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert!(!registry.contains(&known));
-            assert!(registry.contains(&unrelated));
         }
     }
 
