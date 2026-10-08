@@ -1,0 +1,251 @@
+{
+  "candidate": {
+    "version": "0.0.56",
+    "artifacts": {
+      "root": {
+        "finalWasm": 3436050,
+        "gzip9": 1541225,
+        "glue": 14998,
+        "glueGzip9": 4199
+      },
+      "highlight": {
+        "finalWasm": 1537137,
+        "gzip9": 822285,
+        "glue": 8758,
+        "glueGzip9": 2637
+      },
+      "render": {
+        "finalWasm": 2240279,
+        "gzip9": 1111923,
+        "glue": 8772,
+        "glueGzip9": 2661
+      },
+      "parse": {
+        "finalWasm": 741625,
+        "gzip9": 298857,
+        "glue": 11159,
+        "glueGzip9": 3797
+      }
+    },
+    "completeDistBytes": 8243855,
+    "ceilings": {
+      "root": 1600000,
+      "highlight": 880000,
+      "render": 1100000,
+      "parse": 325000,
+      "tarball": 3900000
+    },
+    "headroom": {
+      "root": 58775,
+      "highlight": 57715,
+      "render": -11923,
+      "parse": 26143
+    },
+    "timings": [
+      {
+        "step": "cargo rustc",
+        "seconds": 95.521
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.32
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 11.003
+      },
+      {
+        "step": "cargo rustc",
+        "seconds": 31.178
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.116
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 3.736
+      },
+      {
+        "step": "cargo rustc",
+        "seconds": 14.666
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.152
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 6.17
+      },
+      {
+        "step": "cargo rustc",
+        "seconds": 8.747
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.05
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 2.396
+      }
+    ],
+    "productionSeconds": 174.055,
+    "wallSeconds": 176.55,
+    "wrapperMaximumResidentBytes": 615497728,
+    "buildExit": 1,
+    "budgetExit": 1,
+    "tarballBytes": 3859716,
+    "tarballHeadroom": 40284,
+    "packExit": 0
+  },
+  "control": {
+    "version": "0.0.44",
+    "artifacts": {
+      "root": {
+        "finalWasm": 3398523,
+        "gzip9": 1524882,
+        "glue": 14998,
+        "glueGzip9": 4199
+      },
+      "highlight": {
+        "finalWasm": 1537137,
+        "gzip9": 822289,
+        "glue": 8758,
+        "glueGzip9": 2637
+      },
+      "render": {
+        "finalWasm": 2204458,
+        "gzip9": 1098011,
+        "glue": 8772,
+        "glueGzip9": 2661
+      },
+      "parse": {
+        "finalWasm": 704576,
+        "gzip9": 283410,
+        "glue": 11159,
+        "glueGzip9": 3797
+      }
+    },
+    "completeDistBytes": 8133458,
+    "ceilings": {
+      "root": 1600000,
+      "highlight": 880000,
+      "render": 1100000,
+      "parse": 325000,
+      "tarball": 3900000
+    },
+    "headroom": {
+      "root": 75118,
+      "highlight": 57711,
+      "render": 1989,
+      "parse": 41590
+    },
+    "timings": [
+      {
+        "step": "cargo rustc",
+        "seconds": 95.769
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.204
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 10.46
+      },
+      {
+        "step": "cargo rustc",
+        "seconds": 27.458
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.077
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 3.857
+      },
+      {
+        "step": "cargo rustc",
+        "seconds": 13.395
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.107
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 6.687
+      },
+      {
+        "step": "cargo rustc",
+        "seconds": 8.554
+      },
+      {
+        "step": "wasm-bindgen",
+        "seconds": 0.098
+      },
+      {
+        "step": "wasm-opt",
+        "seconds": 2.737
+      }
+    ],
+    "productionSeconds": 169.403,
+    "wallSeconds": 171.49,
+    "wrapperMaximumResidentBytes": 591298560,
+    "buildExit": 0,
+    "budgetExit": 0,
+    "tarballBytes": 3814132,
+    "tarballHeadroom": 85868,
+    "packExit": 0
+  },
+  "candidateMinusControl": {
+    "artifacts": {
+      "root": {
+        "finalWasm": 37527,
+        "gzip9": 16343,
+        "glue": 0,
+        "glueGzip9": 0
+      },
+      "highlight": {
+        "finalWasm": 0,
+        "gzip9": -4,
+        "glue": 0,
+        "glueGzip9": 0
+      },
+      "render": {
+        "finalWasm": 35821,
+        "gzip9": 13912,
+        "glue": 0,
+        "glueGzip9": 0
+      },
+      "parse": {
+        "finalWasm": 37049,
+        "gzip9": 15447,
+        "glue": 0,
+        "glueGzip9": 0
+      }
+    },
+    "completeDistBytes": 110397,
+    "productionSeconds": 4.652,
+    "tarballBytes": 45584
+  },
+  "gateOutcomes": {
+    "candidateWasmCheckExit": 0,
+    "candidateStrictExit": 1,
+    "candidateTimedBuildExit": 1,
+    "candidateBudgetExit": 1,
+    "controlTimedBuildExit": 0,
+    "controlBudgetExit": 0,
+    "restorationExit": 0,
+    "verificationExit": 0,
+    "candidateDiagnosticTestsExit": 0,
+    "candidateTarballExit": 0,
+    "controlTarballExit": 0,
+    "finalRegistryExit": 0,
+    "finalGithubExit": 0,
+    "authenticatedDriftExit": 10
+  }
+}
