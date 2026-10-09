@@ -28,7 +28,7 @@
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "4b2f292d905dbdbc49326cdc89aba724878cb12c06c258dd4d194c78a3d7d9b0",
+    "pnpmLockSha256": "912eb597197ad77874bfebbb893599c77dcde3c3ea9323830b7182359200b100",
     "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",

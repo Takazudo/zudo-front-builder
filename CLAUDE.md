@@ -146,8 +146,9 @@ Use only when you genuinely need to push from a worktree (rare). Never set this 
 
 ## npm dist-tags: `latest` always, `next` only while it is ahead
 
-zfb publishes 10 packages in lockstep (5 platform + `@takazudo/zfb`, `zfb-runtime`,
-`zfb-adapter-cloudflare`, `create-zfb`, `zfb-md-wasm`). The rule for their dist-tags:
+zfb publishes 11 packages in lockstep (5 platform + `@takazudo/zfb-slugify`,
+`@takazudo/zfb`, `zfb-runtime`, `zfb-adapter-cloudflare`, `create-zfb`, `zfb-md-wasm`).
+The rule for their dist-tags:
 
 **A dist-tag is a promise to keep moving it. Only two states are safe — a tag that
 always advances, or no tag at all.** A *frozen* tag is worse than a missing one:
@@ -181,7 +182,7 @@ would go red every week whenever the tag is correctly absent.
 
 ## Five-lane release changelog contract
 
-All ten published npm packages keep one lockstep version and the existing single GitHub Release,
+All eleven published npm packages keep one lockstep version and the existing single GitHub Release,
 tag, binary/npm publication, and Homebrew topology. Each future release nevertheless authors
 exactly five default-locale-only English MDX notes:
 

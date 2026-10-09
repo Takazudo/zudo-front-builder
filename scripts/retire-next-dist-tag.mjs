@@ -55,6 +55,7 @@ export const PUBLISHED_PACKAGES = [
   "@takazudo/zfb-linux-arm64-gnu",
   "@takazudo/zfb-linux-x64-gnu",
   "@takazudo/zfb-win32-x64-msvc",
+  "@takazudo/zfb-slugify",
   "@takazudo/zfb",
   "@takazudo/zfb-runtime",
   "@takazudo/zfb-adapter-cloudflare",

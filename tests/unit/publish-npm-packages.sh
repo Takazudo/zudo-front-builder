@@ -103,7 +103,7 @@ assert_exit 'classify: real error AND version NOT on registry → fail (1)' 1 \
 
 # Build a throwaway PATH dir holding mock `npm` and `pnpm` executables.
 MOCK_BIN=$(mktemp -d)
-trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}"' EXIT HUP INT TERM
+trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}" "${LEGACY_TARGET:-}" "${LEGACY_OUTPUT:-}" "${LEGACY_PUB_LOG:-}"' EXIT HUP INT TERM
 
 cat >"$MOCK_BIN/npm" <<'MOCK_NPM'
 #!/bin/sh
@@ -188,7 +188,7 @@ ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop"
 export ZFB_MD_WASM_VERIFY_NODE
 
 V=$(node -p "require('./packages/zfb/package.json').version")
-ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-runtime@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V @takazudo/zfb-md-wasm@$V"
+ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb-slugify@$V @takazudo/zfb@$V @takazudo/zfb-runtime@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V @takazudo/zfb-md-wasm@$V"
 
 # log_has <name> — true iff the publish log has a line for exactly <name>
 # (matching <name> at line start followed by '@' or end-of-line, so
@@ -197,18 +197,20 @@ log_has() {
   grep -Eq "^$1(@|$)" "$PUB_LOG"
 }
 
-# Case 1 — idempotent re-run: 8 packages already published (incl.
-# @takazudo/zfb-md-wasm), only @takazudo/zfb-runtime + create-zfb missing.
+# Case 1 — idempotent re-run: 9 packages already published (incl.
+# @takazudo/zfb-slugify and @takazudo/zfb-md-wasm), only @takazudo/zfb-runtime
+# + create-zfb missing.
 # Expect exit 0 and ONLY the two missing ones published.
 PUB_LOG=$(mktemp)
 : >"$PUB_LOG"
 if PATH="$MOCK_BIN:$PATH" \
    DIST_TAG=next \
    MOCK_PUBLISH_LOG="$PUB_LOG" \
-   MOCK_EXISTING="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-adapter-cloudflare@$V @takazudo/zfb-md-wasm@$V" \
+   MOCK_EXISTING="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb-slugify@$V @takazudo/zfb@$V @takazudo/zfb-adapter-cloudflare@$V @takazudo/zfb-md-wasm@$V" \
    bash "$SCRIPT" all-provenance >/dev/null 2>&1; then
   if log_has "@takazudo/zfb-runtime" && log_has "create-zfb" \
-     && ! log_has "@takazudo/zfb" && ! log_has "@takazudo/zfb-adapter-cloudflare" \
+     && ! log_has "@takazudo/zfb" && ! log_has "@takazudo/zfb-slugify" \
+     && ! log_has "@takazudo/zfb-adapter-cloudflare" \
      && ! log_has "@takazudo/zfb-darwin-x64" && ! log_has "@takazudo/zfb-md-wasm"; then
     pass "integration: idempotent re-run publishes ONLY the 2 missing packages"
   else
@@ -218,9 +220,8 @@ else
   fail "integration: idempotent re-run exited non-zero"
 fi
 
-# Case 2 — fresh publish: nothing on the registry → all 10 packages published
-# (5 platform via npm publish, 5 non-platform via pnpm publish — the 5th
-# non-platform package being @takazudo/zfb-md-wasm, zfb#1579).
+# Case 2 — fresh publish: nothing on the registry → all 11 packages published
+# (5 platform via npm publish, 6 non-platform via pnpm publish).
 PUB_LOG=$(mktemp)
 : >"$PUB_LOG"
 if PATH="$MOCK_BIN:$PATH" \
@@ -229,10 +230,13 @@ if PATH="$MOCK_BIN:$PATH" \
    MOCK_EXISTING="" \
    bash "$SCRIPT" all-provenance >/dev/null 2>&1; then
   COUNT=$(grep -c . "$PUB_LOG" || true)
-  if [ "$COUNT" -eq 10 ] && log_has "@takazudo/zfb-darwin-x64" && log_has "create-zfb" && log_has "@takazudo/zfb-runtime" && log_has "@takazudo/zfb-md-wasm"; then
-    pass "integration: fresh registry publishes all 10 packages"
+  SLUGIFY_LINE=$(grep -n -m 1 -E '^@takazudo/zfb-slugify(@|$)' "$PUB_LOG" | cut -d: -f1)
+  ZFB_LINE=$(grep -n -m 1 -E '^@takazudo/zfb(@|$)' "$PUB_LOG" | cut -d: -f1)
+  if [ "$COUNT" -eq 11 ] && log_has "@takazudo/zfb-darwin-x64" && log_has "create-zfb" && log_has "@takazudo/zfb-runtime" && log_has "@takazudo/zfb-md-wasm" \
+     && [ -n "$SLUGIFY_LINE" ] && [ -n "$ZFB_LINE" ] && [ "$SLUGIFY_LINE" -lt "$ZFB_LINE" ]; then
+    pass "integration: fresh registry publishes all 11 packages with slugify before zfb"
   else
-    fail "integration: fresh publish count=$COUNT (want 10): $(tr '\n' ' ' <"$PUB_LOG")"
+    fail "integration: fresh publish count=$COUNT (want 11; slugify line=$SLUGIFY_LINE, zfb line=$ZFB_LINE): $(tr '\n' ' ' <"$PUB_LOG")"
   fi
 else
   fail "integration: fresh publish exited non-zero"
@@ -289,16 +293,88 @@ if PATH="$MOCK_BIN:$PATH" \
    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
    bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1; then
   COUNT=$(grep -c . "$PUB_LOG" || true)
-  if [ "$COUNT" -eq 10 ] && ! grep -q -- '--provenance' "$ARGS_LOG"; then
-    pass "integration: recovery publishes all 10 packages without --provenance"
+  if [ "$COUNT" -eq 11 ] && ! grep -q -- '--provenance' "$ARGS_LOG"; then
+    pass "integration: recovery publishes all 11 packages without --provenance"
   else
-    fail "integration: recovery count=$COUNT or found --provenance: $(tr '\n' ' ' <"$ARGS_LOG")"
+    fail "integration: recovery count=$COUNT (want 11) or found --provenance: $(tr '\n' ' ' <"$ARGS_LOG")"
   fi
 else
   fail "integration: recovery-no-provenance run exited non-zero"
 fi
 
-# Case 6 — trust-downgrade advisory (#2623). Both provenance-omitting modes must
+# Case 6 — an older release-tag package tree has no slugify directory. The
+# release-control script must omit only this newly-added package and still
+# publish the older tag's ten packages completely.
+LEGACY_TARGET=$(mktemp -d)
+LEGACY_OUTPUT=$(mktemp)
+LEGACY_PUB_LOG=$(mktemp)
+: >"$LEGACY_PUB_LOG"
+LEGACY_PACKAGE_DIRS='
+packages/zfb-darwin-arm64
+packages/zfb-darwin-x64
+packages/zfb-linux-arm64-gnu
+packages/zfb-linux-x64-gnu
+packages/zfb-win32-x64-msvc
+packages/zfb
+packages/zfb-runtime
+packages/zfb-adapter-cloudflare
+packages/create-zfb
+crates/zfb-md-wasm/npm
+'
+for dir in $LEGACY_PACKAGE_DIRS; do
+  mkdir -p "$LEGACY_TARGET/$dir"
+  cp "$dir/package.json" "$LEGACY_TARGET/$dir/package.json"
+done
+if (
+  cd "$LEGACY_TARGET"
+  PATH="$MOCK_BIN:$PATH" \
+    DIST_TAG=latest \
+    MOCK_PUBLISH_LOG="$LEGACY_PUB_LOG" \
+    MOCK_EXISTING="" \
+    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
+    ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop" \
+    bash "$REPO_ROOT/$SCRIPT" recovery-no-provenance
+) >"$LEGACY_OUTPUT" 2>&1; then
+  COUNT=$(grep -c . "$LEGACY_PUB_LOG" || true)
+  if [ "$COUNT" -eq 10 ] && ! grep -Eq '^@takazudo/zfb-slugify(@|$)' "$LEGACY_PUB_LOG" \
+     && grep -Fq 'target tree predates @takazudo/zfb-slugify' "$LEGACY_OUTPUT"; then
+    pass "integration: older release tag omits absent slugify and publishes all 10 available packages"
+  else
+    fail "integration: older tag recovery count=$COUNT (want 10), slugify published=$(grep -Eq '^@takazudo/zfb-slugify(@|$)' "$LEGACY_PUB_LOG" && echo yes || echo no), output=$(tail -4 "$LEGACY_OUTPUT" | tr '\n' ' ')"
+  fi
+else
+  fail "integration: older release tag recovery exited non-zero: $(tail -6 "$LEGACY_OUTPUT" | tr '\n' ' ')"
+fi
+
+# The same old target must fail closed for normal publishes; only recovery may
+# omit the new package, and refusal must happen before any platform upload.
+assert_missing_slugify_refused() {
+  LEGACY_MODE="$1"
+  : >"$LEGACY_PUB_LOG"
+  : >"$LEGACY_OUTPUT"
+  LEGACY_RC=0
+  (
+    cd "$LEGACY_TARGET"
+    PATH="$MOCK_BIN:$PATH" \
+      DIST_TAG=latest \
+      MOCK_PUBLISH_LOG="$LEGACY_PUB_LOG" \
+      MOCK_EXISTING="" \
+      ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
+      bash "$REPO_ROOT/$SCRIPT" "$LEGACY_MODE"
+  ) >"$LEGACY_OUTPUT" 2>&1 || LEGACY_RC=$?
+
+  if [ "$LEGACY_RC" -ne 0 ] && [ ! -s "$LEGACY_PUB_LOG" ] \
+     && grep -Fq 'publish target is missing expected package manifest: packages/zfb-slugify/package.json' "$LEGACY_OUTPUT"; then
+    pass "integration: $LEGACY_MODE refuses a missing slugify manifest before any publish"
+  else
+    fail "integration: $LEGACY_MODE missing-slugify refusal exit=$LEGACY_RC, publishes=$(cat "$LEGACY_PUB_LOG" | tr '\n' ' '), output=$(tail -4 "$LEGACY_OUTPUT" | tr '\n' ' ')"
+  fi
+}
+
+assert_missing_slugify_refused all-provenance
+assert_missing_slugify_refused mac-local
+
+# Case 7 — trust-downgrade advisory (#2623). Both provenance-omitting modes must
 # announce the downgrade loudly ONCE (::warning + job summary) so the release
 # operator schedules the follow-up attested release; the fully-attested mode must
 # stay silent, or the warning trains operators to ignore it.
