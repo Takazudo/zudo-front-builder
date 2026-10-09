@@ -239,6 +239,9 @@ publish_nonplatform_packages() {
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
     if should_skip_publish "$name" "$version"; then
+      if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+        verify_published_md_wasm "$version" "$mode"
+      fi
       continue
     fi
     extra_flags=()
@@ -267,7 +270,25 @@ publish_nonplatform_packages() {
       pnpm -r --filter "$name" --fail-if-no-match publish \
       --tag "$DIST_TAG" --no-git-checks --access public \
       "${provenance_flags[@]}" "${extra_flags[@]}"
+    if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+      verify_published_md_wasm "$version" "$mode"
+    fi
   done
+}
+
+# This runs after every successful MD/WASM outcome: a fresh publish, initial
+# registry skip, conflict, or lost ACK. A digest mismatch is a hard failure,
+# never the ordinary "publish now" return from should_skip_publish.
+verify_published_md_wasm() {
+  local version="$1" mode="$2"
+  local recovery_flags=()
+  if [[ "$mode" == "recovery-no-provenance" ]]; then
+    recovery_flags=(--allow-missing-manifest)
+  fi
+  "${ZFB_MD_WASM_VERIFY_NODE:-node}" "${PUBLISH_SCRIPT_DIR}/verify-zfb-md-wasm-published-digests.mjs" \
+    --version "$version" \
+    --manifest "${ZFB_MD_WASM_MANIFEST:-crates/zfb-md-wasm/npm/dist/shipped-artifacts.json}" \
+    "${recovery_flags[@]}"
 }
 
 # Trust-downgrade advisory (issue #2623).
