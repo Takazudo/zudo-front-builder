@@ -3,7 +3,8 @@
  * sync-platform-versions.mjs
  *
  * Keep lockstep package version fields, packages/zfb/package.json
- * optionalDependencies entries (prefixed with @takazudo/zfb-), and related
+ * optionalDependencies entries (prefixed with @takazudo/zfb-), the slugify
+ * dependency, and related
  * workspace package version fields in lockstep with packages/zfb/package.json
  * version.
  *
@@ -124,6 +125,16 @@ function main() {
       }
     }
   }
+  // The lightweight helper is a required SDK dependency and follows the same lockstep pin.
+  const slugifyDep = zfbPkg.dependencies?.["@takazudo/zfb-slugify"];
+  if (typeof slugifyDep !== "string") fail("packages/zfb must depend on @takazudo/zfb-slugify");
+  const nextSlugifyDep = slugifyDep.startsWith("workspace:")
+    ? `workspace:${srcVersion}`
+    : srcVersion;
+  zfbPkg.dependencies["@takazudo/zfb-slugify"] = nextSlugifyDep;
+  process.stdout.write(
+    `  packages/zfb/package.json dependencies[@takazudo/zfb-slugify]: ${slugifyDep === nextSlugifyDep ? `already ${nextSlugifyDep} (no change)` : `${slugifyDep} -> ${nextSlugifyDep}`}\n`,
+  );
   writeJsonIfChanged(zfbPkgPath, zfbPkg, zfbRaw);
 
   // 3. Rewrite packages/zfb-runtime/package.json version field.
@@ -183,14 +194,32 @@ function main() {
     }
   }
 
-  // 6. (Removed) crates/zfb/src/commands/new.rs no longer carries a
+  // 6. Rewrite packages/zfb-slugify/package.json version field.
+  {
+    const pkgPath = resolve(repoRoot, "packages", "zfb-slugify", "package.json");
+    const { raw, data: pkg } = readJson(pkgPath);
+    const previousVersion = pkg.version;
+    pkg.version = srcVersion;
+    const changed = writeJsonIfChanged(pkgPath, pkg, raw);
+    if (changed) {
+      process.stdout.write(
+        `  packages/zfb-slugify/package.json: ${previousVersion} -> ${srcVersion}\n`,
+      );
+    } else {
+      process.stdout.write(
+        `  packages/zfb-slugify/package.json: already ${srcVersion} (no change)\n`,
+      );
+    }
+  }
+
+  // 7. (Removed) crates/zfb/src/commands/new.rs no longer carries a
   //    WORKSPACE_DEP_PLACEHOLDER constant to keep in sync. The scaffold pin is
   //    now self-syncing — derived at compile time from the binary's own
   //    release version (ZFB_RELEASE_VERSION, else CARGO_PKG_VERSION). See
   //    workspace_dep_placeholder() in new.rs and issue #503. Nothing to rewrite
   //    here.
 
-  // 7. Rewrite packages/create-zfb/package.json:
+  // 8. Rewrite packages/create-zfb/package.json:
   //    - version field
   //    - dependencies."@takazudo/zfb" (preserving "workspace:" prefix if present)
   {

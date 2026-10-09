@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { ISLAND_MOUNTED_ATTR, mountIslands, unmountIslands } from "../runtime.js";
+import {
+  cancelPendingIslands,
+  ISLAND_MOUNTED_ATTR,
+  mountIslands,
+  unmountIslands,
+} from "../runtime.js";
 import { mountTestIslands, mountNewTestIslands } from "./owned-manifest-fixture.js";
 
 const persist = 'data-zfb-transition-persist="h"';
@@ -49,6 +54,67 @@ function swapHeader(incoming: HTMLBodyElement) {
 }
 
 describe("unmountIslands persistence plan", () => {
+  it("keeps pending render intent through A→B→C when B and C props match", () => {
+    const callbacks = new Map<number, () => void>();
+    let nextId = 0;
+    vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+      callbacks.set(++nextId, callback);
+      return nextId;
+    });
+    vi.stubGlobal("cancelIdleCallback", (id: number) => callbacks.delete(id));
+    try {
+      const { mounts, disposals } = setup(
+        `<header ${persist}>${island("A", '{"v":1}', 'data-when="idle"')}</header>`,
+      );
+      const el = document.querySelector("[data-zfb-island]")!;
+      const b = body(`<header ${persist}>${island("A", '{"v":2}', 'data-when="idle"')}</header>`);
+      const stale = [...callbacks.values()][0]!;
+      cancelPendingIslands();
+      unmountIslands(document.body, b);
+      swapHeader(b);
+      expect(mounts.A).not.toHaveBeenCalled();
+      const c = body(`<header ${persist}>${island("A", '{"v":2}', 'data-when="idle"')}</header>`);
+      cancelPendingIslands();
+      unmountIslands(document.body, c);
+      swapHeader(c);
+      mountNewTestIslands();
+      stale();
+      expect(mounts.A).not.toHaveBeenCalled();
+      expect(el.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(false);
+      expect(callbacks.size).toBe(1);
+      [...callbacks.values()][0]!();
+      expect(mounts.A).toHaveBeenCalledExactlyOnceWith({ v: 2 }, el, "render");
+      expect(disposals.A).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("drops a pending render when its retained descendant is removed", () => {
+    const callbacks: Array<() => void> = [];
+    vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    try {
+      const { mounts } = setup(
+        `<header ${persist}>${island("A", '{"v":1}', 'data-when="idle"')}</header>`,
+      );
+      const b = body(`<header ${persist}>${island("A", '{"v":2}', 'data-when="idle"')}</header>`);
+      cancelPendingIslands();
+      unmountIslands(document.body, b);
+      swapHeader(b);
+      const el = document.querySelector("[data-zfb-island]")!;
+      unmountIslands(document.body, body(`<header ${persist}></header>`));
+      for (const callback of callbacks) callback();
+      expect(el.isConnected).toBe(false);
+      expect(el.hasAttribute("data-zfb-island-pending-render")).toBe(false);
+      expect(mounts.A).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("keeps an unchanged descendant's handle and mounted marker", () => {
     const { mounts, disposals } = setup(`<header ${persist}>${island("A")}</header>`);
     const old = document.querySelector("[data-zfb-island]")!;

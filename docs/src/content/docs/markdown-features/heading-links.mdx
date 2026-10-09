@@ -40,13 +40,14 @@ emoji) pass through unchanged, lowercased where casing applies — this
 has tripped up full-width-paren headings in Japanese content before.
 
 The heading-ID algorithm above and the `slugify()` function exported
-publicly from `@takazudo/zfb/slugify` (source: `packages/zfb/src/slugify.ts`)
+publicly from the lightweight `@takazudo/zfb-slugify` package and the supported
+`@takazudo/zfb/slugify` compatibility route (re-export: `packages/zfb/src/slugify.ts`)
 are the same algorithm — not two unrelated slugifiers, as the naming might
 suggest — but they are two separate implementations: heading IDs come from
 the Rust `slugify()` in `crates/zfb-content/src/plugins/heading_links.rs`,
-and the public API is an independent TypeScript port. A shared fixture
+and the helper package owns the TypeScript port. A shared fixture
 (`crates/zfb-content/tests/fixtures/slugify-parity.json`) tests that both
-currently produce matching output; it does not make them one implementation.
+produce matching output.
 
 </Note>
 

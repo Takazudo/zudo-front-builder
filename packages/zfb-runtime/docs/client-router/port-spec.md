@@ -414,6 +414,12 @@ For islands specifically (Astro's branch around line 124–132 detects `astro-is
   > `mountNewIslands()` bypasses the deferred scheduler for the replacement mount
   > so the island is not left blank while waiting for idle/visible/media to fire
   > again. Ordinary first-time deferred hydration remains deferred.
+  >
+  > **Post-spec update (2026-10, issue #4097):** a retained island that has never
+  > mounted still obeys `when` after its props change. It keeps a pending render
+  > intent across navigation cancellation and repeat scans, then renders the
+  > latest props over retained DOM when its first-mount condition fires. Only a
+  > live root's replacement bypasses deferred scheduling.
 
 #### 12.3.2 Boundary table (W3D pins this)
 

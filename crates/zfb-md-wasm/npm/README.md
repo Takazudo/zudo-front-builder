@@ -773,6 +773,13 @@ patch whose compiled code is identical and whose byte sizes do not move at all.
 If you verify these artifacts by content digest rather than by semver, re-pin on
 every upgrade; never read "sizes unchanged" as "nothing to re-verify".
 
+The package exports `@takazudo/zfb-md-wasm/shipped-artifacts.json` (the
+`./shipped-artifacts.json` subpath). Its `schemaVersion`, `name`, and `version`
+identify the manifest, and its ordered `artifacts` array records each `entry`,
+package-relative `path`, `bytes`, and `sha256`. The build generates it
+from the final `.wasm` files in `dist`; release CI checks it against both `dist`
+and the packed tarball. Reading the JSON does not initialize WebAssembly.
+
 Gating `swc_core` out of the highlight graph (#2449/#2450) was a
 **provability win, not a size win**. The #2447 SWC-retaining baseline was
 1,484,705 B raw and 767,009 B gzip-9; the #2450 result was 7,965 B smaller

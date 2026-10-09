@@ -31,7 +31,8 @@
 # The `( cd "$dir" && npm publish ... )` invocation below is kept byte-identical
 # to the original for that reason.
 #
-# Non-platform packages (@takazudo/zfb, @takazudo/zfb-runtime,
+# Non-platform packages (@takazudo/zfb-slugify, @takazudo/zfb,
+# @takazudo/zfb-runtime,
 # @takazudo/zfb-adapter-cloudflare, create-zfb) are published with
 # `pnpm -r --filter <name> publish` so pnpm rewrites their `workspace:*` deps to
 # concrete versions at pack time. Published one package per call (a recursive
@@ -92,10 +93,11 @@ PLATFORM_DIRS=(
 )
 
 # Non-platform packages — pnpm publish (workspace:* rewrite). Listed in
-# topological order: @takazudo/zfb is published before create-zfb (which depends
-# on it). npm does not validate dependency existence at publish time, so order
-# is not required for success, but matching pnpm -r's topological default keeps
-# the published set self-consistent at every intermediate moment.
+# topological order: @takazudo/zfb-slugify precedes @takazudo/zfb, and zfb is
+# published before create-zfb (which depends on it). npm does not validate
+# dependency existence at publish time, so order is not required for success,
+# but matching pnpm -r's topological default keeps the published set
+# self-consistent at every intermediate moment.
 #
 # @takazudo/zfb-md-wasm is a lockstep non-platform package that lives outside
 # packages/* under the `crates/*/npm` workspace glob (pnpm-workspace.yaml).
@@ -104,12 +106,36 @@ PLATFORM_DIRS=(
 # resolves to crates/zfb-md-wasm/npm), so it belongs in the same
 # idempotent/tolerant/dist-tag publish machinery as the packages/* entries.
 NONPLATFORM_DIRS=(
+  packages/zfb-slugify
   packages/zfb
   packages/zfb-runtime
   packages/zfb-adapter-cloudflare
   packages/create-zfb
   crates/zfb-md-wasm/npm
 )
+
+# release.yml's main-based recovery checks out a current release-control tree
+# beside an older tag's package tree. Older tags predate zfb-slugify, so that
+# one newly-added package is absent from the target tree and may be omitted
+# only for recovery. Every other inventory entry is required; validate the
+# complete list before publishing any platform package so a malformed target
+# cannot partially ship.
+prepare_nonplatform_inventory() {
+  local mode="$1"
+  local dir
+  local -a present=()
+  for dir in "${NONPLATFORM_DIRS[@]}"; do
+    if [[ -f "$dir/package.json" ]]; then
+      present+=("$dir")
+    elif [[ "$dir" == "packages/zfb-slugify" && "$mode" == "recovery-no-provenance" ]]; then
+      echo "ℹ target tree predates @takazudo/zfb-slugify; omitting it from this recovery publish."
+    else
+      echo "::error::publish target is missing expected package manifest: $dir/package.json"
+      return 1
+    fi
+  done
+  NONPLATFORM_DIRS=("${present[@]}")
+}
 
 # Read a field from a package's manifest (name | version). Deriving the package
 # name from the manifest — rather than hard-coding it in a --filter string —
@@ -239,6 +265,9 @@ publish_nonplatform_packages() {
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
     if should_skip_publish "$name" "$version"; then
+      if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+        verify_published_md_wasm "$version" "$mode"
+      fi
       continue
     fi
     extra_flags=()
@@ -267,7 +296,25 @@ publish_nonplatform_packages() {
       pnpm -r --filter "$name" --fail-if-no-match publish \
       --tag "$DIST_TAG" --no-git-checks --access public \
       "${provenance_flags[@]}" "${extra_flags[@]}"
+    if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+      verify_published_md_wasm "$version" "$mode"
+    fi
   done
+}
+
+# This runs after every successful MD/WASM outcome: a fresh publish, initial
+# registry skip, conflict, or lost ACK. A digest mismatch is a hard failure,
+# never the ordinary "publish now" return from should_skip_publish.
+verify_published_md_wasm() {
+  local version="$1" mode="$2"
+  local recovery_flags=()
+  if [[ "$mode" == "recovery-no-provenance" ]]; then
+    recovery_flags=(--allow-missing-manifest)
+  fi
+  "${ZFB_MD_WASM_VERIFY_NODE:-node}" "${PUBLISH_SCRIPT_DIR}/verify-zfb-md-wasm-published-digests.mjs" \
+    --version "$version" \
+    --manifest "${ZFB_MD_WASM_MANIFEST:-crates/zfb-md-wasm/npm/dist/shipped-artifacts.json}" \
+    "${recovery_flags[@]}"
 }
 
 # Trust-downgrade advisory (issue #2623).
@@ -349,6 +396,9 @@ main() {
   if [[ ! -f packages/zfb/package.json ]]; then
     echo "::error::must be run from the repo root (packages/zfb/package.json not found in $(pwd))"
     return 2
+  fi
+  if ! prepare_nonplatform_inventory "$mode"; then
+    return 1
   fi
 
   # Defense in depth (A2, #3140): these two modes publish at least one package

@@ -27,6 +27,7 @@ This skill is **model-invocable**: a rough natural-language request like "bump v
 The lockstep packages are:
 
 - `@takazudo/zfb` (`packages/zfb/package.json`) — **version source-of-truth**
+- `@takazudo/zfb-slugify` (`packages/zfb-slugify/package.json`)
 - `@takazudo/zfb-runtime` (`packages/zfb-runtime/package.json`)
 - `@takazudo/zfb-md-wasm` (`crates/zfb-md-wasm/npm/package.json`)
 - `@takazudo/zfb-adapter-cloudflare` (`packages/zfb-adapter-cloudflare/package.json`)
@@ -43,7 +44,7 @@ The Rust CLI binary is built by `.github/workflows/release.yml`, not by this ski
 
 ## Boundaries
 
-- **Default**: this skill leaves the Mac archive for the `macos-15-intel` CI leg (so the default publish carries provenance for all ten packages), publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`), then watches the triggered `release.yml` run to completion. With `--fast-mac`, it pre-uploads the local Mac archive and the workflow uses the fast, unattested Mac lane. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
+- **Default**: this skill leaves the Mac archive for the `macos-15-intel` CI leg (so the default publish carries provenance for all eleven packages), publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`), then watches the triggered `release.yml` run to completion. With `--fast-mac`, it pre-uploads the local Mac archive and the workflow uses the fast, unattested Mac lane. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
 - This skill **never** pushes a tag separately. The draft Release creation (`gh release create --draft`) creates the tag remotely.
 - This skill **never** publishes to npm directly. `release.yml` does that when the Release is published.
 - **Homebrew is automatic on the default path, for stable releases only.** Once `release.yml`
@@ -109,7 +110,7 @@ Every rule below sets two independent things: **which component bumps** (major /
 
 **Stable-by-default.** The no-argument path judges the level from the commits and, for **patch** and
 **minor**, lands it **stable** — straight to `latest`, in one release cycle. Prerelease-first is NOT
-the default: burning two full cycles (each republishing all 10 lockstep packages, each waiting on a
+the default: burning two full cycles (each republishing all 11 lockstep packages, each waiting on a
 ~40-minute `release.yml`) to ship a routine fix batch is exactly the cost this avoids.
 
 **A major is the one exception** — see the no-argument rule below. That is where a soak on `next`
@@ -279,7 +280,7 @@ Categorize each commit by its conventional-commit prefix:
 
 Then classify every user-facing commit and diff into package lanes by ownership:
 
-- **zfb**: the Rust engine/CLI, `@takazudo/zfb`, and all native carrier packaging.
+- **zfb**: the Rust engine/CLI, `@takazudo/zfb`, `@takazudo/zfb-slugify`, and all native carrier packaging.
 - **zfb-runtime**: browser/runtime package behavior and API.
 - **zfb-adapter-cloudflare**: Cloudflare adapter behavior and API.
 - **create-zfb**: generator CLI and generated-project behavior.
@@ -457,6 +458,10 @@ Rules:
   byte sizes do not move at all. A note saying only "artifacts and their sizes are unchanged" reads
   to a digest-pinning consumer as "nothing to re-verify"; that wording in v2.15.1 nearly caused a
   skipped re-pin (#2885). Say *sizes* when you mean sizes, and say that digests still move.
+  Point readers to the versioned GitHub Release asset
+  `zfb-md-wasm-<version>-shipped-artifacts.json` and the package export
+  `@takazudo/zfb-md-wasm/shipped-artifacts.json` for the four SHA-256 digests.
+  Do not write a digest table or refer to a transient CI run as the source.
 - Compute `sidebar_position` independently in each package directory as if the target page were
   absent. For each target, call the executable helper with that target path; it scans only that
   lane's non-index `v*.mdx` pages, validates their positions, takes the maximum, and adds one.
@@ -631,10 +636,14 @@ the body exactly as assembled above — the marker must never appear when it was
 acknowledged.
 
 The tag is created remotely as a draft. The `release: published` webhook event does NOT fire on draft creation (by design).
+The Release body is finalized before npm publication. Keep the four MD/WASM
+digests in the versioned asset, not in these notes. `release.yml` uploads that
+asset only after fetching the published npm tarball for this exact version and
+matching all four `.wasm` bytes to `shipped-artifacts.json`.
 
 ## Step 10: Build the macOS x86_64 Binary (CI default; `--fast-mac` escape hatch)
 
-The default path deliberately does **not** build or pre-upload the Mac binary, even on a Mac. Leave both Mac assets absent so publishing the draft runs `release.yml`'s `macos-15-intel` leg; that CI-built binary lets all ten packages publish with `--provenance`.
+The default path deliberately does **not** build or pre-upload the Mac binary, even on a Mac. Leave both Mac assets absent so publishing the draft runs `release.yml`'s `macos-15-intel` leg; that CI-built binary lets all eleven packages publish with `--provenance`.
 
 `--fast-mac` is an explicit escape hatch for a release where avoiding the CI leg is worth the provenance tradeoff. Its local build + pre-upload makes `release.yml` select `mac-local`, so `zfb-darwin-x64` publishes unattested. This is **consumer-breaking for `trust-policy=no-downgrade`** whenever an earlier version of `zfb-darwin-x64` is attested (true since 2.13.0) — Step 1's preflight aborts the release on such a downgrade unless `--accept-provenance-downgrade` was passed.
 
@@ -692,7 +701,12 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    gh run list --workflow release.yml --limit 3 --json databaseId,displayTitle,status
    ```
 
-3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows, plus macos-15-intel on the default path; that leg is skipped only when `--fast-mac` pre-uploaded both Mac assets) and publishes all 10 npm packages.
+3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows, plus macos-15-intel on the default path; that leg is skipped only when `--fast-mac` pre-uploaded both Mac assets) and publishes all 11 npm packages.
+   After success, download the published `@takazudo/zfb-md-wasm@<version>` npm
+   tarball, recompute and retain its four `.wasm` SHA-256 digests, and compare
+   them with both its `dist/shipped-artifacts.json` and the Release asset
+   `zfb-md-wasm-<version>-shipped-artifacts.json`. These are release-specific
+   values; never substitute unit-test fixture digests or a handwritten table.
 4. **On success — update Homebrew (stable only), then report.**
 
    **a. Homebrew.** If `<version>` is **stable** (no `-next.` / `-beta.` / `-rc.`), run it now — do
@@ -759,7 +773,7 @@ NEXT STEP — publish the draft to trigger release.yml (from any host):
   # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
 release.yml's detect-mac-local job will see the pre-uploaded archive,
-skip the macos-15-intel leg, and publish all 10 packages (with the Mac package on the explicit
+skip the macos-15-intel leg, and publish all 11 packages (with the Mac package on the explicit
 unattested fast lane).
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
@@ -794,7 +808,7 @@ NEXT STEP — publish the draft to trigger release.yml (from any host):
   gh release edit v<version> --draft=false
   # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
-release.yml will build the Mac binary on macos-15-intel and publish all 10 packages with
+release.yml will build the Mac binary on macos-15-intel and publish all 11 packages with
 --provenance. The archive is intentionally absent here so detect-mac-local keeps that CI leg.
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
@@ -884,7 +898,7 @@ Fix the issue, commit the fix, push, then re-invoke `/watch-ci`. Do not proceed 
 
 Never unpublish/delete the published Release, move its tag, or publish npm packages directly. If the cause is in `release.yml`, fix it on `main`, commit + push the fix, and wait for main CI to pass. Then run the fixed workflow definition from `main` against the existing published tag:
 
-Recovery is now **always** consumer-breaking for `trust-policy=no-downgrade`, for all 10 packages
+Recovery is now **always** consumer-breaking for `trust-policy=no-downgrade`, for all 11 packages
 (GitHub OIDC cannot identify the older tag commit, so every package publishes without provenance —
 see below). Pass `allow_provenance_downgrade=true` to acknowledge it; `release.yml`'s recovery
 publish requires this input (default `false`) and refuses to run without it:

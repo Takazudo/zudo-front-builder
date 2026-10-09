@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { ARTIFACTS } from "../scripts/build.mjs";
+import { ARTIFACTS, buildShippedArtifactsManifest } from "../scripts/build.mjs";
 import {
   MAX_PACKED_BYTES,
   REQUIRED_PACKED_FILES,
@@ -13,11 +13,38 @@ import {
   assertPackedContents,
 } from "../scripts/assert-packed.mjs";
 import packageJson from "../package.json";
+import { assertShippedArtifactsManifest } from "../../../../scripts/assert-zfb-md-wasm-release.mjs";
 import * as parseEntry from "../src/parse.js";
 import * as renderEntry from "../src/render.js";
 import { createWasmApi } from "../src/runtime.js";
 
 const temporaryDirectories: string[] = [];
+const fixtureBytes = [
+  new Uint8Array([0x61, 0x62, 0x63]),
+  new TextEncoder().encode("highlight fixture bytes"),
+  new TextEncoder().encode("render fixture bytes"),
+  new TextEncoder().encode("parse fixture bytes"),
+];
+const fixturePaths = ARTIFACTS.map(({ entry, dirName, outName }, index) => ({
+  entry,
+  path: `dist/${dirName}/${outName}_bg.wasm`,
+  bytes: fixtureBytes[index],
+}));
+const fixtureBytesByPath = new Map(fixturePaths.map(({ path, bytes }) => [path, bytes]));
+
+function fixtureManifest() {
+  return buildShippedArtifactsManifest({
+    name: packageJson.name,
+    version: packageJson.version,
+    entries: fixturePaths,
+  });
+}
+
+function fixtureReader(path: string) {
+  const bytes = fixtureBytesByPath.get(path);
+  if (!bytes) throw new Error(`missing fixture bytes for ${path}`);
+  return bytes;
+}
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -123,6 +150,13 @@ describe("slim artifact descriptors", () => {
     });
   });
 
+  it("exports the generated artifact manifest from source and published packages", () => {
+    expect(packageJson.exports["./shipped-artifacts.json"]).toBe("./dist/shipped-artifacts.json");
+    expect(packageJson.publishConfig.exports["./shipped-artifacts.json"]).toBe(
+      "./dist/shipped-artifacts.json",
+    );
+  });
+
   it("keeps slim source value surfaces closed", () => {
     expect(Object.keys(renderEntry).sort()).toEqual([
       "ZfbMdWasmTrapError",
@@ -147,6 +181,83 @@ describe("slim artifact descriptors", () => {
   });
 });
 
+describe("shipped artifact manifest", () => {
+  it("hashes four distinct byte fixtures and validates the schema and bytes", () => {
+    expect(new Set(fixtureBytes.map((bytes) => Buffer.from(bytes).toString("hex"))).size).toBe(4);
+
+    const manifest = fixtureManifest();
+    expect(manifest).toMatchObject({
+      schemaVersion: 1,
+      name: "@takazudo/zfb-md-wasm",
+      version: packageJson.version,
+    });
+    expect(manifest.artifacts.map(({ entry, path, bytes }) => ({ entry, path, bytes }))).toEqual(
+      fixturePaths.map(({ entry, path, bytes }) => ({ entry, path, bytes: bytes.byteLength })),
+    );
+    // Independent SHA-256 known answer for the first fixture ("abc").
+    expect(manifest.artifacts[0].sha256).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(() =>
+      assertShippedArtifactsManifest(manifest, packageJson, fixtureReader, "fixture manifest"),
+    ).not.toThrow();
+  });
+
+  it("rejects same-size byte corruption, wrong metadata, and duplicate or extra entries", () => {
+    const manifest = fixtureManifest();
+    const firstPath = manifest.artifacts[0].path;
+    const originalBytes = fixtureBytesByPath.get(firstPath);
+    if (!originalBytes) throw new Error(`missing fixture bytes for ${firstPath}`);
+    const corruptedBytesByPath = new Map(fixtureBytesByPath);
+    const corrupted = new Uint8Array(originalBytes);
+    corrupted[0] ^= 0xff;
+    corruptedBytesByPath.set(firstPath, corrupted);
+    expect(corrupted.byteLength).toBe(originalBytes.byteLength);
+    expect(() =>
+      assertShippedArtifactsManifest(
+        manifest,
+        packageJson,
+        (path) => corruptedBytesByPath.get(path) ?? new Uint8Array(),
+        "corrupt fixture",
+      ),
+    ).toThrow(/sha256 does not match/);
+
+    expect(() =>
+      assertShippedArtifactsManifest(
+        { ...manifest, version: "0.0.0" },
+        packageJson,
+        fixtureReader,
+        "wrong-version fixture",
+      ),
+    ).toThrow(/version/);
+    const wrongPath = fixtureManifest();
+    wrongPath.artifacts[1].path = wrongPath.artifacts[0].path;
+    expect(() =>
+      assertShippedArtifactsManifest(wrongPath, packageJson, fixtureReader, "wrong-path fixture"),
+    ).toThrow(/duplicate artifact path|expected/);
+    const duplicateEntry = fixtureManifest();
+    duplicateEntry.artifacts[1].entry = duplicateEntry.artifacts[0].entry;
+    expect(() =>
+      assertShippedArtifactsManifest(
+        duplicateEntry,
+        packageJson,
+        fixtureReader,
+        "duplicate fixture",
+      ),
+    ).toThrow(/duplicate artifact entry/);
+    const missingEntry = fixtureManifest();
+    missingEntry.artifacts.pop();
+    expect(() =>
+      assertShippedArtifactsManifest(missingEntry, packageJson, fixtureReader, "missing fixture"),
+    ).toThrow(/exactly 4 artifacts/);
+    const extraEntry = fixtureManifest();
+    extraEntry.artifacts.push({ ...extraEntry.artifacts[0] });
+    expect(() =>
+      assertShippedArtifactsManifest(extraEntry, packageJson, fixtureReader, "extra fixture"),
+    ).toThrow(/exactly 4 artifacts/);
+  });
+});
+
 describe("closed packed layout", () => {
   it("describes the closed four-file and six-file resource sets", () => {
     expect(WASM_RESOURCE_SETS).toHaveLength(4);
@@ -161,6 +272,9 @@ describe("closed packed layout", () => {
 
   it("fails closed for a missing file, an extra sidecar, and stray resources", () => {
     expect(() => assertPackedContents(REQUIRED_PACKED_FILES.slice(1))).toThrow(/missing/);
+    expect(() =>
+      assertPackedContents([...REQUIRED_PACKED_FILES, "package/dist/shipped-artifacts.json"]),
+    ).toThrow(/duplicate files/);
     expect(() =>
       assertPackedContents([
         ...REQUIRED_PACKED_FILES,

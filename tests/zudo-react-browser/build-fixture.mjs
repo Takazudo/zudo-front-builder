@@ -29,9 +29,11 @@ const REPO_ROOT = resolve(HARNESS_DIR, "../..");
 const FIXTURES_DIR = join(HARNESS_DIR, "fixtures");
 const GENERATED_DIR = join(HARNESS_DIR, "dist");
 const STAGED_PACKAGE_DIR = join(HARNESS_DIR, "node_modules", "@takazudo", "zfb");
+const STAGED_SLUGIFY_DIR = join(HARNESS_DIR, "node_modules", "@takazudo", "zfb-slugify");
 const TSC_CONFIG = join(FIXTURES_DIR, "tsconfig.json");
 const PACKED_SDK_SCRIPT = join(REPO_ROOT, "packages/zfb/scripts/zudo-react-packed.mjs");
 const IMPORT_MAP_PREFIX = "/zfb-dist/";
+const SLUGIFY_IMPORT_MAP_PREFIX = "/zfb-slugify-dist/";
 const BUILD_ID = "zudo-react-browser-harness-v1";
 const MODES = new Set(["hydrate", "mount", "none"]);
 const FORBIDDEN_PROP_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -218,7 +220,7 @@ function readScenarios() {
     });
 }
 
-function createImportMap(stagedPackage) {
+function createImportMap(stagedPackage, stagedSlugify) {
   const exportsMap = stagedPackage.exports;
   if (!exportsMap || typeof exportsMap !== "object") {
     throw new Error("The staged SDK package has no exports map");
@@ -248,6 +250,12 @@ function createImportMap(stagedPackage) {
     imports[`@takazudo/zfb${subpath.slice(1)}`] =
       IMPORT_MAP_PREFIX + target.slice("./dist/".length);
   }
+  const slugifyTarget = stagedSlugify.exports?.["."]?.default;
+  if (typeof slugifyTarget !== "string" || !slugifyTarget.startsWith("./dist/")) {
+    throw new Error(`Staged slugify export does not point into dist/: ${slugifyTarget}`);
+  }
+  imports["@takazudo/zfb-slugify"] =
+    SLUGIFY_IMPORT_MAP_PREFIX + slugifyTarget.slice("./dist/".length);
   return imports;
 }
 
@@ -339,13 +347,15 @@ function mutateServerHtml(html, mutation) {
 async function main() {
   rmSync(GENERATED_DIR, { recursive: true, force: true });
   rmSync(STAGED_PACKAGE_DIR, { recursive: true, force: true });
+  rmSync(STAGED_SLUGIFY_DIR, { recursive: true, force: true });
   mkdirSync(GENERATED_DIR, { recursive: true });
 
   run(process.execPath, [PACKED_SDK_SCRIPT, "stage", HARNESS_DIR], REPO_ROOT);
   run("pnpm", ["--filter", "@takazudo/zfb", "exec", "tsc", "-p", TSC_CONFIG], REPO_ROOT);
 
   const stagedPackage = JSON.parse(readFileSync(join(STAGED_PACKAGE_DIR, "package.json"), "utf8"));
-  const importMap = createImportMap(stagedPackage);
+  const stagedSlugify = JSON.parse(readFileSync(join(STAGED_SLUGIFY_DIR, "package.json"), "utf8"));
+  const importMap = createImportMap(stagedPackage, stagedSlugify);
   const { h } = await import("@takazudo/zfb/zudo-react");
   const { islandRoot, renderToString } = await import("@takazudo/zfb/zudo-react/server");
   writeFileSync(

@@ -1,6 +1,6 @@
 // Shared component definitions for the built server renderer and browser client.
 // Passing the real zudo-react API in keeps this module resolvable in both Node and Chromium.
-export function createComponents({ h, signal, Show }) {
+export function createComponents({ h, signal, Show, getScope }) {
   function Toggle() {
     const shown = signal(false);
     return h(
@@ -19,11 +19,22 @@ export function createComponents({ h, signal, Show }) {
       }),
     );
   }
-  function Counter({ id, start }) {
+  function Counter({ id, start, label }) {
+    if (id === "pending") {
+      getScope().onActivate(() => {
+        window.__pending.activations++;
+        window.__pending.timeline.push({ phase: "activate", label });
+        return () => {
+          window.__pending.cleanups++;
+          window.__pending.timeline.push({ phase: "cleanup", label });
+        };
+      });
+    }
     const count = signal(start);
     return h(
       "section",
       { id: `counter-${id}` },
+      label === undefined ? null : h("span", { id: `${id}-label` }, label),
       h("span", { id: `value-${id}` }, count),
       h("button", { id: `button-${id}`, type: "button", "on:click": () => count.value++ }, "+1"),
     );

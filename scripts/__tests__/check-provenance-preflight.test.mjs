@@ -193,7 +193,7 @@ describe("checkMode", () => {
     expect(results).toEqual([{ name: "@takazudo/zfb-darwin-x64", status: "ok" }]);
   });
 
-  it("maps recovery-no-provenance to all 10 published packages", async () => {
+  it("maps recovery-no-provenance to all 11 published packages", async () => {
     const seen = [];
     const results = await checkMode("recovery-no-provenance", {
       version: "1.0.0",
@@ -202,10 +202,11 @@ describe("checkMode", () => {
         return packument({});
       },
     });
-    expect(seen).toHaveLength(10);
+    expect(seen).toHaveLength(11);
+    expect(seen).toContain("@takazudo/zfb-slugify");
     expect(seen).toContain("@takazudo/zfb");
     expect(seen).toContain("@takazudo/zfb-darwin-x64");
-    expect(results).toHaveLength(10);
+    expect(results).toHaveLength(11);
     expect(results.every((r) => r.status === "ok")).toBe(true);
   });
 

@@ -42,6 +42,7 @@ _tag_with_retry "@takazudo/zfb-darwin-x64" "$ZFB_SEMVER"     || FAILED=1
 _tag_with_retry "@takazudo/zfb-linux-arm64-gnu" "$ZFB_SEMVER" || FAILED=1
 _tag_with_retry "@takazudo/zfb-linux-x64-gnu" "$ZFB_SEMVER"  || FAILED=1
 _tag_with_retry "@takazudo/zfb-win32-x64-msvc" "$ZFB_SEMVER" || FAILED=1
+_tag_with_retry "@takazudo/zfb-slugify" "$ZFB_SEMVER"    || FAILED=1
 _tag_with_retry "@takazudo/zfb" "$ZFB_SEMVER"                || FAILED=1
 _tag_with_retry "@takazudo/zfb-runtime" "$ZFB_SEMVER"        || FAILED=1
 _tag_with_retry "@takazudo/zfb-adapter-cloudflare" "$ZFB_SEMVER" || FAILED=1

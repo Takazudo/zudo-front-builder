@@ -7,9 +7,11 @@ set -euo pipefail
 # deterministic pnpm-owner staging fixture lives in bundler.rs; this script is
 # the separate, network-dependent package-boundary confirmation.
 #
-# The caller must build `packages/zfb` and `packages/zfb-runtime` and provide a
+# The caller must build `packages/zfb-slugify`, `packages/zfb`, and
+# `packages/zfb-runtime` and provide a
 # zfb binary produced from the same checked-out source SHA:
 #
+#   pnpm -C packages/zfb-slugify build
 #   pnpm -C packages/zfb build
 #   pnpm -C packages/zfb-runtime build
 #   cargo build -p zfb --bin zfb
@@ -102,6 +104,16 @@ printf 'zfb binary version: %s\n' "$BINARY_VERSION"
 
 PACK_ZFB_LOG="$ARTIFACT_DIR/pack-zfb.log"
 PACK_RUNTIME_LOG="$ARTIFACT_DIR/pack-zfb-runtime.log"
+PACK_SLUGIFY_LOG="$ARTIFACT_DIR/pack-zfb-slugify.log"
+echo '+ pnpm -C packages/zfb-slugify pack --pack-destination <artifact>/pack'
+pnpm -C packages/zfb-slugify pack --pack-destination "$PACK_DIR" >"$PACK_SLUGIFY_LOG" 2>&1 || {
+  cat "$PACK_SLUGIFY_LOG"
+  fail "pnpm pack failed for @takazudo/zfb-slugify"
+}
+SLUGIFY_TARBALL="$(tail -n 1 "$PACK_SLUGIFY_LOG")"
+[[ -f "$SLUGIFY_TARBALL" ]] || fail "pnpm pack did not produce a zfb-slugify tarball: $SLUGIFY_TARBALL"
+printf 'Packed @takazudo/zfb-slugify: %s\n' "$SLUGIFY_TARBALL"
+
 echo '+ pnpm -C packages/zfb pack --pack-destination <artifact>/pack'
 pnpm -C packages/zfb pack --pack-destination "$PACK_DIR" >"$PACK_ZFB_LOG" 2>&1 || {
   cat "$PACK_ZFB_LOG"
@@ -122,9 +134,12 @@ printf 'Packed @takazudo/zfb-runtime: %s\n' "$RUNTIME_TARBALL"
 
 tar -xOf "$ZFB_TARBALL" package/package.json > "$ARTIFACT_DIR/zfb-package.json"
 tar -xOf "$RUNTIME_TARBALL" package/package.json > "$ARTIFACT_DIR/zfb-runtime-package.json"
+tar -xOf "$SLUGIFY_TARBALL" package/package.json > "$ARTIFACT_DIR/zfb-slugify-package.json"
 
 ZFB_VERSION="$(PACKAGE_MANIFEST="$ARTIFACT_DIR/zfb-package.json" node -p "JSON.parse(require('node:fs').readFileSync(process.env.PACKAGE_MANIFEST,'utf8')).version")"
 RUNTIME_VERSION="$(PACKAGE_MANIFEST="$ARTIFACT_DIR/zfb-runtime-package.json" node -p "JSON.parse(require('node:fs').readFileSync(process.env.PACKAGE_MANIFEST,'utf8')).version")"
+SLUGIFY_VERSION="$(PACKAGE_MANIFEST="$ARTIFACT_DIR/zfb-slugify-package.json" node -p "JSON.parse(require('node:fs').readFileSync(process.env.PACKAGE_MANIFEST,'utf8')).version")"
+[[ "$SLUGIFY_VERSION" == "$ZFB_VERSION" ]] || fail "packed slugify version $SLUGIFY_VERSION differs from zfb $ZFB_VERSION"
 RUNTIME_HONO_RANGE="$(PACKAGE_MANIFEST="$ARTIFACT_DIR/zfb-runtime-package.json" node -p "JSON.parse(require('node:fs').readFileSync(process.env.PACKAGE_MANIFEST,'utf8')).dependencies?.hono ?? ''")"
 [[ -n "$RUNTIME_HONO_RANGE" ]] || fail "packed zfb-runtime manifest does not declare dependencies.hono"
 printf 'Packed package versions: @takazudo/zfb@%s, @takazudo/zfb-runtime@%s\n' "$ZFB_VERSION" "$RUNTIME_VERSION"
@@ -132,6 +147,7 @@ printf 'Packed runtime Hono range: %s\n' "$RUNTIME_HONO_RANGE"
 
 ZFB_TARBALL="$ZFB_TARBALL" \
 RUNTIME_TARBALL="$RUNTIME_TARBALL" \
+SLUGIFY_TARBALL="$SLUGIFY_TARBALL" \
 CONSUMER_DIR="$CONSUMER_DIR" \
 PNPM_VERSION="$(pnpm --version)" \
 node --input-type=module <<'NODE'
@@ -153,7 +169,8 @@ const manifest = {
 fs.writeFileSync(path.join(env.CONSUMER_DIR, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 // This is an empty one-package workspace only to pin pnpm's resolver settings
 // (isolated linker, no public hoist, and no release-age race). It has no member
-// links, overrides, or Hono dependency that could mask package ownership.
+// links or Hono dependency that could mask package ownership. The single
+// override supplies the unpublished slugify helper from this same checkout.
 fs.writeFileSync(
   path.join(env.CONSUMER_DIR, "pnpm-workspace.yaml"),
   [
@@ -162,6 +179,8 @@ fs.writeFileSync(
     "nodeLinker: isolated",
     "hoist: false",
     "minimumReleaseAge: 0",
+    "overrides:",
+    `  ${JSON.stringify("@takazudo/zfb-slugify")}: ${JSON.stringify(`file:${env.SLUGIFY_TARBALL}`)}`,
     "",
   ].join("\n"),
 );
@@ -176,7 +195,7 @@ NODE
 echo '+ (cd <external consumer> && pnpm install --no-optional --ignore-scripts)'
 (cd "$CONSUMER_DIR" && pnpm install --no-optional --ignore-scripts) 2>&1 | tee "$INSTALL_LOG"
 
-CONSUMER_DIR="$CONSUMER_DIR" RUNTIME_EVIDENCE_FILE="$ARTIFACT_DIR/runtime-resolution.json" node --input-type=module <<'NODE'
+CONSUMER_DIR="$CONSUMER_DIR" SLUGIFY_VERSION="$SLUGIFY_VERSION" RUNTIME_EVIDENCE_FILE="$ARTIFACT_DIR/runtime-resolution.json" node --input-type=module <<'NODE'
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -186,10 +205,20 @@ const root = process.env.CONSUMER_DIR;
 const rootManifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
   assert.equal(Object.hasOwn(rootManifest[field] ?? {}, "hono"), false, `consumer has direct Hono in ${field}`);
+  assert.equal(Object.hasOwn(rootManifest[field] ?? {}, "@takazudo/zfb-slugify"), false,
+    `consumer has direct slugify helper in ${field}`);
 }
 const rootHono = path.join(root, "node_modules/hono");
 assert.equal(Boolean(fs.existsSync(rootHono) || fs.lstatSync(rootHono, { throwIfNoEntry: false })?.isSymbolicLink()), false,
   "strict pnpm consumer unexpectedly has root node_modules/hono");
+
+const sdkRoot = fs.realpathSync(path.join(root, "node_modules/@takazudo/zfb"));
+const sdkRequire = createRequire(path.join(sdkRoot, "dist/slugify.js"));
+const helperEntry = sdkRequire.resolve("@takazudo/zfb-slugify");
+const helperManifest = JSON.parse(fs.readFileSync(path.join(path.dirname(helperEntry), "..", "package.json"), "utf8"));
+assert.equal(helperManifest.name, "@takazudo/zfb-slugify");
+assert.equal(helperManifest.version, process.env.SLUGIFY_VERSION);
+console.log(`SDK-owned slugify helper: ${helperEntry}`);
 
 const runtimeRoot = fs.realpathSync(path.join(root, "node_modules/@takazudo/zfb-runtime"));
 const runtimeManifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"));
@@ -211,6 +240,9 @@ fs.writeFileSync(process.env.RUNTIME_EVIDENCE_FILE, `${JSON.stringify({
   runtimeHonoVersion: honoManifest.version,
   runtimeHonoPath: resolvedHono,
   rootHonoPresent: false,
+  sdkSlugifyEntry: helperEntry,
+  sdkSlugifyVersion: helperManifest.version,
+  rootSlugifyPresent: false,
 }, null, 2)}\n`);
 NODE
 pass "packed consumer has no direct/root Hono link; Hono resolves through packed zfb-runtime"
@@ -227,10 +259,12 @@ node_version=$(node --version)
 pnpm_version=$(pnpm --version)
 binary_sha256=$BINARY_SHA256
 zfb_package_version=$ZFB_VERSION
+zfb_slugify_package_version=$SLUGIFY_VERSION
 zfb_runtime_package_version=$RUNTIME_VERSION
 zfb_runtime_hono_range=$RUNTIME_HONO_RANGE
 installed_hono_version=$(PACKAGE_MANIFEST="$ARTIFACT_DIR/runtime-resolution.json" node -p "JSON.parse(require('node:fs').readFileSync(process.env.PACKAGE_MANIFEST,'utf8')).runtimeHonoVersion")
 zfb_tarball=$ZFB_TARBALL
+zfb_slugify_tarball=$SLUGIFY_TARBALL
 zfb_runtime_tarball=$RUNTIME_TARBALL
 install_command=pnpm install --no-optional --ignore-scripts
 build_command=ZFB_BINARY build

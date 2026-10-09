@@ -85,3 +85,36 @@ for (const [name, config] of Object.entries(sdkPages)) {
 <script type="module" src="/real-islands-bootstrap.js"></script></body></html>`,
   );
 }
+
+// Pending visible islands inside a retained ancestor. The spacer keeps the
+// native IntersectionObserver from firing until the browser actually scrolls.
+for (const [layout, labels] of Object.entries({
+  skip: { a: "Skip A", b: "Skip B" },
+  text: { a: "Text A", b: "Text B", c: "Text B" },
+})) {
+  for (const [name, label] of Object.entries(labels)) {
+    const nav = Object.keys(labels)
+      .map(
+        (target) =>
+          `<a id="to-pending-${target}" href="/real-islands-pending-${layout}-${target}.html">${target}</a>`,
+      )
+      .join(" ");
+    const pending = renderToString(
+      Island({
+        when: "visible",
+        ...(layout === "skip" ? { ssrFallback: jsx("div", { children: "Await visibility" }) } : {}),
+        children: jsx(components.Counter, { id: "pending", start: 0, label }),
+      }),
+    ).replace(/^<div /, '<div id="island-pending" ');
+    writeFileSync(
+      join(fixture, `real-islands-pending-${layout}-${name}.html`),
+      `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>pending ${layout} ${name}</title>
+<meta name="zfb-view-transitions-enabled" content=""><meta name="zfb-view-transitions-fallback" content="animate">
+<script type="importmap">{"imports":{"@takazudo/zfb/runtime":"/zfb-dist/runtime.js"}}</script>
+</head><body><nav>${nav}</nav><h1>pending ${layout} ${name}</h1>
+<header data-zfb-transition-persist="pending-header"><div style="height: 2000px"></div>${pending}</header>
+<script type="module" src="/real-islands-bootstrap.js"></script></body></html>`,
+    );
+  }
+}

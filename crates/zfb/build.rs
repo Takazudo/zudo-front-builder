@@ -576,10 +576,11 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Sub 198 — embed @takazudo/zfb and @takazudo/zfb-runtime
+// Embed the SDK, runtime, and slugify helper for Node-free builds.
 // ---------------------------------------------------------------------------
 
-/// Copy the TypeScript source of `@takazudo/zfb` and `@takazudo/zfb-runtime`
+/// Copy the TypeScript source of `@takazudo/zfb`, `@takazudo/zfb-runtime`,
+/// and `@takazudo/zfb-slugify`
 /// from `packages/` into `$OUT_DIR/vendor/@takazudo/` so `include_dir!` can
 /// embed them in the binary at compile time.
 ///
@@ -605,6 +606,7 @@ fn embed_runtime() {
     let packages = [
         ("packages/zfb", "zfb"),
         ("packages/zfb-runtime", "zfb-runtime"),
+        ("packages/zfb-slugify", "zfb-slugify"),
     ];
 
     for (pkg_rel, pkg_name) in &packages {
