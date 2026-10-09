@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "decisionIssue": 3469,
-  "outcome": "no-product-code-change",
+  "outcome": "intentional-feature-size-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "ed42afc2e2ed620ca07c1541f1305423d81591ef",
+  "baselineSourceSha": "a5b0d55284d502ce09acbbe82977966c89ff7e12",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 66327,
-        "gzip": 22091
+        "raw": 66792,
+        "gzip": 22249
       },
       "scalar-signal": {
-        "raw": 66335,
-        "gzip": 22088
+        "raw": 66800,
+        "gzip": 22256
       },
       "show-for": {
-        "raw": 66481,
-        "gzip": 22171
+        "raw": 66949,
+        "gzip": 22322
       },
       "model": {
-        "raw": 66326,
-        "gzip": 22099
+        "raw": 66791,
+        "gzip": 22249
       },
       "blog-theme": {
-        "raw": 66676,
-        "gzip": 22236
+        "raw": 67144,
+        "gzip": 22374
       },
       "json-api": {
-        "raw": 66481,
-        "gzip": 22184
+        "raw": 66950,
+        "gzip": 22335
       },
       "multi-island": {
-        "raw": 66603,
-        "gzip": 22195
+        "raw": 67072,
+        "gzip": 22341
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 66389,
-        "gzip": 22111
+        "raw": 66854,
+        "gzip": 22267
       },
       "scalar-signal": {
-        "raw": 66397,
-        "gzip": 22118
+        "raw": 66862,
+        "gzip": 22284
       },
       "show-for": {
-        "raw": 66543,
-        "gzip": 22198
+        "raw": 67011,
+        "gzip": 22342
       },
       "model": {
-        "raw": 66388,
-        "gzip": 22127
+        "raw": 66853,
+        "gzip": 22272
       },
       "blog-theme": {
-        "raw": 66738,
-        "gzip": 22260
+        "raw": 67206,
+        "gzip": 22410
       },
       "json-api": {
-        "raw": 66543,
-        "gzip": 22217
+        "raw": 67012,
+        "gzip": 22360
       },
       "multi-island": {
-        "raw": 66665,
-        "gzip": 22222
+        "raw": 67134,
+        "gzip": 22365
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.2.1 ceilings measured in health run 37886732338 at source ed42afc2e2ed620ca07c1541f1305423d81591ef. All 16 raw totals are unchanged from the v4.2.0 contract; 13 gzip totals shifted by -3 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 zero-allowance contract records the deferred first-mount render-intent runtime change measured in health run 37979907933 at PR merge SHA a5b0d55284d502ce09acbbe82977966c89ff7e12 (head b7d161bb3a1adaf605d8934b16773f3e4974ad6d). All nonempty island fixtures gained 465–469 raw bytes and 138–168 gzip bytes; no-island stayed 0/0. Workspace and packed eight-fixture matrices each had two byte-identical full-dist inventories. Darwin and other platforms are not inferred from this run.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 37886732338,
-    "jobId": 113678285830,
-    "sourceSha": "ed42afc2e2ed620ca07c1541f1305423d81591ef",
-    "note": "Push run on the v4.2.1 bump commit. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the v4.2.0 contract; gzip deltas range from -3 to +4 bytes across 13 rows. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history. The run failed only because the old exact gzip ceilings rejected six rows."
+    "runId": 37979907933,
+    "jobId": 113987472669,
+    "sourceSha": "a5b0d55284d502ce09acbbe82977966c89ff7e12",
+    "note": "Root PR #4118 synthetic merge checkout of unchanged main 5a8adac8 and head b7d161bb. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Deferred first-mount render-intent handling adds 465–469 raw and 138–168 gzip bytes in nonempty island entry chunks; no-island remains 0/0. Ceilings equal measured bytes with zero allowance. The original budget failure and previous exact ceilings remain in Git history."
   }
 }
