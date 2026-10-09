@@ -346,6 +346,34 @@ else
   fail "integration: older release tag recovery exited non-zero: $(tail -6 "$LEGACY_OUTPUT" | tr '\n' ' ')"
 fi
 
+# The same old target must fail closed for normal publishes; only recovery may
+# omit the new package, and refusal must happen before any platform upload.
+assert_missing_slugify_refused() {
+  LEGACY_MODE="$1"
+  : >"$LEGACY_PUB_LOG"
+  : >"$LEGACY_OUTPUT"
+  LEGACY_RC=0
+  (
+    cd "$LEGACY_TARGET"
+    PATH="$MOCK_BIN:$PATH" \
+      DIST_TAG=latest \
+      MOCK_PUBLISH_LOG="$LEGACY_PUB_LOG" \
+      MOCK_EXISTING="" \
+      ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
+      bash "$REPO_ROOT/$SCRIPT" "$LEGACY_MODE"
+  ) >"$LEGACY_OUTPUT" 2>&1 || LEGACY_RC=$?
+
+  if [ "$LEGACY_RC" -ne 0 ] && [ ! -s "$LEGACY_PUB_LOG" ] \
+     && grep -Fq 'publish target is missing expected package manifest: packages/zfb-slugify/package.json' "$LEGACY_OUTPUT"; then
+    pass "integration: $LEGACY_MODE refuses a missing slugify manifest before any publish"
+  else
+    fail "integration: $LEGACY_MODE missing-slugify refusal exit=$LEGACY_RC, publishes=$(cat "$LEGACY_PUB_LOG" | tr '\n' ' '), output=$(tail -4 "$LEGACY_OUTPUT" | tr '\n' ' ')"
+  fi
+}
+
+assert_missing_slugify_refused all-provenance
+assert_missing_slugify_refused mac-local
+
 # Case 7 — trust-downgrade advisory (#2623). Both provenance-omitting modes must
 # announce the downgrade loudly ONCE (::warning + job summary) so the release
 # operator schedules the follow-up attested release; the fully-attested mode must

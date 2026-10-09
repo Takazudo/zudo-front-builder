@@ -116,16 +116,18 @@ NONPLATFORM_DIRS=(
 
 # release.yml's main-based recovery checks out a current release-control tree
 # beside an older tag's package tree. Older tags predate zfb-slugify, so that
-# one newly-added package is absent from the target tree and must be omitted.
-# Every other inventory entry is required; validate the complete list before
-# publishing any platform package so a malformed target cannot partially ship.
+# one newly-added package is absent from the target tree and may be omitted
+# only for recovery. Every other inventory entry is required; validate the
+# complete list before publishing any platform package so a malformed target
+# cannot partially ship.
 prepare_nonplatform_inventory() {
+  local mode="$1"
   local dir
   local -a present=()
   for dir in "${NONPLATFORM_DIRS[@]}"; do
     if [[ -f "$dir/package.json" ]]; then
       present+=("$dir")
-    elif [[ "$dir" == "packages/zfb-slugify" ]]; then
+    elif [[ "$dir" == "packages/zfb-slugify" && "$mode" == "recovery-no-provenance" ]]; then
       echo "ℹ target tree predates @takazudo/zfb-slugify; omitting it from this recovery publish."
     else
       echo "::error::publish target is missing expected package manifest: $dir/package.json"
@@ -395,7 +397,7 @@ main() {
     echo "::error::must be run from the repo root (packages/zfb/package.json not found in $(pwd))"
     return 2
   fi
-  if ! prepare_nonplatform_inventory; then
+  if ! prepare_nonplatform_inventory "$mode"; then
     return 1
   fi
 
