@@ -253,6 +253,8 @@ negative scanner／SSR fixture の名前も維持します: `factory-spread`、`
 
 衝突診断で別々のターゲット関数が示されたら、どちらかの定義元の関数名を変更するか、意図しない定義を解決している import またはパッケージ export を修正します。import と re-export の alias でもマーカーは変わりません。スキャナーは `displayName` ではなく、定義元の関数名を使います。サーバーレンダリング時、`displayName` は未設定か関数名と一致している必要があります。一致しない値でターゲット名を変更することはできず、zfb は `ZR_ISLAND_IDENTITY` で失敗します。default target に安定した名前が必要なら `export default function Counter() { ... }` の形にします。
 
+v3.2.0 以降は、同じパッケージ内の二つの定義や、パッケージのファイルとそれをバイト単位で同一にステージングしたコピーも別々のターゲットとして扱われ、この診断で失敗します。移行方法は[パッケージ内で重複する島の定義](../guides/migrating-to-v3.mdx#パッケージ内で重複する島の定義)を参照してください。
+
 同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、signal で自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、ブラウザー専用の読み取りは DOM の確定後に行います。以下はパターンを示す簡略版です。同梱のテンプレートはアイコンに `Show` を使い、ユーティリティクラスと SVG のマークアップも含みます。
 
 ```tsx

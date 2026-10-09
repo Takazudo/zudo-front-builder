@@ -367,6 +367,8 @@ existing root and `/host-override/` route checks when adding these cases.
 
 If a collision diagnostic identifies two different target functions, rename one defining function, or fix an import or package export that resolves to the wrong definition. Import and re-export aliases do not change the marker: the scanner uses the defining function's own name, not `displayName`. At server render time, `displayName` must be absent or equal to that name; otherwise zfb fails with `ZR_ISLAND_IDENTITY` instead of renaming the target. For a default target that needs a stable name, use `export default function Counter() { ... }`.
 
+Since v3.2.0, two definitions in the same package, or a package file and a byte-identical staged copy of it, are also distinct targets and fail with this diagnostic. See [Same-package duplicate island definitions](../guides/migrating-to-v3.mdx#same-package-duplicate-island-definitions) for the migration.
+
 `components/theme-toggle.tsx` in the bundled `basic-blog` template is the canonical real-world example — and the template's only island. It reads `localStorage` and `matchMedia`, manages its own state with a signal, and mirrors the active theme to `document.documentElement.dataset.theme`. The setup starts from a deterministic value for both server rendering and client adoption; browser-only reads happen after the DOM has been committed. This shortened illustration shows the pattern; the shipped template also uses `Show` for its icon and includes utility classes and SVG markup:
 
 ```tsx
