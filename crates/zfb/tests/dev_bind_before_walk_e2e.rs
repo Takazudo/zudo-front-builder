@@ -554,49 +554,23 @@ fn islands_chunk_names(entry: &str) -> Vec<String> {
     names
 }
 
-fn tick_kind_line_count(session: &DevSession, required_names: &[&str]) -> usize {
-    session
-        .logs()
-        .lines()
-        .filter(|line| {
-            line.contains("[zfb-timing] tick():")
-                && required_names.iter().all(|name| line.contains(name))
+fn tick_batch_diagnostics(logs: &str) -> String {
+    logs.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            line.contains("[zfb-timing] tick(): kinds=")
+                || line.contains("[zfb-timing] watcher handoff: batch_id=")
+                || line.contains("[zfb-timing] orchestrator handoff: intake_id=")
+                || line.contains("[zfb-timing] intake paths:")
         })
-        .count()
-}
-
-async fn wait_for_tick_kinds(
-    session: &DevSession,
-    required_names: &[&str],
-    minimum_count: usize,
-    deadline: Duration,
-) -> String {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        let logs = session.logs();
-        let matching = logs
-            .lines()
-            .filter(|line| {
-                line.contains("[zfb-timing] tick():")
-                    && required_names.iter().all(|name| line.contains(name))
-            })
-            .count();
-        if matching > minimum_count {
-            return logs;
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-    panic!(
-        "did not observe a coalesced tick containing {:?} after count {} within {}s.\n{}",
-        required_names,
-        minimum_count,
-        deadline.as_secs(),
-        session.logs(),
-    );
+        .map(|(index, line)| format!("batch line {index}: {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn wait_for_tick_publication(
     session: &DevSession,
+    phase: &str,
     client_before: usize,
     page_before: usize,
     deadline: Duration,
@@ -606,28 +580,40 @@ async fn wait_for_tick_publication(
     let start = Instant::now();
     while start.elapsed() < deadline {
         let logs = session.logs();
-        let client_count = logs
-            .lines()
-            .filter(|line| line.contains(CLIENT_MARKER))
-            .count();
-        let page_count = logs
-            .lines()
-            .filter(|line| line.contains(PAGE_MARKER))
-            .count();
-        if client_count > client_before && page_count > page_before {
+        let lines: Vec<&str> = logs.lines().collect();
+        let client_at = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(CLIENT_MARKER))
+            .nth(client_before)
+            .map(|(index, _)| index);
+        if client_at.is_some_and(|client_at| {
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.contains(PAGE_MARKER))
+                .skip(page_before)
+                .any(|(index, _)| index > client_at)
+        }) {
             return logs;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     panic!(
-        "did not observe one client-publication + page-write marker pair within {}s \
-         (before counts: client={client_before}, page={page_before}).\n{}",
+        "phase {phase}: did not observe a client-publication marker followed by a page-write marker within {}s \
+         (before counts: client={client_before}, page={page_before}).\nTick batches:\n{}\nFull logs:\n{}",
         deadline.as_secs(),
+        tick_batch_diagnostics(&session.logs()),
         session.logs(),
     );
 }
 
-fn assert_tick_publication_order(logs: &str, client_before: usize, page_before: usize) {
+fn assert_tick_publication_order(
+    logs: &str,
+    phase: &str,
+    client_before: usize,
+    page_before: usize,
+) {
     const CLIENT_MARKER: &str = "[zfb-timing] tick: client scripts published";
     const PAGE_MARKER: &str = "[zfb-timing] tick: page write complete";
     let lines: Vec<&str> = logs.lines().collect();
@@ -638,18 +624,31 @@ fn assert_tick_publication_order(logs: &str, client_before: usize, page_before: 
         .nth(client_before)
         .map(|(index, _)| index)
         .expect("new client-publication marker in captured logs");
-    let page_at = lines
+    let first_page_at = lines
         .iter()
         .enumerate()
         .filter(|(_, line)| line.contains(PAGE_MARKER))
         .nth(page_before)
         .map(|(index, _)| index)
         .expect("new page-write marker in captured logs");
-    assert!(
-        client_at < page_at,
-        "client-script publication must precede the page-write boundary; \
-         client marker at line {client_at}, page marker at line {page_at}.\n{logs}"
-    );
+    let page_at = lines
+        .iter()
+        .enumerate()
+        .skip(client_at + 1)
+        .find(|(_, line)| line.contains(PAGE_MARKER))
+        .map(|(index, _)| index)
+        .expect("page-write marker after client publication in captured logs");
+    // On removal, a page-only tick may write the tag-free page first. The
+    // client-removal tick must still write its page after publishing clients.
+    assert!(client_at < page_at);
+    if phase != "remove" {
+        assert!(
+            client_at < first_page_at,
+            "phase {phase}: a page was written before its client publication; \
+             first page marker at line {first_page_at}, client marker at line {client_at}.\nTick batches:\n{}\nFull logs:\n{logs}",
+            tick_batch_diagnostics(logs),
+        );
+    }
 }
 
 async fn ready_json(client: &reqwest::Client, url: &str) -> serde_json::Value {
@@ -692,6 +691,7 @@ async fn wait_for_publication_ready(
 async fn wait_for_client_script_urls(
     client: &reqwest::Client,
     ready_url: &str,
+    phase: &str,
     minimum_generation: u64,
     expected_status: &str,
     expected_urls: &[&str],
@@ -700,10 +700,27 @@ async fn wait_for_client_script_urls(
 ) -> serde_json::Value {
     let expected_urls = serde_json::json!(expected_urls);
     let start = Instant::now();
+    let mut last = serde_json::Value::Null;
     while start.elapsed() < deadline {
-        let body = ready_json(client, ready_url).await;
+        let response = client.get(ready_url).send().await.unwrap_or_else(|error| {
+            panic!(
+                "phase {phase}: GET /__zfb/ready failed: {error}\n{}",
+                session.logs()
+            )
+        });
+        assert_eq!(
+            response.status().as_u16(),
+            200,
+            "phase {phase}: readiness endpoint status\n{}",
+            session.logs(),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.expect("read readiness JSON body"))
+                .expect("valid readiness JSON");
+        last = body.clone();
         let urls_match = body["client_scripts"]["urls"] == expected_urls;
-        if ready_generation(&body) > minimum_generation
+        if body["ready"] == true
+            && ready_generation(&body) > minimum_generation
             && body["client_scripts"]["status"] == expected_status
             && urls_match
         {
@@ -712,9 +729,10 @@ async fn wait_for_client_script_urls(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     panic!(
-        "readiness endpoint did not reach client_scripts status {expected_status:?} and \
-         URLs {expected_urls} above generation {minimum_generation} within {}s.\n{}",
+        "phase {phase}: readiness endpoint did not reach client_scripts status {expected_status:?} and \
+         URLs {expected_urls} above generation {minimum_generation} within {}s; last ready: {last}.\nTick batches:\n{}\nFull logs:\n{}",
         deadline.as_secs(),
+        tick_batch_diagnostics(&session.logs()),
         session.logs(),
     );
 }
@@ -1665,9 +1683,6 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
     let client = client();
 
     // Boot is deliberately clean: there is no client entry and no page tag.
-    // The add transition below writes both synchronously, before polling, so
-    // zfb-watcher's 50ms debounce receives one coalesced batch containing the
-    // entry creation and the page reference.
     wait_for_log_line(
         &session,
         "[zfb-timing] boot: render complete",
@@ -1690,35 +1705,29 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         "clean boot document must not name the not-yet-added client entry"
     );
 
-    // Addition: create the entry, then add the page reference in one
-    // synchronous write pair. The timing kind line pins that both paths were
-    // actually coalesced into the same watcher tick.
+    // Addition: create the entry, then add the page reference. Native watcher
+    // delivery may combine or split these edits; the publication markers and
+    // readiness state are the phase barriers.
     let client_marker = "[zfb-timing] tick: client scripts published";
     let page_marker = "[zfb-timing] tick: page write complete";
     let client_before_add = log_line_count(&session, client_marker);
     let page_before_add = log_line_count(&session, page_marker);
-    let add_batch_before = tick_kind_line_count(&session, &["order.client.ts", "index.tsx"]);
     let order_path = root.join("pages/order.client.ts");
     fs::write(&order_path, order_source).expect("add order.client.ts");
     fs::write(&index_path, &tagged_index).expect("add clientScript tag");
-    wait_for_tick_kinds(
-        &session,
-        &["order.client.ts", "index.tsx"],
-        add_batch_before,
-        RENDER_DEADLINE,
-    )
-    .await;
     let add_logs = wait_for_tick_publication(
         &session,
+        "add",
         client_before_add,
         page_before_add,
         RENDER_DEADLINE,
     )
     .await;
-    assert_tick_publication_order(&add_logs, client_before_add, page_before_add);
+    assert_tick_publication_order(&add_logs, "add", client_before_add, page_before_add);
     let added = wait_for_client_script_urls(
         &client,
         &ready_url,
+        "add",
         baseline_generation,
         "published",
         &["/assets/client/order.js"],
@@ -1754,10 +1763,9 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         "the committed added document must name the published client entry"
     );
 
-    // Removal: remove the page tag and delete the entry in one synchronous
-    // write pair. The old URL must remain served after this successful
-    // removal generation; a later successful client generation is the point
-    // at which the previous lazy fallback may be pruned.
+    // Removal: remove the page tag and delete the entry. The old URL must
+    // remain served after this successful removal generation. A later client
+    // generation is the point at which the previous fallback may be pruned.
     let untagged_index = tagged_index
         .replace("import { clientScript } from \"@takazudo/zfb\";\n", "")
         .replace(
@@ -1770,27 +1778,26 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
     );
     let client_before_remove = log_line_count(&session, client_marker);
     let page_before_remove = log_line_count(&session, page_marker);
-    let remove_batch_before = tick_kind_line_count(&session, &["order.client.ts", "index.tsx"]);
     fs::write(&index_path, &untagged_index).expect("remove clientScript tag");
     fs::remove_file(&order_path).expect("remove order.client.ts");
-    wait_for_tick_kinds(
-        &session,
-        &["order.client.ts", "index.tsx"],
-        remove_batch_before,
-        RENDER_DEADLINE,
-    )
-    .await;
     let remove_logs = wait_for_tick_publication(
         &session,
+        "remove",
         client_before_remove,
         page_before_remove,
         RENDER_DEADLINE,
     )
     .await;
-    assert_tick_publication_order(&remove_logs, client_before_remove, page_before_remove);
+    assert_tick_publication_order(
+        &remove_logs,
+        "remove",
+        client_before_remove,
+        page_before_remove,
+    );
     let removed = wait_for_client_script_urls(
         &client,
         &ready_url,
+        "remove",
         added_generation,
         "not_expected",
         &[],
@@ -1837,15 +1844,22 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
     .expect("add cleanup.client.ts");
     let cleanup_logs = wait_for_tick_publication(
         &session,
+        "cleanup",
         client_before_cleanup,
         page_before_cleanup,
         RENDER_DEADLINE,
     )
     .await;
-    assert_tick_publication_order(&cleanup_logs, client_before_cleanup, page_before_cleanup);
+    assert_tick_publication_order(
+        &cleanup_logs,
+        "cleanup",
+        client_before_cleanup,
+        page_before_cleanup,
+    );
     let cleaned = wait_for_client_script_urls(
         &client,
         &ready_url,
+        "cleanup",
         ready_generation(&removed),
         "published",
         &["/assets/client/cleanup.js"],
@@ -1857,6 +1871,29 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         ready_generation(&cleaned) > ready_generation(&removed),
         "cleanup client generation must advance publication generation"
     );
+    // Document readiness is committed before companion-asset pruning. Observe
+    // the prune at this cleanup client generation, while the server still
+    // serves both the current client entry and the document.
+    let prune_start = Instant::now();
+    loop {
+        let pruned_entry = client.get(&order_url).send().await.unwrap_or_else(|error| {
+            panic!("cleanup: GET old entry failed: {error}\n{}", session.logs())
+        });
+        match pruned_entry.status().as_u16() {
+            200 if prune_start.elapsed() < RENDER_DEADLINE => {
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+            404 => break,
+            status => panic!(
+                "cleanup: old entry returned {status}, expected 404 after pruning; \
+                 ready generation={}, baseline generation={}.\nTick batches:\n{}\nFull logs:\n{}",
+                ready_generation(&cleaned),
+                ready_generation(&removed),
+                tick_batch_diagnostics(&session.logs()),
+                session.logs(),
+            ),
+        }
+    }
     let cleanup_entry = client
         .get(format!("{base}/assets/client/cleanup.js"))
         .send()
@@ -1866,16 +1903,6 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         cleanup_entry.status().as_u16(),
         200,
         "the current cleanup entry must remain servable"
-    );
-    let pruned_entry = client
-        .get(&order_url)
-        .send()
-        .await
-        .expect("request pruned client entry");
-    assert_ne!(
-        pruned_entry.status().as_u16(),
-        200,
-        "the removed entry must be pruned after the later successful client generation"
     );
 
     let final_page = client
