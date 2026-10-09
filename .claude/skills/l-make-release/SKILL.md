@@ -457,6 +457,10 @@ Rules:
   byte sizes do not move at all. A note saying only "artifacts and their sizes are unchanged" reads
   to a digest-pinning consumer as "nothing to re-verify"; that wording in v2.15.1 nearly caused a
   skipped re-pin (#2885). Say *sizes* when you mean sizes, and say that digests still move.
+  Point readers to the versioned GitHub Release asset
+  `zfb-md-wasm-<version>-shipped-artifacts.json` and the package export
+  `@takazudo/zfb-md-wasm/shipped-artifacts.json` for the four SHA-256 digests.
+  Do not write a digest table or refer to a transient CI run as the source.
 - Compute `sidebar_position` independently in each package directory as if the target page were
   absent. For each target, call the executable helper with that target path; it scans only that
   lane's non-index `v*.mdx` pages, validates their positions, takes the maximum, and adds one.
@@ -631,6 +635,10 @@ the body exactly as assembled above — the marker must never appear when it was
 acknowledged.
 
 The tag is created remotely as a draft. The `release: published` webhook event does NOT fire on draft creation (by design).
+The Release body is finalized before npm publication. Keep the four MD/WASM
+digests in the versioned asset, not in these notes. `release.yml` uploads that
+asset only after fetching the published npm tarball for this exact version and
+matching all four `.wasm` bytes to `shipped-artifacts.json`.
 
 ## Step 10: Build the macOS x86_64 Binary (CI default; `--fast-mac` escape hatch)
 
@@ -693,6 +701,11 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    ```
 
 3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows, plus macos-15-intel on the default path; that leg is skipped only when `--fast-mac` pre-uploaded both Mac assets) and publishes all 10 npm packages.
+   After success, download the published `@takazudo/zfb-md-wasm@<version>` npm
+   tarball, recompute and retain its four `.wasm` SHA-256 digests, and compare
+   them with both its `dist/shipped-artifacts.json` and the Release asset
+   `zfb-md-wasm-<version>-shipped-artifacts.json`. These are release-specific
+   values; never substitute unit-test fixture digests or a handwritten table.
 4. **On success — update Homebrew (stable only), then report.**
 
    **a. Homebrew.** If `<version>` is **stable** (no `-next.` / `-beta.` / `-rc.`), run it now — do

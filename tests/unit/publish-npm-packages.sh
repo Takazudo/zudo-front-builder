@@ -25,6 +25,7 @@ REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
 SCRIPT="scripts/publish-npm-packages.sh"
+NODE_EXE=$(node -p 'process.execPath')
 
 PASS=0
 FAIL=0
@@ -102,7 +103,7 @@ assert_exit 'classify: real error AND version NOT on registry → fail (1)' 1 \
 
 # Build a throwaway PATH dir holding mock `npm` and `pnpm` executables.
 MOCK_BIN=$(mktemp -d)
-trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}"' EXIT
+trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}"' EXIT HUP INT TERM
 
 cat >"$MOCK_BIN/npm" <<'MOCK_NPM'
 #!/bin/sh
@@ -110,6 +111,10 @@ cat >"$MOCK_BIN/npm" <<'MOCK_NPM'
 case "$1" in
   view)
     spec="$2"
+    if [ "$spec" = "@takazudo/zfb-md-wasm@${MOCK_VERSION:-}" ] && [ -f "${MOCK_PUBLISHED_MARKER:-/dev/null}" ]; then
+      printf '%s\n' "$MOCK_VERSION"
+      exit 0
+    fi
     for e in $MOCK_EXISTING; do
       if [ "$e" = "$spec" ]; then
         printf '%s\n' "${spec##*@}"   # version part (after the last @)
@@ -117,6 +122,11 @@ case "$1" in
       fi
     done
     exit 1   # not found — npm view exits non-zero
+    ;;
+  pack)
+    destination="$4"
+    cp "$MOCK_PACK_TARBALL" "$destination/published.tgz"
+    printf 'published.tgz\n'
     ;;
   publish)
     name=$(node -p "require('./package.json').name")
@@ -149,11 +159,33 @@ done
 if [ "$is_publish" -eq 1 ]; then
   printf '%s\n' "$filter" >>"$MOCK_PUBLISH_LOG"
   printf 'pnpm %s\n' "$original_args" >>"${MOCK_ARGS_LOG:-/dev/null}"
+  if [ "$filter" = "@takazudo/zfb-md-wasm" ]; then
+    case "${MOCK_MD_RESULT:-success}" in
+      conflict) echo 'EPUBLISHCONFLICT' >&2; exit 1 ;;
+      lost) touch "$MOCK_PUBLISHED_MARKER"; echo 'ETIMEDOUT' >&2; exit 1 ;;
+    esac
+  fi
 fi
 exit 0
 MOCK_PNPM
 
 chmod +x "$MOCK_BIN/npm" "$MOCK_BIN/pnpm"
+
+cat >"$MOCK_BIN/gh" <<'MOCK_GH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$MOCK_GH_LOG"
+MOCK_GH
+chmod +x "$MOCK_BIN/gh"
+
+# Existing publish/provenance cases predate the manifest and test unrelated
+# behavior. The dedicated digest cases below replace this with the real Node.
+cat >"$MOCK_BIN/verify-noop" <<'MOCK_VERIFY'
+#!/bin/sh
+exit 0
+MOCK_VERIFY
+chmod +x "$MOCK_BIN/verify-noop"
+ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop"
+export ZFB_MD_WASM_VERIFY_NODE
 
 V=$(node -p "require('./packages/zfb/package.json').version")
 ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-runtime@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V @takazudo/zfb-md-wasm@$V"
@@ -364,6 +396,101 @@ assert_downgrade_gate "gate: recovery-no-provenance WITH ZFB_ALLOW_PROVENANCE_DO
   recovery-no-provenance "ZFB_ALLOW_PROVENANCE_DOWNGRADE=1" allowed
 assert_downgrade_gate "gate: all-provenance is unaffected (no env var needed)" \
   all-provenance "" allowed
+
+# ── Published MD/WASM decision seam and actual upload gate ──────────────────
+
+DIGEST_FIXTURE=$(mktemp -d)
+mkdir -p "$DIGEST_FIXTURE/packed/package/dist"
+cp crates/zfb-md-wasm/npm/package.json "$DIGEST_FIXTURE/packed/package/package.json"
+MOCK_VERSION=$V
+export MOCK_VERSION
+DIGEST_FIXTURE="$DIGEST_FIXTURE" node --input-type=module <<'FIXTURE'
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const root = process.env.DIGEST_FIXTURE;
+const paths = [
+  ['.', 'dist/wasm/zfb_md_wasm_bg.wasm'],
+  ['./highlight', 'dist/wasm-highlight/zfb_md_wasm_highlight_bg.wasm'],
+  ['./render', 'dist/wasm-render/zfb_md_wasm_render_bg.wasm'],
+  ['./parse', 'dist/wasm-parse/zfb_md_wasm_parse_bg.wasm'],
+];
+const artifacts = paths.map(([entry, path]) => {
+  const bytes = Buffer.from(`fixture:${entry}:${process.env.MOCK_VERSION}`);
+  const file = join(root, 'packed/package', path);
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, bytes);
+  return { entry, path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+});
+const manifest = JSON.stringify({ schemaVersion: 1, name: '@takazudo/zfb-md-wasm', version: process.env.MOCK_VERSION, artifacts }) + '\n';
+writeFileSync(join(root, 'manifest.json'), manifest);
+writeFileSync(join(root, 'packed/package/dist/shipped-artifacts.json'), manifest);
+FIXTURE
+tar -czf "$DIGEST_FIXTURE/good.tgz" -C "$DIGEST_FIXTURE/packed" package
+mkdir -p "$DIGEST_FIXTURE/bad/package"
+cp -R "$DIGEST_FIXTURE/packed/package/." "$DIGEST_FIXTURE/bad/package/"
+printf 'wrong published bytes' >"$DIGEST_FIXTURE/bad/package/dist/wasm/zfb_md_wasm_bg.wasm"
+tar -czf "$DIGEST_FIXTURE/bad.tgz" -C "$DIGEST_FIXTURE/bad" package
+
+# Each case runs the real publish decision, then the same verifier with --upload
+# that release.yml invokes. The mock gh log records the actual upload command.
+assert_digest_case() {
+  DC_DESC=$1 DC_EXISTING=$2 DC_RESULT=$3 DC_TARBALL=$4 DC_MANIFEST=$5 DC_WANT=$6
+  DC_GH_LOG=$(mktemp)
+  DC_PUB_LOG=$(mktemp)
+  DC_OUTPUT=$(mktemp)
+  DC_MARKER=$(mktemp)
+  rm -f "$DC_MARKER"
+  : >"$DC_GH_LOG"
+  DC_RC=0
+  DC_MODE=all-provenance
+  if [ "$DC_WANT" = older ]; then DC_MODE=recovery-no-provenance; fi
+  PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_EXISTING="$DC_EXISTING" \
+    MOCK_MD_RESULT="$DC_RESULT" MOCK_PACK_TARBALL="$DC_TARBALL" \
+    MOCK_PUBLISH_LOG="$DC_PUB_LOG" MOCK_GH_LOG="$DC_GH_LOG" \
+    MOCK_PUBLISHED_MARKER="$DC_MARKER" ZFB_MD_WASM_MANIFEST="$DC_MANIFEST" \
+    ZFB_MD_WASM_VERIFY_NODE="$NODE_EXE" \
+    ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 PUBLISH_RECHECK_DELAY=0 \
+    bash "$SCRIPT" "$DC_MODE" >"$DC_OUTPUT" 2>&1 || DC_RC=$?
+  DC_PUBLISH_RC=$DC_RC
+  DC_UPLOAD_RC=0
+  if [ "$DC_PUBLISH_RC" -eq 0 ] || [ "$DC_WANT" = mismatch ]; then
+    DC_EXTRA_ARGS=
+    if [ "$DC_WANT" = older ]; then DC_EXTRA_ARGS=--allow-missing-manifest; fi
+    PATH="$MOCK_BIN:$PATH" MOCK_PACK_TARBALL="$DC_TARBALL" MOCK_GH_LOG="$DC_GH_LOG" \
+      "$NODE_EXE" scripts/verify-zfb-md-wasm-published-digests.mjs --version "$V" \
+      --manifest "$DC_MANIFEST" --tag "v$V" --upload $DC_EXTRA_ARGS >>"$DC_OUTPUT" 2>&1 || DC_UPLOAD_RC=$?
+    if [ "$DC_RC" -eq 0 ]; then DC_RC=$DC_UPLOAD_RC; fi
+  fi
+  case "$DC_WANT" in
+    upload)
+      if [ "$DC_RC" -eq 0 ] && grep -q "^release upload v$V .* --clobber$" "$DC_GH_LOG"; then
+        pass "$DC_DESC"
+      else
+        fail "$DC_DESC (exit=$DC_RC, gh=$(cat "$DC_GH_LOG"), output=$(tail -4 "$DC_OUTPUT" | tr '\n' ' '))"
+      fi ;;
+    mismatch)
+      if [ "$DC_PUBLISH_RC" -ne 0 ] && [ "$DC_UPLOAD_RC" -ne 0 ] && [ ! -s "$DC_GH_LOG" ] && grep -q 'published bytes differ' "$DC_OUTPUT"; then
+        pass "$DC_DESC"
+      else
+        fail "$DC_DESC (exit=$DC_RC, gh=$(cat "$DC_GH_LOG"), output=$(tail -4 "$DC_OUTPUT" | tr '\n' ' '))"
+      fi ;;
+    older)
+      if [ "$DC_RC" -eq 0 ] && [ ! -s "$DC_GH_LOG" ] && grep -q 'Digests are NOT verified' "$DC_OUTPUT"; then
+        pass "$DC_DESC"
+      else
+        fail "$DC_DESC (exit=$DC_RC, gh=$(cat "$DC_GH_LOG"), output=$(tail -4 "$DC_OUTPUT" | tr '\n' ' '))"
+      fi ;;
+  esac
+  rm -f "$DC_GH_LOG" "$DC_PUB_LOG" "$DC_OUTPUT" "$DC_MARKER"
+}
+
+assert_digest_case 'digest: fresh publish matches and uploads' '' success "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/manifest.json" upload
+assert_digest_case 'digest: initial registry skip matches and uploads' "@takazudo/zfb-md-wasm@$V" success "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/manifest.json" upload
+assert_digest_case 'digest: publish conflict matches and uploads' '' conflict "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/manifest.json" upload
+assert_digest_case 'digest: lost ACK matches and uploads' '' lost "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/manifest.json" upload
+assert_digest_case 'digest: published mismatch blocks gh upload' '' success "$DIGEST_FIXTURE/bad.tgz" "$DIGEST_FIXTURE/manifest.json" mismatch
+assert_digest_case 'digest: older tag without manifest annotates skip and has no upload' '' success "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/absent.json" older
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

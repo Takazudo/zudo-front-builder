@@ -824,6 +824,20 @@ jobs:
       - name: Test @takazudo/zfb-md-wasm package
         run: pnpm --filter @takazudo/zfb-md-wasm test
 
+      # Package tests run after the first pack. Re-pack and compare against
+      # dist immediately before upload so a test cannot mutate shipped bytes.
+      - name: Re-assert final @takazudo/zfb-md-wasm dist
+        shell: bash
+        run: |
+          ARTIFACT_DIR="$RUNNER_TEMP/zfb-md-wasm-final-artifact"
+          mkdir -p "$ARTIFACT_DIR"
+          TARBALL="$(cd crates/zfb-md-wasm/npm && pnpm pack --pack-destination "$ARTIFACT_DIR" | tail -1)"
+          test -f "$TARBALL" || { echo "::error::final packed tarball missing: $TARBALL"; exit 1; }
+          node scripts/assert-zfb-md-wasm-release.mjs \
+            --dist crates/zfb-md-wasm/npm/dist \
+            --package crates/zfb-md-wasm/npm/package.json \
+            --tarball "$TARBALL"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wasm-md-dist
@@ -831,6 +845,14 @@ jobs:
           if-no-files-found: error
           # Consumed within this run by the publish job; cap Actions storage
           # at the 1-day floor like the other build artifacts above.
+          retention-days: 1
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ hashFiles('crates/zfb-md-wasm/npm/dist/shipped-artifacts.json') != '' }}
+        with:
+          name: wasm-md-shipped-artifacts
+          path: crates/zfb-md-wasm/npm/dist/shipped-artifacts.json
+          if-no-files-found: error
           retention-days: 1
 
   release-assets:
@@ -924,7 +946,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
       # id-token: write enables npm OIDC-attested provenance via --provenance below.
       # Each published tarball carries a signed attestation linking to the GHA run + commit SHA.
       id-token: write
@@ -1040,6 +1062,13 @@ jobs:
         with:
           name: wasm-md-dist
           path: crates/zfb-md-wasm/npm/dist
+
+      - name: Download @takazudo/zfb-md-wasm manifest artifact
+        if: ${{ needs.release-context.outputs.is_recovery != 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-md-shipped-artifacts
+          path: ${{ runner.temp }}/wasm-md-shipped-artifacts
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1249,6 +1278,38 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Defense in depth (A2, #3140): see the mac-local step's comment above.
           ZFB_ALLOW_PROVENANCE_DOWNGRADE: ${{ steps.preflight-recovery.outputs.cleared == 'true' && '1' || '' }}
+
+      # The publish helper verifies MD/WASM through every successful decision
+      # path. Re-check published bytes here and let this script alone decide
+      # whether the versioned Release asset may be uploaded. Recovery uses the
+      # current control script against the verified older tag tree.
+      - name: Verify published @takazudo/zfb-md-wasm and upload digest asset
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          IS_RECOVERY: ${{ needs.release-context.outputs.is_recovery }}
+        run: |
+          if [[ "$RELEASE_TAG" != "v$RELEASE_VERSION" ]]; then
+            echo "::error::Verified release tag/version mismatch: $RELEASE_TAG / $RELEASE_VERSION"
+            exit 1
+          fi
+          if [[ "$IS_RECOVERY" != "true" ]]; then
+            cmp crates/zfb-md-wasm/npm/dist/shipped-artifacts.json \
+              "$RUNNER_TEMP/wasm-md-shipped-artifacts/shipped-artifacts.json"
+          fi
+          CONTROL_PREFIX=scripts
+          EXTRA_ARGS=()
+          if [[ "$IS_RECOVERY" == "true" ]]; then
+            CONTROL_PREFIX=.release-control/scripts
+            EXTRA_ARGS=(--allow-missing-manifest)
+          fi
+          node "$CONTROL_PREFIX/verify-zfb-md-wasm-published-digests.mjs" \
+            --version "$RELEASE_VERSION" \
+            --manifest crates/zfb-md-wasm/npm/dist/shipped-artifacts.json \
+            --tag "$RELEASE_TAG" --upload "${EXTRA_ARGS[@]}"
 
       # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
       # The ALSO_LATEST block above is the FORWARD half of the prerelease
