@@ -5,6 +5,7 @@
  * published manifest checks below.
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +39,46 @@ if (!existsSync(installedManifestPath)) {
 const installedManifest = JSON.parse(readFileSync(installedManifestPath, "utf8"));
 if (installedManifest.name !== "@takazudo/zfb-md-wasm") {
   throw new Error(`unexpected staged package: ${installedManifest.name}`);
+}
+const installedArtifactManifestUrl = import.meta
+  .resolve("@takazudo/zfb-md-wasm/shipped-artifacts.json");
+if (!installedArtifactManifestUrl.startsWith("file:")) {
+  throw new Error(
+    `shipped artifact manifest resolved to a non-file URL: ${installedArtifactManifestUrl}`,
+  );
+}
+const installedArtifactManifestPath = fileURLToPath(installedArtifactManifestUrl);
+const expectedInstalledArtifactManifestPath = resolve(
+  installedPackage,
+  "dist",
+  "shipped-artifacts.json",
+);
+if (
+  realpathSync(installedArtifactManifestPath) !==
+  realpathSync(expectedInstalledArtifactManifestPath)
+) {
+  throw new Error("shipped-artifacts.json export does not resolve inside the staged package");
+}
+const installedArtifactManifestBytes = readFileSync(installedArtifactManifestPath);
+const packedArtifactManifestBytes = execFileSync("tar", [
+  "-xOf",
+  archive,
+  "package/dist/shipped-artifacts.json",
+]);
+if (!installedArtifactManifestBytes.equals(packedArtifactManifestBytes)) {
+  throw new Error(
+    "installed shipped-artifacts.json differs from the manifest in the packed tarball",
+  );
+}
+const shippedArtifactManifest = JSON.parse(installedArtifactManifestBytes.toString("utf8"));
+if (
+  shippedArtifactManifest.schemaVersion !== 1 ||
+  shippedArtifactManifest.name !== installedManifest.name ||
+  shippedArtifactManifest.version !== installedManifest.version ||
+  !Array.isArray(shippedArtifactManifest.artifacts) ||
+  shippedArtifactManifest.artifacts.length !== 4
+) {
+  throw new Error("installed shipped-artifacts.json has an invalid package identity or schema");
 }
 if (
   installedManifest.main !== "./dist/index.js" ||
@@ -84,4 +125,6 @@ if (!readFileSync(firstPartySource, "utf8").includes('import("@takazudo/zfb-md-w
   throw new Error("fixture is missing the first-party packed md-wasm root importer");
 }
 
-console.log("md-wasm browser fixture is staged from the asserted packed tarball");
+console.log(
+  "md-wasm browser fixture and exported manifest are staged from the asserted packed tarball",
+);

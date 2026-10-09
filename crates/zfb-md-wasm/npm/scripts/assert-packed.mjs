@@ -55,6 +55,7 @@ export const WASM_RESOURCE_SETS = [
 });
 
 export const REQUIRED_PACKED_FILES = [
+  "package/dist/shipped-artifacts.json",
   ...ENTRY_FILES,
   ...WASM_RESOURCE_SETS.flatMap((set) => [...set.requiredFiles]),
 ];
@@ -67,6 +68,18 @@ export function packedPaths(archivePath) {
 
 /** Fail closed on missing, extra, duplicated, or cross-artifact resources. */
 export function assertPackedContents(paths) {
+  const seenPaths = new Set();
+  const duplicatePaths = new Set();
+  for (const path of paths) {
+    if (seenPaths.has(path)) duplicatePaths.add(path);
+    seenPaths.add(path);
+  }
+  if (duplicatePaths.size > 0) {
+    throw new Error(
+      `packed @takazudo/zfb-md-wasm has duplicate files: ${[...duplicatePaths].join(", ")}`,
+    );
+  }
+
   const files = new Set(paths);
   const missing = REQUIRED_PACKED_FILES.filter((path) => !files.has(path));
   if (missing.length > 0) {
