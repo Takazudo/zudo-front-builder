@@ -472,7 +472,7 @@ fn walked_only_orphan_with_broken_relative_import_still_yields_token() {
     assert_ne!(
         edited,
         f.token("symlink"),
-        "a later-created import target is walked"
+        "creating the missing import target changes the token"
     );
 }
 

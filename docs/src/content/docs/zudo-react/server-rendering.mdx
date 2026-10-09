@@ -142,6 +142,7 @@ export function renderLayout(): string {
 
 - `components` lists every component used as an `Island` child inside the callback, as an array or as a record whose values are components. Each name is taken from the component's `displayName`, or from its function name when it has none. An `Island` whose child is not in the list fails with `ZR_ISLAND_IDENTITY: <name> is not registered by the scanner`.
 - `build` is the string written to each wrapper's `data-zfb-build` attribute. It defaults to `"test"`. Pass a stable, nonempty value.
+- Compile the JSX with `@takazudo/zfb/zudo-react` as the JSX import source (for example, esbuild `jsxImportSource`). Elements created by another JSX runtime are not zudo-react descriptions, and `Island` rejects them with `ZR_ISLAND_CHILD`.
 - The callback must be synchronous. A callback that returns a promise fails with `ZR_ISLAND_TEST: context callback must be synchronous`, because the registration lives on a shared global. Load data before entering the callback.
 
 ### Preserve function names in a minified bundle

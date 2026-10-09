@@ -136,6 +136,7 @@ export function renderLayout(): string {
 
 - `components` には、コールバック内で `Island` の子として使うすべてのコンポーネントを、配列か、値がコンポーネントのレコードで渡します。名前はコンポーネントの `displayName`、なければ関数名から取ります。一覧にない子を持つ `Island` は `ZR_ISLAND_IDENTITY: <name> is not registered by the scanner` で失敗します。
 - `build` は各ラッパーの `data-zfb-build` 属性に書かれる文字列です。デフォルトは `"test"` です。空でない安定した値を渡してください。
+- JSX は `@takazudo/zfb/zudo-react` を JSX import source にしてコンパイルしてください（例: esbuild の `jsxImportSource`）。別の JSX ランタイムで作った要素は zudo-react の記述ではないため、`Island` は `ZR_ISLAND_CHILD` で拒否します。
 - コールバックは同期でなければなりません。登録は共有のグローバルに置かれるため、promise を返すコールバックは `ZR_ISLAND_TEST: context callback must be synchronous` で失敗します。データの読み込みはコールバックに入る前に済ませてください。
 
 ### minify したバンドルで関数名を保持する
@@ -159,7 +160,7 @@ ZR_ISLAND_IDENTITY: dc conflicts with displayName SidebarToggle
 
 ### zfb のクライアントでハイドレーションする
 
-`withIslandTestContext` が満たすのはサーバー側の検証だけです。zfb がビルドしたクライアントバンドルでページをハイドレーションする場合、各ラッパーのコンポーネント名と `data-zfb-build` の値をそのクライアントの識別子と一致させる必要があります。一致しないと、クライアントは `ZR_IDENTITY: island <name> has invalid transport identity` で島を拒否します。自分で所有するクライアント mount については[ハイドレーション](./hydration.mdx)を参照してください。
+`withIslandTestContext` が満たすのはサーバー側の検証だけです。zfb がビルドしたクライアントバンドルでページをハイドレーションする場合、各ラッパーのコンポーネント名と `data-zfb-build` の値をそのクライアントの識別子と一致させる必要があります。一致しないと、クライアントは `ZR_IDENTITY: island <name> has invalid transport identity` で島を拒否します。自分で所有するクライアント mount については[自分で所有するホストから mount する](./hydration.mdx#自分で所有するホストから-mount-する)を参照してください。
 
 ## 関連ページ
 
