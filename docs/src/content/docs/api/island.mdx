@@ -171,6 +171,10 @@ incoming page has different props. `persistProps` defaults to `false` and
 requires `persist`. A changed component, build, transport, protocol, or root
 kind still recreates the root.
 
+If a persisted island has not mounted yet, changed props keep its first mount
+deferred according to `when`. When the condition fires, it renders the latest
+props over the retained DOM. A previously mounted island remounts immediately.
+
 ## Mount state and persisted roots
 
 The runtime writes `data-zfb-island-mounted` only after a root is mounted

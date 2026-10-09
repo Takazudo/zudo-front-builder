@@ -302,6 +302,9 @@ const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
  * - bundle re-import: dispose the old symbol handle before render mode replaces it.
  */
 export const ISLAND_MOUNTED_ATTR = "data-zfb-island-mounted";
+// Retained SSR DOM may already have incoming props while its first mount is
+// deferred. Keep the render operation across swaps, retries, and dev re-imports.
+const ISLAND_PENDING_RENDER_ATTR = "data-zfb-island-pending-render";
 const COMPOSITION_KEY = Symbol.for("@takazudo/zfb/zudo-react/composition-v1");
 const TRACKER_KEY = Symbol.for("@takazudo/zfb/zudo-react/composition-tracker-v1");
 
@@ -328,6 +331,9 @@ function reportIslandError(element: Element, phase: string, error: unknown): voi
   }
 }
 function disposeIsland(element: Element, phase: string): void {
+  pendingCancels.get(element)?.();
+  pendingCancels.delete(element);
+  element.removeAttribute(ISLAND_PENDING_RENDER_ATTR);
   const handle = rootHandle(element);
   try {
     handle?.dispose();
@@ -409,8 +415,16 @@ export function mountIslands(manifest: IslandManifest): void {
     // dispatch.
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
+    const hadLiveRoot = !!rootHandle(el);
+    const flagged = !hadLiveRoot && !replacing && clearMountedForRemount(el);
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, replacing ? "render" : "hydrate", { force: replacing });
+    scheduleMount(
+      manifest,
+      el,
+      name,
+      replacing || flagged || el.hasAttribute(ISLAND_PENDING_RENDER_ATTR) ? "render" : "hydrate",
+      { force: hadLiveRoot || replacing },
+    );
   }
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
@@ -418,8 +432,10 @@ export function mountIslands(manifest: IslandManifest): void {
     const replacing = prepareMount(el);
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
+    const hadLiveRoot = !!rootHandle(el);
+    if (!hadLiveRoot && !replacing) clearMountedForRemount(el);
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, "render", { force: replacing });
+    scheduleMount(manifest, el, name, "render", { force: hadLiveRoot || replacing });
   }
 }
 
@@ -446,9 +462,16 @@ export function mountNewIslands(): void {
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
     // The router marks changed persisted identity/props on the surviving node.
-    const forceRemount = clearMountedForRemount(el) || replacing;
+    const hadLiveRoot = !!rootHandle(el);
+    const flagged = clearMountedForRemount(el);
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, forceRemount ? "render" : "hydrate", { force: forceRemount });
+    scheduleMount(
+      manifest,
+      el,
+      name,
+      replacing || flagged || el.hasAttribute(ISLAND_PENDING_RENDER_ATTR) ? "render" : "hydrate",
+      { force: hadLiveRoot || replacing },
+    );
   }
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
@@ -457,8 +480,9 @@ export function mountNewIslands(): void {
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
     warnIfNestedIsland(el, name);
-    const forceRemount = clearMountedForRemount(el) || replacing;
-    scheduleMount(manifest, el, name, "render", { force: forceRemount });
+    const hadLiveRoot = !!rootHandle(el);
+    clearMountedForRemount(el);
+    scheduleMount(manifest, el, name, "render", { force: hadLiveRoot || replacing });
   }
 }
 
@@ -467,7 +491,10 @@ function clearMountedForRemount(el: Element): boolean {
   if (!el.hasAttribute(ISLAND_REMOUNT_ATTR)) return false;
   el.removeAttribute(ISLAND_REMOUNT_ATTR);
   if (rootHandle(el)) disposeIsland(el, "remount disposal");
-  else el.removeAttribute(ISLAND_MOUNTED_ATTR);
+  else {
+    el.removeAttribute(ISLAND_MOUNTED_ATTR);
+    el.setAttribute(ISLAND_PENDING_RENDER_ATTR, "");
+  }
   return true;
 }
 
@@ -475,6 +502,7 @@ function prepareMount(el: Element): boolean {
   let replacing = false;
   if (rootHandle(el) && !owned.has(el)) {
     disposeIsland(el, "dev replacement disposal");
+    el.removeAttribute(ISLAND_REMOUNT_ATTR);
     replacing = true;
   }
   if (!rootHandle(el)) el.removeAttribute(ISLAND_MOUNTED_ATTR);
@@ -538,6 +566,10 @@ function scheduleMount(
   options: { force?: boolean } = {},
 ): void {
   if (rootHandle(element)) return;
+
+  // A later scan may change hydrate into render after a retained props update.
+  pendingCancels.get(element)?.();
+  pendingCancels.delete(element);
 
   const entry = manifest[componentName];
   if (entry == null) {
@@ -603,6 +635,7 @@ function fireInlineMount(
       setRootHandle(element, handle);
       owned.add(element);
       element.setAttribute(ISLAND_MOUNTED_ATTR, "");
+      element.removeAttribute(ISLAND_PENDING_RENDER_ATTR);
     } catch (error) {
       element.removeAttribute(ISLAND_MOUNTED_ATTR);
       reportIslandError(element, "mount", error);

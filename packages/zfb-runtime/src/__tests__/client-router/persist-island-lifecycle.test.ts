@@ -695,9 +695,10 @@ for (const moveMode of ["moveBefore", "fallback"] as const) {
             : header(island("A", variant === "changed" ? 2 : 1, 'data-when="idle"'));
         navigate(next);
         expect(cancelled).toHaveBeenCalledTimes(1);
-        // A changed descendant forces an immediate render mount. The cancelled
-        // pre-swap callback must never add a second mount.
+        // A never-mounted descendant remains deferred even when its props change.
+        // The cancelled pre-swap callback must never mount it.
         const mountsAfterSwap = l.mount("A").mock.calls.length;
+        expect(mountsAfterSwap).toBe(0);
         stale({ didTimeout: false, timeRemaining: () => 50 });
         expect(l.mount("A")).toHaveBeenCalledTimes(mountsAfterSwap);
         for (const cb of callbacks.values()) cb({ didTimeout: false, timeRemaining: () => 50 });

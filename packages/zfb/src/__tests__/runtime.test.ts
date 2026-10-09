@@ -824,6 +824,56 @@ describe("scheduleHydrate", () => {
         }
       });
 
+      it.each(["visible", "idle", "media"] as const)(
+        "keeps a never-mounted %s root deferred after a flagged props update",
+        (when) => {
+          for (const marker of ["data-zfb-island", "data-zfb-island-skip-ssr"]) {
+            let activate: () => void = () => {};
+            if (when === "visible") {
+              vi.stubGlobal("IntersectionObserver", function (callback: IntersectionCallback) {
+                activate = () => callback([{ isIntersecting: true, target: el }], observer);
+                return observer;
+              });
+            } else if (when === "idle") {
+              vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+                activate = callback;
+                return 1;
+              });
+              vi.stubGlobal("cancelIdleCallback", vi.fn());
+            } else {
+              vi.stubGlobal("matchMedia", () => ({
+                matches: false,
+                addEventListener: (
+                  _event: string,
+                  callback: (event: { matches: boolean }) => void,
+                ) => {
+                  activate = () => callback({ matches: true });
+                },
+                removeEventListener: vi.fn(),
+              }));
+            }
+            const observer = { disconnect: vi.fn(), observe: vi.fn() };
+            document.body.innerHTML = `<div ${marker}="Panel" data-props='{"v":1}' data-when="${when}" data-media="(min-width: 1px)"></div>`;
+            const el = document.body.firstElementChild!;
+            const mount = vi.fn();
+            const dispose = vi.fn();
+            mountIslands({ Panel: { mount, dispose } });
+            el.setAttribute("data-props", '{"v":2}');
+            el.setAttribute("data-zfb-island-remount", "");
+            mountNewIslands();
+            el.setAttribute("data-props", '{"v":3}');
+            expect(mount).not.toHaveBeenCalled();
+            expect(dispose).not.toHaveBeenCalled();
+            expect(el.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(false);
+            activate();
+            expect(mount).toHaveBeenCalledTimes(1);
+            expect(mount).toHaveBeenCalledWith({ v: 3 }, el, "render");
+            expect(el.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
+            vi.unstubAllGlobals();
+          }
+        },
+      );
+
       it("mountNewIslands leaves a persisted island with unchanged props (no remount flag) mounted — no unmount, no re-mount", () => {
         document.body.innerHTML = `
           <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
