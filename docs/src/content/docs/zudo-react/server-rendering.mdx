@@ -109,6 +109,65 @@ TypeError: ...
 
 Elements written with `h()`, elements created inside a dependency, and code changed by a preprocessor have no reliable source position. For them zfb prints the structural context without an authored span, rather than a guessed line. It may add an internal-frame hint such as `— internal frame node_modules/…`, `<generated>/…`, or `external/…` for debugging; that label is never your source location. The first line never contains props, raw HTML, or absolute local paths.
 
+## Rendering Islands outside a zfb build
+
+Since v3.0.0, `Island` validates its child before rendering. The build identity and the registered island names come from metadata that zfb's server bundle sets on `globalThis.__zfb`. A page rendered by another bundler or a plain Node script, such as a package that renders its own layout for a static export, has no such metadata. Every `Island` then fails with an error like this one:
+
+~~~text
+ZR_ISLAND_IDENTITY: ThemeToggle has no build identity
+~~~
+
+### Supply the identity with `withIslandTestContext`
+
+`withIslandTestContext` from `@takazudo/zfb/zudo-react/testing` sets that metadata for one synchronous callback and restores the previous `globalThis.__zfb` afterwards, including when rendering throws. Despite the subpath name, it is the supported way to render SDK `Island` boundaries outside a zfb build.
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { withIslandTestContext } from "@takazudo/zfb/zudo-react/testing";
+import { SidebarToggle } from "./sidebar-toggle";
+
+export function renderLayout(): string {
+  return withIslandTestContext({ components: [SidebarToggle], build: "my-site-1" }, () =>
+    renderToString(
+      <body>
+        <Island when="idle">
+          <SidebarToggle />
+        </Island>
+      </body>,
+    ),
+  );
+}
+~~~
+
+- `components` lists every component used as an `Island` child inside the callback, as an array or as a record whose values are components. Each name is taken from the component's `displayName`, or from its function name when it has none. An `Island` whose child is not in the list fails with `ZR_ISLAND_IDENTITY: <name> is not registered by the scanner`.
+- `build` is the string written to each wrapper's `data-zfb-build` attribute. It defaults to `"test"`. Pass a stable, nonempty value.
+- Compile the JSX with `@takazudo/zfb/zudo-react` as the JSX import source (for example, esbuild `jsxImportSource`). Elements created by another JSX runtime are not zudo-react descriptions, and `Island` rejects them with `ZR_ISLAND_CHILD`.
+- The callback must be synchronous. A callback that returns a promise fails with `ZR_ISLAND_TEST: context callback must be synchronous`, because the registration lives on a shared global. Load data before entering the callback.
+
+### Preserve function names in a minified bundle
+
+`Island` identifies its child by the function's `name` property. zfb's own bundler always preserves function names, so a zfb build never loses them. A consumer bundler that minifies without that option renames functions, and the check then fails. With a `displayName` override, the minified name conflicts with it:
+
+~~~text
+ZR_ISLAND_IDENTITY: dc conflicts with displayName SidebarToggle
+~~~
+
+When the same component is passed to `withIslandTestContext`, the helper rejects it first with `ZR_ISLAND_IDENTITY: invalid component name dc`. Without a `displayName`, the render succeeds, but the island marker carries the minified name (`data-zfb-island="dc"`). No client built from the original source will recognize that name.
+
+Enable function-name preservation in the bundler that produces the standalone render:
+
+- esbuild: `keepNames: true` in the JavaScript API, or `--keep-names` on the command line.
+- Rolldown, including Vite 8: `output.keepNames: true`. In Vite 8, set it as `build.rolldownOptions.output.keepNames`.
+- Terser, including Vite's `build.minify: "terser"`: `keep_fnames: true`. In Vite, pass it through `build.terserOptions`.
+- Any other minifier: enable its option that keeps function names.
+
+If you cannot change the bundler, there are two fallbacks. Removing `displayName` overrides from island components stops the error, but the marker still carries the minified name, so use it only when no client built from the original source hydrates that output. Otherwise, render the child directly without `Island` in the standalone build. A child rendered without `Island` is static HTML and never hydrates.
+
+### Hydrate against a zfb client
+
+`withIslandTestContext` only satisfies the server-side checks. If the page is hydrated by a client bundle that zfb built, each wrapper's component name and `data-zfb-build` value must match that client's identity. A mismatch makes the client reject the island with `ZR_IDENTITY: island <name> has invalid transport identity`. For a client mount you own, see [Mount from a host you own](./hydration.mdx#mount-from-a-host-you-own).
+
 ## See also
 
 - [Overview](./overview.mdx)

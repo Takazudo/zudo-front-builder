@@ -3093,6 +3093,10 @@ fn collect_zudo_react_external_file_closure(
         .into_iter()
         .map(|(physical, logical)| (physical, logical, strict_seeds))
         .collect();
+    // Strictness is inherited along import edges: a walked-only seed may be an
+    // orphan file no bundle loads, so its broken imports must not be fatal.
+    // Every seed in one call shares `strict_seeds`, so a file is never revisited
+    // with a different strictness.
     let mut visited = BTreeSet::new();
     let mut total_bytes = 0_u64;
     while let Some((physical, logical, strict)) = pending.pop() {
@@ -3145,15 +3149,20 @@ fn collect_zudo_react_external_file_closure(
                 continue;
             }
             let candidate = normalize_path_lexical(&physical.parent().unwrap().join(path));
-            let target = probe_graph_candidate(&candidate, false).ok_or_else(|| anyhow!(
-                "owned island build token cannot resolve external relative import {specifier:?} from {}",
-                physical.display()
-            ))?;
+            let Some(target) = probe_graph_candidate(&candidate, false) else {
+                if !strict {
+                    continue;
+                }
+                bail!(
+                    "owned island build token cannot resolve external relative import {specifier:?} from {}",
+                    physical.display()
+                );
+            };
             let mut next_logical = normalize_path_lexical(&logical.parent().unwrap().join(path));
             if let Some(extension) = target.extension() {
                 next_logical.set_extension(extension);
             }
-            pending.push((target, next_logical, true));
+            pending.push((target, next_logical, strict));
         }
     }
     Ok(visited)

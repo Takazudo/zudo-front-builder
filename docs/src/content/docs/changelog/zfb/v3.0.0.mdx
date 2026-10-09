@@ -9,6 +9,7 @@ Released: 2026-09-30
 
 ## Breaking Changes
 
+- Documented after release: `Island` now validates its child against the build identity and registered island names that zfb's server bundle sets, and rejects a function name that conflicts with `displayName`. Rendering `Island` with another bundler or plain Node fails with `ZR_ISLAND_IDENTITY`. See [Islands rendered outside a zfb build](../../guides/migrating-to-v3.mdx#islands-rendered-outside-a-zfb-build).
 - Replace the Tailwind CSS executable and `tailwind` configuration with the built-in zudo-wind compiler (fc6d9ed9). Remove Tailwind imports and directives, declare the tokens your utilities use, and choose a `wind` reset explicitly where browser defaults matter. The old Tailwind environment overrides are gone.
 - Remove React and Preact runtime selection in favor of the owned zudo-react engine (9ec87c0a). Delete the `framework` key, use `@takazudo/zfb/zudo-react` as the JSX import source, and migrate components, events, signals, and islands. The [v3 migration guide](../../guides/migrating-to-v3.mdx) covers the required changes.
 - Remove Preact from `@takazudo/zfb` packaging and the old JSX aliases (039b2e24). Consumers must use the owned runtime entry points.
