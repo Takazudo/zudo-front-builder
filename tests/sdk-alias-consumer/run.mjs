@@ -113,17 +113,20 @@ async function run(command, args, { cwd, label }) {
 }
 
 async function packPackage(packageDir, tarballDir, label) {
+  const manifest = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
+  assert.equal(manifest.name, label);
   await run("pnpm", ["run", "build"], { cwd: packageDir, label: `build ${label}` });
   await run("pnpm", ["pack", "--pack-destination", tarballDir], {
     cwd: packageDir,
     label: `pack ${label}`,
   });
   const expectedPrefix = label.replace(/^@takazudo\//u, "takazudo-").replaceAll("/", "-");
-  const archives = (await readdir(tarballDir)).filter(
-    (name) => name.startsWith(`${expectedPrefix}-`) && name.endsWith(".tgz"),
+  const archive = `${expectedPrefix}-${manifest.version}.tgz`;
+  assert.ok(
+    (await readdir(tarballDir)).includes(archive),
+    `expected packed archive ${archive} for ${label}`,
   );
-  assert.equal(archives.length, 1, `expected one packed archive for ${label}`);
-  return join(tarballDir, archives[0]);
+  return join(tarballDir, archive);
 }
 
 function sleep(ms) {
