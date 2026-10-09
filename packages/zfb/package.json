@@ -95,6 +95,9 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "dependencies": {
+    "@takazudo/zfb-slugify": "workspace:4.2.1"
+  },
   "optionalDependencies": {
     "@takazudo/zfb-darwin-arm64": "workspace:4.2.1",
     "@takazudo/zfb-darwin-x64": "workspace:4.2.1",

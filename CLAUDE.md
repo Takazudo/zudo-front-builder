@@ -187,7 +187,7 @@ tag, binary/npm publication, and Homebrew topology. Each future release neverthe
 exactly five default-locale-only English MDX notes:
 
 - `docs/src/content/docs/changelog/zfb/v<version>.mdx` owns the Rust engine/CLI,
-  `@takazudo/zfb`, and native carrier packaging.
+  `@takazudo/zfb`, `@takazudo/zfb-slugify`, and native carrier packaging.
 - `docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx` owns browser/runtime behavior and API.
 - `docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx` owns Cloudflare adapter
   behavior and API.

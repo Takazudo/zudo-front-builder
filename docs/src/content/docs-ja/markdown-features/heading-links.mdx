@@ -39,12 +39,12 @@ sidebar_position: 51
 通過します — これが日本語コンテンツの全角括弧を含む見出しでアンカーの
 不具合を招いたことがあります。
 
-上記の見出し ID アルゴリズムと、`@takazudo/zfb/slugify` として公開されている
-`slugify()` 関数（ソース: `packages/zfb/src/slugify.ts`）は、名前から連想され
+上記の見出し ID アルゴリズムと、軽量な `@takazudo/zfb-slugify` パッケージと互換ルート
+`@takazudo/zfb/slugify` から公開されている `slugify()` 関数は、名前から連想され
 がちな「まったく無関係な 2 つのスラッグ生成器」ではなく同一のアルゴリズムで
 すが、実装は別々です: 見出し ID は
 `crates/zfb-content/src/plugins/heading_links.rs` の Rust 版 `slugify()`
-から生成され、公開 API は独立した TypeScript 移植版です。共有フィクスチャ
+から生成され、TypeScript 移植版は `@takazudo/zfb-slugify` にあります。共有フィクスチャ
 （`crates/zfb-content/tests/fixtures/slugify-parity.json`）は両者が現時点で
 同じ出力を生成することをテストしているだけで、単一の実装であることを意味
 しません。

@@ -98,6 +98,7 @@ jobs:
               - 'crates/zfb-md-wasm/npm/test/**'
               - 'tests/md-wasm-browser-smoke/**'
               - 'packages/zfb/**'
+              - 'packages/zfb-slugify/**'
               - 'packages/zfb-runtime/**'
 
               # Root Rust/Node/workspace manifests, locks, toolchain, and
@@ -321,11 +322,9 @@ jobs:
       # same type errors) so coverage isn't lost, just relocated.
       - run: pnpm typecheck:workspace
 
-      # Run the JS/TS test suites across all packages (@takazudo/zfb and
-      # @takazudo/zfb-runtime). Includes the slugify parity tests that
-      # consume the shared fixture in crates/zfb-content/tests/fixtures/
-      # (issue #973), so any drift between the TS port and the Rust
-      # slugifier fails here as well as in cargo test.
+      # Run JS/TS suites across the SDK, runtime, and slugify helper. The
+      # helper's parity tests consume the shared Rust fixture, while the SDK
+      # tests prove its root and subpath compatibility exports.
       # @takazudo/zfb-md-wasm is excluded for the same reason as the
       # typecheck step above — its tests import the built `dist/index.js`,
       # which needs the wasm32 toolchain this job doesn't have. Covered by
@@ -875,11 +874,14 @@ jobs:
         run: |
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
           ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
-          mkdir -p "$ZFB_SIZE_OUT/pack" "$ZFB_SIZE_OUT/packed-package" "$ZFB_SIZE_OUT/packed-runtime"
+          mkdir -p "$ZFB_SIZE_OUT/pack" "$ZFB_SIZE_OUT/packed-package" "$ZFB_SIZE_OUT/packed-runtime" "$ZFB_SIZE_OUT/packed-slugify"
+          pnpm -C packages/zfb-slugify build
           pnpm -C packages/zfb build
           pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb-slugify pack --pack-destination "$ZFB_SIZE_OUT/pack"
           pnpm -C packages/zfb pack --pack-destination "$ZFB_SIZE_OUT/pack"
           pnpm -C packages/zfb-runtime pack --pack-destination "$ZFB_SIZE_OUT/pack"
+          tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-slugify-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-slugify"
           tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-package"
           tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
 
@@ -900,6 +902,7 @@ jobs:
             --mode workspace \
             --package "$GITHUB_WORKSPACE/packages/zfb" \
             --runtime-package "$GITHUB_WORKSPACE/packages/zfb-runtime" \
+            --slugify-package "$GITHUB_WORKSPACE/packages/zfb-slugify" \
             --hono-package "$ZFB_SIZE_HONO" \
             --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
             --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \
@@ -911,6 +914,7 @@ jobs:
             --mode packed \
             --package "$ZFB_SIZE_OUT/packed-package/package" \
             --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" \
+            --slugify-package "$ZFB_SIZE_OUT/packed-slugify/package" \
             --hono-package "$ZFB_SIZE_HONO" \
             --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" \
             --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" \

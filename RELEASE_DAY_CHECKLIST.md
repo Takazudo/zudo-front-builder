@@ -42,7 +42,7 @@ track the latest prerelease and are never left pointing at a stale release.
 **Self-disabling condition**: the `publish` job probes `npm view @takazudo/zfb
 dist-tags.latest` before each `*-next.*` publish. If `latest` is empty (first
 ever publish) or is itself a prerelease (version string contains `"-"`), the
-workflow advances `latest` alongside `next` for all 10 workspace packages. Once
+workflow advances `latest` alongside `next` for all 11 workspace packages. Once
 a real stable version holds `latest` the condition is false and prereleases no
 longer touch it — a prerelease can never clobber a real stable `latest` after
 launch.
@@ -113,7 +113,7 @@ so no manual re-dispatch is needed.
 1. Run `/l-make-release` to create the draft Release.
 2. Publish the draft (`gh release edit vX.Y.Z --draft=false` or web UI) with
    NO Mac archive attached.
-3. The workflow builds all 5 platforms on CI and publishes all 10 packages with
+3. The workflow builds all 5 platforms on CI and publishes all 11 packages with
    full npm `--provenance` (option C).
 
 ### Fast-Mac path (`--fast-mac` opt-in; mixed provenance)
@@ -190,7 +190,7 @@ Release, or publish npm packages by hand. Commit the workflow fix to `main`, the
 dispatch the reviewed workflow from `main` while pointing it at the existing tag:
 
 **Recovery is now always consumer-breaking for `trust-policy=no-downgrade`, for
-all 10 packages** — see below for why GitHub OIDC cannot attest the older tag
+all 11 packages** — see below for why GitHub OIDC cannot attest the older tag
 commit. Unlike fast-Mac (which acknowledges only an actual detected
 downgrade), recovery unconditionally omits provenance for every package, so
 the `publish` job always requires the acknowledgement in this mode regardless

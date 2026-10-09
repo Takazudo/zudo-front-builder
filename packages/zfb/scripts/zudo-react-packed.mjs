@@ -23,20 +23,31 @@ function run(binary, args, cwd) {
 }
 
 function buildAndPack() {
+  run("pnpm", ["--filter", "@takazudo/zfb-slugify", "build"], repoDir);
   run("pnpm", ["--filter", "@takazudo/zfb", "build"], repoDir);
   console.log("build: PASS");
   const packDir = mkdtempSync(join(tmpdir(), "zudo-react-pack-"));
+  run("pnpm", ["pack", "--pack-destination", packDir], resolve(repoDir, "packages/zfb-slugify"));
   run("pnpm", ["pack", "--pack-destination", packDir], packageDir);
-  const tarball = readdirSync(packDir).find((name) => name.endsWith(".tgz"));
-  if (!tarball) throw new Error("pnpm pack did not create a tarball");
+  const tarballs = readdirSync(packDir);
+  const tarball = tarballs.find((name) => /^takazudo-zfb-\d/.test(name) && name.endsWith(".tgz"));
+  const slugifyTarball = tarballs.find(
+    (name) => name.includes("zfb-slugify") && name.endsWith(".tgz"),
+  );
+  if (!tarball || !slugifyTarball) throw new Error("pnpm pack did not create both tarballs");
   console.log("pack: PASS");
-  return join(packDir, tarball);
+  return {
+    zfb: join(packDir, tarball),
+    "zfb-slugify": join(packDir, slugifyTarball),
+  };
 }
 
-function stage(tarball, directory) {
-  const target = join(directory, "node_modules", "@takazudo", "zfb");
-  mkdirSync(target, { recursive: true });
-  run("tar", ["-xzf", tarball, "-C", target, "--strip-components=1"], repoDir);
+function stage(tarballs, directory) {
+  for (const [name, tarball] of Object.entries(tarballs)) {
+    const target = join(directory, "node_modules", "@takazudo", name);
+    mkdirSync(target, { recursive: true });
+    run("tar", ["-xzf", tarball, "-C", target, "--strip-components=1"], repoDir);
+  }
   console.log("stage: PASS");
 }
 
@@ -82,6 +93,22 @@ function assertPackedExports(directory) {
     `if (typeof globalThis.document !== "undefined") throw new Error("unexpected DOM global");\nconst server = await import("@takazudo/zfb/zudo-react/server");\nif (Object.keys(server).sort().join(",") !== "islandRoot,renderToString,serializeProps") throw new Error("unexpected server entry exports");\nif (typeof globalThis.document !== "undefined") throw new Error("server entry touched the DOM");\n`,
   );
   run(process.execPath, [probe], directory);
+  const slugProbe = join(directory, "slugify-import-probe.mjs");
+  const parityFixture = resolve(repoDir, "crates/zfb-content/tests/fixtures/slugify-parity.json");
+  writeFileSync(
+    slugProbe,
+    `import { readFileSync } from "node:fs";
+import { slugify as rootSlugify, SlugAllocator as RootAllocator } from "@takazudo/zfb";
+import { slugify as subSlugify, SlugAllocator as SubAllocator } from "@takazudo/zfb/slugify";
+import { slugify as helperSlugify, SlugAllocator as HelperAllocator } from "@takazudo/zfb-slugify";
+const fixture = JSON.parse(readFileSync(${JSON.stringify(parityFixture)}, "utf8"));
+if (rootSlugify !== helperSlugify || subSlugify !== helperSlugify || RootAllocator !== HelperAllocator || SubAllocator !== HelperAllocator) throw new Error("packed compatibility identity mismatch");
+for (const { input, expected } of fixture.slugify) for (const fn of [rootSlugify, subSlugify]) if (fn(input) !== expected) throw new Error("packed slugify parity mismatch");
+for (const { strategy, headings, expected } of fixture.allocate) for (const Allocator of [RootAllocator, SubAllocator]) { const allocator = new Allocator(strategy); const actual = headings.map(({ depth, text }) => allocator.allocate(depth, rootSlugify(text))); if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("packed allocator parity mismatch"); }
+`,
+  );
+  run(process.execPath, [slugProbe], directory);
+  console.log("packed root/subpath/helper slugify parity: PASS");
   console.log("packed exports and DOM-free server import: PASS");
 }
 
@@ -92,10 +119,21 @@ function writeConsumer(directory) {
   for (const fixture of fixtures) {
     cpSync(join(packageDir, "type-tests-zudo-react", fixture), join(directory, fixture));
   }
+  const slugifyFixture = "slugify-types.ts";
+  writeFileSync(
+    join(directory, slugifyFixture),
+    `import { slugify as rootSlugify, SlugAllocator as RootAllocator } from "@takazudo/zfb";
+import { slugify as subSlugify, SlugAllocator as SubAllocator } from "@takazudo/zfb/slugify";
+import { slugify as helperSlugify, SlugAllocator as HelperAllocator } from "@takazudo/zfb-slugify";
+const value: string = rootSlugify(subSlugify(helperSlugify("Hello")));
+const allocators: Array<RootAllocator | SubAllocator | HelperAllocator> = [new RootAllocator(), new SubAllocator(), new HelperAllocator()];
+for (const allocator of allocators) allocator.allocate(2, value);
+`,
+  );
   const config = JSON.parse(
     readFileSync(join(packageDir, "tsconfig.zudo-react-fixture.json"), "utf8"),
   );
-  config.include = fixtures;
+  config.include = [...fixtures, slugifyFixture];
   // The repo fixture loads the workspace's @types/node; an isolated packed consumer has none.
   config.compilerOptions.types = [];
   writeFileSync(join(directory, "tsconfig.json"), JSON.stringify(config));
@@ -146,12 +184,12 @@ try {
   if (command !== "stage" && command !== "check")
     throw new Error("Usage: zudo-react-packed.mjs stage <dir> | check");
   if (command === "stage" && !process.argv[3]) throw new Error("stage needs a directory");
-  const tarball = buildAndPack();
+  const tarballs = buildAndPack();
   const directory =
     command === "stage"
       ? resolve(process.argv[3])
       : mkdtempSync(join(tmpdir(), "zudo-react-consumer-"));
-  stage(tarball, directory);
+  stage(tarballs, directory);
   if (command === "check") {
     assertPackedExports(directory);
     checkTypes(directory);
@@ -159,6 +197,11 @@ try {
     const link = join(sourceDir, "node_modules", "@takazudo", "zfb");
     mkdirSync(dirname(link), { recursive: true });
     symlinkSync(packageDir, link, "dir");
+    symlinkSync(
+      resolve(repoDir, "packages/zfb-slugify"),
+      join(sourceDir, "node_modules", "@takazudo", "zfb-slugify"),
+      "dir",
+    );
     const esbuild =
       process.env.ZFB_ESBUILD_BIN ||
       join(repoDir, "crates", "zfb", "binaries", "esbuild", "esbuild");

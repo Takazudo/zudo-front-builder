@@ -935,8 +935,8 @@ jobs:
 
   publish:
     # Publishes all workspace packages once all platform binaries are built.
-    # pnpm -r publish honors the dependency graph:
-    #   platform packages → @takazudo/zfb → @takazudo/zfb-runtime → @takazudo/zfb-adapter-cloudflare → create-zfb
+    # scripts/publish-npm-packages.sh follows the dependency graph:
+    #   platform packages → @takazudo/zfb-slugify → @takazudo/zfb → @takazudo/zfb-runtime → @takazudo/zfb-adapter-cloudflare → create-zfb
     # pnpm (not npm) is used so workspace:* peer-deps are rewritten at publish time.
     # @takazudo/zfb-md-wasm (needs: build-wasm-md) is a separate, unrelated
     # dependency graph (crates/zfb-md-wasm/npm) — it's just published

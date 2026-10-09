@@ -52,6 +52,7 @@ const zfbTarball = resolve(option("--zfb-tarball"));
 const runtimeTarball = resolve(option("--runtime-tarball"));
 const packageDir = resolve(option("--package"));
 const runtimePackageDir = resolve(option("--runtime-package"));
+const slugifyPackageDir = resolve(option("--slugify-package"));
 const honoPackageDir = resolve(option("--hono-package"));
 const out = resolve(option("--out"));
 const mode = option("--mode");
@@ -69,6 +70,13 @@ if (packageJson.name !== "@takazudo/zfb") throw new Error("wrong package path");
 const runtimePackageJson = JSON.parse(
   readFileSync(join(runtimePackageDir, "package.json"), "utf8"),
 );
+const slugifyPackageJson = JSON.parse(
+  readFileSync(join(slugifyPackageDir, "package.json"), "utf8"),
+);
+if (slugifyPackageJson.name !== "@takazudo/zfb-slugify")
+  throw new Error("wrong slugify package path");
+if (slugifyPackageJson.version !== packageJson.version)
+  throw new Error("zfb and slugify package versions differ");
 if (runtimePackageJson.name !== "@takazudo/zfb-runtime")
   throw new Error("wrong runtime package path");
 if (runtimePackageJson.version !== packageJson.version)
@@ -108,6 +116,7 @@ function build(label, ids, pass) {
     mkdirSync(join(work, "node_modules", "@takazudo"), { recursive: true });
     symlinkSync(packageDir, join(work, "node_modules", "@takazudo", "zfb"), "dir");
     symlinkSync(runtimePackageDir, join(work, "node_modules", "@takazudo", "zfb-runtime"), "dir");
+    symlinkSync(slugifyPackageDir, join(work, "node_modules", "@takazudo", "zfb-slugify"), "dir");
     symlinkSync(honoPackageDir, join(work, "node_modules", "hono"), "dir");
     writeFileSync(join(work, "zfb.config.json"), '{"wind":false}\n');
     writeFileSync(join(work, "pages", "index.tsx"), projectPage(ids));
@@ -239,6 +248,8 @@ const report = {
     packageJsonSha256: sha(readFileSync(join(packageDir, "package.json"))),
     packagePath: packageDir,
     runtimePackageVersion: runtimePackageJson.version,
+    slugifyPackageJsonSha256: sha(readFileSync(join(slugifyPackageDir, "package.json"))),
+    slugifyPackagePath: slugifyPackageDir,
     runtimePackageJsonSha256: sha(readFileSync(join(runtimePackageDir, "package.json"))),
     runtimePackagePath: runtimePackageDir,
     honoPackageVersion: honoPackageJson.version,

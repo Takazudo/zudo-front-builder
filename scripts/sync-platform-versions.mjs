@@ -3,7 +3,8 @@
  * sync-platform-versions.mjs
  *
  * Keep lockstep package version fields, packages/zfb/package.json
- * optionalDependencies entries (prefixed with @takazudo/zfb-), and related
+ * optionalDependencies entries (prefixed with @takazudo/zfb-), the slugify
+ * dependency, and related
  * workspace package version fields in lockstep with packages/zfb/package.json
  * version.
  *
@@ -124,6 +125,16 @@ function main() {
       }
     }
   }
+  // The lightweight helper is a required SDK dependency and follows the same lockstep pin.
+  const slugifyDep = zfbPkg.dependencies?.["@takazudo/zfb-slugify"];
+  if (typeof slugifyDep !== "string") fail("packages/zfb must depend on @takazudo/zfb-slugify");
+  const nextSlugifyDep = slugifyDep.startsWith("workspace:")
+    ? `workspace:${srcVersion}`
+    : srcVersion;
+  zfbPkg.dependencies["@takazudo/zfb-slugify"] = nextSlugifyDep;
+  process.stdout.write(
+    `  packages/zfb/package.json dependencies[@takazudo/zfb-slugify]: ${slugifyDep === nextSlugifyDep ? `already ${nextSlugifyDep} (no change)` : `${slugifyDep} -> ${nextSlugifyDep}`}\n`,
+  );
   writeJsonIfChanged(zfbPkgPath, zfbPkg, zfbRaw);
 
   // 3. Rewrite packages/zfb-runtime/package.json version field.

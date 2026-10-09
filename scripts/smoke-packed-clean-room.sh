@@ -108,15 +108,16 @@ pnpm_pack() {
   (cd "$1" && pnpm pack --pack-destination "$TARBALL_DIR" | tail -1)
 }
 
+ZFB_SLUGIFY_TARBALL="$(pnpm_pack packages/zfb-slugify)"
 ZFB_TARBALL="$(pnpm_pack packages/zfb)"
 ZFB_RUNTIME_TARBALL="$(pnpm_pack packages/zfb-runtime)"
 ZFB_ADAPTER_CF_TARBALL="$(pnpm_pack packages/zfb-adapter-cloudflare)"
 CREATE_ZFB_TARBALL="$(pnpm_pack packages/create-zfb)"
 
-for t in "$ZFB_TARBALL" "$ZFB_RUNTIME_TARBALL" "$ZFB_ADAPTER_CF_TARBALL" "$CREATE_ZFB_TARBALL"; do
+for t in "$ZFB_SLUGIFY_TARBALL" "$ZFB_TARBALL" "$ZFB_RUNTIME_TARBALL" "$ZFB_ADAPTER_CF_TARBALL" "$CREATE_ZFB_TARBALL"; do
   [[ -f "$t" ]] || fail "expected tarball not found: $t"
 done
-pass "packed zfb, zfb-runtime, zfb-adapter-cloudflare, create-zfb"
+pass "packed zfb-slugify, zfb, zfb-runtime, zfb-adapter-cloudflare, create-zfb"
 
 # ── Stage 3: clean room — install create-zfb from its tarball, LOCAL overrides ──
 # Work in a temp dir completely outside the checked-out workspace, same
@@ -142,6 +143,7 @@ echo "Clean room: $CLEAN_ROOM_DIR"
 # same-day-publish policy, masking the override bug as an unrelated
 # supply-chain failure instead of the "did not install from local tarball"
 # assertion below.
+ZFB_SLUGIFY_TARBALL="$ZFB_SLUGIFY_TARBALL" \
 ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 ZFB_ADAPTER_CF_TARBALL="$ZFB_ADAPTER_CF_TARBALL" \
@@ -154,6 +156,7 @@ const path = require("node:path");
 const env = process.env;
 const overrides = {
   "@takazudo/zfb": `file:${env.ZFB_TARBALL}`,
+  "@takazudo/zfb-slugify": `file:${env.ZFB_SLUGIFY_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
   "@takazudo/zfb-adapter-cloudflare": `file:${env.ZFB_ADAPTER_CF_TARBALL}`,
   "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
@@ -229,6 +232,7 @@ rm -rf "$SITE_DIR/node_modules" "$SITE_DIR/pnpm-lock.yaml"
 # install root (no pnpm-workspace.yaml links it back to the clean-room dir,
 # so it needs its own). As in Stage 3, pnpm 11 only reads `overrides` from
 # pnpm-workspace.yaml, not package.json's `pnpm` field — write it there.
+ZFB_SLUGIFY_TARBALL="$ZFB_SLUGIFY_TARBALL" \
 ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 PLATFORM_TARBALL_PATH="$PLATFORM_TARBALL_PATH" \
@@ -239,6 +243,7 @@ const path = require("node:path");
 const env = process.env;
 const overrides = {
   "@takazudo/zfb": `file:${env.ZFB_TARBALL}`,
+  "@takazudo/zfb-slugify": `file:${env.ZFB_SLUGIFY_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
   "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
 };
