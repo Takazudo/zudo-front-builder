@@ -2,8 +2,9 @@
  * Static server for the packed-SDK zudo-react browser fixture.
  *
  * Serves generated pages and compiled fixtures from tests/zudo-react-browser/dist/
- * at /, and the staged package's dist/ tree at /zfb-dist/. The latter keeps the
- * browser's import-map URLs and the staged export map pointed at the same files.
+ * at /, and the staged SDK/helper dist/ trees at /zfb-dist/ and
+ * /zfb-slugify-dist/. These keep browser import-map URLs pointed at the same
+ * files as the staged package exports.
  */
 
 import { createServer } from "node:http";
@@ -14,6 +15,7 @@ import { fileURLToPath } from "node:url";
 const HARNESS_DIR = fileURLToPath(new URL(".", import.meta.url));
 const GENERATED_DIR = join(HARNESS_DIR, "dist");
 const SDK_DIST_DIR = join(HARNESS_DIR, "node_modules", "@takazudo", "zfb", "dist");
+const SLUGIFY_DIST_DIR = join(HARNESS_DIR, "node_modules", "@takazudo", "zfb-slugify", "dist");
 const portArg = process.argv[2] ?? "4342";
 const PORT = Number(portArg);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -68,6 +70,12 @@ const server = createServer((request, response) => {
 
   if (pathname.startsWith("/zfb-dist/")) {
     const target = safeJoin(SDK_DIST_DIR, pathname.slice("/zfb-dist/".length));
+    if (target && tryServe(response, target)) return;
+    notFound(response, pathname);
+    return;
+  }
+  if (pathname.startsWith("/zfb-slugify-dist/")) {
+    const target = safeJoin(SLUGIFY_DIST_DIR, pathname.slice("/zfb-slugify-dist/".length));
     if (target && tryServe(response, target)) return;
     notFound(response, pathname);
     return;
