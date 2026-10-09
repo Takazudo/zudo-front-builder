@@ -3093,27 +3093,36 @@ fn collect_zudo_react_external_file_closure(
         .into_iter()
         .map(|(physical, logical)| (physical, logical, strict_seeds))
         .collect();
-    let mut visited = BTreeSet::new();
+    // Strictness is inherited along import edges: a walked-only seed may be an
+    // orphan file no bundle loads, so its broken imports must not be fatal.
+    // A strict visit after a lenient one rescans the file so strict wins.
+    let mut visited: BTreeMap<PathBuf, bool> = BTreeMap::new();
     let mut total_bytes = 0_u64;
     while let Some((physical, logical, strict)) = pending.pop() {
         let physical = fs::canonicalize(physical)?;
-        if !visited.insert(physical.clone()) {
-            continue;
+        match visited.get(&physical).copied() {
+            Some(visited_strict) if visited_strict || !strict => continue,
+            Some(_) => {
+                visited.insert(physical.clone(), true);
+            }
+            None => {
+                visited.insert(physical.clone(), strict);
+                if visited.len() > 4096 {
+                    bail!(
+                        "owned island build token external import closure exceeds 4096 files at {}",
+                        logical.display()
+                    );
+                }
+                total_bytes += fs::metadata(&physical)?.len();
+                if total_bytes > 64 * 1024 * 1024 {
+                    bail!(
+                        "owned island build token external import closure exceeds 64 MiB at {}",
+                        logical.display()
+                    );
+                }
+                emit_zudo_react_token_file(logical.clone(), physical.clone(), files, emitted);
+            }
         }
-        if visited.len() > 4096 {
-            bail!(
-                "owned island build token external import closure exceeds 4096 files at {}",
-                logical.display()
-            );
-        }
-        total_bytes += fs::metadata(&physical)?.len();
-        if total_bytes > 64 * 1024 * 1024 {
-            bail!(
-                "owned island build token external import closure exceeds 64 MiB at {}",
-                logical.display()
-            );
-        }
-        emit_zudo_react_token_file(logical.clone(), physical.clone(), files, emitted);
         let extension = physical.extension().and_then(|ext| ext.to_str());
         if !matches!(
             extension,
@@ -3145,18 +3154,23 @@ fn collect_zudo_react_external_file_closure(
                 continue;
             }
             let candidate = normalize_path_lexical(&physical.parent().unwrap().join(path));
-            let target = probe_graph_candidate(&candidate, false).ok_or_else(|| anyhow!(
-                "owned island build token cannot resolve external relative import {specifier:?} from {}",
-                physical.display()
-            ))?;
+            let Some(target) = probe_graph_candidate(&candidate, false) else {
+                if !strict {
+                    continue;
+                }
+                bail!(
+                    "owned island build token cannot resolve external relative import {specifier:?} from {}",
+                    physical.display()
+                );
+            };
             let mut next_logical = normalize_path_lexical(&logical.parent().unwrap().join(path));
             if let Some(extension) = target.extension() {
                 next_logical.set_extension(extension);
             }
-            pending.push((target, next_logical, true));
+            pending.push((target, next_logical, strict));
         }
     }
-    Ok(visited)
+    Ok(visited.into_keys().collect())
 }
 
 fn emit_zudo_react_token_file(
