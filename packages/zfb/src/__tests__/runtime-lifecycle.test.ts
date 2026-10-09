@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { mountIslands as mountOwnedIslands, unmountIslands } from "../runtime.js";
+import {
+  cancelPendingIslands,
+  mountIslands as mountOwnedIslands,
+  unmountIslands,
+} from "../runtime.js";
 import {
   mountTestIslands as mountIslands,
   mountNewTestIslands as mountNewIslands,
@@ -106,6 +110,7 @@ describe("island root lifecycle", () => {
     document.body.innerHTML = '<div data-zfb-island="Fresh"></div>';
     const order: string[] = [];
     mountIslands({ Fresh: { mount: () => ({ dispose: () => order.push("dispose") }) } });
+    document.body.firstElementChild!.setAttribute("data-zfb-island-remount", "");
     vi.resetModules();
     const fresh = await import("../runtime.js");
     mountIslands(
@@ -119,8 +124,64 @@ describe("island root lifecycle", () => {
       },
       fresh.mountIslands,
     );
+    fresh.mountNewIslands();
     expect(order).toEqual(["dispose", "render"]);
   });
+
+  it("preserves a pending render across a dev re-import until the first valid handle", async () => {
+    const callbacks: Array<() => void> = [];
+    vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    try {
+      document.body.innerHTML =
+        '<div data-zfb-island="Fresh" data-when="idle" data-props="{}"></div>';
+      const el = document.body.firstElementChild!;
+      const oldMount = vi.fn();
+      mountIslands({ Fresh: { mount: oldMount } });
+      el.setAttribute("data-zfb-island-remount", "");
+      mountNewIslands();
+      cancelPendingIslands();
+      vi.resetModules();
+      const fresh = await import("../runtime.js");
+      const newMount = vi.fn(() => ({ dispose: vi.fn(), unmount: vi.fn() }));
+      fresh.mountIslands({
+        Fresh: { identity: { component: "Fresh", build: "test" }, mount: newMount },
+      });
+      expect(newMount).not.toHaveBeenCalled();
+      callbacks.at(-1)!();
+      expect(newMount).toHaveBeenCalledWith({}, el, "render");
+      expect(el.hasAttribute("data-zfb-island-pending-render")).toBe(false);
+      expect(oldMount).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["missing", "null", "error"] as const)(
+    "retains render intent after a %s first-mount attempt",
+    (failure) => {
+      document.body.innerHTML =
+        '<div data-zfb-island="Retry" data-zfb-transport="json/1" data-zfb-protocol="zudo-react/1" data-zfb-build="test" data-props="{}" data-zfb-island-remount></div>';
+      const el = document.body.firstElementChild!;
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const identity = { component: "Retry", build: "test" };
+      const failed = vi.fn(() => {
+        if (failure === "error") throw new Error("mount failed");
+        return null;
+      });
+      mountOwnedIslands(failure === "missing" ? {} : { Retry: { identity, mount: failed } });
+      expect(el.hasAttribute("data-zfb-island-pending-render")).toBe(true);
+      expect(el.hasAttribute("data-zfb-island-mounted")).toBe(false);
+      const retry = vi.fn(() => ({ dispose: vi.fn(), unmount: vi.fn() }));
+      mountOwnedIslands({ Retry: { identity, mount: retry } });
+      expect(retry).toHaveBeenCalledWith({}, el, "render");
+      expect(el.hasAttribute("data-zfb-island-pending-render")).toBe(false);
+    },
+  );
 
   it("continues remounting after one root's replacement throws", () => {
     document.body.innerHTML = '<div data-zfb-island="Bad"></div><div data-zfb-island="Good"></div>';

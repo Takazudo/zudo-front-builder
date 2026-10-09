@@ -525,6 +525,8 @@ Use the same nonempty `persist` key on each page where the island should survive
 
 By default, navigation refreshes the persisted island's props from the incoming page. Identical props keep the current instance. Changed props dispose it once and mount a fresh instance with the incoming props, so the island does not keep showing stale page data. Any internal state held by the old instance is lost during that remount.
 
+For an island still waiting on `when="visible"`, `"idle"`, or `"media"`, changed props do not start its first mount early. When its condition fires, the runtime renders the latest props over the retained DOM. A live island with changed props still remounts immediately.
+
 Set `persistProps` to keep the current props and state when the key matches:
 
 ```tsx
