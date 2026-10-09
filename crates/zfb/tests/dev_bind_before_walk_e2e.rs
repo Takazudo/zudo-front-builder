@@ -695,9 +695,9 @@ async fn wait_for_client_script_urls(
     minimum_generation: u64,
     expected_status: &str,
     expected_urls: &[&str],
-    deadline: Duration,
     session: &DevSession,
 ) -> serde_json::Value {
+    let deadline = RENDER_DEADLINE;
     let expected_urls = serde_json::json!(expected_urls);
     let start = Instant::now();
     let mut last = serde_json::Value::Null;
@@ -1731,7 +1731,6 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         baseline_generation,
         "published",
         &["/assets/client/order.js"],
-        RENDER_DEADLINE,
         &session,
     )
     .await;
@@ -1801,7 +1800,6 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         added_generation,
         "not_expected",
         &[],
-        RENDER_DEADLINE,
         &session,
     )
     .await;
@@ -1863,7 +1861,6 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         ready_generation(&removed),
         "published",
         &["/assets/client/cleanup.js"],
-        RENDER_DEADLINE,
         &session,
     )
     .await;
