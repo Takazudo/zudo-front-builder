@@ -514,6 +514,57 @@ async fn wait_for_dev_ready(session: &mut DevSession) -> u16 {
     }
 }
 
+async fn wait_for_dev_document_publication(
+    session: &mut DevSession,
+    port: u16,
+    phase: &str,
+    after_generation: Option<u64>,
+    expected_documents: &str,
+) -> u64 {
+    let started = Instant::now();
+    let deadline = Duration::from_secs(90);
+    let url = format!("http://127.0.0.1:{port}/__zfb/ready");
+    let mut last = "no readiness response".to_string();
+    loop {
+        if let Some(status) = session.guard.try_exit_status() {
+            panic!(
+                "phase {phase}: zfb dev exited while waiting for document publication ({status:?}); \
+                 baseline generation {after_generation:?}, expected documents {expected_documents:?}; \
+                 last readiness: {last}\n{}",
+                session.logs()
+            );
+        }
+        match reqwest::get(&url).await {
+            Ok(response) if response.status().is_success() => {
+                let body: serde_json::Value = response
+                    .json()
+                    .await
+                    .expect("parse /__zfb/ready JSON response");
+                last = body.to_string();
+                if let Some(generation) = body["generation"].as_u64() {
+                    if body["ready"] == true
+                        && body["documents"] == expected_documents
+                        && after_generation.is_none_or(|baseline| generation > baseline)
+                    {
+                        return generation;
+                    }
+                }
+            }
+            Ok(response) => last = format!("HTTP {}", response.status()),
+            Err(error) => last = error.to_string(),
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "phase {phase}: document publication did not settle within {}s; \
+             baseline generation {after_generation:?}, expected documents {expected_documents:?}; \
+             last readiness: {last}\n{}",
+            deadline.as_secs(),
+            session.logs()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 fn appended_logs(session: &DevSession, old_stdout: &str, old_stderr: &str) -> String {
     let stdout = session.stdout();
     let stderr = session.stderr();
@@ -1709,6 +1760,15 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
         "initial dynamic output must be on disk"
     );
 
+    let beta_baseline = wait_for_dev_document_publication(
+        &mut session,
+        port,
+        "before alpha → beta",
+        None,
+        "published",
+    )
+    .await;
+
     // Ordinary Modified must use reload_renderer, rebuild route tables, and
     // prune both served/cache state and the globally vanished HTML file.
     let before_beta_stdout = session.stdout();
@@ -1730,9 +1790,22 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
             "known page must bypass discovery: {tick_logs}"
         );
     }
+    // The beta response observes this edit's route-table swap. That swap
+    // precedes its document write/prune/commit; no other edit is in flight.
+    // A request-time lazy repair can advance generation, but cannot satisfy
+    // this eager tick's `published` document state.
+    let beta_generation = wait_for_dev_document_publication(
+        &mut session,
+        port,
+        "alpha → beta",
+        Some(beta_baseline),
+        "published",
+    )
+    .await;
     assert!(
         !alpha_output.exists(),
-        "vanished alpha output must be pruned"
+        "vanished alpha output must be pruned at beta publication generation {beta_generation} \
+         (baseline {beta_baseline})"
     );
     let old = reqwest::get(format!("http://127.0.0.1:{port}/posts/alpha"))
         .await
@@ -1743,6 +1816,14 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
         "old route must leave the live cache"
     );
 
+    let zero_baseline = wait_for_dev_document_publication(
+        &mut session,
+        port,
+        "before beta → zero routes",
+        None,
+        "published",
+    )
+    .await;
     write(&root, dynamic, &source(None));
     let started = Instant::now();
     loop {
@@ -1759,10 +1840,34 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(!dev_session_output(&root, &session, "posts/beta/index.html").exists());
+    // Beta 404 observes the zero-route table. This eager tick has no selected
+    // document, so its completed prune commits `ready_on_request`. The 404
+    // cannot start a beta lazy repair; the tick is the only publication after
+    // the settled baseline (request finalizers serialize before tick Begin).
+    let zero_generation = wait_for_dev_document_publication(
+        &mut session,
+        port,
+        "beta → zero routes",
+        Some(zero_baseline),
+        "ready_on_request",
+    )
+    .await;
+    assert!(
+        !dev_session_output(&root, &session, "posts/beta/index.html").exists(),
+        "vanished beta output must be pruned at zero-route publication generation {zero_generation} \
+         (baseline {zero_baseline})"
+    );
 
     // A module that currently expands to zero routes is still a known page
     // source, and a later edit can publish routes again.
+    let gamma_baseline = wait_for_dev_document_publication(
+        &mut session,
+        port,
+        "before zero routes → gamma",
+        None,
+        "ready_on_request",
+    )
+    .await;
     let before_gamma_stdout = session.stdout();
     let before_gamma_stderr = session.stderr();
     write(&root, dynamic, &source(Some("gamma")));
@@ -1782,7 +1887,19 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
             "zero-output known page bypasses discovery: {tick_logs}"
         );
     }
-    assert!(dev_session_output(&root, &session, "posts/gamma/index.html").exists());
+    let gamma_generation = wait_for_dev_document_publication(
+        &mut session,
+        port,
+        "zero routes → gamma",
+        Some(gamma_baseline),
+        "published",
+    )
+    .await;
+    assert!(
+        dev_session_output(&root, &session, "posts/gamma/index.html").exists(),
+        "gamma output must exist at publication generation {gamma_generation} \
+         (baseline {gamma_baseline})"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
