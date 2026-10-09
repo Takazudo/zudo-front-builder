@@ -1840,16 +1840,15 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // Beta 404 observes the zero-route table. This eager tick has no selected
-    // document, so its completed prune commits `ready_on_request`. The 404
-    // cannot start a beta lazy repair; the tick is the only publication after
-    // the settled baseline (request finalizers serialize before tick Begin).
+    // Beta 404 observes the zero-route table. This fixture still has the
+    // selected home page, so the eager tick commits `published` after its
+    // prune. A request-time repair cannot satisfy that document state.
     let zero_generation = wait_for_dev_document_publication(
         &mut session,
         port,
         "beta → zero routes",
         Some(zero_baseline),
-        "ready_on_request",
+        "published",
     )
     .await;
     assert!(
@@ -1865,7 +1864,7 @@ async fn dynamic_page_route_rebuild(force_created: bool) {
         port,
         "before zero routes → gamma",
         None,
-        "ready_on_request",
+        "published",
     )
     .await;
     let before_gamma_stdout = session.stdout();
