@@ -1,0 +1,14 @@
+---
+title: v4.2.1
+sidebar_position: 145
+---
+
+# v4.2.1
+
+Released: 2026-10-09
+
+## Bug Fixes
+
+- `zfb build` no longer fails with `owned island build token cannot resolve external relative import` when a symlinked package that resolves outside the project root (a nested pnpm-style layout or a `workspace:` sibling) ships an unexported, never-imported file whose relative import does not exist, such as a raw eject template. Files reached only by walking a linked package now skip unresolvable relative imports while their bytes still feed the build token; plugin and tsconfig alias targets and declared root files still fail on a broken import. Present since v3.0.0 (#4060; ba559c43, 04c8e2e8).
+- The declared-root audit plan label in `zfb css` / wind source planning is preserved when the project or temp directory sits behind a symlink, such as macOS `/var` → `/private/var` (#4054; 8b0b64a5).
+- `zfb dev` no longer goes silent after a watcher handoff when a known page is created or a page with an invalid island registration is edited and then recovered: the tick now reports its outcome, normalizes known page creates, and rediscovers unregistered pages after modified recovery edits (#4056; 3120ecc8, fe2ac5e8). This fix is verified on Linux CI; its macOS confirmation is deferred to #4090.

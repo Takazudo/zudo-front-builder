@@ -1,15 +1,15 @@
 {
-  "measuredOnVersion": "4.2.0",
+  "measuredOnVersion": "4.2.1",
   "measured": {
     "root": {
       "finalWasm": 3390113,
-      "gzip9": 1518982,
+      "gzip9": 1518981,
       "glue": 14998,
       "glueGzip9": 4199
     },
     "highlight": {
       "finalWasm": 1537593,
-      "gzip9": 817810,
+      "gzip9": 817809,
       "glue": 8758,
       "glueGzip9": 2637
     },
@@ -21,7 +21,7 @@
     },
     "parse": {
       "finalWasm": 700375,
-      "gzip9": 284334,
+      "gzip9": 284331,
       "glue": 11159,
       "glueGzip9": 3797
     }

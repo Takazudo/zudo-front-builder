@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-win32-x64-msvc",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "Platform-specific zfb binary (win32-x64-msvc)",
   "license": "MIT",
   "os": [

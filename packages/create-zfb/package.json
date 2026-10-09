@@ -1,6 +1,6 @@
 {
   "name": "create-zfb",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "private": false,
   "type": "module",
   "description": "Scaffold a new zfb static-site project: `npm create zfb@latest my-site`",
@@ -40,7 +40,7 @@
     "test:watch": "vp test"
   },
   "dependencies": {
-    "@takazudo/zfb": "workspace:4.2.0"
+    "@takazudo/zfb": "workspace:4.2.1"
   },
   "devDependencies": {
     "vite-plus": "catalog:"
