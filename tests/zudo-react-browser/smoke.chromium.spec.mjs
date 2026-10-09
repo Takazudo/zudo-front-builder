@@ -52,6 +52,7 @@ test("loads the packed core after observing the server-rendered counter", async 
     expect(Object.keys(importMap).sort()).toEqual(
       [
         "@takazudo/zfb",
+        "@takazudo/zfb-slugify",
         "@takazudo/zfb/zudo-react",
         "@takazudo/zfb/zudo-react/client",
         "@takazudo/zfb/zudo-react/jsx-dev-runtime",
@@ -60,6 +61,7 @@ test("loads the packed core after observing the server-rendered counter", async 
         "@takazudo/zfb/zudo-react/testing",
       ].sort(),
     );
+    expect(importMap["@takazudo/zfb-slugify"]).toBe("/zfb-slugify-dist/index.js");
     await expect(page.locator("#counter")).toHaveText("Count: 0");
 
     heldModule.release();
