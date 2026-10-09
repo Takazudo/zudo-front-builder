@@ -501,27 +501,27 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("4.2.0");
+    expect(linuxContract.toolchain.packageVersion).toBe("4.2.1");
     expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66327, gzip: 22087 },
-      "scalar-signal": { raw: 66335, gzip: 22091 },
-      "show-for": { raw: 66481, gzip: 22169 },
-      model: { raw: 66326, gzip: 22101 },
-      "blog-theme": { raw: 66676, gzip: 22234 },
-      "json-api": { raw: 66481, gzip: 22185 },
-      "multi-island": { raw: 66603, gzip: 22194 },
+      "event-only": { raw: 66327, gzip: 22091 },
+      "scalar-signal": { raw: 66335, gzip: 22088 },
+      "show-for": { raw: 66481, gzip: 22171 },
+      model: { raw: 66326, gzip: 22099 },
+      "blog-theme": { raw: 66676, gzip: 22236 },
+      "json-api": { raw: 66481, gzip: 22184 },
+      "multi-island": { raw: 66603, gzip: 22195 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66389, gzip: 22112 },
-      "scalar-signal": { raw: 66397, gzip: 22121 },
-      "show-for": { raw: 66543, gzip: 22201 },
-      model: { raw: 66388, gzip: 22126 },
+      "event-only": { raw: 66389, gzip: 22111 },
+      "scalar-signal": { raw: 66397, gzip: 22118 },
+      "show-for": { raw: 66543, gzip: 22198 },
+      model: { raw: 66388, gzip: 22127 },
       "blog-theme": { raw: 66738, gzip: 22260 },
-      "json-api": { raw: 66543, gzip: 22215 },
-      "multi-island": { raw: 66665, gzip: 22223 },
+      "json-api": { raw: 66543, gzip: 22217 },
+      "multi-island": { raw: 66665, gzip: 22222 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });
