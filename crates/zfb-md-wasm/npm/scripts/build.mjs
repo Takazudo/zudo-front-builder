@@ -46,6 +46,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -122,6 +123,39 @@ export const ARTIFACTS = [
 ];
 
 const FACTORY_CAPABILITIES = new Set(["parseToAst", "highlightCode"]);
+
+/** Build the package manifest from the exact byte arrays supplied by the caller. */
+export function buildShippedArtifactsManifest({ name, version, entries }) {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError("shipped artifacts manifest name must be a nonempty string");
+  }
+  if (typeof version !== "string" || version.length === 0) {
+    throw new TypeError("shipped artifacts manifest version must be a nonempty string");
+  }
+  if (!Array.isArray(entries)) {
+    throw new TypeError("shipped artifacts manifest entries must be an array");
+  }
+
+  return {
+    schemaVersion: 1,
+    name,
+    version,
+    artifacts: entries.map(({ entry, path, bytes }) => {
+      if (typeof entry !== "string" || typeof path !== "string") {
+        throw new TypeError("shipped artifact entry and path must be strings");
+      }
+      if (!(bytes instanceof Uint8Array)) {
+        throw new TypeError(`shipped artifact ${entry} bytes must be a Buffer or Uint8Array`);
+      }
+      return {
+        entry,
+        path,
+        bytes: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    }),
+  };
+}
 
 function matchingBrace(source, openIndex) {
   let depth = 0;
@@ -667,6 +701,23 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir, w
   return { cdylibSize, bindgenSize, glueSize, glueGzipSize, finalSize, gzipSize };
 }
 
+function writeShippedArtifactsManifest(distDir) {
+  const packageJson = JSON.parse(readFileSync(resolve(pkgRoot, "package.json"), "utf8"));
+  const manifest = buildShippedArtifactsManifest({
+    name: packageJson.name,
+    version: packageJson.version,
+    entries: ARTIFACTS.map(({ entry, dirName, outName }) => ({
+      entry,
+      path: `dist/${dirName}/${outName}_bg.wasm`,
+      bytes: readFileSync(resolve(distDir, dirName, `${outName}_bg.wasm`)),
+    })),
+  });
+  writeFileSync(
+    resolve(distDir, "shipped-artifacts.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+}
+
 function main(argv) {
   const env = envWithRustupPathFix();
 
@@ -707,6 +758,7 @@ function main(argv) {
     mkdirSync(distSubDir, { recursive: true });
     cpSync(resolve(pkgRoot, "src", dirName), distSubDir, { recursive: true });
   }
+  writeShippedArtifactsManifest(distDir);
 
   const records = stats.map(({ artifact, stats: artifactStats }) => ({
     label: artifact.label,
