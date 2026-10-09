@@ -470,27 +470,27 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.1.0");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.2.1");
     expect(darwinContract.allowance).toEqual({ raw: 0, gzip: 0 });
     expect(darwinContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66327, gzip: 22087 },
-      "scalar-signal": { raw: 66335, gzip: 22093 },
-      "show-for": { raw: 66481, gzip: 22165 },
-      model: { raw: 66326, gzip: 22097 },
-      "blog-theme": { raw: 66676, gzip: 22232 },
-      "json-api": { raw: 66481, gzip: 22187 },
-      "multi-island": { raw: 66603, gzip: 22196 },
+      "event-only": { raw: 66792, gzip: 22249 },
+      "scalar-signal": { raw: 66800, gzip: 22256 },
+      "show-for": { raw: 66949, gzip: 22322 },
+      model: { raw: 66791, gzip: 22249 },
+      "blog-theme": { raw: 67144, gzip: 22374 },
+      "json-api": { raw: 66950, gzip: 22335 },
+      "multi-island": { raw: 67072, gzip: 22341 },
     });
     expect(darwinContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66389, gzip: 22111 },
-      "scalar-signal": { raw: 66397, gzip: 22121 },
-      "show-for": { raw: 66543, gzip: 22199 },
-      model: { raw: 66388, gzip: 22129 },
-      "blog-theme": { raw: 66738, gzip: 22262 },
-      "json-api": { raw: 66543, gzip: 22216 },
-      "multi-island": { raw: 66665, gzip: 22224 },
+      "event-only": { raw: 66854, gzip: 22267 },
+      "scalar-signal": { raw: 66862, gzip: 22284 },
+      "show-for": { raw: 67011, gzip: 22342 },
+      model: { raw: 66853, gzip: 22272 },
+      "blog-theme": { raw: 67206, gzip: 22410 },
+      "json-api": { raw: 67012, gzip: 22360 },
+      "multi-island": { raw: 67134, gzip: 22365 },
     });
     const state = makeState(darwinContract.platform, darwinContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });

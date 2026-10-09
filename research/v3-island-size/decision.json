@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "decisionIssue": 3469,
-  "outcome": "no-product-code-change",
+  "outcome": "intentional-feature-size-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "bd1edc1bc6fee22f06f1d323f5a253ac3f2fb6ee",
+  "baselineSourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -23,12 +23,12 @@
     "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
   },
   "toolchain": {
-    "packageVersion": "4.1.0",
+    "packageVersion": "4.2.1",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "cf3f83ee51f380d89de4e519649c720492f04083809997955b4082d71bf67626",
+    "pnpmLockSha256": "113d2ec03d688fe05d573b1c4a56b97a55647ccae86b1416b84e8c97e04d9b8d",
     "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -43,32 +43,32 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 66327,
-        "gzip": 22087
+        "raw": 66792,
+        "gzip": 22249
       },
       "scalar-signal": {
-        "raw": 66335,
-        "gzip": 22093
+        "raw": 66800,
+        "gzip": 22256
       },
       "show-for": {
-        "raw": 66481,
-        "gzip": 22165
+        "raw": 66949,
+        "gzip": 22322
       },
       "model": {
-        "raw": 66326,
-        "gzip": 22097
+        "raw": 66791,
+        "gzip": 22249
       },
       "blog-theme": {
-        "raw": 66676,
-        "gzip": 22232
+        "raw": 67144,
+        "gzip": 22374
       },
       "json-api": {
-        "raw": 66481,
-        "gzip": 22187
+        "raw": 66950,
+        "gzip": 22335
       },
       "multi-island": {
-        "raw": 66603,
-        "gzip": 22196
+        "raw": 67072,
+        "gzip": 22341
       }
     },
     "packed": {
@@ -77,42 +77,42 @@
         "gzip": 0
       },
       "event-only": {
-        "raw": 66389,
-        "gzip": 22111
+        "raw": 66854,
+        "gzip": 22267
       },
       "scalar-signal": {
-        "raw": 66397,
-        "gzip": 22121
+        "raw": 66862,
+        "gzip": 22284
       },
       "show-for": {
-        "raw": 66543,
-        "gzip": 22199
+        "raw": 67011,
+        "gzip": 22342
       },
       "model": {
-        "raw": 66388,
-        "gzip": 22129
+        "raw": 66853,
+        "gzip": 22272
       },
       "blog-theme": {
-        "raw": 66738,
-        "gzip": 22262
+        "raw": 67206,
+        "gzip": 22410
       },
       "json-api": {
-        "raw": 66543,
-        "gzip": 22216
+        "raw": 67012,
+        "gzip": 22360
       },
       "multi-island": {
-        "raw": 66665,
-        "gzip": 22224
+        "raw": 67134,
+        "gzip": 22365
       }
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml once it reaches main; its path-filtered pull_request trigger is a temporary bootstrap. Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v4.1.0 ceilings measured in macOS 15.7.9 CI run 37722926877, job 113134501986, at source bd1edc1bc6fee22f06f1d323f5a253ac3f2fb6ee. Each fixture in both eight-fixture matrices has two identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 zero-allowance contract records the deferred first-mount render-intent runtime change measured natively in workflow_dispatch run 37982542273 at source b7d161bb3a1adaf605d8934b16773f3e4974ad6d. All nonempty island fixtures gained 465–469 raw bytes and 141–163 gzip bytes against the prior Darwin exact ceilings; no-island stayed 0/0. Workspace and packed eight-fixture matrices each had two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
-    "event": "pull_request",
-    "runId": 37722926877,
-    "jobId": 113134501986,
-    "sourceSha": "bd1edc1bc6fee22f06f1d323f5a253ac3f2fb6ee",
-    "note": "PR #4047 measurement at v4.1.0 on the native macOS 15.7.9 arm64 runner; downloaded artifact 11527282895 contains both complete matrices, saved passes, package tarballs, and runner provenance. The initial checker exited 1 only because it compared the valid measurement with the prior v4.0.0 ceilings. These ceilings match every measured raw/gzip total with zero allowance."
+    "event": "workflow_dispatch",
+    "runId": 37982542273,
+    "jobId": 113996389940,
+    "sourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
+    "note": "Native macOS 15 arm64 run from root PR #4118 head b7d161bb; artifact 11642476321 contains complete workspace and packed eight-fixture matrices with two identical full-dist passes per case, package tarballs and runner provenance. Deferred first-mount render-intent handling adds 465–469 raw bytes per nonempty island entry; no-island remains 0/0. Ceilings equal the measured bytes with zero allowance. The prior Darwin v4.1.0 contract remains in Git history."
   }
 }
