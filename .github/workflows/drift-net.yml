@@ -48,7 +48,7 @@
 #     reported it. This leg closes that gap on the same weekly cadence.
 #
 # The provenance leg fails on regressions and on every package that has never
-# carried an attestation. All ten published packages are subject to the
+# carried an attestation. All eleven published packages are subject to the
 # all-published policy from #2627; the temporary legacy exception expired when
 # the attested `2.13.0` release advanced `latest`.
 #
