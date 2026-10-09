@@ -477,8 +477,10 @@ jobs:
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-build.log
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/metadata.txt
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/pack-zfb.log
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/pack-zfb-slugify.log
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/pack-zfb-runtime.log
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-package.json
+            ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-slugify-package.json
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/zfb-runtime-package.json
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/runtime-resolution.json
             ${{ runner.temp }}/zfb-packed-runtime-${{ github.run_id }}/node_modules-before.json
