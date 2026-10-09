@@ -488,11 +488,26 @@ async function main() {
     await mkdir(tarballDir, { recursive: true });
     await mkdir(consumer, { recursive: true });
     const zfbBinary = await copyCurrentBinary(join(tempRoot, "zfb-bin"));
+    // The helper is not published yet. Keep it a transitive SDK dependency in
+    // this external consumer, resolved from the same checkout's packed bytes.
+    const slugifyTarball = await packPackage(
+      join(REPO_ROOT, "packages/zfb-slugify"),
+      tarballDir,
+      "@takazudo/zfb-slugify",
+    );
     const zfbTarball = await packPackage(
       join(REPO_ROOT, "packages/zfb"),
       tarballDir,
       "@takazudo/zfb",
     );
+    const packedSdk = JSON.parse(
+      execFileSync("tar", ["-xOf", zfbTarball, "package/package.json"], { encoding: "utf8" }),
+    );
+    const packedSlugify = JSON.parse(
+      execFileSync("tar", ["-xOf", slugifyTarball, "package/package.json"], { encoding: "utf8" }),
+    );
+    assert.equal(packedSlugify.name, "@takazudo/zfb-slugify");
+    assert.equal(packedSdk.dependencies?.["@takazudo/zfb-slugify"], packedSlugify.version);
     const runtimeTarball = await packPackage(
       join(REPO_ROOT, "packages/zfb-runtime"),
       tarballDir,
@@ -510,6 +525,7 @@ async function main() {
             "@takazudo/zfb": `file:${zfbTarball}`,
             "@takazudo/zfb-runtime": `file:${runtimeTarball}`,
           },
+          overrides: { "@takazudo/zfb-slugify": `file:${slugifyTarball}` },
           devDependencies: { typescript: TYPESCRIPT_VERSION },
         },
         null,
