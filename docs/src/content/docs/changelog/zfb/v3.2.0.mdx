@@ -7,6 +7,8 @@ sidebar_position: 141
 
 Released: 2026-10-04
 
+**Breaking change, documented after release:** island identity no longer exempts duplicate definitions in the same package or byte-identical staged copies of package files. They now fail with `ambiguous owned island marker`. See [Same-package duplicate island definitions](../../guides/migrating-to-v3.mdx#same-package-duplicate-island-definitions).
+
 ## Features
 
 - Expand the finite HTML and SVG markup vocabulary and expose precise owned JSX and Island types (fefe6832, 513c60b3).
