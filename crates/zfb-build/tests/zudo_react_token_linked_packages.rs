@@ -446,3 +446,50 @@ fn ignored_nested_node_modules_are_not_discovered() {
     assert_eq!(changed_nested, "6391d61134c50a83");
     assert_ne!(second, changed_nested);
 }
+
+// #4060: a walked-only file (an unexported eject template) is hashed but never
+// bundled, so its unresolvable relative import must not fail the token.
+#[test]
+fn walked_only_orphan_with_broken_relative_import_still_yields_token() {
+    let f = Fixture::new();
+    let counter = f.widget.join("eject/counter.tsx");
+    write(
+        &counter,
+        "\"use client\";\nimport { label } from \"./helper.js\";\nexport const Counter = () => label;\n",
+    );
+    let first = f.token("symlink");
+    assert!(!first.is_empty());
+    write(
+        &counter,
+        "\"use client\";\nimport { label } from \"./helper.js\";\nexport const Counter = () => label + 1;\n",
+    );
+    let edited = f.token("symlink");
+    assert_ne!(first, edited, "orphan bytes stay in the token");
+    write(
+        &f.widget.join("eject/helper.js"),
+        "export const label = 1;\n",
+    );
+    assert_ne!(
+        edited,
+        f.token("symlink"),
+        "a later-created import target is walked"
+    );
+}
+
+#[test]
+fn strict_alias_target_with_broken_relative_import_still_errors() {
+    let f = Fixture::new();
+    write(
+        &f.widget.join("target.js"),
+        "import { dep } from './missing.js'; export const target = dep;\n",
+    );
+    let aliases = vec![(
+        "widget-target".into(),
+        f.widget.join("target.js").display().to_string(),
+    )];
+    let error = zudo_react_build_token_with_aliases(&f.app, &aliases).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("cannot resolve external relative import"),
+        "{error:#}"
+    );
+}
