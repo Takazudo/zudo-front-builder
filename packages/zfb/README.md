@@ -74,8 +74,8 @@ surface. Today it covers:
 - `clientScript(name)` — SSR helper that returns the stable URL for a
   named client-script asset.
 - `slugify(input)` and `SlugAllocator` — exported from the root barrel and
-  the `zfb/slugify` subpath for heading-id parity with the Rust content
-  pipeline.
+  the `zfb/slugify` compatibility subpath for heading-id parity with the Rust content
+  pipeline. For a lightweight direct import, use `@takazudo/zfb-slugify`.
 
 The package uses the owned `@takazudo/zfb/zudo-react` runtime for island
 rendering and hydration. Consumers do not install a separate JSX runtime.

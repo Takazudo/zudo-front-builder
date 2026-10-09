@@ -107,7 +107,7 @@ it can be modified, rather than requiring the host to reconstruct package intern
 
 The changelog has five package lanes in this stable order: `zfb`, `zfb-runtime`,
 `zfb-adapter-cloudflare`, `create-zfb`, and `zfb-md-wasm`. The `zfb` lane owns
-`@takazudo/zfb`, the Rust engine/CLI, and the five platform carrier packages; each other lane
+`@takazudo/zfb`, `@takazudo/zfb-slugify`, the Rust engine/CLI, and the five platform carrier packages; each other lane
 owns only its named package. The complete shared lockstep history through **v2.10.0** stays in
 `src/content/docs/changelog/zfb/` and must not be duplicated into another lane.
 

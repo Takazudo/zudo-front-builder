@@ -9,7 +9,8 @@ The changelog is split into five package lanes while preserving the complete sha
 history. Releases through **v2.10.0** were published together: their release pages live in the
 `zfb` lane and cover `@takazudo/zfb`, the Rust engine and CLI, and the five platform carrier
 packages. The other four lanes are reserved for package-specific notes after that shared-history
-cutoff; historical pages are not duplicated into them.
+cutoff; historical pages are not duplicated into them. Future `@takazudo/zfb-slugify` notes also
+belong to the `zfb` lane.
 
 ## Release process (internal)
 
@@ -17,7 +18,7 @@ Maintainers use the `/l-make-release` Claude Code skill to bump versions and wri
 appropriate lane. See the skill's `SKILL.md` for the full flow.
 
 By default, `release.yml` builds the Mac x86_64 binary on the `macos-15-intel` runner, so all
-ten packages publish with npm provenance. `/l-make-release --fast-mac` is the autonomous opt-in;
+eleven packages publish with npm provenance. `/l-make-release --fast-mac` is the autonomous opt-in;
 after a manual `/l-make-release --confirm` run, `/l-make-mac-release-binary` is the separate-Mac
 equivalent. Both pre-upload the archive, skip that CI leg, and publish the Mac package without
 provenance.

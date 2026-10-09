@@ -153,7 +153,7 @@ fn embedded_extraction_resolves_owned_runtime_and_hono_with_no_consumer_node_mod
     )
     .expect("embedded node_modules lease must succeed");
     let nm_path = nm_lease.node_modules().to_path_buf();
-    for pkg in ["@takazudo/zfb", "hono"] {
+    for pkg in ["@takazudo/zfb", "@takazudo/zfb-slugify", "hono"] {
         let pkg_json = nm_path.join(pkg).join("package.json");
         assert!(
             pkg_json.exists(),

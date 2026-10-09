@@ -152,11 +152,14 @@ jobs:
           set -euo pipefail
           out="$GITHUB_WORKSPACE/target/island-size"
           version="$(node -p "require('./packages/zfb/package.json').version")"
-          mkdir -p "$out/pack" "$out/packed-package" "$out/packed-runtime"
+          mkdir -p "$out/pack" "$out/packed-package" "$out/packed-runtime" "$out/packed-slugify"
+          pnpm -C packages/zfb-slugify build
           pnpm -C packages/zfb build
           pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb-slugify pack --pack-destination "$out/pack"
           pnpm -C packages/zfb pack --pack-destination "$out/pack"
           pnpm -C packages/zfb-runtime pack --pack-destination "$out/pack"
+          tar -xzf "$out/pack/takazudo-zfb-slugify-$version.tgz" -C "$out/packed-slugify"
           tar -xzf "$out/pack/takazudo-zfb-$version.tgz" -C "$out/packed-package"
           tar -xzf "$out/pack/takazudo-zfb-runtime-$version.tgz" -C "$out/packed-runtime"
 
@@ -177,6 +180,7 @@ jobs:
             printf 'esbuild_binary='; shasum -a 256 "$esbuild"
             printf 'hono_version=%s\n' "$(node -p "require('./packages/zfb-runtime/node_modules/hono/package.json').version")"
             printf 'hono_package_json='; shasum -a 256 packages/zfb-runtime/node_modules/hono/package.json
+            printf 'slugify_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-slugify-$version.tgz"
             printf 'zfb_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-$version.tgz"
             printf 'runtime_tarball='; shasum -a 256 "$out/pack/takazudo-zfb-runtime-$version.tgz"
           } | tee -a "$out/runner-provenance.txt"
@@ -197,6 +201,7 @@ jobs:
             --mode workspace \
             --package packages/zfb \
             --runtime-package packages/zfb-runtime \
+            --slugify-package packages/zfb-slugify \
             --hono-package "$hono" \
             --zfb-tarball "$out/pack/takazudo-zfb-$version.tgz" \
             --runtime-tarball "$out/pack/takazudo-zfb-runtime-$version.tgz" \
@@ -208,6 +213,7 @@ jobs:
             --mode packed \
             --package "$out/packed-package/package" \
             --runtime-package "$out/packed-runtime/package" \
+            --slugify-package "$out/packed-slugify/package" \
             --hono-package "$hono" \
             --zfb-tarball "$out/pack/takazudo-zfb-$version.tgz" \
             --runtime-tarball "$out/pack/takazudo-zfb-runtime-$version.tgz" \
