@@ -145,6 +145,17 @@ Make every boundary import one definition:
 
 Rename one defining function only when the two definitions really are different components. An explicit trusted-provenance mapping that declares a staged copy equivalent to its package source is the designed future path, but it is not available yet.
 
+## Islands rendered outside a zfb build
+
+Version 3.0.0 made `Island` validate its child, and the v3.0.0 release notes did not announce this change. In v2, `Island` took the marker name from `displayName ?? name` and emitted its wrapper without checks, so a minified function with a `displayName` still rendered. In v3, it reads the build identity and registered island names that zfb's server bundle sets, and it compares the child's function name with its `displayName`. Pages rendered by zfb are unaffected. A package or script that renders `Island` with another bundler or plain Node now fails with `ZR_ISLAND_IDENTITY`, for example:
+
+```text
+ZR_ISLAND_IDENTITY: ThemeToggle has no build identity
+ZR_ISLAND_IDENTITY: dc conflicts with displayName SidebarToggle
+```
+
+Wrap the synchronous render in `withIslandTestContext` from `@takazudo/zfb/zudo-react/testing`, and keep function names in the consumer bundler's minified output. See [Rendering Islands outside a zfb build](../zudo-react/server-rendering.mdx#rendering-islands-outside-a-zfb-build).
+
 ## MDX and md-wasm
 
 The `@takazudo/zfb-md-wasm` `compile()` and `renderHtml()` options no longer accept `jsxRuntime`. Remove the field rather than selecting `react` or `preact`; the typed API rejects it and the JSON validator reports an unknown field naming `jsxRuntime`. Compiled MDX imports its Fragment from `@takazudo/zfb/zudo-react/jsx-runtime`. Ensure a consumer bundling compiled output resolves that subpath and does not alias it to an old engine.

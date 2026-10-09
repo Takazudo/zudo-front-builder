@@ -103,6 +103,64 @@ TypeError: ...
 
 `h()` で書いた要素、依存パッケージ内で作られた要素、プリプロセッサーが書き換えたコードには、信頼できるソース位置がありません。これらについては推測した行を出さず、記述した位置なしで構造上の文脈を表示します。デバッグの手がかりとして `— internal frame node_modules/…`、`<generated>/…`、`external/…` のような内部フレームを付けることがありますが、これはあなたのソースの位置ではありません。1 行目には props、raw HTML、ローカルの絶対パスは含まれません。
 
+## zfb ビルドの外で Island をレンダリングする
+
+v3.0.0 から、`Island` はレンダリングの前に子を検証します。ビルド識別子と登録済みの島の名前は、zfb のサーバーバンドルが `globalThis.__zfb` に設定するメタデータから読み取ります。別のバンドラーや素の Node スクリプトでレンダリングするページ（たとえば静的エクスポート用に自分のレイアウトをレンダリングするパッケージ）には、このメタデータがありません。そのため、すべての `Island` が次のようなエラーで失敗します。
+
+~~~text
+ZR_ISLAND_IDENTITY: ThemeToggle has no build identity
+~~~
+
+### `withIslandTestContext` で識別子を与える
+
+`@takazudo/zfb/zudo-react/testing` の `withIslandTestContext` は、同期コールバック 1 回の間だけこのメタデータを設定し、終了後に元の `globalThis.__zfb` を復元します。レンダリングが例外を投げた場合も復元します。サブパス名に反して、zfb ビルドの外で SDK の `Island` 境界をレンダリングするためのサポートされた方法です。
+
+~~~tsx
+import { Island } from "@takazudo/zfb";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+import { withIslandTestContext } from "@takazudo/zfb/zudo-react/testing";
+import { SidebarToggle } from "./sidebar-toggle";
+
+export function renderLayout(): string {
+  return withIslandTestContext({ components: [SidebarToggle], build: "my-site-1" }, () =>
+    renderToString(
+      <body>
+        <Island when="idle">
+          <SidebarToggle />
+        </Island>
+      </body>,
+    ),
+  );
+}
+~~~
+
+- `components` には、コールバック内で `Island` の子として使うすべてのコンポーネントを、配列か、値がコンポーネントのレコードで渡します。名前はコンポーネントの `displayName`、なければ関数名から取ります。一覧にない子を持つ `Island` は `ZR_ISLAND_IDENTITY: <name> is not registered by the scanner` で失敗します。
+- `build` は各ラッパーの `data-zfb-build` 属性に書かれる文字列です。デフォルトは `"test"` です。空でない安定した値を渡してください。
+- コールバックは同期でなければなりません。登録は共有のグローバルに置かれるため、promise を返すコールバックは `ZR_ISLAND_TEST: context callback must be synchronous` で失敗します。データの読み込みはコールバックに入る前に済ませてください。
+
+### minify したバンドルで関数名を保持する
+
+`Island` は子を関数の `name` プロパティで識別します。zfb 自身のバンドラーは常に関数名を保持するので、zfb のビルドで名前が失われることはありません。利用側のバンドラーが関数名の保持なしで minify すると関数名が変わり、検証に失敗します。`displayName` を上書きしている場合は、minify 後の名前と衝突します。
+
+~~~text
+ZR_ISLAND_IDENTITY: dc conflicts with displayName SidebarToggle
+~~~
+
+同じコンポーネントを `withIslandTestContext` に渡すと、ヘルパーが先に `ZR_ISLAND_IDENTITY: invalid component name dc` で拒否します。`displayName` がなければレンダリングは成功しますが、島のマーカーには minify 後の名前（`data-zfb-island="dc"`）が入ります。元のソースからビルドしたクライアントは、この名前を認識しません。
+
+単独でレンダリングするバンドルを作るバンドラーで、関数名の保持を有効にしてください。
+
+- esbuild: JavaScript API では `keepNames: true`、コマンドラインでは `--keep-names`。
+- Rolldown（Vite 8 を含む）: `output.keepNames: true`。Vite 8 では `build.rolldownOptions.output.keepNames` として設定します。
+- Terser（Vite の `build.minify: "terser"` を含む）: `keep_fnames: true`。Vite では `build.terserOptions` で渡します。
+- その他の minifier: 関数名を保持するオプションを有効にします。
+
+バンドラーを変更できない場合の代替策は二つあります。島のコンポーネントから `displayName` の上書きを取り除くとエラーは止まりますが、マーカーには minify 後の名前が入ったままです。元のソースからビルドしたクライアントがその出力をハイドレーションしない場合にだけ使ってください。それ以外では、単独ビルドで `Island` を使わずに子を直接レンダリングしてください。`Island` なしでレンダリングした子は静的な HTML になり、ハイドレーションされません。
+
+### zfb のクライアントでハイドレーションする
+
+`withIslandTestContext` が満たすのはサーバー側の検証だけです。zfb がビルドしたクライアントバンドルでページをハイドレーションする場合、各ラッパーのコンポーネント名と `data-zfb-build` の値をそのクライアントの識別子と一致させる必要があります。一致しないと、クライアントは `ZR_IDENTITY: island <name> has invalid transport identity` で島を拒否します。自分で所有するクライアント mount については[ハイドレーション](./hydration.mdx)を参照してください。
+
 ## 関連ページ
 
 - [概要](./overview.mdx)

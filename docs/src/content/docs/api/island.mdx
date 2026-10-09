@@ -70,6 +70,10 @@ guessing which client entry to load. The client verifies the same component
 name and nonempty build identity from the wrapper before setup. For the static
 discovery rules, see [the island guide](../architecture/islands.mdx).
 
+The build identity and registered names come from metadata that zfb's server
+bundle sets. To render `Island` with another bundler or plain Node, see
+[Rendering Islands outside a zfb build](../zudo-react/server-rendering.mdx#rendering-islands-outside-a-zfb-build).
+
 Only JSON data crosses in `data-props`. The top-level value must be a plain
 record; ordinary and null-prototype records are accepted. Nested values may be
 null, booleans, strings, finite numbers, dense arrays, and plain records.

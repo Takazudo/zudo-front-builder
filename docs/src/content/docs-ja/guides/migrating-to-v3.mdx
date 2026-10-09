@@ -138,6 +138,17 @@ ambiguous owned island marker "Widget": <first definition> (Widget) used at <fir
 
 定義元の関数名を変更するのは、二つの定義が本当に別のコンポーネントである場合だけにしてください。ステージングしたコピーとパッケージソースが同等であることを宣言する、明示的な信頼済み provenance マッピングが将来の手段として設計されていますが、まだ利用できません。
 
+## zfb ビルドの外でレンダリングする島
+
+v3.0.0 で `Island` は子を検証するようになりましたが、v3.0.0 のリリースノートはこの変更を告知していませんでした。v2 の `Island` はマーカー名を `displayName ?? name` から取り、検証なしでラッパーを出力していたので、`displayName` を持つ minify 済みの関数もレンダリングできました。v3 では、zfb のサーバーバンドルが設定するビルド識別子と登録済みの島の名前を読み取り、子の関数名と `displayName` を比較します。zfb がレンダリングするページには影響しません。別のバンドラーや素の Node で `Island` をレンダリングするパッケージやスクリプトは、次のような `ZR_ISLAND_IDENTITY` で失敗するようになりました。
+
+```text
+ZR_ISLAND_IDENTITY: ThemeToggle has no build identity
+ZR_ISLAND_IDENTITY: dc conflicts with displayName SidebarToggle
+```
+
+同期のレンダリングを `@takazudo/zfb/zudo-react/testing` の `withIslandTestContext` で包み、利用側のバンドラーの minify 出力で関数名を保持してください。詳しくは[zfb ビルドの外で Island をレンダリングする](../zudo-react/server-rendering.mdx#zfb-ビルドの外で-island-をレンダリングする)を参照してください。
+
 ## MDX と md-wasm
 
 `@takazudo/zfb-md-wasm` の `compile()` と `renderHtml()` のオプションは `jsxRuntime` を受け付けなくなりました。`react` や `preact` を選ぶ代わりに、このフィールドを削除してください。型付き API は拒否し、JSON の検証では `jsxRuntime` を示す未知フィールドのエラーになります。コンパイル済み MDX は Fragment を `@takazudo/zfb/zudo-react/jsx-runtime` からインポートします。出力をバンドルする側でこのサブパスを解決し、旧エンジンへエイリアスしないようにします。
