@@ -123,9 +123,11 @@ impl Request {
             .get_current_dir()
             .map(Path::to_path_buf)
             .unwrap_or(std::env::current_dir()?);
-        let mut options = BundlerOptions::default();
-        options.cwd = Some(cwd.clone());
-        options.code_splitting = Some(rolldown_common::CodeSplittingMode::Bool(false));
+        let mut options = BundlerOptions {
+            cwd: Some(cwd.clone()),
+            code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
+            ..Default::default()
+        };
         let mut resolve = rolldown::ResolveOptions::default();
         let mut definitions = Vec::new();
         let mut loaders = BTreeMap::new();
