@@ -20,6 +20,44 @@ function fail(message) {
   throw new Error(`published @takazudo/zfb-md-wasm digest verification failed: ${message}`);
 }
 
+// npm registry read-after-write is not immediate: a just-published version can
+// answer ETARGET/E404 for minutes (#4122). Only "not visible yet" is retried.
+const NOT_VISIBLE = /\b(ETARGET|E404)\b|No matching version found|404 Not Found/;
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function packWhenVisible(spec, destination) {
+  const attempts = Number(process.env.ZFB_MD_WASM_VISIBILITY_ATTEMPTS ?? 40);
+  const delayMs = Number(process.env.ZFB_MD_WASM_VISIBILITY_DELAY_MS ?? 15000);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return execFileSync(
+        "npm",
+        ["pack", spec, "--pack-destination", destination, "--ignore-scripts"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      const stderr = String(error.stderr ?? "");
+      if (!NOT_VISIBLE.test(stderr)) {
+        process.stderr.write(stderr);
+        throw error;
+      }
+      if (attempt >= attempts) {
+        fail(
+          `${spec} never became visible on the registry after ${attempts} attempts ` +
+            `(${(attempts * delayMs) / 1000}s); this is registry lag, not a digest mismatch`,
+        );
+      }
+      console.log(
+        `${spec} not visible on the registry yet (attempt ${attempt}/${attempts}); retrying in ${delayMs / 1000}s`,
+      );
+      sleepMs(delayMs);
+    }
+  }
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -63,11 +101,7 @@ function main() {
 
   const temporary = mkdtempSync(join(tmpdir(), "zfb-md-wasm-published-"));
   try {
-    const output = execFileSync(
-      "npm",
-      ["pack", `${NAME}@${version}`, "--pack-destination", temporary, "--ignore-scripts"],
-      { encoding: "utf8" },
-    );
+    const output = packWhenVisible(`${NAME}@${version}`, temporary);
     const filename = output.trim().split(/\r?\n/).at(-1);
     if (!filename || filename.includes("/") || filename.includes("\\"))
       fail("npm pack returned an invalid filename");
