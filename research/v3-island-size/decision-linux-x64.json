@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "decisionIssue": 3469,
-  "outcome": "no-product-code-change",
+  "outcome": "intentional-feature-size-change",
   "selectedOptimizations": [],
   "baselineSourceSha": "1238ed66e38c6fd04316a08de057dd2b5d8e457c",
   "platform": {
@@ -107,12 +107,12 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.3.0 ceilings measured in health run 38023765871 at source 11623738455758588cb0ad811778c711c8638b6d. All 16 raw totals are unchanged from the v4.2.1 deferred-mount contract; 12 gzip totals shifted by -4 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.3.0 ceilings measured in health run 38056758496 at PR merge source 212aac381841845836549b77ae23a01ad66433fe (PR #4129 head 1238ed66e38c6fd04316a08de057dd2b5d8e457c merged with main 6925a4a531596fa93e96e181cbc47263be2f0312) for the client-router History-rejection change (#4126). All 16 raw totals are unchanged from the preceding contract; 12 gzip totals shifted by -4 to +6 bytes. The cause of these length-neutral byte changes was not isolated. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 38023765871,
-    "jobId": 114130135066,
-    "sourceSha": "11623738455758588cb0ad811778c711c8638b6d",
-    "note": "Push run on the v4.3.0 bump commit. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the v4.2.1 deferred-mount contract; gzip deltas range from -4 to +4 bytes across 12 rows. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history. The run failed only because the old exact gzip ceilings rejected five rows."
+    "runId": 38056758496,
+    "jobId": 114226868533,
+    "sourceSha": "212aac381841845836549b77ae23a01ad66433fe",
+    "note": "PR #4129 (#4126) health run at PR merge source 212aac381841845836549b77ae23a01ad66433fe (PR #4129 head 1238ed66e38c6fd04316a08de057dd2b5d8e457c merged with main 6925a4a531596fa93e96e181cbc47263be2f0312). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the preceding contract; gzip deltas range from -4 to +6 bytes across 12 rows. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
