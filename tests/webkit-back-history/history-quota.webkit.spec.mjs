@@ -120,6 +120,7 @@ async function waitForPageLoad(page, doc, count = 1) {
       { timeout: 8000 },
     )
     .toBeGreaterThanOrEqual(count);
+  await page.waitForFunction(() => !document.documentElement.hasAttribute("data-zfb-transition"));
 }
 
 async function traverse(page, direction, expectedPath, expectedH1) {

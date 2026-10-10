@@ -79,6 +79,15 @@ const HARNESS_INIT = (arg) => {
     };
   }
 
+  // The router's simulated transition marks each phase on <html>; this proves
+  // the fallback path actually ran rather than inferring it from a missing VT.
+  // Logged synchronously at the write so ordering against lifecycle events holds.
+  const nativeSetAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {
+    if (name === "data-zfb-transition-fallback") log({ kind: "fallback-phase", phase: value });
+    return nativeSetAttribute.call(this, name, value);
+  };
+
   for (const method of /** @type {const} */ (["pushState", "replaceState"])) {
     const native = History.prototype[method];
     History.prototype[method] = function (_data, _unused, url) {
@@ -444,6 +453,12 @@ for (const mode of ["native View Transition", "fallback simulation"]) {
     expect(log.slice(mark).filter((e) => e.kind === "view-transition").length).toBe(
       noViewTransition ? 0 : 2,
     );
+    // The wrapper is not installed in fallback mode, so a zero VT count alone
+    // is vacuous there; require the simulation's own "new" phase per swap
+    // ("old" is also re-applied by the root-attribute swap, so it is not 1:1).
+    expect(
+      log.slice(mark).filter((e) => e.kind === "fallback-phase" && e.phase === "new").length,
+    ).toBe(noViewTransition ? 2 : 0);
     expect(
       log
         .slice(mark)
@@ -510,13 +525,23 @@ test("rejected POST form write aborts on the old page without replaying the POST
   const aborted = log.slice(mark).find((e) => e.name === "zfb:navigation-aborted");
   expect(pathOf(aborted.href)).toBe("/post-form.html");
   expect(aborted.h1).toBe("Post Form");
-  const formEvents = eventsOf(log, doc, mark);
-  expect(formEvents.slice(0, formEvents.indexOf("zfb:navigation-aborted") + 1)).toEqual([
+  // The full record, not a prefix: a late swap of the POST response after the
+  // abort would otherwise hide behind the follow-up Home navigation.
+  expect(eventsOf(log, doc, mark)).toEqual([
     "zfb:before-preparation",
     "zfb:after-preparation",
     "zfb:before-swap",
     "zfb:navigation-aborted",
+    "zfb:before-preparation",
+    "zfb:after-preparation",
+    "zfb:before-swap",
+    "zfb:after-swap",
+    "zfb:page-load",
   ]);
+  // Before the abort, the form ran on the simulation, never a native VT.
+  const beforeAbort = log.slice(mark, log.indexOf(aborted));
+  expect(beforeAbort.filter((e) => e.kind === "view-transition")).toEqual([]);
+  expect(beforeAbort.some((e) => e.kind === "fallback-phase" && e.phase === "old")).toBe(true);
   // Only the follow-up Home navigation added an entry.
   expect(await historyLength(page)).toBe(lengthBefore + 1);
   expect(await docId(page)).toBe(doc);
