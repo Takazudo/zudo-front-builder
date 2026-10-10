@@ -4,7 +4,7 @@
 
 ## Revision and scope
 
-- Verified implementation commit: `c0ae55f70fab1b5477b5818576ee572ff92105b5`; final evidence-only follow-up changes this report and source-digest metadata.
+- Verified implementation commit: `c0ae55f70fab1b5477b5818576ee572ff92105b5`; follow-up commits change only evidence and existing source-digest metadata.
 - Repository base: `4c53014c04982687e3960e9f1f8aa6ae2d64d845` (refreshed main).
 - Rolldown Git revision: `24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9`, crate version `1.2.13`, including `rolldown_common` from the same revision. `Cargo.lock` pins the complete family; no fork.
 - Local tools: Linux x86_64, rustc 1.99.0, Node 24.19.0, esbuild 0.25.12, Playwright 1.58.2 / Chromium 145.0.7632.6, Hono 4.12.8. Development profile, debug information disabled, four Cargo jobs. No release benchmark.
@@ -76,6 +76,12 @@ All commands ran from the repository root; the installed Cargo home/tool paths w
 | Guarded `cargo check -p zfb-build -p zfb-islands --no-default-features` | PASS, 17.45 s; native feature absent |
 | `cargo fmt --all --check`; Oxfmt 0.70.0 (repository fmt settings) check on prototype JS/TS; mdx-formatter 1.2.1 check on prototype MD/MDX | PASS |
 | `compilerSourceDigest(REPO_ROOT)` from `docs/scripts/wind-preview-assets.mjs` | Refreshed and verified existing wind manifest's source-only digest (covers Cargo and all crates); no CSS or release artifacts regenerated |
+
+## Initial PR CI diagnosis
+
+On `335cdc36`, the docs check failed at generated English utility references: `Wind source differs from reviewed support pin 478bbf83e137fbdbe2f386df834839c08e884b9e`. That separate reviewed Wind closure hashes root `Cargo.lock` as well as unchanged Wind sources. After **117/117** `cargo test --locked -p zudo-wind --lib` tests passed (guard PASS, 22 s), its digest was refreshed with the existing 100-path count, fixed support pin and assertion logic unchanged. English and Japanese generated-reference checks now pass locally. CI's workspace Wind preview asset job also passed on the initial head, checking generated CSS against the changed dependency closure.
+
+The repository automatically started docs/showcase preview workflows when the draft opened. They were canceled to honor this task's explicit no-publish/no-deploy boundary. The docs upload job and showcase preview job executed no steps; the associated binary/smoke jobs were canceled along with their preview-producing workflow. Those cancellations are not passing validation, nor compiler/test failures. Normal nondeployment CI is observed separately on the PR.
 
 ## Failures retained as evidence
 

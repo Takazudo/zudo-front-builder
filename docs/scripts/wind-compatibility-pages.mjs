@@ -177,8 +177,10 @@ function localizedNote(value, locale, field) {
 // Fingerprint of the reviewed Wind source closure, independent of shallow CI Git history.
 // The zfb/zudo-react h-import alias changes extraction entry matching without
 // changing the pinned utility compatibility catalog.
+// #318 refreshes only Cargo.lock for the optional Rolldown prototype: Wind
+// source/catalog are unchanged; all 117 Wind library tests pass at this closure.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "6b8dfc0ce7d2b77b9d67ee14279b92c54b959f542f6da782e0877fcce1ba37ad";
+  "68fc7286f0d2f394582bc8beeeb7bbc9900df82f1f184a612c88b5d159fafa2a";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
