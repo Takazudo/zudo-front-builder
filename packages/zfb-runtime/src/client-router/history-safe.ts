@@ -30,8 +30,10 @@ const COMMITTED: HistoryWriteResult = { outcome: "committed" };
 
 // Identify srcdoc by the document's own address. `document.baseURI` is
 // deliberately NOT consulted: a srcdoc document inherits its parent's base URL,
-// so an HTTP baseURI says nothing about which kind of document this is.
-const isSrcdocDocument = (): boolean => document.URL === "about:srcdoc";
+// so an HTTP baseURI says nothing about which kind of document this is. A
+// fragment navigation inside the srcdoc document keeps it a srcdoc document
+// while its URL becomes `about:srcdoc#…`, so the fragment is ignored.
+const isSrcdocDocument = (): boolean => document.URL.split("#", 1)[0] === "about:srcdoc";
 
 const isSecurityError = (error: unknown): boolean =>
   typeof error === "object" &&

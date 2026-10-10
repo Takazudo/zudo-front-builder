@@ -371,20 +371,16 @@ const writeLocationEntry = (
   const replace = options.history === "replace" || early === "committed";
   let result: HistoryWriteResult;
   if (replace) {
-    // Astro reads current.index/scrollX/scrollY directly; `history.state` can be
-    // null (page entered without a transition state), which would throw a
-    // TypeError. Fall back to a synthesized state from the tracked index/scroll.
-    const current = history.state ?? {
-      index: currentHistoryIndex,
-      scrollX,
-      scrollY,
-    };
+    // `history.state` can be null or a foreign shape (page entered without a
+    // transition state, or written by raw-History code); fall back per field.
+    const current = history.state;
     result = tryReplaceState(
       {
         ...options.state,
-        index: current.index,
-        scrollX: current.scrollX,
-        scrollY: current.scrollY,
+        index:
+          current != null && Number.isFinite(current.index) ? current.index : currentHistoryIndex,
+        scrollX: Number.isFinite(current?.scrollX) ? current.scrollX : scrollX,
+        scrollY: Number.isFinite(current?.scrollY) ? current.scrollY : scrollY,
       },
       "",
       to.href,
@@ -751,14 +747,15 @@ function abandonNavigation(
     // biome-ignore lint/suspicious/noConsole: allowed
     console.log("[zfb]", err?.name, err?.message);
   }
+  // An early write may already have moved the URL; describe where the browser
+  // actually is rather than the location this navigation started from. Done
+  // before the abort event so a navigation started by a listener sees it too.
+  originalLocation = new URL(location.href);
   notifyNavigationAborted(navigation);
   // An abort listener may have started a newer navigation, which now owns the
   // page; this one must not load over it.
   if (navigation.controller.signal.aborted) return;
   if (navigation === mostRecentNavigation) mostRecentNavigation = undefined;
-  // An early write may already have moved the URL; describe where the browser
-  // actually is rather than the location this navigation started from.
-  originalLocation = new URL(location.href);
   if (!recoverByDocumentLoad) return;
   if (write.replace) location.replace(to.href);
   else location.href = to.href;

@@ -123,6 +123,13 @@ describe("about:srcdoc tolerance (#2424)", () => {
     });
   });
 
+  it("still tolerates the SecurityError after a fragment navigation inside the srcdoc document", () => {
+    vi.spyOn(document, "URL", "get").mockReturnValue("about:srcdoc#section");
+    const error = new DOMException("pushState is not allowed", "SecurityError");
+    rejectWrites(error);
+    expect(tryPushState({}, "", "/next")).toEqual({ outcome: "tolerated", error });
+  });
+
   it("does not tolerate an unrelated error just because the document is srcdoc", () => {
     const error = new TypeError("boom");
     rejectWrites(error);
