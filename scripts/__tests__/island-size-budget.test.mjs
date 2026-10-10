@@ -12,6 +12,7 @@ import {
   pnpmLockHashForContract,
   validateIslandSizeBudget,
 } from "../../research/v3-island-size/check-budget.mjs";
+import { rebaselineContract } from "../rebaseline-island-size-linux.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -524,6 +525,32 @@ describe("island shipped-size budget", () => {
       "multi-island": { raw: 67134, gzip: 22363 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("accepts a contract written by the release rebaseline helper", () => {
+    const linuxContract = JSON.parse(
+      readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
+    );
+    const state = makeState(linuxContract.platform, linuxContract);
+    const previous = structuredClone(state.contract);
+    const totals = {};
+    for (const mode of ["workspace", "packed"]) {
+      totals[mode] = structuredClone(state.contract.ceilings[mode]);
+      for (const ceiling of Object.values(previous.ceilings[mode])) {
+        if (ceiling.gzip > 0) ceiling.gzip -= 1;
+      }
+    }
+    const { contract } = rebaselineContract(previous, totals, {
+      version: previous.toolchain.packageVersion,
+      pnpmLockSha256: previous.toolchain.pnpmLockSha256,
+      sourceSha: state.sourceSha,
+      headSha: state.sourceSha,
+      runId: 1,
+      jobId: 2,
+      runLabel: "Synthetic rebaseline",
+    });
+    state.contract = contract;
     expect(validate(state)).toEqual({ errors: [], passed: true });
   });
 

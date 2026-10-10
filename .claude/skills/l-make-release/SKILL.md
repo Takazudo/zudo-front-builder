@@ -326,48 +326,94 @@ else `feat:` → minor, else patch), so do it before finalizing the proposed ver
 
 ## Step 4: Bump + Sync + Package Changelog MDX
 
-### 4a. Measure md-wasm sizes in CI at the release version (before the bump)
+### 4a. Measure version-stamped sizes in CI at the release version (before the bump)
 
-The four `.wasm` files embed `ZFB_RELEASE_VERSION`. An exact-size column can change when the
-version stamp changes: the `3.0.0` probe on source `027c86fa` changed render-only `finalWasm` by
-−8 bytes, while a same-source `2.22.1` build matched the manifest. See the
-[3.0.0 probe run](https://github.com/Takazudo/zudo-front-builder/actions/runs/36570873352) and
-[2.22.1 comparison](https://github.com/Takazudo/zudo-front-builder/actions/runs/36571467542).
-Measure each release version separately; those runs do not establish that other stamps are safe.
+Two exact-size gates move with the release version string, so each release version must be
+measured in CI before the bump lands on `main`:
 
-Before editing `packages/zfb/package.json` or pushing the version-bump commit:
+- **md-wasm.** The four `.wasm` files embed `ZFB_RELEASE_VERSION`. An exact-size column can change
+  when the version stamp changes: the `3.0.0` probe on source `027c86fa` changed render-only
+  `finalWasm` by −8 bytes, while a same-source `2.22.1` build matched the manifest. See the
+  [3.0.0 probe run](https://github.com/Takazudo/zudo-front-builder/actions/runs/36570873352) and
+  [2.22.1 comparison](https://github.com/Takazudo/zudo-front-builder/actions/runs/36571467542).
+- **Linux island size.** `health.yml`'s `Measure and enforce Linux x64 island-size budgets` step
+  builds the island runtime with the `packages/zfb` version embedded, and
+  `research/v3-island-size/decision-linux-x64.json` holds exact zero-allowance ceilings plus the
+  pinned package version and lockfile hash. Every bump leaves raw totals identical and moves a few
+  gzip totals by a handful of bytes, so an unprobed bump commit always fails `health` (v4.1.0
+  through v4.3.0 each needed a follow-up rebaseline commit).
 
-1. Record the current `main` SHA. From that commit, make a disposable branch whose **only initial change** sets
-   `crates/zfb-md-wasm/npm/package.json`'s `version` to `<version>`. Push it and open a draft PR
-   targeting `main`. Do not run `scripts/sync-platform-versions.mjs` on this branch: it would undo
-   the isolated stamp. The `crates/zfb-md-wasm/**` path makes health.yml run `wasm-md (default)`.
-2. Read that job's run URL, head SHA, and the `Enforce four-artifact gzip budgets and report
-   metrics` step. Copy **all four CI-measured columns** (`finalWasm`, `gzip9`, `glue`,
-   `glueGzip9`) for default/root, highlight, render, and parse from its four metric lines.
-   Record every mismatch and gzip warning, including each delta. Check that all four gzip sizes
-   remain at or below their existing ceilings, and that `assert-zfb-md-wasm-exports.sh` passed. A
-   `manifest-mismatch` failure can skip packing; it does not make the measured metric lines
-   unusable. A missing metric, failed build or exports assert, or ceiling breach blocks the
-   release until diagnosed. Never measure or refresh the manifest from a Mac build.
-3. On the disposable branch, set `crates/zfb-md-wasm/shipped-sizes.json`'s
-   `measuredOnVersion` to `<version>` and replace its measured columns with the values from
-   that CI log. Keep the real ceilings unchanged. Run
-   `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`, then
-   `node scripts/assert-md-wasm-size-docs.mjs`. The fix command updates every dependent
-   documentation table and preserves the digest-disclaimer checks. Push this rehearsal commit
-   to the draft PR and require a new `wasm-md (default)` run with zero budget errors. Check
-   `assert-packed.mjs`, `assert-zfb-md-wasm-release.mjs`, the tarball budget against its existing
-   ceiling, and `assert-zfb-md-wasm-exports.sh` in that run. Gzip drift warnings within 64 bytes
-   are acceptable; exact-size errors and ceiling breaches are not.
-4. Confirm `main` is still at the recorded SHA; if it advanced, repeat this probe on the new
-   source before using its measurements. Copy the CI-measured manifest and synchronized
-   documentation changes into the `main` working tree for the single version-bump commit below.
-   Close the disposable PR **unmerged**
-   and delete its branch. Do not carry its isolated npm-only bump onto `main`; Steps 4b–4d make
-   the real lockstep bump. The manifest refresh belongs in that same bump commit, not an
-   earlier push.
+Measure each release version separately; earlier runs do not establish that other stamps are safe.
+
+Before pushing anything to `main`:
+
+1. Record the current `main` SHA. From that commit, make a disposable branch and apply the real
+   lockstep bump to it — Steps 4b–4d below (`packages/zfb/package.json`, then
+   `node scripts/sync-platform-versions.mjs`, then `pnpm install --lockfile-only`). The branch
+   must carry exactly the version and lockfile bytes the bump commit will carry, because the
+   island-size contract pins both. Push it and open a draft PR targeting `main`. The
+   `crates/zfb-md-wasm/**` change makes `health.yml` run `wasm-md (default)`; the `health` job
+   always runs the island-size step.
+2. **md-wasm:** read the `wasm-md (default)` job's run URL, head SHA, and the `Enforce
+   four-artifact gzip budgets and report metrics` step. Copy **all four CI-measured columns**
+   (`finalWasm`, `gzip9`, `glue`, `glueGzip9`) for default/root, highlight, render, and parse from
+   its four metric lines. Record every mismatch and gzip warning, including each delta. Check that
+   all four gzip sizes remain at or below their existing ceilings, and that
+   `assert-zfb-md-wasm-exports.sh` passed. A `manifest-mismatch` failure can skip packing; it does
+   not make the measured metric lines unusable. A missing metric, failed build or exports assert,
+   or ceiling breach blocks the release until diagnosed. Never measure or refresh the manifest
+   from a Mac build. (Match the job by prefix: its check name is `wasm-md (default, default)`.)
+3. **Island size:** the `health` job's island-size step normally fails on this first push, because
+   gzip totals moved. Download its `island-size-linux-x64` artifact (uploaded with `if: always()`)
+   and note the `health` run ID, job ID, and the probe branch's head SHA. Do not rebaseline from a
+   run whose failure is anything other than that step's budget rejection. If the step passed (no
+   gzip total moved), still run the helper below: the contract must record the new version and
+   evidence, and the helper handles a no-change measurement.
+4. On the disposable branch, write the rehearsal commit:
+   - md-wasm: set `crates/zfb-md-wasm/shipped-sizes.json`'s `measuredOnVersion` to `<version>`
+     and replace its measured columns with the values from that CI log. Keep the real ceilings
+     unchanged. Run `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`,
+     then `node scripts/assert-md-wasm-size-docs.mjs`. The fix command updates every dependent
+     documentation table and preserves the digest-disclaimer checks.
+   - Island size: run
+
+     ```bash
+     node scripts/rebaseline-island-size-linux.mjs --artifact <downloaded-artifact-dir> \
+       --run-id <health-run-id> --job-id <health-job-id> --head-sha <probe-head-sha> \
+       --label "Release probe PR #<pr> run for v<version>"
+     ```
+
+     It records the measured totals as the new exact ceilings, updates the pinned version,
+     lockfile hash, `platformStatus`, and `baselineEvidence`, and sets `baselineSourceSha` to the
+     probe head (the PR's synthetic merge commit that CI measured is kept on no branch, but
+     `refs/pull/<pr>/head` stays reachable and has the identical tree), rewrites the pins in
+     `scripts/__tests__/island-size-budget.test.mjs`, and appends a `## v<version> release
+     baseline` section to `research/v3-island-size/README.md`. It **refuses** if any raw total
+     changed, the fixture set differs, or the artifact's lockfile/version differ from the checkout —
+     a raw change is a product size change that needs a reviewed decision, not a release
+     rebaseline. Stop and surface it. Run `pnpm exec vp fmt` on the changed files.
+   - Push the rehearsal commit and require a new `wasm-md (default)` run with zero budget errors
+     (a few minutes). Do not wait for the rehearsal's `health` job: it takes ~40 minutes, and
+     Step 7 runs the same island-size gate on the bump commit as a hard gate anyway. Check `assert-packed.mjs`, `assert-zfb-md-wasm-release.mjs`, the tarball budget
+     against its existing ceiling, and `assert-zfb-md-wasm-exports.sh` in that run. Gzip drift
+     warnings within 64 bytes are acceptable; exact-size errors and ceiling breaches are not.
+5. Confirm `main` is still at the recorded SHA; if it advanced, repeat this probe on the new
+   source before using its measurements. Carry the probe's whole diff onto `main`'s working tree:
+
+   ```bash
+   git diff <recorded-main-sha> <probe-head-sha> | git apply
+   ```
+
+   That brings the lockstep bump, the lockfile, the md-wasm manifest and synchronized docs, and
+   the island-size contract, test pins, and README section into the single version-bump commit
+   below. Then close the disposable PR **unmerged** and delete its branch. The Darwin arm64
+   island contract (`decision.json`) is not part of this probe; it is remeasured separately
+   through `island-size-darwin.yml`.
 
 ### 4b. Update packages/zfb/package.json
+
+Steps 4b–4d are first applied on the 4a probe branch and reach `main` through 4a's carry-over.
+After the carry-over, re-run 4c and 4d on `main` as a check: they must produce no further diff.
 
 Update the `version` field in `packages/zfb/package.json` to the confirmed new version (without the `v` prefix). Do NOT touch the workspace root `package.json`.
 
@@ -535,6 +581,8 @@ git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.ya
   docs/src/content/docs-ja/guides/browser-markdown-preview.mdx \
   docs/src/content/docs/guides/syntax-highlighting.mdx \
   docs/src/content/docs-ja/guides/syntax-highlighting.mdx \
+  research/v3-island-size/decision-linux-x64.json research/v3-island-size/README.md \
+  scripts/__tests__/island-size-budget.test.mjs \
   docs/src/content/docs/changelog/zfb/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx \
