@@ -65,3 +65,43 @@ export function resetDocument(): void {
 export function htmlDoc(html: string): Document {
   return new DOMParser().parseFromString(html, "text/html");
 }
+
+/**
+ * Capture the router's full-document loads instead of letting happy-dom
+ * perform them: `location.href = …` assignments and `location.replace(…)`
+ * calls are recorded, while reading `location.href` keeps reporting the live
+ * URL (pushState/replaceState still move it). Call the returned `restore` in
+ * afterEach.
+ */
+export function captureDocumentLoads(): {
+  assigned: string[];
+  replaced: string[];
+  restore: () => void;
+} {
+  let proto: object | null = Object.getPrototypeOf(location);
+  let hrefDescriptor: PropertyDescriptor | undefined;
+  while (proto && !hrefDescriptor) {
+    hrefDescriptor = Object.getOwnPropertyDescriptor(proto, "href");
+    proto = Object.getPrototypeOf(proto);
+  }
+  const assigned: string[] = [];
+  const replaced: string[] = [];
+  Object.defineProperty(location, "href", {
+    configurable: true,
+    get: () => hrefDescriptor!.get!.call(location),
+    set: (value: string) => {
+      assigned.push(String(value));
+    },
+  });
+  location.replace = (url: string | URL) => {
+    replaced.push(String(url));
+  };
+  return {
+    assigned,
+    replaced,
+    restore: () => {
+      delete (location as { href?: string }).href;
+      delete (location as { replace?: unknown }).replace;
+    },
+  };
+}

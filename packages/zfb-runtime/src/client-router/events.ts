@@ -194,7 +194,8 @@ export async function doSwap(
   afterPreparation: BeforeEvent,
   viewTransition: ViewTransition,
   afterDispatch?: () => Promise<void>,
-  beforeSwap?: (event: TransitionBeforeSwapEvent) => void,
+  // Returning `false` vetoes the swap. It must do so before any teardown.
+  beforeSwap?: (event: TransitionBeforeSwapEvent) => boolean | void,
 ) {
   const event = new TransitionBeforeSwapEvent(afterPreparation, viewTransition);
   document.dispatchEvent(event);
@@ -207,7 +208,9 @@ export async function doSwap(
   // This callback and event.swap() deliberately form one synchronous commit
   // section. Once teardown starts, the navigation must finish even if an
   // observer aborts its signal from inside an overridden swap().
-  beforeSwap?.(event);
+  if (beforeSwap?.(event) === false) {
+    return { swapped: false as const, event };
+  }
   event.swap();
   return { swapped: true as const, event };
 }
