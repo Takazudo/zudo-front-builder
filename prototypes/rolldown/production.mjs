@@ -1,13 +1,19 @@
 // Real CLI/adapter integration, using binaries built separately from this probe.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import assert from "node:assert/strict";
 const reports = [];
+const profile = process.env.ZFB_PROTOTYPE_PROFILE ?? "debug";
+assert.ok(["debug", "release"].includes(profile));
 for (const backend of ["esbuild", "rolldown"]) {
-  const env = { ...process.env };
+  const env = {
+    ...process.env,
+    ZFB_PROTOTYPE_CLI: process.env.ZFB_PROTOTYPE_CLI ?? resolve(`target/${profile}/zfb`),
+  };
   delete env.ZFB_ROLLDOWN_PROTOTYPE;
   if (backend === "rolldown") env.ZFB_ROLLDOWN_PROTOTYPE = "1";
-  const result = spawnSync("target/debug/examples/rolldown_production", [], {
+  const result = spawnSync(`target/${profile}/examples/rolldown_production`, [], {
     env,
     stdio: "inherit",
   });

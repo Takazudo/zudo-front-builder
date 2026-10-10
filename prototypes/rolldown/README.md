@@ -58,3 +58,7 @@ Keep `ZFB_ESBUILD_BIN` exported so the existing fixture discovery cannot skip. F
 ## Real production second pass
 
 The bounded mixed SSG/SSR catch-all fixture now runs the actual CLI production rebundle and local adapter, then executes scratch and adapter output in existing V8. See [PRODUCTION.md](PRODUCTION.md) for assertions, exact invocation, adjacent-pin rehearsal, manual rollback, and the baseline SSR copied-glue limitation. No deployment occurs.
+
+## Release comparison and maintenance checks
+
+[RELEASE-MEASUREMENT.md](RELEASE-MEASUREMENT.md) provides the bounded optimized-build comparison, fail-closed copy-provenance checks, and deferred Mac issues. `ZFB_PROTOTYPE_PROFILE=release` selects already-built release probes in `verify.mjs` and `production.mjs`; it does not change backend selection or product defaults.

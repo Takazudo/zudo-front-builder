@@ -87,7 +87,7 @@ impl Plugin for GraphPlugin {
         let mut inputs = self.inputs.lock().unwrap();
         let mut copy_outputs = self.copy_outputs.lock().unwrap();
         for id in ctx.get_module_ids() {
-            if let Some(reference) = copy_reference::reference(id.as_str()) {
+            if let Some(reference) = copy_reference::reference(id.as_str())? {
                 copy_outputs.insert(id.to_string(), ctx.get_file_name(reference)?.to_string());
                 // Actual source nodes are installed from emitted asset provenance below.
                 continue;
@@ -101,7 +101,7 @@ impl Plugin for GraphPlugin {
                 (&info.dynamically_imported_ids, "dynamic-import"),
             ] {
                 for imported in ids {
-                    if let Some(reference) = copy_reference::reference(imported.as_str()) {
+                    if let Some(reference) = copy_reference::reference(imported.as_str())? {
                         let filename = ctx.get_file_name(reference)?.to_string();
                         copy_outputs.insert(imported.to_string(), filename.clone());
                         imports.push(json!({"path": imported.as_str(), "kind":kind, "external":false, "zfbCopiedOutput":filename}));
@@ -276,6 +276,7 @@ async fn run(request: Request) -> Result<()> {
             output["entryPoint"] = json!(key(entry));
         }
     }
+    copy_reference::validate_metadata(&inputs, &outputs)?;
     if inputs.is_empty() {
         bail!("Rolldown returned no resolved input graph");
     }

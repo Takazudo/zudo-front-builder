@@ -4,7 +4,10 @@ import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-const binary = resolve(process.env.ZFB_PREPARED_RUNNER ?? "target/debug/examples/prepared");
+const binary = resolve(
+  process.env.ZFB_PREPARED_RUNNER ??
+    `target/${process.env.ZFB_PROTOTYPE_PROFILE ?? "debug"}/examples/prepared`,
+);
 const root = mkdtempSync(resolve("target/rolldown-gate-"));
 writeFileSync(
   join(root, "entry.mjs"),

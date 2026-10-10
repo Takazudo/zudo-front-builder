@@ -15,6 +15,7 @@ mod probe {
         fs,
         path::{Path, PathBuf},
         process::Command,
+        time::Instant,
     };
     use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
     fn copy(src: &Path, dst: &Path) -> Result<()> {
@@ -48,6 +49,7 @@ mod probe {
             fs::remove_dir_all(tmp)?;
         }
         fs::create_dir_all(tmp)?;
+        let start = Instant::now();
         let out = Command::new(cli)
             .arg("build")
             .current_dir(project)
@@ -55,6 +57,11 @@ mod probe {
             .env("ZFB_KEEP_BUILD_SHADOW", "1")
             .env("ZFB_DEV_TIMING", "1")
             .output()?;
+        let cli_elapsed_us = start.elapsed().as_micros();
+        fs::write(
+            evidence.join(format!("{label}-timing.json")),
+            serde_json::to_vec(&json!({"cli_elapsed_us":cli_elapsed_us}))?,
+        )?;
         let log = format!(
             "{}\n{}",
             String::from_utf8_lossy(&out.stdout),
