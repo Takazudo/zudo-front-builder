@@ -4,10 +4,10 @@
 
 ## Revision and scope
 
-- Verified implementation commit: `c0ae55f70fab1b5477b5818576ee572ff92105b5`; follow-up commits change only evidence and existing source-digest metadata.
+- Verified final implementation commit: `648ba4621a74b1a46358f6a6e9d94c626a978be3` (initial implementation `c0ae55f70fab1b5477b5818576ee572ff92105b5`). The final source follow-up replaces two immediate option-field assignments with an equivalent struct initializer to satisfy native-feature Clippy; later evidence/provenance changes do not alter runtime code.
 - Repository base: `4c53014c04982687e3960e9f1f8aa6ae2d64d845` (refreshed main).
 - Rolldown Git revision: `24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9`, crate version `1.2.13`, including `rolldown_common` from the same revision. `Cargo.lock` pins the complete family; no fork.
-- Local tools: Linux x86_64, rustc 1.99.0, Node 24.19.0, esbuild 0.25.12, Playwright 1.58.2 / Chromium 145.0.7632.6, Hono 4.12.8. Development profile, debug information disabled, four Cargo jobs. No release benchmark.
+- Local tools: Linux x86_64, rustc 1.99.0, Node 24.19.0, esbuild 0.25.12, Playwright 1.58.2 / Chromium 145.0.7632.6, Hono 4.12.8. Development profile (Rust opt-level 0), debug information disabled, four Cargo jobs. The esbuild executable is an optimized prebuilt binary; this comparison is not a release-engine benchmark.
 - This follows the accepted 2026-10-10 brief and four historical comments on [issue #318](https://github.com/Takazudo/zudo-front-builder/issues/318). Browser, SSR, and review evidence is bounded to the checked-in fixture and selected existing tests.
 
 `zfb-rolldown-prototype` owns a strict decoder of ZFB's **already prepared esbuild command contract**, plus compatibility metadata. This is not a generalized neutral compiler API. It runs `Bundler::with_plugins(...).write()` in process, on an isolated thread/Tokio runtime. Only `std::process::Command` and `anyhow::Result` cross the boundary; no upstream types are exposed. No Node binding or Rolldown CLI is invoked.
@@ -40,12 +40,12 @@ Uncontended prepared run (microseconds, first process, three iterations):
 
 | Measurement | esbuild | native Rolldown |
 | --- | --- | --- |
-| SSR selected pipeline | 116617, 76356, 71795 | 316691, 236671, 215262 |
-| Browser selected bundle calls | 345291, 17982, 16316 | 456887, 128196, 177428 |
-| Browser production publication | 8325, 6410, 6276 | 5431, 4802, 6589 |
-| Native SSR bundle / metadata | n/a | 248681/2768, 189634/3061, 168155/2811 |
+| SSR selected pipeline | 130212, 76122, 92001 | 257977, 199172, 204069 |
+| Browser selected bundle calls | 346024, 16414, 16012 | 449440, 124009, 123687 |
+| Browser production publication | 6303, 5970, 5812 | 5735, 4806, 4634 |
+| Native SSR bundle / metadata | n/a | 191898/2860, 164189/2649, 169049/2666 |
 
-For the third SSR iteration, normal timers reported esbuild preparation/invocation/postprocessing at 26/17/27 ms; native at 33/175/5 ms. Native browser main/worker timing is separately printed for every job (third iteration: 166645/6435 us bundling and 1558/129 us metadata). Compilation and browser startup are excluded from these measurements. Three samples do not support a statistical performance conclusion; first-call cache/warm-up overhead is visible. No peak RSS comparison or whole-site/end-to-end speedup claim.
+For the third SSR iteration, normal timers reported esbuild preparation/invocation/postprocessing at 27/28/35 ms; native at 26/173/4 ms. Native browser main/worker timing is separately printed for every job (third iteration: 114647/5372 us bundling and 1377/91 us metadata). Compilation and browser startup are excluded from these measurements. Three samples do not support a statistical performance conclusion; first-call cache/warm-up overhead is visible. No peak RSS comparison or whole-site/end-to-end speedup claim.
 
 ## Ownership costs and constraints
 
@@ -63,7 +63,7 @@ Concrete coupled APIs include `BundlerOptions`, `BundlerTransformOptions`, `Reso
 
 ## Verification command ledger
 
-All commands ran from the repository root; the installed Cargo home/tool paths were `/workspace/.cargo`, `/workspace/.rustup` and `/workspace/zfb-prototype-tools`. `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0` and the README's explicit esbuild path were set. The commands below abbreviate only those environment assignments. Runtime execution at the implementation SHA above completed with guard `verdict=PASS exit=0 secs=6`.
+All commands ran from the repository root; the installed Cargo home/tool paths were `/workspace/.cargo`, `/workspace/.rustup` and `/workspace/zfb-prototype-tools`. `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0` and the README's explicit esbuild path were set. The commands below abbreviate only those environment assignments. Runtime execution at the implementation SHA above completed with guard `verdict=PASS exit=0 secs=5`.
 
 | Command | Observed outcome |
 | --- | --- |
@@ -74,12 +74,15 @@ All commands ran from the repository root; the installed Cargo home/tool paths w
 | Native `cargo test -p zfb-build --features rolldown-prototype --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored` | PASS 1/1; initial command without `--ignored` skipped and was not counted |
 | Native `cargo test -p zfb-build --features rolldown-prototype --test bundler_exact_match_resolution plugin_alias_matches_exact_specifier` and `plugin_alias_does_not_match_prefix_with_slash` | PASS 1/1 each |
 | Guarded `cargo check -p zfb-build -p zfb-islands --no-default-features` | PASS, 17.45 s; native feature absent |
+| Native `cargo clippy --locked -p zfb-rolldown-prototype --features native --lib -- -D warnings` | PASS after equivalent options-initializer cleanup |
 | `cargo fmt --all --check`; Oxfmt 0.70.0 (repository fmt settings) check on prototype JS/TS; mdx-formatter 1.2.1 check on prototype MD/MDX | PASS |
 | `compilerSourceDigest(REPO_ROOT)` from `docs/scripts/wind-preview-assets.mjs` | Refreshed and verified existing wind manifest's source-only digest (covers Cargo and all crates); no CSS or release artifacts regenerated |
 
 ## Initial PR CI diagnosis
 
 On `335cdc36`, the docs check failed at generated English utility references: `Wind source differs from reviewed support pin 478bbf83e137fbdbe2f386df834839c08e884b9e`. That separate reviewed Wind closure hashes root `Cargo.lock` as well as unchanged Wind sources. After **117/117** `cargo test --locked -p zudo-wind --lib` tests passed (guard PASS, 22 s), its digest was refreshed with the existing 100-path count, fixed support pin and assertion logic unchanged. English and Japanese generated-reference checks now pass locally. CI's workspace Wind preview asset job also passed on the initial head, checking generated CSS against the changed dependency closure.
+
+On `b40a06d3`, four existing island-size-budget tests still rejected the new Cargo lock hash. Both complete normal-esbuild size matrices were then measured on pinned Linux and native Darwin; all raw/gzip totals exactly match the existing ceilings. Only lock provenance and explanatory status were refreshed, preserving ceilings, zero allowances, assertions and original baseline evidence. The 17 budget tests plus 22 Wind-reference tests pass. See [native measurement and artifact replay report](../../research/v3-island-size/rolldown-lock-provenance-report.md). The linked-package probe failures on earlier CI heads were a cascade: the skipped CLI build left `target/debug/zfb` absent.
 
 The repository automatically started docs/showcase preview workflows when the draft opened. They were canceled to honor this task's explicit no-publish/no-deploy boundary. The docs upload job and showcase preview job executed no steps; the associated binary/smoke jobs were canceled along with their preview-producing workflow. Those cancellations are not passing validation, nor compiler/test failures. Normal nondeployment CI is observed separately on the PR.
 
@@ -99,6 +102,6 @@ The first browser run timed out because the test server selected an old hashed e
 | `zfb-build/src/plugin_bundler.rs` TypeScript plugin prebundle | Remains esbuild |
 | Version probes and direct esbuild-specific regression helpers | Remain esbuild |
 
-No public backend selection API, `NativeRustBundler` implementation, staging redesign, default switch, deployment, release, CI-wide run, full end-to-end suite, Windows/macOS validation, source-map-enabled browser production rename test, or package-wide compatibility claim. The harness's node_modules link is Unix-specific. No broad repeated builds or b4push were run. Keep #318 and this draft PR open.
+No public backend selection API, `NativeRustBundler` implementation, staging redesign, default switch, deployment, release, CI-wide run, full end-to-end suite, Windows/macOS prototype-runtime validation (the separate Darwin size-provenance measurement runs the unchanged esbuild baseline), source-map-enabled browser production rename test, or package-wide compatibility claim. The harness's node_modules link is Unix-specific. No broad repeated workspace builds or b4push were run. Change-induced lock provenance failures additionally required one targeted CLI build and the existing 32-build size matrix on each of Linux and native Darwin; these are the normal esbuild path, separate from the prototype runtime matrix. Keep #318 and this draft PR open.
 
 Next bounded work: replace/own the argv coupling and copy-loader private prefix; evaluate required CommonJS and external/alias option semantics against real consumer jobs; exercise the alternate production SSR pass and broader source-map/diagnostic cases; run a controlled release-profile benchmark on representative prepared inputs; attempt one adjacent upstream pin update and measure patch/lock churn. Config/plugin/client-script migration requires separate caller-specific evidence.

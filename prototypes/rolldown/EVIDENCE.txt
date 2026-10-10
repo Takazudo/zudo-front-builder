@@ -1,38 +1,38 @@
-Implementation: c0ae55f70fab1b5477b5818576ee572ff92105b5
+Implementation: 648ba4621a74b1a46358f6a6e9d94c626a978be3
 Command: guarded node prototypes/rolldown/verify.mjs
 Prepared binaries; ZFB_PROTOTYPE_TOOLS and ZFB_ESBUILD_BIN as in README.
 Selected stdout/stderr assertion and timing lines; repeated warnings omitted.
 
 direct native API: real static/dynamic graph, executed split output, linked map, actionable unresolved import PASS
-[zfb-timing] bundle(): materialise=65ms esbuild=19ms post-esbuild=30ms post=0ms teardown=0ms
-[zfb-timing] bundle(): materialise=28ms esbuild=21ms post-esbuild=25ms post=0ms teardown=0ms
-[zfb-timing] bundle(): materialise=26ms esbuild=17ms post-esbuild=27ms post=0ms teardown=0ms
-SSR esbuild: host/MDX/CSS/alias/transitive deps/exclusion/diagnostic passed, mapping=Some("pages/throw.tsx:2:9"), selected_pipeline_us=[116617, 76356, 71795]
-browser esbuild: deterministic split/worker/resources, selected_bundle_call_us=[345291, 17982, 16316], production_publish_us=[8325, 6410, 6276]
-browser esbuild: deterministic split/worker/resources, selected_bundle_call_us=[346782, 16398, 16960], production_publish_us=[5303, 4305, 5344]
+[zfb-timing] bundle(): materialise=70ms esbuild=23ms post-esbuild=30ms post=0ms teardown=0ms
+[zfb-timing] bundle(): materialise=26ms esbuild=18ms post-esbuild=30ms post=0ms teardown=0ms
+[zfb-timing] bundle(): materialise=27ms esbuild=28ms post-esbuild=35ms post=0ms teardown=0ms
+SSR esbuild: host/MDX/CSS/alias/transitive deps/exclusion/diagnostic passed, mapping=Some("pages/throw.tsx:2:9"), selected_pipeline_us=[130212, 76122, 92001]
+browser esbuild: deterministic split/worker/resources, selected_bundle_call_us=[346024, 16414, 16012], production_publish_us=[6303, 5970, 5812]
+browser esbuild: deterministic split/worker/resources, selected_bundle_call_us=[343225, 18550, 17519], production_publish_us=[5748, 4793, 4647]
 esbuild: fresh-process/client-stage deterministic asset names and bytes PASS
-[zfb-timing] rolldown-prototype: bundle=248681us metadata=2768us
-[zfb-timing] bundle(): materialise=58ms esbuild=253ms post-esbuild=4ms post=0ms teardown=0ms
-[zfb-timing] rolldown-prototype: bundle=189634us metadata=3061us
-[zfb-timing] bundle(): materialise=36ms esbuild=195ms post-esbuild=4ms post=0ms teardown=0ms
-[zfb-timing] rolldown-prototype: bundle=168155us metadata=2811us
-[zfb-timing] bundle(): materialise=33ms esbuild=175ms post-esbuild=5ms post=0ms teardown=0ms
-SSR rolldown: host/MDX/CSS/alias/transitive deps/exclusion/diagnostic passed, mapping=Some("pages/throw.tsx:2:9"), selected_pipeline_us=[316691, 236671, 215262]
-[zfb-timing] rolldown-prototype: bundle=120661us metadata=1478us
-[zfb-timing] rolldown-prototype: bundle=7195us metadata=174us
-[zfb-timing] rolldown-prototype: bundle=117136us metadata=1346us
-[zfb-timing] rolldown-prototype: bundle=6523us metadata=109us
-[zfb-timing] rolldown-prototype: bundle=166645us metadata=1558us
-[zfb-timing] rolldown-prototype: bundle=6435us metadata=129us
-browser rolldown: deterministic split/worker/resources, selected_bundle_call_us=[456887, 128196, 177428], production_publish_us=[5431, 4802, 6589]
-[zfb-timing] rolldown-prototype: bundle=119820us metadata=1361us
-[zfb-timing] rolldown-prototype: bundle=6043us metadata=106us
-[zfb-timing] rolldown-prototype: bundle=120833us metadata=1395us
-[zfb-timing] rolldown-prototype: bundle=6413us metadata=154us
-[zfb-timing] rolldown-prototype: bundle=117806us metadata=1333us
-[zfb-timing] rolldown-prototype: bundle=7538us metadata=172us
-browser rolldown: deterministic split/worker/resources, selected_bundle_call_us=[468988, 131771, 129547], production_publish_us=[5889, 5015, 7596]
+[zfb-timing] rolldown-prototype: bundle=191898us metadata=2860us
+[zfb-timing] bundle(): materialise=56ms esbuild=197ms post-esbuild=4ms post=0ms teardown=0ms
+[zfb-timing] rolldown-prototype: bundle=164189us metadata=2649us
+[zfb-timing] bundle(): materialise=26ms esbuild=168ms post-esbuild=4ms post=0ms teardown=0ms
+[zfb-timing] rolldown-prototype: bundle=169049us metadata=2666us
+[zfb-timing] bundle(): materialise=26ms esbuild=173ms post-esbuild=4ms post=0ms teardown=0ms
+SSR rolldown: host/MDX/CSS/alias/transitive deps/exclusion/diagnostic passed, mapping=Some("pages/throw.tsx:2:9"), selected_pipeline_us=[257977, 199172, 204069]
+[zfb-timing] rolldown-prototype: bundle=110446us metadata=1421us
+[zfb-timing] rolldown-prototype: bundle=5325us metadata=91us
+[zfb-timing] rolldown-prototype: bundle=115194us metadata=1371us
+[zfb-timing] rolldown-prototype: bundle=5220us metadata=143us
+[zfb-timing] rolldown-prototype: bundle=114647us metadata=1377us
+[zfb-timing] rolldown-prototype: bundle=5372us metadata=91us
+browser rolldown: deterministic split/worker/resources, selected_bundle_call_us=[449440, 124009, 123687], production_publish_us=[5735, 4806, 4634]
+[zfb-timing] rolldown-prototype: bundle=116037us metadata=1397us
+[zfb-timing] rolldown-prototype: bundle=5363us metadata=95us
+[zfb-timing] rolldown-prototype: bundle=103450us metadata=1310us
+[zfb-timing] rolldown-prototype: bundle=5588us metadata=113us
+[zfb-timing] rolldown-prototype: bundle=101555us metadata=1294us
+[zfb-timing] rolldown-prototype: bundle=5665us metadata=118us
+browser rolldown: deterministic split/worker/resources, selected_bundle_call_us=[453366, 112749, 110971], production_publish_us=[4748, 4733, 4836]
 rolldown: fresh-process/client-stage deterministic asset names and bytes PASS
 esbuild: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
 rolldown: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
-heavy-guard: verdict=PASS exit=0 secs=6 min_mem_mb=17162 reason=-
+heavy-guard: verdict=PASS exit=0 secs=5 min_mem_mb=17120 reason=-
