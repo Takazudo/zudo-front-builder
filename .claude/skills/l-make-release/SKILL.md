@@ -495,7 +495,7 @@ Rules:
 
 ```bash
 pnpm --filter @takazudo/zfb test && \
-  cargo test --package zfb && \
+  cargo test --package zfb --lib && \
   pnpm --filter docs check && \
   pnpm --filter docs build && \
   pnpm --filter docs check:html
@@ -506,9 +506,18 @@ five commands before the direct release push so type/content errors, strict brok
 malformed emitted HTML cannot be published. If anything fails, stop and tell the user. Do not
 proceed.
 
+The Rust leg is deliberately `--lib` (unit tests, one binary), not the full `cargo test --package zfb`.
+The full suite is ~60 integration-test binaries that each link V8, and `build.rs` embeds
+`ZFB_RELEASE_VERSION`, so the version bump forces them all to rebuild: on an M-series Mac the
+v4.3.0 attempt took 28.5 min to compile and over 30 min more to run, twice overrunning the
+heavy-guard run cap. Re-running it locally only duplicates the full `cargo nextest` that Step 7's
+`health.yml` runs on the exact bump commit — and Step 7 is a hard gate: no draft Release (Step 9)
+until that CI run is green. Run the full suite locally only when this release itself changes Rust
+code that CI has not yet tested on `main`.
+
 Also run `node scripts/assert-md-wasm-size-docs.mjs` after the manifest and documentation edits.
 
-If you used `--lockfile-only` in 4d (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test` leg is unaffected.
+If you used `--lockfile-only` in 4d (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test --lib` leg is unaffected.
 
 If this release touches `packages/zfb-runtime` router code, also run `pnpm test:webkit-back` (T4 local-heavy, Mac only — not covered by Step 7's CI wait; `pnpm test:router-chromium` already runs in CI via `router-chromium.yml`).
 

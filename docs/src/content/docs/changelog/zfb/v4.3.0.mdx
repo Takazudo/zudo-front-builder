@@ -1,0 +1,16 @@
+---
+title: v4.3.0
+sidebar_position: 146
+---
+
+# v4.3.0
+
+Released: 2026-10-10
+
+## Features
+
+- Heading-anchor slug utilities now ship as the standalone, zero-dependency `@takazudo/zfb-slugify` package, published in lockstep with zfb. `@takazudo/zfb` depends on it and routes its `slugify()` / `SlugAllocator` exports through it, so the `@takazudo/zfb/slugify` subpath and the SDK root re-exports keep working unchanged. Consumers that only need slugs can depend on `@takazudo/zfb-slugify` directly (#4107, #4108; 05d90ea8, c2f5cce6).
+
+## Bug Fixes
+
+- A persisted island that has never mounted now keeps obeying its `when` hydration condition after its props change across a client-side navigation. It holds a pending render intent through navigation cancellation and repeat scans, then renders the latest props over the retained DOM when its first-mount condition fires. Only a live island's replacement mount still bypasses deferred scheduling (#4097; 9c58bf9f).
