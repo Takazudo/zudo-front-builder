@@ -1,5 +1,5 @@
 // Supplemental actual-host acceptance for #4079; manager runs in the guarded browser lane.
-import { chromium, expect } from "@playwright/test";
+import { chromium, expect, webkit } from "@playwright/test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -23,7 +23,12 @@ const evidence = {
   failures: [],
   pageErrors: [],
 };
-const browser = await chromium.launch();
+const browserName = process.env.DOCS_VERIFY_BROWSER ?? "chromium";
+const browserType = { chromium, webkit }[browserName];
+if (!browserType)
+  throw new Error(`DOCS_VERIFY_BROWSER must be chromium or webkit, got ${browserName}`);
+const browser = await browserType.launch();
+evidence.browser = browserName;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 async function scenario(name, width, locale, run) {
   const context = await browser.newContext({
