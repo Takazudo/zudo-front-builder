@@ -15524,7 +15524,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().unwrap();
-        let project = tmp.path().join("site");
+        let project = tmp.path().canonicalize().unwrap().join("site");
         let store = project.join("node_modules/.pnpm");
         let runtime = store.join("runtime@1/node_modules/@takazudo/zfb-runtime");
         let hono = store.join("hono@1/node_modules/hono");
