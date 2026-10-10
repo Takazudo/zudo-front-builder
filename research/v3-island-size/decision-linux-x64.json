@@ -3,7 +3,7 @@
   "decisionIssue": 3469,
   "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "11623738455758588cb0ad811778c711c8638b6d",
+  "baselineSourceSha": "1238ed66e38c6fd04316a08de057dd2b5d8e457c",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -44,7 +44,7 @@
       },
       "event-only": {
         "raw": 66792,
-        "gzip": 22248
+        "gzip": 22251
       },
       "scalar-signal": {
         "raw": 66800,
@@ -52,23 +52,23 @@
       },
       "show-for": {
         "raw": 66949,
-        "gzip": 22324
+        "gzip": 22323
       },
       "model": {
         "raw": 66791,
-        "gzip": 22250
+        "gzip": 22249
       },
       "blog-theme": {
         "raw": 67144,
-        "gzip": 22372
+        "gzip": 22374
       },
       "json-api": {
         "raw": 66950,
-        "gzip": 22334
+        "gzip": 22333
       },
       "multi-island": {
         "raw": 67072,
-        "gzip": 22343
+        "gzip": 22341
       }
     },
     "packed": {
@@ -78,19 +78,19 @@
       },
       "event-only": {
         "raw": 66854,
-        "gzip": 22270
+        "gzip": 22271
       },
       "scalar-signal": {
         "raw": 66862,
-        "gzip": 22283
+        "gzip": 22282
       },
       "show-for": {
         "raw": 67011,
-        "gzip": 22342
+        "gzip": 22348
       },
       "model": {
         "raw": 66853,
-        "gzip": 22276
+        "gzip": 22272
       },
       "blog-theme": {
         "raw": 67206,
@@ -98,11 +98,11 @@
       },
       "json-api": {
         "raw": 67012,
-        "gzip": 22356
+        "gzip": 22359
       },
       "multi-island": {
         "raw": 67134,
-        "gzip": 22363
+        "gzip": 22365
       }
     }
   },
