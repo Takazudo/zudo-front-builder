@@ -45,3 +45,25 @@ This strengthens the owned boundary; it does not remove the private dependency, 
 - [#4124](https://github.com/Takazudo/zudo-front-builder/issues/4124): normal esbuild Darwin size/packaging contracts and separate release measurements after semantic acceptance.
 
 No Mac execution or connection was requested in this session. Linux evidence does not satisfy those issues. SSR copied-glue URL imports remain a baseline limitation on both backends; adapter inner sourcemaps remain stripped by existing policy.
+
+## Observed Linux result
+
+Measured source: `2cd2f14ae2c142010019aa0e893ba54f5c2a4b4b`, clean worktree. [RELEASE-EVIDENCE.json](RELEASE-EVIDENCE.json) retains every positive sample, phase lines, source/input/binary hashes and environment. AMD EPYC 9V74 Linux x86_64, rustc 1.99.0, Node 24.14.0, pnpm 12.8.2, esbuild 0.25.12; same prepared Hono/SDK versions as the original probes. Compilation used four jobs and an initially absent release target, with existing registry/Git/V8 download caches: 329.903 seconds elapsed, minimum available memory 14,371 MB. A same-command build at the committed source took 0.475 seconds. Native-only unit-test feature closure compilation took a separate 76 seconds; all four grouped tests passed. No clean-machine or baseline-only compilation-cost delta was measured. Release artifacts consumed about 3 GiB and left 6.3 GiB available; binary-size adoption comparisons were not performed.
+
+Times below are milliseconds; first-call cells list both fresh producer processes, later-call cells are the four same-process observations' minimum–maximum. Every production CLI observation is a fresh process.
+
+| Selected interval | esbuild | native Rolldown |
+| --- | --- | --- |
+| Direct SSR development-policy pipeline, first call | 37.865 / 44.982 | 36.524 / 40.956 |
+| Direct SSR, later calls | 29.006–43.161 | 30.147–35.776 |
+| Browser production main + worker call, first | 32.937 / 28.916 | 28.942 / 29.896 |
+| Browser main + worker, later calls | 16.901–24.687 | 14.583–28.071 |
+| Production CLI, first clean fixture build | 172.058 / 145.996 | 162.518 / 191.069 |
+| Production CLI, existing dist second build | 162.156 / 143.578 | 149.503 / 163.570 |
+| Browser publication only, all calls | 2.100–5.612 | 2.509–4.619 |
+
+Native direct-SSR bundling was 22.921–28.798 ms and compatibility metadata 0.580–0.777 ms. Production's two native bundling phases were 20.055–23.698 ms each, metadata 0.474–0.775 ms each; the actual whole CLI intervals above include the rest of the production path. Esbuild's corresponding internal metadata split is unavailable. Existing `bundle(): ... esbuild=...` phase labels name the shared command seam even when native is selected; they are not evidence that an esbuild subprocess ran on the native leg. Exact raw phase lines, including browser main/worker separation and pipeline postprocessing, are in the ledger.
+
+All measured probes passed runtime/graph/audit/determinism assertions. Chromium passed hydration, split import, module worker, Wasm and copied browser glue after production rename. Both real production backends passed V8 regular/catch-all responses, SSG exclusion, source edges, Wasm, deliberate throw mapping and the negative cases. The bounded sample shows overlapping distributions and round-to-round variability. **It does not establish an overall production speed advantage**; faster individual bundle samples are insufficient to recommend switching defaults. Continue narrowly for ownership/compatibility evidence, with Mac and broader caller coverage still outstanding.
+
+Failed setup attempts are retained separately: `/usr/bin/time` was absent (exit127 before Cargo); a warm-build command had a malformed feature argument (Cargo exit101 before compilation). Corrected commands passed. Neither is an engine/runtime failure. No ceilings, test assertions, Cargo dependencies or normal-path compiler settings were weakened.
