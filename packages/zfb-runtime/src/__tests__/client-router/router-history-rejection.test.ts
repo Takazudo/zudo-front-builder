@@ -299,6 +299,37 @@ describe("before-swap retargeting (final target commit before teardown)", () => 
     expect(h.pushes.at(-1)).toEqual({ index: baseIndex + 2, url: abs("/retarget-next") });
   });
 
+  it("early push succeeded, rejected correction: a hash of the unrendered entry is loaded, not served from the stale DOM", async () => {
+    await startAt("/abort-source");
+    const fetchMock = stubFetchByPath();
+    const h = controlHistory();
+    h.reject("replaceState", historyRejection());
+    const stop = retargetTo("/abort-final");
+
+    let nextNavigation: Promise<void> | undefined;
+    document.addEventListener(
+      "zfb:navigation-aborted",
+      () => {
+        stop();
+        nextNavigation = navigate("/abort-early#section");
+      },
+      { once: true },
+    );
+
+    await navigate("/abort-early");
+    await nextNavigation;
+
+    // The abort listener's navigation owns the page: no recovery load for the
+    // rejected final target, and the live DOM (still /abort-source) is not
+    // mistaken for the early entry's page just because the URL matches.
+    expect(loads.replaced).toEqual([]);
+    expect(location.pathname).toBe("/abort-early");
+    expect(location.hash).toBe("#section");
+    expect(document.querySelector("main")?.textContent).toBe("content for /abort-early");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events).toContain("zfb:after-swap");
+  });
+
   it("no early entry (destination was the live URL), rejected late push: document load to the final target", async () => {
     await startAt("/same-url");
     const h = controlHistory();

@@ -133,6 +133,11 @@ let mostRecentTransition: Transition | undefined;
 // When we traverse the history, the window.location is already set to the new location.
 // This variable tells us where we came from
 let originalLocation: URL;
+// True while the current history entry belongs to a navigation that committed
+// its URL early but never rendered its page (the final write was rejected). The
+// address bar then names a page the live DOM is not, so URL equality must not be
+// taken as "already rendered" until a swap settles the location.
+let currentEntryUnrendered = false;
 
 // Route announcer — ported from Astro's announce(). Each navigation appends a fresh
 // aria-live <div> (after removing any prior announcer, so exactly one ever exists) and
@@ -406,6 +411,7 @@ const settleLocation = (to: URL, from: URL, historyState?: State) => {
   // now we are on the new page for non-history navigation!
   // (with history navigation page change happens before popstate is fired)
   originalLocation = to;
+  currentEntryUnrendered = false;
 
   // freshly loaded pages start from the top
   if (!intraPage) {
@@ -750,7 +756,10 @@ function abandonNavigation(
   // An early write may already have moved the URL; describe where the browser
   // actually is rather than the location this navigation started from. Done
   // before the abort event so a navigation started by a listener sees it too.
-  originalLocation = new URL(location.href);
+  // That entry's page was never rendered, so remember the mismatch.
+  const actual = new URL(location.href);
+  if (!samePage(actual, originalLocation)) currentEntryUnrendered = true;
+  originalLocation = actual;
   notifyNavigationAborted(navigation);
   // An abort listener may have started a newer navigation, which now owns the
   // page; this one must not load over it.
@@ -817,7 +826,9 @@ async function transition(
   if (navigationType !== "traverse") {
     updateScrollPosition({ scrollX, scrollY });
   }
-  if (samePage(from, to) && !options.formData) {
+  // An unrendered early entry shares its URL with no live DOM: never serve it
+  // from the current page, fetch and swap instead.
+  if (samePage(from, to) && !options.formData && !currentEntryUnrendered) {
     if (
       // Same-page Back/Forward: serve from the live DOM (no re-fetch/re-swap)
       // unless this page opted back into the fetch (per-request SSR). #1374/#1376.
@@ -1238,6 +1249,7 @@ const onPageShow = (ev: PageTransitionEvent) => {
   // both here so the next transition() gets the correct `from` URL (a stale
   // `originalLocation` would feed onPopState the wrong origin).
   originalLocation = new URL(location.href);
+  currentEntryUnrendered = false;
   const index = history.state?.index;
   if (Number.isFinite(index)) {
     currentHistoryIndex = index;
@@ -1528,6 +1540,7 @@ export function init(_options?: InitOptions): void {
   // syncHistoryEntry() already primed it via ensureNavigationState().
   navigationStateSeeded = true;
   originalLocation = new URL(location.href);
+  currentEntryUnrendered = false;
 
   registerNavigationListeners();
 
