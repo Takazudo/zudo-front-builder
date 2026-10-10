@@ -28,7 +28,12 @@ description = "zfb islands runtime: \"use client\" AST scanner, esbuild subproce
 
 [lib]
 
+[features]
+rolldown-prototype = ["dep:zfb-rolldown-prototype", "zfb-rolldown-prototype/native"]
+default = []
+
 [dependencies]
+zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", optional = true }
 # Stable asset-URL / on-disk-path constants shared with zfb-render
 # (head injection, S1) and zfb-build (production pipeline, S4).
 # zfb-types is a zero-zfb-dep leaf crate, so this introduces no

@@ -15025,6 +15025,11 @@ fn run_esbuild(
 
     cmd.arg(OsString::from(entry));
 
+    #[cfg(feature = "rolldown-prototype")]
+    if zfb_rolldown_prototype::enabled() {
+        return zfb_rolldown_prototype::run_prepared(&cmd);
+    }
+
     let output =
         run_capturing(&mut cmd).with_context(|| format!("failed to spawn {}", bin.display()))?;
     // Drop `resolver_inputs` now — the subprocess has finished and

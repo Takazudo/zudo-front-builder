@@ -21,10 +21,12 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 # V8-off path do so explicitly via `--no-default-features` at the top
 # level — see `crates/zfb/Cargo.toml` for the matching seam.
 [features]
+rolldown-prototype = ["dep:zfb-rolldown-prototype", "zfb-rolldown-prototype/native"]
 default = ["embed_v8"]
 embed_v8 = ["zfb-render/embed_v8"]
 
 [dependencies]
+zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", optional = true }
 zfb-watcher = { path = "../zfb-watcher" }
 zfb-graph = { path = "../zfb-graph" }
 # Read-only consumption of the MDX → JSX emitter (Wave 1 / T3 bundler).
