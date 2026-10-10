@@ -342,6 +342,12 @@ measured in CI before the bump lands on `main`:
   pinned package version and lockfile hash. Every bump leaves raw totals identical and moves a few
   gzip totals by a handful of bytes, so an unprobed bump commit always fails `health` (v4.1.0
   through v4.3.0 each needed a follow-up rebaseline commit).
+- **Wind preview digest.** `docs/public/wind-examples/manifest.json` records
+  `compiler.sourceSha256`, which `compilerSourceDigest` in `docs/scripts/wind-preview-assets.mjs`
+  computes over every `crates/**/*.{rs,toml,json,css}` file. The bump rewrites
+  `crates/zfb-md-wasm/npm/package.json` and `shipped-sizes.json`, so an unrefreshed bump fails
+  `Check workspace wind preview assets` and the required `Docs gate` (first hit on the v4.3.1 probe).
+  `docs-checks.yml` does not run on `main` pushes, so this staleness can sit unnoticed on `main`.
 
 Measure each release version separately; earlier runs do not establish that other stamps are safe.
 
@@ -392,8 +398,21 @@ Before pushing anything to `main`:
      changed, the fixture set differs, or the artifact's lockfile/version differ from the checkout —
      a raw change is a product size change that needs a reviewed decision, not a release
      rebaseline. Stop and surface it. Run `pnpm exec vp fmt` on the changed files.
+   - Wind preview digest: after every `crates/` edit above, recompute the digest and write it to
+     `docs/public/wind-examples/manifest.json`'s `compiler.sourceSha256`:
+
+     ```bash
+     node --input-type=module -e "import {compilerSourceDigest} from './docs/scripts/wind-preview-assets.mjs'; console.log(compilerSourceDigest(process.cwd()))"
+     ```
+
+     The version bump changes no compiler code, so only the digest moves; the rehearsal run's
+     `Check workspace wind preview assets` job regenerates every preview and proves it. If that
+     job reports any asset other than `manifest.json` as stale, the compiler output changed —
+     regenerate with `node docs/scripts/wind-preview-assets.mjs --compiler <abs path to a
+     --no-default-features zfb build>` and review the diff instead.
    - Push the rehearsal commit and require a new `wasm-md (default)` run with zero budget errors
-     (a few minutes). Do not wait for the rehearsal's `health` job: it takes ~40 minutes, and
+     (a few minutes), plus green `Check workspace wind preview assets` and `Docs gate` jobs.
+     Do not wait for the rehearsal's `health` job: it takes ~40 minutes, and
      Step 7 runs the same island-size gate on the bump commit as a hard gate anyway. Check `assert-packed.mjs`, `assert-zfb-md-wasm-release.mjs`, the tarball budget
      against its existing ceiling, and `assert-zfb-md-wasm-exports.sh` in that run. Gzip drift
      warnings within 64 bytes are acceptable; exact-size errors and ceiling breaches are not.
@@ -582,7 +601,7 @@ git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.ya
   docs/src/content/docs/guides/syntax-highlighting.mdx \
   docs/src/content/docs-ja/guides/syntax-highlighting.mdx \
   research/v3-island-size/decision-linux-x64.json research/v3-island-size/README.md \
-  scripts/__tests__/island-size-budget.test.mjs \
+  scripts/__tests__/island-size-budget.test.mjs docs/public/wind-examples/manifest.json \
   docs/src/content/docs/changelog/zfb/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx \
   docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx \
