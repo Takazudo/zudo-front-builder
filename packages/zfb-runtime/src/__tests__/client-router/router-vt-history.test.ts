@@ -17,7 +17,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
+import {
+  captureDocumentLoads,
+  drainHappyDom,
+  installHappyDomShim,
+  resetDocument,
+} from "./_helpers.js";
 import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
 
 vi.mock("@takazudo/zfb/runtime", () => ({
@@ -598,5 +603,143 @@ describe("Back wins after the early history commit but before swap (#2603)", () 
     expect(location.pathname).toBe("/skipped-callback-a");
     expect(document.querySelector("main")?.textContent).toBe("content for /skipped-callback-a");
     expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
+  });
+});
+
+describe("rejected History writes on the native View Transition path (#4127)", () => {
+  let loads: ReturnType<typeof captureDocumentLoads>;
+  let events: string[];
+  const LIFECYCLE = [
+    "zfb:before-swap",
+    "zfb:after-swap",
+    "zfb:page-load",
+    "zfb:navigation-aborted",
+  ] as const;
+  const record = (event: Event) => events.push(event.type);
+  const abs = (path: string) => new URL(path, location.href).href;
+  const rejection = () => new DOMException("History write rejected", "SecurityError");
+
+  beforeEach(() => {
+    loads = captureDocumentLoads();
+    events = [];
+    for (const type of LIFECYCLE) document.addEventListener(type, record);
+    document.body.innerHTML = "<main>old page</main>";
+    vi.mocked(cancelPendingIslands).mockClear();
+    vi.mocked(unmountIslands).mockClear();
+    vi.mocked(mountNewIslands).mockClear();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    for (const type of LIFECYCLE) document.removeEventListener(type, record);
+    loads.restore();
+  });
+
+  function expectOldPageKept(path: string): void {
+    expect(location.pathname).toBe(path);
+    expect(document.querySelector("main")?.textContent).toBe("old page");
+    expect(events).not.toContain("zfb:after-swap");
+    expect(events).not.toContain("zfb:page-load");
+    expect(events.filter((type) => type === "zfb:navigation-aborted")).toHaveLength(1);
+    expect(cancelPendingIslands).not.toHaveBeenCalled();
+    expect(unmountIslands).not.toHaveBeenCalled();
+    expect(mountNewIslands).not.toHaveBeenCalled();
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
+  }
+
+  function retargetTo(path: string): () => void {
+    const listener = (event: Event) => {
+      (event as Event & { to: URL }).to = new URL(path, location.href);
+    };
+    document.addEventListener("zfb:before-swap", listener);
+    return () => document.removeEventListener("zfb:before-swap", listener);
+  }
+
+  it("a rejected early push never starts the transition and recovers with one document load", async () => {
+    const startViewTransition = vi.fn(makeFakeStartViewTransition());
+    (document as unknown as { startViewTransition: unknown }).startViewTransition =
+      startViewTransition;
+    vi.spyOn(history, "pushState").mockImplementation(() => {
+      throw rejection();
+    });
+
+    await navigate("/vt-rejected");
+
+    expect(startViewTransition).not.toHaveBeenCalled();
+    expectOldPageKept("/");
+    expect(events).not.toContain("zfb:before-swap");
+    expect(loads.assigned).toEqual([abs("/vt-rejected")]);
+    expect(loads.replaced).toEqual([]);
+  });
+
+  it("early push, then a rejected correction inside the callback: replace-recovery before teardown", async () => {
+    const pushes: string[] = [];
+    const nativePush = History.prototype.pushState;
+    vi.spyOn(history, "pushState").mockImplementation((...args) => {
+      pushes.push(String(args[2]));
+      return nativePush.apply(history, args);
+    });
+    const nativeReplace = History.prototype.replaceState;
+    vi.spyOn(history, "replaceState").mockImplementation((...args) => {
+      if (args[2] != null) throw rejection();
+      return nativeReplace.apply(history, args);
+    });
+    const stop = retargetTo("/vt-final");
+
+    await navigate("/vt-early");
+    stop();
+
+    expect(pushes).toEqual([abs("/vt-early")]);
+    expectOldPageKept("/vt-early");
+    expect(events.filter((type) => type === "zfb:before-swap")).toHaveLength(1);
+    expect(loads.replaced).toEqual([abs("/vt-final")]);
+    expect(loads.assigned).toEqual([]);
+  });
+
+  it("no early entry, late new target: no push inside the callback, document load to the final target", async () => {
+    const pushState = vi.spyOn(history, "pushState");
+    const stop = retargetTo("/vt-late");
+
+    // The prepared destination is the live URL, so transition() writes nothing
+    // before the callback; only the before-swap listener asks for a new entry.
+    await navigate("/");
+    stop();
+
+    expect(pushState).not.toHaveBeenCalled();
+    expectOldPageKept("/");
+    expect(events.filter((type) => type === "zfb:before-swap")).toHaveLength(1);
+    expect(loads.assigned).toEqual([abs("/vt-late")]);
+    expect(loads.replaced).toEqual([]);
+  });
+
+  it("a submitted form swaps outside native View Transitions, writing History once after before-swap", async () => {
+    const order: string[] = [];
+    const startViewTransition = vi.fn(makeFakeStartViewTransition());
+    (document as unknown as { startViewTransition: unknown }).startViewTransition =
+      startViewTransition;
+    const nativePush = History.prototype.pushState;
+    vi.spyOn(history, "pushState").mockImplementation((...args) => {
+      order.push(`pushState ${new URL(String(args[2])).pathname}`);
+      return nativePush.apply(history, args);
+    });
+    const onBeforeSwap = () => order.push("before-swap");
+    document.addEventListener("zfb:before-swap", onBeforeSwap);
+    const formData = new FormData();
+    formData.set("name", "value");
+
+    await navigate("/vt-form", { formData });
+    document.removeEventListener("zfb:before-swap", onBeforeSwap);
+
+    expect(startViewTransition).not.toHaveBeenCalled();
+    expect(order).toEqual(["before-swap", "pushState /vt-form"]);
+    expect(location.pathname).toBe("/vt-form");
+    expect(document.querySelector("main")?.textContent).toBe("content for /vt-form");
+    expect(events.filter((type) => type === "zfb:after-swap")).toHaveLength(1);
   });
 });
