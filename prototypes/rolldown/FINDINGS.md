@@ -86,6 +86,23 @@ On `b40a06d3`, four existing island-size-budget tests still rejected the new Car
 
 The repository automatically started docs/showcase preview workflows when the draft opened. They were canceled to honor this task's explicit no-publish/no-deploy boundary. The docs upload job and showcase preview job executed no steps; the associated binary/smoke jobs were canceled along with their preview-producing workflow. Those cancellations are not passing validation, nor compiler/test failures. Normal nondeployment CI is observed separately on the PR.
 
+### Terminal-CI follow-up
+
+CI for `de58861d` used synthetic merge `f3a6806904e71d412af12254ec2b72e9d5837f7a` with newer main `11623738455758588cb0ad811778c711c8638b6d` (the 4.3.0 release metadata). That main was synchronized locally before the follow-up. The original source-only Wind digest matched a clean archive of the prototype head, but the merged package/measurement JSON changed the digest. The actual Wind generator and freshness checker were rerun on the combined tree: all 173 samples pass, with only the manifest digest changing, no CSS changes.
+
+The default Wasm job exposed a separate **real shared-lock cost**. [Baseline main job 114130159406](https://github.com/Takazudo/zudo-front-builder/actions/runs/38023765871/job/114130159406) passed with rustc 1.99.0 (`b940084d7`); [prototype merge job 114131518358](https://github.com/Takazudo/zudo-front-builder/actions/runs/38024216690/job/114131518358) used the same compiler and passed all 237 consumer tests plus generated-export checks. Its four artifacts remained below every existing ceiling, but differed from the documented measurements. The actual budget step's file measurements, not expected values, supply the refreshed measured rows below. Generated size documentation was updated using `assert-md-wasm-size-docs.mjs --fix`; ceilings, gzip tolerance, build flags and checker logic are unchanged.
+
+| Artifact | CI final Wasm bytes | CI gzip-9 bytes | Existing gzip ceiling |
+| --- | --- | --- | --- |
+| default | 3385636 | 1520643 | 1600000 |
+| highlight | 1540775 | 820953 | 880000 |
+| render | 2201047 | 1095897 | 1100000 |
+| parse | 700678 | 284215 | 325000 |
+
+Nine updated packages are present in `cargo tree --locked -p zfb-md-wasm --target wasm32-unknown-unknown --edges normal`: bitflags 2.13.2, memchr 2.8.3, regex 1.13.1, regex-automata 0.4.18, regex-syntax 0.8.11, rustc-hash 2.1.3, serde_json 1.0.151, smallvec 1.16.3 and uuid 1.28.0. No per-package causal attribution is claimed.
+
+A bounded local four-artifact build used the same compiler, wasm-bindgen 0.2.121 and pinned Binaryen. The first invocation omitted CI's version stamp; the corrected `ZFB_RELEASE_VERSION=4.3.0` invocation passed under the guard in 58 seconds. Local raw sizes still differ slightly from hosted CI (for example default 3385169 versus 3385636); those local numbers were **not** substituted into the manifest. Existing policy treats CI as the authority, so the unchanged next CI budget check must remeasure and validate the refreshed rows. No environment-matching experiment or tolerance relaxation was attempted. Final terminal workflow outcomes are recorded in the draft PR.
+
 ## Failures retained as evidence
 
 The first browser run timed out because the test server selected an old hashed entry from a reused output directory, producing a build-token mismatch. The fix uses the actual production pipeline receipt; both engines then passed the same browser assertions. Earlier fixture setup failures included hardcoded worker URL, incomplete SDK package copies, and `className` in the owned JSX dialect. The first native route dependency assertion found absolute graph keys incompatible with the existing cwd-relative schema; the adapter now changes key representation consistently without rediscovering edges. None of these was classified as an upstream capability gap; none was fixed by weakening the asserted contract.
