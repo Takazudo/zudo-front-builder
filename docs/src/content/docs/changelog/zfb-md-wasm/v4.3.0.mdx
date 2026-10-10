@@ -1,0 +1,17 @@
+---
+title: v4.3.0
+sidebar_position: 32
+---
+
+# v4.3.0
+
+Released: 2026-10-10
+
+## Features
+
+- The package exports `@takazudo/zfb-md-wasm/shipped-artifacts.json`, a manifest of the four shipped `.wasm` artifacts with their SHA-256 digests (#4103; db1b6f26).
+- Each GitHub Release now carries a `zfb-md-wasm-<version>-shipped-artifacts.json` asset. It is uploaded only after the published npm tarball for that exact version has been fetched and its four `.wasm` files match the manifest byte for byte (#4106; 3436dfd7).
+
+## Other Changes
+
+- All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so their SHA-256 digests change for v4.3.0 even though the measured byte sizes are the same as v4.2.1 (only the parse-only gzip size moved, by 3 bytes). Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.3.0-shipped-artifacts.json` Release asset.
