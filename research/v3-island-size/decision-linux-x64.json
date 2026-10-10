@@ -29,7 +29,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "8d19df6c5724fc6827cdfc94da0da143f207c715702641df1e4275c923cccc6c",
-    "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
+    "cargoLockSha256": "8c2862b6e27faedcbe37b4f71bd05d83c845acd65cae7ba286a396438eb264d6"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -107,7 +107,7 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.3.0 ceilings measured in health run 38023765871 at source 11623738455758588cb0ad811778c711c8638b6d. All 16 raw totals are unchanged from the v4.2.1 deferred-mount contract; 12 gzip totals shifted by -4 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.3.0 ceilings measured in health run 38023765871 at source 11623738455758588cb0ad811778c711c8638b6d. All 16 raw totals are unchanged from the v4.2.1 deferred-mount contract; 12 gzip totals shifted by -4 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered. #318 shared-lock provenance: PR head 8e029dd2 health run 38024921630 artifact 11660256168 contains the same 16 measurement rows and 92 byte-identical emitted files as this baseline artifact 11660048737. Only Cargo.lock provenance differs; original and refreshed evidence remain in rolldown-lock-provenance-report.md and prototypes/rolldown/FINDINGS.md.",
   "baselineEvidence": {
     "event": "ci",
     "runId": 38023765871,

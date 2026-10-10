@@ -30,6 +30,7 @@ path = "src/lib.rs"
 # Detection / `output` config (sub-task 4.1b, issue #373) layers ON
 # TOP of this feature; that work is out of scope here.
 [features]
+rolldown-prototype = ["zfb-build/rolldown-prototype", "zfb-islands/rolldown-prototype"]
 default = ["embed_v8"]
 embed_v8 = [
     "zfb-render/embed_v8",

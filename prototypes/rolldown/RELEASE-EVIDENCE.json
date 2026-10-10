@@ -1,0 +1,338 @@
+{
+  "source_sha": "2cd2f14ae2c142010019aa0e893ba54f5c2a4b4b",
+  "worktree_status": "",
+  "dirty_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "input_snapshot_scope": "Materialised fixture sources and top-level copied runtime dependencies, excluding nested package node_modules development installs. This is not a byte-for-byte prepared argv/stage hash; both backends use the same existing preparation/policy code.",
+  "platform": "linux",
+  "arch": "x64",
+  "kernel": "6.18.44",
+  "cpu": "AMD EPYC 9V74 80-Core Processor",
+  "node": "v24.14.0",
+  "profile": "Cargo release, unchanged workspace settings",
+  "interpretation": "Two fresh probe processes/backend; each SSR/browser has three calls (first then two same-process warm calls, no bundler instance reuse). Production samples each spawn a fresh CLI; second has an existing dist. No OS cache flush. Compilation excluded. Native internal phases available; esbuild internal metadata phase unavailable. Probe process time includes validation/negative cases and is not pipeline time.",
+  "prepared_inputs": {
+    "sha256": "0965008c76cf7bd9148e4e59b8d164fb148f3bfd4050d50a86ea4b3b773e373a",
+    "file_count": 912
+  },
+  "production_inputs": {
+    "sha256": "5084e72faf05223b36b99fa5fa99bba44b07ca25c0080d98a6f794833efd9bdf",
+    "file_count": 11
+  },
+  "binaries": {
+    "target/release/zfb": "3586f51e7906f8b7389df5697d91e79ede57e2552294415d6a089ab5cd062704",
+    "target/release/examples/rolldown_ssr": "79049efe551baa218dfd5bcd9917b06ad72b5bbd52f9b33fff1ea2f975213208",
+    "target/release/examples/rolldown_browser": "35e4de714aa87e551a45d5f504080721ea92d606a67be1cb66480521219e6d48",
+    "target/release/examples/rolldown_production": "31ce8951bd2ba42b1576eb6e012addeb228f29dc6b0110662a9a5f7f821beba8",
+    "/workspace/zfb-prototype-tools/node_modules/@esbuild/linux-x64/bin/esbuild": "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
+  },
+  "samples": [
+    {
+      "round": 0,
+      "backend": "esbuild",
+      "fixture": "ssr",
+      "probe_process_us": 781818,
+      "selected_pipeline_us": [37865, 32769, 43161],
+      "positive_pipeline_phase_lines": [
+        "[zfb-timing] bundle(): materialise=6ms esbuild=24ms post-esbuild=6ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=3ms esbuild=23ms post-esbuild=5ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=3ms esbuild=33ms post-esbuild=5ms post=0ms teardown=0ms"
+      ]
+    },
+    {
+      "round": 0,
+      "backend": "esbuild",
+      "fixture": "browser",
+      "probe_process_us": 97404,
+      "selected_bundle_call_us": [32937, 19608, 24687],
+      "positive_pipeline_phase_lines": [],
+      "production_publish_us": [5612, 5326, 2833]
+    },
+    {
+      "round": 0,
+      "backend": "esbuild",
+      "fixture": "production",
+      "probe_process_us": 657800,
+      "positive_cli_calls": [
+        {
+          "cli_elapsed_us": 172058,
+          "phase_lines": [
+            "[zfb-timing] bundle(): materialise=10ms esbuild=21ms post-esbuild=5ms post=0ms teardown=0ms",
+            "[zfb-timing] bundle(): materialise=8ms esbuild=20ms post-esbuild=5ms post=0ms teardown=0ms"
+          ]
+        },
+        {
+          "cli_elapsed_us": 162156,
+          "phase_lines": [
+            "[zfb-timing] bundle(): materialise=9ms esbuild=21ms post-esbuild=5ms post=0ms teardown=0ms",
+            "[zfb-timing] bundle(): materialise=8ms esbuild=19ms post-esbuild=5ms post=0ms teardown=0ms"
+          ]
+        }
+      ]
+    },
+    {
+      "round": 0,
+      "backend": "rolldown",
+      "fixture": "ssr",
+      "probe_process_us": 810534,
+      "selected_pipeline_us": [36524, 31378, 30147],
+      "positive_pipeline_phase_lines": [
+        "[zfb-timing] bundle(): materialise=6ms esbuild=27ms post-esbuild=1ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=4ms esbuild=25ms post-esbuild=1ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=4ms esbuild=24ms post-esbuild=1ms post=0ms teardown=0ms"
+      ],
+      "positive_native_jobs_by_call": [
+        [
+          {
+            "bundle_us": 25665,
+            "metadata_us": 777
+          }
+        ],
+        [
+          {
+            "bundle_us": 24022,
+            "metadata_us": 652
+          }
+        ],
+        [
+          {
+            "bundle_us": 22921,
+            "metadata_us": 580
+          }
+        ]
+      ]
+    },
+    {
+      "round": 0,
+      "backend": "rolldown",
+      "fixture": "browser",
+      "probe_process_us": 73635,
+      "selected_bundle_call_us": [28942, 15145, 14583],
+      "positive_pipeline_phase_lines": [],
+      "positive_native_jobs_by_call": [
+        [
+          {
+            "bundle_us": 13422,
+            "metadata_us": 303
+          },
+          {
+            "bundle_us": 1268,
+            "metadata_us": 37
+          }
+        ],
+        [
+          {
+            "bundle_us": 12515,
+            "metadata_us": 229
+          },
+          {
+            "bundle_us": 1086,
+            "metadata_us": 31
+          }
+        ],
+        [
+          {
+            "bundle_us": 11804,
+            "metadata_us": 245
+          },
+          {
+            "bundle_us": 1187,
+            "metadata_us": 36
+          }
+        ]
+      ],
+      "production_publish_us": [2913, 2509, 2674]
+    },
+    {
+      "round": 0,
+      "backend": "rolldown",
+      "fixture": "production",
+      "probe_process_us": 657310,
+      "positive_cli_calls": [
+        {
+          "cli_elapsed_us": 162518,
+          "phase_lines": [
+            "[zfb-timing] rolldown-prototype: bundle=21638us metadata=525us",
+            "[zfb-timing] bundle(): materialise=10ms esbuild=23ms post-esbuild=0ms post=0ms teardown=0ms",
+            "[zfb-timing] rolldown-prototype: bundle=23698us metadata=538us",
+            "[zfb-timing] bundle(): materialise=7ms esbuild=25ms post-esbuild=0ms post=0ms teardown=0ms"
+          ]
+        },
+        {
+          "cli_elapsed_us": 149503,
+          "phase_lines": [
+            "[zfb-timing] rolldown-prototype: bundle=20055us metadata=474us",
+            "[zfb-timing] bundle(): materialise=9ms esbuild=22ms post-esbuild=0ms post=0ms teardown=0ms",
+            "[zfb-timing] rolldown-prototype: bundle=20294us metadata=625us",
+            "[zfb-timing] bundle(): materialise=7ms esbuild=22ms post-esbuild=0ms post=0ms teardown=0ms"
+          ]
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "backend": "rolldown",
+      "fixture": "ssr",
+      "probe_process_us": 795035,
+      "selected_pipeline_us": [40956, 35776, 33164],
+      "positive_pipeline_phase_lines": [
+        "[zfb-timing] bundle(): materialise=8ms esbuild=30ms post-esbuild=1ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=7ms esbuild=26ms post-esbuild=1ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=5ms esbuild=26ms post-esbuild=1ms post=0ms teardown=0ms"
+      ],
+      "positive_native_jobs_by_call": [
+        [
+          {
+            "bundle_us": 28798,
+            "metadata_us": 658
+          }
+        ],
+        [
+          {
+            "bundle_us": 24862,
+            "metadata_us": 721
+          }
+        ],
+        [
+          {
+            "bundle_us": 24385,
+            "metadata_us": 734
+          }
+        ]
+      ]
+    },
+    {
+      "round": 1,
+      "backend": "rolldown",
+      "fixture": "browser",
+      "probe_process_us": 101932,
+      "selected_bundle_call_us": [29896, 28071, 26682],
+      "positive_pipeline_phase_lines": [],
+      "positive_native_jobs_by_call": [
+        [
+          {
+            "bundle_us": 14748,
+            "metadata_us": 226
+          },
+          {
+            "bundle_us": 1284,
+            "metadata_us": 33
+          }
+        ],
+        [
+          {
+            "bundle_us": 21106,
+            "metadata_us": 264
+          },
+          {
+            "bundle_us": 2496,
+            "metadata_us": 64
+          }
+        ],
+        [
+          {
+            "bundle_us": 22141,
+            "metadata_us": 281
+          },
+          {
+            "bundle_us": 2337,
+            "metadata_us": 32
+          }
+        ]
+      ],
+      "production_publish_us": [2822, 4619, 3128]
+    },
+    {
+      "round": 1,
+      "backend": "rolldown",
+      "fixture": "production",
+      "probe_process_us": 734172,
+      "positive_cli_calls": [
+        {
+          "cli_elapsed_us": 191069,
+          "phase_lines": [
+            "[zfb-timing] rolldown-prototype: bundle=21239us metadata=541us",
+            "[zfb-timing] bundle(): materialise=10ms esbuild=23ms post-esbuild=0ms post=0ms teardown=0ms",
+            "[zfb-timing] rolldown-prototype: bundle=21531us metadata=605us",
+            "[zfb-timing] bundle(): materialise=10ms esbuild=23ms post-esbuild=0ms post=0ms teardown=0ms"
+          ]
+        },
+        {
+          "cli_elapsed_us": 163570,
+          "phase_lines": [
+            "[zfb-timing] rolldown-prototype: bundle=21282us metadata=499us",
+            "[zfb-timing] bundle(): materialise=9ms esbuild=22ms post-esbuild=0ms post=0ms teardown=0ms",
+            "[zfb-timing] rolldown-prototype: bundle=21447us metadata=775us",
+            "[zfb-timing] bundle(): materialise=8ms esbuild=25ms post-esbuild=0ms post=0ms teardown=0ms"
+          ]
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "backend": "esbuild",
+      "fixture": "ssr",
+      "probe_process_us": 799017,
+      "selected_pipeline_us": [44982, 29006, 30674],
+      "positive_pipeline_phase_lines": [
+        "[zfb-timing] bundle(): materialise=7ms esbuild=30ms post-esbuild=6ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=3ms esbuild=19ms post-esbuild=5ms post=0ms teardown=0ms",
+        "[zfb-timing] bundle(): materialise=3ms esbuild=21ms post-esbuild=5ms post=0ms teardown=0ms"
+      ]
+    },
+    {
+      "round": 1,
+      "backend": "esbuild",
+      "fixture": "browser",
+      "probe_process_us": 78128,
+      "selected_bundle_call_us": [28916, 18625, 16901],
+      "positive_pipeline_phase_lines": [],
+      "production_publish_us": [2846, 2100, 2335]
+    },
+    {
+      "round": 1,
+      "backend": "esbuild",
+      "fixture": "production",
+      "probe_process_us": 614263,
+      "positive_cli_calls": [
+        {
+          "cli_elapsed_us": 145996,
+          "phase_lines": [
+            "[zfb-timing] bundle(): materialise=9ms esbuild=20ms post-esbuild=5ms post=0ms teardown=0ms",
+            "[zfb-timing] bundle(): materialise=7ms esbuild=13ms post-esbuild=4ms post=0ms teardown=0ms"
+          ]
+        },
+        {
+          "cli_elapsed_us": 143578,
+          "phase_lines": [
+            "[zfb-timing] bundle(): materialise=9ms esbuild=12ms post-esbuild=4ms post=0ms teardown=0ms",
+            "[zfb-timing] bundle(): materialise=7ms esbuild=17ms post-esbuild=4ms post=0ms teardown=0ms"
+          ]
+        }
+      ]
+    }
+  ],
+  "compilation": {
+    "initial_release_build_elapsed_seconds": 329.903,
+    "initial_release_target_empty": true,
+    "cargo_registry_git_and_prebuilt_v8_cache": "already present; not a clean machine/network build",
+    "jobs": 4,
+    "guard_min_available_memory_mb": 14371,
+    "exact_source_warm_build_elapsed_seconds": 0.475,
+    "native_only_test_closure_compilation_seconds": 76,
+    "failures_before_compilation": [
+      "/usr/bin/time missing; wrapper exit127 before Cargo",
+      "warm-build command feature-list typo; Cargo exit101 in0.032s before compilation"
+    ]
+  },
+  "rustc": "1.99.0 (b940084d7)",
+  "esbuild": "0.25.12",
+  "validation": {
+    "copy_boundary_tests": "4passed",
+    "release_semantic_matrix": "PASS Chromium/direct SSR/production both backends",
+    "benchmark": "PASS all12 producer processes, Chromium, direct native gate, cross-backend production responses",
+    "source_tree_clean": true,
+    "native_clippy": "PASS --release --lib --tests -- -D warnings (18.68s)",
+    "wind_previews": "173 samples freshness PASS; only required source digest refreshed"
+  },
+  "raw_local_report_sha256": "5697bb8516d16e5f7f6f172d325f4f7b0583eaf787a3454d3844097580a364a7"
+}

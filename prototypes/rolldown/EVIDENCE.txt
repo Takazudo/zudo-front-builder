@@ -1,0 +1,38 @@
+Implementation: 648ba4621a74b1a46358f6a6e9d94c626a978be3
+Command: guarded node prototypes/rolldown/verify.mjs
+Prepared binaries; ZFB_PROTOTYPE_TOOLS and ZFB_ESBUILD_BIN as in README.
+Selected stdout/stderr assertion and timing lines; repeated warnings omitted.
+
+direct native API: real static/dynamic graph, executed split output, linked map, actionable unresolved import PASS
+[zfb-timing] bundle(): materialise=70ms esbuild=23ms post-esbuild=30ms post=0ms teardown=0ms
+[zfb-timing] bundle(): materialise=26ms esbuild=18ms post-esbuild=30ms post=0ms teardown=0ms
+[zfb-timing] bundle(): materialise=27ms esbuild=28ms post-esbuild=35ms post=0ms teardown=0ms
+SSR esbuild: host/MDX/CSS/alias/transitive deps/exclusion/diagnostic passed, mapping=Some("pages/throw.tsx:2:9"), selected_pipeline_us=[130212, 76122, 92001]
+browser esbuild: deterministic split/worker/resources, selected_bundle_call_us=[346024, 16414, 16012], production_publish_us=[6303, 5970, 5812]
+browser esbuild: deterministic split/worker/resources, selected_bundle_call_us=[343225, 18550, 17519], production_publish_us=[5748, 4793, 4647]
+esbuild: fresh-process/client-stage deterministic asset names and bytes PASS
+[zfb-timing] rolldown-prototype: bundle=191898us metadata=2860us
+[zfb-timing] bundle(): materialise=56ms esbuild=197ms post-esbuild=4ms post=0ms teardown=0ms
+[zfb-timing] rolldown-prototype: bundle=164189us metadata=2649us
+[zfb-timing] bundle(): materialise=26ms esbuild=168ms post-esbuild=4ms post=0ms teardown=0ms
+[zfb-timing] rolldown-prototype: bundle=169049us metadata=2666us
+[zfb-timing] bundle(): materialise=26ms esbuild=173ms post-esbuild=4ms post=0ms teardown=0ms
+SSR rolldown: host/MDX/CSS/alias/transitive deps/exclusion/diagnostic passed, mapping=Some("pages/throw.tsx:2:9"), selected_pipeline_us=[257977, 199172, 204069]
+[zfb-timing] rolldown-prototype: bundle=110446us metadata=1421us
+[zfb-timing] rolldown-prototype: bundle=5325us metadata=91us
+[zfb-timing] rolldown-prototype: bundle=115194us metadata=1371us
+[zfb-timing] rolldown-prototype: bundle=5220us metadata=143us
+[zfb-timing] rolldown-prototype: bundle=114647us metadata=1377us
+[zfb-timing] rolldown-prototype: bundle=5372us metadata=91us
+browser rolldown: deterministic split/worker/resources, selected_bundle_call_us=[449440, 124009, 123687], production_publish_us=[5735, 4806, 4634]
+[zfb-timing] rolldown-prototype: bundle=116037us metadata=1397us
+[zfb-timing] rolldown-prototype: bundle=5363us metadata=95us
+[zfb-timing] rolldown-prototype: bundle=103450us metadata=1310us
+[zfb-timing] rolldown-prototype: bundle=5588us metadata=113us
+[zfb-timing] rolldown-prototype: bundle=101555us metadata=1294us
+[zfb-timing] rolldown-prototype: bundle=5665us metadata=118us
+browser rolldown: deterministic split/worker/resources, selected_bundle_call_us=[453366, 112749, 110971], production_publish_us=[4748, 4733, 4836]
+rolldown: fresh-process/client-stage deterministic asset names and bytes PASS
+esbuild: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+rolldown: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+heavy-guard: verdict=PASS exit=0 secs=5 min_mem_mb=17120 reason=-

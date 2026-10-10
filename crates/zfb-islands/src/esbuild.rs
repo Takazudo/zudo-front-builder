@@ -1355,11 +1355,23 @@ impl EsbuildSubprocessBundler {
             cmd.arg(arg);
         }
 
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
+        #[cfg(feature = "rolldown-prototype")]
+        let native = zfb_rolldown_prototype::enabled();
+        #[cfg(not(feature = "rolldown-prototype"))]
+        let native = false;
+        #[cfg(feature = "rolldown-prototype")]
+        if native {
+            zfb_rolldown_prototype::run_prepared(&cmd)?;
+        }
+        let output = if native {
+            None
+        } else {
+            Some(cmd.output().with_context(|| {
+                format!("failed to spawn {}", self.config.binary_path.display())
+            })?)
+        };
 
-        if !output.status.success() {
+        if let Some(output) = output.filter(|output| !output.status.success()) {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let friendly = redact_temp_path(
                 &stderr,
@@ -1448,14 +1460,23 @@ impl EsbuildSubprocessBundler {
                     worker_cmd.arg(arg);
                 }
 
-                let worker_output = worker_cmd.output().with_context(|| {
-                    format!(
-                        "failed to spawn {} for module-worker entry {}",
-                        self.config.binary_path.display(),
-                        worker.source_path().display()
-                    )
-                })?;
-                if !worker_output.status.success() {
+                #[cfg(feature = "rolldown-prototype")]
+                if native {
+                    zfb_rolldown_prototype::run_prepared(&worker_cmd)?;
+                }
+                let worker_output = if native {
+                    None
+                } else {
+                    Some(worker_cmd.output().with_context(|| {
+                        format!(
+                            "failed to spawn {} for module-worker entry {}",
+                            self.config.binary_path.display(),
+                            worker.source_path().display()
+                        )
+                    })?)
+                };
+                if let Some(worker_output) = worker_output.filter(|output| !output.status.success())
+                {
                     let stderr = String::from_utf8_lossy(&worker_output.stderr);
                     let friendly = redact_temp_path(
                         &stderr,

@@ -1,0 +1,16 @@
+[package]
+name = "zfb-rolldown-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+native = ["dep:rolldown", "dep:rolldown_common", "dep:tokio", "dep:anyhow", "dep:serde_json"]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+rolldown = { git = "https://github.com/rolldown/rolldown", rev = "24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9", optional = true }
+rolldown_common = { git = "https://github.com/rolldown/rolldown", rev = "24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9", optional = true }
