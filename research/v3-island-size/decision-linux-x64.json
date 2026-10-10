@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "decisionIssue": 3469,
-  "outcome": "intentional-feature-size-change",
+  "outcome": "no-product-code-change",
   "selectedOptimizations": [],
-  "baselineSourceSha": "d840f01a2a50eef0321a52308e5823d2d2f04ca4",
+  "baselineSourceSha": "d3d78455daa4f632a0e9d3d76ed51ad9be45875b",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -23,12 +23,12 @@
     "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
   },
   "toolchain": {
-    "packageVersion": "4.3.0",
+    "packageVersion": "4.3.1",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "8d19df6c5724fc6827cdfc94da0da143f207c715702641df1e4275c923cccc6c",
+    "pnpmLockSha256": "5b0564ee306a23eb2c864f04070b5271fff932d4b44c6b2695e3310ae632af7c",
     "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -44,11 +44,11 @@
       },
       "event-only": {
         "raw": 66792,
-        "gzip": 22251
+        "gzip": 22249
       },
       "scalar-signal": {
         "raw": 66800,
-        "gzip": 22255
+        "gzip": 22254
       },
       "show-for": {
         "raw": 66949,
@@ -56,19 +56,19 @@
       },
       "model": {
         "raw": 66791,
-        "gzip": 22248
+        "gzip": 22251
       },
       "blog-theme": {
         "raw": 67144,
-        "gzip": 22371
+        "gzip": 22375
       },
       "json-api": {
         "raw": 66950,
-        "gzip": 22336
+        "gzip": 22334
       },
       "multi-island": {
         "raw": 67072,
-        "gzip": 22338
+        "gzip": 22337
       }
     },
     "packed": {
@@ -78,27 +78,27 @@
       },
       "event-only": {
         "raw": 66854,
-        "gzip": 22268
+        "gzip": 22271
       },
       "scalar-signal": {
         "raw": 66862,
-        "gzip": 22282
+        "gzip": 22283
       },
       "show-for": {
         "raw": 67011,
-        "gzip": 22343
+        "gzip": 22344
       },
       "model": {
         "raw": 66853,
-        "gzip": 22271
+        "gzip": 22273
       },
       "blog-theme": {
         "raw": 67206,
-        "gzip": 22412
+        "gzip": 22410
       },
       "json-api": {
         "raw": 67012,
-        "gzip": 22360
+        "gzip": 22356
       },
       "multi-island": {
         "raw": 67134,
@@ -107,12 +107,12 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.3.0 ceilings measured in health run 38070141079 at PR merge source 03ae30dd43b9b0f0d4e1eb17465668468accda21 (PR #4129 head d840f01a2a50eef0321a52308e5823d2d2f04ca4 merged with main 6925a4a531596fa93e96e181cbc47263be2f0312) for the client-router History-rejection change (#4126) after its review fix. All 16 raw totals are unchanged from the preceding contract; 12 gzip totals shifted by -5 to +3 bytes. The only byte difference in every islands entry bundle is the 16-character zudo_react_build identity token (`data-zfb-build`, a source digest over the fixture project including its linked @takazudo/zfb-runtime sources), which changed because the review fix edits the client-router source again; raw lengths cannot move and the gzip totals shift by a few bytes. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.3.1 ceilings measured in health run 38075998971 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). All 16 raw totals are unchanged from the v4.3.0 contract; 12 gzip totals shifted by -4 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 38070141079,
-    "jobId": 114265695484,
-    "sourceSha": "03ae30dd43b9b0f0d4e1eb17465668468accda21",
-    "note": "PR #4129 (#4126) health run after the review fix, at PR merge source 03ae30dd43b9b0f0d4e1eb17465668468accda21 (PR #4129 head d840f01a2a50eef0321a52308e5823d2d2f04ca4 merged with main 6925a4a531596fa93e96e181cbc47263be2f0312). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the preceding contract; gzip deltas range from -5 to +3 bytes across 12 rows, isolated by byte-diffing the islands entry bundles against the preceding baseline artifact (run 38056758496): the sole difference is the zudo_react_build identity token. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "runId": 38075998971,
+    "jobId": 114282961692,
+    "sourceSha": "3aaad9b4c403a3c8e920384885c541d5864d9c00",
+    "note": "Release probe PR #4132 run for v4.3.1 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the v4.3.0 contract; gzip deltas range from -4 to +4 bytes across 12 rows. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

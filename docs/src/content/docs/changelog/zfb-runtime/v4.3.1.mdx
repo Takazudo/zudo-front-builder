@@ -1,0 +1,14 @@
+---
+title: v4.3.1
+sidebar_position: 33
+---
+
+# v4.3.1
+
+Released: 2026-10-11
+
+## Bug Fixes
+
+- The client router now treats a History URL write that the browser rejects (for example WebKit's History-write rate limit) as a navigation failure instead of swallowing it. Previously the router swapped in the new content and advanced its index under the old URL. Router bookkeeping now advances only on a committed write. A rejected GET navigation recovers with one full document load of the resolved destination. Submitted forms write History once at the final target, so a rejection never leaves the old page under an intermediate URL and never replays the POST (#4126, #4127; 5b70444b).
+- History-rejection handling now treats `about:srcdoc#fragment` as a srcdoc document. It also re-syncs the original location before emitting `navigation-aborted`, and falls back field by field when `history.state` lacks a finite index or scroll position (4b1c208e).
+- When an early `pushState` commits but the follow-up correction is rejected, the router no longer serves that never-rendered entry from the live DOM. A later navigation to a fragment of that URL used to take the same-page fast path and leave the old page under the new URL. That path is now skipped until a swap settles the location (#4129; d840f01a).
