@@ -2,7 +2,7 @@
 
 Decision: **continue narrowly**, retaining this as a draft experiment. The pinned Rust API can produce executable ZFB browser and embedded-V8 SSR bundles with authoritative graph/output provenance. This fixture does not justify a default switch or a speed claim. See [FINDINGS.md](FINDINGS.md) for the evidence and ownership costs.
 
-The opt-in is deliberately internal: compile `rolldown-prototype` on `zfb-build` and `zfb-islands`, then set `ZFB_ROLLDOWN_PROTOTYPE=1`. Without both, the existing esbuild path runs. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
+The opt-in is deliberately internal: compile `rolldown-prototype` on `zfb-build` and `zfb-islands` (or the forwarding `zfb` CLI feature), then set `ZFB_ROLLDOWN_PROTOTYPE=1`. Without both, the existing esbuild path runs. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
 
 ## Reproduce (Linux x86_64)
 
@@ -54,3 +54,7 @@ cargo fmt --all --check
 ```
 
 Keep `ZFB_ESBUILD_BIN` exported so the existing fixture discovery cannot skip. Feature-off checking disables the native dependency and V8 for this bounded compile check; baseline runtime above executes the feature-enabled binary with native selection off and V8 on.
+
+## Real production second pass
+
+The bounded mixed SSG/SSR catch-all fixture now runs the actual CLI production rebundle and local adapter, then executes scratch and adapter output in existing V8. See [PRODUCTION.md](PRODUCTION.md) for assertions, exact invocation, adjacent-pin rehearsal, manual rollback, and the baseline SSR copied-glue limitation. No deployment occurs.

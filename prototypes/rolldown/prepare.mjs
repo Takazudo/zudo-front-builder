@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 const repo = resolve(import.meta.dirname, "../..");
 const root = resolve(process.argv[2] ?? join(repo, "target/rolldown-prototype/project"));
@@ -13,8 +13,9 @@ for (const [name, target] of [
   ["@takazudo/zfb-slugify", join(repo, "packages/zfb-slugify")],
   ["hono", join(tools, "node_modules/hono")],
 ]) {
-  if (!existsSync(join(root, "node_modules", name)))
-    cpSync(target, join(root, "node_modules", name), { recursive: true });
+  const destination = join(root, "node_modules", name);
+  rmSync(destination, { recursive: true, force: true });
+  cpSync(target, destination, { recursive: true });
 }
 writeFileSync(
   join(root, "tsconfig.json"),
