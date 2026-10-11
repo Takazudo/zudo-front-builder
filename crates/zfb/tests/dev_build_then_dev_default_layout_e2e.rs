@@ -2,6 +2,15 @@
 //! Each case uses a real CLI process, a built MDX/two-island seed, and a single
 //! source edit. The per-probe timeline and Drop diagnostics distinguish a
 //! persistent 404 from a later 200 or a naturally exited listener.
+//!
+//! Eager-scratch boot observation (issue #4134): `dev.rs` prints
+//! `[zfb-timing] boot: render complete` AFTER committing document publication,
+//! so a 200 can be served before that stderr line reaches the captured log.
+//! The #4011 contract is therefore "the post-boot state serves the document":
+//! the test observes the boot line first, then accepts a fresh 200 carrying
+//! both island markers. HTTP publication and the later diagnostic stderr write
+//! are not claimed to be atomic; a 200 seen before the line is observed is
+//! recorded as `early_200_before_boot_line` evidence, never a failure.
 
 #![cfg(unix)]
 
@@ -21,6 +30,8 @@ const MARKERS: [&str; 2] = [
     "data-zfb-island=\"Counter\"",
     "data-zfb-island=\"NamedCounter\"",
 ];
+// Mirrors `format_boot_render_complete_line` in crates/zfb/src/commands/dev.rs.
+const BOOT_RENDER_COMPLETE_LINE: &str = "[zfb-timing] boot: render complete";
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -128,6 +139,10 @@ impl DevSession {
         )
     }
 
+    fn stderr_logs(&self) -> String {
+        fs::read_to_string(&self.stderr).unwrap_or_default()
+    }
+
     fn status(&mut self) -> Option<ExitStatus> {
         self.child.try_wait().expect("inspect dev child")
     }
@@ -194,11 +209,18 @@ async fn ready(session: &mut DevSession) -> Instant {
     }
 }
 
+/// `boot_line`, when set, gates acceptance on the captured stderr: a probe is
+/// accepted only if the line was already observed BEFORE that probe was sent,
+/// so the accepted response is provably a post-boot one. An acceptable
+/// response seen earlier is recorded as `early_200_before_boot_line` and
+/// polling continues against the same `DEADLINE`. The other callers pass
+/// `None` and keep their previous behavior.
 async fn poll<F>(
     session: &mut DevSession,
     ready_at: Instant,
     url: &str,
     phase: &str,
+    boot_line: Option<&str>,
     accept: F,
 ) -> String
 where
@@ -211,8 +233,30 @@ where
     let started = Instant::now();
     let mut probes = 0;
     let mut not_found = 0;
+    let mut early_200 = 0;
+    let mut boot_line_observed_ms: Option<u128> = None;
     loop {
         probes += 1;
+        if let Some(gate) = boot_line {
+            if boot_line_observed_ms.is_none() && session.stderr_logs().contains(gate) {
+                let observed = ready_at.elapsed().as_millis();
+                boot_line_observed_ms = Some(observed);
+                let line = format!(
+                    "[{}] {phase} boot_line_observed_ms={observed} before_probe={probes} early_200_before_boot_line={early_200}",
+                    session.mode.name()
+                );
+                session.record(&line);
+                eprintln!("{line}");
+            }
+        }
+        let post_boot = boot_line.is_none() || boot_line_observed_ms.is_some();
+        let gate_suffix = if boot_line.is_some() {
+            format!(
+                " post_boot={post_boot} early_200_before_boot_line={early_200} boot_line_observed_ms={boot_line_observed_ms:?}"
+            )
+        } else {
+            String::new()
+        };
         let latest = match client.get(url).send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
@@ -221,33 +265,33 @@ where
                     not_found += 1;
                 }
                 let line = format!(
-                    "[{}] {phase} probe={probes} ready_ms={} status={status} bytes={} markers=[{},{}]",
+                    "[{}] {phase} probe={probes} ready_ms={} status={status} bytes={} markers=[{},{}]{gate_suffix}",
                     session.mode.name(), ready_at.elapsed().as_millis(), body.len(),
                     body.contains(MARKERS[0]), body.contains(MARKERS[1])
                 );
                 session.record(&line);
                 eprintln!("{line}");
-                if phase == "initial HTML"
-                    && matches!(session.mode, Mode::EagerScratch)
-                    && status == 200
-                {
-                    assert!(
-                        session
-                            .logs()
-                            .contains("[zfb-timing] boot: render complete"),
-                        "eager HTML became 200 before the boot-render line\n{}",
-                        session.diagnostic(phase)
-                    );
-                }
                 if accept(status, &body) {
+                    if post_boot {
+                        let line = format!(
+                            "[{}] {phase} accepted_ms={} not_found_probes={not_found}{gate_suffix}",
+                            session.mode.name(),
+                            started.elapsed().as_millis()
+                        );
+                        session.record(&line);
+                        eprintln!("{line}");
+                        return body;
+                    }
+                    // Valid, but not yet provably post-boot: evidence, not
+                    // acceptance (issue #4134). Keep polling.
+                    early_200 += 1;
                     let line = format!(
-                        "[{}] {phase} accepted_ms={} not_found_probes={not_found}",
+                        "[{}] {phase} early_200_before_boot_line probe={probes} ready_ms={} count={early_200}",
                         session.mode.name(),
-                        started.elapsed().as_millis()
+                        ready_at.elapsed().as_millis()
                     );
                     session.record(&line);
                     eprintln!("{line}");
-                    return body;
                 }
                 format!(
                     "status={status}, body={}",
@@ -274,7 +318,9 @@ where
         assert!(
             started.elapsed() < DEADLINE,
             "last probe: {latest}\n{}",
-            session.diagnostic(&format!("{phase} timeout; 404 probes={not_found}"))
+            session.diagnostic(&format!(
+                "{phase} timeout; 404 probes={not_found}{gate_suffix}"
+            ))
         );
         tokio::time::sleep(POLL).await;
     }
@@ -384,11 +430,15 @@ async fn run(mode: Mode) {
         eprintln!("{line}");
     }
 
+    // Eager scratch: observe the boot-render line, THEN accept a fresh 200
+    // with both markers (issue #4134). The other modes gate on nothing.
+    let boot_gate = matches!(mode, Mode::EagerScratch).then_some(BOOT_RENDER_COMPLETE_LINE);
     let html = poll(
         &mut session,
         ready_at,
         &home,
         "initial HTML",
+        boot_gate,
         |status, body| status == 200 && MARKERS.iter().all(|marker| body.contains(marker)),
     )
     .await;
@@ -397,10 +447,12 @@ async fn run(mode: Mode) {
         "MDX content absent: {html}"
     );
     if matches!(mode, Mode::EagerScratch) {
-        let log = session.logs();
+        // The gate guarantees this; the pin keeps the eager contract explicit
+        // if the gate is ever dropped from the call above.
+        let log = session.stderr_logs();
         assert!(
-            log.contains("[zfb-timing] boot: render complete"),
-            "eager 200 lacked boot-render boundary:\n{log}"
+            log.contains(BOOT_RENDER_COMPLETE_LINE),
+            "eager HTML accepted without an observed boot-render line:\n{log}"
         );
     }
     let initial_bundle = poll(
@@ -408,6 +460,7 @@ async fn run(mode: Mode) {
         ready_at,
         &asset,
         "initial islands",
+        None,
         |status, body| status == 200 && body.contains("Named source v1"),
     )
     .await;
@@ -422,6 +475,7 @@ async fn run(mode: Mode) {
         ready_at,
         &asset,
         "rebundled islands",
+        None,
         |status, body| status == 200 && body.contains("Named source v2"),
     )
     .await;
@@ -434,6 +488,7 @@ async fn run(mode: Mode) {
         ready_at,
         &home,
         "rerendered HTML",
+        None,
         |status, body| {
             status == 200
                 && body.contains("Named source v2")
