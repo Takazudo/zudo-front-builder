@@ -1,0 +1,12 @@
+---
+title: v4.3.2
+sidebar_position: 148
+---
+
+# v4.3.2
+
+Released: 2026-10-12
+
+## Bug Fixes
+
+- zudo-wind now honors `wind.sources.ignoreAttributes` for MDX components that appear after frontmatter or Markdown prose. Previously the extractor took the surrounding Markdown as the JavaScript context for a brace expression, so an ignored attribute such as `` html={`...`} `` on a `<Preview>` component was scanned for classes anyway and its sample markup leaked into the generated CSS. The attribute context now comes from the containing tag, giving MDX the same result as TSX (#4148; 227ad929).
