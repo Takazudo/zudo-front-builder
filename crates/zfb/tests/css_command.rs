@@ -2619,6 +2619,61 @@ fn wind_audit_ignores_viewport_root_links_style_text_and_hidden_inputs() {
 }
 
 #[test]
+fn ignored_preview_backticks_have_mdx_tsx_cli_parity() {
+    let configured = r#"{"wind":{"sources":{"ignoreAttributes":["html","css"]}}}"#;
+    let preview = r#"<Preview html={`<span class="text-sample">Hello</span>`} css={`.text-sample { color:red }`} />"#;
+    for (extension, prefix) in [
+        ("mdx", "---\ntitle: Demo\n---\n"),
+        (
+            "tsx",
+            "const Preview = (props: unknown) => null;\nexport const example = ",
+        ),
+    ] {
+        let temp = wind_audit_fixture(configured, "");
+        fs::write(
+            temp.path().join(format!("src/demo.{extension}")),
+            format!("{prefix}{preview}\n"),
+        )
+        .unwrap();
+        let config = temp.path().join("zfb.config.json");
+        for ignore in [true, false, true] {
+            fs::write(&config, if ignore { configured } else { "{}" }).unwrap();
+            let output = run_wind_audit(
+                temp.path(),
+                &[
+                    "--config",
+                    "zfb.config.json",
+                    "--fail-on",
+                    "error",
+                    "--group",
+                ],
+            );
+            assert_eq!(
+                output.status.success(),
+                ignore,
+                "{extension}, ignore={ignore}: {}",
+                combined_output(&output)
+            );
+            let json = run_wind_audit(temp.path(), &["--json"]);
+            let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+            let diagnostics = report["report"]["diagnostics"].as_array().unwrap();
+            if ignore {
+                assert!(diagnostics.is_empty(), "{extension}: {report}");
+            } else {
+                for (candidate, code) in [("text-sample", "ZW006"), ("color:red", "ZW002")] {
+                    assert!(
+                        diagnostics
+                            .iter()
+                            .any(|item| item["candidate"] == candidate && item["code"] == code),
+                        "{extension}: {report}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
     let temp = wind_audit_fixture(
         r#"{"wind":{"spec":1,"sources":{"ignoreAttributes":["css","html","title"]}}}"#,
@@ -2626,7 +2681,10 @@ fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
     );
     fs::write(
         temp.path().join("src/demo.mdx"),
-        r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
+        r#"---
+title: Demo
+---
+<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color:red }`} />
 <div class="flex bg-missing-real">Real content</div>
 "#,
     )
@@ -2645,7 +2703,8 @@ fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
         !diagnostics
             .iter()
             .any(|item| item["candidate"] == "bg-missing-preview"
-                || item["candidate"] == "irrelevant"),
+                || item["candidate"] == "irrelevant"
+                || item["candidate"] == "color:red"),
         "{report}"
     );
 
@@ -2659,7 +2718,10 @@ fn ignored_preview_props_keep_real_mdx_css_and_audit_findings() {
     );
     fs::write(
         temp.path().join("src/demo.mdx"),
-        r#"<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color: red; }`} />
+        r#"---
+title: Demo
+---
+<Preview title="irrelevant" html={`<div class="bg-missing-preview">x</div>`} css={`.demo { color:red }`} />
 <div class="flex block">Real content</div>
 "#,
     )

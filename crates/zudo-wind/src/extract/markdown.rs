@@ -25,6 +25,7 @@ pub(super) fn scan(source: &str, out: &mut Collector<'_>, mdx: bool) {
         }
         offset += line.len();
     }
+    let mut tags = Vec::new();
     let mut inline: Option<usize> = None;
     let mut i = 0;
     while i < masked.len() {
@@ -33,7 +34,9 @@ pub(super) fn scan(source: &str, out: &mut Collector<'_>, mdx: bool) {
             && i + 1 < masked.len()
             && masked[i + 1].is_ascii_alphabetic()
         {
+            let tag_start = i;
             let mut quote = None;
+            let mut brace = 0usize;
             i += 1;
             while i < masked.len() {
                 let b = masked[i];
@@ -43,12 +46,17 @@ pub(super) fn scan(source: &str, out: &mut Collector<'_>, mdx: bool) {
                     }
                 } else if matches!(b, b'\'' | b'"' | b'`') {
                     quote = Some(b);
-                } else if b == b'>' {
+                } else if b == b'{' {
+                    brace += 1;
+                } else if b == b'}' {
+                    brace = brace.saturating_sub(1);
+                } else if b == b'>' && brace == 0 {
                     i += 1;
                     break;
                 }
                 i += 1;
             }
+            tags.push((tag_start, i));
             continue;
         }
         if masked[i] == b'`' {
@@ -89,11 +97,16 @@ pub(super) fn scan(source: &str, out: &mut Collector<'_>, mdx: bool) {
                     i += 1;
                 }
                 if depth == 0 {
-                    // MDX scans each brace expression as a separate script.
-                    // The attribute name sits outside that slice, so preserve
-                    // the parent context before entering the script scanner.
+                    // Markdown frontmatter/prose is not a JavaScript prefix.
+                    // Use the containing tag to retain the attribute context.
+                    let tag_index = tags.partition_point(|&(at, _)| at < start);
+                    let context_start = tag_index
+                        .checked_sub(1)
+                        .and_then(|index| tags.get(index))
+                        .filter(|&&(_, end)| start < end)
+                        .map_or(0, |&(at, _)| at);
                     if !super::script::known_non_class_context(
-                        &clean[..start],
+                        &clean[context_start..start],
                         &out.options.ignore_attributes,
                     ) {
                         super::script::scan(&clean[start..i - 1], start, out);
