@@ -182,6 +182,12 @@ describe("identity normalization boundaries (L1)", () => {
     expect(html.match(/data-zfb-build=/g)).toHaveLength(2);
     expect(buildTokenFromHtml(html)).toBe(REAL_TOKEN);
     expect(buildTokenFromHtml("<html><body>no islands</body></html>")).toBeNull();
+    expect(() => buildTokenFromHtml("<div data-zfb-build='" + REAL_TOKEN + "'></div>")).toThrow(
+      /malformed data-zfb-build attribute/,
+    );
+    expect(() => buildTokenFromHtml("<div data-zfb-build></div>")).toThrow(
+      /malformed data-zfb-build attribute/,
+    );
     expect(() => buildTokenFromHtml(html.replace(REAL_TOKEN, "D1CBD3E6CDD9D75E"))).toThrow(
       /data-zfb-build attributes disagree|must be 16 lowercase hex/,
     );
@@ -250,6 +256,33 @@ describe("identity normalization boundaries (L1)", () => {
     const { bytes, sites } = normalizeIdentitySites(unrelated, REAL_TOKEN, 0, "chunk.js");
     expect(sites).toBe(0);
     expect(bytes.equals(unrelated)).toBe(true);
+  });
+
+  it("leaves matching build properties in user objects, comments, and strings alone", () => {
+    const entry = fixtureFiles("multi-island")[ENTRY];
+    const decoys = Buffer.from(
+      ';const user={build:"' +
+        REAL_TOKEN +
+        '"};/* identity:{component:n,build:"' +
+        REAL_TOKEN +
+        '"} */const text=\'let x={component:n,build:"' +
+        REAL_TOKEN +
+        "\"}';\n",
+    );
+    const bytes = Buffer.concat([entry, decoys]);
+    const normalized = normalizeIdentitySites(bytes, REAL_TOKEN, 2, ENTRY);
+    expect(normalized.sites).toBe(2);
+    expect(normalized.bytes.subarray(entry.length).equals(decoys)).toBe(true);
+  });
+
+  it("keeps byte positions correct after a non-BMP character", () => {
+    const entry = fixtureFiles("multi-island")[ENTRY];
+    const prefix = Buffer.from('const symbol="😀";');
+    const normalized = normalizeIdentitySites(Buffer.concat([prefix, entry]), REAL_TOKEN, 2, ENTRY);
+    expect(normalized.bytes.subarray(0, prefix.length).equals(prefix)).toBe(true);
+    expect(normalized.bytes.subarray(prefix.length).toString("utf8")).toContain(
+      'identity:{component:n,build:"' + IDENTITY_PLACEHOLDER + '"}',
+    );
   });
 
   it("requires the HTML/bundle relationship per case", () => {

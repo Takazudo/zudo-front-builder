@@ -200,9 +200,11 @@ describe("rebaseline-island-size-linux", () => {
       { ...evidence, sourceSha: evidence.headSha, runLabel: "Runtime-identity re-pin" },
       "runtime-identity",
     );
-    expect(next.outcome).toBe("runtime-identity-only");
+    expect(next.outcome).toBe("runtime-identity-repin");
     expect(next.platformStatus).toContain("at source " + evidence.headSha + ".");
-    expect(next.platformStatus).toContain("only the zudo_react_build runtime identity token moved");
+    expect(next.platformStatus).toContain(
+      "equal totals alone do not prove byte-identical product code",
+    );
     expect(Object.keys(REASONS)).toEqual(["release-bump", "metric-migration", "runtime-identity"]);
   });
 
@@ -287,7 +289,7 @@ describe("rebaseline-island-size-linux", () => {
     const release = readmeSection(next, gzipEvidence, previousVersion, "release-bump");
     expect(release).toContain("## v9.9.9 release baseline");
     expect(release).toContain("actions/runs/1) (job 2)");
-    expect(release).toContain("every raw and `gzipNormalized` total is unchanged");
+    expect(release).toContain("Every raw and `gzipNormalized` total is unchanged");
     expect(release).toContain("No actual gzip total moved.");
     expect(release).toContain("still measures actual gzip under schemaVersion 1");
 
@@ -315,6 +317,6 @@ describe("rebaseline-island-size-linux", () => {
 
     const identity = readmeSection(next, [], previousVersion, "runtime-identity");
     expect(identity).toContain("## v9.9.9 runtime-identity re-pin");
-    expect(identity).toContain("moved only the `zudo_react_build` runtime identity token");
+    expect(identity).toContain("These totals alone do not prove byte-identical product code");
   });
 });

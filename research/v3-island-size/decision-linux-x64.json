@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "metric": "gzip-identity-normalized",
   "normalizationVersion": 1,
-  "normalizerSha256": "7633f60d0a9a96c834ee3bfb6dfeab50620449ed738cb8f1029046713ff7f6d8",
+  "normalizerSha256": "8ed3f5318a9d3994509793ae4a113681019f83a2f78d6b75b9f4349556063fd6",
   "decisionIssue": 3469,
   "outcome": "metric-migration",
   "selectedOptimizations": [],

@@ -340,8 +340,8 @@ measured in CI before the bump lands on `main`:
   builds the island runtime with the `packages/zfb` version embedded, and
   `research/v3-island-size/decision-linux-x64.json` holds exact zero-allowance `raw` and
   `gzipNormalized` ceilings plus the pinned package version, lockfile hash, and normalizer hash.
-  Every bump leaves raw totals identical and moves only the `zudo_react_build` token; since #4131
-  the metric normalizes that token away, so the bump itself no longer fails `health` (v4.1.0
+  A pure version-stamp bump can move the `zudo_react_build` token; since #4131
+  the metric normalizes that token away, so such a bump should not fail `health` (v4.1.0
   through v4.3.1 each needed a follow-up actual-gzip rebaseline commit). The contract still has
   to record the new version and lockfile hash, which is the probe's job below.
 - **Wind preview digest.** `docs/public/wind-examples/manifest.json` records
@@ -372,7 +372,7 @@ Before pushing anything to `main`:
    or ceiling breach blocks the release until diagnosed. Never measure or refresh the manifest
    from a Mac build. (Match the job by prefix: its check name is `wasm-md (default, default)`.)
 3. **Island size:** the `health` job's island-size step measures `gzip-identity-normalized`
-   (#4131): the version bump moves only the `zudo_react_build` token, which the metric normalizes
+   (#4131): a pure version bump moves the `zudo_react_build` token, which the metric normalizes
    away, so the step is expected to **pass** on this first push. Download its
    `island-size-linux-x64` artifact (uploaded with `if: always()`) and note the `health` run ID,
    job ID, and the probe branch's head SHA. Run the helper below even on a pass: the contract must

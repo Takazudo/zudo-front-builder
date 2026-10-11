@@ -48,16 +48,53 @@ export const IDENTITY_SITES_BY_ROLE = Object.freeze({ entry: 2, shared: 0, lazy:
 export const IDENTITY_NORMALIZATION_RULES =
   "v1: read the zudo_react_build token from every data-zfb-build attribute in the saved " +
   "index.html (all must be one identical 16-character lowercase hex value); in each emitted JS " +
-  'file replace only exact build:"<that token>" occurrences with build:"' +
+  'file replace only exact build:"<that token>" occurrences in the emitted registration ' +
+  'identity:{component,build} and mount-local let identity shapes (outside comments and strings) with build:"' +
   IDENTITY_PLACEHOLDER +
   '" (same length, so raw is unchanged); require exactly 2 sites in the islands entry and 0 in ' +
-  'shared/lazy chunks; reject any build:"<16 hex>" carrying another token; a dist with no JS ' +
+  "shared/lazy chunks; reject any recognized compiler identity site carrying another token; a dist with no JS " +
   "must carry no token; gzipNormalized is node:zlib gzipSync level=9 mtime=0 of the normalized " +
   "bytes, summed per entry/shared/lazy role exactly like the actual gzip.";
 
 const tokenPattern = /^[0-9a-f]{16}$/;
 const htmlTokenPattern = /data-zfb-build="([^"]*)"/g;
-const buildSitePattern = /build:"([0-9a-f]{16})"/g;
+// Match the two object shapes emitted by __zfb_register, rather than an
+// arbitrary object with a property named build. The first is the registration
+// identity; the second is the mount closure's local identity.
+const buildSitePatterns = [
+  /identity:\{component:[\w$]+,build:"([0-9a-f]{16})"/g,
+  /let [\w$]+=\{component:[\w$]+,build:"([0-9a-f]{16})"/g,
+];
+
+// A candidate inside a comment or string is not executable compiler output.
+// Preserve indices so the candidate patterns can still inspect the source.
+function nonCodeMask(text) {
+  const mask = text.split("");
+  let state = "code";
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (state === "code") {
+      if (char === '"' || char === "'" || char === "`") state = char;
+      else if (char === "/" && next === "/") state = "line";
+      else if (char === "/" && next === "*") state = "block";
+      else continue;
+      mask[index] = " ";
+      continue;
+    }
+    mask[index] = " ";
+    if (state === "line" && char === "\n") state = "code";
+    else if (state === "block" && char === "*" && next === "/") {
+      mask[++index] = " ";
+      state = "code";
+    } else if ((state === '"' || state === "'" || state === "`") && char === "\\") {
+      mask[++index] = " ";
+    } else if (state === char && (char === '"' || char === "'" || char === "`")) {
+      state = "code";
+    }
+  }
+  return mask.join("");
+}
 
 export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -75,6 +112,12 @@ function isRecord(value) {
 // declares none. Any malformed or disagreeing attribute is fatal.
 export function buildTokenFromHtml(htmlText, label = "index.html") {
   const tokens = [...htmlText.matchAll(htmlTokenPattern)].map((match) => match[1]);
+  const attributes = [...htmlText.matchAll(/\bdata-zfb-build\b/gi)];
+  if (attributes.length !== tokens.length) {
+    throw new Error(
+      label + ': malformed data-zfb-build attribute; expected data-zfb-build="<16 lowercase hex>"',
+    );
+  }
   if (tokens.length === 0) return null;
   for (const token of tokens) {
     if (!tokenPattern.test(token)) {
@@ -98,7 +141,10 @@ export function buildTokenFromHtml(htmlText, label = "index.html") {
 // how many were replaced. Works on latin1 so every byte round-trips unchanged.
 export function normalizeIdentitySites(bytes, token, expectedSites, label) {
   const text = bytes.toString("latin1");
-  const sites = [...text.matchAll(buildSitePattern)];
+  const codeMask = nonCodeMask(text);
+  const sites = buildSitePatterns
+    .flatMap((pattern) => [...text.matchAll(pattern)])
+    .filter((match) => codeMask[match.index] !== " ");
   const foreign = sites.map((match) => match[1]).filter((found) => found !== token);
   if (foreign.length > 0) {
     throw new Error(
@@ -115,11 +161,12 @@ export function normalizeIdentitySites(bytes, token, expectedSites, label) {
     );
   }
   if (sites.length === 0) return { bytes, sites: 0 };
-  const normalized = text.replaceAll(
-    'build:"' + token + '"',
-    'build:"' + IDENTITY_PLACEHOLDER + '"',
-  );
-  const output = Buffer.from(normalized, "latin1");
+  const normalized = text.split("");
+  for (const site of sites) {
+    const tokenIndex = site.index + site[0].length - token.length - 1;
+    normalized.splice(tokenIndex, token.length, ...IDENTITY_PLACEHOLDER);
+  }
+  const output = Buffer.from(normalized.join(""), "latin1");
   if (output.length !== bytes.length) {
     throw new Error(label + ": normalization changed the raw length");
   }

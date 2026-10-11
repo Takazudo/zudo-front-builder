@@ -44,7 +44,7 @@ export const REASONS = Object.freeze({
     requires: 1,
   },
   "runtime-identity": {
-    outcome: "runtime-identity-only",
+    outcome: "runtime-identity-repin",
     heading: "runtime-identity re-pin",
     requires: 2,
   },
@@ -254,7 +254,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       sourceText(evidence.sourceSha, evidence.headSha) +
       ". Every raw and gzipNormalized total is unchanged from the v" +
       previousVersion +
-      " contract; the release version stamp moved only the zudo_react_build token, and " +
+      " contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. " +
       gzipSummary +
       "." +
       matrices;
@@ -268,8 +268,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       evidence.runId +
       " at " +
       sourceText(evidence.sourceSha, evidence.headSha) +
-      ". Every raw and gzipNormalized total is unchanged; only the zudo_react_build runtime " +
-      "identity token moved, and " +
+      ". Every raw and gzipNormalized total is unchanged. This records a runtime-identity re-pin; equal totals alone do not prove byte-identical product code. " +
       gzipSummary +
       "." +
       matrices;
@@ -399,10 +398,9 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       version +
       " release from " +
       run +
-      ". The version bump moved only the `zudo_react_build` token: every raw and `gzipNormalized` " +
-      "total is unchanged from the v" +
+      ". Every raw and `gzipNormalized` total is unchanged from the v" +
       previousVersion +
-      " contract. " +
+      " contract. These totals alone do not prove byte-identical product code. " +
       evidence +
       closing;
   } else {
@@ -411,8 +409,8 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       version +
       " from " +
       run +
-      " after a change that moved only the `zudo_react_build` runtime identity token: every raw " +
-      "and `gzipNormalized` total is unchanged. " +
+      " for a runtime-identity change: every raw and `gzipNormalized` total is unchanged. " +
+      "These totals alone do not prove byte-identical product code. " +
       evidence +
       closing;
   }

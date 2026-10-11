@@ -83,8 +83,8 @@ function currentLocalInputs(
 }
 
 // Synthetic fixtures carry the compiler-owned identity shape the normalizer
-// validates: one data-zfb-build token in the HTML and two build:"<token>"
-// sites in the islands entry (crates/zfb-islands/src/esbuild.rs).
+// validates: one data-zfb-build token in the HTML and two compiler-shaped
+// build sites in the islands entry (crates/zfb-islands/src/esbuild.rs).
 function buildToken(fixture) {
   return sha(fixture).slice(0, 16);
 }
@@ -104,11 +104,11 @@ function filesForFixture(fixture) {
 
   let entry = "// fixture " + fixture + "\n";
   entry +=
-    'const manifest = { identity: { component: "Island", build:"' +
+    'function register(n){const manifest={identity:{component:n,build:"' +
     token +
-    '" }, mount: () => ({ component: "Island", build:"' +
+    '"},mount:()=>{let local={component:n,build:"' +
     token +
-    '" }) };\n';
+    '"};return local}};return manifest}\n';
   if (fixture === "event-only") entry += 'void import("./islands-chunk-lazy.js");\n';
   if (fixture === "multi-island") {
     entry += 'import "./shared.js";\n';
