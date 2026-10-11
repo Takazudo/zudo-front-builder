@@ -1,16 +1,30 @@
 #!/usr/bin/env node
-// Release-time Linux x64 island-size rebaseline (used by /l-make-release Step 4a).
+// Linux x64 island-size contract re-pin (used by /l-make-release Step 4a and
+// by metric migrations, #4131).
 //
-// The island runtime embeds the release version, so every version bump moves a
-// few gzip totals by a handful of bytes while every raw total stays identical.
-// This script records a CI run's measured totals as the new exact ceilings and
-// refuses anything that is not that shape: a raw change means real product
-// bytes moved and needs a reviewed decision, not a release rebaseline.
+// The contract measures `gzip-identity-normalized` (research/v3-island-size/
+// normalize-identity.mjs): the compiler-owned `zudo_react_build` token is
+// replaced with a same-length placeholder before compressing, so a version
+// bump or a runtime source edit that only moves the token leaves every raw and
+// gzipNormalized total unchanged. This script re-derives the totals from the
+// saved artifact bytes (never from measurement.json's claims), refuses any raw
+// change, and under `--reason release-bump` / `--reason runtime-identity`
+// also refuses a gzipNormalized change: a moved normalized total is product
+// code moving and needs a reviewed decision, not a re-pin. `--reason
+// metric-migration` converts a schemaVersion-1 actual-gzip contract to the
+// schemaVersion-2 normalized shape from a replayed artifact.
 
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  IDENTITY_NORMALIZATION_VERSION,
+  IDENTITY_NORMALIZED_METRIC,
+  normalizeMeasurementDirectory,
+  normalizerSha256,
+} from "../research/v3-island-size/normalize-identity.mjs";
 
 const MODES = ["workspace", "packed"];
 const CONTRACT = "research/v3-island-size/decision-linux-x64.json";
@@ -18,12 +32,36 @@ const README = "research/v3-island-size/README.md";
 const TEST_FILE = "scripts/__tests__/island-size-budget.test.mjs";
 const TEST_ANCHOR = 'it("records the reviewed Linux x64 ceilings with zero allowance"';
 
-export function measuredTotals(measurementsByMode) {
+export const REASONS = Object.freeze({
+  "release-bump": {
+    outcome: "release-version-stamp",
+    heading: "release baseline",
+    requires: 2,
+  },
+  "metric-migration": {
+    outcome: "metric-migration",
+    heading: "metric migration",
+    requires: 1,
+  },
+  "runtime-identity": {
+    outcome: "runtime-identity-only",
+    heading: "runtime-identity re-pin",
+    requires: 2,
+  },
+});
+
+// `normalizedByMode` holds normalize-identity.mjs results recomputed from
+// the saved bytes, keyed by mode. Actual gzip rides along as evidence only.
+export function measuredTotals(normalizedByMode) {
   const totals = {};
   for (const mode of MODES) {
     totals[mode] = {};
-    for (const [fixture, result] of Object.entries(measurementsByMode[mode].results)) {
-      totals[mode][fixture] = { raw: result.shipped.raw, gzip: result.shipped.gzip };
+    for (const [fixture, result] of Object.entries(normalizedByMode[mode])) {
+      totals[mode][fixture] = {
+        raw: result.shipped.raw,
+        gzipNormalized: result.shipped.gzipNormalized,
+        gzip: result.shipped.gzip,
+      };
     }
   }
   return totals;
@@ -32,7 +70,9 @@ export function measuredTotals(measurementsByMode) {
 export function diffCeilings(contract, totals) {
   const missingFixtures = [];
   const rawChanges = [];
+  const normalizedChanges = [];
   const gzipChanges = [];
+  const normalizedContract = contract.schemaVersion === 2;
   for (const mode of MODES) {
     const ceilings = contract.ceilings[mode];
     const fixtures = new Set([...Object.keys(ceilings), ...Object.keys(totals[mode])]);
@@ -43,12 +83,18 @@ export function diffCeilings(contract, totals) {
         missingFixtures.push(mode + "/" + fixture);
       } else if (before.raw !== after.raw) {
         rawChanges.push({ mode, fixture, before, after });
-      } else if (before.gzip !== after.gzip) {
+      } else if (normalizedContract && before.gzipNormalized !== after.gzipNormalized) {
+        normalizedChanges.push({
+          mode,
+          fixture,
+          delta: after.gzipNormalized - before.gzipNormalized,
+        });
+      } else if (!normalizedContract && before.gzip !== after.gzip) {
         gzipChanges.push({ mode, fixture, delta: after.gzip - before.gzip });
       }
     }
   }
-  return { missingFixtures, rawChanges, gzipChanges };
+  return { missingFixtures, rawChanges, normalizedChanges, gzipChanges };
 }
 
 function signed(n) {
@@ -59,11 +105,11 @@ function joinNames(names) {
   return names.length < 2 ? names.join("") : names.slice(0, -1).join(", ") + " and " + names.at(-1);
 }
 
-export function describeGzipChanges(gzipChanges) {
+export function describeDeltas(changes) {
   const parts = [];
   for (const mode of MODES) {
     const byDelta = new Map();
-    for (const change of gzipChanges.filter((c) => c.mode === mode)) {
+    for (const change of changes.filter((c) => c.mode === mode)) {
       byDelta.set(change.delta, [...(byDelta.get(change.delta) ?? []), change.fixture]);
     }
     const groups = [...byDelta.entries()]
@@ -82,13 +128,44 @@ function sourceText(measuredSha, headSha) {
     : "PR merge source " + measuredSha + " (probe head " + headSha + ")";
 }
 
-function deltaRange(gzipChanges) {
-  const deltas = gzipChanges.map((c) => c.delta);
+function deltaRange(changes) {
+  const deltas = changes.map((c) => c.delta);
   return signed(Math.min(...deltas)) + " to " + signed(Math.max(...deltas));
 }
 
-export function rebaselineContract(contract, totals, evidence) {
-  const { missingFixtures, rawChanges, gzipChanges } = diffCeilings(contract, totals);
+function metricText() {
+  return IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
+}
+
+// Actual gzip movement between the previous ceilings and the new measurement,
+// reported as transfer-size evidence; never a ceiling under schemaVersion 2.
+function actualGzipEvidence(contract, totals) {
+  const changes = [];
+  for (const mode of MODES) {
+    for (const [fixture, after] of Object.entries(totals[mode])) {
+      const before = contract.ceilings[mode][fixture];
+      if (!before || typeof before.gzip !== "number") return null;
+      if (before.gzip !== after.gzip)
+        changes.push({ mode, fixture, delta: after.gzip - before.gzip });
+    }
+  }
+  return changes;
+}
+
+export function rebaselineContract(contract, totals, evidence, reason) {
+  const policy = REASONS[reason];
+  if (!policy) throw new Error("unknown --reason " + String(reason));
+  if (contract.schemaVersion !== policy.requires) {
+    throw new Error(
+      "--reason " +
+        reason +
+        " needs a schemaVersion " +
+        policy.requires +
+        " contract, found schemaVersion " +
+        String(contract.schemaVersion),
+    );
+  }
+  const { missingFixtures, rawChanges, normalizedChanges } = diffCeilings(contract, totals);
   if (missingFixtures.length > 0) {
     throw new Error(
       "fixture set differs from the contract (" +
@@ -101,36 +178,104 @@ export function rebaselineContract(contract, totals, evidence) {
     throw new Error(
       "raw totals changed (" +
         rows +
-        "); this is not a version-stamp rebaseline — " +
-        "record a reviewed decision instead",
+        "); this is not a " +
+        reason +
+        " re-pin — record a reviewed decision instead",
+    );
+  }
+  if (normalizedChanges.length > 0) {
+    const rows = normalizedChanges.map((c) => c.mode + "/" + c.fixture + " " + signed(c.delta));
+    throw new Error(
+      "gzipNormalized totals changed (" +
+        rows.join(", ") +
+        "); the identity token is normalized away, so this is product code moving, not a " +
+        reason +
+        " — record a reviewed decision instead",
     );
   }
   const previousVersion = contract.toolchain.packageVersion;
-  const summary =
-    gzipChanges.length === 0
-      ? "no gzip total changed"
-      : gzipChanges.length + " gzip totals shifted by " + deltaRange(gzipChanges) + " bytes";
+  const gzipEvidence = actualGzipEvidence(contract, totals) ?? [];
   const next = structuredClone(contract);
-  next.outcome = "no-product-code-change";
+  if (reason === "metric-migration") {
+    const migrated = {};
+    for (const [key, value] of Object.entries(next)) {
+      migrated[key] = value;
+      if (key === "schemaVersion") {
+        migrated.schemaVersion = 2;
+        migrated.metric = IDENTITY_NORMALIZED_METRIC;
+        migrated.normalizationVersion = IDENTITY_NORMALIZATION_VERSION;
+        migrated.normalizerSha256 = evidence.normalizerSha256;
+      }
+    }
+    Object.keys(next).forEach((key) => delete next[key]);
+    Object.assign(next, migrated);
+    next.allowance = { raw: 0, gzipNormalized: 0 };
+  }
+  next.outcome = policy.outcome;
   next.baselineSourceSha = evidence.headSha;
   next.toolchain.packageVersion = evidence.version;
   next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
-  next.platformStatus =
-    "Linux x64 has exact zero-allowance v" +
-    evidence.version +
-    " ceilings measured in health run " +
-    evidence.runId +
-    " at " +
-    sourceText(evidence.sourceSha, evidence.headSha) +
-    ". All 16 raw totals are unchanged from the v" +
-    previousVersion +
-    " contract; " +
-    summary +
-    " after the release version stamp. Workspace and " +
-    "packed eight-fixture matrices each have two byte-identical full-dist inventories. Other " +
-    "platforms and toolchains are not covered.";
+  next.normalizerSha256 = evidence.normalizerSha256;
+  const gzipSummary =
+    gzipEvidence.length === 0
+      ? "no actual gzip total moved"
+      : gzipEvidence.length +
+        " actual gzip totals moved by " +
+        deltaRange(gzipEvidence) +
+        " bytes (evidence only, not a ceiling)";
+  const matrices =
+    " Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
+    "inventories. Other platforms and toolchains are not covered.";
+  if (reason === "metric-migration") {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", replayed by normalize-identity.mjs over the retained artifact of health run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      ". All 16 raw totals are unchanged from the v" +
+      previousVersion +
+      " actual-gzip contract; the gzipNormalized ceilings are new values computed from the " +
+      "saved bytes and are not comparable with any earlier gzip ceiling. Integrated-tree CI " +
+      "re-verification by the manager is pending." +
+      matrices;
+  } else if (reason === "release-bump") {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from health run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      ". Every raw and gzipNormalized total is unchanged from the v" +
+      previousVersion +
+      " contract; the release version stamp moved only the zudo_react_build token, and " +
+      gzipSummary +
+      "." +
+      matrices;
+  } else {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from health run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      ". Every raw and gzipNormalized total is unchanged; only the zudo_react_build runtime " +
+      "identity token moved, and " +
+      gzipSummary +
+      "." +
+      matrices;
+  }
   next.baselineEvidence = {
-    event: "ci",
+    event: reason === "metric-migration" ? "ci-artifact-replay" : "ci",
     runId: evidence.runId,
     jobId: evidence.jobId,
     sourceSha: evidence.sourceSha,
@@ -139,24 +284,31 @@ export function rebaselineContract(contract, totals, evidence) {
       " at " +
       sourceText(evidence.sourceSha, evidence.headSha) +
       ". Complete Linux x64 workspace and packed eight-fixture matrices, each " +
-      "with two identical full-dist inventories. Raw totals did not change from the v" +
-      previousVersion +
-      " contract; " +
-      (gzipChanges.length === 0
-        ? "no gzip total changed"
-        : "gzip deltas range from " +
-          deltaRange(gzipChanges) +
-          " bytes across " +
-          gzipChanges.length +
-          " rows") +
-      ". Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
+      "with two identical full-dist inventories. " +
+      (reason === "metric-migration"
+        ? "Metric migration: the gzipNormalized ceilings were computed by normalize-identity.mjs v" +
+          IDENTITY_NORMALIZATION_VERSION +
+          " over the saved artifact bytes, not converted arithmetically from the v" +
+          previousVersion +
+          " actual-gzip ceilings. Raw totals did not change. Actual gzip stays in the sidecar " +
+          "as transfer-size evidence. The manager re-verifies these values on the integrated " +
+          "tree in CI."
+        : "Raw and gzipNormalized totals did not change from the v" +
+          previousVersion +
+          " contract; " +
+          gzipSummary +
+          ".") +
+      " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
     for (const fixture of Object.keys(next.ceilings[mode])) {
-      next.ceilings[mode][fixture] = { ...totals[mode][fixture] };
+      next.ceilings[mode][fixture] = {
+        raw: totals[mode][fixture].raw,
+        gzipNormalized: totals[mode][fixture].gzipNormalized,
+      };
     }
   }
-  return { contract: next, gzipChanges, previousVersion };
+  return { contract: next, gzipEvidence, previousVersion };
 }
 
 function fixtureKey(fixture) {
@@ -180,7 +332,13 @@ export function rewriteTestPins(source, contract) {
       throw new Error("missing " + mode + " pins in " + TEST_FILE);
     const lines = Object.entries(contract.ceilings[mode]).map(
       ([fixture, c]) =>
-        "      " + fixtureKey(fixture) + ": { raw: " + c.raw + ", gzip: " + c.gzip + " },",
+        "      " +
+        fixtureKey(fixture) +
+        ": { raw: " +
+        c.raw +
+        ", gzipNormalized: " +
+        c.gzipNormalized +
+        " },",
     );
     block =
       block.slice(0, blockStart + marker.length) +
@@ -192,41 +350,73 @@ export function rewriteTestPins(source, contract) {
   return source.slice(0, start) + block + source.slice(end);
 }
 
-export function readmeSection(contract, gzipChanges, previousVersion) {
+export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
   const { runId, jobId, sourceSha } = contract.baselineEvidence;
-  const moved =
-    gzipChanges.length === 0
-      ? "left every raw and gzip total unchanged"
-      : "left every raw total unchanged and moved " +
-        gzipChanges.length +
-        " gzip totals by " +
-        deltaRange(gzipChanges) +
-        " bytes (" +
-        describeGzipChanges(gzipChanges) +
-        ")";
-  return (
-    "\n## v" +
-    contract.toolchain.packageVersion +
-    " release baseline\n\n" +
-    "The Linux contract was rebaselined for the v" +
-    contract.toolchain.packageVersion +
-    " release from [health run " +
+  const policy = REASONS[reason];
+  const version = contract.toolchain.packageVersion;
+  const run =
+    "[health run " +
     runId +
     "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
     runId +
     ") (job " +
     jobId +
     ") at " +
-    sourceText(sourceSha, contract.baselineSourceSha).replace(/([0-9a-f]{40})/g, "`$1`") +
-    ". The version bump " +
-    moved +
-    ". The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two " +
-    "identical full-dist inventories per case. `decision-linux-x64.json` records those measured totals " +
-    "as exact ceilings with zero allowance and the bump's lockfile hash; the v" +
-    previousVersion +
-    " ceilings remain in git history. The Darwin arm64 contract is unchanged by this release and needs " +
-    "its separate native remeasurement through `island-size-darwin.yml`.\n"
-  );
+    sourceText(sourceSha, contract.baselineSourceSha).replace(/([0-9a-f]{40})/g, "`$1`");
+  const evidence =
+    gzipEvidence.length === 0
+      ? "No actual gzip total moved."
+      : "Actual gzip moved on " +
+        gzipEvidence.length +
+        " rows by " +
+        deltaRange(gzipEvidence) +
+        " bytes (" +
+        describeDeltas(gzipEvidence) +
+        "); that is transfer-size evidence in the sidecar, not a ceiling.";
+  const closing =
+    " The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two " +
+    "identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and " +
+    "`gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git " +
+    "history. The Darwin arm64 contract is unchanged, still measures actual gzip under schemaVersion 1, " +
+    "and needs its separate native remeasurement through `island-size-darwin.yml`.\n";
+  let body;
+  if (reason === "metric-migration") {
+    body =
+      "The Linux contract moved from actual gzip (schemaVersion 1) to `" +
+      metricText() +
+      "` (schemaVersion 2) by replaying `normalize-identity.mjs` over the retained artifact of " +
+      run +
+      ". Every raw total is unchanged from the v" +
+      previousVersion +
+      " contract; the `gzipNormalized` ceilings are computed from the saved bytes and are not " +
+      "comparable with any earlier `gzip` ceiling. " +
+      evidence +
+      " The manager re-verifies these ceilings on the integrated tree in CI." +
+      closing;
+  } else if (reason === "release-bump") {
+    body =
+      "The Linux contract was re-pinned for the v" +
+      version +
+      " release from " +
+      run +
+      ". The version bump moved only the `zudo_react_build` token: every raw and `gzipNormalized` " +
+      "total is unchanged from the v" +
+      previousVersion +
+      " contract. " +
+      evidence +
+      closing;
+  } else {
+    body =
+      "The Linux contract was re-pinned at v" +
+      version +
+      " from " +
+      run +
+      " after a change that moved only the `zudo_react_build` runtime identity token: every raw " +
+      "and `gzipNormalized` total is unchanged. " +
+      evidence +
+      closing;
+  }
+  return "\n## v" + version + " " + policy.heading + "\n\n" + body;
 }
 
 export function parseArgs(argv) {
@@ -236,7 +426,7 @@ export function parseArgs(argv) {
       throw new Error("bad argument: " + argv[i]);
     values[argv[i].slice(2)] = argv[i + 1];
   }
-  for (const required of ["artifact", "run-id", "job-id", "head-sha"]) {
+  for (const required of ["artifact", "run-id", "job-id", "head-sha", "reason"]) {
     if (!values[required]) throw new Error("required --" + required);
   }
   for (const id of ["run-id", "job-id"]) {
@@ -246,13 +436,19 @@ export function parseArgs(argv) {
   if (!/^[0-9a-f]{40}$/.test(values["head-sha"])) {
     throw new Error("--head-sha must be a full 40-character commit SHA");
   }
+  if (!Object.hasOwn(REASONS, values.reason)) {
+    throw new Error("--reason must be one of " + Object.keys(REASONS).join(", "));
+  }
   return values;
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const measurements = {};
+  const normalized = {};
   for (const mode of MODES) {
+    const { sidecar } = normalizeMeasurementDirectory(join(args.artifact, "real-" + mode));
+    normalized[mode] = sidecar.results;
     measurements[mode] = JSON.parse(
       readFileSync(join(args.artifact, "real-" + mode, "measurement.json"), "utf8"),
     );
@@ -274,26 +470,41 @@ function main() {
     }
   }
   const contract = JSON.parse(readFileSync(CONTRACT, "utf8"));
-  const result = rebaselineContract(contract, measuredTotals(measurements), {
-    version,
-    pnpmLockSha256,
-    sourceSha: provenance.sourceSha,
-    headSha: args["head-sha"],
-    runId: Number(args["run-id"]),
-    jobId: Number(args["job-id"]),
-    runLabel: args.label ?? "Release probe run for v" + version,
-  });
+  const defaultLabel = {
+    "release-bump": "Release probe run for v" + version,
+    "metric-migration":
+      "Metric migration replayed from the retained artifact of health run " + args["run-id"],
+    "runtime-identity": "Runtime-identity re-pin run at v" + version,
+  }[args.reason];
+  const result = rebaselineContract(
+    contract,
+    measuredTotals(normalized),
+    {
+      version,
+      pnpmLockSha256,
+      normalizerSha256: normalizerSha256(),
+      sourceSha: provenance.sourceSha,
+      headSha: args["head-sha"],
+      runId: Number(args["run-id"]),
+      jobId: Number(args["job-id"]),
+      runLabel: args.label ?? defaultLabel,
+    },
+    args.reason,
+  );
   writeFileSync(CONTRACT, JSON.stringify(result.contract, null, 2) + "\n");
   writeFileSync(TEST_FILE, rewriteTestPins(readFileSync(TEST_FILE, "utf8"), result.contract));
   appendFileSync(
     README,
-    readmeSection(result.contract, result.gzipChanges, result.previousVersion),
+    readmeSection(result.contract, result.gzipEvidence, result.previousVersion, args.reason),
   );
   console.log(
-    "rebaselined Linux island-size contract to v" +
+    "re-pinned Linux island-size contract to v" +
       version +
-      ": " +
-      (describeGzipChanges(result.gzipChanges) || "no gzip change"),
+      " (" +
+      args.reason +
+      "): " +
+      (describeDeltas(result.gzipEvidence) || "no actual gzip change") +
+      " (actual gzip, evidence only)",
   );
 }
 

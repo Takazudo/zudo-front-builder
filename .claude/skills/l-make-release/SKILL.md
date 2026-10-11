@@ -338,10 +338,12 @@ measured in CI before the bump lands on `main`:
   [2.22.1 comparison](https://github.com/Takazudo/zudo-front-builder/actions/runs/36571467542).
 - **Linux island size.** `health.yml`'s `Measure and enforce Linux x64 island-size budgets` step
   builds the island runtime with the `packages/zfb` version embedded, and
-  `research/v3-island-size/decision-linux-x64.json` holds exact zero-allowance ceilings plus the
-  pinned package version and lockfile hash. Every bump leaves raw totals identical and moves a few
-  gzip totals by a handful of bytes, so an unprobed bump commit always fails `health` (v4.1.0
-  through v4.3.0 each needed a follow-up rebaseline commit).
+  `research/v3-island-size/decision-linux-x64.json` holds exact zero-allowance `raw` and
+  `gzipNormalized` ceilings plus the pinned package version, lockfile hash, and normalizer hash.
+  Every bump leaves raw totals identical and moves only the `zudo_react_build` token; since #4131
+  the metric normalizes that token away, so the bump itself no longer fails `health` (v4.1.0
+  through v4.3.1 each needed a follow-up actual-gzip rebaseline commit). The contract still has
+  to record the new version and lockfile hash, which is the probe's job below.
 - **Wind preview digest.** `docs/public/wind-examples/manifest.json` records
   `compiler.sourceSha256`, which `compilerSourceDigest` in `docs/scripts/wind-preview-assets.mjs`
   computes over every `crates/**/*.{rs,toml,json,css}` file. The bump rewrites
@@ -369,12 +371,14 @@ Before pushing anything to `main`:
    not make the measured metric lines unusable. A missing metric, failed build or exports assert,
    or ceiling breach blocks the release until diagnosed. Never measure or refresh the manifest
    from a Mac build. (Match the job by prefix: its check name is `wasm-md (default, default)`.)
-3. **Island size:** the `health` job's island-size step normally fails on this first push, because
-   gzip totals moved. Download its `island-size-linux-x64` artifact (uploaded with `if: always()`)
-   and note the `health` run ID, job ID, and the probe branch's head SHA. Do not rebaseline from a
-   run whose failure is anything other than that step's budget rejection. If the step passed (no
-   gzip total moved), still run the helper below: the contract must record the new version and
-   evidence, and the helper handles a no-change measurement.
+3. **Island size:** the `health` job's island-size step measures `gzip-identity-normalized`
+   (#4131): the version bump moves only the `zudo_react_build` token, which the metric normalizes
+   away, so the step is expected to **pass** on this first push. Download its
+   `island-size-linux-x64` artifact (uploaded with `if: always()`) and note the `health` run ID,
+   job ID, and the probe branch's head SHA. Run the helper below even on a pass: the contract must
+   record the new version, lockfile hash, and evidence. If the step **failed**, a raw or
+   `gzipNormalized` total moved — that is product code moving, not a version stamp. The helper
+   refuses it; stop and surface it as a reviewed decision instead of re-pinning.
 4. On the disposable branch, write the rehearsal commit:
    - md-wasm: set `crates/zfb-md-wasm/shipped-sizes.json`'s `measuredOnVersion` to `<version>`
      and replace its measured columns with the values from that CI log. Keep the real ceilings
@@ -386,18 +390,22 @@ Before pushing anything to `main`:
      ```bash
      node scripts/rebaseline-island-size-linux.mjs --artifact <downloaded-artifact-dir> \
        --run-id <health-run-id> --job-id <health-job-id> --head-sha <probe-head-sha> \
+       --reason release-bump \
        --label "Release probe PR #<pr> run for v<version>"
      ```
 
-     It records the measured totals as the new exact ceilings, updates the pinned version,
-     lockfile hash, `platformStatus`, and `baselineEvidence`, and sets `baselineSourceSha` to the
-     probe head (the PR's synthetic merge commit that CI measured is kept on no branch, but
-     `refs/pull/<pr>/head` stays reachable and has the identical tree), rewrites the pins in
-     `scripts/__tests__/island-size-budget.test.mjs`, and appends a `## v<version> release
-     baseline` section to `research/v3-island-size/README.md`. It **refuses** if any raw total
-     changed, the fixture set differs, or the artifact's lockfile/version differ from the checkout —
-     a raw change is a product size change that needs a reviewed decision, not a release
-     rebaseline. Stop and surface it. Run `pnpm exec vp fmt` on the changed files.
+     It re-derives every total from the artifact's saved pass bytes with
+     `research/v3-island-size/normalize-identity.mjs` (never from `measurement.json`'s claims),
+     keeps the `raw`/`gzipNormalized` ceilings, updates the pinned version, lockfile hash,
+     normalizer hash, `platformStatus`, and `baselineEvidence` (outcome `release-version-stamp`),
+     and sets `baselineSourceSha` to the probe head (the PR's synthetic merge commit that CI
+     measured is kept on no branch, but `refs/pull/<pr>/head` stays reachable and has the
+     identical tree), rewrites the pins in `scripts/__tests__/island-size-budget.test.mjs`, and
+     appends a `## v<version> release baseline` section to `research/v3-island-size/README.md`.
+     It **refuses** if any raw or `gzipNormalized` total changed, the fixture set differs, or the
+     artifact's lockfile/version differ from the checkout — a moved total is a product size change
+     that needs a reviewed decision, not a release re-pin. Stop and surface it. Run
+     `pnpm exec vp fmt` on the changed files.
    - Wind preview digest: after every `crates/` edit above, recompute the digest and write it to
      `docs/public/wind-examples/manifest.json`'s `compiler.sourceSha256`:
 
