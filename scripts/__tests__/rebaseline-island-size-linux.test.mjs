@@ -109,7 +109,7 @@ describe("rebaseline-island-size-linux", () => {
       "PR merge source " + evidence.sourceSha + " (probe head " + evidence.headSha + ")",
     );
     expect(next.baselineEvidence.note).toContain(
-      "Raw and gzipNormalized totals did not change from the v4.3.1 contract",
+      `Raw and gzipNormalized totals did not change from the v${contract.toolchain.packageVersion} contract`,
     );
     expect(next.platformStatus).toContain("Every raw and gzipNormalized total is unchanged");
     expect(next.platformStatus).not.toContain("no-product-code-change");
@@ -164,7 +164,7 @@ describe("rebaseline-island-size-linux", () => {
       { ...evidence, version: "4.3.1" },
       "metric-migration",
     );
-    expect(previousVersion).toBe("4.3.1");
+    expect(previousVersion).toBe(contract.toolchain.packageVersion);
     expect(Object.keys(next).slice(0, 5)).toEqual([
       "schemaVersion",
       "metric",
