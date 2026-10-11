@@ -366,6 +366,12 @@ function writeSidecar(jsonPath) {
     measurementText: run.measurementText,
     artifacts: run.artifacts,
   });
+  // This synthetic saved run models the pinned Linux Node/zlib toolchain even
+  // when the workspace test job itself runs under Node 22. Keep the production
+  // normalizer and checker strict about the actual toolchain on a live run.
+  const pinnedToolchain = JSON.parse(run.measurementText).provenance;
+  sidecar.normalizer.nodeVersion = pinnedToolchain.nodeVersion;
+  sidecar.normalizer.zlibVersion = pinnedToolchain.zlibVersion;
   writeFileSync(
     join(dirname(jsonPath), NORMALIZED_SIDECAR),
     JSON.stringify(sidecar, null, 2) + "\n",
@@ -719,6 +725,12 @@ describe("island shipped-size budget", () => {
       "local normalize-identity.mjs: SHA-256 differs from the reviewed contract",
     );
     expect(findings).toContain("workspace normalized: normalizer hash differs from the contract");
+
+    const wrongNode = linuxState();
+    wrongNode.workspace.normalized.normalizer.nodeVersion = "v22.22.2";
+    expect(validate(wrongNode).errors.join("\n")).toContain(
+      "workspace normalized: sidecar was normalized under an unsupported nodeVersion",
+    );
 
     const tampered = linuxState();
     for (const passNumber of [1, 2]) {
