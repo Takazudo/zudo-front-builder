@@ -2732,6 +2732,42 @@ title: Demo
     assert!(emitted.contains(".flex"), "{emitted}");
     assert!(emitted.contains(".block"), "{emitted}");
     assert!(!emitted.contains("bg-missing-preview"), "{emitted}");
+
+    fs::create_dir_all(temp.path().join("pages")).unwrap();
+    fs::write(
+        temp.path().join("pages/index.tsx"),
+        "export default () => <main>Host</main>;\n",
+    )
+    .unwrap();
+    let build = || {
+        Command::new(zfb_binary!())
+            .arg("build")
+            .current_dir(temp.path())
+            .output()
+            .expect("spawn build for ignored MDX preview")
+    };
+    let built = build();
+    assert_success(&built, "build with ignored MDX preview");
+    let built_css = fs::read_to_string(find_build_css(temp.path())).unwrap();
+    for selector in [".flex", ".block"] {
+        assert!(built_css.contains(selector), "{built_css}");
+    }
+    assert!(!built_css.contains("bg-missing-preview"), "{built_css}");
+
+    let mdx_path = temp.path().join("src/demo.mdx");
+    let source = fs::read_to_string(&mdx_path).unwrap();
+    fs::write(
+        &mdx_path,
+        format!("{source}<div class=\"bg-missing-real\" />\n"),
+    )
+    .unwrap();
+    let rejected = build();
+    assert_failure(&rejected, "build with real invalid MDX host class");
+    let rejection = combined_output(&rejected);
+    assert!(
+        rejection.contains("ZW006") && rejection.contains("bg-missing-real"),
+        "{rejection}"
+    );
 }
 
 /// A package with no site config or pages, plus a sibling directory holding
