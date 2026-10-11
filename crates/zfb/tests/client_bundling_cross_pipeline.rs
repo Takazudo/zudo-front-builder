@@ -526,12 +526,24 @@ fn assert_client_pipeline(
 }
 
 fn run_zfb_build(root: &Path, esbuild: &Path, label: &str) -> (String, String) {
-    let output = Command::new(zfb_binary!())
+    run_zfb_build_with_timing(root, esbuild, label, false)
+}
+
+fn run_zfb_build_with_timing(
+    root: &Path,
+    esbuild: &Path,
+    label: &str,
+    timing: bool,
+) -> (String, String) {
+    let mut command = Command::new(zfb_binary!());
+    command
         .arg("build")
         .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
-        .output()
-        .expect("spawn `zfb build`");
+        .env("ZFB_ESBUILD_BIN", esbuild);
+    if timing {
+        command.env("ZFB_DEV_TIMING", "1");
+    }
+    let output = command.output().expect("spawn `zfb build`");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -542,8 +554,9 @@ fn run_zfb_build(root: &Path, esbuild: &Path, label: &str) -> (String, String) {
     (stdout, stderr)
 }
 
-fn run_and_assert_production(root: &Path, esbuild: &Path) {
-    let (stdout, stderr) = run_zfb_build(root, esbuild, "the cross-pipeline fixture");
+fn run_and_assert_production(root: &Path, esbuild: &Path) -> String {
+    let (stdout, stderr) =
+        run_zfb_build_with_timing(root, esbuild, "the cross-pipeline fixture", true);
     assert_build_output_omits_sub_packages(&stdout, &stderr, "cross-pipeline production build");
 
     let names = WorkerNames::for_root(root);
@@ -636,6 +649,7 @@ fn run_and_assert_production(root: &Path, esbuild: &Path) {
         ],
         "production SSR bundle",
     );
+    stderr
 }
 
 struct DevServerGuard {
@@ -1343,7 +1357,61 @@ async fn real_binary_build_and_dev_cover_client_bundling_contract() {
 
     let production = tempfile::tempdir().expect("production fixture tempdir");
     copy_fixture(&fixture_dir(), production.path()).expect("copy production fixture");
-    run_and_assert_production(production.path(), &esbuild);
+    let build_stderr = run_and_assert_production(production.path(), &esbuild);
+    #[cfg(feature = "rolldown-prototype")]
+    {
+        use std::collections::BTreeSet;
+
+        let names = WorkerNames::for_root(production.path());
+        let expected = BTreeSet::from([
+            ("cross-pipeline".to_string(), "entry".to_string()),
+            (
+                names.client.trim_end_matches(".js").to_string(),
+                "worker".to_string(),
+            ),
+            (
+                names.client_nested.trim_end_matches(".js").to_string(),
+                "worker".to_string(),
+            ),
+        ]);
+        let prefix = "[zfb-timing] rolldown-prototype client-script ";
+        let observed = build_stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix(prefix))
+            .map(|line| {
+                let fields = line.splitn(3, ' ').collect::<Vec<_>>();
+                assert_eq!(
+                    fields.len(),
+                    3,
+                    "unexpected client-script timing line: {line}"
+                );
+                let job = fields[0].strip_prefix("job=").expect("job field");
+                let kind = fields[1].strip_prefix("kind=").expect("kind field");
+                let source = fields[2].strip_prefix("source=").expect("source field");
+                assert!(
+                    Path::new(source).is_relative(),
+                    "client-script source must be relative to working_dir: {line}"
+                );
+                (job.to_string(), kind.to_string())
+            })
+            .collect::<Vec<_>>();
+        if std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
+        {
+            assert_eq!(
+                observed.len(),
+                expected.len(),
+                "one timing line per client job: {build_stderr}"
+            );
+            assert_eq!(observed.into_iter().collect::<BTreeSet<_>>(), expected);
+        } else {
+            assert!(
+                observed.is_empty(),
+                "native client jobs appeared without opt-in: {build_stderr}"
+            );
+        }
+    }
+    #[cfg(not(feature = "rolldown-prototype"))]
+    let _ = build_stderr;
 
     let development = tempfile::tempdir().expect("development fixture tempdir");
     copy_fixture(&fixture_dir(), development.path()).expect("copy development fixture");
