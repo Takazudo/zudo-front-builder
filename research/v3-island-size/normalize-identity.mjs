@@ -101,7 +101,15 @@ export function sha256(bytes) {
 }
 
 export function normalizerSha256() {
-  return sha256(readFileSync(scriptPath));
+  // The inventory helper decides which bytes and chunk roles enter the metric.
+  // Pin it together with this file so either implementation change invalidates
+  // the reviewed contract and every previously generated sidecar.
+  return createHash("sha256")
+    .update("normalize-identity.mjs\0")
+    .update(readFileSync(scriptPath))
+    .update("\0chunk-inventory.mjs\0")
+    .update(readFileSync(resolve(dirname(scriptPath), "chunk-inventory.mjs")))
+    .digest("hex");
 }
 
 function isRecord(value) {

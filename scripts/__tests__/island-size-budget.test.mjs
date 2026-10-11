@@ -17,6 +17,7 @@ import {
   IDENTITY_NORMALIZED_METRIC,
   NORMALIZED_SIDECAR,
   normalizeMeasurement,
+  normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import { measuredTotals, rebaselineContract } from "../rebaseline-island-size-linux.mjs";
 
@@ -78,7 +79,7 @@ function currentLocalInputs(
     pnpmLockActualSha256:
       packageVersion === contract.toolchain.packageVersion ? contractLockHash : sha(lockText),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
-    normalizerSha256: sha(readFileSync(join(sizeDir, "normalize-identity.mjs"))),
+    normalizerSha256: normalizerSha256(),
   };
 }
 

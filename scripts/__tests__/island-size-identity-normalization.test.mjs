@@ -177,6 +177,19 @@ afterEach(() => {
 });
 
 describe("identity normalization boundaries (L1)", () => {
+  it("pins the inventory helper with the normalizer in the Linux contract", () => {
+    const sizeDir = join(repoRoot, "research/v3-island-size");
+    const expected = createHash("sha256")
+      .update("normalize-identity.mjs\0")
+      .update(readFileSync(join(sizeDir, "normalize-identity.mjs")))
+      .update("\0chunk-inventory.mjs\0")
+      .update(readFileSync(join(sizeDir, "chunk-inventory.mjs")))
+      .digest("hex");
+    expect(normalizerSha256()).toBe(expected);
+    expect(linuxContract.normalizerSha256).toBe(expected);
+    expect(expected).not.toBe(sha(readFileSync(join(sizeDir, "normalize-identity.mjs"))));
+  });
+
   it("reads one 16-hex token from the real HTML and rejects malformed or disagreeing ones", () => {
     const html = fixtureFiles("multi-island")["index.html"].toString("utf8");
     expect(html.match(/data-zfb-build=/g)).toHaveLength(2);
@@ -520,9 +533,7 @@ describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () =
     expect(IDENTITY_NORMALIZED_METRIC).toBe("gzip-identity-normalized");
     expect(IDENTITY_NORMALIZATION_VERSION).toBe(1);
     expect(IDENTITY_NORMALIZATION_RULES).toContain("v1:");
-    expect(sidecar.normalizer.sha256).toBe(
-      sha(readFileSync(join(repoRoot, "research/v3-island-size", NORMALIZER_FILE))),
-    );
+    expect(sidecar.normalizer.sha256).toBe(normalizerSha256());
     expect(linuxContract.normalizerSha256).toBe(sidecar.normalizer.sha256);
     expect(sidecar.results["multi-island"]).toMatchObject({
       buildToken: REAL_TOKEN,
