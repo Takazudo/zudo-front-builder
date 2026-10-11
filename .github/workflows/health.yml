@@ -621,7 +621,9 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
         env:
           ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/default-layout-checkpoint
-        run: cargo nextest run -p zfb --test dev_build_then_dev_default_layout_e2e --profile ci --success-output final
+        # This opt-in acceptance checkpoint must report the first attempt,
+        # independent of the ordinary CI profile's one-retry flake telemetry.
+        run: cargo nextest run -p zfb --test dev_build_then_dev_default_layout_e2e --profile ci --retries 0 --success-output final
 
       - name: Stash default-layout checkpoint JUnit
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
