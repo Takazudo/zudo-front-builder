@@ -1,6 +1,6 @@
 # Internal direct-Rust Rolldown feasibility probe (#318)
 
-Decision: **continue narrowly**, retaining this as a draft experiment. The pinned Rust API can produce executable ZFB browser and embedded-V8 SSR bundles with authoritative graph/output provenance. This fixture does not justify a default switch or a speed claim. See [FINDINGS.md](FINDINGS.md) for the evidence and ownership costs.
+Decision: **continue narrowly**, retaining this as a draft experiment. The pinned Rust API can produce executable ZFB browser and embedded-V8 SSR bundles with authoritative graph/output provenance. The standalone client-script entry and its declared module workers now also run through the native adapter behind the same opt-in. These fixtures do not justify a default switch or a speed claim. See [FINDINGS.md](FINDINGS.md) for the evidence and ownership costs.
 
 The opt-in is deliberately internal: compile `rolldown-prototype` on `zfb-build` and `zfb-islands` (or the forwarding `zfb` CLI feature), then set `ZFB_ROLLDOWN_PROTOTYPE=1`. Without both, the existing esbuild path runs. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
 
@@ -68,7 +68,7 @@ node prototypes/rolldown/gate.mjs
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- node prototypes/rolldown/client-scripts.mjs
 ```
 
-The harness copies [client-fixture/](client-fixture/) into ignored `target/rolldown-client-scripts/<backend>/` paths, runs real `zfb build` and `zfb dev` commands for both backends, executes their client entry and nested module workers in Chromium, checks native per-job attribution, performs one watched worker-dependency edit, and checks CLI failure cases. Each backend writes `target/rolldown-client-scripts/<backend>/evidence/report.json`. This is a new correctness probe and is **not** part of the historical measurement set.
+The harness copies [client-fixture/](client-fixture/) into ignored `target/rolldown-client-scripts/<backend>/` paths, runs real `zfb build` and `zfb dev` commands for both backends, executes their client entry and nested module workers in Chromium, checks `ZFB_DEV_TIMING=1` per-job attribution, performs one watched worker-dependency edit, and checks missing-import and worker stage-escape CLI failures. The native report requires one entry and two worker jobs in both production and the dev edit; the esbuild report requires zero native jobs. Each backend writes `target/rolldown-client-scripts/<backend>/evidence/report.json`. This is a correctness probe, not a new benchmark or part of the historical measurement set. The observed local run used Darwin arm64 and the debug profile; Linux native client-script execution and Intel remain unverified.
 
 ## Release comparison and maintenance checks
 
