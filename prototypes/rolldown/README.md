@@ -59,6 +59,17 @@ Keep `ZFB_ESBUILD_BIN` exported so the existing fixture discovery cannot skip. F
 
 The bounded mixed SSG/SSR catch-all fixture now runs the actual CLI production rebundle and local adapter, then executes scratch and adapter output in existing V8. See [PRODUCTION.md](PRODUCTION.md) for assertions, exact invocation, adjacent-pin rehearsal, manual rollback, and the baseline SSR copied-glue limitation. No deployment occurs.
 
+## Standalone client-script harness (new, 2026-10)
+
+From the repository root, prepare the feature-enabled `target/debug/zfb` CLI (or select an already built release binary with `ZFB_PROTOTYPE_PROFILE=release`). Set `ZFB_PROTOTYPE_TOOLS` to the tools directory described above, install Playwright Chromium there, and set `ZFB_ESBUILD_BIN` to the absolute pinned esbuild binary for this platform. On Darwin arm64 the package is `@esbuild/darwin-arm64@0.25.12`. Then run:
+
+```sh
+node prototypes/rolldown/gate.mjs
+bash "$HOME/.codex/scripts/heavy-guard.sh" -- node prototypes/rolldown/client-scripts.mjs
+```
+
+The harness copies [client-fixture/](client-fixture/) into ignored `target/rolldown-client-scripts/<backend>/` paths, runs real `zfb build` and `zfb dev` commands for both backends, executes their client entry and nested module workers in Chromium, checks native per-job attribution, performs one watched worker-dependency edit, and checks CLI failure cases. Each backend writes `target/rolldown-client-scripts/<backend>/evidence/report.json`. This is a new correctness probe and is **not** part of the historical measurement set.
+
 ## Release comparison and maintenance checks
 
 [RELEASE-MEASUREMENT.md](RELEASE-MEASUREMENT.md) provides the bounded optimized-build comparison, fail-closed copy-provenance checks, and deferred Mac issues. `ZFB_PROTOTYPE_PROFILE=release` selects already-built release probes in `verify.mjs` and `production.mjs`; it does not change backend selection or product defaults.
