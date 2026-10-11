@@ -2851,6 +2851,11 @@ impl EsbuildSubprocessBundler {
             )
         }));
 
+        #[cfg(feature = "rolldown-prototype")]
+        let native = zfb_rolldown_prototype::enabled();
+        #[cfg(not(feature = "rolldown-prototype"))]
+        let native = false;
+
         for (output_stem, source_path, label) in jobs {
             let job_resolver = build_job_resolver_inputs(
                 &self.config.working_dir,
@@ -2891,11 +2896,33 @@ impl EsbuildSubprocessBundler {
             for arg in &args {
                 cmd.arg(arg);
             }
-            let output = cmd.output().with_context(|| {
-                format!("failed to spawn {}", self.config.binary_path.display())
-            })?;
+            #[cfg(feature = "rolldown-prototype")]
+            if native {
+                zfb_rolldown_prototype::run_prepared(&cmd)?;
+                if std::env::var_os("ZFB_DEV_TIMING").is_some() {
+                    let kind = if label == "client script" {
+                        "entry"
+                    } else {
+                        "worker"
+                    };
+                    let relative_source = source_path
+                        .strip_prefix(&self.config.working_dir)
+                        .unwrap_or(&source_path);
+                    eprintln!(
+                        "[zfb-timing] rolldown-prototype client-script job={output_stem} kind={kind} source={}",
+                        relative_source.display()
+                    );
+                }
+            }
+            let output = if native {
+                None
+            } else {
+                Some(cmd.output().with_context(|| {
+                    format!("failed to spawn {}", self.config.binary_path.display())
+                })?)
+            };
 
-            if !output.status.success() {
+            if let Some(output) = output.filter(|output| !output.status.success()) {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let friendly = redact_temp_path(
                     &stderr,
