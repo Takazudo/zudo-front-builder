@@ -338,6 +338,11 @@ jobs:
 
           TAR_PRESENT=false
           SHA_PRESENT=false
+          ADDON="zfb-css-${ZFB_SEMVER}-x86_64-apple-darwin.node"
+          ADDON_PRESENT=false
+          # Older recovery tags predate the CSS API and have only the archive.
+          if ! node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then ADDON_PRESENT=true; fi
+          if grep -Fxq "$ADDON" <<<"$ASSETS" && grep -Fxq "${ADDON}.sha256" <<<"$ASSETS"; then ADDON_PRESENT=true; fi
           if echo "$ASSETS" | grep -Fxq "$ARCHIVE"; then
             TAR_PRESENT=true
           fi
@@ -345,7 +350,7 @@ jobs:
             SHA_PRESENT=true
           fi
 
-          if [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "true" ]]; then
+          if [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "true" && "$ADDON_PRESENT" == "true" ]]; then
             echo "Both macOS-x64 assets found on the Release — reporting mac_local_present=true"
             echo "mac_local_present=true" >> "$GITHUB_OUTPUT"
           elif [[ "$TAR_PRESENT" == "true" && "$SHA_PRESENT" == "false" ]]; then
@@ -537,6 +542,18 @@ jobs:
           ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cross build -p zfb --release --target ${{ matrix.settings.target }}
 
+      - name: Build native CSS addon
+        if: ${{ hashFiles('crates/zfb-css-node/Cargo.toml') != '' }}
+        shell: bash
+        env:
+          CSS_BUILDER: ${{ matrix.settings.use_cross && 'cross' || 'cargo' }}
+        run: bash scripts/build-css-node.sh ${{ matrix.settings.target }} "$CSS_BUILDER"
+
+      - name: Load and compile with native CSS addon
+        if: ${{ matrix.settings.use_cross != true && hashFiles('crates/zfb-css-node/Cargo.toml') != '' }}
+        shell: bash
+        run: node scripts/smoke-css-node.mjs packages/zfb-${{ matrix.settings.platform }}/zfb-css.node
+
       # Verify the arm64 binary runs correctly under QEMU emulation.
       # Satisfies acceptance criterion: "linux-arm64 binary runs ./zfb --version correctly
       # under QEMU verification step in workflow logs."
@@ -554,6 +571,16 @@ jobs:
             -v "$PWD:/w" -w /w \
             debian:stable-slim \
             ./target/aarch64-unknown-linux-gnu/release/zfb --version
+
+      - name: Load Linux CSS addon on Node 22.0.0 (native or QEMU)
+        if: ${{ matrix.settings.use_cross == true && hashFiles('crates/zfb-css-node/Cargo.toml') != '' }}
+        shell: bash
+        env:
+          NODE_PLATFORM: ${{ matrix.settings.qemu && 'linux/arm64' || 'linux/amd64' }}
+        run: |
+          docker run --rm --platform "$NODE_PLATFORM" -v "$PWD:/w:ro" -w /w \
+            node:22.0.0-bookworm-slim node scripts/smoke-css-node.mjs \
+            packages/zfb-${{ matrix.settings.platform }}/zfb-css.node
 
       # Per-platform short-version guard (Unix — all non-Windows platforms).
       # `--version` intentionally includes embedded dependency versions; `-V`
@@ -682,7 +709,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binary-${{ matrix.settings.target }}
-          path: packages/zfb-${{ matrix.settings.platform }}/${{ matrix.settings.binary }}
+          path: |
+            packages/zfb-${{ matrix.settings.platform }}/${{ matrix.settings.binary }}
+            packages/zfb-${{ matrix.settings.platform }}/zfb-css.node
           if-no-files-found: error
           # Consumed within this run by the npm-publish job; the real binaries
           # ship as GitHub Release assets, so cap Actions storage at the 1-day floor.
@@ -1004,7 +1033,14 @@ jobs:
           echo "Fetching pre-built macOS-x64 asset from GH Release ${TAG}: ${ARCHIVE} (+ .sha256)"
 
           ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          for f in "$ARCHIVE" "${ARCHIVE}.sha256"; do
+          ADDON="zfb-css-${ZFB_SEMVER}-x86_64-apple-darwin.node"
+          ASSET_FILES=("$ARCHIVE" "${ARCHIVE}.sha256")
+          HAS_CSS=false
+          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+            HAS_CSS=true
+            ASSET_FILES+=("$ADDON" "${ADDON}.sha256")
+          fi
+          for f in "${ASSET_FILES[@]}"; do
             if ! grep -Fxq "$f" <<<"$ASSETS"; then
               echo "::error::mac_local_present=true but '${f}' is not attached to GH Release ${TAG}."
               echo "::error::Run ./scripts/build-macos-x64-local.sh --upload ${TAG} on a Mac first."
@@ -1014,9 +1050,9 @@ jobs:
           done
           echo "Both macOS-x64 assets present on the release."
 
-          gh release download "$TAG" \
-            --pattern "$ARCHIVE" --pattern "${ARCHIVE}.sha256" \
-            --dir prebuilt-macos-x64 --clobber
+          PATTERNS=()
+          for f in "${ASSET_FILES[@]}"; do PATTERNS+=(--pattern "$f"); done
+          gh release download "$TAG" "${PATTERNS[@]}" --dir prebuilt-macos-x64 --clobber
 
           # Validate the archive against its published checksum before trusting
           # it — guards against a corrupted/interrupted upload or an independent
@@ -1028,6 +1064,10 @@ jobs:
             echo "::error::Archive ${ARCHIVE} did not contain a 'zfb' binary at its root."
             exit 1
           fi
+          if [[ "$HAS_CSS" == true ]]; then
+            ( cd prebuilt-macos-x64 && sha256sum -c "${ADDON}.sha256" )
+            cp "prebuilt-macos-x64/$ADDON" packages/zfb-darwin-x64/zfb-css.node
+          fi
           cp prebuilt-macos-x64/zfb packages/zfb-darwin-x64/zfb
           chmod +x packages/zfb-darwin-x64/zfb
           echo "Placed locally-built macOS-x64 binary into packages/zfb-darwin-x64/zfb"
@@ -1036,9 +1076,21 @@ jobs:
         shell: bash
         run: |
           cp artifacts/binary-aarch64-apple-darwin/zfb packages/zfb-darwin-arm64/zfb
+          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+            cp artifacts/binary-aarch64-apple-darwin/zfb-css.node packages/zfb-darwin-arm64/zfb-css.node
+          fi
           cp artifacts/binary-aarch64-unknown-linux-gnu/zfb packages/zfb-linux-arm64-gnu/zfb
+          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+            cp artifacts/binary-aarch64-unknown-linux-gnu/zfb-css.node packages/zfb-linux-arm64-gnu/zfb-css.node
+          fi
           cp artifacts/binary-x86_64-unknown-linux-gnu/zfb packages/zfb-linux-x64-gnu/zfb
+          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+            cp artifacts/binary-x86_64-unknown-linux-gnu/zfb-css.node packages/zfb-linux-x64-gnu/zfb-css.node
+          fi
           cp artifacts/binary-x86_64-pc-windows-msvc/zfb.exe packages/zfb-win32-x64-msvc/zfb.exe
+          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+            cp artifacts/binary-x86_64-pc-windows-msvc/zfb-css.node packages/zfb-win32-x64-msvc/zfb-css.node
+          fi
           chmod +x packages/zfb-darwin-arm64/zfb
           chmod +x packages/zfb-linux-arm64-gnu/zfb
           chmod +x packages/zfb-linux-x64-gnu/zfb
@@ -1050,6 +1102,9 @@ jobs:
         shell: bash
         run: |
           cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
+          if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+            cp artifacts/binary-x86_64-apple-darwin/zfb-css.node packages/zfb-darwin-x64/zfb-css.node
+          fi
           chmod +x packages/zfb-darwin-x64/zfb
 
       # Built by the build-wasm-md job above (needs the Rust wasm32 toolchain

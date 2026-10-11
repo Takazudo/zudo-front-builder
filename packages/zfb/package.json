@@ -3,7 +3,7 @@
   "version": "4.3.1",
   "private": false,
   "type": "module",
-  "description": "Content-site engine on the web's Request/Response model — prerender to static HTML, serve on Cloudflare Workers, or run as a local content server inside your app. One Rust binary. SDK with islands, content collections, pagination, and config helpers.",
+  "description": "Content-site engine on the web's Request/Response model \u2014 prerender to static HTML, serve on Cloudflare Workers, or run as a local content server inside your app. One Rust binary. SDK with islands, content collections, pagination, and config helpers.",
   "keywords": [
     "zfb",
     "static-site-generator",
@@ -83,6 +83,10 @@
     "./zudo-react/testing": {
       "types": "./src/zudo-react/testing.ts",
       "default": "./src/zudo-react/testing.ts"
+    },
+    "./css": {
+      "types": "./src/css.ts",
+      "default": "./src/css.ts"
     }
   },
   "bin": {
@@ -166,6 +170,10 @@
       "./zudo-react/testing": {
         "types": "./dist/zudo-react/testing.d.ts",
         "default": "./dist/zudo-react/testing.js"
+      },
+      "./css": {
+        "types": "./dist/css.d.ts",
+        "default": "./dist/css.js"
       }
     }
   },

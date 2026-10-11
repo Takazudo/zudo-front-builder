@@ -1,0 +1,23 @@
+[package]
+name = "zfb-css-node"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+# A workspace build may unify V8 into zfb. Only the dedicated package build
+# produces a cdylib, so workspace all-target builds never link V8 into one.
+crate-type = ["rlib"]
+
+[dependencies]
+zfb = { path = "../zfb", default-features = false }
+napi = { version = "2", default-features = false, features = ["napi8", "dyn-symbols"] }
+napi-derive = "2"
+zfb-css = { path = "../zfb-css" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[build-dependencies]
+napi-build = "2"

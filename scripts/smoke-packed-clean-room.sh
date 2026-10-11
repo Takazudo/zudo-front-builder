@@ -66,6 +66,10 @@ fi
 # ── Stage 1: inject the freshly built binary, pack it, assert its exec bit ──
 
 PLATFORM_DIR="packages/zfb-linux-x64-gnu"
+: "${ZFB_LINUX_X64_CSS_ADDON:?freshly built CSS addon is required}"
+cp "$ZFB_LINUX_X64_CSS_ADDON" "$PLATFORM_DIR/zfb-css.node"
+chmod 0644 "$PLATFORM_DIR/zfb-css.node"
+node scripts/smoke-css-node.mjs "$PLATFORM_DIR/zfb-css.node"
 cp "$ZFB_LINUX_X64_BINARY" "$PLATFORM_DIR/zfb"
 chmod 0755 "$PLATFORM_DIR/zfb"
 
