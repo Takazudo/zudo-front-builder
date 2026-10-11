@@ -64,6 +64,8 @@ vi.hoisted(() => {
 
 installHappyDomShim();
 
+let loads: ReturnType<typeof captureDocumentLoads> | undefined;
+
 function enableTransitions(): void {
   const meta = document.createElement("meta");
   meta.setAttribute("name", "zfb-view-transitions-enabled");
@@ -116,6 +118,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  loads?.restore();
+  loads = undefined;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   (document as unknown as { startViewTransition: unknown }).startViewTransition =
@@ -607,7 +611,6 @@ describe("Back wins after the early history commit but before swap (#2603)", () 
 });
 
 describe("rejected History writes on the native View Transition path (#4127)", () => {
-  let loads: ReturnType<typeof captureDocumentLoads>;
   let events: string[];
   const LIFECYCLE = [
     "zfb:before-swap",
@@ -638,7 +641,6 @@ describe("rejected History writes on the native View Transition path (#4127)", (
 
   afterEach(() => {
     for (const type of LIFECYCLE) document.removeEventListener(type, record);
-    loads.restore();
   });
 
   function expectOldPageKept(path: string): void {
