@@ -24,7 +24,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
+import {
+  captureDocumentLoads,
+  drainHappyDom,
+  installHappyDomShim,
+  resetDocument,
+  type DocumentLoadCapture,
+} from "./_helpers.js";
 import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
 
 vi.mock("@takazudo/zfb/runtime", () => ({
@@ -104,6 +110,16 @@ const firstInitListenerTypes: string[] = (() => {
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
 
+// Tests that drive the router into a full-document load call captureLoads()
+// instead of shimming `location.href` by hand. The one global afterEach below
+// restores happy-dom's own `location` descriptors, so a later test's
+// push/replaceState keeps reflecting into `location.href` (#4130).
+let loads: DocumentLoadCapture | undefined;
+function captureLoads(): DocumentLoadCapture {
+  loads = captureDocumentLoads();
+  return loads;
+}
+
 beforeEach(() => {
   resetDocument();
   // Re-inject opt-in meta tag for each test (resetDocument clears head).
@@ -111,6 +127,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  loads?.restore();
+  loads = undefined;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   await drainHappyDom();
@@ -296,14 +314,8 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const originalHref = location.href;
-    Object.defineProperty(location, "href", {
-      configurable: true,
-      get: () => originalHref,
-      set: (_v: string) => {
-        // capture but don't assign; keeps happy-dom stable
-      },
-    });
+    // Swallow any full-document load the aborted navigation might request.
+    captureLoads();
 
     const seenNavigationAborted = vi.fn();
     const seenAfterSwap = vi.fn();
@@ -589,16 +601,7 @@ describe("non-opt-in target page degrade", () => {
     document.addEventListener("zfb:after-swap", seenAfterSwap);
     document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
 
-    // happy-dom's location.href is read-only by default; capture assignments.
-    const originalHref = location.href;
-    let assignedHref: string | undefined;
-    Object.defineProperty(location, "href", {
-      configurable: true,
-      get: () => originalHref,
-      set: (v: string) => {
-        assignedHref = v;
-      },
-    });
+    const { assigned } = captureLoads();
 
     await navigate("/plain-no-clientrouter");
 
@@ -613,6 +616,7 @@ describe("non-opt-in target page degrade", () => {
     // prep-aborted branch to signal that the SPA swap will not happen.
     expect(seenAfterSwap).not.toHaveBeenCalled();
     expect(seenNavigationAborted).toHaveBeenCalledOnce();
+    const assignedHref = assigned.at(-1);
     expect(assignedHref).toContain("/plain-no-clientrouter");
   });
 });
@@ -681,15 +685,7 @@ describe("non-HTML response degrade", () => {
     document.addEventListener("zfb:after-swap", seenAfterSwap);
     document.addEventListener("zfb:navigation-aborted", seenNavigationAborted);
 
-    const originalHref = location.href;
-    let assignedHref: string | undefined;
-    Object.defineProperty(location, "href", {
-      configurable: true,
-      get: () => originalHref,
-      set: (v: string) => {
-        assignedHref = v;
-      },
-    });
+    const { assigned } = captureLoads();
 
     await navigate("/api/echo");
 
@@ -700,6 +696,7 @@ describe("non-HTML response degrade", () => {
     // zfb:navigation-aborted fires in the prep-aborted branch.
     expect(seenAfterSwap).not.toHaveBeenCalled();
     expect(seenNavigationAborted).toHaveBeenCalledOnce();
+    const assignedHref = assigned.at(-1);
     expect(assignedHref).toContain("/api/echo");
   });
 });
@@ -718,20 +715,12 @@ describe("navigate() — fallback=none + no View Transitions → full page load 
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    // Capture location.href assignments (happy-dom's href is read-only by default).
-    const originalHref = location.href;
-    let assignedHref: string | undefined;
-    Object.defineProperty(location, "href", {
-      configurable: true,
-      get: () => originalHref,
-      set: (v: string) => {
-        assignedHref = v;
-      },
-    });
+    const { assigned } = captureLoads();
 
     await navigate("/foo");
 
     // Full page load path: location.href must be set to the resolved URL.
+    const assignedHref = assigned.at(-1);
     expect(assignedHref).toBeDefined();
     expect(assignedHref).toContain("/foo");
     // The guard fires before any fetch — fetch must NOT have been called.
@@ -749,30 +738,18 @@ describe("navigate() — fallback=none + no View Transitions → full page load 
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    // Capture href assignments separately from replace() calls so we can
-    // assert push-vs-replace semantics. happy-dom's location.replace is a
-    // real method, so spy on it; href is read-only, so shim it.
-    const originalHref = location.href;
-    let assignedHref: string | undefined;
-    Object.defineProperty(location, "href", {
-      configurable: true,
-      get: () => originalHref,
-      set: (v: string) => {
-        assignedHref = v;
-      },
-    });
-    const replaceSpy = vi.spyOn(location, "replace").mockImplementation(() => {});
+    // The helper records href assignments and replace() calls separately so
+    // we can assert push-vs-replace semantics.
+    const { assigned, replaced } = captureLoads();
 
     await navigate("/bar", { history: "replace" });
 
     // Replace semantics: location.replace called with the resolved URL,
     // href setter NOT touched.
-    expect(replaceSpy).toHaveBeenCalledTimes(1);
-    expect(String(replaceSpy.mock.calls[0]?.[0])).toContain("/bar");
-    expect(assignedHref).toBeUndefined();
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]).toContain("/bar");
+    expect(assigned).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
-
-    replaceSpy.mockRestore();
   });
 });
 
@@ -833,18 +810,6 @@ describe("popstate — forward + back history navigation", () => {
 // `hasUAVisualTransition`, so this proves the handler's branch logic, NOT the
 // real WebKit fix. Definitive proof is the Wave-2 WebKit harness on a Mac.
 describe("pageshow / bfcache re-sync — WebKit Back-history (#1076)", () => {
-  // Earlier tests in this file shim `location.href` via Object.defineProperty
-  // and never restore it, leaving a frozen own-property getter that would make
-  // `history.replaceState(state, "", path)` no longer reflect into
-  // `location.href` (which `onPopState` reads via `new URL(location.href)`).
-  // Delete any leaked own-property so happy-dom's native prototype getter — which
-  // DOES track replaceState — is back in effect for these tests.
-  beforeEach(() => {
-    if (Object.getOwnPropertyDescriptor(location, "href")) {
-      delete (location as unknown as Record<string, unknown>)["href"];
-    }
-  });
-
   // Capture the direction the router classified for a popstate-driven
   // transition by listening on the `zfb:before-preparation` event, which
   // carries the resolved Direction.
@@ -1035,18 +1000,6 @@ describe("pageshow / bfcache re-sync — WebKit Back-history (#1076)", () => {
 // bfcache, so this proves the gate's BRANCH LOGIC, not the real-browser
 // no-flash behavior. Definitive proof is the Wave-3 chromium harness (#1378).
 describe("same-page traverse fast-path (#1374 / #1376)", () => {
-  // Earlier tests in this file shim `location.href` via Object.defineProperty
-  // and never restore it, leaving a frozen own-property getter that would stop
-  // `history.push/replaceState(state, "", path)` from reflecting into
-  // `location.href` (which onPopState reads via `new URL(location.href)`).
-  // Delete any leaked own-property so happy-dom's native prototype getter — which
-  // DOES track push/replaceState — is back in effect for these tests.
-  beforeEach(() => {
-    if (Object.getOwnPropertyDescriptor(location, "href")) {
-      delete (location as unknown as Record<string, unknown>)["href"];
-    }
-  });
-
   const drain = () => new Promise((r) => setTimeout(r, 0));
 
   function fetchPages() {
@@ -1367,15 +1320,7 @@ describe("route announcer — timer lifecycle (#1063)", () => {
 // not real-browser back/forward behavior. Definitive proof is the Wave-3
 // chromium harness (#1378).
 describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => {
-  // Earlier tests in this file shim `location.href` via Object.defineProperty and
-  // never restore it, leaving a frozen own-property getter that would stop
-  // history.push/replaceState(state, "", path) from reflecting into
-  // `location.href`. Delete any leaked own-property so happy-dom's native getter —
-  // which DOES track push/replaceState — is back in effect.
   beforeEach(() => {
-    if (Object.getOwnPropertyDescriptor(location, "href")) {
-      delete (location as unknown as Record<string, unknown>)["href"];
-    }
     // A well-formed router-managed base entry so history.state is never null.
     history.replaceState({ index: 0, scrollX: 0, scrollY: 0 }, "", "/sync-base");
   });

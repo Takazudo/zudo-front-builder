@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-runtime",
-  "version": "4.3.0",
+  "version": "4.3.1",
   "private": false,
   "type": "module",
   "description": "JavaScript runtime for zfb static sites — Hono-backed page router, content snapshots, and client-side hydration.",

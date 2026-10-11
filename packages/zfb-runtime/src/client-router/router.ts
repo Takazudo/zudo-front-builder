@@ -60,7 +60,12 @@ import {
   updateScrollPosition,
   type TransitionBeforePreparationEvent,
 } from "./events.js";
-import { safePushState, safeReplaceState } from "./history-safe.js";
+import {
+  safeReplaceState,
+  tryPushState,
+  tryReplaceState,
+  type HistoryWriteResult,
+} from "./history-safe.js";
 import { assertUniquePersistKeys, detectScriptExecuted } from "./swap-functions.js";
 import type { Direction, Fallback, Options, SyncHistoryEntryOptions } from "./types.js";
 // Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
@@ -128,6 +133,11 @@ let mostRecentTransition: Transition | undefined;
 // When we traverse the history, the window.location is already set to the new location.
 // This variable tells us where we came from
 let originalLocation: URL;
+// True while the current history entry belongs to a navigation that committed
+// its URL early but never rendered its page (the final write was rejected). The
+// address bar then names a page the live DOM is not, so URL equality must not be
+// taken as "already rendered" until a swap settles the location.
+let currentEntryUnrendered = false;
 
 // Route announcer — ported from Astro's announce(). Each navigation appends a fresh
 // aria-live <div> (after removing any prior announcer, so exactly one ever exists) and
@@ -328,62 +338,80 @@ function runScripts() {
   return wait;
 }
 
-// Add a new entry to the browser history. This also sets the new page in the browser address bar.
-// Sets the scroll position according to the hash fragment of the new location.
-const moveToLocation = (
+// What transition() already wrote for THIS navigation before the swap (the
+// WebKit early commit, outside any native View Transition callback).
+// "tolerated" means the write reached an about:srcdoc restriction, which the
+// router degrades through without touching History again.
+type EarlyCommit = "none" | "committed" | "tolerated";
+
+type LocationWrite =
+  | { readonly status: "unchanged" | "committed" | "tolerated" }
+  // `replace`: a deliberate recovery load must replace the current entry
+  // rather than add one. `error` is absent when no write was attempted
+  // because a new entry cannot be pushed from inside a native View Transition.
+  | { readonly status: "rejected"; readonly replace: boolean; readonly error?: unknown };
+
+const UNCHANGED: LocationWrite = { status: "unchanged" };
+
+// Point the current history entry at `to` (push or replace), advancing the
+// tracked index only once the browser has actually accepted a push.
+//
+// `early` is the write transition() already made for this navigation. When a
+// `zfb:before-swap` listener has since changed `event.to` (writable per Astro
+// parity), the already-committed entry is REPLACED rather than a second one
+// pushed — one navigation must never leave a phantom Back stop (#1398).
+//
+// A push from inside a native View Transition update callback is not reliably
+// committed by WebKit (zudolab/zzmod#662), so it is reported as rejected
+// without being attempted; the caller recovers with a full document load.
+const writeLocationEntry = (
   to: URL,
-  from: URL,
   options: Options,
-  pageTitleForBrowserHistory: string,
-  historyState?: State,
-  // True when transition() already committed a history entry for THIS
-  // navigation before the swap ran (the WebKit-workaround early commit
-  // below). `to` here may differ from that committed entry's URL if a
-  // `zfb:before-swap` listener mutated `event.to` (writable per Astro
-  // parity) after the early commit already ran — in that case we must
-  // REPLACE the already-committed entry instead of pushing a second one, or
-  // a single navigation would leave two history entries (a phantom Back
-  // stop). #1398.
-  historyCommittedEarly = false,
-) => {
+  historyState: State | undefined,
+  early: EarlyCommit,
+  insideNativeViewTransition: boolean,
+): LocationWrite => {
+  // A traverse already moved the browser; a srcdoc restriction is not retried.
+  if (historyState || early === "tolerated" || to.href === location.href) return UNCHANGED;
+  const replace = options.history === "replace" || early === "committed";
+  let result: HistoryWriteResult;
+  if (replace) {
+    // `history.state` can be null or a foreign shape (page entered without a
+    // transition state, or written by raw-History code); fall back per field.
+    const current = history.state;
+    result = tryReplaceState(
+      {
+        ...options.state,
+        index:
+          current != null && Number.isFinite(current.index) ? current.index : currentHistoryIndex,
+        scrollX: Number.isFinite(current?.scrollX) ? current.scrollX : scrollX,
+        scrollY: Number.isFinite(current?.scrollY) ? current.scrollY : scrollY,
+      },
+      "",
+      to.href,
+    );
+  } else {
+    if (insideNativeViewTransition) return { status: "rejected", replace: false };
+    const index = currentHistoryIndex + 1;
+    result = tryPushState({ ...options.state, index, scrollX: 0, scrollY: 0 }, "", to.href);
+    if (result.outcome === "committed") currentHistoryIndex = index;
+  }
+  return result.outcome === "rejected"
+    ? { status: "rejected", replace, error: result.error }
+    : { status: result.outcome };
+};
+
+// Settle the page on its new location after the entry was written: re-point
+// the "from" URL and set the scroll position according to the hash fragment
+// (or the traversed entry's saved scroll).
+const settleLocation = (to: URL, from: URL, historyState?: State) => {
   const intraPage = samePage(from, to);
 
-  const targetPageTitle = document.title;
-  document.title = pageTitleForBrowserHistory;
-
   let scrolledToTop = false;
-  if (to.href !== location.href && !historyState) {
-    if (options.history === "replace" || historyCommittedEarly) {
-      // Astro reads current.index/scrollX/scrollY directly; `history.state` can be
-      // null (page entered without a transition state), which would throw a
-      // TypeError. Fall back to a synthesized state from the tracked index/scroll.
-      const current = history.state ?? {
-        index: currentHistoryIndex,
-        scrollX,
-        scrollY,
-      };
-      safeReplaceState(
-        {
-          ...options.state,
-          index: current.index,
-          scrollX: current.scrollX,
-          scrollY: current.scrollY,
-        },
-        "",
-        to.href,
-      );
-    } else {
-      safePushState(
-        { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
-        "",
-        to.href,
-      );
-    }
-  }
-  document.title = targetPageTitle;
   // now we are on the new page for non-history navigation!
   // (with history navigation page change happens before popstate is fired)
   originalLocation = to;
+  currentEntryUnrendered = false;
 
   // freshly loaded pages start from the top
   if (!intraPage) {
@@ -448,6 +476,13 @@ let syncHistoryEntryOnServerWarned = false;
  * @param options.state - Merged into the entry's `history.state`; the
  *   router's own bookkeeping keys (`index`, `scrollX`, `scrollY`) always win
  *   on a colliding key.
+ * @throws The browser's own History error, rethrown unchanged, when it rejects
+ *   the URL write (e.g. WebKit's History-write rate limit). The router's
+ *   tracked history index and "from" URL are left describing the entry that
+ *   is still current; no navigation, fetch, DOM change or scroll happens. A
+ *   push may already have saved the outgoing entry's scroll position. Inside
+ *   an `about:srcdoc` document the browser's History restriction is tolerated
+ *   instead: the call returns without writing or throwing.
  */
 export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOptions = {}): void {
   // SSR guard: no window/history to touch. Mirror navigate()'s server no-op +
@@ -484,6 +519,7 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     );
   }
 
+  let write: HistoryWriteResult;
   if (options.replace) {
     // Replace keeps the current entry's index. A consumer migrating from raw
     // history.pushState may have left a missing/invalid index, so fall back to
@@ -491,7 +527,7 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     const current = history.state;
     const index =
       current != null && Number.isFinite(current.index) ? current.index : currentHistoryIndex;
-    safeReplaceState(
+    write = tryReplaceState(
       {
         ...options.state,
         index,
@@ -509,21 +545,23 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     // Stamp the CURRENT scroll on the freshly-pushed entry too — NOT (0,0).
     // This is a same-page push (dialog/photo-viewer pattern): the underlying
     // page never actually scrolled anywhere, it just gained an overlay. A
-    // (0,0)-stamped entry would make the traverse fast-path (moveToLocation's
-    // historyState branch below) scrollTo(0,0) when this entry is later
+    // (0,0)-stamped entry would make the traverse fast-path (settleLocation's
+    // historyState branch) scrollTo(0,0) when this entry is later
     // Forward-reopened, snapping the page to the top under the reopened
     // dialog. #1398.
-    safePushState(
-      { ...options.state, index: ++currentHistoryIndex, scrollX, scrollY },
-      "",
-      to.href,
-    );
+    const index = currentHistoryIndex + 1;
+    write = tryPushState({ ...options.state, index, scrollX, scrollY }, "", to.href);
+    if (write.outcome === "committed") currentHistoryIndex = index;
   }
 
-  // Always re-point originalLocation so the next transition()/onPopState uses the
+  // The browser kept the old URL: report it with the browser's own error and
+  // leave the bookkeeping describing the entry that is actually current.
+  if (write.outcome === "rejected") throw write.error;
+  // Re-point originalLocation so the next transition()/onPopState uses the
   // correct "from" URL. Skipping this is exactly what makes a raw pushState
   // desync the router (a same-page Back would miss the traverse fast path).
-  originalLocation = to;
+  // A tolerated srcdoc restriction did not move the URL, so neither does this.
+  if (write.outcome === "committed") originalLocation = to;
 }
 
 function preloadStyleLinks(newDocument: Document) {
@@ -570,10 +608,9 @@ async function updateDOM(
   options: Options,
   currentNavigation: Navigation,
   currentTransition: Transition,
-  historyState?: State,
-  fallback?: Fallback,
-  // Forwarded to moveToLocation() — see its parameter doc. #1398.
-  historyCommittedEarly = false,
+  historyState: State | undefined,
+  fallback: Fallback | undefined,
+  historyCommit: HistoryCommitPlan,
 ): Promise<DOMUpdateOutcome> {
   async function animate(phase: string) {
     function isInfinite(animation: Animation) {
@@ -621,7 +658,7 @@ async function updateDOM(
   // commit but before the update callback started.
   if (preparationEvent.signal.aborted) return finishAbortedUpdate();
 
-  const pageTitleForBrowserHistory = document.title; // document.title will be overridden by swap()
+  let rejectedWrite = undefined as RejectedLocationWrite | undefined;
   const swapResult = await doSwap(
     preparationEvent,
     currentTransition.viewTransition!,
@@ -632,25 +669,43 @@ async function updateDOM(
       // a navigation that still owns the commit.
       assertUniquePersistKeys(document, "current");
       assertUniquePersistKeys(event.newDocument, "incoming");
+      // Commit the final URL — a before-swap listener may have changed
+      // `event.to` — while the old page is still intact. Written before the
+      // swap, the outgoing entry also keeps the old page's title.
+      const write = writeLocationEntry(
+        event.to,
+        options,
+        historyState,
+        historyCommit.early,
+        historyCommit.insideNativeViewTransition,
+      );
+      if (write.status === "rejected") {
+        rejectedWrite = write;
+        return false;
+      }
       currentNavigation.domCommitStarted = true;
       cancelPendingIslands();
       // Unmount mounted islands on the OLD body before the swap so component
       // trees receive render(null, element) / root.unmount() and their useEffect
       // cleanups fire. Pass the incoming body so persisted islands are kept.
       unmountIslands(document.body, event.newDocument.body);
+      return true;
     },
   );
-  if (!swapResult.swapped) return finishAbortedUpdate();
+  if (!swapResult.swapped) {
+    if (rejectedWrite) {
+      abandonNavigation(
+        currentNavigation,
+        swapResult.event.to,
+        rejectedWrite,
+        historyCommit.recoverByDocumentLoad,
+      );
+    }
+    return finishAbortedUpdate();
+  }
 
   const swapEvent = swapResult.event;
-  moveToLocation(
-    swapEvent.to,
-    swapEvent.from,
-    options,
-    pageTitleForBrowserHistory,
-    historyState,
-    historyCommittedEarly,
-  );
+  settleLocation(swapEvent.to, swapEvent.from, historyState);
   triggerEvent("zfb:after-swap");
 
   // Resolve the finished promise of the simulation's ViewTransition.
@@ -670,6 +725,49 @@ function notifyNavigationAborted(navigation: Navigation): void {
   if (navigation.domCommitStarted || navigation.abortEventEmitted) return;
   navigation.abortEventEmitted = true;
   triggerEvent("zfb:navigation-aborted");
+}
+
+type RejectedLocationWrite = Extract<LocationWrite, { status: "rejected" }>;
+
+type HistoryCommitPlan = {
+  early: EarlyCommit;
+  // The swap runs inside a native startViewTransition update callback.
+  insideNativeViewTransition: boolean;
+  // False for a submitted form: its request may already have changed server
+  // state, so a rejected URL write must never be retried as a document load.
+  recoverByDocumentLoad: boolean;
+};
+
+// End a navigation whose URL write the browser rejected, before any DOM
+// change. A GET is recovered with one deliberate document load of its resolved
+// destination (replacing the entry this navigation already made, or honoring
+// its replace intent); anything else stays on the intact old page.
+function abandonNavigation(
+  navigation: Navigation,
+  to: URL,
+  write: RejectedLocationWrite,
+  recoverByDocumentLoad: boolean,
+): void {
+  if (write.error !== undefined) {
+    const err = write.error as Error;
+    // biome-ignore lint/suspicious/noConsole: allowed
+    console.log("[zfb]", err?.name, err?.message);
+  }
+  // An early write may already have moved the URL; describe where the browser
+  // actually is rather than the location this navigation started from. Done
+  // before the abort event so a navigation started by a listener sees it too.
+  // That entry's page was never rendered, so remember the mismatch.
+  const actual = new URL(location.href);
+  if (!samePage(actual, originalLocation)) currentEntryUnrendered = true;
+  originalLocation = actual;
+  notifyNavigationAborted(navigation);
+  // An abort listener may have started a newer navigation, which now owns the
+  // page; this one must not load over it.
+  if (navigation.controller.signal.aborted) return;
+  if (navigation === mostRecentNavigation) mostRecentNavigation = undefined;
+  if (!recoverByDocumentLoad) return;
+  if (write.replace) location.replace(to.href);
+  else location.href = to.href;
 }
 
 function abortAndRecreateMostRecentNavigation(): Navigation {
@@ -728,7 +826,9 @@ async function transition(
   if (navigationType !== "traverse") {
     updateScrollPosition({ scrollX, scrollY });
   }
-  if (samePage(from, to) && !options.formData) {
+  // An unrendered early entry shares its URL with no live DOM: never serve it
+  // from the current page, fetch and swap instead.
+  if (samePage(from, to) && !options.formData && !currentEntryUnrendered) {
     if (
       // Same-page Back/Forward: serve from the live DOM (no re-fetch/re-swap)
       // unless this page opted back into the fetch (per-request SSR). #1374/#1376.
@@ -736,7 +836,14 @@ async function transition(
       (direction !== "back" && to.hash) ||
       (direction === "back" && from.hash)
     ) {
-      moveToLocation(to, from, options, document.title, historyState);
+      const write = writeLocationEntry(to, options, historyState, "none", false);
+      if (write.status === "rejected") {
+        // A clean abort: the page and URL stay as they are, with no fragment
+        // scroll and no state advance for a location that never happened.
+        abandonNavigation(currentNavigation, to, write, false);
+        return;
+      }
+      settleLocation(to, from, historyState);
       if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
       return;
     }
@@ -871,7 +978,17 @@ async function transition(
     return;
   }
 
-  document.documentElement.setAttribute(DIRECTION_ATTR, prepEvent.direction);
+  // A submitted form's request may already have changed server state, so a
+  // rejected URL write can be neither retried as a document load nor followed
+  // by an SPA swap. Its single history write is therefore deferred until the
+  // final target is known — after zfb:before-swap, right before teardown — so
+  // no early entry can strand the old page under an intermediate URL. That
+  // write may push a new entry, which must not happen inside a native View
+  // Transition callback (see below), so form navigations swap through the
+  // simulated transition instead.
+  const submittedForm = options.formData !== undefined || prepEvent.formData !== undefined;
+  const useNativeViewTransition =
+    supportsViewTransitions && !hasUAVisualTransition && !submittedForm;
 
   // Commit the SPA history entry BEFORE the transition's update callback runs.
   //
@@ -881,57 +998,40 @@ async function transition(
   // updates but no new entry is created, so a single Back press falls off the
   // site to the browser home (zudolab/zzmod#662). Committing the entry here —
   // outside the transition's update callback — makes WebKit create it; Chromium
-  // is unaffected either way. moveToLocation() (called later from updateDOM,
-  // inside the callback) then no-ops its own push/replace via the
-  // `to.href !== location.href` guard, since location is already at the
-  // committed URL, so currentHistoryIndex is not double-advanced.
+  // is unaffected either way. The final write in updateDOM (inside the
+  // callback) then has nothing left to do unless a zfb:before-swap listener
+  // retargets `event.to`, in which case it replaces this entry.
   //
   // We use prepEvent.to (redirects are already resolved into it during
   // preparation) and write before the swap, while document.title is still the
-  // old page's title — so the back entry keeps the correct (old-page) title
-  // without needing moveToLocation's title juggle. Writing here also covers the
-  // non-VT fallback path below in one place.
+  // old page's title — so the back entry keeps the correct (old-page) title.
+  // Writing here also covers the non-VT fallback path below in one place.
   //
   // Traverse (popstate) navigations carry historyState: the browser has already
   // moved, so they must NOT create a new entry here.
-  //
-  // Tracks whether this block ran (push OR replace) so moveToLocation (called
-  // later, from updateDOM) knows a commit already happened for THIS navigation
-  // — see moveToLocation's `historyCommittedEarly` parameter doc. #1398.
-  let historyCommittedEarly = false;
-  if (!historyState && prepEvent.to.href !== location.href) {
-    historyCommittedEarly = true;
-    if (options.history === "replace") {
-      // Mirror of the moveToLocation replace-path guard: `history.state` can be
-      // null here too (page entered without a transition state), so synthesize a
-      // state from the tracked index/scroll instead of dereferencing null.
-      const current = history.state ?? {
-        index: currentHistoryIndex,
-        scrollX,
-        scrollY,
-      };
-      safeReplaceState(
-        {
-          ...options.state,
-          index: current.index,
-          scrollX: current.scrollX,
-          scrollY: current.scrollY,
-        },
-        "",
-        prepEvent.to.href,
-      );
-    } else {
-      safePushState(
-        { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
-        "",
-        prepEvent.to.href,
-      );
+  let early: EarlyCommit = "none";
+  if (!submittedForm) {
+    const write = writeLocationEntry(prepEvent.to, options, historyState, "none", false);
+    if (write.status === "rejected") {
+      // Nothing has been swapped or started yet: release the transition slot
+      // and let the browser load the resolved destination itself.
+      if (currentTransition === mostRecentTransition) mostRecentTransition = undefined;
+      abandonNavigation(currentNavigation, prepEvent.to, write, true);
+      return;
     }
+    if (write.status !== "unchanged") early = write.status;
   }
+  const historyCommit: HistoryCommitPlan = {
+    early,
+    insideNativeViewTransition: useNativeViewTransition,
+    recoverByDocumentLoad: !submittedForm,
+  };
+
+  document.documentElement.setAttribute(DIRECTION_ATTR, prepEvent.direction);
 
   let domUpdateOutcome: DOMUpdateOutcome | undefined;
 
-  if (supportsViewTransitions && !hasUAVisualTransition) {
+  if (useNativeViewTransition) {
     // This automatically cancels any previous transition
     // We also already took care that the earlier update callback got through
     currentTransition.viewTransition = document.startViewTransition(async () => {
@@ -942,7 +1042,7 @@ async function transition(
         currentTransition,
         historyState,
         undefined,
-        historyCommittedEarly,
+        historyCommit,
       );
     });
     // A skipped native transition rejects ready even when its update callback
@@ -953,7 +1053,7 @@ async function transition(
     // Simulation mode requires a bit more manual work.
     // Also used when PopStateEvent.hasUAVisualTransition indicates the browser already
     // provided a visual transition (e.g. Safari swipe gesture) — in that case, fallback
-    // is "swap" to skip animations.
+    // is "swap" to skip animations. Submitted forms use it too (see submittedForm).
     const updateDone = (async () => {
       // Immediately paused to set up the ViewTransition object for Fallback mode
       await Promise.resolve(); // hop through the micro task queue
@@ -964,7 +1064,7 @@ async function transition(
         currentTransition,
         historyState,
         hasUAVisualTransition ? "swap" : getFallback(),
-        historyCommittedEarly,
+        historyCommit,
       );
       return undefined;
     })();
@@ -1149,6 +1249,7 @@ const onPageShow = (ev: PageTransitionEvent) => {
   // both here so the next transition() gets the correct `from` URL (a stale
   // `originalLocation` would feed onPopState the wrong origin).
   originalLocation = new URL(location.href);
+  currentEntryUnrendered = false;
   const index = history.state?.index;
   if (Number.isFinite(index)) {
     currentHistoryIndex = index;
@@ -1439,6 +1540,7 @@ export function init(_options?: InitOptions): void {
   // syncHistoryEntry() already primed it via ensureNavigationState().
   navigationStateSeeded = true;
   originalLocation = new URL(location.href);
+  currentEntryUnrendered = false;
 
   registerNavigationListeners();
 

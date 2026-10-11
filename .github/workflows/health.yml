@@ -621,7 +621,9 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
         env:
           ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/default-layout-checkpoint
-        run: cargo nextest run -p zfb --test dev_build_then_dev_default_layout_e2e --profile ci --success-output final
+        # This opt-in acceptance checkpoint must report the first attempt,
+        # independent of the ordinary CI profile's one-retry flake telemetry.
+        run: cargo nextest run -p zfb --test dev_build_then_dev_default_layout_e2e --profile ci --retries 0 --success-output final
 
       - name: Stash default-layout checkpoint JUnit
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
@@ -887,7 +889,12 @@ jobs:
 
       # Exact Linux x64 contract selected after the reviewed Linux replay.
       # Keep the complete workspace and packed real CLI matrices together so
-      # the guard checks fresh saved dist bytes from this checkout.
+      # the guard checks fresh saved dist bytes from this checkout. The
+      # contract measures gzip-identity-normalized (#4131): after each real
+      # run, normalize-identity.mjs writes measurement.normalized.json next to
+      # measurement.json from the saved pass bytes, and check-budget.mjs
+      # recomputes both metrics from those bytes before comparing raw and
+      # gzipNormalized against the zero-allowance ceilings.
       - name: Measure and enforce Linux x64 island-size budgets
         shell: bash
         run: |
@@ -922,14 +929,19 @@ jobs:
             --esbuild "$ZFB_SIZE_ESBUILD" \
             --source-sha "$ZFB_SIZE_SHA" \
             --out "$ZFB_SIZE_OUT/real-packed"
+          node research/v3-island-size/normalize-identity.mjs \
+            --measurement "$ZFB_SIZE_OUT/real-workspace/measurement.json"
+          node research/v3-island-size/normalize-identity.mjs \
+            --measurement "$ZFB_SIZE_OUT/real-packed/measurement.json"
           node research/v3-island-size/check-budget.mjs \
             --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" \
             --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
             --contract research/v3-island-size/decision-linux-x64.json
 
-      # Keep the emitted JS and both-pass dist inventories for byte-level
-      # comparison when an exact gzip ceiling fails (issue #3767). These two
-      # measurement trees are small; omit the packed tarballs and native binary.
+      # Keep the emitted JS, both-pass dist inventories, and the normalized
+      # sidecars for byte-level comparison when an exact ceiling fails (issue
+      # #3767). These two measurement trees are small; omit the packed
+      # tarballs and native binary.
       - name: Upload island-size measurement evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -1,5 +1,5 @@
 // @verification: issue #4079 actual-host acceptance; not automatically added to CI.
-import { chromium, expect } from "@playwright/test";
+import { chromium, expect, webkit } from "@playwright/test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -22,7 +22,12 @@ const evidence = {
   geometry: [],
   errors: [],
 };
-const browser = await chromium.launch();
+const browserName = process.env.DOCS_VERIFY_BROWSER ?? "chromium";
+const browserType = { chromium, webkit }[browserName];
+if (!browserType)
+  throw new Error(`DOCS_VERIFY_BROWSER must be chromium or webkit, got ${browserName}`);
+const browser = await browserType.launch();
+evidence.browser = browserName;
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1000 },
   reducedMotion: "reduce",
@@ -80,6 +85,23 @@ async function soft(path) {
   await expect(page).toHaveURL(origin + path);
   await page.waitForFunction(() => window.__structureSwap === true);
   await page.locator("#verification-link").evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
+  await page.locator("main").waitFor();
+}
+// A native traversal swaps asynchronously; assert only after the router's swap,
+// as soft() does. WebKit's slower swap otherwise races the next assertion.
+async function traverse(direction) {
+  await page.evaluate(() => {
+    window.__structureSwap = false;
+    document.addEventListener(
+      "zfb:after-swap",
+      () => {
+        window.__structureSwap = true;
+      },
+      { once: true },
+    );
+  });
+  await (direction === "back" ? page.goBack() : page.goForward());
+  await page.waitForFunction(() => window.__structureSwap === true);
   await page.locator("main").waitFor();
 }
 try {
@@ -149,11 +171,11 @@ try {
             : flex;
       await assertScope(group.slug, group.members, width < 1024);
     }
-    await page.goBack();
+    await traverse("back");
     await assertScope(type.slug, type.members, width < 1024);
-    await page.goBack();
+    await traverse("back");
     await assertScope(flex.slug, flex.members, width < 1024);
-    await page.goForward();
+    await traverse("forward");
     await assertScope(type.slug, type.members, width < 1024);
   }
   for (const locale of ["", "/ja"])

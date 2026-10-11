@@ -297,6 +297,43 @@ describe("doSwap — lifecycle ordering", () => {
     expect(beforeSwap).toHaveBeenCalledOnce();
   });
 
+  it("returns not-swapped without calling swap() when the pre-swap callback vetoes", async () => {
+    const fakePrepEvent = new TransitionBeforePreparationEvent(
+      new URL("http://test.local/a"),
+      new URL("http://test.local/b"),
+      "forward",
+      "push",
+      undefined,
+      undefined,
+      window.document,
+      new AbortController().signal,
+      undefined,
+      async () => {},
+    );
+    const swap = vi.fn();
+    const dispatched = vi.fn();
+    const beforeHandler = (event: Event) => {
+      dispatched();
+      if (isTransitionBeforeSwapEvent(event)) event.swap = swap;
+    };
+    document.addEventListener("zfb:before-swap", beforeHandler);
+    const beforeSwap = vi.fn(() => false);
+
+    const result = await doSwap(
+      fakePrepEvent,
+      { skipTransition: () => {} } as unknown as ViewTransition,
+      undefined,
+      beforeSwap,
+    );
+
+    document.removeEventListener("zfb:before-swap", beforeHandler);
+    expect(result.swapped).toBe(false);
+    expect(result.event).toBeInstanceOf(TransitionBeforeSwapEvent);
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(beforeSwap).toHaveBeenCalledOnce();
+    expect(swap).not.toHaveBeenCalled();
+  });
+
   it("isTransitionBeforeSwapEvent guards correctly", () => {
     const ok = new TransitionBeforeSwapEvent(
       new TransitionBeforePreparationEvent(

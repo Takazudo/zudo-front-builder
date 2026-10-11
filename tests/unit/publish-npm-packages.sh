@@ -124,6 +124,15 @@ case "$1" in
     exit 1   # not found — npm view exits non-zero
     ;;
   pack)
+    if [ -n "${MOCK_PACK_MISSES_FILE:-}" ]; then
+      misses=$(cat "$MOCK_PACK_MISSES_FILE")
+      if [ "$misses" -gt 0 ]; then
+        echo $((misses - 1)) >"$MOCK_PACK_MISSES_FILE"
+        echo "npm error code ${MOCK_PACK_MISS_CODE:-ETARGET}" >&2
+        echo "npm error notarget No matching version found for $2." >&2
+        exit 1
+      fi
+    fi
     destination="$4"
     cp "$MOCK_PACK_TARBALL" "$destination/published.tgz"
     printf 'published.tgz\n'
@@ -567,6 +576,41 @@ assert_digest_case 'digest: publish conflict matches and uploads' '' conflict "$
 assert_digest_case 'digest: lost ACK matches and uploads' '' lost "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/manifest.json" upload
 assert_digest_case 'digest: published mismatch blocks gh upload' '' success "$DIGEST_FIXTURE/bad.tgz" "$DIGEST_FIXTURE/manifest.json" mismatch
 assert_digest_case 'digest: older tag without manifest annotates skip and has no upload' '' success "$DIGEST_FIXTURE/good.tgz" "$DIGEST_FIXTURE/absent.json" older
+
+# Registry read-after-write lag (#4122): the verifier retries "not visible yet"
+# and fails with a distinct message once its budget runs out.
+assert_visibility_case() {
+  VC_DESC=$1 VC_MISSES=$2 VC_ATTEMPTS=$3 VC_WANT=$4
+  VC_MISSES_FILE=$(mktemp)
+  VC_OUTPUT=$(mktemp)
+  echo "$VC_MISSES" >"$VC_MISSES_FILE"
+  VC_RC=0
+  PATH="$MOCK_BIN:$PATH" MOCK_PACK_TARBALL="$DIGEST_FIXTURE/good.tgz" \
+    MOCK_PACK_MISSES_FILE="$VC_MISSES_FILE" \
+    ZFB_MD_WASM_VISIBILITY_ATTEMPTS="$VC_ATTEMPTS" ZFB_MD_WASM_VISIBILITY_DELAY_MS=0 \
+    "$NODE_EXE" scripts/verify-zfb-md-wasm-published-digests.mjs --version "$V" \
+    --manifest "$DIGEST_FIXTURE/manifest.json" >"$VC_OUTPUT" 2>&1 || VC_RC=$?
+  case "$VC_WANT" in
+    verified)
+      if [ "$VC_RC" -eq 0 ] && grep -q 'Verified all four' "$VC_OUTPUT" \
+        && [ "$(grep -c 'not visible on the registry yet' "$VC_OUTPUT")" -eq "$VC_MISSES" ]; then
+        pass "$VC_DESC"
+      else
+        fail "$VC_DESC (exit=$VC_RC, output=$(tail -4 "$VC_OUTPUT" | tr '\n' ' '))"
+      fi ;;
+    invisible)
+      if [ "$VC_RC" -ne 0 ] && grep -q 'never became visible' "$VC_OUTPUT" \
+        && ! grep -q 'published bytes differ' "$VC_OUTPUT"; then
+        pass "$VC_DESC"
+      else
+        fail "$VC_DESC (exit=$VC_RC, output=$(tail -4 "$VC_OUTPUT" | tr '\n' ' '))"
+      fi ;;
+  esac
+  rm -f "$VC_MISSES_FILE" "$VC_OUTPUT"
+}
+
+assert_visibility_case 'digest: ETARGET right after publish is retried, then verified' 3 5 verified
+assert_visibility_case 'digest: version never visible fails as registry lag, not mismatch' 9 3 invisible
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

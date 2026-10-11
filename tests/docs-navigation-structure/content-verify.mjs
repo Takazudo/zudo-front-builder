@@ -1,5 +1,5 @@
 // @verification: #4079 native-host content acceptance; manager-owned browser lane.
-import { chromium, expect } from "@playwright/test";
+import { chromium, expect, webkit } from "@playwright/test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -20,7 +20,12 @@ const evidence = {
   errors: [],
   status: "running",
 };
-const browser = await chromium.launch();
+const browserName = process.env.DOCS_VERIFY_BROWSER ?? "chromium";
+const browserType = { chromium, webkit }[browserName];
+if (!browserType)
+  throw new Error(`DOCS_VERIFY_BROWSER must be chromium or webkit, got ${browserName}`);
+const browser = await browserType.launch();
+evidence.browser = browserName;
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1000 },
   reducedMotion: "reduce",
@@ -32,6 +37,15 @@ async function goto(path) {
   const response = await page.goto(origin + path);
   assert(response?.ok(), `${path}: HTTP ${response?.status()}`);
   await expect(page.locator("main")).toBeVisible();
+}
+// WebKit throws SecurityError past 100 history.pushState/replaceState calls per
+// 10 s, and the router makes ~4 per soft navigation. Pace scripted clicks under
+// that budget; the router's silent URL desync on the throw is tracked separately.
+let lastNavigation = 0;
+async function paceNavigation() {
+  const wait = lastNavigation + 450 - Date.now();
+  if (wait > 0) await page.waitForTimeout(wait);
+  lastNavigation = Date.now();
 }
 async function at(path) {
   await expect.poll(() => normalize(page.url())).toBe(normalize(path));
@@ -145,6 +159,7 @@ try {
         const next = pager.locator("a[href]").filter({ hasText: locale ? /次/ : /Next/ });
         await expect(next).toHaveCount(1);
         assert.equal(normalize(await next.getAttribute("href")), route(locale, sequence[i + 1]));
+        await paceNavigation();
         await next.click();
       }
     }

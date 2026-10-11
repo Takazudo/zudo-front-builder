@@ -2,10 +2,25 @@
 // Validate real zfb island-size runs against the reviewed, per-fixture contract.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
+
+import {
+  chunkRole,
+  emittedJavascript,
+  initialJavascript,
+  readDirectoryFiles,
+} from "./chunk-inventory.mjs";
+import {
+  IDENTITY_NORMALIZATION_VERSION,
+  IDENTITY_NORMALIZED_METRIC,
+  NORMALIZED_SIDECAR,
+  NORMALIZER_FILE,
+  normalizeMeasurement,
+  normalizerSha256,
+} from "./normalize-identity.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = dirname(scriptPath);
@@ -45,8 +60,6 @@ const compression =
 const shaPattern = /^[0-9a-f]{64}$/;
 const packageVersionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 const sourceShaPattern = /^[0-9a-f]{40}$/;
-const javascriptPattern = /\.(?:js|mjs|cjs)$/;
-const entryPattern = /^assets\/islands(?:-[^/]+)?\.js$/;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -242,82 +255,6 @@ function compareInventory(files, reported, label, errors) {
   return Object.fromEntries(actualEntries.map(({ path, bytes }) => [path, bytes]));
 }
 
-function staticImports(code) {
-  const paths = [];
-  const patterns = [
-    /\bimport\s*(?!\()(?:[^;'"()]*?\bfrom\s*)?["'](\.\.?\/[^"']+\.(?:js|mjs|cjs))["']/g,
-    /\bexport\s+[^;'"()]*?\bfrom\s*["'](\.\.?\/[^"']+\.(?:js|mjs|cjs))["']/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of code.matchAll(pattern)) paths.push(match[1]);
-  }
-  return paths;
-}
-
-function resolveImport(from, specifier) {
-  const parts = from.split("/").slice(0, -1).concat(specifier.split("/"));
-  const normalized = [];
-  for (const part of parts) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (normalized.length === 0) return null;
-      normalized.pop();
-    } else {
-      normalized.push(part);
-    }
-  }
-  return normalized.join("/");
-}
-
-function initialJavascript(files, jsPaths, entryPaths, label, errors) {
-  const initial = new Set();
-  const html = files["index.html"];
-  if (!html) {
-    errors.push(label + ": dist is missing index.html");
-    return initial;
-  }
-
-  const emitted = new Set(jsPaths);
-  const visit = (path) => {
-    if (initial.has(path)) return;
-    const bytes = files[path];
-    if (!bytes) {
-      errors.push(label + ": missing imported chunk " + path);
-      return;
-    }
-    initial.add(path);
-    const code = bytes.toString("utf8");
-    for (const specifier of staticImports(code)) {
-      const resolved = resolveImport(path, specifier);
-      if (!resolved || !emitted.has(resolved)) {
-        errors.push(
-          label +
-            ": static import does not resolve to an emitted JS file: " +
-            path +
-            " -> " +
-            specifier,
-        );
-      } else {
-        visit(resolved);
-      }
-    }
-  };
-
-  for (const path of entryPaths) visit(path);
-  const htmlScripts = [
-    ...html
-      .toString("utf8")
-      .matchAll(/(?:src|href)=["']([^"']+\.(?:js|mjs|cjs))(?:[?#][^"']*)?["']/g),
-  ];
-  for (const match of htmlScripts) {
-    const rawPath = match[1];
-    if (/^(?:[a-z]+:)?\/\//i.test(rawPath)) continue;
-    const path = rawPath.replace(/^\//, "").split(/[?#]/, 1)[0];
-    if (emitted.has(path)) visit(path);
-  }
-  return initial;
-}
-
 function sumChunks(chunks) {
   return {
     raw: chunks.reduce((total, chunk) => total + chunk.raw, 0),
@@ -341,7 +278,26 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     errors.push("contract: expected a JSON object");
     return;
   }
-  if (contract.schemaVersion !== 1) errors.push("contract: unsupported schemaVersion");
+  if (contract.schemaVersion !== 1 && contract.schemaVersion !== 2) {
+    errors.push("contract: unsupported schemaVersion");
+  }
+  const metrics = ceilingMetrics(contract);
+  if (contract.schemaVersion === 2) {
+    if (contract.metric !== IDENTITY_NORMALIZED_METRIC) {
+      errors.push("contract: schemaVersion 2 must declare metric " + IDENTITY_NORMALIZED_METRIC);
+    }
+    if (contract.normalizationVersion !== IDENTITY_NORMALIZATION_VERSION) {
+      errors.push(
+        "contract: unsupported normalizationVersion; this checker implements v" +
+          IDENTITY_NORMALIZATION_VERSION,
+      );
+    }
+    if (!shaPattern.test(contract.normalizerSha256 ?? "")) {
+      errors.push("contract: invalid normalizerSha256");
+    }
+  } else if (Object.hasOwn(contract, "metric") || Object.hasOwn(contract, "normalizerSha256")) {
+    errors.push("contract: schemaVersion 1 measures actual gzip and cannot declare a metric");
+  }
   if (contract.fixtureVersion !== "v3-islands-1")
     errors.push("contract: unsupported fixtureVersion");
   if (!sourceShaPattern.test(contract.baselineSourceSha ?? "")) {
@@ -369,9 +325,10 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     );
   }
   if (contract.compression !== compression) errors.push("contract: unsupported compression method");
-  if (!isRecord(contract.allowance)) errors.push("contract: missing allowance");
-  else {
-    for (const metric of ["raw", "gzip"]) {
+  if (!isRecord(contract.allowance) || !sameKeys(contract.allowance, metrics)) {
+    errors.push("contract: allowance must list exactly " + metrics.join(" and "));
+  } else {
+    for (const metric of metrics) {
       if (!validCount(contract.allowance[metric]))
         errors.push("contract: invalid " + metric + " allowance");
       else if (contract.allowance[metric] !== 0) {
@@ -420,9 +377,13 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     }
     for (const fixture of fixtureNames) {
       const ceiling = ceilings[fixture];
-      if (!isRecord(ceiling) || !validCount(ceiling.raw) || !validCount(ceiling.gzip)) {
+      if (
+        !isRecord(ceiling) ||
+        !sameKeys(ceiling, metrics) ||
+        metrics.some((metric) => !validCount(ceiling[metric]))
+      ) {
         errors.push("contract: invalid " + mode + " ceiling for " + fixture);
-      } else if (fixture === "no-island" && (ceiling.raw !== 0 || ceiling.gzip !== 0)) {
+      } else if (fixture === "no-island" && metrics.some((metric) => ceiling[metric] !== 0)) {
         errors.push("contract: no-island ceiling must remain exactly zero in " + mode);
       }
     }
@@ -450,6 +411,23 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   if (contract.toolchain?.cargoLockSha256 !== localInputs.cargoLockSha256) {
     errors.push("local Cargo.lock: SHA-256 differs from the reviewed contract");
   }
+  if (
+    contract.schemaVersion === 2 &&
+    shaPattern.test(contract.normalizerSha256 ?? "") &&
+    contract.normalizerSha256 !== localInputs.normalizerSha256
+  ) {
+    errors.push("local " + NORMALIZER_FILE + ": SHA-256 differs from the reviewed contract");
+  }
+}
+
+export function contractMetric(contract) {
+  return contract?.schemaVersion === 2 ? IDENTITY_NORMALIZED_METRIC : "gzip";
+}
+
+function ceilingMetrics(contract) {
+  return contractMetric(contract) === IDENTITY_NORMALIZED_METRIC
+    ? ["raw", "gzipNormalized"]
+    : ["raw", "gzip"];
 }
 
 function sameHashMaps(expected, actual) {
@@ -617,7 +595,7 @@ function validateProvenance(
   return provenance;
 }
 
-function validateOneResult(mode, fixture, result, artifactCase, contract, errors) {
+function validateOneResult(mode, fixture, result, artifactCase, contract, normalized, errors) {
   const label = mode + " " + fixture;
   if (!isRecord(result)) {
     errors.push(label + ": missing fixture result");
@@ -676,10 +654,7 @@ function validateOneResult(mode, fixture, result, artifactCase, contract, errors
     errors.push(label + ": repeat inventory hash is stale");
   }
 
-  const jsPaths = firstNames.filter((path) => javascriptPattern.test(path));
-  const actualEntries = jsPaths
-    .filter((path) => entryPattern.test(path) && !path.startsWith("assets/islands-chunk-"))
-    .sort();
+  const { jsPaths, entryPaths: actualEntries } = emittedJavascript(firstFiles);
   if (fixture === "no-island" && jsPaths.length !== 0) {
     errors.push(label + ": no-island must emit no JavaScript");
   }
@@ -696,13 +671,19 @@ function validateOneResult(mode, fixture, result, artifactCase, contract, errors
       errors.push(label + ": entry is not referenced by index.html: " + entry);
   }
 
-  const initial = initialJavascript(firstFiles, jsPaths, actualEntries, label, errors);
+  const { initial, errors: closureErrors } = initialJavascript(
+    firstFiles,
+    jsPaths,
+    actualEntries,
+    label,
+  );
+  errors.push(...closureErrors);
   const actualChunks = jsPaths.map((file) => {
     const bytes = firstFiles[file];
     return {
       file,
       phase: initial.has(file) ? "initial" : "later",
-      role: actualEntries.includes(file) ? "entry" : initial.has(file) ? "shared" : "lazy",
+      role: chunkRole(file, actualEntries, initial),
       raw: bytes.length,
       gzip: gzipSync(bytes, { level: 9, mtime: 0 }).length,
       sha256: sha256(bytes),
@@ -742,37 +723,101 @@ function validateOneResult(mode, fixture, result, artifactCase, contract, errors
 
   const ceiling = contract.ceilings?.[mode]?.[fixture];
   if (isRecord(ceiling) && isRecord(contract.allowance)) {
-    const maximum = {
-      raw: ceiling.raw + (contract.allowance.raw ?? 0),
-      gzip: ceiling.gzip + (contract.allowance.gzip ?? 0),
-    };
-    const rawDelta = actualShipped.raw - ceiling.raw;
-    const gzipDelta = actualShipped.gzip - ceiling.gzip;
-    if (actualShipped.raw > maximum.raw || actualShipped.gzip > maximum.gzip) {
-      errors.push(
-        label +
-          " " +
-          expectedToolchain.nodeVersion +
-          ": baseline raw/gzip " +
-          ceiling.raw +
-          "/" +
-          ceiling.gzip +
-          "; actual " +
-          actualShipped.raw +
-          "/" +
-          actualShipped.gzip +
-          "; delta " +
-          signed(rawDelta) +
-          "/" +
-          signed(gzipDelta) +
-          "; ceiling " +
-          maximum.raw +
-          "/" +
-          maximum.gzip,
+    if (contractMetric(contract) === IDENTITY_NORMALIZED_METRIC) {
+      compareNormalizedCeiling(
+        label,
+        ceiling,
+        contract.allowance,
+        actualShipped,
+        normalized,
+        errors,
       );
+    } else {
+      compareActualCeiling(label, ceiling, contract.allowance, actualShipped, errors);
     }
   }
   return actualShipped;
+}
+
+function compareActualCeiling(label, ceiling, allowance, actualShipped, errors) {
+  const maximum = {
+    raw: ceiling.raw + (allowance.raw ?? 0),
+    gzip: ceiling.gzip + (allowance.gzip ?? 0),
+  };
+  const rawDelta = actualShipped.raw - ceiling.raw;
+  const gzipDelta = actualShipped.gzip - ceiling.gzip;
+  if (actualShipped.raw > maximum.raw || actualShipped.gzip > maximum.gzip) {
+    errors.push(
+      label +
+        " " +
+        expectedToolchain.nodeVersion +
+        ": baseline raw/gzip " +
+        ceiling.raw +
+        "/" +
+        ceiling.gzip +
+        "; actual " +
+        actualShipped.raw +
+        "/" +
+        actualShipped.gzip +
+        "; delta " +
+        signed(rawDelta) +
+        "/" +
+        signed(gzipDelta) +
+        "; ceiling " +
+        maximum.raw +
+        "/" +
+        maximum.gzip,
+    );
+  }
+}
+
+// The normalized shipped total comes from the normalizer's own recomputation
+// over the saved bytes; actual gzip is printed as transfer-size evidence only
+// and is never compared with a normalized ceiling.
+function compareNormalizedCeiling(label, ceiling, allowance, actualShipped, normalized, errors) {
+  if (!isRecord(normalized)) {
+    errors.push(label + ": no identity-normalized measurement to compare with the contract");
+    return;
+  }
+  if (normalized.raw !== actualShipped.raw || normalized.gzip !== actualShipped.gzip) {
+    errors.push(label + ": normalized measurement disagrees with the emitted JS totals");
+    return;
+  }
+  const maximum = {
+    raw: ceiling.raw + (allowance.raw ?? 0),
+    gzipNormalized: ceiling.gzipNormalized + (allowance.gzipNormalized ?? 0),
+  };
+  const rawDelta = normalized.raw - ceiling.raw;
+  const normalizedDelta = normalized.gzipNormalized - ceiling.gzipNormalized;
+  if (normalized.raw > maximum.raw || normalized.gzipNormalized > maximum.gzipNormalized) {
+    errors.push(
+      label +
+        " " +
+        expectedToolchain.nodeVersion +
+        " " +
+        IDENTITY_NORMALIZED_METRIC +
+        " v" +
+        IDENTITY_NORMALIZATION_VERSION +
+        ": baseline raw/gzipNormalized " +
+        ceiling.raw +
+        "/" +
+        ceiling.gzipNormalized +
+        "; actual " +
+        normalized.raw +
+        "/" +
+        normalized.gzipNormalized +
+        " (actual gzip " +
+        normalized.gzip +
+        ", evidence only); delta " +
+        signed(rawDelta) +
+        "/" +
+        signed(normalizedDelta) +
+        "; ceiling " +
+        maximum.raw +
+        "/" +
+        maximum.gzipNormalized,
+    );
+  }
 }
 
 function signed(value) {
@@ -841,9 +886,11 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, lo
     localInputs,
     errors,
   );
+  const normalizedContract = contractMetric(contract) === IDENTITY_NORMALIZED_METRIC;
   const expectedRootEntries = [
     "measurement.json",
     "report.md",
+    ...(normalizedContract ? [NORMALIZED_SIDECAR] : []),
     ...sortedKeys(run.artifacts),
   ].sort();
   if (
@@ -859,6 +906,9 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, lo
   if (!isRecord(run.artifacts) || !sameKeys(run.artifacts, fixtureNames)) {
     errors.push(mode + ": saved outputs must contain all eight fixture directories exactly once");
   }
+  const normalized = normalizedContract
+    ? validateNormalizedSidecar(run, mode, contract, errors)
+    : rejectNormalizedSidecar(run, mode, errors);
   for (const fixture of fixtureNames) {
     validateOneResult(
       mode,
@@ -866,10 +916,107 @@ function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, lo
       results?.[fixture],
       run.artifacts?.[fixture],
       contract,
+      normalized?.[fixture]?.shipped ?? null,
       errors,
     );
   }
   return provenance;
+}
+
+// A schemaVersion-1 contract pins actual gzip ceilings. A run that already
+// carries the identity-normalized sidecar was produced for the other metric,
+// and the two numbers must never be compared with each other.
+function rejectNormalizedSidecar(run, mode, errors) {
+  if (run.normalized !== undefined) {
+    errors.push(
+      mode +
+        ": metric mismatch: schemaVersion 1 contract pins actual gzip ceilings but the " +
+        "measurement carries a " +
+        IDENTITY_NORMALIZED_METRIC +
+        " sidecar (" +
+        NORMALIZED_SIDECAR +
+        ")",
+    );
+  }
+  return null;
+}
+
+// Recomputes the normalized metric from the saved bytes and requires the
+// sidecar on disk to agree with it, so neither the sidecar's claims nor the
+// measurement's claimed totals are trusted.
+function validateNormalizedSidecar(run, mode, contract, errors) {
+  const label = mode + " normalized";
+  if (run.normalized === undefined) {
+    errors.push(
+      mode +
+        ": metric mismatch: schemaVersion 2 contract pins " +
+        IDENTITY_NORMALIZED_METRIC +
+        " ceilings but the measurement has no " +
+        NORMALIZED_SIDECAR +
+        " sidecar (run normalize-identity.mjs over the saved passes)",
+    );
+    return null;
+  }
+  const sidecar = run.normalized;
+  if (!isRecord(sidecar)) {
+    errors.push(label + ": sidecar must be a JSON object");
+    return null;
+  }
+  for (const path of run.normalizedDuplicateKeys ?? []) {
+    errors.push(label + ": duplicate JSON object key " + path);
+  }
+  if (sidecar.metric !== IDENTITY_NORMALIZED_METRIC) {
+    errors.push(label + ": metric mismatch: sidecar metric " + String(sidecar.metric));
+  }
+  if (sidecar.normalizationVersion !== contract.normalizationVersion) {
+    errors.push(
+      label +
+        ": normalizationVersion " +
+        String(sidecar.normalizationVersion) +
+        " differs from the contract's v" +
+        String(contract.normalizationVersion),
+    );
+  }
+  if (sidecar.normalizer?.file !== NORMALIZER_FILE) {
+    errors.push(label + ": sidecar was not produced by " + NORMALIZER_FILE);
+  }
+  if (sidecar.normalizer?.sha256 !== contract.normalizerSha256) {
+    errors.push(label + ": normalizer hash differs from the contract");
+  }
+  if (sidecar.source?.sha256 !== run.measurementSha256) {
+    errors.push(label + ": sidecar was produced from a different measurement.json");
+  }
+  for (const key of ["nodeVersion", "zlibVersion"]) {
+    if (sidecar.normalizer?.[key] !== expectedToolchain[key]) {
+      errors.push(label + ": sidecar was normalized under an unsupported " + key);
+    }
+  }
+  let recomputed;
+  try {
+    recomputed = normalizeMeasurement({
+      measurementText: run.measurementText,
+      artifacts: run.artifacts,
+      normalizerDigest: contract.normalizerSha256,
+    });
+  } catch (error) {
+    errors.push(label + ": " + (error?.message ?? String(error)));
+    return null;
+  }
+  if (JSON.stringify(sidecar.results) !== JSON.stringify(recomputed.results)) {
+    errors.push(label + ": sidecar results are stale against the saved bytes");
+  }
+  for (const key of ["rules", "placeholder", "identitySitesByRole", "compression"]) {
+    if (JSON.stringify(sidecar[key]) !== JSON.stringify(recomputed[key])) {
+      errors.push(
+        label +
+          ": sidecar " +
+          key +
+          " differs from normalization v" +
+          contract.normalizationVersion,
+      );
+    }
+  }
+  return recomputed.results;
 }
 
 export function validateIslandSizeBudget({
@@ -906,29 +1053,6 @@ export function validateIslandSizeBudget({
   );
   compareMatchingProvenance(workspaceProvenance, packedProvenance, errors);
   return { errors, passed: errors.length === 0 };
-}
-
-function readDirectoryFiles(directory) {
-  const files = {};
-  const visit = (current) => {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const absolute = resolve(current, entry.name);
-      const stat = lstatSync(absolute);
-      if (stat.isSymbolicLink()) {
-        throw new Error("artifact tree contains a symbolic link: " + absolute);
-      }
-      if (entry.isDirectory()) {
-        visit(absolute);
-      } else if (entry.isFile()) {
-        const path = relative(directory, absolute).split(sep).join("/");
-        files[path] = readFileSync(absolute);
-      } else {
-        throw new Error("artifact tree contains a non-file entry: " + absolute);
-      }
-    }
-  };
-  visit(directory);
-  return files;
 }
 
 function readPackageManifest(packagePath) {
@@ -1010,6 +1134,14 @@ export function loadRun(jsonPath) {
   const duplicates = duplicateJsonKeys(measurementText);
   const measurement = JSON.parse(measurementText);
   const actualInputs = loadPackageInputs(measurement.provenance ?? {});
+  const sidecarPath = resolve(outDir, NORMALIZED_SIDECAR);
+  let normalized;
+  let normalizedDuplicateKeys = [];
+  if (existsSync(sidecarPath)) {
+    const sidecarText = readFileSync(sidecarPath, "utf8");
+    normalizedDuplicateKeys = duplicateJsonKeys(sidecarText);
+    normalized = JSON.parse(sidecarText);
+  }
   const rootEntries = readdirSync(outDir, { withFileTypes: true }).map((entry) => {
     if (entry.isDirectory()) return entry.name;
     if (!entry.isFile()) throw new Error("unexpected measurement output path: " + entry.name);
@@ -1017,7 +1149,8 @@ export function loadRun(jsonPath) {
   });
   const artifacts = {};
   for (const caseDir of rootEntries.filter(
-    (entry) => entry !== "measurement.json" && entry !== "report.md",
+    (entry) =>
+      entry !== "measurement.json" && entry !== "report.md" && entry !== NORMALIZED_SIDECAR,
   )) {
     const casePath = resolve(outDir, caseDir);
     const caseEntries = readdirSync(casePath, { withFileTypes: true }).map((entry) => {
@@ -1036,7 +1169,17 @@ export function loadRun(jsonPath) {
     }
     artifacts[caseDir] = { passDirectories: caseEntries, passes };
   }
-  return { measurement, artifacts, rootEntries, duplicateKeys: duplicates, actualInputs };
+  return {
+    measurement,
+    measurementText,
+    measurementSha256: sha256(Buffer.from(measurementText, "utf8")),
+    normalized,
+    normalizedDuplicateKeys,
+    artifacts,
+    rootEntries,
+    duplicateKeys: duplicates,
+    actualInputs,
+  };
 }
 
 function currentLocalInputs(contract) {
@@ -1060,6 +1203,7 @@ function currentLocalInputs(contract) {
     ),
     pnpmLockActualSha256: sha256(pnpmLockText),
     cargoLockSha256: hashFile(resolve(repoRoot, "Cargo.lock")),
+    normalizerSha256: normalizerSha256(),
   };
 }
 
@@ -1115,7 +1259,12 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  console.log("Island size budget passed for all eight fixtures in workspace and packed modes.");
+  console.log(
+    "Island size budget passed for all eight fixtures in workspace and packed modes (metric " +
+      contractMetric(contract) +
+      (contract.schemaVersion === 2 ? " v" + contract.normalizationVersion : "") +
+      ").",
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
