@@ -4,7 +4,7 @@ export default function Page() {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
+        <meta charset="utf-8" />
         <title>Standalone client script probe</title>
         <link rel="icon" href="data:," />
         <script type="module" src={clientScript("probe")} />

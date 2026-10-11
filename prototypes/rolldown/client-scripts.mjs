@@ -231,7 +231,15 @@ async function subscribeSse(origin) {
   const openDeadline = setTimeout(() => controller.abort(), deadlineMs);
   let response;
   try {
-    response = await fetch(`${origin}/__zfb/reload`, { signal: controller.signal });
+    // The ready banner precedes the first route publication. During that
+    // short interval the dev server answers 404 for its reload endpoint.
+    do {
+      response = await fetch(new URL("__zfb/reload", origin), { signal: controller.signal });
+      if (response.status === 200) break;
+      assert.equal(response.status, 404, "SSE startup status");
+      await response.body?.cancel();
+      await new Promise((done) => setTimeout(done, 50));
+    } while (!controller.signal.aborted);
   } finally {
     clearTimeout(openDeadline);
   }
