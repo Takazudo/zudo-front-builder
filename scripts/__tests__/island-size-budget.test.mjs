@@ -12,7 +12,14 @@ import {
   pnpmLockHashForContract,
   validateIslandSizeBudget,
 } from "../../research/v3-island-size/check-budget.mjs";
-import { rebaselineContract } from "../rebaseline-island-size-linux.mjs";
+import {
+  IDENTITY_NORMALIZATION_VERSION,
+  IDENTITY_NORMALIZED_METRIC,
+  NORMALIZED_SIDECAR,
+  normalizeMeasurement,
+  normalizerSha256,
+} from "../../research/v3-island-size/normalize-identity.mjs";
+import { measuredTotals, rebaselineContract } from "../rebaseline-island-size-linux.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -72,20 +79,37 @@ function currentLocalInputs(
     pnpmLockActualSha256:
       packageVersion === contract.toolchain.packageVersion ? contractLockHash : sha(lockText),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
+    normalizerSha256: normalizerSha256(),
   };
 }
 
+// Synthetic fixtures carry the compiler-owned identity shape the normalizer
+// validates: one data-zfb-build token in the HTML and two compiler-shaped
+// build sites in the islands entry (crates/zfb-islands/src/esbuild.rs).
+function buildToken(fixture) {
+  return sha(fixture).slice(0, 16);
+}
+
 function filesForFixture(fixture) {
+  const token = buildToken(fixture);
   const files = {
     "index.html": Buffer.from(
       fixture === "no-island"
         ? "<!doctype html><html><body>empty</body></html>\n"
-        : '<!doctype html><html><head><script type="module" src="/assets/islands-test.js"></script></head><body>island</body></html>\n',
+        : '<!doctype html><html><head><script type="module" src="/assets/islands-test.js"></script></head><body><div data-zfb-island="Island" data-zfb-build="' +
+            token +
+            '"></div></body></html>\n',
     ),
   };
   if (fixture === "no-island") return files;
 
   let entry = "// fixture " + fixture + "\n";
+  entry +=
+    'function register(n){const manifest={identity:{component:n,build:"' +
+    token +
+    '"},mount:()=>{let local={component:n,build:"' +
+    token +
+    '"};return local}};return manifest}\n';
   if (fixture === "event-only") entry += 'void import("./islands-chunk-lazy.js");\n';
   if (fixture === "multi-island") {
     entry += 'import "./shared.js";\n';
@@ -313,7 +337,7 @@ function provenance(mode, sourceSha, localInputs, packageInputs, platform) {
   };
 }
 
-function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform) {
+function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform, normalized) {
   const outDir = join(root, mode);
   mkdirSync(outDir, { recursive: true });
   const measurement = {
@@ -331,7 +355,27 @@ function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform) 
   writeFileSync(join(outDir, "report.md"), "synthetic measurement report\n");
   const jsonPath = join(outDir, "measurement.json");
   writeFileSync(jsonPath, JSON.stringify(measurement, null, 2) + "\n");
+  if (normalized) writeSidecar(jsonPath);
   return { jsonPath, run: loadRun(jsonPath) };
+}
+
+// Mirrors `node normalize-identity.mjs --measurement <jsonPath>`.
+function writeSidecar(jsonPath) {
+  const run = loadRun(jsonPath);
+  const sidecar = normalizeMeasurement({
+    measurementText: run.measurementText,
+    artifacts: run.artifacts,
+  });
+  // This synthetic saved run models the pinned Linux Node/zlib toolchain even
+  // when the workspace test job itself runs under Node 22. Keep the production
+  // normalizer and checker strict about the actual toolchain on a live run.
+  const pinnedToolchain = JSON.parse(run.measurementText).provenance;
+  sidecar.normalizer.nodeVersion = pinnedToolchain.nodeVersion;
+  sidecar.normalizer.zlibVersion = pinnedToolchain.zlibVersion;
+  writeFileSync(
+    join(dirname(jsonPath), NORMALIZED_SIDECAR),
+    JSON.stringify(sidecar, null, 2) + "\n",
+  );
 }
 
 function makeState(
@@ -342,17 +386,37 @@ function makeState(
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
+  const normalized = base.schemaVersion === 2;
   const localInputs = currentLocalInputs(base, packageVersion);
   const packageInputs = makePackageInputs(root, packageVersion);
-  const workspace = buildMode(root, "workspace", sourceSha, localInputs, packageInputs, platform);
-  const packed = buildMode(root, "packed", sourceSha, localInputs, packageInputs, platform);
+  const workspace = buildMode(
+    root,
+    "workspace",
+    sourceSha,
+    localInputs,
+    packageInputs,
+    platform,
+    normalized,
+  );
+  const packed = buildMode(
+    root,
+    "packed",
+    sourceSha,
+    localInputs,
+    packageInputs,
+    platform,
+    normalized,
+  );
   const contract = structuredClone(base);
   for (const mode of ["workspace", "packed"]) {
     const run = mode === "workspace" ? workspace.run : packed.run;
     for (const fixture of fixtures) {
-      contract.ceilings[mode][fixture] = {
-        ...run.measurement.results[fixture].shipped,
-      };
+      contract.ceilings[mode][fixture] = normalized
+        ? {
+            raw: run.normalized.results[fixture].shipped.raw,
+            gzipNormalized: run.normalized.results[fixture].shipped.gzipNormalized,
+          }
+        : { ...run.measurement.results[fixture].shipped };
     }
   }
   return {
@@ -406,7 +470,13 @@ function rewriteMeasurement(state, mode) {
   const resultDir = join(dirname(jsonPath), "event-only", "pass-1");
   measurement.results["event-only"] = summarizeFiles("event-only", readPassFiles(resultDir));
   writeFileSync(jsonPath, JSON.stringify(measurement, null, 2) + "\n");
+  if (state.contract.schemaVersion === 2) writeSidecar(jsonPath);
   reload(state, mode);
+}
+
+function linuxState() {
+  const linuxContract = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+  return makeState(linuxContract.platform, linuxContract);
 }
 
 afterEach(() => {
@@ -503,55 +573,183 @@ describe("island shipped-size budget", () => {
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
     expect(linuxContract.toolchain.packageVersion).toBe("4.3.1");
-    expect(linuxContract.allowance).toEqual({ raw: 0, gzip: 0 });
+    expect(linuxContract.schemaVersion).toBe(2);
+    expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
+    expect(linuxContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
+    expect(linuxContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
+    expect(linuxContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
-      "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66792, gzip: 22249 },
-      "scalar-signal": { raw: 66800, gzip: 22254 },
-      "show-for": { raw: 66949, gzip: 22326 },
-      model: { raw: 66791, gzip: 22251 },
-      "blog-theme": { raw: 67144, gzip: 22375 },
-      "json-api": { raw: 66950, gzip: 22334 },
-      "multi-island": { raw: 67072, gzip: 22337 },
+      "no-island": { raw: 0, gzipNormalized: 0 },
+      "event-only": { raw: 66792, gzipNormalized: 22235 },
+      "scalar-signal": { raw: 66800, gzipNormalized: 22240 },
+      "show-for": { raw: 66949, gzipNormalized: 22310 },
+      model: { raw: 66791, gzipNormalized: 22235 },
+      "blog-theme": { raw: 67144, gzipNormalized: 22359 },
+      "json-api": { raw: 66950, gzipNormalized: 22319 },
+      "multi-island": { raw: 67072, gzipNormalized: 22324 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
-      "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66854, gzip: 22271 },
-      "scalar-signal": { raw: 66862, gzip: 22283 },
-      "show-for": { raw: 67011, gzip: 22344 },
-      model: { raw: 66853, gzip: 22273 },
-      "blog-theme": { raw: 67206, gzip: 22410 },
-      "json-api": { raw: 67012, gzip: 22356 },
-      "multi-island": { raw: 67134, gzip: 22363 },
+      "no-island": { raw: 0, gzipNormalized: 0 },
+      "event-only": { raw: 66854, gzipNormalized: 22254 },
+      "scalar-signal": { raw: 66862, gzipNormalized: 22269 },
+      "show-for": { raw: 67011, gzipNormalized: 22329 },
+      model: { raw: 66853, gzipNormalized: 22259 },
+      "blog-theme": { raw: 67206, gzipNormalized: 22390 },
+      "json-api": { raw: 67012, gzipNormalized: 22343 },
+      "multi-island": { raw: 67134, gzipNormalized: 22349 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });
   });
 
-  it("accepts a contract written by the release rebaseline helper", () => {
-    const linuxContract = JSON.parse(
-      readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
-    );
-    const state = makeState(linuxContract.platform, linuxContract);
-    const previous = structuredClone(state.contract);
-    const totals = {};
-    for (const mode of ["workspace", "packed"]) {
-      totals[mode] = structuredClone(state.contract.ceilings[mode]);
-      for (const ceiling of Object.values(previous.ceilings[mode])) {
-        if (ceiling.gzip > 0) ceiling.gzip -= 1;
-      }
-    }
-    const { contract } = rebaselineContract(previous, totals, {
-      version: previous.toolchain.packageVersion,
-      pnpmLockSha256: previous.toolchain.pnpmLockSha256,
-      sourceSha: state.sourceSha,
-      headSha: state.sourceSha,
-      runId: 1,
-      jobId: 2,
-      runLabel: "Synthetic rebaseline",
+  it("accepts a contract written by the release re-pin helper", () => {
+    const state = linuxState();
+    const totals = measuredTotals({
+      workspace: state.workspace.normalized.results,
+      packed: state.packed.normalized.results,
     });
+    const { contract } = rebaselineContract(
+      state.contract,
+      totals,
+      {
+        version: state.contract.toolchain.packageVersion,
+        pnpmLockSha256: state.contract.toolchain.pnpmLockSha256,
+        normalizerSha256: state.localInputs.normalizerSha256,
+        sourceSha: state.sourceSha,
+        headSha: state.sourceSha,
+        runId: 1,
+        jobId: 2,
+        runLabel: "Synthetic re-pin",
+      },
+      "release-bump",
+    );
     state.contract = contract;
     expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("compares a schemaVersion-2 contract against gzipNormalized recomputed from bytes", () => {
+    const state = linuxState();
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+    const shipped = state.workspace.normalized.results["multi-island"].shipped;
+    expect(shipped.gzipNormalized).toBeGreaterThan(0);
+    expect(state.workspace.measurement.results["multi-island"].shipped.gzip).toBe(shipped.gzip);
+
+    const overflow = linuxState();
+    overflow.contract.ceilings.workspace["multi-island"].gzipNormalized -= 1;
+    const findings = validate(overflow).errors.join("\n");
+    expect(findings).toContain("workspace multi-island v24.14.0 gzip-identity-normalized v1");
+    expect(findings).toContain("delta 0/+1");
+    expect(findings).toContain("actual gzip " + shipped.gzip + ", evidence only");
+
+    const rawOverflow = linuxState();
+    rawOverflow.contract.ceilings.packed.model.raw -= 1;
+    expect(validate(rawOverflow).errors.join("\n")).toContain("delta +1/0");
+  });
+
+  it("leaves gzipNormalized unchanged when only the identity token moves", () => {
+    const state = linuxState();
+    const before = state.packed.normalized.results["event-only"].shipped;
+    const caseDir = join(dirname(state.packedPath), "event-only");
+    const oldToken = buildToken("event-only");
+    const newToken = "f".repeat(16);
+    for (const passNumber of [1, 2]) {
+      for (const file of ["index.html", "assets/islands-test.js"]) {
+        const path = join(caseDir, "pass-" + passNumber, file);
+        writeFileSync(path, readFileSync(path, "utf8").replaceAll(oldToken, newToken));
+      }
+    }
+    const measurement = JSON.parse(readFileSync(state.packedPath, "utf8"));
+    measurement.results["event-only"] = summarizeFiles(
+      "event-only",
+      readPassFiles(join(caseDir, "pass-1")),
+    );
+    writeFileSync(state.packedPath, JSON.stringify(measurement, null, 2) + "\n");
+    writeSidecar(state.packedPath);
+    reload(state, "packed");
+    const after = state.packed.normalized.results["event-only"];
+    expect(after.buildToken).toBe(newToken);
+    expect(after.shipped.raw).toBe(before.raw);
+    expect(after.shipped.gzipNormalized).toBe(before.gzipNormalized);
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("fails loudly on a metric mismatch between contract and measurement", () => {
+    const legacyWithSidecar = makeState();
+    writeSidecar(legacyWithSidecar.workspacePath);
+    reload(legacyWithSidecar, "workspace");
+    const legacyFindings = validate(legacyWithSidecar).errors.join("\n");
+    expect(legacyFindings).toContain(
+      "workspace: metric mismatch: schemaVersion 1 contract pins actual gzip ceilings but the measurement carries a gzip-identity-normalized sidecar",
+    );
+
+    const normalizedWithoutSidecar = linuxState();
+    rmSync(join(dirname(normalizedWithoutSidecar.packedPath), NORMALIZED_SIDECAR));
+    reload(normalizedWithoutSidecar, "packed");
+    const findings = validate(normalizedWithoutSidecar).errors.join("\n");
+    expect(findings).toContain(
+      "packed: metric mismatch: schemaVersion 2 contract pins gzip-identity-normalized ceilings but the measurement has no measurement.normalized.json sidecar",
+    );
+
+    const legacyShape = linuxState();
+    legacyShape.contract.schemaVersion = 1;
+    const shapeFindings = validate(legacyShape).errors.join("\n");
+    expect(shapeFindings).toContain(
+      "contract: schemaVersion 1 measures actual gzip and cannot declare a metric",
+    );
+    expect(shapeFindings).toContain("contract: allowance must list exactly raw and gzip");
+  });
+
+  it("rejects a stale, foreign, or differently versioned normalized sidecar", () => {
+    const stale = linuxState();
+    stale.packed.normalized.results["model"].shipped.gzipNormalized -= 1;
+    expect(validate(stale).errors.join("\n")).toContain(
+      "packed normalized: sidecar results are stale against the saved bytes",
+    );
+
+    const foreign = linuxState();
+    foreign.workspace.normalized.source.sha256 = "0".repeat(64);
+    expect(validate(foreign).errors.join("\n")).toContain(
+      "workspace normalized: sidecar was produced from a different measurement.json",
+    );
+
+    const wrongVersion = linuxState();
+    wrongVersion.workspace.normalized.normalizationVersion = 2;
+    expect(validate(wrongVersion).errors.join("\n")).toContain(
+      "workspace normalized: normalizationVersion 2 differs from the contract's v1",
+    );
+
+    const wrongNormalizer = linuxState();
+    wrongNormalizer.contract.normalizerSha256 = "1".repeat(64);
+    const findings = validate(wrongNormalizer).errors.join("\n");
+    expect(findings).toContain(
+      "local normalize-identity.mjs: SHA-256 differs from the reviewed contract",
+    );
+    expect(findings).toContain("workspace normalized: normalizer hash differs from the contract");
+
+    const wrongNode = linuxState();
+    wrongNode.workspace.normalized.normalizer.nodeVersion = "v22.22.2";
+    expect(validate(wrongNode).errors.join("\n")).toContain(
+      "workspace normalized: sidecar was normalized under an unsupported nodeVersion",
+    );
+
+    const tampered = linuxState();
+    for (const passNumber of [1, 2]) {
+      const entryPath = join(
+        dirname(tampered.workspacePath),
+        "show-for",
+        "pass-" + passNumber,
+        "assets/islands-test.js",
+      );
+      writeFileSync(
+        entryPath,
+        readFileSync(entryPath, "utf8").replace(buildToken("show-for"), "a".repeat(16)),
+      );
+    }
+    reload(tampered, "workspace");
+    expect(validate(tampered).errors.join("\n")).toContain(
+      "build identity site carries aaaaaaaaaaaaaaaa but index.html declares " +
+        buildToken("show-for"),
+    );
   });
 
   it("rejects a contract or run measured for a different platform", () => {

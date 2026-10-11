@@ -1,7 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "metric": "gzip-identity-normalized",
+  "normalizationVersion": 1,
+  "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
   "decisionIssue": 3469,
-  "outcome": "no-product-code-change",
+  "outcome": "metric-migration",
   "selectedOptimizations": [],
   "baselineSourceSha": "d3d78455daa4f632a0e9d3d76ed51ad9be45875b",
   "platform": {
@@ -34,85 +37,85 @@
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
     "raw": 0,
-    "gzip": 0
+    "gzipNormalized": 0
   },
   "ceilings": {
     "workspace": {
       "no-island": {
         "raw": 0,
-        "gzip": 0
+        "gzipNormalized": 0
       },
       "event-only": {
         "raw": 66792,
-        "gzip": 22249
+        "gzipNormalized": 22235
       },
       "scalar-signal": {
         "raw": 66800,
-        "gzip": 22254
+        "gzipNormalized": 22240
       },
       "show-for": {
         "raw": 66949,
-        "gzip": 22326
+        "gzipNormalized": 22310
       },
       "model": {
         "raw": 66791,
-        "gzip": 22251
+        "gzipNormalized": 22235
       },
       "blog-theme": {
         "raw": 67144,
-        "gzip": 22375
+        "gzipNormalized": 22359
       },
       "json-api": {
         "raw": 66950,
-        "gzip": 22334
+        "gzipNormalized": 22319
       },
       "multi-island": {
         "raw": 67072,
-        "gzip": 22337
+        "gzipNormalized": 22324
       }
     },
     "packed": {
       "no-island": {
         "raw": 0,
-        "gzip": 0
+        "gzipNormalized": 0
       },
       "event-only": {
         "raw": 66854,
-        "gzip": 22271
+        "gzipNormalized": 22254
       },
       "scalar-signal": {
         "raw": 66862,
-        "gzip": 22283
+        "gzipNormalized": 22269
       },
       "show-for": {
         "raw": 67011,
-        "gzip": 22344
+        "gzipNormalized": 22329
       },
       "model": {
         "raw": 66853,
-        "gzip": 22273
+        "gzipNormalized": 22259
       },
       "blog-theme": {
         "raw": 67206,
-        "gzip": 22410
+        "gzipNormalized": 22390
       },
       "json-api": {
         "raw": 67012,
-        "gzip": 22356
+        "gzipNormalized": 22343
       },
       "multi-island": {
         "raw": 67134,
-        "gzip": 22363
+        "gzipNormalized": 22349
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.3.1 ceilings measured in health run 38075998971 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). All 16 raw totals are unchanged from the v4.3.0 contract; 12 gzip totals shifted by -4 to +4 bytes after the release version stamp. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.3.1 ceilings on metric gzip-identity-normalized v1, replayed by normalize-identity.mjs over the retained artifact of health run 38075998971 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). All 16 raw totals are unchanged from the v4.3.1 actual-gzip contract; the gzipNormalized ceilings are new values computed from the saved bytes and are not comparable with any earlier gzip ceiling. Integrated-tree CI re-verification by the manager is pending. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
-    "event": "ci",
+    "event": "ci-artifact-replay",
     "runId": 38075998971,
     "jobId": 114282961692,
     "sourceSha": "3aaad9b4c403a3c8e920384885c541d5864d9c00",
-    "note": "Release probe PR #4132 run for v4.3.1 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw totals did not change from the v4.3.0 contract; gzip deltas range from -4 to +4 bytes across 12 rows. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Metric migration (#4131) replayed from the retained island-size-linux-x64 artifact of health run 38075998971, the v4.3.1 release probe PR #4132 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Metric migration: the gzipNormalized ceilings were computed by normalize-identity.mjs v1 over the saved artifact bytes, not converted arithmetically from the v4.3.1 actual-gzip ceilings. Raw totals did not change. Actual gzip stays in the sidecar as transfer-size evidence. The manager re-verifies these values on the integrated tree in CI. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

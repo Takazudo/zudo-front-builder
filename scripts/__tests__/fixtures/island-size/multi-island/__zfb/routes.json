@@ -1,0 +1,11 @@
+{
+  "routes": [
+    {
+      "url": "/",
+      "output": "index.html",
+      "extension": "html",
+      "source": "pages/index.tsx",
+      "prerender": true
+    }
+  ]
+}

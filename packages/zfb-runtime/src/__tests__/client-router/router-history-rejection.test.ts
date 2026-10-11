@@ -88,8 +88,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const type of LIFECYCLE) document.removeEventListener(type, recordEvent);
   loads.restore();
+  for (const type of LIFECYCLE) document.removeEventListener(type, recordEvent);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   await drainHappyDom();

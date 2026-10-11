@@ -52,6 +52,9 @@ export default defineConfig({
       "crates/zfb-content/tests/fixtures/two-collections-schemas/expected.d.ts",
       // Markdown sources and compiler output are byte-exact cross-language goldens.
       "packages/zfb/src/__tests__/zudo-react/fixtures/md-roundtrip/**",
+      // Real emitted island bytes copied from the v4.3.1 Linux x64 artifact
+      // (#4131); the identity-normalization tests hash and gzip them as-is.
+      "scripts/__tests__/fixtures/island-size/**",
       "_temp-resource/",
     ],
   },
