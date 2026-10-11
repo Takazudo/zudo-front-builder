@@ -336,11 +336,16 @@ async function development(browser, root, env, backend, workerStems) {
     const workerName = await waitForCondition(
       () => {
         const dir = join(root, ".zfb-build/dev-assets/assets/client");
-        return readdirSync(dir).find(
-          (name) =>
-            /^worker-.*\.js$/.test(name) &&
-            readFileSync(join(dir, name), "utf8").includes("WORKER_VALUE_V2"),
-        );
+        try {
+          return readdirSync(dir).find(
+            (name) =>
+              /^worker-.*\.js$/.test(name) &&
+              readFileSync(join(dir, name), "utf8").includes("WORKER_VALUE_V2"),
+          );
+        } catch (error) {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        }
       },
       "published worker file containing edited value",
       child,
@@ -402,6 +407,13 @@ try {
     assert.match(missing.stderr, /missing-client-import\.ts/);
     const escapeRoot = join(output, backend, "worker-escape");
     prepare(escapeRoot);
+    // A claimed workspace widens the first-party boundary to the parent.
+    // The worker dependency below is inside that boundary but outside the
+    // staged project, so the CLI arms and exercises the per-worker audit.
+    writeFileSync(
+      join(dirname(escapeRoot), "pnpm-workspace.yaml"),
+      "packages:\n  - 'worker-escape'\n",
+    );
     const outside = join(dirname(escapeRoot), "outside-worker-dep.ts");
     writeFileSync(outside, 'export const workerValue = "OUTSIDE";\n');
     writeFileSync(
@@ -413,6 +425,8 @@ try {
     );
     const escape = cli(escapeRoot, env, false);
     assert.match(escape.stderr, /stage-escape audit failed for client-script module worker/);
+    assert.match(escape.stderr, /worker\.ts/);
+    assert.match(escape.stderr, /outside-worker-dep\.ts/);
     console.log(`${backend}: missing import and worker stage escape CLI negatives PASS`);
     writeFileSync(
       join(evidence, "report.json"),
