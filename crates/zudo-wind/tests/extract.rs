@@ -84,6 +84,74 @@ fn configured_ignored_attributes_skip_preview_literals_and_embedded_markup() {
 }
 
 #[test]
+fn ignored_mdx_preview_props_after_frontmatter_and_prose() {
+    let mut options = ExtractionOptions::default();
+    options
+        .ignore_attributes
+        .extend(["html".into(), "css".into()]);
+    for prefix in [
+        "---\ntitle: Demo\n---\n",
+        "# Demo\n\nHere's the preview.\n\n",
+        "Some prose\n\n",
+    ] {
+        let source = format!(
+            "{prefix}{}",
+            r#"<Preview html={`<span class="text-sample">Hello</span>`} css={`.text-sample { color:red }`} />
+<div class="flex missing-host">Host</div>
+{"grid"}
+"#
+        );
+        let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Mdx, &options);
+        let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(
+            found,
+            ["flex", "grid", "missing-host"],
+            "{prefix:?}: {result:?}"
+        );
+        let host = result
+            .candidates
+            .iter()
+            .find(|c| c.text == "missing-host")
+            .unwrap();
+        assert!(host
+            .occurrences
+            .iter()
+            .all(|o| o.position_kind == PositionKind::Class));
+        assert_eq!(
+            host.occurrences[0].byte_offset,
+            source.find("missing-host").unwrap()
+        );
+
+        let control = extract_candidates(source.as_bytes(), SourceKind::Mdx);
+        for candidate in ["text-sample", "color:red", "flex", "missing-host", "grid"] {
+            assert!(
+                control.candidates.iter().any(|c| c.text == candidate),
+                "{candidate}: {control:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ignored_mdx_attributes_keep_tag_boundaries_and_non_attribute_expressions() {
+    let mut options = ExtractionOptions::default();
+    options
+        .ignore_attributes
+        .extend(["html".into(), "css".into()]);
+    let source = r#"---
+title: Demo
+---
+<Preview render={() => true} label=">" html={`<span class="text-sample">Hello</span>`} css={`.text-sample { color:red }`} className="flex" />
+{(() => { let html; html = 'grid'; return html; })()}
+<style>{`.host { color: red; }`}</style>
+<div class="block" />
+"#;
+    let result = extract_candidates_with_options(source.as_bytes(), SourceKind::Mdx, &options);
+    let found: Vec<_> = result.candidates.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(found, ["block", "flex", "grid"], "{result:?}");
+}
+
+#[test]
 fn ignored_jsx_expression_excludes_nested_literals_and_class_helpers() {
     let mut options = ExtractionOptions::default();
     options.ignore_attributes.insert("html".into());
