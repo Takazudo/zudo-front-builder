@@ -204,3 +204,7 @@ The YAML pin moved from `noyalib`/`noyalib-serde-yaml` 0.0.44 to 0.0.53 to clear
 
 - Linux x64 (`decision-linux-x64.json`): the CI health job measures this lockfile; that result is pending.
 - Darwin arm64 (`decision.json`): needs a native remeasure. That contract was already stale on main before this change ([#4158](https://github.com/Takazudo/zudo-front-builder/issues/4158): v4.2.1 actual-gzip metric, rejected by +1 to +3 gzip bytes), so the hash update does not make it current.
+
+## v4.3.3 release baseline
+
+The Linux contract was re-pinned for the v4.3.3 release from [health run 38237866807](https://github.com/Takazudo/zudo-front-builder/actions/runs/38237866807) (job 114772898843) at PR merge source `17a2f48afb85fe5fa61f6264413ba775965a509f` (probe head `cb14255bab75bdc281356a00cace1a3a22e1c513`). Every raw and `gzipNormalized` total is unchanged from the v4.3.2 contract. These totals alone do not prove byte-identical product code. No actual gzip total moved. The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and `gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git history. The Darwin arm64 contract is unchanged, still measures actual gzip under schemaVersion 1, and needs its separate native remeasurement through `island-size-darwin.yml`.

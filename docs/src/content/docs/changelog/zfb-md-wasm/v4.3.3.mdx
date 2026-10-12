@@ -1,0 +1,14 @@
+---
+title: v4.3.3
+sidebar_position: 35
+---
+
+# v4.3.3
+
+Released: 2026-10-12
+
+## Bug Fixes
+
+- The bundled YAML frontmatter parser (`noyalib`) moves from 0.0.44 to 0.0.53 to clear [RUSTSEC-2026-0333](https://rustsec.org/advisories/RUSTSEC-2026-0333). Frontmatter acceptance is unchanged (#4159; 6d14afc6, 18c9832c).
+- Artifact sizes change with the parser. Compared with v4.3.2, `finalWasm` grows by 791 bytes (default), 862 bytes (render-only) and 706 bytes (parse-only). gzip-9 grows by 911, 236 and 198 bytes respectively. highlight-only `finalWasm` is unchanged, and its gzip-9 moves by 5 bytes. Every artifact stays under its ceiling (3b2f5fd6).
+- All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so all four SHA-256 digests change for v4.3.3. Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.3.3-shipped-artifacts.json` Release asset.
