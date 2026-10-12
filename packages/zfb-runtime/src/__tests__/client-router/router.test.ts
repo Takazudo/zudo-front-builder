@@ -1319,10 +1319,14 @@ describe("browser-created (null-state) fragment entries (#4165)", () => {
     const lengthAfterFirstBack = history.length;
 
     loaded = nextPageLoad();
+    const lifecycle = recordLifecycle();
     traverseTo("/frag-b", bState);
     await loaded;
+    lifecycle.stop();
     expect(document.title).toBe("Frag B");
     expect(document.querySelector("#a-only")).toBeNull();
+    // B's index equals the tracked one (the null entry adopted none): still Forward.
+    expect(lifecycle.seen[0]).toBe("before-preparation:traverse:forward");
 
     loaded = nextPageLoad();
     traverseTo("/frag-a#section", null);
