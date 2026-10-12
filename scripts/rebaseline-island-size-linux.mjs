@@ -386,8 +386,8 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     " The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two " +
     "identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and " +
     "`gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git " +
-    "history. The Darwin arm64 contract is unchanged, still measures actual gzip under schemaVersion 1, " +
-    "and needs its separate native remeasurement through `island-size-darwin.yml`.\n";
+    "history. The Darwin arm64 contract is unchanged; it is re-pinned separately from a native " +
+    "`island-size-darwin.yml` artifact by `rebaseline-island-size-darwin.mjs`.\n";
   let body;
   if (reason === "metric-migration") {
     body =
