@@ -1,21 +1,29 @@
 #!/usr/bin/env node
-// Darwin arm64 island-size contract metric migration (#4169, source #4158).
+// Darwin arm64 island-size contract metric migration (#4169, source #4158)
+// and schema-2 provenance re-pin (#4170).
 //
-// Converts the schemaVersion-1 actual-gzip Darwin contract
+// `--reason release-bump` / `--reason runtime-identity` re-pin a
+// schemaVersion-2 contract to a new package version / lock hashes / runner
+// digests taken from a native Darwin arm64 artifact, with the same policy as
+// rebaseline-island-size-linux.mjs: every raw AND gzipNormalized total must be
+// exactly equal to the current contract (zero allowance, increase or decrease),
+// so only provenance fields move. A changed total needs a reviewed decision.
+//
+// `--reason metric-migration` converts the schemaVersion-1 actual-gzip Darwin contract
 // (research/v3-island-size/decision.json) to the schemaVersion-2
 // `gzip-identity-normalized` shape from a retained native Darwin arm64 CI
 // artifact. Deliberately a separate, narrower entry point than
 // rebaseline-island-size-linux.mjs: it supports only `metric-migration`, only
 // the Darwin arm64 contract, and takes every provenance value from the
 // artifact's own saved files instead of the current checkout, because the
-// artifact is historical evidence (not a measurement of current inputs).
+// artifact is the evidence (the caller passes the artifact's source SHA).
 //
 // It re-derives all totals from the saved pass trees, requires the
 // normalize-identity.mjs sidecars to exist and agree with that recomputation,
 // and refuses any changed raw total, fixture-set difference, platform,
 // provenance or saved-file inconsistency. It cannot approve growth: every
 // migrated gzipNormalized ceiling must not exceed the previous actual-gzip
-// ceiling it replaces.
+// ceiling it replaces, and a re-pin cannot change any total at all.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
@@ -30,13 +38,19 @@ import {
   normalizeMeasurement,
   normalizerSha256,
 } from "../research/v3-island-size/normalize-identity.mjs";
-import { describeDeltas, diffCeilings, measuredTotals } from "./rebaseline-island-size-linux.mjs";
+import {
+  REASONS,
+  describeDeltas,
+  diffCeilings,
+  measuredTotals,
+} from "./rebaseline-island-size-linux.mjs";
 
 const MODES = ["workspace", "packed"];
 const CONTRACT = "research/v3-island-size/decision.json";
 const README = "research/v3-island-size/README.md";
 const PLATFORM = { os: "darwin", arch: "arm64" };
-const REASON = "metric-migration";
+const METRIC_MIGRATION = "metric-migration";
+const REPIN_REASONS = ["release-bump", "runtime-identity"];
 const shaPattern = /^[0-9a-f]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 
@@ -129,13 +143,32 @@ export function loadDarwinArtifact(artifactDir) {
 }
 
 // Returns every reason the artifact cannot back this migration, or [].
-export function validateDarwinEvidence(contract, artifact, expectedSourceSha) {
+export function validateDarwinEvidence(
+  contract,
+  artifact,
+  expectedSourceSha,
+  reason = METRIC_MIGRATION,
+) {
   const errors = [];
   if (!isRecord(contract) || !samePlatform(contract.platform)) {
     errors.push("contract is not the Darwin arm64 contract");
   }
-  if (contract?.schemaVersion !== 1 || Object.hasOwn(contract ?? {}, "metric")) {
-    errors.push("contract is not a schemaVersion 1 actual-gzip contract");
+  if (reason === METRIC_MIGRATION) {
+    if (contract?.schemaVersion !== 1 || Object.hasOwn(contract ?? {}, "metric")) {
+      errors.push("contract is not a schemaVersion 1 actual-gzip contract");
+    }
+  } else if (
+    contract?.schemaVersion !== 2 ||
+    contract?.metric !== IDENTITY_NORMALIZED_METRIC ||
+    contract?.normalizationVersion !== IDENTITY_NORMALIZATION_VERSION
+  ) {
+    errors.push(
+      "contract is not a schemaVersion 2 " +
+        IDENTITY_NORMALIZED_METRIC +
+        " v" +
+        IDENTITY_NORMALIZATION_VERSION +
+        " contract",
+    );
   }
   const reference = artifact.modes.workspace.measurement.provenance ?? {};
   for (const mode of MODES) {
@@ -385,6 +418,174 @@ export function migrateDarwinContract(contract, totals, evidence) {
   return next;
 }
 
+// Zero-allowance guard for a re-pin: every fixture present and both raw and
+// gzipNormalized exactly equal to the contract, in either direction.
+export function checkRepinTotals(contract, totals) {
+  const errors = [];
+  const { missingFixtures, rawChanges, normalizedChanges } = diffCeilings(contract, totals);
+  if (missingFixtures.length > 0) {
+    errors.push("fixture set differs from the contract (" + missingFixtures.join(", ") + ")");
+  }
+  if (rawChanges.length > 0) {
+    errors.push(
+      "raw totals changed (" +
+        rawChanges.map((c) => c.mode + "/" + c.fixture).join(", ") +
+        "); record a reviewed decision instead of a re-pin",
+    );
+  }
+  if (normalizedChanges.length > 0) {
+    errors.push(
+      "gzipNormalized totals changed (" +
+        normalizedChanges.map((c) => c.mode + "/" + c.fixture + " " + signed(c.delta)).join(", ") +
+        "); the identity token is normalized away, so this is product code moving — " +
+        "record a reviewed decision instead of a re-pin",
+    );
+  }
+  return errors;
+}
+
+function signed(n) {
+  return n > 0 ? "+" + n : String(n);
+}
+
+// Actual gzip movement against the previous contract's recorded transfer-size
+// evidence; null when the previous contract carries none.
+function gzipMovesSince(contract, totals) {
+  const before = contract.baselineEvidence?.actualGzip;
+  if (!isRecord(before)) return null;
+  const moves = [];
+  for (const mode of MODES) {
+    for (const [fixture, row] of Object.entries(totals[mode])) {
+      const was = before[mode]?.[fixture];
+      if (typeof was !== "number") return null;
+      if (was !== row.gzip) moves.push({ mode, fixture, delta: row.gzip - was });
+    }
+  }
+  return moves;
+}
+
+function gzipSummary(moves) {
+  if (moves === null) return "no previous actual gzip evidence to compare";
+  if (moves.length === 0) return "no actual gzip total moved";
+  return (
+    moves.length +
+    " actual gzip totals moved (" +
+    describeDeltas(moves) +
+    "; evidence only, not a ceiling)"
+  );
+}
+
+// Provenance-only re-pin of a schemaVersion-2 contract. Ceilings, metric,
+// fixtures, allowance and proposedCiLane are carried over untouched.
+export function repinDarwinContract(contract, totals, evidence, reason) {
+  if (!REPIN_REASONS.includes(reason)) throw new Error("unknown re-pin --reason " + reason);
+  const errors = checkRepinTotals(contract, totals);
+  if (errors.length > 0) throw new Error(errors.join("; "));
+  const policy = REASONS[reason];
+  const previousVersion = contract.toolchain.packageVersion;
+  const moves = gzipMovesSince(contract, totals);
+  const next = structuredClone(contract);
+  next.outcome = policy.outcome;
+  next.normalizerSha256 = evidence.normalizerSha256;
+  next.baselineSourceSha = evidence.sourceSha;
+  next.toolchain.packageVersion = evidence.packageVersion;
+  next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
+  next.toolchain.cargoLockSha256 = evidence.cargoLockSha256;
+  const metric = IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
+  next.platformStatus =
+    "Darwin arm64 has exact zero-allowance v" +
+    evidence.packageVersion +
+    " ceilings on metric " +
+    metric +
+    ", re-pinned (" +
+    reason +
+    ") from the native artifact of workflow_dispatch run " +
+    evidence.runId +
+    " at source " +
+    evidence.sourceSha +
+    ". Every raw and gzipNormalized total is unchanged from the v" +
+    previousVersion +
+    " contract; equal totals alone do not prove byte-identical product code. " +
+    gzipSummary(moves) +
+    ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
+    "inventories. Other platforms and toolchains are not covered.";
+  next.baselineEvidence = {
+    event: "ci-artifact",
+    runId: evidence.runId,
+    jobId: evidence.jobId,
+    sourceSha: evidence.sourceSha,
+    artifact: {
+      id: evidence.artifactId,
+      name: "island-size-darwin-arm64-" + evidence.sourceSha,
+      expiresAt: evidence.artifactExpiresAt,
+    },
+    nativeRunner: evidence.nativeRunner,
+    repinnedFrom: {
+      schemaVersion: contract.schemaVersion,
+      outcome: contract.outcome,
+      packageVersion: previousVersion,
+      baselineSourceSha: contract.baselineSourceSha,
+      baselineRunId: contract.baselineEvidence?.runId,
+    },
+    originalCheckerResult: evidence.originalCheckerResult,
+    actualGzip: actualGzipRows(totals),
+    note:
+      "Re-pin (" +
+      reason +
+      ") from the native Darwin arm64 artifact of run " +
+      evidence.runId +
+      " (job " +
+      evidence.jobId +
+      ") at source " +
+      evidence.sourceSha +
+      ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
+      "inventories. Raw and gzipNormalized totals did not change from the v" +
+      previousVersion +
+      " contract; " +
+      gzipSummary(moves) +
+      ". Only package version, lock hashes and the normalizer digest were re-pinned. " +
+      "Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
+  };
+  return { contract: next, gzipMoves: moves ?? [], previousVersion };
+}
+
+export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, reason) {
+  const e = contract.baselineEvidence;
+  const version = contract.toolchain.packageVersion;
+  return (
+    "\n## Darwin v" +
+    version +
+    " " +
+    REASONS[reason].heading +
+    "\n\n" +
+    "The Darwin arm64 contract was re-pinned (`" +
+    reason +
+    "`) for v" +
+    version +
+    " from the native artifact " +
+    e.artifact.id +
+    " of [workflow_dispatch run " +
+    e.runId +
+    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+    e.runId +
+    ") (job " +
+    e.jobId +
+    ") at source `" +
+    e.sourceSha +
+    "`. Every raw and `gzipNormalized` total is unchanged from the v" +
+    previousVersion +
+    " contract, so only the package version, lock hashes and normalizer digest moved; these totals alone do not prove byte-identical product code. " +
+    (gzipMoves.length === 0
+      ? "No actual gzip total moved."
+      : "Actual gzip moved on " +
+        gzipMoves.length +
+        " rows (" +
+        describeDeltas(gzipMoves) +
+        "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
+    " Linux x64 is unaffected.\n"
+  );
+}
+
 function actualGzipRows(totals) {
   return Object.fromEntries(
     MODES.map((mode) => [
@@ -479,8 +680,8 @@ export function parseArgs(argv) {
   if (Number.isNaN(Date.parse(values["artifact-expires-at"]))) {
     throw new Error("--artifact-expires-at must be an ISO timestamp");
   }
-  if (values.reason !== REASON) {
-    throw new Error("--reason must be " + REASON + "; Darwin supports only the metric migration");
+  if (values.reason !== METRIC_MIGRATION && !REPIN_REASONS.includes(values.reason)) {
+    throw new Error("--reason must be one of " + [METRIC_MIGRATION, ...REPIN_REASONS].join(", "));
   }
   return values;
 }
@@ -531,21 +732,45 @@ function main() {
   const contractPath = args.contract ?? CONTRACT;
   const contract = JSON.parse(readFileSync(contractPath, "utf8"));
   const artifact = loadDarwinArtifact(args.artifact);
-  const problems = validateDarwinEvidence(contract, artifact, args["source-sha"]);
+  const problems = validateDarwinEvidence(contract, artifact, args["source-sha"], args.reason);
   if (problems.length > 0) throw new Error("artifact rejected: " + problems.join("; "));
   const normalized = {
     workspace: artifact.modes.workspace.recomputed.results,
     packed: artifact.modes.packed.recomputed.results,
   };
   const totals = measuredTotals(normalized);
-  const next = migrateDarwinContract(contract, totals, buildEvidence(args, artifact));
+  const evidence = buildEvidence(args, artifact);
+  if (args.reason !== METRIC_MIGRATION) {
+    const result = repinDarwinContract(contract, totals, evidence, args.reason);
+    writeFileSync(contractPath, JSON.stringify(result.contract, null, 2) + "\n");
+    appendFileSync(
+      args.readme ?? README,
+      darwinRepinReadmeSection(
+        result.contract,
+        result.gzipMoves,
+        result.previousVersion,
+        args.reason,
+      ),
+    );
+    console.log(
+      "re-pinned Darwin island-size contract to v" +
+        result.contract.toolchain.packageVersion +
+        " (" +
+        args.reason +
+        "): " +
+        (describeDeltas(result.gzipMoves) || "no actual gzip change") +
+        " (actual gzip, evidence only)",
+    );
+    return;
+  }
+  const next = migrateDarwinContract(contract, totals, evidence);
   writeFileSync(contractPath, JSON.stringify(next, null, 2) + "\n");
   appendFileSync(args.readme ?? README, darwinReadmeSection(next, contract));
   console.log(
     "migrated Darwin island-size contract to v" +
       next.toolchain.packageVersion +
       " (" +
-      REASON +
+      METRIC_MIGRATION +
       "): " +
       (describeDeltas(
         MODES.flatMap((mode) =>

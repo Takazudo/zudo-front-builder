@@ -15,10 +15,18 @@ After the matrices are measured, the workflow runs `normalize-identity.mjs --mea
 **Status, by kind of evidence.**
 
 - Completed migration: `decision.json` is schemaVersion 2 (`gzip-identity-normalized v1`, zero allowance), migrated from a retained native artifact (see "Darwin v4.3.2 metric migration"), and the workflow generates the sidecars it needs.
-- Native verification: pending. The migration pins the historical v4.2.x/4.3.2 artifact's Cargo.lock hash and package version, so a run on current source fails the checker's provenance check by design until the contract is re-pinned from a native measurement of that source. No Darwin pass is inferred from the Linux contract or from the sidecar calculation.
+- Native verification: pending until a re-pin (below). The migration pins the historical v4.2.x/4.3.2 artifact's Cargo.lock hash and package version, so a run on current source fails the checker's provenance check by design until the contract is re-pinned from a native measurement of that source. No Darwin pass is inferred from the Linux contract or from the sidecar calculation.
 - Historical evidence: the earlier stale-contract runs and measurements below are preserved as recorded.
 
-Re-pin: `rebaseline-island-size-darwin.mjs` supports only `--reason metric-migration` over a schemaVersion 1 contract and `rebaseline-island-size-linux.mjs` rejects non-Linux artifacts, so no reviewed script yet re-pins a schemaVersion 2 Darwin contract to a new release/lockfile. Until one exists, apply a reviewed hand edit to `decision.json` from the retained native artifact (never fabricated hashes), keeping zero allowance and refusing any raw or `gzipNormalized` increase, then run the enforced dispatch against the final source.
+Re-pin: `rebaseline-island-size-darwin.mjs --reason release-bump` (or `runtime-identity`) re-pins a schemaVersion 2 Darwin contract to a new package version, lock hashes, runner digests and normalizer digest taken from a downloaded native Darwin arm64 artifact. It mirrors the Linux policy: Darwin arm64 artifact only, both modes with all eight fixtures and two identical saved passes, normalized sidecars present and consistent with the saved bytes, and every raw and `gzipNormalized` total exactly equal to the current contract (zero allowance; any increase or decrease is rejected and needs a reviewed product-size decision). Ceilings are never edited by a re-pin. Download the artifact, run `node research/v3-island-size/normalize-identity.mjs --measurement <artifact>/real-workspace/measurement.json` (and `real-packed`) if the sidecars are absent, then:
+
+```sh
+node scripts/rebaseline-island-size-darwin.mjs --reason release-bump \
+  --artifact <artifact-dir> --run-id <run> --job-id <job> --artifact-id <id> \
+  --artifact-expires-at <ISO timestamp> --source-sha <40-hex measured source SHA>
+```
+
+`--source-sha` must equal the artifact's measured source; the script rewrites `decision.json` and appends a README section. `--reason metric-migration` remains the schemaVersion 1 to 2 conversion.
 
 Use the evidence in this order:
 
