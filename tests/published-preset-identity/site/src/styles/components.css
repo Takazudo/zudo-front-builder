@@ -1,0 +1,4 @@
+/* Authored host component rules are independent of the wind utility output. */
+.zc-fixture-card {
+  border-inline-start: 3px solid var(--color-accent);
+}
