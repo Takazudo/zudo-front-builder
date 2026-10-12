@@ -625,12 +625,13 @@ async function runNestedCopyNegative(installRoot, workRoot) {
       /^ZR_NO_SCOPE: getScope requires synchronous setup/.test(diagnostic ?? ""),
   };
   // The render fails after bundling, so the server bundle is always emitted
-  // and must show both runtime copies; client assets are not emitted (recorded).
+  // and must show both runtime copies, while client assets are never emitted.
   result.bundleArtifacts = {
     serverBundle: facts.serverRuntimeRoots !== undefined,
     clientAssets: facts.clientDefinitionSites !== undefined,
   };
   result.checks["server bundle emitted"] = result.bundleArtifacts.serverBundle;
+  result.checks["client assets not emitted"] = result.bundleArtifacts.clientAssets === false;
   result.checks["two server runtime roots"] = facts.serverRuntimeRoots?.length === 2;
   result.checks["two server definition sites"] = facts.serverDefinitionSites === 2;
   const missed = Object.entries(result.checks).filter(([, ok]) => !ok);

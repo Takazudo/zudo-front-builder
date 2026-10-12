@@ -22,6 +22,9 @@ const evidence = {
   geometry: [],
   errors: [],
   storedExpansion: [],
+  settle: [],
+  knownDefects: [],
+  navigationFailures: [],
 };
 const browserName = process.env.DOCS_VERIFY_BROWSER ?? "chromium";
 const browserType = { chromium, webkit }[browserName];
@@ -34,17 +37,24 @@ const page = await browser.newPage({
   reducedMotion: "reduce",
 });
 page.on("pageerror", (e) => evidence.errors.push(e.message));
-// Long tasks are observed per document so navigations start only on a quiet
-// main thread (see settled()).
+// A cross-browser main-thread signal per document: a requestAnimationFrame
+// loop records every frame gap; navigations start only after a quiet second
+// (see settled()).
 await page.addInitScript(() => {
-  window.__verifyLongTaskEnd = 0;
-  new PerformanceObserver((list) => {
-    for (const entry of list.getEntries())
-      window.__verifyLongTaskEnd = Math.max(
-        window.__verifyLongTaskEnd,
-        entry.startTime + entry.duration,
-      );
-  }).observe({ type: "longtask", buffered: true });
+  const frames = { prev: performance.now(), lastGap: performance.now(), maxGap: 0, gaps: [] };
+  window.__verifyFrames = frames;
+  const tick = (now) => {
+    const gap = now - frames.prev;
+    if (gap > 50) {
+      frames.lastGap = now;
+      frames.gaps.push([Math.round(frames.prev), Math.round(gap)]);
+      if (frames.gaps.length > 40) frames.gaps.shift();
+    }
+    frames.maxGap = Math.max(frames.maxGap, gap);
+    frames.prev = now;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 });
 const goto = async (path) => {
   await page.goto(origin + path);
@@ -67,6 +77,20 @@ const prefixedLinks = (target, prefix) =>
 const resetScopeState = () => page.evaluate(() => sessionStorage.removeItem("zd-sidebar-scope"));
 const storedScope = () =>
   page.evaluate(() => JSON.parse(sessionStorage.getItem("zd-sidebar-scope") ?? "null"));
+// The sidebar islands write zd-sidebar-scope after activation or navigation.
+// Poll until a non-null value has stayed identical across two reads 250 ms
+// apart; "unwritten" if nothing appears within the evidence window.
+async function writtenScope(windowMs = 5000) {
+  const deadline = Date.now() + windowMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const current = JSON.stringify(await storedScope());
+    if (current !== "null" && current === last) return JSON.parse(current);
+    last = current;
+    await page.waitForTimeout(250);
+  }
+  return "unwritten";
+}
 // A round's first hard load must not adopt state persisted by an earlier round
 // (popstate leaves explicit expansion behind; see the asymmetry check below).
 // Load, clear the key, then reload so the islands also start from fresh memory.
@@ -75,7 +99,13 @@ async function freshGoto(path) {
   await resetScopeState();
   await page.reload();
   await page.locator("main").waitFor();
-  assert.equal(await storedScope().then((state) => state?.selected ?? null), null);
+  await page
+    .locator(`${sidebar} [data-zfb-island="SidebarTree"][data-zfb-island-mounted]`)
+    .waitFor({ state: "attached" });
+  const state = await writtenScope();
+  assert.notEqual(state, "unwritten", `fresh ${path}: sidebar never wrote its scope state`);
+  assert.equal(state.selected, null, `fresh ${path} adopted a stored scope`);
+  assert.deepEqual(state.expansion ?? {}, {}, `fresh ${path} adopted stored expansion`);
 }
 // The configured local view (06R baseline/Restore view) is exactly the scope
 // root's members, all collapsed except the branch holding the current page. The
@@ -107,16 +137,70 @@ async function assertScope(root, members, mobile = false, prefix = "/docs/") {
   if (mobile) await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
 }
 // Wide EN pages such as zudo-wind/compatibility spend several seconds in
-// compositor layerization after a swap (also on the pre-migration host). A
-// click landing between those tasks waits behind them, so start navigations
-// only after the main thread has been free of long tasks for one second.
-const settled = () =>
-  page.waitForFunction(() => performance.now() - (window.__verifyLongTaskEnd ?? 0) > 1000, null, {
-    polling: 250,
-    timeout: 60_000,
+// compositor layerization after a swap, also on the pre-migration host
+// (https://github.com/Takazudo/zudo-front-builder/issues/4156). A click landing
+// between those tasks waits behind them, so navigations start only after the
+// main thread has produced frames with no gap above 50 ms for 1000 ms.
+// Liveness budget, derived from the measured distribution (old and new hosts,
+// 1440px, 4 interleaved rounds): at most two consecutive stalls of <= 7.5 s
+// each => 2 x 7.5 s = 15 s, plus the 1 s quiet window and 4 s margin = 20 s.
+const SETTLE_BUDGET_MS = 20_000;
+async function settled(label) {
+  const started = Date.now();
+  try {
+    await page.waitForFunction(
+      () => {
+        const frames = window.__verifyFrames;
+        const now = performance.now();
+        return !!frames && now - frames.lastGap >= 1000 && now - frames.prev < 100;
+      },
+      null,
+      { polling: 100, timeout: SETTLE_BUDGET_MS },
+    );
+  } catch (error) {
+    const maxGap = await page
+      .evaluate(() => window.__verifyFrames?.maxGap ?? null)
+      .catch(() => null);
+    throw new Error(
+      `main thread not quiet within ${SETTLE_BUDGET_MS} ms before ${label} (max frame gap ${maxGap} ms; see #4156): ${error.message}`,
+    );
+  }
+  const sample = await page.evaluate(() => {
+    const frames = window.__verifyFrames;
+    const max = Math.round(frames.maxGap);
+    frames.maxGap = 0;
+    return { maxFrameGapMs: max };
   });
+  evidence.settle.push({ before: label, waitedMs: Date.now() - started, ...sample });
+}
+// Known defect, zudolab/zudo-doc#4547: below 1024px a soft navigation persists
+// the visited page's ancestors, so after utilities → Flex & grid → grid the
+// entry view on the next Wind entry page (compatibility) also shows the Utility
+// reference groups and the Flex & grid family pages. The following soft
+// navigation (Coming from Tailwind) is clean again. Asserted as the exact leaked list
+// observed with zudo-doc 6.0.1, so it fails loudly when upstream changes either
+// way (fixed, or leaking differently).
+const KNOWN_4547_LEAK = [
+  "zudo-wind/learn",
+  "zudo-wind/utilities",
+  ...WIND_UTILITY_GROUPS.flatMap((group) =>
+    group.id === "flex-grid" ? [group.slug, ...group.members] : [group.slug],
+  ),
+  "zudo-wind/compatibility",
+  "playground/design-system",
+];
+async function assertKnownMobileLeak(prefix, slug) {
+  const drawer = page.locator("[data-zd-mobile-sidebar]");
+  await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
+  await expect(drawer).not.toHaveAttribute("inert");
+  await expect
+    .poll(() => prefixedLinks(drawer, prefix))
+    .toEqual(KNOWN_4547_LEAK.map((member) => prefix + member));
+  await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
+  evidence.knownDefects.push({ issue: "zudolab/zudo-doc#4547", page: prefix + slug });
+}
 async function soft(path) {
-  await settled();
+  await settled(`soft ${path}`);
   await resetScopeState();
   await page.evaluate((path) => {
     window.__structureSwap = false;
@@ -133,8 +217,20 @@ async function soft(path) {
     a.id = "verification-link";
     document.querySelector("main").prepend(a);
   }, path);
+  const clickedAt = await page.evaluate(() => Math.round(performance.now()));
   await page.locator("#verification-link").click();
-  await expect(page).toHaveURL(origin + path);
+  try {
+    await expect(page).toHaveURL(origin + path);
+  } catch (error) {
+    // Keep the main-thread timeline for diagnosis (#4156) before failing.
+    evidence.navigationFailures.push({
+      path,
+      clickedAt,
+      now: await page.evaluate(() => Math.round(performance.now())).catch(() => null),
+      frameGaps: await page.evaluate(() => window.__verifyFrames?.gaps ?? null).catch(() => null),
+    });
+    throw error;
+  }
   await page.waitForFunction(() => window.__structureSwap === true);
   await page.locator("#verification-link").evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
   await page.locator("main").waitFor();
@@ -142,7 +238,7 @@ async function soft(path) {
 // A native traversal swaps asynchronously; assert only after the router's swap,
 // as soft() does. WebKit's slower swap otherwise races the next assertion.
 async function traverse(direction) {
-  await settled();
+  await settled(`traverse ${direction}`);
   await resetScopeState();
   await page.evaluate(() => {
     window.__structureSwap = false;
@@ -440,7 +536,9 @@ try {
     // expansion differently per viewport and per navigation kind
     // (https://github.com/zudolab/zudo-doc/issues/4547).
     // User-visible link lists stay strictly asserted by assertScope.
-    const expansionAfterSoft = (await storedScope())?.expansion ?? null;
+    const writtenAfterSoft = await writtenScope();
+    const expansionAfterSoft =
+      writtenAfterSoft === "unwritten" ? "unwritten" : writtenAfterSoft.expansion;
     await traverse("back");
     await assertScope(type.slug, type.members, width < 1024);
     await traverse("back");
@@ -452,7 +550,9 @@ try {
       soft: { page: "/docs/zudo-wind/utilities/font-size/", expansion: expansionAfterSoft },
       popstate: {
         page: `/docs/${type.slug}/`,
-        expansion: (await storedScope())?.expansion ?? null,
+        expansion: await writtenScope().then((state) =>
+          state === "unwritten" ? state : state.expansion,
+        ),
       },
     });
   }
@@ -466,20 +566,20 @@ try {
       await soft(prefix + flex.slug + "/");
       await soft(prefix + "zudo-wind/utilities/grid/");
       await assertScope(flex.slug, flex.members, width < 1024, prefix);
-      // Below 1024px a soft navigation also persists the visited page's ancestors
-      // (zudolab/zudo-doc#4547), which would carry the Utility reference and
-      // Flex & grid branches into the entry view. Reload the current page fresh
-      // so the following soft navigation starts from isolated state.
-      await freshGoto(prefix + "zudo-wind/utilities/grid/");
-      for (const slug of ["zudo-wind/compatibility", "zudo-wind/coming-from-tailwind"]) {
-        await soft(prefix + slug + "/");
-        await assertScope("zudo-wind", WIND_ENTRY_SLUGS, width < 1024, prefix);
-      }
+      await soft(prefix + "zudo-wind/compatibility/");
+      if (width >= 1024) await assertScope("zudo-wind", WIND_ENTRY_SLUGS, false, prefix);
+      else await assertKnownMobileLeak(prefix, "zudo-wind/compatibility");
+      // The leak does not survive the next soft navigation: exact entry view again.
+      await soft(prefix + "zudo-wind/coming-from-tailwind/");
+      await assertScope("zudo-wind", WIND_ENTRY_SLUGS, width < 1024, prefix);
       await soft(prefix + "zudo-wind/learn/");
       await assertScope("zudo-wind/learn", WIND_LEARN_SLUGS, width < 1024, prefix);
+      // Isolated fresh start: the clean entry view at every width.
+      await freshGoto(prefix + "zudo-wind/compatibility/");
+      await assertScope("zudo-wind", WIND_ENTRY_SLUGS, width < 1024, prefix);
     }
   evidence.checks.push(
-    "Direct/native soft cross-group navigation, unopened/reopened mobile drawer and history scopes",
+    "Soft cross-group navigation and history scopes: exact local views at 1440px; below 1024px the compatibility entry view right after utilities → Flex & grid → grid carries the known zudolab/zudo-doc#4547 leak (asserted exactly as a known defect) and the next soft navigation is exact again; clean entry view also checked from a fresh start",
   );
   await verifyBroaderTree();
   for (const width of [1440, 1280, 1024, 768, 390, 360])
