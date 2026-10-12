@@ -44,6 +44,18 @@
 #   job-<jobId>.rate-limited
 #                           if present, that job's log fetch fails with gh's
 #                           primary rate-limit message (exit 1, HTTP 403)
+#   job-<jobId>.blob-notfound
+#                           if present, that job's log fetch reproduces the
+#                           404 gh 2.88.1 printed for the #3230 cancelled
+#                           jobs (captured 2026-10-12): the log endpoint's 302
+#                           target (the Azure blob host) answers 404, so
+#                           stderr is a bare "gh: HTTP 404" line followed by
+#                           the blob's BlobNotFound XML, stdout is empty, and
+#                           gh exits 1. Only the RequestId/Time values are
+#                           placeholders.
+#   job-<jobId>.blob-gone   if present, the same blob-host shape with
+#                           "gh: HTTP 410" (an expired log reached via the
+#                           302 target).
 #   job-<jobId>.gone        if present, that job's log fetch reproduces gh's
 #                           real 410 shape (#2995): the API error body on
 #                           stdout, a "gh: Server Error (HTTP 410)" line on
@@ -143,6 +155,14 @@ if [ "$1" = "api" ]; then
       if [ -f "$FIXDIR/job-$jobId.rate-limited" ]; then
         printf '{"message":"API rate limit exceeded for installation ID 1.","status":"403"}'
         echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.blob-notfound" ]; then
+        printf 'gh: HTTP 404\n<?xml version="1.0" encoding="utf-8"?><Error><Code>BlobNotFound</Code><Message>The specified blob does not exist.\nRequestId:00000000-0000-0000-0000-000000000000\nTime:2026-10-12T05:10:00.0000000Z</Message></Error>' >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.blob-gone" ]; then
+        printf 'gh: HTTP 410\n<?xml version="1.0" encoding="utf-8"?><Error><Code>BlobNotFound</Code><Message>The specified blob does not exist.\nRequestId:00000000-0000-0000-0000-000000000000\nTime:2026-10-12T05:10:00.0000000Z</Message></Error>' >&2
         exit 1
       fi
       if [ -f "$FIXDIR/job-$jobId.notfound" ]; then

@@ -168,6 +168,11 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *   - `rate-limited`, `not-attempted:<rate-limited|budget-exhausted>`,
  *     `run-cap`: see the enumeration section above.
  *
+ * Request cost is about 2 metered calls per run (run-jobs + job log; fewer
+ * for skipped runs) plus one per run-list page: the 2026-10-04..12 window
+ * spent 890 of the 950 budget on 452 runs, so a busier week will truthfully
+ * end `budget-exhausted` / incomplete rather than overrun the token limit.
+ *
  * The per-run `failedRecords=<m>` and the final summary's `failed=<f>` count
  * different things: the per-run one counts that run's own parsed records
  * whose `outcome=failed` (an R-A candidate inside an otherwise-successful
@@ -572,22 +577,37 @@ function isGoneStatus(status) {
   return status === 410 || status === "410";
 }
 
+// gh words an HTTP failure two ways on stderr. Against api.github.com it is
+// "gh: Not Found (HTTP 404)" / "gh: Server Error (HTTP 410)"; when the job-log
+// endpoint's 302 target (the Azure blob host) fails, gh 2.88.1 prints a bare
+// "gh: HTTP 404" line followed by the blob's XML error body (captured live on
+// the two #3230 cancelled jobs, 2026-10-12). Both forms are accepted, for the
+// exact status code only, so no other status can be misfiled.
+function stderrHasHttpStatus(error, code) {
+  if (typeof error.stderr !== "string") return false;
+  return new RegExp(`\\(HTTP ${code}\\)|^gh: HTTP ${code}$`, "m").test(error.stderr);
+}
+
 // Recognises a 410 Gone from either half of the OR: the real exec-failure
-// shape (exit 1, "gh: Server Error (HTTP 410)" on stderr, the envelope on
-// stdout) or a bare stderr-only / stdout-envelope-only variant, so a caller
-// does not have to depend on both halves being present together.
+// shape (exit 1, "gh: Server Error (HTTP 410)" or the blob host's
+// "gh: HTTP 410" on stderr, the envelope on stdout) or a bare stderr-only /
+// stdout-envelope-only variant, so a caller does not have to depend on both
+// halves being present together.
 function isGoneError(error) {
-  if (typeof error.stderr === "string" && /\(HTTP 410\)/.test(error.stderr)) return true;
+  if (stderrHasHttpStatus(error, 410)) return true;
   const envelope = typeof error.stdout === "string" ? apiErrorMessage(error.stdout) : null;
   return envelope !== null && isGoneStatus(envelope.status);
 }
 
-// gh's real 404 shape (captured 2026-09-07): exit 1, "gh: Not Found (HTTP
-// 404)" on stderr, the error envelope on stdout. Only the exec-failure shape
-// counts -- a 404 envelope arriving on a successful exit stays the ordinary
-// "API error envelope" failure in `fetchJobLog`.
+// gh's real 404 shapes: exit 1 with "gh: Not Found (HTTP 404)" on stderr and
+// the error envelope on stdout (api.github.com, captured 2026-09-07), or exit
+// 1 with "gh: HTTP 404" plus the blob host's BlobNotFound XML on stderr (the
+// log's 302 target, captured 2026-10-12 -- the shape the #3230 cancelled jobs
+// actually answer). Only exec failures count -- a 404 envelope arriving on a
+// successful exit stays the ordinary "API error envelope" failure in
+// `fetchJobLog`.
 function isNotFoundError(error) {
-  return typeof error.stderr === "string" && /\(HTTP 404\)/.test(error.stderr);
+  return stderrHasHttpStatus(error, 404);
 }
 
 // Names the health job's `pnpm test:workspace` step outcome for an

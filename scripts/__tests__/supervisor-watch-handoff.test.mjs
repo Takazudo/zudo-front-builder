@@ -303,7 +303,7 @@ describe("supervisor watch incomplete-window handoff (#3230)", () => {
       logsByJobId: {
         7001: jobLog({ outcome: "ok", firstUpLine: 430, total: 540, env: ENV_DIGEST }),
       },
-      notFoundJobIds: [7002],
+      blobNotFoundJobIds: [7002],
     });
     const result = await runWatch(fixtures);
 

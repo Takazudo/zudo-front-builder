@@ -113,6 +113,8 @@ export function setupFixtures({
   runListTotalCount,
   runsPageMarkers = {},
   rateLimitedJobIds = [],
+  blobNotFoundJobIds = [],
+  blobGoneJobIds = [],
 }) {
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.add(dir);
@@ -152,6 +154,10 @@ export function setupFixtures({
   for (const jobId of failingJobIds) writeFileSync(join(dir, `job-${jobId}.fail`), "");
   for (const jobId of notFoundJobIds) writeFileSync(join(dir, `job-${jobId}.notfound`), "");
   for (const jobId of goneJobIds) writeFileSync(join(dir, `job-${jobId}.gone`), "");
+  for (const jobId of blobNotFoundJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.blob-notfound`), "");
+  }
+  for (const jobId of blobGoneJobIds) writeFileSync(join(dir, `job-${jobId}.blob-gone`), "");
   for (const jobId of rateLimitedJobIds) {
     writeFileSync(join(dir, `job-${jobId}.rate-limited`), "");
   }

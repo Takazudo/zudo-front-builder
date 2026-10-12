@@ -358,7 +358,7 @@ const verdictScenarios = [
       ],
       jobsById: { 1001: jobsJson(5001), 1002: cancelledAfterTestsJob(5002) },
       logsByJobId: { 5001: healthyLog() },
-      notFoundJobIds: [5002],
+      blobNotFoundJobIds: [5002],
     }),
   },
   {
@@ -370,7 +370,7 @@ const verdictScenarios = [
     fixtures: () => ({
       runs: [makeRun({ databaseId: 1002, headBranch: "feat/x", conclusion: "cancelled" })],
       jobsById: { 1002: cancelledAfterTestsJob(5002) },
-      notFoundJobIds: [5002],
+      blobNotFoundJobIds: [5002],
     }),
   },
   {

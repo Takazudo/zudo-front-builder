@@ -1366,6 +1366,8 @@ describe(
     });
 
     it("exit 5: a started job cancelled after its test step whose log 404s is unavailable evidence", async () => {
+      // The blob-host shape (bare "gh: HTTP 404" + BlobNotFound XML) is what
+      // the two #3230 cancelled jobs really answered in the 2026-10-12 live run.
       const runs = [
         makeRun({ databaseId: 4101, conclusion: "cancelled" }),
         makeRun({ databaseId: 4102, conclusion: "cancelled", createdAt: "2026-09-06T00:00:00Z" }),
@@ -1386,7 +1388,7 @@ describe(
         // The cancelled job whose log IS available is parsed as usual, and its
         // failed record stays visible.
         logsByJobId: { 8102: FAILED_RECORD_LINE },
-        notFoundJobIds: [8101],
+        blobNotFoundJobIds: [8101],
       });
       process.env.GH_STUB_FIXTURES_DIR = dir;
 
@@ -1399,6 +1401,65 @@ describe(
       expect(s.err()).toMatch(/^incomplete: reason=unavailable-evidence runs=1 /m);
       expect(s.err()).toMatch(/runs=2 harvested=1 failed=0 records=1 unavailable=1 complete=no/);
       expect(s.out()).toContain("outcome=failed");
+    });
+
+    it("the parenthesized api.github.com 404 on a cancelled started job is unavailable evidence too", async () => {
+      const runs = [makeRun({ databaseId: 4111, conclusion: "cancelled" })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: {
+          4111: [
+            {
+              id: 8111,
+              name: "health",
+              conclusion: "cancelled",
+              steps: [{ name: "Set up job", conclusion: "success" }],
+            },
+          ],
+        },
+        notFoundJobIds: [8111],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(
+        /^run=4111 .* job=8111 unavailable=cancelled-job-log-404 job-conclusion=cancelled test-step=absent$/m,
+      );
+    });
+
+    it("exit 3: the blob-host 404 on a job that was NOT cancelled stays an error, never unavailable", async () => {
+      const runs = [makeRun({ databaseId: 4112 })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 4112: [{ id: 8112, name: "health", conclusion: "success" }] },
+        blobNotFoundJobIds: [8112],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_PARTIAL);
+      expect(s.err()).toMatch(
+        /^run=4112 .* job=8112 error=.*gh: HTTP 404 \| <\?xml .*BlobNotFound/m,
+      );
+      expect(s.err()).not.toMatch(/^run=4112 .* unavailable=/m);
+    });
+
+    it("a blob-host 410 (bare `gh: HTTP 410`) is log-expired, never retried, never an error", async () => {
+      const runs = [makeRun({ databaseId: 4113 })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 4113: [{ id: 8113, name: "health" }] },
+        blobGoneJobIds: [8113],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_NO_RUNS);
+      expect(s.err()).toMatch(/^run=4113 .* job=8113 skipped=log-expired$/m);
+      expect(
+        readCalls(dir).filter((line) => line.includes("/actions/jobs/8113/logs")),
+      ).toHaveLength(1);
     });
 
     it("exit 4 stays a genuinely empty, complete window", async () => {
