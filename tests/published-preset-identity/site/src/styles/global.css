@@ -1,0 +1,22 @@
+/* zfb discovers this entry automatically. Wind owns reset and utilities. */
+@layer zw-reset, zd-flow;
+@import "@takazudo/zudo-doc/theme.css";
+@import "./ui-tokens.css";
+@import "./components.css";
+
+@import "@takazudo/zudo-doc/content.css";
+@import "@takazudo/zudo-doc/features.css";
+@import "@takazudo/zudo-doc/page-loading.css";
+
+@import "@takazudo/zdtp/dashboard/styles.css";
+@import "@takazudo/zudo-sg/styles.css";
+
+/* The engine chrome owns raw --sg-* tokens and no longer needs the host's
+ * bare --color-* values. To theme chrome intentionally, add an unlayered
+ * override after these imports, for example:
+ *
+ * :root {
+ *   --sg-border: #94a3b8;
+ *   --sg-accent: #7c3aed;
+ * }
+ */

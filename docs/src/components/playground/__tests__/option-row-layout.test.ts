@@ -1,5 +1,5 @@
-import { h } from "preact";
-import { render } from "preact-render-to-string";
+import { h, signal } from "@takazudo/zfb/zudo-react";
+import { renderToString as render } from "@takazudo/zfb/zudo-react/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import OptionRow from "../option-row";
@@ -9,8 +9,7 @@ describe("playground option row layout", () => {
     const html = render(
       h(OptionRow, {
         label: "pipeline.gfm.table",
-        checked: true,
-        onChange: () => undefined,
+        checked: signal(true),
       }),
     );
 
@@ -21,7 +20,7 @@ describe("playground option row layout", () => {
     expect(rowClasses).not.toContain("py-vsp-");
     expect(labelClasses).toContain("min-h-[44px]");
     expect(labelClasses).toContain("min-w-0");
-    expect(labelClasses).toContain("[overflow-wrap:anywhere]");
+    expect(labelClasses).toContain("wrap-anywhere");
     expect(labelClasses).not.toContain("py-vsp-");
   });
 
@@ -31,8 +30,7 @@ describe("playground option row layout", () => {
         OptionRow,
         {
           label: "pipeline.codeHighlight",
-          checked: true,
-          onChange: () => undefined,
+          checked: signal(true),
         },
         h("span", null, "Nested option"),
       ),

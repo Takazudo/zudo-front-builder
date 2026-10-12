@@ -34,7 +34,7 @@ the diagnostics list reports expected compile and Markdown failures.
 
 To evaluate the source in an application, provide a host, a JSX runtime, and a components map. The
 [Browser Markdown Preview guide](../guides/browser-markdown-preview.mdx) explains that setup.
-Output from this playground imports `preact/jsx-runtime` or `react/jsx-runtime` because it uses
-the published 2.x compiler; the v3 emitter uses
-`@takazudo/zfb/zudo-react/jsx-runtime`. See the guide for the v3 specifier and the
-[zfb-md-wasm API reference](../api/md-wasm.mdx) for the current option and result contract.
+Output from this playground imports `@takazudo/zfb/zudo-react/jsx-runtime`, the emitter's only
+JSX runtime; there is no `jsxRuntime` option to choose another. See the guide for resolving that
+specifier and the [zfb-md-wasm API reference](../api/md-wasm.mdx) for the current option and result
+contract.

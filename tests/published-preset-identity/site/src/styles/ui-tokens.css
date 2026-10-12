@@ -1,0 +1,122 @@
+/* Self-contained input for the packed gen-token-manifest CLI. The current
+ * generator requires this complete host vocabulary; none comes from demo-ui
+ * or the workspace. The engine chrome owns raw --sg-* tokens and no longer
+ * depends on these bare --color-* values. Keep the vocabulary for host
+ * components and the manifest; override chrome separately in global.css, e.g.:
+ *
+ * :root {
+ *   --sg-border: #94a3b8;
+ *   --sg-accent: #7c3aed;
+ * }
+ *
+ * The Button/Card still use only the original five tokens. */
+:root {
+  --palette-neutral-0: #ffffff;
+  --palette-neutral-1: #e2e8f0;
+  --palette-neutral-2: #475569;
+  --palette-neutral-3: #0f172a;
+  --palette-accent-0: #dbeafe;
+  --palette-accent-1: #93c5fd;
+  --palette-accent-2: #2563eb;
+  --palette-accent-3: #1e40af;
+  --palette-state-danger: #dc2626;
+  --palette-state-danger-dark: #f87171;
+  --palette-state-success: #15803d;
+  --palette-state-success-dark: #4ade80;
+  --palette-state-warning: #a16207;
+  --palette-state-warning-dark: #facc15;
+  --palette-state-info: #0369a1;
+  --palette-state-info-dark: #38bdf8;
+  --palette-line-vacuum-accent: #2563eb;
+  --palette-line-vacuum-accent-dark: #93c5fd;
+  --palette-line-vacuum-hover: #1e40af;
+  --palette-line-vacuum-hover-dark: #dbeafe;
+  --palette-line-process-accent: #2563eb;
+  --palette-line-process-accent-dark: #93c5fd;
+  --palette-line-process-hover: #1e40af;
+  --palette-line-process-hover-dark: #dbeafe;
+  --palette-line-laser-accent: #2563eb;
+  --palette-line-laser-accent-dark: #93c5fd;
+  --palette-line-laser-hover: #1e40af;
+  --palette-line-laser-hover-dark: #dbeafe;
+  --palette-line-meeting-accent: #2563eb;
+  --palette-line-meeting-accent-dark: #93c5fd;
+  --palette-line-meeting-hover: #1e40af;
+  --palette-line-meeting-hover-dark: #dbeafe;
+  --palette-line-beauty-accent: #2563eb;
+  --palette-line-beauty-accent-dark: #93c5fd;
+  --palette-line-beauty-hover: #1e40af;
+  --palette-line-beauty-hover-dark: #dbeafe;
+}
+
+:root {
+  --color-accent: #2563eb;
+  --color-fg: #0f172a;
+  --color-bg: #ffffff;
+  --color-surface: light-dark(#ffffff, #0f172a);
+  --color-surface-2: light-dark(#e2e8f0, #475569);
+  --color-border: #475569;
+  --color-loading-scrim: #ffffff80;
+  --color-muted: #475569;
+  --color-accent-hover: #1e40af;
+  --color-on-accent: #ffffff;
+  --color-focus: #2563eb;
+  --color-rail-bg: #0f172a;
+  --color-rail-bg-strong: #0f172a;
+  --color-rail-fg: #ffffff;
+  --color-rail-muted: #e2e8f0;
+  --color-rail-border: #475569;
+  --color-rail-hover-bg: #475569;
+  --color-success: #15803d;
+  --color-danger: #dc2626;
+  --color-warning: #a16207;
+  --color-info: #0369a1;
+
+  --spacing-hsp-2xs: 0.125rem;
+  --spacing-hsp-xs: 0.25rem;
+  --spacing-hsp-sm: 0.5rem;
+  --spacing-hsp-md: 1rem;
+  --spacing-hsp-lg: 1.5rem;
+  --spacing-hsp-xl: 2rem;
+  --spacing-hsp-2xl: 3rem;
+  --spacing-vsp-3xs: 0.0625rem;
+  --spacing-vsp-2xs: 0.125rem;
+  --spacing-vsp-xs: 0.25rem;
+  --spacing-vsp-sm: 0.5rem;
+  --spacing-vsp-md: 1rem;
+  --spacing-vsp-lg: 1.5rem;
+  --spacing-vsp-xl: 2rem;
+  --spacing-vsp-2xl: 3rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-xs--line-height: 1.5;
+  --text-sm--line-height: 1.5;
+  --text-base--line-height: 1.5;
+  --text-lg--line-height: 1.5;
+  --text-xl--line-height: 1.5;
+  --text-2xl--line-height: 1.5;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+  --font-sans: sans-serif;
+  --font-mono: monospace;
+
+  --radius-DEFAULT: 0.25rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 1rem;
+  --radius-full: 9999px;
+  --shadow-card: 0 1px 2px #0000001a;
+  --shadow-raised: 0 2px 4px #0000001a;
+  --shadow-overlay: 0 4px 8px #0000001a;
+}

@@ -1,0 +1,17 @@
+{
+  "extends": "@takazudo/zudo-doc/tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react",
+    "skipLibCheck": false
+  },
+  "include": ["pages", "src", "ui", "zfb.config.ts", "zudo-sg.config.mjs"]
+}

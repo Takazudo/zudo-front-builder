@@ -1,34 +1,49 @@
 import { WIND_ENTRY_SLUGS, WIND_LEARN_SLUGS, WIND_UTILITY_GROUPS } from "./navigation-groups.mjs";
 
-const entryScope = {
-  id: "wind",
-  navSection: "zudo-wind",
-  rootSlug: "zudo-wind",
-  memberSlugs: WIND_ENTRY_SLUGS,
-};
-const learnScope = {
-  id: "wind-learn",
-  navSection: "zudo-wind",
-  rootSlug: "zudo-wind/learn",
-  memberSlugs: WIND_LEARN_SLUGS,
-};
-const utilitiesScope = {
-  id: "wind-utilities",
-  navSection: "zudo-wind",
-  rootSlug: "zudo-wind/utilities",
-  memberSlugs: WIND_UTILITY_GROUPS.map((group) => group.slug),
-};
-const groupScopes = WIND_UTILITY_GROUPS.map((group) => ({
-  id: group.id,
-  navSection: "zudo-wind",
-  rootSlug: group.slug,
-  memberSlugs: group.members,
-}));
+const WIND_ROOT_SLUG = "zudo-wind";
+
+// Editorial parent → ordered members. Members are often URL siblings of their
+// parent (`utilities/background` under `utilities/surfaces-borders`), so the
+// hierarchy comes from this shared membership source, never from URL segments.
+const WIND_EDITORIAL_MEMBERS = new Map([
+  [WIND_ROOT_SLUG, WIND_ENTRY_SLUGS],
+  ["zudo-wind/learn", WIND_LEARN_SLUGS],
+  ["zudo-wind/utilities", WIND_UTILITY_GROUPS.map((group) => group.slug)],
+  ...WIND_UTILITY_GROUPS.map((group) => [group.slug, group.members]),
+]);
+
+function windScope(id, rootSlug) {
+  return {
+    id,
+    navSection: WIND_ROOT_SLUG,
+    rootSlug,
+    memberSlugs: WIND_EDITORIAL_MEMBERS.get(rootSlug),
+    path: editorialPath(rootSlug),
+  };
+}
+
+// Occurrence indexes from the Wind root to `slug` along the editorial tree.
+function editorialPath(slug) {
+  if (slug === WIND_ROOT_SLUG) return [];
+  for (const [parent, members] of WIND_EDITORIAL_MEMBERS) {
+    const index = members.indexOf(slug);
+    if (index >= 0) return [...editorialPath(parent), index];
+  }
+  throw new Error(`No editorial Wind parent for ${slug}`);
+}
+
+const entryScope = windScope("wind", WIND_ROOT_SLUG);
+const learnScope = windScope("wind-learn", "zudo-wind/learn");
+const utilitiesScope = windScope("wind-utilities", "zudo-wind/utilities");
+const groupScopes = WIND_UTILITY_GROUPS.map((group) => windScope(group.id, group.slug));
 
 export function resolveNavigationScope(currentSlug, navSection) {
-  if (navSection !== "zudo-wind") return undefined;
+  if (navSection !== WIND_ROOT_SLUG) return undefined;
+  // Coming from Tailwind keeps the entry view without being one of its menu members.
   if (
-    ["zudo-wind", "zudo-wind/compatibility", "zudo-wind/coming-from-tailwind"].includes(currentSlug)
+    [WIND_ROOT_SLUG, "zudo-wind/compatibility", "zudo-wind/coming-from-tailwind"].includes(
+      currentSlug,
+    )
   )
     return entryScope;
   if (currentSlug === learnScope.rootSlug || WIND_LEARN_SLUGS.includes(currentSlug))
@@ -39,7 +54,15 @@ export function resolveNavigationScope(currentSlug, navSection) {
   );
 }
 
-export function selectNavigationTree(tree, scope) {
+/**
+ * Rebuild the complete Wind editorial forest from the native nav tree.
+ * Every node keeps its native label, href and metadata; its children are
+ * exactly its editorial members. A node without membership is an editorial
+ * leaf: its native URL descendants are dropped, as the pre-06R local views
+ * did, so a page reaches the sidebar only through navigation-groups.mjs.
+ * The input tree is not mutated.
+ */
+export function buildWindEditorialForest(tree) {
   const nodes = new Map();
   function visit(children) {
     for (const node of children) {
@@ -48,16 +71,12 @@ export function selectNavigationTree(tree, scope) {
     }
   }
   visit(tree);
-  function required(slug) {
+  function build(slug) {
     const node = nodes.get(slug);
     if (!node?.hasPage || !node.href)
-      throw new Error(`Navigation scope ${scope.id} requires routed node ${slug}`);
-    return node;
+      throw new Error(`Wind editorial navigation requires routed node ${slug}`);
+    const members = WIND_EDITORIAL_MEMBERS.get(slug);
+    return { ...node, children: members ? members.map(build) : [] };
   }
-  return [
-    {
-      ...required(scope.rootSlug),
-      children: scope.memberSlugs.map((slug) => ({ ...required(slug), children: [] })),
-    },
-  ];
+  return [build(WIND_ROOT_SLUG)];
 }
