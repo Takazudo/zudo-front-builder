@@ -67,10 +67,11 @@ async function waitForSwaps(page, before, step) {
 
 // The target sits near its scroll-margin offset, or the page is already scrolled to its end.
 async function expectAnchorSettled(page, id, step) {
+  let last;
   await expect
     .poll(
-      () =>
-        page.evaluate((id) => {
+      async () =>
+        (last = await page.evaluate((id) => {
           const el = document.getElementById(id);
           if (!el) return { ok: false, reason: "missing" };
           const top = el.getBoundingClientRect().top;
@@ -79,10 +80,13 @@ async function expectAnchorSettled(page, id, step) {
           const atEnd = scrollY >= max - 1;
           const ok = top >= -2 && top < innerHeight && (atEnd || Math.abs(top - margin) <= 24);
           return { ok, top, margin, scrollY, max };
-        }, id),
+        }, id)),
       { message: `${step}: #${id} settled near its scroll margin`, timeout: TIMEOUT },
     )
-    .toMatchObject({ ok: true });
+    .toMatchObject({ ok: true })
+    .catch((error) => {
+      throw new Error(`${error.message}\nlast measurement: ${JSON.stringify(last)}`);
+    });
 }
 
 async function expectArticle(page, path, h1, step, hash = "") {
@@ -100,9 +104,14 @@ async function softTo(page, path, step) {
     a.href = path;
     a.id = "verification-link";
     a.textContent = "verification navigation";
+    // Out of flow: an in-flow link would shift A's layout before its scroll is saved.
+    a.style.cssText = "position:fixed;top:0;left:0";
     document.querySelector("main").prepend(a);
+    // Activate in place: Playwright's locator.click() would first scroll the prepended
+    // link into view, so the router would correctly save scrollY 0 for the outgoing
+    // fragment entry and Back would restore 0 instead of the anchor.
+    a.click();
   }, path);
-  await page.locator("#verification-link").click();
   await waitForSwaps(page, before, step);
   await page.locator("#verification-link").evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
 }
@@ -229,7 +238,8 @@ try {
         );
       }
   const ran = (n) => evidence.cases.filter((c) => !c.skipped && c.name === n).length;
-  for (const locale of ["en", "ja"]) {
+  // Case names carry the locale path prefix: "en-…" for the root locale, "/ja-…" for Japanese.
+  for (const locale of ["en", "/ja"]) {
     assert.equal(ran(`${locale}-desktop-toc`), 1, `${locale}: desktop TOC case must run`);
     assert.equal(ran(`${locale}-mobile-hash`), 1, `${locale}: mobile hash case must run`);
   }
