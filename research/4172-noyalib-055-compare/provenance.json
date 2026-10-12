@@ -1,0 +1,72 @@
+{
+  "checkedAt": "2026-10-12T14:28:00Z",
+  "issue": "https://github.com/Takazudo/zudo-front-builder/issues/4172",
+  "sourceBase": "badb68360ed8d28e807f0d3770709da9e9b49529",
+  "control": "0.0.53",
+  "candidate": "0.0.55",
+  "outOfScope": ["0.0.54", "0.0.56", "0.0.57"],
+  "pairs": {
+    "0.0.53": {
+      "noyalib": {
+        "checksum": "962838abbd8dd2cd3844d2208dc502458bba6985f8bf1dc21761b30260fcbd7f",
+        "archiveBytes": 1220902,
+        "publishedAt": "2026-10-06T12:41:27.063308Z",
+        "yanked": false,
+        "tag": "v0.0.53",
+        "tagObject": "447dfd54d9e6c4fa37e5a835a140c53b0f21db6c",
+        "commit": "8c6671fc74f04dcb75dac90b424b7976db24368f"
+      },
+      "noyalib-serde-yaml": {
+        "checksum": "a62fedc8613fa5ba4db669ce4a88fec7227dfd08902995492c2b4b6ee53f24db",
+        "archiveBytes": 70252,
+        "publishedAt": "2026-10-06T18:20:53.416765Z",
+        "yanked": false,
+        "tag": "v0.0.53",
+        "tagObject": "684cc5376cc948abc3862e8fdb3fe7d5747eab10",
+        "commit": "4d6794a14a1b434054fc7bb26b07269c44fa611b"
+      }
+    },
+    "0.0.55": {
+      "noyalib": {
+        "checksum": "0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41",
+        "archiveBytes": 1274912,
+        "publishedAt": "2026-10-08T06:37:46.465213Z",
+        "yanked": false,
+        "tag": "v0.0.55",
+        "tagObject": "65c55452c7f419fbb672d67705269583745928a4",
+        "commit": "8adef27f177e03f07ac0e96ea9a8a774b21bee76",
+        "releaseChecksumMatches": true
+      },
+      "noyalib-serde-yaml": {
+        "checksum": "4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b",
+        "archiveBytes": 72952,
+        "publishedAt": "2026-10-08T07:10:21.924189Z",
+        "yanked": false,
+        "tag": "v0.0.55",
+        "tagObject": "3cda03c23b0a2cfe27c1b7e548421494c8bd3a72",
+        "commit": "21a0ff6424367a0b47b5d3110a6990767395114e",
+        "releaseChecksumMatches": true
+      }
+    }
+  },
+  "aliasManifest": {
+    "exactCorePin": "=0.0.55",
+    "defaultFeatures": false,
+    "features": ["std", "compat-serde-yaml"],
+    "srcLibDiff": "doc comment version string only (re-exports noyalib::compat::serde_yaml::*)"
+  },
+  "coreManifest": {
+    "license": "MIT OR Apache-2.0",
+    "rustVersion": "1.86.0",
+    "normalDependencies": "identical 0.0.53 -> 0.0.55",
+    "buildDependencies": "identical",
+    "features": "identical",
+    "buildRs": "identical",
+    "devDependencyAdded": "jsonschema 0.58 (dev only)"
+  },
+  "compatProfile": {
+    "serdeYamlCompatConfig": "identical 0.0.53 -> 0.0.55",
+    "defaultLimits": "identical (max_nodes 250000, max_sequence_length 65536, max_document_length 64 MiB, alias_anchor_ratio 10.0, alias_jump_event_factor 100)",
+    "duplicateKeyChange": "compat::serde_yaml::from_str refuses duplicate keys only when T is noyalib::Value (TypeId check); serde_json::Value keeps last-wins"
+  }
+}
