@@ -1,5 +1,3 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
 import { routeContext } from "virtual:zudo-doc-route-context";
 import { createRouteContext, type RouteContextPayload } from "@takazudo/zudo-doc/route-context";
 import type { ChromeContext, ChromeHostBindings } from "@takazudo/zudo-doc/factory-context";

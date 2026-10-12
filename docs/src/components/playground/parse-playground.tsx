@@ -1,8 +1,14 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
 "use client";
 
-import { useMemo, useState } from "preact/hooks";
+import {
+  computed,
+  getScope,
+  Show,
+  signal,
+  type ReadonlySignal,
+  type Scope,
+  type Signal,
+} from "@takazudo/zfb/zudo-react";
 
 import type {
   FrontmatterPolicy,
@@ -17,7 +23,7 @@ import DiagnosticsList, { type PlaygroundDiagnostic } from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
 import SamplePicker, { type PlaygroundSample } from "./sample-picker";
-import { createModuleLoader, useWasmModule } from "./use-wasm-module";
+import { createModuleLoader, wasmModule, type WasmModuleState } from "./use-wasm-module";
 
 type ParseModule = typeof import("@takazudo/zfb-md-wasm/parse");
 
@@ -105,37 +111,54 @@ function formatTrap(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function ParseOutput({ state }: { state: ReturnType<typeof useParseModule>["state"] }) {
-  if (state.status !== "ready") {
-    return (
-      <pre className="m-0 whitespace-pre-wrap">
-        {state.status === "idle" ? "Run to inspect the raw mdast tree." : ""}
-      </pre>
-    );
-  }
+const loadParseModule = createModuleLoader<ParseModule>(
+  () => import("@takazudo/zfb-md-wasm/parse"),
+);
 
-  const summary = summarizeAst(state.result.displayAst);
+function ParseOutput({ state }: { state: ReadonlySignal<WasmModuleState<ParseRunResult>> }) {
+  const ready = computed(() => state.value.status === "ready");
+  const summary = computed(() => {
+    const current = state.value;
+    return current.status === "ready"
+      ? summarizeAst(current.result.displayAst)
+      : { nodeCount: 0, maxDepth: 0 };
+  });
+
   return (
-    <div className="flex min-w-0 flex-col gap-vsp-sm">
-      <p className="m-0 text-caption">
-        node count: {summary.nodeCount} · max depth: {summary.maxDepth}
-      </p>
-      <pre className="m-0 whitespace-pre">{formatJson(state.result.displayAst)}</pre>
-    </div>
+    <Show
+      when={ready}
+      fallback={() => (
+        <pre class="m-0 whitespace-pre-wrap">
+          {computed(() =>
+            state.value.status === "idle" ? "Run to inspect the raw mdast tree." : "",
+          )}
+        </pre>
+      )}
+    >
+      {() => (
+        <div class="flex min-w-0 flex-col gap-vsp-sm">
+          <p class="m-0 text-caption">
+            node count: {computed(() => summary.value.nodeCount)} · max depth:{" "}
+            {computed(() => summary.value.maxDepth)}
+          </p>
+          <pre class="m-0 whitespace-pre">
+            {computed(() => {
+              const current = state.value;
+              return current.status === "ready" ? formatJson(current.result.displayAst) : "";
+            })}
+          </pre>
+        </div>
+      )}
+    </Show>
   );
 }
 
-function useParseModule() {
-  const loadParseModule = useMemo(
-    () => createModuleLoader<ParseModule>(() => import("@takazudo/zfb-md-wasm/parse")),
-    [],
-  );
-
-  return useWasmModule<
+function parseModule(scope: Scope) {
+  return wasmModule<
     ParseModule,
     [source: string, options: ParseToAstOptions, adaptToMdast: boolean],
     ParseRunResult
-  >({
+  >(scope, {
     loadModule: loadParseModule,
     execute: async (module, source, options, adaptToMdast) => {
       const parsed: ParseToAstResult = await module.parseToAst(source, options);
@@ -170,6 +193,9 @@ function useParseModule() {
   });
 }
 
+const selectClass =
+  "rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2";
+
 function ParseOptions({
   dialect,
   filename,
@@ -177,71 +203,43 @@ function ParseOptions({
   frontmatter,
   gfm,
   adaptToMdast,
-  onDialectChange,
-  onFilenameChange,
-  onDirectivesChange,
-  onFrontmatterChange,
-  onGfmChange,
-  onAdapterChange,
 }: {
-  dialect: ParseDialect;
-  filename: string;
-  directives: boolean;
-  frontmatter: FrontmatterPolicy;
-  gfm: Record<GfmField, boolean>;
-  adaptToMdast: boolean;
-  onDialectChange: (value: ParseDialect) => void;
-  onFilenameChange: (value: string) => void;
-  onDirectivesChange: (value: boolean) => void;
-  onFrontmatterChange: (value: FrontmatterPolicy) => void;
-  onGfmChange: (field: GfmField, value: boolean) => void;
-  onAdapterChange: (value: boolean) => void;
+  dialect: Signal<string>;
+  filename: Signal<string>;
+  directives: Signal<boolean>;
+  frontmatter: Signal<string>;
+  gfm: Record<GfmField, Signal<boolean>>;
+  adaptToMdast: Signal<boolean>;
 }) {
   return (
-    <fieldset className="m-0 border-0 p-0">
-      <legend className="mb-vsp-xs text-small font-semibold">ParseToAstOptions</legend>
-      <div className="grid grid-cols-1 gap-hsp-md md:grid-cols-2">
-        <label className="flex flex-col gap-vsp-2xs text-small">
-          <span className="font-mono">dialect</span>
-          <select
-            className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            value={dialect}
-            onChange={(event) => onDialectChange(event.currentTarget.value as ParseDialect)}
-          >
+    <fieldset class="m-0 border-0 p-0">
+      <legend class="mb-vsp-xs text-small font-semibold">ParseToAstOptions</legend>
+      <div class="grid grid-cols-1 gap-hsp-md md:grid-cols-2">
+        <label class="flex flex-col gap-vsp-2xs text-small">
+          <span class="font-mono">dialect</span>
+          <select class={selectClass} modelValue={dialect}>
             <option value="markdown">markdown</option>
             <option value="mdx">mdx</option>
           </select>
         </label>
 
-        <label className="flex flex-col gap-vsp-2xs text-small">
-          <span className="font-mono">filename</span>
-          <input
-            className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            type="text"
-            value={filename}
-            onInput={(event) => onFilenameChange(event.currentTarget.value)}
-          />
+        <label class="flex flex-col gap-vsp-2xs text-small">
+          <span class="font-mono">filename</span>
+          <input class={selectClass} type="text" modelValue={filename} />
         </label>
 
-        <label className="flex items-center gap-hsp-sm text-small">
+        <label class="flex items-center gap-hsp-sm text-small">
           <input
             type="checkbox"
-            className="accent-accent focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            checked={directives}
-            onChange={(event) => onDirectivesChange(event.currentTarget.checked)}
+            class="accent-accent focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+            modelChecked={directives}
           />
-          <span className="font-mono">directives</span>
+          <span class="font-mono">directives</span>
         </label>
 
-        <label className="flex flex-col gap-vsp-2xs text-small">
-          <span className="font-mono">frontmatter</span>
-          <select
-            className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            value={frontmatter}
-            onChange={(event) =>
-              onFrontmatterChange(event.currentTarget.value as FrontmatterPolicy)
-            }
-          >
+        <label class="flex flex-col gap-vsp-2xs text-small">
+          <span class="font-mono">frontmatter</span>
+          <select class={selectClass} modelValue={frontmatter}>
             <option value="extract">extract</option>
             <option value="node">node</option>
             <option value="none">none</option>
@@ -249,66 +247,81 @@ function ParseOptions({
         </label>
       </div>
 
-      <div className="mt-vsp-sm">
+      <div class="mt-vsp-sm">
         {GFM_FIELDS.map(({ key, label }) => (
-          <OptionRow
-            key={key}
-            label={label}
-            checked={gfm[key]}
-            onChange={(value) => onGfmChange(key, value)}
-          />
+          <OptionRow label={label} checked={gfm[key]} />
         ))}
-        <OptionRow label="toMdastRoot" checked={adaptToMdast} onChange={onAdapterChange} />
+        <OptionRow label="toMdastRoot" checked={adaptToMdast} />
       </div>
     </fieldset>
   );
 }
 
-function ParsePlayground() {
-  const [source, setSource] = useState(PARSE_SAMPLE.value);
-  const [activeSampleId, setActiveSampleId] = useState<string | undefined>(PARSE_SAMPLE.id);
-  const [dialect, setDialect] = useState<ParseDialect>("mdx");
-  const [filename, setFilename] = useState("preview.mdx");
-  const [directives, setDirectives] = useState(false);
-  const [frontmatter, setFrontmatter] = useState<FrontmatterPolicy>("extract");
-  const [gfm, setGfm] = useState(DEFAULT_GFM);
-  const [adaptToMdast, setAdaptToMdast] = useState(false);
-  const [hasRun, setHasRun] = useState(false);
-  const { state, run } = useParseModule();
+export default function ParsePlayground() {
+  const scope = getScope();
+  const source = signal(PARSE_SAMPLE.value);
+  const activeSampleId = signal<string | undefined>(PARSE_SAMPLE.id);
+  const dialect = signal<string>("mdx");
+  const filename = signal("preview.mdx");
+  const directives = signal(false);
+  const frontmatter = signal<string>("extract");
+  const gfm: Record<GfmField, Signal<boolean>> = {
+    strikethrough: signal(DEFAULT_GFM.strikethrough),
+    table: signal(DEFAULT_GFM.table),
+    autolinkLiteral: signal(DEFAULT_GFM.autolinkLiteral),
+    taskListItem: signal(DEFAULT_GFM.taskListItem),
+    footnoteDefinition: signal(DEFAULT_GFM.footnoteDefinition),
+  };
+  const adaptToMdast = signal(false);
+  const hasRun = signal(false);
+  const { state, run } = parseModule(scope);
 
   function handleRun(): void {
     const options: ParseToAstOptions = {
-      dialect,
-      filename,
-      directives,
-      frontmatter,
-      pipeline: { gfm },
+      dialect: dialect.value as ParseDialect,
+      filename: filename.value,
+      directives: directives.value,
+      frontmatter: frontmatter.value as FrontmatterPolicy,
+      pipeline: {
+        gfm: {
+          strikethrough: gfm.strikethrough.value,
+          table: gfm.table.value,
+          autolinkLiteral: gfm.autolinkLiteral.value,
+          taskListItem: gfm.taskListItem.value,
+          footnoteDefinition: gfm.footnoteDefinition.value,
+        },
+      },
     };
-    setHasRun(true);
-    void run(source, options, adaptToMdast).catch(() => undefined);
+    hasRun.value = true;
+    void run(source.value, options, adaptToMdast.value).catch(() => undefined);
   }
 
   function pickSample(sample: PlaygroundSample): void {
-    setSource(sample.value);
-    setActiveSampleId(sample.id);
-    setDirectives(isNoteDirectiveSample(sample));
+    source.value = sample.value;
+    activeSampleId.value = sample.id;
+    directives.value = isNoteDirectiveSample(sample);
   }
 
-  const diagnostics = state.status === "ready" ? state.result.diagnostics : [];
-  const trapError = state.status === "error" ? formatTrap(state.error) : null;
+  const diagnostics = computed(() => {
+    const current = state.value;
+    return current.status === "ready" ? current.result.diagnostics : [];
+  });
+  const trapError = computed(() => {
+    const current = state.value;
+    return current.status === "error" ? formatTrap(current.error) : "";
+  });
 
   return (
     <PlaygroundShell
       value={source}
-      onInput={(value) => {
-        setSource(value);
-        setActiveSampleId(undefined);
+      onInput={() => {
+        activeSampleId.value = undefined;
       }}
       onRun={handleRun}
-      pending={state.status === "loading"}
+      pending={computed(() => state.value.status === "loading")}
       hasRun={hasRun}
       options={
-        <div className="flex flex-col gap-vsp-sm">
+        <div class="flex flex-col gap-vsp-sm">
           <SamplePicker
             samples={PARSE_SAMPLES}
             activeSampleId={activeSampleId}
@@ -321,23 +334,13 @@ function ParsePlayground() {
             frontmatter={frontmatter}
             gfm={gfm}
             adaptToMdast={adaptToMdast}
-            onDialectChange={setDialect}
-            onFilenameChange={setFilename}
-            onDirectivesChange={setDirectives}
-            onFrontmatterChange={setFrontmatter}
-            onGfmChange={(field, value) => setGfm((current) => ({ ...current, [field]: value }))}
-            onAdapterChange={setAdaptToMdast}
           />
         </div>
       }
       output={<ParseOutput state={state} />}
       diagnostics={<DiagnosticsList diagnostics={diagnostics} label="Parse diagnostics" />}
       trapError={trapError}
-      textareaProps={{ "aria-label": "Markdown or MDX source" }}
+      textareaLabel="Markdown or MDX source"
     />
   );
 }
-
-(ParsePlayground as { displayName?: string }).displayName = "ParsePlayground";
-
-export default ParsePlayground;

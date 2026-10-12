@@ -1,8 +1,6 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
 "use client";
 
-import { useEffect, useRef } from "preact/hooks";
+import { getScope, type Ref } from "@takazudo/zfb/zudo-react";
 import type { WorkshopSnapshot } from "./design-workshop/model.js";
 import { mountDesignWorkshop } from "./design-workshop/workshop.js";
 
@@ -11,8 +9,9 @@ import { mountDesignWorkshop } from "./design-workshop/workshop.js";
 type WorkshopWindow = Window & { __zfbDesignWorkshopSnapshot?: WorkshopSnapshot };
 
 export default function DesignSystemPlayground() {
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  const root: Ref<HTMLDivElement> = { current: null };
+
+  getScope().onActivate(() => {
     if (!root.current) return;
     const host = window as WorkshopWindow;
     const workshop = mountDesignWorkshop(root.current, {
@@ -22,9 +21,7 @@ export default function DesignSystemPlayground() {
       host.__zfbDesignWorkshopSnapshot = workshop.getSnapshot();
       workshop.dispose();
     };
-  }, []);
+  });
 
   return <div id="design-workshop" ref={root} />;
 }
-
-DesignSystemPlayground.displayName = "DesignSystemPlayground";

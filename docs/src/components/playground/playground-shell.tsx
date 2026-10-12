@@ -1,7 +1,10 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
-
-import type { ComponentChildren, JSX } from "preact";
+import {
+  computed,
+  Show,
+  type Child,
+  type ReadonlySignal,
+  type Signal,
+} from "@takazudo/zfb/zudo-react";
 
 export interface PlaygroundShellLabels {
   input: string;
@@ -13,22 +16,18 @@ export interface PlaygroundShellLabels {
 }
 
 export interface PlaygroundShellProps {
-  value: string;
-  onInput: (value: string) => void;
+  value: Signal<string>;
+  onInput?: () => void;
   onRun: () => void;
-  pending?: boolean;
-  hasRun?: boolean;
+  pending: ReadonlySignal<boolean>;
+  hasRun: ReadonlySignal<boolean>;
   labels?: Partial<PlaygroundShellLabels>;
   apiReferenceHref?: string;
-  options?: ComponentChildren;
-  output?: ComponentChildren;
-  diagnostics?: ComponentChildren;
-  trapError?: ComponentChildren;
-  textareaProps?: Omit<
-    JSX.TextareaHTMLAttributes<HTMLTextAreaElement>,
-    "children" | "className" | "onInput" | "spellcheck" | "value"
-  >;
-  textareaClassName?: string;
+  options?: Child;
+  output?: Child;
+  diagnostics?: Child;
+  trapError?: Child;
+  textareaLabel?: string;
 }
 
 const defaultLabels: PlaygroundShellLabels = {
@@ -44,71 +43,71 @@ export default function PlaygroundShell({
   value,
   onInput,
   onRun,
-  pending = false,
-  hasRun = false,
+  pending,
+  hasRun,
   labels: labelsProp,
   apiReferenceHref = "/docs/api/md-wasm/",
   options,
   output,
   diagnostics,
   trapError,
-  textareaProps,
-  textareaClassName = "",
+  textareaLabel,
 }: PlaygroundShellProps) {
   const labels = { ...defaultLabels, ...labelsProp };
+  const runLabel = computed(() => (pending.value ? labels.pending : labels.run));
+  const showFirstRunNotice = computed(() => !hasRun.value);
 
   return (
-    <section className="flex flex-col gap-vsp-sm text-fg">
+    <section class="flex flex-col gap-vsp-sm text-fg">
       {options ? (
-        <div className="rounded-lg border border-muted bg-surface p-hsp-lg">{options}</div>
+        <div class="rounded-lg border border-muted bg-surface p-hsp-lg">{options}</div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-vsp-sm lg:grid-cols-2">
-        <label className="flex min-w-0 flex-col gap-vsp-2xs text-small font-semibold">
+      <div class="grid grid-cols-1 gap-vsp-sm lg:grid-cols-2">
+        <label class="flex min-w-0 flex-col gap-vsp-2xs text-small font-semibold">
           {labels.input}
           <textarea
-            {...textareaProps}
-            value={value}
+            aria-label={textareaLabel}
+            modelValue={value}
             rows={18}
             spellcheck={false}
-            className={`w-full resize-y rounded-lg border border-muted bg-code-bg p-hsp-lg font-mono text-small font-normal text-code-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 ${textareaClassName}`}
-            onInput={(event) => onInput(event.currentTarget.value)}
+            class="w-full resize-y rounded-lg border border-muted bg-code-bg p-hsp-lg font-mono text-small font-normal text-code-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+            on:input={() => onInput?.()}
           />
         </label>
 
-        <section className="flex min-w-0 flex-col gap-vsp-2xs" aria-label={labels.output}>
-          <h2 className="text-small font-semibold">{labels.output}</h2>
-          <div className="flex-1 overflow-auto rounded-lg border border-muted bg-code-bg p-hsp-lg font-mono text-small text-code-fg">
+        <section class="flex min-w-0 flex-col gap-vsp-2xs" aria-label={labels.output}>
+          <h2 class="text-small font-semibold">{labels.output}</h2>
+          <div class="flex-1 overflow-auto rounded-lg border border-muted bg-code-bg p-hsp-lg font-mono text-small text-code-fg">
             {output}
           </div>
         </section>
       </div>
 
-      <div className="flex flex-wrap items-center gap-hsp-md">
+      <div class="flex flex-wrap items-center gap-hsp-md">
         <button
           type="button"
-          className="rounded bg-accent px-hsp-lg py-vsp-xs text-small font-semibold text-bg transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+          class="rounded bg-accent px-hsp-lg py-vsp-xs text-small font-semibold text-bg transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
           aria-busy={pending}
-          onClick={onRun}
+          on:click={() => onRun()}
         >
-          {pending ? labels.pending : labels.run}
+          {runLabel}
         </button>
-        <div aria-live="assertive" className="min-w-0 text-small text-danger">
+        <div aria-live="assertive" class="min-w-0 text-small text-danger">
           {trapError}
         </div>
       </div>
 
-      {!hasRun ? (
-        <p className="text-caption text-muted">
-          {labels.firstRunNotice}{" "}
-          <a
-            className="text-accent hover:underline focus-visible:underline"
-            href={apiReferenceHref}
-          >
-            {labels.apiReference}
-          </a>
-        </p>
-      ) : null}
+      <Show when={showFirstRunNotice}>
+        {() => (
+          <p class="text-caption text-muted">
+            {labels.firstRunNotice}{" "}
+            <a class="text-accent hover:underline focus-visible:underline" href={apiReferenceHref}>
+              {labels.apiReference}
+            </a>
+          </p>
+        )}
+      </Show>
 
       {diagnostics}
     </section>

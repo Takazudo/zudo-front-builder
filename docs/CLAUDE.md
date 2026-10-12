@@ -1,23 +1,26 @@
 # Docs
 
-Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, Tailwind CSS v4, and Preact islands.
+Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-This host stays on zudo-doc's published 2.x stack until that downstream
-package ships a major release on the new engines.
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 4.3.2,
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 6.0.1 and `@takazudo/zdtp` 0.8.6 (#3329). Verify
+versions from the docs command context (`pnpm --dir docs exec zfb --version`,
+`pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
 ## Tech Stack
 
 - **zfb** — static site engine (Rust binary + JS plugin host)
 - **MDX** — content format
-- **Tailwind CSS v4** — compiled by the Tailwind v4 CLI embedded in the `zfb` binary; there is no per-project `tailwindcss` / `@tailwindcss/vite` install (see `src/content/docs/concepts/styling.mdx`)
-- **Preact** — for interactive islands only
+- **zudo-wind** — utility CSS compiled in-process by `zfb`. `zudoDoc()` registers the package's `wind.json` manifest and var-backed defaults; the host's top-level `wind` key in `zfb.config.ts` adds the `md` (768px) breakpoint the playgrounds use, excludes Wind preview samples and the workshop's generated starter code from source discovery, and reserves the workshop's authored class names. `src/styles/global.css` holds only package CSS imports, authored CSS and `:root` overrides — no Tailwind directives. Gate with `pnpm exec zfb wind audit --project-root . --plan build --fail-on error`
+- **zudo-react** — host islands (the playgrounds) use setup-time signals, `Show`/`For`, and scope `onActivate`/`effect`/`onCleanup`; there is no Preact rendering or compatibility path in the host
 - **`@takazudo/zfb-md-wasm`** — code highlighting (compiled into the zfb pipeline; no separate Shiki dependency)
 
 ## Dependency audit register
 
 Keep these direct docs declarations when auditing dependencies:
 
-- **zudo-doc peer feature packages:** `diff`, `katex`, `preact`, `zod`, `@takazudo/zdtp`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
+- **zudo-doc peer feature packages:** `diff`, `katex`, `zod`, `@takazudo/zdtp`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
+- **No direct `preact` / `preact-render-to-string`.** zudo-doc 6 core rendering does not need Preact. The only Preact left in the docs graph is zdtp 0.8.6's own private dependency (its isolated panel subtree); `designTokenPanel` stays at the package default `false`, so no page mounts it. Never re-add Preact to host code or tests (component tests render with `@takazudo/zfb/zudo-react/server`).
 - **No separate script supervisor:** `dev` and `dev:network` use `run-parallel`, a bin shipped by `@takazudo/zudo-doc` (already a direct dependency, since 5.14.0), so no separate process-supervisor package belongs here. Any future replacement must forward signals to the whole descendant tree, propagate the real exit status, and reap both children on Ctrl-C — `run-parallel` was verified for all three in the PR for issue #2826. JSON cannot carry this rationale as a comment.
 
 This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing these declarations.
@@ -25,14 +28,12 @@ This register is a keep-list, not a request to add dependencies. Re-check the in
 ## tsconfig.json inlines zudo-doc's base config
 
 `docs/tsconfig.json` copies the `compilerOptions` and `files` of
-`@takazudo/zudo-doc@5.27.0/tsconfig.base.json` instead of extending it (#3556). The upstream file
-sets `baseUrl: "."`, which TypeScript 6 rejects as deprecated (TS5101) and TypeScript 7 removes.
-Extending it would make every inherited `paths` anchor at the zudo-doc package directory, and
-`"baseUrl": null` is not a fix: tsc honors the reset, but esbuild and zfb's own tsconfig reader keep
-the inherited value, so the `react` → `preact/compat` aliases stop resolving in the product build.
-The copy drops only `baseUrl`, adds `types: ["node"]` (TypeScript 6 no longer auto-loads
-`@types/*`), and keeps the `paths` relative to `docs/`. When zudo-doc is bumped, diff its new
-`tsconfig.base.json` against this file and carry over any change.
+`@takazudo/zudo-doc@6.0.1/tsconfig.base.json` instead of extending it (#3556). The upstream file
+sets `baseUrl: "."`, which this host's TypeScript 7 rejects (TS5102) even when inherited through
+`extends`. The copy drops only `baseUrl` and adds `types: ["node"]` (TypeScript 6+ no longer
+auto-loads `@types/*`). It keeps the base's `jsxImportSource: "@takazudo/zfb/zudo-react"` and has no
+`paths`: the old `react` → `preact/compat` aliases are gone, and nothing imports `@/`. When zudo-doc
+is bumped, diff its new `tsconfig.base.json` against this file and carry over any change.
 
 ## Setup
 
@@ -57,36 +58,43 @@ This site is a **minimal v4 scaffold host**: one config file drives everything, 
 
 ```
 docs/
-├── zfb.config.ts        # The ONE config file — defineConfig(zudoDoc({ ... }))
-├── pages/                # Three route stubs the host must carry (see below)
+├── zfb.config.ts        # The ONE config file — defineConfig(zudoDoc({ ... })), incl. `wind`
+├── pages/                # Four host-owned route files (see below)
 │   ├── index.tsx                     # "/" — re-exports @takazudo/zudo-doc/routes/index
+│   ├── [locale].tsx                  # "/{locale}" — locale home: EN-only compact links + JA tags
 │   ├── docs/[[...slug]].tsx          # "/docs/**" — self-contained stub, see file header
-│   └── [locale]/docs/[[...slug]].tsx # "/{locale}/docs/**" — locale counterpart
-├── public/               # Static assets copied flat to dist/ (favicons, img/)
+│   └── [locale]/docs/[[...slug]].tsx # "/{locale}/docs/**" — locale counterpart (JA fallback dirs)
+├── public/               # Static assets copied flat to dist/ (favicons, img/, _redirects)
 └── src/
+    ├── chrome-bindings.tsx   # chromeBindingsModule: MDX playground islands, home extras, nav chrome
+    ├── navigation-chrome.tsx # Header/Sidebar factories fed with the editorial navigation data
+    ├── components/           # Host islands (playgrounds, design workshop, Wind preview enhancer)
     ├── config/
-    │   └── docs-schema.ts  # 10-line wrapper over the package's default schema,
-    │                       # adding the one host-specific frontmatter key: `tier`
+    │   ├── docs-schema.ts        # wrapper over the package schema adding the `tier` key
+    │   ├── navigation-groups.mjs # shared editorial membership (sidebar + overview cards)
+    │   ├── navigation-scope.mjs  # local sidebar views for Wind pages
+    │   └── route-migrations.mjs  # compatibility redirects/anchors
     ├── content/
     │   ├── docs/        # EN MDX content
     │   └── docs-ja/     # Japanese MDX content (mirrors docs/ structure)
-    └── styles/          # global.css (Tailwind config + package CSS imports + token overrides)
+    └── styles/          # global.css (package CSS imports + authored CSS + :root overrides)
 ```
 
 There is no `src/config/settings.ts`, `settings-types.ts`, `i18n.ts`, `color-schemes.ts`,
 `tag-vocabulary.ts`, or `zfb-shim.d.ts` — `zudoDoc({ ... })` in `zfb.config.ts` replaces all of
-them. `docs-schema.ts` is the only survivor under `src/config/`, and only because this site adds
-one frontmatter key the package doesn't know about.
+them.
 
-**Why three route stubs exist, not zero:** `zudoDoc()`'s routes plugin injects `/docs/[[...slug]]`,
-`/[locale]/docs/[[...slug]]`, `/[locale]`, `/404`, `/sitemap.xml`, and `/robots.txt` package-side —
-but injected **dynamic** routes 404 under `zfb dev` (a pre-existing zfb dev-mode gap, distinct from
-the static-route injection gap). The two `[[...slug]]` stubs under `pages/` work around it by
-reconstructing the route from the sanctioned package entrypoints (`virtual:zudo-doc-route-context`,
-`@takazudo/zudo-doc/route-context`, `@takazudo/zudo-doc/chrome`) — see each file's own header
-comment for the full contract. `pages/index.tsx` is a one-line re-export because the static home
-route doesn't hit the same dynamic-route bug. There is no `pages/[locale].tsx` — the package serves
-`/[locale]` itself without a host stub.
+**Why the host keeps route files:** `zudoDoc()`'s routes plugin injects `/docs/[[...slug]]`,
+`/[locale]/docs/[[...slug]]`, `/[locale]`, `/404`, `/sitemap.xml`, and `/robots.txt` package-side;
+a host `pages/` route shadows the package one. The two `[[...slug]]` stubs keep explicit host
+ownership of the doc routes, rebuilt from the sanctioned package entrypoints
+(`virtual:zudo-doc-route-context`, `@takazudo/zudo-doc/route-context`, `@takazudo/zudo-doc/chrome`).
+Each statically imports `../src/chrome-bindings` (the island scanner cannot follow the virtual
+bindings module to on-disk client components) and merges the package `DocHistoryBoundary` over the
+bindings so the history button hydrates. The locale stub threads each locale's content dir and the
+EN fallback (`isFallback`, EN `docsDir` for doc history). `pages/[locale].tsx` replaces the
+package locale home so the compact site links keep EN-only sections while tag counts stay
+locale-filtered. `pages/index.tsx` is a one-line re-export of the package home.
 
 **Extension seam:** to customize a package-owned component (chrome, a specific route, etc.), run
 `npx zudo-doc eject <component>` — this copies the package's implementation into the host tree so
