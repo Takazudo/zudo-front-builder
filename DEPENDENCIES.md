@@ -2925,6 +2925,29 @@ The frozen harness already pins the ratio rejection in its `alias-anchor-repetit
   tests must be re-counted ([README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
   checked 2026-08-30; [abandon rule](#abandon-rule), checked 2026-08-30).
 
+##### `noyalib 0.0.55` adoption (#4161, #4172, #4173) — MIGRATE to 0.0.55
+
+**Rationale.** 0.0.55 fixes quadratic-time parsing of long flow lines, which hits zfb's default-configuration frontmatter path. #4172 evaluated the exact 0.0.55 pair against the shipping 0.0.53 pair (`research/4172-noyalib-055-compare/report.md`) and found it MIGRATE-ELIGIBLE: the immutable 18-observation differential harness, frontmatter resource budgets, `zfb-content` tests and the md-wasm build/npm/pack lanes all pass, and every hard artifact ceiling holds on CI. 0.0.54, 0.0.56 and 0.0.57 stay out of scope.
+
+**Owner exception.** The owner granted a candidate-specific discretionary exception on 2026-10-12 (#4161) for the default and parse-only growth above the 1,024 B threshold and for render-only growth. It covers exactly this pair and is not a ceiling change; no ceiling is raised.
+
+**Pin.** Root `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.55" }`. `Cargo.lock` changes only the two pair entries; checksums match crates.io and `research/4172-noyalib-055-compare/provenance.json`: `0c3ccce0306ea4477a655985ff2bf3e6c38f78f3e1defef6f30c7eb24d58cf41` (`noyalib 0.0.55`) and `4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b` (`noyalib-serde-yaml 0.0.55`). The harness label (`CURRENT_ADAPTER_NAME` and the fixture `adapter` field) moves to 0.0.55 with the corpus and the 18 baseline observations byte-identical. Both island-size contracts record the new `Cargo.lock` SHA-256 (`22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e`), ceilings unchanged, and the Wind source digests are refreshed.
+
+**Accepted probe diffs.** Each is a refusal, a new acceptance or different error text; none changes the value of a previously accepted document:
+
+- `v: !<int> 1` is now refused (YAML 1.2.2: a verbatim tag names the URI exactly). No frontmatter in `docs/`, `crates/zfb/templates/` or `tests/` uses verbatim tags. This must be called out in the zfb and zfb-md-wasm changelog lanes at release time.
+- `!<tag:yaml.org,2002:int>` and `!<tag:yaml.org,2002:str>` verbatim tags are newly accepted.
+- An alias deeper than `max_depth` (128) is newly refused (resource-safety tightening).
+- Over-long flow-sequence keys (1,025 and 30,000 chars) and flow pairs in a 1,050-element sequence are refused by both pins; only the error text differs.
+
+**Behavior evidence.** At 240,000 mapping rows, long-flow-line parsing drops from 4.23 s to 0.074 s (about 57x; log-log slope 1.82-2.00 to about 1.0). Refusal above `max_nodes` takes 49-52 ms against 9.3-23.9 s. Timing is evidence only, not a CI threshold.
+
+**CI candidate sizes** (gzip-9, [health run 38279381185](https://github.com/Takazudo/zudo-front-builder/actions/runs/38279381185), wasm-md default job 114912721041, scratch branch head `560f7bee`): render-only 1,094,951 (+742 vs 0.0.53; ceiling 1,100,000), default 1,521,735 (+1,842; ceiling 1,600,000), parse-only 285,917 (+1,385; ceiling 325,000), highlight-only 817,815 (0; ceiling 880,000). The CI tarball size was not measured by that run.
+
+**CI size alignment (#4173).** `crates/zfb-md-wasm/shipped-sizes.json` and its synced doc tables now carry the authoritative CI wasm-md build of PR #4178 ([health run 38290518002](https://github.com/Takazudo/zudo-front-builder/actions/runs/38290518002), job `wasm-md (default, default)` 114949291592, head `1798f6862f07917713c21ef532d290f78529d127`), never Mac bytes. finalWasm/gzip-9 moved: root 3,390,904/1,519,893 to 3,393,574/1,521,735, render 2,198,163/1,094,209 to 2,200,768/1,094,951, parse 701,081/284,532 to 703,433/285,917. highlight is unchanged (byte-identical finalWasm and gzip-9 817,815). Glue columns and every ceiling are unchanged. The manifest records no measured tarball total, so none is updated; a tarball figure would come from a later CI pack step.
+
+**Still open.** Native Darwin and CI Linux island-size confirmation at the new `Cargo.lock` hash are pending.
+
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
 This evaluation deliberately used **serde-saphyr 1.2.0**, superseding the

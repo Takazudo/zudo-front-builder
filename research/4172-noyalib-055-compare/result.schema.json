@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zfb-4172-result/v1",
+  "title": "#4172 noyalib 0.0.53 vs 0.0.55 comparison result (evaluate.py summarize)",
+  "type": "object",
+  "required": [
+    "schema",
+    "issue",
+    "summarizedAt",
+    "control",
+    "candidate",
+    "decision",
+    "steps",
+    "gates",
+    "incompleteReasons",
+    "pendingReasons",
+    "keepReasons",
+    "notes"
+  ],
+  "properties": {
+    "schema": { "const": "zfb-4172-result/v1" },
+    "issue": { "type": "string" },
+    "summarizedAt": { "type": "string" },
+    "control": { "const": "0.0.53" },
+    "candidate": { "const": "0.0.55" },
+    "decision": { "enum": ["MIGRATE-ELIGIBLE", "KEEP", "HOLD"] },
+    "environment": {
+      "type": ["object", "null"],
+      "description": "host, toolchainStart/Control/Candidate/End key-value records from compare.sh"
+    },
+    "registry": {
+      "type": ["object", "null"],
+      "description": "evaluate.py registry output: per-crate yanked, checksum, archive SHA-256, exact core pin, newer pairs"
+    },
+    "steps": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "control": { "$ref": "#/$defs/state" },
+          "candidate": { "$ref": "#/$defs/state" }
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": { "type": "array", "items": { "type": "string" } }
+    },
+    "informationalSteps": { "type": "object" },
+    "probeCases": { "type": "integer" },
+    "probeDiffs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "documented", "class", "control", "candidate"],
+        "properties": {
+          "name": { "type": "string" },
+          "documented": { "type": "boolean" },
+          "class": {
+            "enum": [
+              "error-text-only",
+              "value-change",
+              "newly-refused",
+              "newly-accepted",
+              "missing"
+            ]
+          },
+          "control": { "type": "object" },
+          "candidate": { "type": ["object", "null"] },
+          "disposition": {
+            "type": "object",
+            "required": ["disposition"],
+            "properties": {
+              "disposition": { "enum": ["accepted", "regression"] },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "longFlowLine": {
+      "type": "object",
+      "description": "per shape (mapping-value, document-start): per-lane slopes/rows plus largestCommonControlOverCandidate and the descriptive improvementDemonstrated flag"
+    },
+    "ciCandidate": {
+      "type": "object",
+      "properties": {
+        "run": { "type": ["string", "null"] },
+        "parsed": { "type": "object" }
+      }
+    },
+    "sizes": {
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "control",
+              "candidate",
+              "delta",
+              "ceiling",
+              "projectedCiGzip9",
+              "projectedCiHeadroom"
+            ]
+          }
+        },
+        "tarballBytes": { "type": "object" },
+        "tarballCeiling": { "const": 3900000 },
+        "ciTarballBytes": { "type": ["integer", "null"] },
+        "distTotalBytes": { "type": "object" },
+        "renderZeroGrowth": { "type": "boolean" },
+        "ownerExceptionApplies": { "type": "boolean" }
+      }
+    },
+    "incompleteReasons": { "type": "array", "items": { "type": "string" } },
+    "pendingReasons": { "type": "array", "items": { "type": "string" } },
+    "keepReasons": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "state": { "enum": ["PASS", "FAIL", "ENV_FAIL", "NOT_RUN"] }
+  }
+}
