@@ -568,26 +568,26 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.3.2");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.3.3");
     expect(darwinContract.schemaVersion).toBe(2);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("87a9b722bb35d609001d6cac1337461113e0c98f");
+    expect(darwinContract.baselineSourceSha).toBe("e7d703770d7a8e805a72cad5c947cf59a847a760");
     expect(darwinContract.baselineEvidence).toMatchObject({
-      event: "ci-artifact-replay",
-      runId: 38217794482,
-      jobId: 114706509526,
-      artifact: { id: 11733203044 },
+      event: "ci-artifact",
+      runId: 38264188626,
+      jobId: 114862063309,
+      artifact: { id: 11754721284 },
     });
-    // The lock hashes are those of the artifact's source SHA (historical
-    // evidence); #4170 owns re-pinning them from a native run of current inputs.
+    // Lock hashes come from the native release-bump re-pin (#4170); the
+    // ceilings below are the unchanged #4169 metric-migration values.
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "6f0472019d08cf4198c9f3bada97a1469302e7ce9ed0b3829fabccbace95d14c",
+      "0cd28018dc8e27bdf43384ba50efba8f6b2f08a824701e2cb0e3942bea485d00",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504",
+      "e488faa9fe58e3bf2cee980228761558a44a61eab70c454463ea872b013fec75",
     );
     expect(darwinContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
