@@ -193,10 +193,10 @@ export function validateDarwinEvidence(
     }
     if (p.fixtureVersion !== contract?.fixtureVersion)
       errors.push(label + "fixture version differs");
-    if (!sameJson(sortedEntries(p.fixtureSha256), sortedEntries(contract.fixtureSha256))) {
+    if (!sameJson(sortedEntries(p.fixtureSha256), sortedEntries(contract?.fixtureSha256))) {
       errors.push(label + "fixture hashes differ from the contract");
     }
-    if (!sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract.runnerSha256))) {
+    if (!sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract?.runnerSha256))) {
       errors.push(label + "runner hashes differ from the contract");
     }
     for (const [key, expected] of [
