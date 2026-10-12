@@ -514,6 +514,12 @@ declaration is removable even if its package remains in `Cargo.lock`.
   **Next trigger:** unchanged from above — the next lockstep release beyond
   0.0.44, or a yank of either adopted version.
 
+  **Bumped to `0.0.53` on 2026-10-12 for RUSTSEC-2026-0333 (#4159).** The
+  advisory's patched floor is 0.0.53. The newest complete pair, 0.0.57,
+  still carries the `render-only` size growth that rejected 0.0.56, so the
+  pin moves to the first patched pair. See the "`noyalib 0.0.53` security
+  pin" section below for the same-toolchain size comparison and checksums.
+
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
   `serde_yaml` baseline in 11 of 18 cases. A pinned pre-release re-check of
@@ -2580,6 +2586,25 @@ All 0.0.45–0.0.55 intermediate core and alias versions were non-yanked; their 
 **Detector regression coverage.** The first exact focused-suite invocation, before the baseline refresh, passed 75/77 tests and preserved two failures: the retired-PR request expectation and the expected temporary baseline/config mismatch. After the snapshot but before test correction, the same two stale assertions still failed against the coherent null-pointer state. The corrected final suite passed **78/78**: explicit null/no-query assertions and a positive synthetic-PR test with `finally` restoration were added; the baseline/config agreement, OPEN → MERGED/CLOSED, and malformed-response checks remain. Both changed JavaScript files pass `node --check`; `pnpm format:check` and `git diff --check` pass. The exact five-file scope and all protected Cargo/content/wasm size files were verified against the incoming base. No visual check applies.
 
 **Downstream contract.** Keep `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.44" }`, the complete `Cargo.lock`, `CURRENT_ADAPTER_NAME`, and fixture adapter label `noyalib-serde-yaml 0.0.44 (noyalib 0.0.44 compat-serde-yaml)` unchanged. No release/probe merge, dependency switch, size-manifest edit, or upstream message is part of this decision. A newer complete non-yanked pair, adopted-pair safety/maintenance event, or fresh evidence addressing 0.0.56's measured size regression opens a new bounded evaluation.
+
+##### `noyalib 0.0.53` security pin for RUSTSEC-2026-0333 (#4159) — MIGRATE to 0.0.53
+
+**Trigger: an adopted-pair safety event.** The weekly Security Audit ([run 38220616262](https://github.com/Takazudo/zudo-front-builder/actions/runs/38220616262), `cargo deny`) failed on [RUSTSEC-2026-0333](https://rustsec.org/advisories/RUSTSEC-2026-0333) (GHSA-4xcc-23fx-w2wj, `denial-of-service`, upstream severity Low): before 0.0.53 the typed `from_str::<T>` path did not charge `max_events`, `max_nodes`, `max_total_scalar_bytes`, `max_merge_keys` or the alias ratio. Patched is `>= 0.0.53`. zfb calls `serde_yaml::from_str::<serde_json::Value>` with the default configuration and never tightens those budgets, and the default length, depth and alias-count caps were always enforced, so zfb was not practically exposed. `cargo deny` still denies the version, and `deny.toml` takes no ignore for it.
+
+**Choice: 0.0.53, the first patched pair.** The newer complete pairs carry the size growth that rejected 0.0.56. All four pins were built in one session on the same toolchain (`Darwin arm64`, rustc 1.94.0, wasm-bindgen 0.2.121, `ZFB_RELEASE_VERSION=4.3.2`, `pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling`). Each cell is `finalWasm` / `gzip9` minus the 0.0.44 control:
+
+| Artifact | 0.0.44 control | 0.0.53 | 0.0.54 | 0.0.57 |
+| --- | --- | ---: | ---: | ---: |
+| root | 3,388,459 / 1,524,296 | +742 / +296 | +831 / +462 | +38,694 / +16,897 |
+| highlight | 1,532,921 / 822,379 | 0 / +14 | +1,353 / +315 | +9 / −12 |
+| render | 2,197,882 / 1,097,961 | +834 / +139 | +395 / −10 | +36,933 / +15,995 |
+| parse | 702,039 / 283,320 | +764 / +222 | −272 / +57 | +37,551 / +16,946 |
+
+0.0.57 adds about 16 KB gzip to `render-only`. That is more than its 6,027 B CI headroom (1,093,973 B against 1,100,000 B), so 0.0.55 and later stay blocked by the same size regression that rejected 0.0.56. 0.0.53 grows every field by less than 1,024 B. Its 0.0.54 follow-up bounds only the `from_reader*` entry points, which zfb does not call, and grows `highlight` by more than 1,024 B. `render-only` grows by 834 / 139 B at 0.0.53, so it does not meet the zero-render-growth criterion used for discretionary candidates. That growth is accepted only to clear the advisory, and the ceiling is unchanged. These are Mac bytes. The CI `wasm-md (default)` build summary decides the shipped numbers, and `crates/zfb-md-wasm/shipped-sizes.json` must be aligned from that summary, not from this table.
+
+**Pin.** Root `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.53" }`, with zero production `.rs` lines changed. `Cargo.lock` changes only the two adopted entries. Their checksums match crates.io: `962838abbd8dd2cd3844d2208dc502458bba6985f8bf1dc21761b30260fcbd7f` (`noyalib 0.0.53`, published 2026-10-06T12:41:27Z) and `a62fedc8613fa5ba4db669ce4a88fec7227dfd08902995492c2b4b6ee53f24db` (`noyalib-serde-yaml 0.0.53`, published 2026-10-06T18:20:53Z). Both are un-yanked with `rust-version 1.86.0`, and the alias still pins exact `noyalib =0.0.53` with `std` and `compat-serde-yaml`. The harness label (`CURRENT_ADAPTER_NAME` and the fixture's `adapter` field) moves to 0.0.53 in lockstep, with the corpus and the 18 baseline cases unchanged. Both island-size contracts record the new `Cargo.lock` SHA-256 (see `research/v3-island-size/README.md`). `scripts/yaml-candidate-baseline.json` is unchanged, because the adopted crates did not change and this is not a watcher triage.
+
+**Still open.** 0.0.55 has a hardening fix for quadratic-time parsing of long flow lines, which hits the default configuration, and 0.0.56 adds a nesting cap. zfb does not ship either until the `render-only` size regression is addressed. A newer complete pair that fits the ceiling, or a decision on the render budget, opens the next evaluation.
 
 ##### Epic #3103 wave 4 final confirmation (#3107) — KEEP, one snapshot refresh
 
