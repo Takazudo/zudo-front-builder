@@ -197,3 +197,10 @@ The Linux contract moved from actual gzip (schemaVersion 1) to `gzip-identity-no
 ## v4.3.2 release baseline
 
 The Linux contract was re-pinned for the v4.3.2 release from [health run 38171175674](https://github.com/Takazudo/zudo-front-builder/actions/runs/38171175674) (job 114564479498) at PR merge source `8967122969539d8ae5dbcb2beccf6f7f61360e9f` (probe head `3b1b8f3c55db5aa173db80e7fb049f0b914779be`). Every raw and `gzipNormalized` total is unchanged from the v4.3.1 contract. These totals alone do not prove byte-identical product code. No actual gzip total moved. The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and `gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git history. The Darwin arm64 contract is unchanged, still measures actual gzip under schemaVersion 1, and needs its separate native remeasurement through `island-size-darwin.yml`.
+
+## noyalib 0.0.53 security pin (RUSTSEC-2026-0333)
+
+The YAML pin moved from `noyalib`/`noyalib-serde-yaml` 0.0.44 to 0.0.53 to clear RUSTSEC-2026-0333 ([#4159](https://github.com/Takazudo/zudo-front-builder/issues/4159)). Only those two `Cargo.lock` entries change. Following the `globset` precedent above, both contracts record the new `Cargo.lock` SHA-256 in `toolchain.cargoLockSha256` only. Ceilings, totals, `platformStatus`, and `baselineEvidence` are unchanged, so those fields still describe runs measured at the previous lockfile. The YAML parser is Rust-only and is not part of the shipped island bundles, so the totals are expected to hold:
+
+- Linux x64 (`decision-linux-x64.json`): the CI health job measures this lockfile; that result is pending.
+- Darwin arm64 (`decision.json`): needs a native remeasure. That contract was already stale on main before this change ([#4158](https://github.com/Takazudo/zudo-front-builder/issues/4158): v4.2.1 actual-gzip metric, rejected by +1 to +3 gzip bytes), so the hash update does not make it current.
