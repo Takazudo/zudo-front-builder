@@ -178,9 +178,9 @@ function localizedNote(value, locale, field) {
 // The zfb/zudo-react h-import alias changes extraction entry matching without
 // changing the pinned utility compatibility catalog. MDX ignored-attribute
 // context boundaries likewise do not change utility compatibility rows (#3721).
-// The noyalib 0.0.53 pin (#4159) moves only Cargo.toml/Cargo.lock.
+// The noyalib 0.0.53 and 0.0.55 pins (#4159, #4173) move only Cargo.toml/Cargo.lock.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "899c401c7042faf659287ccce04d8466f533612f06d864e896c1f806c1a79a2f";
+  "49b12a56aa81e15a4c88b6a0a58648f8610eac196afa5a1cf1a94544e73b1d90";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
