@@ -106,7 +106,11 @@ whose `initialPath` selects the page's configured local view. Editorial parents 
 membership data, never URL segments (`utilities/background` is a URL sibling of
 `utilities/surfaces-borders`). Broaden / Show only this branch / Restore, persistence and
 rendering are zudo-doc's; the host adds no scope state. `initialPath` makes the local view the
-scope root's members, so the first Broaden reveals the root row. `sidebar_initial_expansion:
+scope root's members, so the first Broaden reveals the root row. **Accepted deviation from
+#4099's wording (owner choice, 2026-10-12):** the starting view no longer shows the root row, and
+Broaden takes one extra step (Background: Surfaces family pages → Surfaces & borders → Utility
+reference → zudo-wind). zudo-doc 6.0.1 has no `initialPath` mode that selects the node itself;
+#4099 stays open until upstream ships one. `sidebar_initial_expansion:
 collapsed` on both Wind index pages keeps those views compact. Architecture keeps its four
 category groups via `sidebarsConfig.architecture`.
 
