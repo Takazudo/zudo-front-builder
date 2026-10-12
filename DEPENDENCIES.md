@@ -515,10 +515,15 @@ declaration is removable even if its package remains in `Cargo.lock`.
   0.0.44, or a yank of either adopted version.
 
   **Bumped to `0.0.53` on 2026-10-12 for RUSTSEC-2026-0333 (#4159).** The
-  advisory's patched floor is 0.0.53. The newest complete pair, 0.0.57,
-  still carries the `render-only` size growth that rejected 0.0.56, so the
-  pin moves to the first patched pair. See the "`noyalib 0.0.53` security
-  pin" section below for the same-toolchain size comparison and checksums.
+  advisory's patched floor is 0.0.53. 0.0.56 and 0.0.57 exceed the
+  `render-only` ceiling. 0.0.55 fits under it but grows three artifacts by
+  more than 1,024 B. So the pin moves to the first patched pair. See the
+  "`noyalib 0.0.53` security pin" section below for the same-toolchain size
+  comparison, the frontmatter behavior check, and checksums.
+  **Next trigger:** an owner decision to accept 0.0.55's growth above the
+  threshold, a newer complete pair that fits the `render-only` ceiling and
+  growth threshold, a new advisory against 0.0.53, or a yank of either
+  adopted version.
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
@@ -2541,74 +2546,9 @@ The only committed file is `DEPENDENCIES.md`; there are no package/source
 changes that require committed generated artifacts. No browser or visual
 check applies to this evidence-only change. No upstream message was sent.
 
-##### `noyalib 0.0.56` / `noyalib-serde-yaml 0.0.56` released differential evaluation (#4064) — KEEP
-
-**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.44; evaluated 0.0.56 is rejected for same-toolchain size growth.** This follows the final release-race check and the decision from #4067. It is a final rejection of 0.0.56, not a pending-CI migration or a blocked evaluation. The tested Phase 1 source was `9375431ab81a95f480063f392b61444b9b5d892d`; Phase 2 tested merged Phase 1 SHA `8d811be3990ca560135f57aaf8705bb36f9bd05f`. The merged decision/application base is `9d1b92e225a1904bf74f87940f9c6c5559570f39`.
-
-**Phase 1 and preserved failures.** The 18-case differential harness passed 4/4 with all 18 observations equal; `zfb-content` passed 1,081 tests; protected wasm API/AST pins passed 58/58; CLI diagnostics passed 11/11. All three separate native checks exited 0, as did the wasm32 check. Normal and feature dependency graphs matched at both pins; both `cargo deny check` runs exited 0, with 15 unchanged license categories (Apache-2.0 289, MIT 432). Both pin states had 594 packages and exactly the two expected YAML version/checksum changes. There were zero product source edits and zero source-correction rounds. The initial Phase 1 stamp configuration failed (32/33 API tests); the single runner correction to fixed stamp `0.0.0` recovered the guard, with both outcomes retained. The candidate diagnostic wasm package tests passed 234/234 separately; they do not change the strict composite result below. The historical Linux 0.0.55 Phase 2 disk-gate BLOCKED record and the Phase 1 pre-Phase-2 status are preserved as time-bounded history in [the detailed evaluation report](research/4049-yaml-evaluation/report.md).
-
-**Phase 2 size verdict.** Both pins used rustc/cargo 1.96.0, wasm-bindgen 0.2.121, wasm-opt 130, macOS 26.6.1 / Apple A18 Pro, and fixed release stamp `0.0.0`; targets were initially absent and builds were serial under the heavy guard. Candidate wasm32 check passed. Candidate strict `pnpm test:md-wasm`, timed build, and budget assertion each exited 1 at render-only gzip-9 1,111,923 B against the unchanged 1,100,000 B ceiling; the same-toolchain control build and budget assertion exited 0 at 1,098,011 B. The candidate's tarball is 3,859,716 B under the unchanged 3,900,000 B ceiling. Aggregate peak RSS across child processes is unavailable; this is not an incomplete semantic or size gate. The full timing, disk-sampling, and artifact evidence remains in the linked report and `phase2-summary.json`.
-
-| Artifact | Field | Control 0.0.44 | Candidate 0.0.56 | Candidate − control |
-| --- | --- | ---: | ---: | ---: |
-| root | finalWasm | 3,398,523 | 3,436,050 | +37,527 |
-| root | gzip9 | 1,524,882 | 1,541,225 | +16,343 |
-| root | glue | 14,998 | 14,998 | +0 |
-| root | glueGzip9 | 4,199 | 4,199 | +0 |
-| highlight | finalWasm | 1,537,137 | 1,537,137 | +0 |
-| highlight | gzip9 | 822,289 | 822,285 | −4 |
-| highlight | glue | 8,758 | 8,758 | +0 |
-| highlight | glueGzip9 | 2,637 | 2,637 | +0 |
-| render | finalWasm | 2,204,458 | 2,240,279 | +35,821 |
-| render | gzip9 | 1,098,011 | 1,111,923 | +13,912 |
-| render | glue | 8,772 | 8,772 | +0 |
-| render | glueGzip9 | 2,661 | 2,661 | +0 |
-| parse | finalWasm | 704,576 | 741,625 | +37,049 |
-| parse | gzip9 | 283,410 | 298,857 | +15,447 |
-| parse | glue | 11,159 | 11,159 | +0 |
-| parse | glueGzip9 | 3,797 | 3,797 | +0 |
-
-| Gzip-9 gate | Ceiling | Control | Control headroom | Candidate | Candidate headroom |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| root | 1,600,000 | 1,524,882 | +75,118 | 1,541,225 | +58,775 |
-| highlight | 880,000 | 822,289 | +57,711 | 822,285 | +57,715 |
-| render | 1,100,000 | 1,098,011 | +1,989 | 1,111,923 | **−11,923** |
-| parse | 325,000 | 283,410 | +41,590 | 298,857 | +26,143 |
-
-Complete dist was 8,133,458 → 8,243,855 B (+110,397); tarball was 3,814,132 → 3,859,716 B (+45,584). The accepted growth limit is ≤1,024 B for each artifact's `finalWasm` and `gzip9`, with no render growth. Root, render, and parse growth exceed the limit; render also violates zero growth. The candidate strict size gate fails while the same-toolchain control passes. CI's 6,027 B headroom does not allow projecting these Mac deltas onto CI. No ceiling, CI size manifest, synchronized size documentation, production pin, or lockfile was changed.
-
-**GHSA-4xcc-23fx-w2wj non-exposure:** zfb does not use `ParserConfig` or YAML budget setters in `crates/`; its YAML path deserializes with `serde_yaml::from_str` into `Value` (explicit `::<Value>` in the differential harness). This call-path observation is not a claim that the upstream advisory is fixed. The required `rg` search found and inspection confirmed only `crates/zfb-content/src/frontmatter.rs:254` (`serde_yaml::from_str(yaml_str)`) and `crates/zfb-content/tests/yaml_differential_harness.rs:112` (`serde_yaml::from_str::<Value>(yaml)`).
-
-**Final release-race guard.** The fresh registry check at `2026-10-08T15:06:38.359015Z` exited 0: adopted 0.0.44 and evaluated 0.0.56 were non-yanked; the downloaded 0.0.56 archives matched frozen checksums `17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77` (core) and `bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70` (alias); the alias still pins exact core `=0.0.56` with `std` and `compat-serde-yaml`; and no newer non-yanked complete pair or half-pair was reported. Both complete authenticated open-PR collections were empty at 2026-10-08T15:06:48Z–15:06:49Z (exit 0). The authenticated pre-refresh watcher at `2026-10-08T15:06:55.654Z` returned exit 10, `CANDIDATE_DRIFT`, `errors: []`: 30 already-evaluated publish/tag/Release deltas for 0.0.52–0.0.56 plus merged-state deltas for PR #459 and #28; branch movement is informational. This expected old-baseline drift is not a compatibility failure. Both `pendingReleasePr` pointers are set to `null` based on the live empty open-PR collections.
-
-All 0.0.45–0.0.55 intermediate core and alias versions were non-yanked; their individual registry publication timestamps are recorded in the detailed report. The single authenticated snapshot refresh exited 0, was copied once from its temporary output, and was formatted successfully. The resulting baseline has `checkedAt = 2026-10-08T15:10:56.693Z`; both release-PR pointers are `null`. The authenticated post-refresh detector at `2026-10-08T15:11:09.004Z` exited 0 with `no-drift`, `errors: []`, and no deltas for all seven candidates. No additional snapshot refresh was made.
-
-**Detector regression coverage.** The first exact focused-suite invocation, before the baseline refresh, passed 75/77 tests and preserved two failures: the retired-PR request expectation and the expected temporary baseline/config mismatch. After the snapshot but before test correction, the same two stale assertions still failed against the coherent null-pointer state. The corrected final suite passed **78/78**: explicit null/no-query assertions and a positive synthetic-PR test with `finally` restoration were added; the baseline/config agreement, OPEN → MERGED/CLOSED, and malformed-response checks remain. Both changed JavaScript files pass `node --check`; `pnpm format:check` and `git diff --check` pass. The exact five-file scope and all protected Cargo/content/wasm size files were verified against the incoming base. No visual check applies.
-
-**Downstream contract.** Keep `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.44" }`, the complete `Cargo.lock`, `CURRENT_ADAPTER_NAME`, and fixture adapter label `noyalib-serde-yaml 0.0.44 (noyalib 0.0.44 compat-serde-yaml)` unchanged. No release/probe merge, dependency switch, size-manifest edit, or upstream message is part of this decision. A newer complete non-yanked pair, adopted-pair safety/maintenance event, or fresh evidence addressing 0.0.56's measured size regression opens a new bounded evaluation.
-
-##### `noyalib 0.0.53` security pin for RUSTSEC-2026-0333 (#4159) — MIGRATE to 0.0.53
-
-**Trigger: an adopted-pair safety event.** The weekly Security Audit ([run 38220616262](https://github.com/Takazudo/zudo-front-builder/actions/runs/38220616262), `cargo deny`) failed on [RUSTSEC-2026-0333](https://rustsec.org/advisories/RUSTSEC-2026-0333) (GHSA-4xcc-23fx-w2wj, `denial-of-service`, upstream severity Low): before 0.0.53 the typed `from_str::<T>` path did not charge `max_events`, `max_nodes`, `max_total_scalar_bytes`, `max_merge_keys` or the alias ratio. Patched is `>= 0.0.53`. zfb calls `serde_yaml::from_str::<serde_json::Value>` with the default configuration and never tightens those budgets, and the default length, depth and alias-count caps were always enforced, so zfb was not practically exposed. `cargo deny` still denies the version, and `deny.toml` takes no ignore for it.
-
-**Choice: 0.0.53, the first patched pair.** The newer complete pairs carry the size growth that rejected 0.0.56. All four pins were built in one session on the same toolchain (`Darwin arm64`, rustc 1.94.0, wasm-bindgen 0.2.121, `ZFB_RELEASE_VERSION=4.3.2`, `pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling`). Each cell is `finalWasm` / `gzip9` minus the 0.0.44 control:
-
-| Artifact | 0.0.44 control | 0.0.53 | 0.0.54 | 0.0.57 |
-| --- | --- | ---: | ---: | ---: |
-| root | 3,388,459 / 1,524,296 | +742 / +296 | +831 / +462 | +38,694 / +16,897 |
-| highlight | 1,532,921 / 822,379 | 0 / +14 | +1,353 / +315 | +9 / −12 |
-| render | 2,197,882 / 1,097,961 | +834 / +139 | +395 / −10 | +36,933 / +15,995 |
-| parse | 702,039 / 283,320 | +764 / +222 | −272 / +57 | +37,551 / +16,946 |
-
-0.0.57 adds about 16 KB gzip to `render-only`. That is more than its 6,027 B CI headroom (1,093,973 B against 1,100,000 B), so 0.0.55 and later stay blocked by the same size regression that rejected 0.0.56. 0.0.53 grows every field by less than 1,024 B. Its 0.0.54 follow-up bounds only the `from_reader*` entry points, which zfb does not call, and grows `highlight` by more than 1,024 B. `render-only` grows by 834 / 139 B at 0.0.53, so it does not meet the zero-render-growth criterion used for discretionary candidates. That growth is accepted only to clear the advisory, and the ceiling is unchanged. These are Mac bytes. The CI `wasm-md (default)` build summary decides the shipped numbers, and `crates/zfb-md-wasm/shipped-sizes.json` must be aligned from that summary, not from this table.
-
-**Pin.** Root `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.53" }`, with zero production `.rs` lines changed. `Cargo.lock` changes only the two adopted entries. Their checksums match crates.io: `962838abbd8dd2cd3844d2208dc502458bba6985f8bf1dc21761b30260fcbd7f` (`noyalib 0.0.53`, published 2026-10-06T12:41:27Z) and `a62fedc8613fa5ba4db669ce4a88fec7227dfd08902995492c2b4b6ee53f24db` (`noyalib-serde-yaml 0.0.53`, published 2026-10-06T18:20:53Z). Both are un-yanked with `rust-version 1.86.0`, and the alias still pins exact `noyalib =0.0.53` with `std` and `compat-serde-yaml`. The harness label (`CURRENT_ADAPTER_NAME` and the fixture's `adapter` field) moves to 0.0.53 in lockstep, with the corpus and the 18 baseline cases unchanged. Both island-size contracts record the new `Cargo.lock` SHA-256 (see `research/v3-island-size/README.md`). `scripts/yaml-candidate-baseline.json` is unchanged, because the adopted crates did not change and this is not a watcher triage.
-
-**Still open.** 0.0.55 has a hardening fix for quadratic-time parsing of long flow lines, which hits the default configuration, and 0.0.56 adds a nesting cap. zfb does not ship either until the `render-only` size regression is addressed. A newer complete pair that fits the ceiling, or a decision on the render budget, opens the next evaluation.
-
 ##### Epic #3103 wave 4 final confirmation (#3107) — KEEP, one snapshot refresh
 
-The installed YAML pair remains **0.0.44**, as required by #3106. `Cargo.toml`
+At this confirmation (2026-09-24), the installed YAML pair remained **0.0.44**, as required by #3106. The 0.0.53 security pin (#4159) later superseded it. `Cargo.toml`
 still pins `noyalib-serde-yaml =0.0.44`; both lock entries and the harness's
 `CURRENT_ADAPTER_NAME` still identify 0.0.44. No production manifest, lockfile,
 corpus, harness, or adapter metadata changed.
@@ -2807,6 +2747,86 @@ macOS signature as pre-existing FAIL under #3126; any different failure needs
 new attribution. The manager owns resource-serialized heavy checks and the
 required PR gates on the integrated SHA. CI must show no new failures and
 the exact public fixture outcome; a pass there remains non-recurrence.
+
+##### `noyalib 0.0.56` / `noyalib-serde-yaml 0.0.56` released differential evaluation (#4064) — KEEP
+
+**Verdict: KEEP — retain production noyalib / noyalib-serde-yaml =0.0.44; evaluated 0.0.56 is rejected for same-toolchain size growth.** This follows the final release-race check and the decision from #4067. It is a final rejection of 0.0.56, not a pending-CI migration or a blocked evaluation. The tested Phase 1 source was `9375431ab81a95f480063f392b61444b9b5d892d`; Phase 2 tested merged Phase 1 SHA `8d811be3990ca560135f57aaf8705bb36f9bd05f`. The merged decision/application base is `9d1b92e225a1904bf74f87940f9c6c5559570f39`.
+
+**Phase 1 and preserved failures.** The 18-case differential harness passed 4/4 with all 18 observations equal; `zfb-content` passed 1,081 tests; protected wasm API/AST pins passed 58/58; CLI diagnostics passed 11/11. All three separate native checks exited 0, as did the wasm32 check. Normal and feature dependency graphs matched at both pins; both `cargo deny check` runs exited 0, with 15 unchanged license categories (Apache-2.0 289, MIT 432). Both pin states had 594 packages and exactly the two expected YAML version/checksum changes. There were zero product source edits and zero source-correction rounds. The initial Phase 1 stamp configuration failed (32/33 API tests); the single runner correction to fixed stamp `0.0.0` recovered the guard, with both outcomes retained. The candidate diagnostic wasm package tests passed 234/234 separately; they do not change the strict composite result below. The historical Linux 0.0.55 Phase 2 disk-gate BLOCKED record and the Phase 1 pre-Phase-2 status are preserved as time-bounded history in [the detailed evaluation report](research/4049-yaml-evaluation/report.md).
+
+**Phase 2 size verdict.** Both pins used rustc/cargo 1.96.0, wasm-bindgen 0.2.121, wasm-opt 130, macOS 26.6.1 / Apple A18 Pro, and fixed release stamp `0.0.0`; targets were initially absent and builds were serial under the heavy guard. Candidate wasm32 check passed. Candidate strict `pnpm test:md-wasm`, timed build, and budget assertion each exited 1 at render-only gzip-9 1,111,923 B against the unchanged 1,100,000 B ceiling; the same-toolchain control build and budget assertion exited 0 at 1,098,011 B. The candidate's tarball is 3,859,716 B under the unchanged 3,900,000 B ceiling. Aggregate peak RSS across child processes is unavailable; this is not an incomplete semantic or size gate. The full timing, disk-sampling, and artifact evidence remains in the linked report and `phase2-summary.json`.
+
+| Artifact | Field | Control 0.0.44 | Candidate 0.0.56 | Candidate − control |
+| --- | --- | ---: | ---: | ---: |
+| root | finalWasm | 3,398,523 | 3,436,050 | +37,527 |
+| root | gzip9 | 1,524,882 | 1,541,225 | +16,343 |
+| root | glue | 14,998 | 14,998 | +0 |
+| root | glueGzip9 | 4,199 | 4,199 | +0 |
+| highlight | finalWasm | 1,537,137 | 1,537,137 | +0 |
+| highlight | gzip9 | 822,289 | 822,285 | −4 |
+| highlight | glue | 8,758 | 8,758 | +0 |
+| highlight | glueGzip9 | 2,637 | 2,637 | +0 |
+| render | finalWasm | 2,204,458 | 2,240,279 | +35,821 |
+| render | gzip9 | 1,098,011 | 1,111,923 | +13,912 |
+| render | glue | 8,772 | 8,772 | +0 |
+| render | glueGzip9 | 2,661 | 2,661 | +0 |
+| parse | finalWasm | 704,576 | 741,625 | +37,049 |
+| parse | gzip9 | 283,410 | 298,857 | +15,447 |
+| parse | glue | 11,159 | 11,159 | +0 |
+| parse | glueGzip9 | 3,797 | 3,797 | +0 |
+
+| Gzip-9 gate | Ceiling | Control | Control headroom | Candidate | Candidate headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| root | 1,600,000 | 1,524,882 | +75,118 | 1,541,225 | +58,775 |
+| highlight | 880,000 | 822,289 | +57,711 | 822,285 | +57,715 |
+| render | 1,100,000 | 1,098,011 | +1,989 | 1,111,923 | **−11,923** |
+| parse | 325,000 | 283,410 | +41,590 | 298,857 | +26,143 |
+
+Complete dist was 8,133,458 → 8,243,855 B (+110,397); tarball was 3,814,132 → 3,859,716 B (+45,584). The accepted growth limit is ≤1,024 B for each artifact's `finalWasm` and `gzip9`, with no render growth. Root, render, and parse growth exceed the limit; render also violates zero growth. The candidate strict size gate fails while the same-toolchain control passes. CI's 6,027 B headroom does not allow projecting these Mac deltas onto CI. No ceiling, CI size manifest, synchronized size documentation, production pin, or lockfile was changed.
+
+**GHSA-4xcc-23fx-w2wj non-exposure:** zfb does not use `ParserConfig` or YAML budget setters in `crates/`; its YAML path deserializes with `serde_yaml::from_str` into `Value` (explicit `::<Value>` in the differential harness). This call-path observation is not a claim that the upstream advisory is fixed. The required `rg` search found and inspection confirmed only `crates/zfb-content/src/frontmatter.rs:254` (`serde_yaml::from_str(yaml_str)`) and `crates/zfb-content/tests/yaml_differential_harness.rs:112` (`serde_yaml::from_str::<Value>(yaml)`).
+
+**Final release-race guard.** The fresh registry check at `2026-10-08T15:06:38.359015Z` exited 0: adopted 0.0.44 and evaluated 0.0.56 were non-yanked; the downloaded 0.0.56 archives matched frozen checksums `17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77` (core) and `bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70` (alias); the alias still pins exact core `=0.0.56` with `std` and `compat-serde-yaml`; and no newer non-yanked complete pair or half-pair was reported. Both complete authenticated open-PR collections were empty at 2026-10-08T15:06:48Z–15:06:49Z (exit 0). The authenticated pre-refresh watcher at `2026-10-08T15:06:55.654Z` returned exit 10, `CANDIDATE_DRIFT`, `errors: []`: 30 already-evaluated publish/tag/Release deltas for 0.0.52–0.0.56 plus merged-state deltas for PR #459 and #28; branch movement is informational. This expected old-baseline drift is not a compatibility failure. Both `pendingReleasePr` pointers are set to `null` based on the live empty open-PR collections.
+
+All 0.0.45–0.0.55 intermediate core and alias versions were non-yanked; their individual registry publication timestamps are recorded in the detailed report. The single authenticated snapshot refresh exited 0, was copied once from its temporary output, and was formatted successfully. The resulting baseline has `checkedAt = 2026-10-08T15:10:56.693Z`; both release-PR pointers are `null`. The authenticated post-refresh detector at `2026-10-08T15:11:09.004Z` exited 0 with `no-drift`, `errors: []`, and no deltas for all seven candidates. No additional snapshot refresh was made.
+
+**Detector regression coverage.** The first exact focused-suite invocation, before the baseline refresh, passed 75/77 tests and preserved two failures: the retired-PR request expectation and the expected temporary baseline/config mismatch. After the snapshot but before test correction, the same two stale assertions still failed against the coherent null-pointer state. The corrected final suite passed **78/78**: explicit null/no-query assertions and a positive synthetic-PR test with `finally` restoration were added; the baseline/config agreement, OPEN → MERGED/CLOSED, and malformed-response checks remain. Both changed JavaScript files pass `node --check`; `pnpm format:check` and `git diff --check` pass. The exact five-file scope and all protected Cargo/content/wasm size files were verified against the incoming base. No visual check applies.
+
+**Downstream contract.** Keep `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.44" }`, the complete `Cargo.lock`, `CURRENT_ADAPTER_NAME`, and fixture adapter label `noyalib-serde-yaml 0.0.44 (noyalib 0.0.44 compat-serde-yaml)` unchanged. No release/probe merge, dependency switch, size-manifest edit, or upstream message is part of this decision. A newer complete non-yanked pair, adopted-pair safety/maintenance event, or fresh evidence addressing 0.0.56's measured size regression opens a new bounded evaluation. **Superseded 2026-10-12 by the 0.0.53 security pin (#4159) below:** the production pin and harness label are now 0.0.53, and the 0.0.56 rejection stands.
+
+##### `noyalib 0.0.53` security pin for RUSTSEC-2026-0333 (#4159) — MIGRATE to 0.0.53
+
+**Trigger: an adopted-pair safety event.** The weekly Security Audit ([run 38220616262](https://github.com/Takazudo/zudo-front-builder/actions/runs/38220616262), `cargo deny`) failed on [RUSTSEC-2026-0333](https://rustsec.org/advisories/RUSTSEC-2026-0333) (GHSA-4xcc-23fx-w2wj, `denial-of-service`, upstream severity Low). Before 0.0.53, the typed `from_str::<T>` path did not charge `max_events`, `max_nodes`, `max_total_scalar_bytes`, `max_merge_keys` or the alias ratio. Patched is `>= 0.0.53`. `cargo deny` denies the installed version, and `deny.toml` takes no ignore for it. This supersedes the 0.0.56 section's downstream contract above.
+
+**Choice: 0.0.53, the first patched pair.** All six pins were built in one session on the same toolchain (`Darwin arm64`, rustc 1.94.0, wasm-bindgen 0.2.121, `ZFB_RELEASE_VERSION=4.3.2`, `pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling`). Each cell is `finalWasm` / `gzip9` minus the 0.0.44 control:
+
+| Artifact | 0.0.44 control | 0.0.53 | 0.0.54 | 0.0.55 | 0.0.56 | 0.0.57 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| root | 3,388,459 / 1,524,296 | +742 / +296 | +831 / +462 | +4,291 / +1,541 | +37,527 / +16,274 | +38,694 / +16,897 |
+| highlight | 1,532,921 / 822,379 | 0 / +14 | +1,353 / +315 | 0 / +7 | 0 / 0 | +9 / −12 |
+| render | 2,197,882 / 1,097,961 | +834 / +139 | +395 / −10 | +2,931 / +1,182 | +35,825 / +13,847 | +36,933 / +15,995 |
+| parse | 702,039 / 283,320 | +764 / +222 | −272 / +57 | +3,467 / +1,624 | +37,049 / +15,246 | +37,551 / +16,946 |
+
+- **0.0.56 and 0.0.57 are blocked by the render ceiling.** They add 13.8 KB and 16.0 KB gzip to `render-only`, more than its 6,027 B CI headroom (1,093,973 B against 1,100,000 B). The 0.0.56 delta matches the rejection measured in #4064.
+- **0.0.55 fits the ceiling but exceeds the growth threshold.** It adds 1,182 B gzip to `render-only`, which would leave about 4.8 KB of CI headroom. Root, render, and parse each grow by more than the 1,024 B threshold used for discretionary candidates. #4055 recorded a Phase 2 blocker for 0.0.55: the host had 13.9 GiB free against a 30 GiB disk preflight. That blocker was about the build environment, not the product, and this session measured Phase 2 sizes without hitting it. At 0.0.55, the 18-case differential harness and the frontmatter budget tests below pass. Adopting 0.0.55 for its default-config quadratic-parse fix is an owner decision on the growth threshold, not a measured ceiling failure.
+- **0.0.54 adds nothing zfb uses.** It bounds only the `from_reader*` entry points, which zfb does not call, and grows `highlight` by 1,353 B.
+- **0.0.53 is the smallest fix.** Every field grows by less than 1,024 B. `render-only` grows by 834 / 139 B, so it does not meet the zero-render-growth criterion used for discretionary candidates. That growth is accepted only to clear the advisory, and the ceiling is unchanged.
+
+These are Mac bytes. The CI `wasm-md (default)` build summary decides the shipped numbers. `crates/zfb-md-wasm/shipped-sizes.json` must be aligned from that summary, not from this table.
+
+**Behavior: zfb frontmatter is unchanged.** zfb's only call is `serde_yaml::from_str::<serde_json::Value>`. That goes through noyalib's `serde_yaml_compat` profile, with `alias_anchor_ratio` 10.0, `max_nodes` 250,000, `max_events` 1,000,000, and `max_merge_keys` 10,000. With this target, the budgets were already charged at 0.0.44, so the advisory's gap never reached zfb. `crates/zfb-content/tests/frontmatter_resource_budgets.rs` pins each boundary through `frontmatter::extract`, and passes unchanged at 0.0.44, 0.0.53, and 0.0.55:
+
+- One anchor with 10 aliases parses. With 11, parsing fails. Two anchors with 20 aliases parse; with 21, parsing fails.
+- 240,240 nodes parse, and 260,000 hit `max_nodes`.
+- A 200 KB description with 2,000 tags, 500 nested items, and a `<<` key parses.
+
+The frozen harness already pins the ratio rejection in its `alias-anchor-repetition-limit` case. None of the 723 frontmatter blocks in this repository uses an anchor, alias, or merge key. The largest is 2,197 B.
+
+**Diagnostics are weak for budget errors.** A budget error carries no location, so zfb's diagnostic (`crates/zfb/src/diagnostics.rs`) points at line 1, column 1. The ratio error only reads `invalid YAML in frontmatter: repetition limit exceeded`, without mentioning aliases. The node error names the budget: `max_nodes budget exceeded: observed 250001 > limit 250000`. This is the same at 0.0.44 and 0.0.53.
+
+**Pin.** Root `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.53" }`, with zero production `.rs` lines changed. `Cargo.lock` changes only the two adopted entries. Their checksums match crates.io: `962838abbd8dd2cd3844d2208dc502458bba6985f8bf1dc21761b30260fcbd7f` (`noyalib 0.0.53`, published 2026-10-06T12:41:27Z) and `a62fedc8613fa5ba4db669ce4a88fec7227dfd08902995492c2b4b6ee53f24db` (`noyalib-serde-yaml 0.0.53`, published 2026-10-06T18:20:53Z). Both are un-yanked with `rust-version 1.86.0`. The alias still pins exact `noyalib =0.0.53` with `std` and `compat-serde-yaml`. The harness label (`CURRENT_ADAPTER_NAME` and the fixture's `adapter` field) moves to 0.0.53 in lockstep, with the corpus and the 18 baseline cases unchanged. Both island-size contracts record the new `Cargo.lock` SHA-256 (see `research/v3-island-size/README.md`). `scripts/yaml-candidate-baseline.json` is unchanged, because the adopted crates did not change and this is not a watcher triage.
+
+**Downstream contract.** Keep `=0.0.53` and the 0.0.53 harness label. **Next trigger:** an owner decision to accept 0.0.55's growth above the threshold, a newer complete non-yanked pair that fits the `render-only` ceiling and growth threshold, a new advisory against 0.0.53, or a yank of either adopted version. Any of these opens the next bounded evaluation. The watcher baseline predates 0.0.57, so its next weekly run will report drift for 0.0.57; that drift is the 0.0.57 measurement above, not a new trigger.
 
 #### `serde-saphyr 1.2.0`
 

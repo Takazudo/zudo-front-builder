@@ -200,4 +200,7 @@ The Linux contract was re-pinned for the v4.3.2 release from [health run 3817117
 
 ## noyalib 0.0.53 security pin (RUSTSEC-2026-0333)
 
-The YAML pin moved from `noyalib`/`noyalib-serde-yaml` 0.0.44 to 0.0.53 to clear RUSTSEC-2026-0333 ([#4159](https://github.com/Takazudo/zudo-front-builder/issues/4159)). It changes only those two `Cargo.lock` entries, so both contracts record the new `Cargo.lock` SHA-256 with every ceiling unchanged. The YAML parser is Rust-only and is not part of the shipped island bundles, so the size totals are expected to be unchanged; the CI island-size measurement at this lockfile is pending.
+The YAML pin moved from `noyalib`/`noyalib-serde-yaml` 0.0.44 to 0.0.53 to clear RUSTSEC-2026-0333 ([#4159](https://github.com/Takazudo/zudo-front-builder/issues/4159)). Only those two `Cargo.lock` entries change. Following the `globset` precedent above, both contracts record the new `Cargo.lock` SHA-256 in `toolchain.cargoLockSha256` only. Ceilings, totals, `platformStatus`, and `baselineEvidence` are unchanged, so those fields still describe runs measured at the previous lockfile. The YAML parser is Rust-only and is not part of the shipped island bundles, so the totals are expected to hold:
+
+- Linux x64 (`decision-linux-x64.json`): the CI health job measures this lockfile; that result is pending.
+- Darwin arm64 (`decision.json`): needs a native remeasure. That contract was already stale on main before this change ([#4158](https://github.com/Takazudo/zudo-front-builder/issues/4158): v4.2.1 actual-gzip metric, rejected by +1 to +3 gzip bytes), so the hash update does not make it current.
