@@ -2812,7 +2812,18 @@ All 0.0.45–0.0.55 intermediate core and alias versions were non-yanked; their 
 - **0.0.54 adds nothing zfb uses.** It bounds only the `from_reader*` entry points, which zfb does not call, and grows `highlight` by 1,353 B.
 - **0.0.53 is the smallest fix.** Every field grows by less than 1,024 B. `render-only` grows by 834 / 139 B, so it does not meet the zero-render-growth criterion used for discretionary candidates. That growth is accepted only to clear the advisory, and the ceiling is unchanged.
 
-These are Mac bytes. The CI `wasm-md (default)` build summary decides the shipped numbers. `crates/zfb-md-wasm/shipped-sizes.json` must be aligned from that summary, not from this table.
+These are Mac bytes. The CI `wasm-md (default)` build summary decides the shipped numbers, and `crates/zfb-md-wasm/shipped-sizes.json` is aligned from that summary, not from this table.
+
+**Reconciled from CI (PR #4160, health run 38228847814, `wasm-md (default)` job 114743070686, ubuntu, at `6d14afc6`).** The first CI run failed with the expected `manifest-mismatch`. The manifest and its eight synced doc tables now hold that run's 0.0.53 numbers. `measuredOnVersion` stays `4.3.2`. Each cell is `finalWasm` / `gzip9`:
+
+| Artifact | Committed (0.0.44) | CI at 0.0.53 | Δ |
+| --- | --- | --- | ---: |
+| root | 3,390,113 / 1,518,982 | 3,390,904 / 1,519,893 | +791 / +911 |
+| highlight | 1,537,593 / 817,810 | 1,537,593 / 817,815 | 0 / +5 (within the gzip band, kept) |
+| render | 2,197,301 / 1,093,973 | 2,198,163 / 1,094,209 | +862 / +236 |
+| parse | 700,375 / 284,334 | 701,081 / 284,532 | +706 / +198 |
+
+`render-only` now ships 5,791 B under its 1,100,000 B ceiling. The highlight artifact's `finalWasm` is byte-identical, and its gzip moved 5 B, inside the job's 64 B band, so its manifest row is unchanged.
 
 **Behavior: zfb frontmatter is unchanged.** zfb's only call is `serde_yaml::from_str::<serde_json::Value>`. That goes through noyalib's `serde_yaml_compat` profile, with `alias_anchor_ratio` 10.0, `max_nodes` 250,000, `max_events` 1,000,000, and `max_merge_keys` 10,000. With this target, the budgets were already charged at 0.0.44, so the advisory's gap never reached zfb. `crates/zfb-content/tests/frontmatter_resource_budgets.rs` pins each boundary through `frontmatter::extract`, and passes unchanged at 0.0.44, 0.0.53, and 0.0.55:
 
