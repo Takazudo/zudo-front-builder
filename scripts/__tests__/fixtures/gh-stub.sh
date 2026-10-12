@@ -3,8 +3,10 @@
 #
 # Shared `gh` stub for the harvester and supervisor-watch suites (issue #2930).
 # Dispatches on argv
-# exactly like the real thing -- `run list`, and (since #2931) the two REST
-# calls `gh api repos/{owner}/{repo}/actions/runs/<id>/jobs?per_page=100` and
+# exactly like the real thing -- the REST run list
+# `gh api repos/{owner}/{repo}/actions/workflows/health.yml/runs?...` (#3230),
+# and (since #2931) the two per-run REST calls
+# `gh api repos/{owner}/{repo}/actions/runs/<id>/jobs?per_page=100` and
 # `gh api repos/{owner}/{repo}/actions/jobs/<id>/logs` -- and reads its
 # fixture data from files under $GH_STUB_FIXTURES_DIR, inherited from the
 # environment the same way a real `gh` invocation would inherit the shell's
@@ -18,9 +20,12 @@
 # fixtures stay independent of which checkout runs them.
 #
 # Fixture files, all optional except run-list.json:
-#   run-list.json           stdout for `gh run list`
-#   run-list.fail           if present, `gh run list` fails every time
-#   run-list.fail-once      if present, the FIRST `gh run list` call fails
+#   run-list.json           the runs served by the list-workflow-runs endpoint
+#                           `gh api repos/{owner}/{repo}/actions/workflows/health.yml/runs?...`
+#                           Its REST paging/filtering lives in gh-stub-runs-page.mjs,
+#                           which documents that endpoint's own markers (#3230)
+#   run-list.fail           if present, every run-list call fails
+#   run-list.fail-once      if present, the FIRST run-list call fails
 #                           and this marker is consumed (removed), so a
 #                           caller's single retry then sees the real fixture
 #   jobs-<runId>.json       stdout for the run-jobs endpoint, page 1
@@ -36,6 +41,9 @@
 #                           what a missing / deleted-unexpectedly job log
 #                           looks like -- a 410 (below) is what an expired
 #                           one looks like.
+#   job-<jobId>.rate-limited
+#                           if present, that job's log fetch fails with gh's
+#                           primary rate-limit message (exit 1, HTTP 403)
 #   job-<jobId>.gone        if present, that job's log fetch reproduces gh's
 #                           real 410 shape (#2995): the API error body on
 #                           stdout, a "gh: Server Error (HTTP 410)" line on
@@ -79,7 +87,10 @@ set -eu
 FIXDIR="${GH_STUB_FIXTURES_DIR:?GH_STUB_FIXTURES_DIR not set}"
 printf '%s\n' "$*" >>"$FIXDIR/calls.log"
 
-if [ "$1" = "run" ] && [ "$2" = "list" ]; then
+# The run-list failure markers, checked before the REST runs endpoint is
+# served (#3230 retired the `gh run list` call shape; the stub no longer
+# answers it, so a regression back to it fails loudly below).
+run_list_failure_markers() {
   if [ -f "$FIXDIR/run-list.fail" ]; then
     echo "gh-stub: simulated run list failure" >&2
     exit 1
@@ -89,9 +100,7 @@ if [ "$1" = "run" ] && [ "$2" = "list" ]; then
     echo "gh-stub: simulated transient run list failure" >&2
     exit 1
   fi
-  cat "$FIXDIR/run-list.json"
-  exit 0
-fi
+}
 
 if [ "$1" = "api" ] && [ "$2" = "--help" ]; then
   if [ -f "$FIXDIR/gh-help.fail" ]; then
@@ -115,6 +124,10 @@ if [ "$1" = "api" ]; then
     path="$2"
   fi
   case "$path" in
+    */actions/workflows/*/runs\?*)
+      run_list_failure_markers
+      exec "${GH_STUB_NODE:-node}" "$(dirname "$0")/gh-stub-runs-page.mjs" "$path"
+      ;;
     */actions/jobs/*/logs)
       jobId=${path#*/actions/jobs/}
       jobId=${jobId%/logs}
@@ -125,6 +138,11 @@ if [ "$1" = "api" ]; then
       if [ -f "$FIXDIR/job-$jobId.fail-once" ]; then
         rm "$FIXDIR/job-$jobId.fail-once"
         echo "gh-stub: simulated transient failure fetching job $jobId" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.rate-limited" ]; then
+        printf '{"message":"API rate limit exceeded for installation ID 1.","status":"403"}'
+        echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2
         exit 1
       fi
       if [ -f "$FIXDIR/job-$jobId.notfound" ]; then

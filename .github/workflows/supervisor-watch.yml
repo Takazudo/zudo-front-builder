@@ -50,14 +50,27 @@
 # the step summary, never a partial harvest. A window in which every log has
 # expired is still `no-data`, not red.
 #
+# AN INCOMPLETE WINDOW IS NEVER GREEN (#3230). The harvester pages the REST
+# run list over a fixed [since, until] window, partitioning past GitHub's
+# 1,000-results-per-search ceiling, and reports `incomplete` when it cannot
+# prove it saw every run: a run cap, a failed/malformed/non-progressing page,
+# a rate limit, its finite request budget, or a started-then-cancelled
+# `health` job whose log answers 404. Verdict `incomplete` (script exit 3)
+# files/comments on the tracking issue and alerts like `red` below — the two
+# conditions only exempt `green` and `no-data` — and never closes it; any red
+# finding in the evidence that was collected still wins as `red`. Window
+# bounds, page counts, and unavailable runs are in the step summary and the
+# artifact's enumeration.txt / unavailable-runs.txt.
+#
 # ALLOWED-TO-FAIL WITHOUT SWALLOWING THE SIGNAL: no `continue-on-error: true`
 # anywhere. That flag has a sharp edge — a continue-on-error step never marks
 # its job "failed", so a downstream `if: failure()` never fires and the
 # failure this workflow exists to surface is silently dropped. Instead the
 # script step wraps the run in `set +e; ...; rc=$?; set -e` and `exit 0`s
 # unconditionally; later steps branch on the `verdict` output the script
-# writes to `$GITHUB_OUTPUT` itself (green / no-data / red). Same shape as
-# exam.yml, but keyed on the verdict token rather than the raw exit code:
+# writes to `$GITHUB_OUTPUT` itself (green / no-data / red / incomplete).
+# Same shape as exam.yml, but keyed on the verdict token rather than the raw
+# exit code:
 # the script's no-data code is 1, and 1 is also what a `set -e` death inside
 # it exits with, so an rc-keyed condition would read a crashed watch as a
 # quiet week. A verdict that was never written (the script died, or a step
@@ -175,6 +188,8 @@ jobs:
       # `null != 'green'` is true. If checkout itself failed this step cannot
       # run the script and fails too; the notify job below still alerts.
       # `no-data` is deliberately excluded: a quiet week is not a finding.
+      # `incomplete` is deliberately included (#3230): missing evidence is a
+      # finding, so it files like red and the close step below cannot run.
       - name: File or comment on tracking issue
         if: >-
           !cancelled()
@@ -210,9 +225,10 @@ jobs:
       IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
     steps:
       # Quiet only when the job succeeded AND the verdict is green or
-      # no-data. Everything else alerts: a red verdict, a verdict that was
-      # never written (infra failure before or inside the script), a job that
-      # went red after a green watch (artifact upload), and a cancelled job.
+      # no-data. Everything else alerts: a red or incomplete verdict, a
+      # verdict that was never written (infra failure before or inside the
+      # script), a job that went red after a green watch (artifact upload),
+      # and a cancelled job.
       # Cancelled is included on purpose: a `timeout-minutes` expiry is
       # reported as `cancelled` too, and a harvester hung on the API past 15
       # minutes is the one failure this lane must never swallow — the cost is

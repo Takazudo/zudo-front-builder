@@ -63,8 +63,9 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *
  * `{owner}` / `{repo}` in those paths are expanded by gh from the current
  * repository (or `GH_REPO`) without an API call of its own — the same
- * resolution `gh run list` already relies on, so the harvester gains no new
- * way to be pointed at the wrong repo.
+ * resolution `gh run list` relied on before the run enumeration moved to
+ * REST too (#3230), so the harvester gains no new way to be pointed at the
+ * wrong repo.
  *
  * The REST log body is NOT what `gh run view --job … --log` printed: the
  * porcelain prefixes every line with `<job>\t<step>\t`, the REST body has
@@ -79,7 +80,50 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * Runs are harvested with bounded concurrency (`CONCURRENCY` below): each
  * run costs two `gh` invocations of roughly 1.5-3.5 s (measured 2026-09-07,
  * and re-measured across the REST migration at 3.4-3.9 s for the pair), so
- * a strictly sequential 200-run default harvest would take 10-17 minutes.
+ * a strictly sequential 200-run harvest would take 10-17 minutes.
+ *
+ * Window enumeration (#3230)
+ * --------------------------
+ * The window is a closed interval `[since, until]`; `until` is captured once
+ * at start (`--until`, default "now") so pagination cannot drift while new
+ * runs are created. Runs are listed through the REST endpoint
+ * `repos/{owner}/{repo}/actions/workflows/health.yml/runs?created=<since>..<until>`
+ * page by page (`RUNS_PER_PAGE`), never through `gh run list --limit`, whose
+ * output cannot tell "every run in the window" from "the newest <limit> of
+ * them" — the gap that let a capped 200-run population go green (watch run
+ * 38115809878 enumerated exactly 200 of an 8-day window holding more).
+ *
+ *   - GitHub serves at most `QUERY_RESULT_CEILING` (1,000) results per query
+ *     filtered by `created`, whatever `total_count` says. A partition whose
+ *     first page reports more is split at its midpoint (whole seconds,
+ *     non-overlapping halves) and each half is enumerated on its own; a
+ *     one-second partition that is still over the ceiling cannot be split
+ *     and makes the window incomplete.
+ *   - A partition is exhausted only on proof: a short page (fewer than
+ *     `RUNS_PER_PAGE` results) whose cumulative count equals `total_count`,
+ *     or a full page that brings the cumulative count to `total_count`
+ *     (an exactly-full final page). Anything else — a failed or malformed
+ *     page, a `total_count` that changes between pages or disagrees with the
+ *     rows served, a full page adding no new run, more pages than the
+ *     ceiling allows — is recorded as an `incomplete:` reason.
+ *   - Attempt policy: one sample per run id, from its LATEST attempt. The
+ *     runs endpoint lists a run once with its current `run_attempt`, and the
+ *     run-jobs endpoint's default `filter=latest` returns that attempt's
+ *     jobs. If a run id is served twice (overlapping pages, or a re-run
+ *     landing mid-enumeration) the higher `run_attempt` is kept and the
+ *     duplicate is counted, never harvested twice.
+ *   - `--limit` is a run cap (default `DEFAULT_LIMIT`): runs beyond the
+ *     newest <limit> are listed as `unavailable=run-cap`, and the window is
+ *     incomplete. `--max-requests` is the finite budget of metered gh calls
+ *     (pages, run-jobs, job logs, retries included; default
+ *     `DEFAULT_MAX_REQUESTS`); runs it leaves unfetched are
+ *     `unavailable=not-attempted:budget-exhausted`. A rate-limit response
+ *     that survives the retry stops all further metered calls the same way
+ *     (`unavailable=rate-limited` / `not-attempted:rate-limited`).
+ *
+ * An incomplete window still harvests and emits every run it did enumerate
+ * (a failed record among them must stay visible), but it can never exit 0:
+ * see exit 5 below.
  *
  * Output contract
  * ----------------
@@ -89,19 +133,40 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * unchanged. All output is buffered and written in a single stdout write
  * at the very end, so a crash mid-harvest can never leave a truncated,
  * plausible-looking dataset on stdout. A *partial* harvest (exit 3, below)
- * does write the records from the runs that succeeded — the exit code is
- * what says the population is incomplete.
+ * or an incomplete window (exit 5) does write the records from the runs
+ * that succeeded — the exit code is what says the population is incomplete.
  *
  * stderr carries one leading `window:` line (the effective `--since`,
- * `--limit`, and branch, since a reader cannot recover them from the rest),
- * a per-run manifest line (emitted as each run completes, so not
- * necessarily in enumeration order), and one final summary line:
+ * `--until`, `--limit`, request budget, and branch, since a reader cannot
+ * recover them from the rest), one `page:` line per run-list page (and a
+ * `partition:` line per split), one `enumeration:` verdict line, an
+ * `incomplete:` line per reason the window is not complete, a per-run
+ * manifest line (emitted as each run completes, so not necessarily in
+ * enumeration order), and one final summary line:
  *
- *   window: since=<iso> limit=<n> branch=<b|all>
+ *   window: since=<iso> until=<iso> limit=<n> max-requests=<n> branch=<b|all>
+ *   partition: created=<a>..<b> total_count=<t> split=<a>..<m>,<m+1>..<b>
+ *   page: created=<a>..<b> page=<n> returned=<k> new=<j> total_count=<t>[ exhausted=short-page|total-count]
+ *   enumeration: complete=<yes|no> runs=<unique> pages=<p> partitions=<q> duplicates=<d> requests=<used>/<max>
+ *   incomplete: reason=<reason> <details>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n> failedRecords=<m>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> skipped=<reason>
+ *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> unavailable=<reason>[ <provenance>]
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> error=<reason>
- *   runs=<enumerated> harvested=<k> failed=<f> records=<r>
+ *   runs=<enumerated> harvested=<k> failed=<f> records=<r> unavailable=<u> complete=<yes|no> requests=<used>/<max>
+ *
+ * `unavailable=` names a run whose evidence the window is missing without
+ * the harvester having failed on it:
+ *   - `cancelled-job-log-404 job-conclusion=cancelled test-step=<c|absent>`:
+ *     a `health` job that started (it has steps) and was cancelled, whose
+ *     log endpoint answers 404. Seen live on runs 37974590551 and
+ *     37686904719, both cancelled after `Run pnpm test:workspace` had
+ *     passed, so the missing log is missing post-emitter evidence — not a
+ *     never-started job, not retention expiry, not a silent emitter. It is
+ *     not waived: it makes the window incomplete. A 404 on any job that was
+ *     not cancelled stays an ordinary `error=` (exit 3).
+ *   - `rate-limited`, `not-attempted:<rate-limited|budget-exhausted>`,
+ *     `run-cap`: see the enumeration section above.
  *
  * The per-run `failedRecords=<m>` and the final summary's `failed=<f>` count
  * different things: the per-run one counts that run's own parsed records
@@ -131,27 +196,31 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *     overlaps by design (see `DEFAULT_WINDOW_DAYS` below). This is a skip,
  *     never a partial harvest -- the log is gone, not broken.
  *
- * When `gh run list` returns exactly `--limit` runs the window is capped,
- * not complete: a `notice:` line says so, because the manifest's
- * `runs=<n>` alone cannot distinguish "all runs since --since" from "the
- * newest --limit of them".
- *
  * Exit codes (mirrors the summarizer's contract style: distinct codes for
  * distinct situations, never conflating "nothing went wrong" with "there is
- * no data"):
+ * no data"), in precedence order 3 > 5 > 4 > 1 > 0:
  *
- *   0  every attempted run succeeded and at least one record was extracted
+ *   0  the window is complete, every attempted run succeeded, and at least
+ *      one record was extracted
  *   1  at least one run was harvested, yet zero records were extracted —
  *      a green `health` job with no `[supervisor-timeline]` lines, i.e. the
  *      emitter (or this parser) went silent
  *   3  at least one run failed (its log could not be fetched, saved, or
  *      parsed as `[supervisor-timeline]` records) — a partial harvest,
  *      distinct from 0/1 regardless of how many records the other runs
- *      still yielded. A failed run contributes no records at all.
- *   4  nothing was harvestable: zero runs enumerated, or every enumerated
- *      run was skipped (see above). A quiet window, not a silent emitter.
- *  64  a usage error (bad flag, `gh run list` itself failed or returned
- *      unparsable JSON, or `--save-dir` could not be created)
+ *      still yielded. A failed run contributes no records at all. The
+ *      `enumeration:` / `incomplete:` lines still say whether the window
+ *      was also incomplete.
+ *   4  nothing was harvestable in a COMPLETE window: zero runs enumerated,
+ *      or every enumerated run was skipped (see above). A quiet window, not
+ *      a silent emitter.
+ *   5  the window is incomplete (#3230): an `incomplete:` reason from
+ *      enumeration, the run cap, the request budget, a rate limit, or
+ *      unavailable cancelled-job evidence. Never success, whatever the
+ *      harvested records say; missing started-job samples are not no-data.
+ *  64  a usage error (bad flag, an unparsable `--since`/`--until`, run
+ *      enumeration failing before a single page was served, or
+ *      `--save-dir` could not be created)
  *
  * Every gh call is attempted twice with a short pause between, so one
  * transient API failure does not by itself demote a harvest to 3 (or 64) --
@@ -186,13 +255,29 @@ const HEALTH_JOB_NAME = "health";
 // the overlap starts harvesting again if retention is raised to >= 9 days.
 export const DEFAULT_WINDOW_DAYS = 8;
 const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-const DEFAULT_LIMIT = 200;
+// A run cap, not a page size: the window is enumerated page by page and a
+// cap hit is an incomplete window, never a silently truncated one (#3230).
+// Sized above the observed load (454 `health.yml` runs in the 8 days to
+// 2026-10-12) so the request budget below, not this cap, is what binds first.
+const DEFAULT_LIMIT = 1000;
+// Finite budget of metered gh calls per harvest (run-list pages, run-jobs
+// pages, job logs, and every retry). `GITHUB_TOKEN`'s primary limit is
+// 1,000 requests per hour per repository; stopping short of it turns an
+// oversized window into an explicit `incomplete:` result instead of a
+// mid-harvest 403 storm.
+const DEFAULT_MAX_REQUESTS = 950;
+// The list-workflow-runs endpoint's own maximum page size.
+export const RUNS_PER_PAGE = 100;
+// GitHub documents that this endpoint "will return up to 1,000 results for
+// each search" when filtered by `created` (also actor/branch/event/status...),
+// even when `total_count` is larger -- hence partitioning, not paging, past it.
+export const QUERY_RESULT_CEILING = 1000;
 const DEFAULT_GH = "gh";
 // Bounded so a full default harvest is minutes, not a quarter hour, while
 // staying below GitHub's secondary rate limit. Since #2931 the two gh
-// invocations per run are one metered GET each, so a capped 200-run harvest
-// is ~400 GETs — comfortably inside the primary hourly limit at this
-// concurrency.
+// invocations per run are one metered GET each, so a 450-run harvest is
+// ~900 GETs at most -- inside the primary hourly limit at this concurrency,
+// with `DEFAULT_MAX_REQUESTS` as the backstop.
 const CONCURRENCY = 4;
 // One retry with a short pause: a single transient 5xx or secondary-rate-limit
 // 403 on one of hundreds of calls must not turn a complete population into a
@@ -227,10 +312,8 @@ export const EXIT_OK = 0;
 export const EXIT_NO_RECORDS = 1;
 export const EXIT_PARTIAL = 3;
 export const EXIT_NO_RUNS = 4;
+export const EXIT_INCOMPLETE = 5;
 export const EXIT_USAGE = 64;
-
-const RUN_LIST_JSON_FIELDS =
-  "databaseId,headBranch,headSha,conclusion,status,createdAt,event,attempt";
 
 // gh output can run into the tens of thousands of lines for a single job log
 // (10,014 lines was the real measurement on 2026-09-07); give execFile a
@@ -240,9 +323,15 @@ const MAX_BUFFER = 200 * 1024 * 1024;
 
 const STRING_FLAGS = {
   "--since": "since",
+  "--until": "until",
   "--branch": "branch",
   "--save-dir": "saveDir",
   "--gh": "gh",
+};
+
+const POSITIVE_INTEGER_FLAGS = {
+  "--limit": "limit",
+  "--max-requests": "maxRequests",
 };
 
 function takeFlagValue(argv, index, flag) {
@@ -256,7 +345,9 @@ function takeFlagValue(argv, index, flag) {
 export function parseCliArgs(argv, { now = new Date() } = {}) {
   const options = {
     since: defaultSince(now),
+    until: toIsoSeconds(now),
     limit: DEFAULT_LIMIT,
+    maxRequests: DEFAULT_MAX_REQUESTS,
     branch: undefined,
     saveDir: undefined,
     gh: DEFAULT_GH,
@@ -266,13 +357,13 @@ export function parseCliArgs(argv, { now = new Date() } = {}) {
     if (Object.hasOwn(STRING_FLAGS, arg)) {
       options[STRING_FLAGS[arg]] = takeFlagValue(argv, index, arg);
       index += 1;
-    } else if (arg === "--limit") {
+    } else if (Object.hasOwn(POSITIVE_INTEGER_FLAGS, arg)) {
       const value = argv[index + 1];
       const parsed = Number(value);
       if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`--limit requires a positive integer, got: ${value}`);
+        throw new Error(`${arg} requires a positive integer, got: ${value}`);
       }
-      options.limit = parsed;
+      options[POSITIVE_INTEGER_FLAGS[arg]] = parsed;
       index += 1;
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown flag: ${arg}`);
@@ -280,23 +371,22 @@ export function parseCliArgs(argv, { now = new Date() } = {}) {
       throw new Error(`unexpected positional argument: ${arg}`);
     }
   }
+  for (const key of ["since", "until"]) {
+    if (Number.isNaN(Date.parse(options[key]))) {
+      throw new Error(`--${key} is not a parseable ISO-8601 instant: ${options[key]}`);
+    }
+  }
+  if (Date.parse(options.since) > Date.parse(options.until)) {
+    throw new Error(`--since ${options.since} is after --until ${options.until}`);
+  }
   return options;
 }
 
-export function buildRunListArgs({ since, limit, branch }) {
-  const args = [
-    "run",
-    "list",
-    `--workflow=${HEALTH_WORKFLOW}`,
-    "--created",
-    `>=${since}`,
-    "--limit",
-    String(limit),
-    "--json",
-    RUN_LIST_JSON_FIELDS,
-  ];
-  if (branch) args.push("--branch", branch);
-  return args;
+/** `gh api` argv for one page of `health.yml` runs created in `[from, to]`. */
+export function buildRunsPageArgs({ from, to, page, perPage = RUNS_PER_PAGE, branch }) {
+  let query = `created=${from}..${to}&exclude_pull_requests=true&per_page=${perPage}&page=${page}`;
+  if (branch) query += `&branch=${encodeURIComponent(branch)}`;
+  return ["api", `repos/{owner}/{repo}/actions/workflows/${HEALTH_WORKFLOW}/runs?${query}`];
 }
 
 function sleep(ms) {
@@ -307,9 +397,9 @@ function sleep(ms) {
 // job log's retention. Non-retryable (see `runGh`'s catch below), and
 // caught narrowly at the `fetchJobLog` call site in `harvestRun`, which is
 // the only place a 410 becomes `skipped=log-expired` rather than an ordinary
-// failure: a 410 from run enumeration or the run-jobs lookup still surfaces
-// as today's usage error / `error=` line, since only a job log is ever
-// expected to expire out from under a harvest.
+// failure: a 410 from a run-list page or the run-jobs lookup still surfaces
+// as a `page-failed` incomplete reason / `error=` line, since only a job log
+// is ever expected to expire out from under a harvest.
 class LogGoneError extends Error {
   constructor(message) {
     super(message);
@@ -317,8 +407,55 @@ class LogGoneError extends Error {
   }
 }
 
-async function runGh({ gh, retryDelayMs }, args) {
+// Thrown instead of spending a metered call once the request budget is used
+// up, or once a rate limit has stopped the harvest. `reason` is what the
+// manifest names (`budget-exhausted` / `rate-limited`).
+class BudgetStopError extends Error {
+  constructor(reason) {
+    super(`request budget stopped: ${reason}`);
+    this.name = "BudgetStopError";
+    this.reason = reason;
+  }
+}
+
+// Thrown when a call still answers with a rate-limit error after its retry.
+// It also stops the shared budget, so every lane's next call becomes a
+// `not-attempted:rate-limited` rather than another doomed request.
+class RateLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RateLimitError";
+  }
+}
+
+/** The finite, shared metered-call budget for one harvest. */
+export function createRequestBudget(max) {
+  return {
+    max,
+    used: 0,
+    stopReason: null,
+    take() {
+      if (this.stopReason !== null) throw new BudgetStopError(this.stopReason);
+      if (this.used >= this.max) {
+        this.stopReason = "budget-exhausted";
+        throw new BudgetStopError(this.stopReason);
+      }
+      this.used += 1;
+    },
+  };
+}
+
+// gh reports both the primary ("API rate limit exceeded ... (HTTP 403)") and
+// the secondary ("You have exceeded a secondary rate limit") limit in its
+// stderr; 429 is the other status GitHub documents for the secondary limit.
+function isRateLimitError(error) {
+  const text = `${error.stderr ?? ""} ${error.stdout ?? ""} ${error.message ?? ""}`;
+  return /rate limit/i.test(text) || /\(HTTP 429\)/.test(text);
+}
+
+async function runGh({ gh, retryDelayMs, budget }, args, { metered = true } = {}) {
   for (let attempt = 1; ; attempt += 1) {
+    if (metered && budget) budget.take();
     try {
       const { stdout } = await execFileAsync(gh, args, {
         encoding: "utf8",
@@ -327,7 +464,13 @@ async function runGh({ gh, retryDelayMs }, args) {
       return stdout;
     } catch (error) {
       if (isGoneError(error)) throw new LogGoneError(flattenErrorMessage(error));
-      if (attempt >= GH_ATTEMPTS) throw error;
+      if (attempt >= GH_ATTEMPTS) {
+        if (isRateLimitError(error)) {
+          if (budget && budget.stopReason === null) budget.stopReason = "rate-limited";
+          throw new RateLimitError(flattenErrorMessage(error));
+        }
+        throw error;
+      }
       await sleep(retryDelayMs);
     }
   }
@@ -364,7 +507,7 @@ export function buildJobLogArgs(jobId, { allowEscapeSequences = false } = {}) {
 // does not resolve one).
 export async function probeAllowEscapeSequences(ghOptions, stderr) {
   try {
-    const stdout = await runGh(ghOptions, ["api", "--help"]);
+    const stdout = await runGh(ghOptions, ["api", "--help"], { metered: false });
     return stdout.includes("--allow-escape-sequences");
   } catch (error) {
     stderr.write(
@@ -439,6 +582,25 @@ function isGoneError(error) {
   return envelope !== null && isGoneStatus(envelope.status);
 }
 
+// gh's real 404 shape (captured 2026-09-07): exit 1, "gh: Not Found (HTTP
+// 404)" on stderr, the error envelope on stdout. Only the exec-failure shape
+// counts -- a 404 envelope arriving on a successful exit stays the ordinary
+// "API error envelope" failure in `fetchJobLog`.
+function isNotFoundError(error) {
+  return typeof error.stderr === "string" && /\(HTTP 404\)/.test(error.stderr);
+}
+
+// Names the health job's `pnpm test:workspace` step outcome for an
+// unavailable cancelled job, so the manifest says whether the emitter had
+// already run (the two #3230 runs had passed it) without a log to prove it.
+function testStepState(job) {
+  const step = (job.steps ?? []).find((candidate) =>
+    String(candidate.name ?? "").includes("test:workspace"),
+  );
+  if (!step) return "absent";
+  return step.conclusion ?? step.status ?? "unknown";
+}
+
 // One metered GET: the endpoint answers 302 to a plaintext blob on a
 // separate host and gh follows it itself (verified live 2026-09-07 with
 // `GH_DEBUG=api`: 302 Found -> actions-results blob, 200 OK). The body is
@@ -490,6 +652,10 @@ function flattenErrorMessage(error) {
 async function harvestRun(run, options, stderr) {
   const base = manifestBase(run);
   const skipped = { kind: "skipped", rawLines: [] };
+  const unavailable = (jobId, reason) => {
+    stderr.write(`${base} job=${jobId ?? "none"} unavailable=${reason}\n`);
+    return { kind: "unavailable", rawLines: [] };
+  };
 
   if (run.status !== "completed") {
     stderr.write(`${base} job=none skipped=status:${run.status}\n`);
@@ -503,8 +669,8 @@ async function harvestRun(run, options, stderr) {
       stderr.write(`${base} job=none skipped=no-health-job\n`);
       return skipped;
     }
-    // REST names the job's numeric id `id`; only `gh run list --json`
-    // (the run enumeration above) calls it `databaseId`.
+    // REST names the job's numeric id `id`; the manifest's `run=` keeps the
+    // `databaseId` name `gh run list --json` used (see `normalizeRestRun`).
     jobId = job.id;
     if (jobNeverStarted(job)) {
       stderr.write(`${base} job=${jobId} skipped=health-job-never-started\n`);
@@ -518,6 +684,15 @@ async function harvestRun(run, options, stderr) {
       if (error instanceof LogGoneError) {
         stderr.write(`${base} job=${jobId} skipped=log-expired\n`);
         return skipped;
+      }
+      // A started job that was cancelled can answer 404 for its log (#3230):
+      // missing evidence, not a broken fetch and not a quiet job -- recorded
+      // so the window is incomplete. Any other 404 stays an `error=` below.
+      if (isNotFoundError(error) && job.conclusion === "cancelled") {
+        return unavailable(
+          jobId,
+          `cancelled-job-log-404 job-conclusion=cancelled test-step=${testStepState(job)}`,
+        );
       }
       throw error;
     }
@@ -541,9 +716,177 @@ async function harvestRun(run, options, stderr) {
     stderr.write(`${base} job=${jobId} lines=${rawLines.length} failedRecords=${failedRecords}\n`);
     return { kind: "harvested", rawLines };
   } catch (error) {
+    if (error instanceof BudgetStopError)
+      return unavailable(jobId, `not-attempted:${error.reason}`);
+    if (error instanceof RateLimitError) return unavailable(jobId, "rate-limited");
     stderr.write(`${base} job=${jobId ?? "none"} error=${flattenErrorMessage(error)}\n`);
     return { kind: "failed", rawLines: [] };
   }
+}
+
+// The REST runs endpoint's field names, mapped onto the shape the manifest
+// has always printed (the names `gh run list --json` used before #3230).
+function normalizeRestRun(raw) {
+  return {
+    databaseId: raw.id,
+    attempt: raw.run_attempt,
+    event: raw.event,
+    headBranch: raw.head_branch,
+    headSha: raw.head_sha,
+    createdAt: raw.created_at,
+    conclusion: raw.conclusion,
+    status: raw.status,
+  };
+}
+
+function isWellFormedRestRun(raw) {
+  return Number.isInteger(raw?.id) && typeof raw.created_at === "string";
+}
+
+function newestFirst(left, right) {
+  const byCreated = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+  return byCreated !== 0 ? byCreated : right.databaseId - left.databaseId;
+}
+
+/**
+ * Enumerates every `health.yml` run created in `[since, until]` (see the
+ * "Window enumeration" section of the header). Never throws for an API
+ * problem: each one becomes an `incomplete:` line and a `reasons` entry, and
+ * the runs served before it are still returned.
+ */
+async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
+  const byId = new Map();
+  const reasons = [];
+  const stats = { pages: 0, partitions: 1, duplicates: 0 };
+  let anyPageServed = false;
+  const incomplete = (reason, details) => {
+    reasons.push(reason);
+    stderr.write(`incomplete: reason=${reason} ${details}\n`);
+  };
+  const finish = () => ({
+    runs: [...byId.values()].sort(newestFirst),
+    reasons,
+    stats,
+    anyPageServed,
+  });
+
+  const wholeSeconds = (ms) => Math.floor(ms / 1000) * 1000;
+  // A stack, newer half on top, so partitions are walked newest-first and
+  // the manifest keeps the endpoint's own created-descending order.
+  const pending = [
+    [wholeSeconds(Date.parse(options.since)), wholeSeconds(Date.parse(options.until))],
+  ];
+  // One page past the ceiling is allowed so a ceiling-sized partition can
+  // still prove exhaustion with its empty next page.
+  const maxPages = Math.ceil(queryCeiling / pageSize) + 1;
+
+  while (pending.length > 0) {
+    const [fromMs, toMs] = pending.pop();
+    const from = toIsoSeconds(new Date(fromMs));
+    const to = toIsoSeconds(new Date(toMs));
+    const label = `created=${from}..${to}`;
+    let served = 0;
+    let firstTotal = null;
+
+    for (let page = 1; ; page += 1) {
+      if (page > maxPages) {
+        incomplete("page-limit", `${label} page=${page} max-pages=${maxPages}`);
+        break;
+      }
+      let body;
+      try {
+        body = await runGh(
+          options.ghOptions,
+          buildRunsPageArgs({ from, to, page, perPage: pageSize, branch: options.branch }),
+        );
+      } catch (error) {
+        if (error instanceof BudgetStopError || error instanceof RateLimitError) {
+          const reason = error instanceof BudgetStopError ? error.reason : "rate-limited";
+          incomplete(reason, `${label} page=${page} enumeration stopped`);
+          return finish();
+        }
+        incomplete("page-failed", `${label} page=${page} error=${flattenErrorMessage(error)}`);
+        break;
+      }
+
+      let parsed = null;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        // Reported as malformed just below.
+      }
+      if (typeof parsed?.total_count !== "number" || !Array.isArray(parsed.workflow_runs)) {
+        incomplete("malformed-page", `${label} page=${page} expected {total_count, workflow_runs}`);
+        break;
+      }
+      if (!parsed.workflow_runs.every(isWellFormedRestRun)) {
+        incomplete("malformed-page", `${label} page=${page} run without id/created_at`);
+        break;
+      }
+      anyPageServed = true;
+      stats.pages += 1;
+
+      if (page === 1) {
+        firstTotal = parsed.total_count;
+        if (firstTotal > queryCeiling) {
+          if (toMs - fromMs >= 1000) {
+            const midMs = wholeSeconds((fromMs + toMs) / 2);
+            const mid = toIsoSeconds(new Date(midMs));
+            const afterMid = toIsoSeconds(new Date(midMs + 1000));
+            stderr.write(
+              `partition: ${label} total_count=${firstTotal} split=${from}..${mid},${afterMid}..${to}\n`,
+            );
+            stats.partitions += 1;
+            pending.push([fromMs, midMs], [midMs + 1000, toMs]);
+            break;
+          }
+          incomplete(
+            "partition-ceiling",
+            `${label} total_count=${firstTotal} ceiling=${queryCeiling} (one second cannot be split)`,
+          );
+        }
+      } else if (parsed.total_count !== firstTotal) {
+        incomplete(
+          "total-count-changed",
+          `${label} page=${page} total_count=${parsed.total_count} page-1-total_count=${firstTotal}`,
+        );
+        break;
+      }
+
+      let added = 0;
+      for (const raw of parsed.workflow_runs) {
+        const run = normalizeRestRun(raw);
+        const previous = byId.get(run.databaseId);
+        if (previous === undefined) {
+          byId.set(run.databaseId, run);
+          added += 1;
+        } else {
+          stats.duplicates += 1;
+          if ((run.attempt ?? 0) > (previous.attempt ?? 0)) byId.set(run.databaseId, run);
+        }
+      }
+      served += parsed.workflow_runs.length;
+
+      let exhausted = null;
+      if (parsed.workflow_runs.length < pageSize) exhausted = "short-page";
+      else if (served >= firstTotal) exhausted = "total-count";
+      stderr.write(
+        `page: ${label} page=${page} returned=${parsed.workflow_runs.length} new=${added} total_count=${parsed.total_count}${exhausted ? ` exhausted=${exhausted}` : ""}\n`,
+      );
+      if (exhausted !== null) {
+        const expected = Math.min(firstTotal, queryCeiling);
+        if (served !== expected) {
+          incomplete("total-count-mismatch", `${label} served=${served} expected=${expected}`);
+        }
+        break;
+      }
+      if (added === 0) {
+        incomplete("non-progressing-page", `${label} page=${page} added no new run`);
+        break;
+      }
+    }
+  }
+  return finish();
 }
 
 /** Runs `worker` over `items` with at most `limit` in flight; results keep
@@ -574,6 +917,10 @@ export async function runCli(
     stderr = process.stderr,
     now = new Date(),
     retryDelayMs = resolveDefaultRetryDelayMs(),
+    // Test-only knobs: lets a suite prove pagination and partitioning with a
+    // handful of stub runs instead of hundreds. Production never passes them.
+    pageSize = RUNS_PER_PAGE,
+    queryCeiling = QUERY_RESULT_CEILING,
   } = {},
 ) {
   let options;
@@ -583,17 +930,18 @@ export async function runCli(
     stderr.write(`usage error: ${error.message}\n`);
     return EXIT_USAGE;
   }
-  options.ghOptions = { gh: options.gh, retryDelayMs };
+  const budget = createRequestBudget(options.maxRequests);
+  options.ghOptions = { gh: options.gh, retryDelayMs, budget };
 
   // The window is the one input a reader of the manifest cannot otherwise
   // recover — and an explicit `--since` can lie in the future, which
   // enumerates nothing and would otherwise read as a quiet week.
   stderr.write(
-    `window: since=${options.since} limit=${options.limit} branch=${options.branch ?? "all"}\n`,
+    `window: since=${options.since} until=${options.until} limit=${options.limit} max-requests=${options.maxRequests} branch=${options.branch ?? "all"}\n`,
   );
   if (Date.parse(options.since) > now.getTime()) {
     stderr.write(
-      `warning: --since ${options.since} lies in the future; gh run list will enumerate nothing\n`,
+      `warning: --since ${options.since} lies in the future; the run enumeration will find nothing\n`,
     );
   }
 
@@ -604,23 +952,27 @@ export async function runCli(
     stderr,
   );
 
-  let runs;
-  try {
-    const raw = await runGh(options.ghOptions, buildRunListArgs(options));
-    runs = JSON.parse(raw);
-    if (!Array.isArray(runs)) {
-      throw new Error("expected a JSON array from `gh run list`");
-    }
-  } catch (error) {
-    stderr.write(`usage error: gh run list failed: ${flattenErrorMessage(error)}\n`);
+  const enumeration = await enumerateWindow(options, stderr, { pageSize, queryCeiling });
+  if (!enumeration.anyPageServed) {
+    stderr.write(
+      `usage error: run enumeration failed before any page was served (${enumeration.reasons.join(",")})\n`,
+    );
     return EXIT_USAGE;
   }
-
-  if (runs.length >= options.limit) {
+  const reasons = [...enumeration.reasons];
+  const enumerated = enumeration.runs;
+  const runs = enumerated.slice(0, options.limit);
+  const capped = enumerated.slice(options.limit);
+  if (capped.length > 0) {
+    reasons.push("run-cap");
     stderr.write(
-      `notice: gh run list returned ${runs.length} run(s), the --limit cap; older runs since ${options.since} may be missing (raise --limit)\n`,
+      `incomplete: reason=run-cap enumerated=${enumerated.length} limit=${options.limit} (the oldest ${capped.length} are unavailable=run-cap)\n`,
     );
   }
+  const { pages, partitions, duplicates } = enumeration.stats;
+  stderr.write(
+    `enumeration: complete=${reasons.length === 0 ? "yes" : "no"} runs=${enumerated.length} pages=${pages} partitions=${partitions} duplicates=${duplicates} requests=${budget.used}/${budget.max}\n`,
+  );
 
   if (options.saveDir) {
     try {
@@ -633,20 +985,32 @@ export async function runCli(
     }
   }
 
+  for (const run of capped) {
+    stderr.write(`${manifestBase(run)} job=none unavailable=run-cap\n`);
+  }
   const results = await mapWithConcurrency(runs, CONCURRENCY, (run) =>
     harvestRun(run, options, stderr),
   );
   const outputLines = results.flatMap((result) => result.rawLines);
   const harvested = results.filter((result) => result.kind === "harvested").length;
   const failed = results.filter((result) => result.kind === "failed").length;
+  const unavailableRuns = results.filter((result) => result.kind === "unavailable").length;
+  if (unavailableRuns > 0) {
+    reasons.push("unavailable-evidence");
+    stderr.write(
+      `incomplete: reason=unavailable-evidence runs=${unavailableRuns} (see the unavailable= manifest lines)\n`,
+    );
+  }
+  const complete = reasons.length === 0;
 
   if (outputLines.length > 0) stdout.write(`${outputLines.join("\n")}\n`);
 
   stderr.write(
-    `runs=${runs.length} harvested=${harvested} failed=${failed} records=${outputLines.length}\n`,
+    `runs=${enumerated.length} harvested=${harvested} failed=${failed} records=${outputLines.length} unavailable=${unavailableRuns + capped.length} complete=${complete ? "yes" : "no"} requests=${budget.used}/${budget.max}\n`,
   );
 
   if (failed > 0) return EXIT_PARTIAL;
+  if (!complete) return EXIT_INCOMPLETE;
   if (harvested === 0) return EXIT_NO_RUNS;
   if (outputLines.length === 0) return EXIT_NO_RECORDS;
   return EXIT_OK;

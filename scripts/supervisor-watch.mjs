@@ -37,8 +37,19 @@ const execFileAsync = promisify(execFile);
  * and is skipped as `log-expired`; a window in which every log has expired
  * is harvester 4 -> no-data, never green.
  *
+ * AN INCOMPLETE WINDOW IS NEVER GREEN (#3230). The harvester exits 5 when
+ * the window could not be enumerated or sampled in full: a run cap, a failed,
+ * malformed, or non-progressing run-list page, a rate limit, the request
+ * budget, or a started-then-cancelled `health` job whose log answers 404
+ * (`unavailable=` manifest lines). Pass A is then `incomplete` and the verdict
+ * is `incomplete` -- unless the evidence that *was* collected is already red
+ * (a failed record, R-B, strict-main drift, a silent main job), which stays
+ * red. Pass B reads the same incomplete population, so it can never stand in
+ * for the missing samples. `incomplete` files/comments on the tracking issue
+ * and alerts exactly like red; only `green` closes it.
+ *
  * Exit codes are informational (the workflow keys on the verdict output):
- *   0 green, 1 no-data, 2 red.
+ *   0 green, 1 no-data, 2 red, 3 incomplete.
  */
 
 function parseOptions(argv, env) {
@@ -114,6 +125,9 @@ function withFinalNewline(text) {
 export function classifyPassA(hrc, src) {
   if (hrc === 0 && src === 0) return "ok";
   if (hrc === 4) return "empty";
+  // An incomplete window's summarizer may legitimately find no samples (1);
+  // a strict finding (2) or a parse failure (64) in what was collected is red.
+  if (hrc === 5) return src === 0 || src === 1 ? "incomplete" : "red";
   return "red";
 }
 
@@ -127,6 +141,7 @@ export function deriveVerdict(statusA, statusB) {
   if (statusA === "red" || statusB === "red" || statusB === "silent") {
     return { verdict: "red", exitCode: 2 };
   }
+  if (statusA === "incomplete") return { verdict: "incomplete", exitCode: 3 };
   if (statusA === "empty") return { verdict: "no-data", exitCode: 1 };
   return { verdict: "green", exitCode: 0 };
 }
@@ -144,6 +159,7 @@ function buildStepSummary({
   silentRuns,
   harvestErrors,
   expiredRuns,
+  unavailableRuns,
   harvestNotices,
   manifest,
   allSummary,
@@ -169,6 +185,10 @@ function buildStepSummary({
     "```\n",
     fileOrNone(expiredRuns),
     "```\n\n",
+    "### Runs with unavailable evidence (incomplete window; never green)\n\n",
+    "```\n",
+    fileOrNone(unavailableRuns),
+    "```\n\n",
     "### Harvest window and notices\n\n",
     "```\n",
     fileOrNone(harvestNotices),
@@ -188,7 +208,16 @@ function buildStepSummary({
 /** Runs the watch end to end and returns its exit code without exiting. */
 export async function runCli(
   argv,
-  { env = process.env, stdout = process.stdout, stderr = process.stderr, now, tar } = {},
+  {
+    env = process.env,
+    stdout = process.stdout,
+    stderr = process.stderr,
+    now,
+    tar,
+    // Test-only: forwarded to the harvester (`pageSize`, `queryCeiling`) so a
+    // suite can drive multi-page and partitioned windows with a few runs.
+    harvestOptions = {},
+  } = {},
 ) {
   let options;
   try {
@@ -227,6 +256,7 @@ export async function runCli(
         manifest += chunk;
       }),
       now,
+      ...harvestOptions,
     }),
   );
   // The manifest is emitted on stderr, potentially in arbitrarily-sized
@@ -313,15 +343,30 @@ export async function runCli(
   const expiredRuns = withFinalNewline(
     matchingLines(manifest, (line) => /^run=[0-9]+ .* skipped=log-expired$/.test(line)),
   );
+  const unavailableRuns = withFinalNewline(
+    matchingLines(manifest, (line) => /^run=[0-9]+ .* unavailable=/.test(line)),
+  );
   const harvestNotices = withFinalNewline(
-    matchingLines(manifest, (line) => /^(window|notice|warning):/.test(line)),
+    matchingLines(manifest, (line) =>
+      /^(window|notice|warning|partition|enumeration|incomplete):/.test(line),
+    ),
+  );
+  // The full enumeration provenance: window bounds, every run-list page and
+  // partition, the completeness verdict, each incomplete reason, and the
+  // harvester's final count line.
+  const enumeration = withFinalNewline(
+    matchingLines(manifest, (line) =>
+      /^(window|partition|page|enumeration|incomplete):|^runs=[0-9]+ /.test(line),
+    ),
   );
   await Promise.all([
     writeFile(join(out, "failed-runs.txt"), failedRuns),
     writeFile(join(out, "harvest-errors.txt"), harvestErrors),
     writeFile(join(out, "silent-runs.txt"), silentRuns),
     writeFile(join(out, "expired-runs.txt"), expiredRuns),
+    writeFile(join(out, "unavailable-runs.txt"), unavailableRuns),
     writeFile(join(out, "harvest-notices.txt"), harvestNotices),
+    writeFile(join(out, "enumeration.txt"), enumeration),
   ]);
 
   const { verdict, exitCode } = deriveVerdict(statusA, statusB);
@@ -342,6 +387,7 @@ export async function runCli(
         silentRuns,
         harvestErrors,
         expiredRuns,
+        unavailableRuns,
         harvestNotices,
         manifest,
         allSummary,

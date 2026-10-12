@@ -28,6 +28,7 @@ import * as harvester from "../harvest-supervisor-timelines.mjs";
 import {
   DEFAULT_RETRY_DELAY_MS,
   DEFAULT_WINDOW_DAYS,
+  EXIT_INCOMPLETE,
   EXIT_NO_RECORDS,
   EXIT_NO_RUNS,
   EXIT_OK,
@@ -35,8 +36,11 @@ import {
   EXIT_USAGE,
   JOBS_PER_PAGE,
   buildJobLogArgs,
+  QUERY_RESULT_CEILING,
+  RUNS_PER_PAGE,
   buildRunJobsArgs,
-  buildRunListArgs,
+  buildRunsPageArgs,
+  createRequestBudget,
   parseCliArgs,
   probeAllowEscapeSequences,
   resolveDefaultRetryDelayMs,
@@ -60,6 +64,11 @@ const CODE_FRAME_LINE = `${LOG_PREFIX}  913|       expect(timelineLines[0]).toCo
 // records shaped like this one.
 const FAILED_RECORD_LINE = `${LOG_PREFIX}${TIMELINE_SAMPLES.FAILED_LINE}`;
 
+// Every stderr line the harvester writes starts with one of these (see its
+// "Output contract" header); anything else is a fragmented manifest line.
+const MANIFEST_LINE =
+  /^(window|warning|partition|page|enumeration|incomplete):|^run=\d+ |^runs=\d+ /;
+
 const JOB_LOG_WITH_RECORD = [
   `${LOG_PREFIX}##[section]Starting: Run tests`,
   UP_UP2_RECORD_LINE,
@@ -75,7 +84,9 @@ const JOB_LOG_NO_RECORDS = [
 // Doubles as runCli's options bag: `retryDelayMs: 0` keeps the retry path
 // instant (every persistent-failure case below goes through it), and a
 // pinned `now` keeps the default window deterministic in cases that are not
-// about it.
+// about it. Since #3230 the stub filters runs by the `created` window the
+// way GitHub does, so `now` sits just after makeRun's default `createdAt`
+// (2026-09-07T00:00:00Z), inside the default 8-day window.
 function sink() {
   const outWrites = [];
   const errWrites = [];
@@ -83,7 +94,7 @@ function sink() {
     stdout: { write: (chunk) => outWrites.push(chunk) },
     stderr: { write: (chunk) => errWrites.push(chunk) },
     retryDelayMs: 0,
-    now: new Date("2026-10-01T12:00:00Z"),
+    now: new Date("2026-09-08T12:00:00Z"),
     out: () => outWrites.join(""),
     err: () => errWrites.join(""),
     outWriteCount: () => outWrites.length,
@@ -96,22 +107,45 @@ afterEach(() => {
   cleanupFixtures();
 });
 
-describe("buildRunListArgs", () => {
-  it("includes --workflow=health.yml, --created, --limit, and --json", () => {
-    const args = buildRunListArgs({ since: "2026-01-01T00:00:00Z", limit: 50 });
-    expect(args).toContain("--workflow=health.yml");
-    const createdIndex = args.indexOf("--created");
-    expect(createdIndex).toBeGreaterThan(-1);
-    expect(args[createdIndex + 1]).toBe(">=2026-01-01T00:00:00Z");
-    const limitIndex = args.indexOf("--limit");
-    expect(args[limitIndex + 1]).toBe("50");
+describe("buildRunsPageArgs (#3230)", () => {
+  it("lists health.yml runs over the closed created range, one explicit page at a time", () => {
+    expect(
+      buildRunsPageArgs({ from: "2026-09-01T00:00:00Z", to: "2026-09-08T00:00:00Z", page: 3 }),
+    ).toEqual([
+      "api",
+      "repos/{owner}/{repo}/actions/workflows/health.yml/runs?created=2026-09-01T00:00:00Z..2026-09-08T00:00:00Z&exclude_pull_requests=true&per_page=100&page=3",
+    ]);
   });
 
-  it("adds --branch only when given", () => {
-    expect(buildRunListArgs({ since: "x", limit: 1 })).not.toContain("--branch");
-    const args = buildRunListArgs({ since: "x", limit: 1, branch: "main" });
-    expect(args).toContain("--branch");
-    expect(args[args.indexOf("--branch") + 1]).toBe("main");
+  it("adds an encoded branch filter only when given, and never gh run list's --limit", () => {
+    const [, plain] = buildRunsPageArgs({ from: "a", to: "b", page: 1 });
+    expect(plain).not.toContain("branch=");
+    const [, filtered] = buildRunsPageArgs({ from: "a", to: "b", page: 1, branch: "feat/a b" });
+    expect(filtered).toContain("&branch=feat%2Fa%20b");
+    expect(buildRunsPageArgs({ from: "a", to: "b", page: 1 })).not.toContain("--limit");
+  });
+
+  it("pins the endpoint's documented maximums: 100 rows per page, 1,000 results per search", () => {
+    expect(RUNS_PER_PAGE).toBe(100);
+    expect(QUERY_RESULT_CEILING).toBe(1000);
+  });
+});
+
+describe("createRequestBudget (#3230)", () => {
+  it("allows exactly max metered calls, then stops with budget-exhausted", () => {
+    const budget = createRequestBudget(2);
+    budget.take();
+    budget.take();
+    expect(() => budget.take()).toThrow(/budget-exhausted/);
+    expect(budget.used).toBe(2);
+    expect(budget.stopReason).toBe("budget-exhausted");
+  });
+
+  it("a recorded stop reason refuses every later call", () => {
+    const budget = createRequestBudget(10);
+    budget.stopReason = "rate-limited";
+    expect(() => budget.take()).toThrow(/rate-limited/);
+    expect(budget.used).toBe(0);
   });
 });
 
@@ -172,7 +206,10 @@ describe("parseCliArgs", () => {
     expect(DEFAULT_WINDOW_DAYS).toBe(8);
     const options = parseCliArgs([], { now: new Date("2026-10-01T12:00:00Z") });
     expect(options.since).toBe("2026-09-23T12:00:00Z");
-    expect(options.limit).toBe(200);
+    // The upper bound is fixed once, at start, so pagination cannot drift.
+    expect(options.until).toBe("2026-10-01T12:00:00Z");
+    expect(options.limit).toBe(1000);
+    expect(options.maxRequests).toBe(950);
     expect(options.branch).toBeUndefined();
     expect(options.saveDir).toBeUndefined();
     expect(options.gh).toBe("gh");
@@ -209,8 +246,12 @@ describe("parseCliArgs", () => {
     const options = parseCliArgs([
       "--since",
       "2026-01-01T00:00:00Z",
+      "--until",
+      "2026-01-02T00:00:00Z",
       "--limit",
       "5",
+      "--max-requests",
+      "40",
       "--branch",
       "main",
       "--save-dir",
@@ -220,7 +261,9 @@ describe("parseCliArgs", () => {
     ]);
     expect(options).toEqual({
       since: "2026-01-01T00:00:00Z",
+      until: "2026-01-02T00:00:00Z",
       limit: 5,
+      maxRequests: 40,
       branch: "main",
       saveDir: "/tmp/out",
       gh: "/usr/local/bin/gh",
@@ -235,6 +278,17 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["--limit", "abc"])).toThrow(/--limit requires a positive integer/);
     expect(() => parseCliArgs(["--limit", "0"])).toThrow(/--limit requires a positive integer/);
     expect(() => parseCliArgs(["--limit", "-1"])).toThrow(/--limit requires a positive integer/);
+    expect(() => parseCliArgs(["--max-requests", "0"])).toThrow(
+      /--max-requests requires a positive integer/,
+    );
+  });
+
+  it("rejects an unparseable or inverted window instead of enumerating nonsense", () => {
+    expect(() => parseCliArgs(["--since", "last-week"])).toThrow(/--since is not a parseable/);
+    expect(() => parseCliArgs(["--until", "soon"])).toThrow(/--until is not a parseable/);
+    expect(() =>
+      parseCliArgs(["--since", "2026-09-02T00:00:00Z", "--until", "2026-09-01T00:00:00Z"]),
+    ).toThrow(/is after --until/);
   });
 
   it("throws on an unexpected positional argument", () => {
@@ -330,21 +384,30 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
 
     const calls = readCalls(dir);
-    expect(
-      calls.some((line) => line.startsWith("run list") && line.includes("--workflow=health.yml")),
-    ).toBe(true);
-    expect(calls.some((line) => line.includes("--created >=2026-09-06T22:00:00Z"))).toBe(true);
+    // The window's closed interval, with the upper bound fixed at `now`.
+    expect(calls).toContain(
+      "api repos/{owner}/{repo}/actions/workflows/health.yml/runs?created=2026-09-06T22:00:00Z..2026-09-08T12:00:00Z&exclude_pull_requests=true&per_page=100&page=1",
+    );
+    expect(calls.some((line) => line.startsWith("run list"))).toBe(false);
+    expect(s.err()).toMatch(
+      /^page: created=2026-09-06T22:00:00Z\.\.2026-09-08T12:00:00Z page=1 returned=1 new=1 total_count=1 exhausted=short-page$/m,
+    );
+    expect(s.err()).toMatch(
+      /^enumeration: complete=yes runs=1 pages=1 partitions=1 duplicates=0 /m,
+    );
+    expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1 unavailable=0 complete=yes/);
     // Exactly the two REST calls, one metered GET each -- and never the
     // `gh run view` porcelain, whose per-run fan-out (~7 GETs, measured
     // 2026-09-07) is what #2931 removed. The stub's default guard (mirroring
     // CI's gh >= 2.97) means the probe (#2986) added one more `api` call and
-    // the job-log call now carries the flag it advertised.
+    // the job-log call now carries the flag it advertised, and the run list
+    // is one more REST page.
     expect(calls).toContain("api --help");
     expect(calls).toContain("api repos/{owner}/{repo}/actions/runs/1001/jobs?per_page=100");
     expect(calls).toContain(
       "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/5001/logs",
     );
-    expect(calls.filter((line) => line.startsWith("api "))).toHaveLength(3);
+    expect(calls.filter((line) => line.startsWith("api "))).toHaveLength(4);
     expect(calls.some((line) => line.startsWith("run view"))).toBe(false);
   });
 
@@ -465,12 +528,14 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     // An explicit --since ahead of "now" enumerates nothing and must say so
     // rather than read as a quiet week.
     const early = sink();
-    await runCli(["--gh", stubPath, "--since", "2026-09-08T00:00:00Z"], {
-      ...early,
-      now: new Date("2026-09-07T00:00:00Z"),
-    });
+    await runCli(
+      ["--gh", stubPath, "--since", "2026-09-08T00:00:00Z", "--until", "2026-09-08T00:00:00Z"],
+      { ...early, now: new Date("2026-09-07T00:00:00Z") },
+    );
     const earlyLines = early.err().trimEnd().split("\n");
-    expect(earlyLines[0]).toBe("window: since=2026-09-08T00:00:00Z limit=200 branch=all");
+    expect(earlyLines[0]).toBe(
+      "window: since=2026-09-08T00:00:00Z until=2026-09-08T00:00:00Z limit=1000 max-requests=950 branch=all",
+    );
     expect(earlyLines[1]).toMatch(/^warning: --since 2026-09-08T00:00:00Z lies in the future/);
 
     const later = sink();
@@ -478,7 +543,9 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
       ...later,
       now: new Date("2026-10-01T12:00:00Z"),
     });
-    expect(later.err()).toMatch(/^window: since=2026-09-23T12:00:00Z limit=7 branch=main$/m);
+    expect(later.err()).toMatch(
+      /^window: since=2026-09-23T12:00:00Z until=2026-10-01T12:00:00Z limit=7 max-requests=950 branch=main$/m,
+    );
     expect(later.err()).not.toMatch(/warning:/);
   });
 
@@ -499,7 +566,9 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     expect(code).toBe(EXIT_OK);
     expect(s.err()).toMatch(/run=1011 .* job=5011 lines=1 failedRecords=0/);
     const calls = readCalls(dir);
-    expect(calls.filter((line) => line.startsWith("run list"))).toHaveLength(2);
+    expect(
+      calls.filter((line) => line.includes("/actions/workflows/health.yml/runs?")),
+    ).toHaveLength(2);
     expect(
       calls.filter(
         (line) =>
@@ -607,12 +676,13 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     expect(s.err()).toMatch(/run=1004 .* job=5004 error=/);
     expect(s.err()).toMatch(/runs=2 harvested=1 failed=1 records=1/);
 
-    // The manifest is documented as one line per run (plus the leading
-    // window line and the final summary): a gh subprocess error (Node's
-    // execFile embeds the child's own stderr, often multi-line) must never
-    // fragment the run=1004 manifest entry across physical lines.
+    // The manifest is documented as one line per run (beside the window /
+    // page / enumeration lines and the final summary): a gh subprocess error
+    // (Node's execFile embeds the child's own stderr, often multi-line) must
+    // never fragment the run=1004 manifest entry across physical lines.
     const errLines = s.err().trimEnd().split("\n");
-    expect(errLines).toHaveLength(runs.length + 2);
+    expect(errLines.filter((line) => line.startsWith("run="))).toHaveLength(runs.length);
+    expect(errLines.every((line) => MANIFEST_LINE.test(line))).toBe(true);
     const run1004Line = errLines.find((line) => line.startsWith("run=1004"));
     expect(run1004Line).toMatch(
       /^run=1004 .*error=.*\| gh-stub: simulated failure fetching job 5004$/,
@@ -667,25 +737,37 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     expect(readCalls(dir).some((line) => line.includes("/actions/jobs/"))).toBe(false);
   });
 
-  it("warns when gh run list returned exactly --limit runs, since the window may be capped", async () => {
-    const runs = [makeRun({ databaseId: 1001 })];
+  it("exit 5: more runs than --limit is an incomplete window naming the capped runs, never success", async () => {
+    const runs = [
+      makeRun({ databaseId: 1001, createdAt: "2026-09-07T02:00:00Z" }),
+      makeRun({ databaseId: 1002, createdAt: "2026-09-07T01:00:00Z" }),
+    ];
     const { dir, stubPath } = setupFixtures({
       runs,
-      jobsById: { 1001: [{ id: 5001, name: "health" }] },
-      logsByJobId: { 5001: JOB_LOG_WITH_RECORD },
+      jobsById: { 1001: [{ id: 5001, name: "health" }], 1002: [{ id: 5002, name: "health" }] },
+      logsByJobId: { 5001: JOB_LOG_WITH_RECORD, 5002: JOB_LOG_WITH_RECORD },
     });
     process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const capped = sink();
-    expect(await runCli(["--gh", stubPath, "--limit", "1"], capped)).toBe(EXIT_OK);
-    expect(capped.err()).toMatch(/^notice: gh run list returned 1 run\(s\), the --limit cap/m);
+    expect(await runCli(["--gh", stubPath, "--limit", "1"], capped)).toBe(EXIT_INCOMPLETE);
+    expect(capped.err()).toMatch(/^incomplete: reason=run-cap enumerated=2 limit=1 /m);
+    expect(capped.err()).toMatch(/^run=1002 .* job=none unavailable=run-cap$/m);
+    expect(capped.err()).toMatch(/^run=1001 .* job=5001 lines=1 failedRecords=0$/m);
+    expect(capped.err()).toMatch(/^enumeration: complete=no runs=2 /m);
+    expect(capped.err()).toMatch(/runs=2 harvested=1 failed=0 records=1 unavailable=1 complete=no/);
+    // The newest run's records are still emitted: incomplete is not empty.
+    expect(capped.out().trimEnd().split("\n")).toHaveLength(1);
+    expect(readCalls(dir).some((line) => line.includes("/actions/runs/1002/jobs"))).toBe(false);
 
-    const uncapped = sink();
-    expect(await runCli(["--gh", stubPath, "--limit", "2"], uncapped)).toBe(EXIT_OK);
-    expect(uncapped.err()).not.toMatch(/notice:/);
+    // Exactly --limit runs is a complete window, not a cap hit: the old
+    // `runs.length >= limit` heuristic could not tell those apart.
+    const exact = sink();
+    expect(await runCli(["--gh", stubPath, "--limit", "2"], exact)).toBe(EXIT_OK);
+    expect(exact.err()).not.toMatch(/incomplete:/);
   });
 
-  it("exit 64: gh run list itself failing is a usage error, not partial or no-records", async () => {
+  it("exit 64: run enumeration failing before any page is a usage error, not partial or no-records", async () => {
     const { dir, stubPath } = setupFixtures({ runs: [], failRunList: true });
     process.env.GH_STUB_FIXTURES_DIR = dir;
 
@@ -693,7 +775,8 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     const code = await runCli(["--gh", stubPath], s);
 
     expect(code).toBe(EXIT_USAGE);
-    expect(s.err()).toMatch(/usage error: gh run list failed/);
+    expect(s.err()).toMatch(/usage error: run enumeration failed before any page was served/);
+    expect(s.err()).toMatch(/^incomplete: reason=page-failed .* page=1 error=/m);
     expect(s.outWriteCount()).toBe(0); // nothing buffered yet -- fails before any run is processed
   });
 
@@ -856,7 +939,9 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     expect(s.err()).toMatch(/runs=1 harvested=0 failed=1 records=0/);
     // One line per run stays one line, even though gh printed a JSON body
     // and a message across two streams.
-    expect(s.err().trimEnd().split("\n")).toHaveLength(3);
+    const errLines = s.err().trimEnd().split("\n");
+    expect(errLines.filter((line) => line.startsWith("run="))).toHaveLength(1);
+    expect(errLines.every((line) => MANIFEST_LINE.test(line))).toBe(true);
   });
 
   it("exit 0: a 410 job-log fetch beside a harvested job is a skip, not a partial harvest (#2995)", async () => {
@@ -1080,6 +1165,272 @@ describe(
       // fail this assertion even if it happened to decode the same.
       const savedBuffer = readFileSync(join(saveDir, "run-3005-job-7005.log"));
       expect(savedBuffer.equals(Buffer.from(jobLogWithEscapeSequence, "utf8"))).toBe(true);
+    });
+  },
+);
+
+// #3230: the window [since, until] is enumerated to proven exhaustion, or the
+// harvest says it is incomplete. `pageSize` / `queryCeiling` are runCli's
+// test-only knobs, so pagination and partitioning are proven with a handful
+// of stub runs; the stub pages and filters exactly like the REST endpoint.
+function windowRuns(count, overrides = () => ({})) {
+  const runs = [];
+  const jobsById = {};
+  const logsByJobId = {};
+  for (let index = 0; index < count; index += 1) {
+    const runId = 4001 + index;
+    const jobId = 8001 + index;
+    runs.push(
+      makeRun({
+        databaseId: runId,
+        // Newest first, one hour apart, all inside the sink's default window.
+        createdAt: `2026-09-07T${String(10 - index).padStart(2, "0")}:00:00Z`,
+        ...overrides(index),
+      }),
+    );
+    jobsById[runId] = [{ id: jobId, name: "health" }];
+    logsByJobId[jobId] = JOB_LOG_WITH_RECORD;
+  }
+  return { runs, jobsById, logsByJobId };
+}
+
+const runsPageCalls = (dir) =>
+  readCalls(dir).filter((line) => line.includes("/actions/workflows/health.yml/runs?"));
+
+describe(
+  "complete-window enumeration (#3230)",
+  { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS },
+  () => {
+    it("walks every page and harvests a failed record that only a later page carries", async () => {
+      const fixtures = windowRuns(5);
+      fixtures.logsByJobId[8005] = FAILED_RECORD_LINE;
+      const { dir, stubPath } = setupFixtures(fixtures);
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_OK);
+
+      expect(s.err()).toMatch(/^page: .* page=1 returned=2 new=2 total_count=5$/m);
+      expect(s.err()).toMatch(/^page: .* page=2 returned=2 new=2 total_count=5$/m);
+      expect(s.err()).toMatch(
+        /^page: .* page=3 returned=1 new=1 total_count=5 exhausted=short-page$/m,
+      );
+      expect(s.err()).toMatch(/^run=4005 .* job=8005 lines=1 failedRecords=1$/m);
+      expect(s.err()).toMatch(/runs=5 harvested=5 failed=0 records=5 unavailable=0 complete=yes/);
+      expect(runsPageCalls(dir)).toHaveLength(3);
+      // Records keep the endpoint's newest-first order across pages.
+      expect(s.out().trimEnd().split("\n").at(-1)).toContain("outcome=failed");
+    });
+
+    it("an exactly-full final page is proven exhausted by total_count, with no extra page fetched", async () => {
+      const { dir, stubPath } = setupFixtures(windowRuns(4));
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_OK);
+      expect(s.err()).toMatch(
+        /^page: .* page=2 returned=2 new=2 total_count=4 exhausted=total-count$/m,
+      );
+      expect(s.err()).toMatch(/^enumeration: complete=yes runs=4 pages=2 /m);
+      expect(runsPageCalls(dir)).toHaveLength(2);
+    });
+
+    it("a full page then an empty page that falls short of total_count is incomplete, not exhausted", async () => {
+      // total_count promises a fifth run the endpoint never serves: the empty
+      // next page proves the listing ended, and the shortfall proves it lost one.
+      const { dir, stubPath } = setupFixtures({ ...windowRuns(4), runListTotalCount: 5 });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(
+        /^page: .* page=3 returned=0 new=0 total_count=5 exhausted=short-page$/m,
+      );
+      expect(s.err()).toMatch(/^incomplete: reason=total-count-mismatch .* served=4 expected=5$/m);
+      expect(s.err()).toMatch(/^enumeration: complete=no runs=4 /m);
+      expect(s.err()).toMatch(/runs=4 harvested=4 failed=0 records=4 unavailable=0 complete=no/);
+    });
+
+    it("deduplicates a run served twice, keeping its latest attempt and harvesting it once", async () => {
+      const fixtures = windowRuns(2);
+      // The same run id listed again with a newer attempt (a re-run landing
+      // mid-enumeration), sharing its createdAt like a real re-run does.
+      fixtures.runs.splice(1, 0, { ...fixtures.runs[0], attempt: 2 });
+      const { dir, stubPath } = setupFixtures(fixtures);
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_OK);
+      expect(s.err()).toMatch(
+        /^enumeration: complete=yes runs=2 pages=2 partitions=1 duplicates=1 /m,
+      );
+      expect(s.err()).toMatch(/^run=4001 attempt=2 .* lines=1 /m);
+      expect(s.err()).not.toMatch(/^run=4001 attempt=1 /m);
+      expect(
+        readCalls(dir).filter((line) => line.includes("/actions/runs/4001/jobs")),
+      ).toHaveLength(1);
+      expect(s.err()).toMatch(/runs=2 harvested=2 failed=0 records=2 /);
+    });
+
+    it("splits a partition past the per-search result ceiling and enumerates each half completely", async () => {
+      const { dir, stubPath } = setupFixtures({ ...windowRuns(5), runListCeiling: 2 });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2, queryCeiling: 2 })).toBe(
+        EXIT_OK,
+      );
+      expect(s.err()).toMatch(
+        /^partition: created=2026-08-31T12:00:00Z\.\.2026-09-08T12:00:00Z total_count=5 split=/m,
+      );
+      expect(s.err()).toMatch(/^enumeration: complete=yes runs=5 /m);
+      expect(s.err()).not.toMatch(/incomplete:/);
+      // Every run harvested exactly once, newest first.
+      const harvestedIds = [...s.err().matchAll(/^run=(\d+) .* lines=1 /gm)].map((m) => m[1]);
+      expect(harvestedIds.sort()).toEqual(["4001", "4002", "4003", "4004", "4005"]);
+      expect(s.err()).toMatch(/duplicates=0 /);
+    });
+
+    it("a one-second partition still over the ceiling is incomplete (it cannot be split)", async () => {
+      const fixtures = windowRuns(3, () => ({ createdAt: "2026-09-07T09:00:00Z" }));
+      const { dir, stubPath } = setupFixtures({ ...fixtures, runListCeiling: 2 });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(
+        await runCli(
+          ["--gh", stubPath, "--since", "2026-09-07T09:00:00Z", "--until", "2026-09-07T09:00:00Z"],
+          { ...s, pageSize: 2, queryCeiling: 2 },
+        ),
+      ).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(/^incomplete: reason=partition-ceiling .* total_count=3 ceiling=2 /m);
+      expect(s.err()).toMatch(/runs=2 harvested=2 failed=0 records=2 unavailable=0 complete=no/);
+    });
+
+    it.each([
+      { kind: "fail", reason: "page-failed" },
+      { kind: "malformed", reason: "malformed-page" },
+      { kind: "repeat", reason: "non-progressing-page" },
+    ])(
+      "exit 5: a $kind run-list page 2 is $reason, and page 1's runs are still harvested",
+      async ({ kind, reason }) => {
+        const { dir, stubPath } = setupFixtures({ ...windowRuns(5), runsPageMarkers: { 2: kind } });
+        process.env.GH_STUB_FIXTURES_DIR = dir;
+
+        const s = sink();
+        expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_INCOMPLETE);
+        expect(s.err()).toMatch(new RegExp(`^incomplete: reason=${reason} .* page=2`, "m"));
+        expect(s.err()).toMatch(/^enumeration: complete=no runs=2 /m);
+        expect(s.err()).toMatch(/runs=2 harvested=2 failed=0 records=2 unavailable=0 complete=no/);
+        expect(s.out().trimEnd().split("\n")).toHaveLength(2);
+      },
+    );
+
+    it("exit 5: a rate-limited run-list page stops every later metered call", async () => {
+      const { dir, stubPath } = setupFixtures({
+        ...windowRuns(3),
+        runsPageMarkers: { 2: "rate-limited" },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(/^incomplete: reason=rate-limited .* page=2 enumeration stopped$/m);
+      expect(s.err()).toMatch(/^run=4001 .* job=none unavailable=not-attempted:rate-limited$/m);
+      expect(s.err()).toMatch(/^run=4002 .* job=none unavailable=not-attempted:rate-limited$/m);
+      expect(readCalls(dir).some((line) => line.includes("/actions/runs/"))).toBe(false);
+      expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0 unavailable=2 complete=no/);
+    });
+
+    it("exit 5: a rate-limited job log is unavailable evidence, not a failed run", async () => {
+      const fixtures = windowRuns(1);
+      const { dir, stubPath } = setupFixtures({ ...fixtures, rateLimitedJobIds: [8001] });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(/^run=4001 .* job=8001 unavailable=rate-limited$/m);
+      expect(s.err()).toMatch(/runs=1 harvested=0 failed=0 records=0 unavailable=1 complete=no/);
+    });
+
+    it("exit 5: the finite request budget leaves later runs not-attempted instead of overrunning", async () => {
+      const { dir, stubPath } = setupFixtures(windowRuns(3));
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath, "--max-requests", "3"], s)).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(/unavailable=not-attempted:budget-exhausted$/m);
+      expect(s.err()).toMatch(/requests=3\/3$/m);
+      // Metered calls never exceed the budget (the --help probe is free).
+      expect(readCalls(dir).filter((line) => line !== "api --help")).toHaveLength(3);
+    });
+
+    it("exit 5: a started job cancelled after its test step whose log 404s is unavailable evidence", async () => {
+      const runs = [
+        makeRun({ databaseId: 4101, conclusion: "cancelled" }),
+        makeRun({ databaseId: 4102, conclusion: "cancelled", createdAt: "2026-09-06T00:00:00Z" }),
+      ];
+      const cancelledJob = (id) => ({
+        id,
+        name: "health",
+        conclusion: "cancelled",
+        steps: [
+          { name: "Set up job", conclusion: "success" },
+          { name: "Run pnpm test:workspace", conclusion: "success" },
+          { name: "Run cargo nextest", conclusion: "cancelled" },
+        ],
+      });
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 4101: [cancelledJob(8101)], 4102: [cancelledJob(8102)] },
+        // The cancelled job whose log IS available is parsed as usual, and its
+        // failed record stays visible.
+        logsByJobId: { 8102: FAILED_RECORD_LINE },
+        notFoundJobIds: [8101],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(
+        /^run=4101 .* job=8101 unavailable=cancelled-job-log-404 job-conclusion=cancelled test-step=success$/m,
+      );
+      expect(s.err()).toMatch(/^run=4102 .* job=8102 lines=1 failedRecords=1$/m);
+      expect(s.err()).toMatch(/^incomplete: reason=unavailable-evidence runs=1 /m);
+      expect(s.err()).toMatch(/runs=2 harvested=1 failed=0 records=1 unavailable=1 complete=no/);
+      expect(s.out()).toContain("outcome=failed");
+    });
+
+    it("exit 4 stays a genuinely empty, complete window", async () => {
+      const { dir, stubPath } = setupFixtures({ runs: [] });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_NO_RUNS);
+      expect(s.err()).toMatch(
+        /^page: .* page=1 returned=0 new=0 total_count=0 exhausted=short-page$/m,
+      );
+      expect(s.err()).toMatch(/^enumeration: complete=yes runs=0 /m);
+      expect(s.err()).toMatch(/runs=0 harvested=0 failed=0 records=0 unavailable=0 complete=yes/);
+    });
+
+    it("only runs created inside [since, until] are enumerated", async () => {
+      const runs = [
+        makeRun({ databaseId: 4201, createdAt: "2026-09-08T12:00:01Z" }),
+        makeRun({ databaseId: 4202, createdAt: "2026-09-07T00:00:00Z" }),
+        makeRun({ databaseId: 4203, createdAt: "2026-08-31T11:59:59Z" }),
+      ];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: { 4202: [{ id: 8202, name: "health" }] },
+        logsByJobId: { 8202: JOB_LOG_WITH_RECORD },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_OK);
+      expect(s.err()).toMatch(/^enumeration: complete=yes runs=1 /m);
+      expect(s.err()).not.toMatch(/^run=420[13] /m);
     });
   },
 );
