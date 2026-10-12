@@ -109,7 +109,7 @@
       }
     }
   },
-  "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml once it reaches main; its path-filtered pull_request trigger is a temporary bootstrap. Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
+  "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml (dispatch-only; the temporary pull_request bootstrap was removed under #4170). Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
   "platformStatus": "Darwin arm64 has exact zero-allowance v4.3.3 ceilings on metric gzip-identity-normalized v1, re-pinned (release-bump) from the native artifact of workflow_dispatch run 38264188626 at source e7d703770d7a8e805a72cad5c947cf59a847a760. Every raw and gzipNormalized total is unchanged from the v4.3.2 contract; equal totals alone do not prove byte-identical product code. 12 actual gzip totals moved (workspace blog-theme and json-api +2, model and scalar-signal -1, event-only and show-for -2, multi-island -4; packed show-for +3, multi-island +2, blog-theme and event-only +1, scalar-signal -1; evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci-artifact",

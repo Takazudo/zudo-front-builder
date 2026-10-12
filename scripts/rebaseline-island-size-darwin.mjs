@@ -727,6 +727,29 @@ export function buildEvidence(args, artifact) {
   };
 }
 
+// A re-pin must describe the checkout it lands in, or the next native check
+// on that checkout fails provenance (mirrors the Linux script's checkout check).
+export function checkoutMismatches(evidence, checkout) {
+  const errors = [];
+  if (evidence.packageVersion !== checkout.packageVersion) {
+    errors.push(
+      "artifact measured @takazudo/zfb " +
+        evidence.packageVersion +
+        ", not the checkout's " +
+        checkout.packageVersion,
+    );
+  }
+  for (const [key, file] of [
+    ["pnpmLockSha256", "pnpm-lock.yaml"],
+    ["cargoLockSha256", "Cargo.lock"],
+  ]) {
+    if (evidence[key] !== checkout[key]) {
+      errors.push("artifact " + file + " hash differs from this checkout's " + file);
+    }
+  }
+  return errors;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const contractPath = args.contract ?? CONTRACT;
@@ -741,6 +764,12 @@ function main() {
   const totals = measuredTotals(normalized);
   const evidence = buildEvidence(args, artifact);
   if (args.reason !== METRIC_MIGRATION) {
+    const mismatches = checkoutMismatches(evidence, {
+      packageVersion: JSON.parse(readFileSync("packages/zfb/package.json", "utf8")).version,
+      pnpmLockSha256: sha256(readFileSync("pnpm-lock.yaml")),
+      cargoLockSha256: sha256(readFileSync("Cargo.lock")),
+    });
+    if (mismatches.length > 0) throw new Error("re-pin rejected: " + mismatches.join("; "));
     const result = repinDarwinContract(contract, totals, evidence, args.reason);
     writeFileSync(contractPath, JSON.stringify(result.contract, null, 2) + "\n");
     appendFileSync(

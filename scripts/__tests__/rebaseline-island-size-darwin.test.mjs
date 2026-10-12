@@ -15,6 +15,7 @@ import { assertLinuxX64Provenance, measuredTotals } from "../rebaseline-island-s
 import {
   buildEvidence,
   checkMigrationTotals,
+  checkoutMismatches,
   darwinReadmeSection,
   loadDarwinArtifact,
   migrateDarwinContract,
@@ -483,6 +484,18 @@ function previousSchema2(root) {
 }
 
 describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
+  it("rejects a re-pin whose artifact does not describe the checkout", () => {
+    const evidence = { packageVersion: "1.0.0", pnpmLockSha256: "a", cargoLockSha256: "b" };
+    expect(checkoutMismatches(evidence, { ...evidence })).toEqual([]);
+    expect(
+      checkoutMismatches(evidence, {
+        packageVersion: "1.0.1",
+        pnpmLockSha256: "x",
+        cargoLockSha256: "y",
+      }),
+    ).toHaveLength(3);
+  });
+
   for (const reason of ["release-bump", "runtime-identity"]) {
     it("re-pins only provenance for " + reason, () => {
       const root = makeArtifact();

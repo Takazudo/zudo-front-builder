@@ -522,6 +522,12 @@ describe("island shipped-size budget", () => {
         ),
       ),
     );
+    // The reviewed Darwin contract must track this checkout's lockfiles, the
+    // same drift guard the Linux contract test enforces through validate().
+    const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(
+      pnpmLockHashForContract(lockText, currentVersion, darwinContract.toolchain.packageVersion),
+    ).toBe(darwinContract.toolchain.pnpmLockSha256);
     expect(
       pnpmLockHashForContract(
         lockText.replace("lockfileVersion:", "unexpectedLockfileVersion:"),
@@ -619,10 +625,6 @@ describe("island shipped-size budget", () => {
       }
     }
     const state = makeState(darwinContract.platform, darwinContract);
-    // makeState measures this checkout's lockfiles; compare the metric, not the
-    // historical lock hashes recorded above.
-    state.contract.toolchain.cargoLockSha256 = state.localInputs.cargoLockSha256;
-    state.contract.toolchain.pnpmLockSha256 = state.localInputs.pnpmLockSha256;
     expect(validate(state)).toEqual({ errors: [], passed: true });
   });
 
