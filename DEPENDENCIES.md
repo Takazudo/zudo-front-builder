@@ -2944,7 +2944,9 @@ The frozen harness already pins the ratio rejection in its `alias-anchor-repetit
 
 **CI candidate sizes** (gzip-9, [health run 38279381185](https://github.com/Takazudo/zudo-front-builder/actions/runs/38279381185), wasm-md default job 114912721041, scratch branch head `560f7bee`): render-only 1,094,951 (+742 vs 0.0.53; ceiling 1,100,000), default 1,521,735 (+1,842; ceiling 1,600,000), parse-only 285,917 (+1,385; ceiling 325,000), highlight-only 817,815 (0; ceiling 880,000). The CI tarball size was not measured by that run.
 
-**Still open.** `crates/zfb-md-wasm/shipped-sizes.json` and its synced doc tables are not touched here; the manager aligns them from this branch's authoritative CI wasm-md build, never from Mac bytes. Native Darwin and CI Linux island-size confirmation at the new `Cargo.lock` hash are pending.
+**CI size alignment (#4173).** `crates/zfb-md-wasm/shipped-sizes.json` and its synced doc tables now carry the authoritative CI wasm-md build of PR #4178 ([health run 38290518002](https://github.com/Takazudo/zudo-front-builder/actions/runs/38290518002), job `wasm-md (default, default)` 114949291592, head `1798f6862f07917713c21ef532d290f78529d127`), never Mac bytes. finalWasm/gzip-9 moved: root 3,390,904/1,519,893 to 3,393,574/1,521,735, render 2,198,163/1,094,209 to 2,200,768/1,094,951, parse 701,081/284,532 to 703,433/285,917. highlight is unchanged (byte-identical finalWasm and gzip-9 817,815). Glue columns and every ceiling are unchanged. The manifest records no measured tarball total, so none is updated; a tarball figure would come from a later CI pack step.
+
+**Still open.** Native Darwin and CI Linux island-size confirmation at the new `Cargo.lock` hash are pending.
 
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 
