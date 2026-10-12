@@ -593,7 +593,7 @@ describe("island shipped-size budget", () => {
       "eb76880355e6512ef8c5846062c6ff6f357db977a9cc54e32d3ee52ac6314389",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "e488faa9fe58e3bf2cee980228761558a44a61eab70c454463ea872b013fec75",
+      "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
     );
     expect(darwinContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
