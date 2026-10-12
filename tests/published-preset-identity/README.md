@@ -17,7 +17,8 @@ ZFB_BIN="$PWD/target/debug/zfb" node tests/published-preset-identity/run.mjs
 `ZFB_PRESET_EVIDENCE_DIR` overrides the evidence directory (default
 `$RUNNER_TEMP` or the OS temp dir, `published-preset-identity/`). It receives
 `evidence.json` plus every install, hook, and build log. Locally, wrap the run in
-the machine-wide heavy guard.
+the machine-wide heavy guard. The scratch install and copies (`evidence.workRoot`) are
+removed at the end of the run unless `ZFB_PRESET_IDENTITY_KEEP=1` is set.
 
 ## Layout
 
