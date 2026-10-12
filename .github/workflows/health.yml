@@ -684,6 +684,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # #3331 installs the exact published zudo-doc/zudo-sg presets and engine
+      # tuple from a frozen lockfile outside the checkout, builds them with this
+      # job's branch-built zfb, and checks one runtime identity in bundles and in
+      # the Chromium installed above. Both negative controls must fail.
+      - name: Published-preset runtime identity fixture (#3331)
+        if: ${{ !cancelled() }}
+        env:
+          ZFB_BIN: ${{ github.workspace }}/target/debug/zfb
+          ZFB_PRESET_EVIDENCE_DIR: ${{ runner.temp }}/published-preset-identity
+        run: node tests/published-preset-identity/run.mjs
+
+      - name: Upload published-preset identity evidence (#3331)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: published-preset-identity
+          path: ${{ runner.temp }}/published-preset-identity/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Declared linked dist dev watch row (#3931)
         if: always()
         run: |

@@ -1,0 +1,9 @@
+node_modules
+dist
+.zfb-build
+.zfb/
+# zudo-doc copies installed package-owned route sources here during builds.
+.zudo-doc/
+.zfb-esbuild-entry-*.tsx
+.zfb-islands-tsconfig-*.json
+.zfb-virtual-*.mjs
