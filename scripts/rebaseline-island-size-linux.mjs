@@ -147,19 +147,33 @@ function metricText() {
   return IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
 }
 
-// Actual gzip movement between the previous ceilings and the new measurement,
+// Actual gzip movement between the previous contract and the new measurement,
 // reported as transfer-size evidence; never a ceiling under schemaVersion 2.
-function actualGzipEvidence(contract, totals) {
+// schemaVersion 1 ceilings are actual gzip; schemaVersion 2 ceilings carry only
+// gzipNormalized, so the previous actual gzip is read from the evidence a
+// re-pin records in baselineEvidence.actualGzip. Null when none was recorded.
+export function actualGzipEvidence(contract, totals) {
   const changes = [];
   for (const mode of MODES) {
     for (const [fixture, after] of Object.entries(totals[mode])) {
-      const before = contract.ceilings[mode][fixture];
-      if (!before || typeof before.gzip !== "number") return null;
-      if (before.gzip !== after.gzip)
-        changes.push({ mode, fixture, delta: after.gzip - before.gzip });
+      const before =
+        contract.schemaVersion === 2
+          ? contract.baselineEvidence?.actualGzip?.[mode]?.[fixture]
+          : contract.ceilings[mode][fixture]?.gzip;
+      if (typeof before !== "number") return null;
+      if (before !== after.gzip) changes.push({ mode, fixture, delta: after.gzip - before });
     }
   }
   return changes;
+}
+
+function actualGzipRows(totals) {
+  return Object.fromEntries(
+    MODES.map((mode) => [
+      mode,
+      Object.fromEntries(Object.entries(totals[mode]).map(([name, row]) => [name, row.gzip])),
+    ]),
+  );
 }
 
 export function rebaselineContract(contract, totals, evidence, reason) {
@@ -204,7 +218,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     );
   }
   const previousVersion = contract.toolchain.packageVersion;
-  const gzipEvidence = actualGzipEvidence(contract, totals) ?? [];
+  const gzipEvidence = actualGzipEvidence(contract, totals);
   const next = structuredClone(contract);
   if (reason === "metric-migration") {
     const migrated = {};
@@ -227,12 +241,14 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
   next.normalizerSha256 = evidence.normalizerSha256;
   const gzipSummary =
-    gzipEvidence.length === 0
-      ? "no actual gzip total moved"
-      : gzipEvidence.length +
-        " actual gzip totals moved by " +
-        deltaRange(gzipEvidence) +
-        " bytes (evidence only, not a ceiling)";
+    gzipEvidence === null
+      ? "no previous actual gzip evidence to compare"
+      : gzipEvidence.length === 0
+        ? "no actual gzip total moved"
+        : gzipEvidence.length +
+          " actual gzip totals moved by " +
+          deltaRange(gzipEvidence) +
+          " bytes (evidence only, not a ceiling)";
   const matrices =
     " Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
     "inventories. Other platforms and toolchains are not covered.";
@@ -288,6 +304,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     runId: evidence.runId,
     jobId: evidence.jobId,
     sourceSha: evidence.sourceSha,
+    actualGzip: actualGzipRows(totals),
     note:
       evidence.runLabel +
       " at " +
@@ -324,11 +341,22 @@ function fixtureKey(fixture) {
   return /^[a-z]+$/.test(fixture) ? fixture : JSON.stringify(fixture);
 }
 
-export function rewriteTestPins(source, contract) {
-  const start = source.indexOf(TEST_ANCHOR);
-  if (start < 0) throw new Error("Linux ceiling test not found in " + TEST_FILE);
+// Rewrites one `it(...)` block of the budget test: `edit` maps the block text
+// to its replacement and everything outside the block is returned untouched.
+export function rewriteTestBlock(source, anchor, label, edit) {
+  const start = source.indexOf(anchor);
+  if (start < 0) throw new Error(label + " test not found in " + TEST_FILE);
   const end = source.indexOf("\n  });", start);
-  let block = source.slice(start, end);
+  return source.slice(0, start) + edit(source.slice(start, end)) + source.slice(end);
+}
+
+export function rewriteTestPins(source, contract) {
+  return rewriteTestBlock(source, TEST_ANCHOR, "Linux ceiling", (block) =>
+    rewriteLinuxBlock(block, contract),
+  );
+}
+
+function rewriteLinuxBlock(block, contract) {
   block = block.replace(
     /(linuxContract\.toolchain\.packageVersion\)\.toBe\()"[^"]+"/,
     '$1"' + contract.toolchain.packageVersion + '"',
@@ -356,7 +384,7 @@ export function rewriteTestPins(source, contract) {
       "\n    " +
       block.slice(blockEnd);
   }
-  return source.slice(0, start) + block + source.slice(end);
+  return block;
 }
 
 export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
@@ -373,15 +401,17 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     ") at " +
     sourceText(sourceSha, contract.baselineSourceSha).replace(/([0-9a-f]{40})/g, "`$1`");
   const evidence =
-    gzipEvidence.length === 0
-      ? "No actual gzip total moved."
-      : "Actual gzip moved on " +
-        gzipEvidence.length +
-        " rows by " +
-        deltaRange(gzipEvidence) +
-        " bytes (" +
-        describeDeltas(gzipEvidence) +
-        "); that is transfer-size evidence in the sidecar, not a ceiling.";
+    gzipEvidence === null
+      ? "No previous actual gzip evidence was recorded to compare."
+      : gzipEvidence.length === 0
+        ? "No actual gzip total moved."
+        : "Actual gzip moved on " +
+          gzipEvidence.length +
+          " rows by " +
+          deltaRange(gzipEvidence) +
+          " bytes (" +
+          describeDeltas(gzipEvidence) +
+          "); that is transfer-size evidence in the sidecar, not a ceiling.";
   const closing =
     " The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two " +
     "identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and " +
@@ -512,7 +542,7 @@ function main() {
       " (" +
       args.reason +
       "): " +
-      (describeDeltas(result.gzipEvidence) || "no actual gzip change") +
+      (describeDeltas(result.gzipEvidence ?? []) || "no actual gzip change") +
       " (actual gzip, evidence only)",
   );
 }
