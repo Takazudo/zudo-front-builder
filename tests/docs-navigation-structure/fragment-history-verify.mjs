@@ -10,7 +10,8 @@ import { execFileSync } from "node:child_process";
 import { WIND_UTILITY_GROUPS } from "../../docs/src/config/navigation-groups.mjs";
 
 const origin = process.env.DOCS_VERIFY_ORIGIN ?? "http://127.0.0.1:4333";
-const output = process.env.DOCS_VERIFY_OUTPUT ?? "/tmp/zfb-docs-fragment-history";
+const output = process.env.DOCS_VERIFY_OUTPUT;
+if (!output) throw new Error("DOCS_VERIFY_OUTPUT must name the evidence directory");
 const label = process.env.DOCS_VERIFY_LABEL ?? "unlabeled";
 mkdirSync(output, { recursive: true });
 const browserName = process.env.DOCS_VERIFY_BROWSER ?? "chromium";

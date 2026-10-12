@@ -39,7 +39,7 @@ DOCS_VERIFY_LABEL=published    DOCS_VERIFY_ORIGIN=http://127.0.0.1:4401 node tes
 DOCS_VERIFY_LABEL=ws-runtime   DOCS_VERIFY_ORIGIN=http://127.0.0.1:4402 node tests/docs-navigation-structure/fragment-history-verify.mjs   # expected: PASS
 ```
 
-Evidence lands in `fragment-history-evidence-<label>.json` (per-case router lifecycle
+`DOCS_VERIFY_OUTPUT` is required (the script errors without it). Evidence lands in `fragment-history-evidence-<label>.json` (per-case router lifecycle
 log, served router asset URLs and hashes). A baseline that passes means the scenario
 does not reproduce the bug; do not proceed on that result. Remove the scratch worktrees
 afterwards (`git worktree remove`).
