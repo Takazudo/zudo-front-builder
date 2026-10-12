@@ -109,6 +109,16 @@ export function setupFixtures({
   failRunList = false,
   failRunListOnce = false,
   helpProbeFail = false,
+  runListCeiling,
+  runListTotalCount,
+  runsPageMarkers = {},
+  rateLimitedJobIds = [],
+  blobNotFoundJobIds = [],
+  blobNotFoundCrlfJobIds = [],
+  blobGoneJobIds = [],
+  secondaryRateLimitedJobIds = [],
+  secondaryRateLimitedOnceJobIds = [],
+  secondaryRetryAfterByJobId = {},
 }) {
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.add(dir);
@@ -117,6 +127,16 @@ export function setupFixtures({
   if (failRunList) writeFileSync(join(dir, "run-list.fail"), "");
   if (failRunListOnce) writeFileSync(join(dir, "run-list.fail-once"), "");
   if (helpProbeFail) writeFileSync(join(dir, "gh-help.fail"), "");
+  // See gh-stub-runs-page.mjs for what each run-list marker reproduces.
+  if (runListCeiling !== undefined) {
+    writeFileSync(join(dir, "run-list.ceiling"), String(runListCeiling));
+  }
+  if (runListTotalCount !== undefined) {
+    writeFileSync(join(dir, "run-list.total-count"), String(runListTotalCount));
+  }
+  for (const [page, kind] of Object.entries(runsPageMarkers)) {
+    writeFileSync(join(dir, `runs-page-${page}.${kind}`), "");
+  }
 
   for (const [runId, jobsOrPage] of Object.entries(jobsById)) {
     writeFileSync(
@@ -138,6 +158,25 @@ export function setupFixtures({
   for (const jobId of failingJobIds) writeFileSync(join(dir, `job-${jobId}.fail`), "");
   for (const jobId of notFoundJobIds) writeFileSync(join(dir, `job-${jobId}.notfound`), "");
   for (const jobId of goneJobIds) writeFileSync(join(dir, `job-${jobId}.gone`), "");
+  for (const jobId of blobNotFoundJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.blob-notfound`), "");
+  }
+  for (const jobId of blobGoneJobIds) writeFileSync(join(dir, `job-${jobId}.blob-gone`), "");
+  for (const jobId of blobNotFoundCrlfJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.blob-notfound-crlf`), "");
+  }
+  for (const jobId of secondaryRateLimitedJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.secondary`), "");
+  }
+  for (const jobId of secondaryRateLimitedOnceJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.secondary-once`), "");
+  }
+  for (const [jobId, seconds] of Object.entries(secondaryRetryAfterByJobId)) {
+    writeFileSync(join(dir, `job-${jobId}.secondary-retry-after`), String(seconds));
+  }
+  for (const jobId of rateLimitedJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.rate-limited`), "");
+  }
   for (const jobId of transientlyFailingJobIds) {
     writeFileSync(join(dir, `job-${jobId}.fail-once`), "");
   }

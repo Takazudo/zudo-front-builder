@@ -153,12 +153,28 @@ describe("supervisor watch workflow handoff and artifacts", () => {
         (call) => call === "api repos/{owner}/{repo}/actions/runs/1002/jobs?per_page=100",
       ),
     ).toHaveLength(1);
-    expect(calls.filter((call) => call.startsWith("api "))).toHaveLength(5);
+    // Pass A enumerates once (one run-list page here); pass B re-reads the
+    // saved logs and never enumerates again.
+    expect(
+      calls.filter((call) => call.includes("/actions/workflows/health.yml/runs?")),
+    ).toHaveLength(1);
+    expect(calls.filter((call) => call.startsWith("api "))).toHaveLength(6);
     expect(calls.filter((call) => call.startsWith("run view "))).toEqual([]);
 
     expect(readFileSync(join(result.outDir, "failed-runs.txt"), "utf8")).toBe("");
     expect(readFileSync(join(result.outDir, "harvest-notices.txt"), "utf8")).toContain(
-      `window: since=${SINCE}`,
+      `window: since=${SINCE} until=2026-09-08T10:00:00Z settle-margin=120m`,
+    );
+    const enumeration = readFileSync(join(result.outDir, "enumeration.txt"), "utf8");
+    expect(enumeration).toMatch(/^window: since=2026-08-31T12:00:00Z until=2026-09-08T10:00:00Z /m);
+    expect(enumeration).toMatch(
+      /^page: .* page=1 returned=2 new=2 total_count=2 exhausted=short-page$/m,
+    );
+    expect(enumeration).toMatch(/^enumeration: complete=yes runs=2 /m);
+    expect(enumeration).toMatch(/^runs=2 .* complete=yes /m);
+    expect(readFileSync(join(result.outDir, "unavailable-runs.txt"), "utf8")).toBe("");
+    expect(summary).toContain(
+      "### Runs with unavailable evidence (incomplete window; never green)",
     );
     expect(readFileSync(join(result.outDir, "silent-runs.txt"), "utf8")).toMatch(
       /^run=1002 .* branch=feat\/pre-emitter .* lines=0 /m,
@@ -256,5 +272,66 @@ describe("supervisor watch job-log expiry (#2996)", () => {
 
     const summary = readFileSync(result.stepSummary, "utf8");
     expect(summary).toMatch(/run=2003 .* job=6003 skipped=log-expired/);
+  });
+});
+
+describe("supervisor watch incomplete-window handoff (#3230)", () => {
+  it("writes verdict=incomplete and names the unavailable cancelled job in every handoff", async () => {
+    const runs = [
+      makeRun({ databaseId: 3001, headBranch: "main" }),
+      makeRun({ databaseId: 3002, headBranch: "feat/x", conclusion: "cancelled" }),
+    ];
+    const fixtures = setupFixtures({
+      runs,
+      jobsById: {
+        3001: jobsJson(7001),
+        3002: {
+          total_count: 1,
+          jobs: [
+            {
+              name: "health",
+              id: 7002,
+              conclusion: "cancelled",
+              steps: [
+                { name: "Set up job", conclusion: "success" },
+                { name: "Run pnpm test:workspace", conclusion: "success" },
+              ],
+            },
+          ],
+        },
+      },
+      logsByJobId: {
+        7001: jobLog({ outcome: "ok", firstUpLine: 430, total: 540, env: ENV_DIGEST }),
+      },
+      blobNotFoundJobIds: [7002],
+    });
+    const result = await runWatch(fixtures);
+
+    expect(result.exitCode).toBe(3);
+    expect(result.stdout).toBe("verdict=incomplete all=incomplete:5/0 main=ok:1/0\n");
+    expect(readFileSync(result.githubOutput, "utf8")).toBe(
+      "verdict=incomplete\ndetail=all=incomplete:5/0 main=ok:1/0\n",
+    );
+
+    const unavailable = readFileSync(join(result.outDir, "unavailable-runs.txt"), "utf8");
+    expect(unavailable).toMatch(
+      /^run=3002 .* job=7002 unavailable=cancelled-job-log-404 job-conclusion=cancelled test-step=success$/m,
+    );
+    // Missing evidence is not a harvest error, an expiry, or a silent job.
+    expect(readFileSync(join(result.outDir, "harvest-errors.txt"), "utf8")).toBe("");
+    expect(readFileSync(join(result.outDir, "expired-runs.txt"), "utf8")).toBe("");
+    expect(readFileSync(join(result.outDir, "silent-runs.txt"), "utf8")).toBe("");
+
+    const enumeration = readFileSync(join(result.outDir, "enumeration.txt"), "utf8");
+    expect(enumeration).toMatch(/^enumeration: complete=yes runs=2 /m);
+    expect(enumeration).toMatch(/^incomplete: reason=unavailable-evidence runs=1 /m);
+    expect(enumeration).toMatch(/^runs=2 .* unavailable=1 complete=no /m);
+
+    const summary = readFileSync(result.stepSummary, "utf8");
+    expect(summary).toContain("## Supervisor watch — incomplete\n");
+    expect(summary).toMatch(
+      /### Runs with unavailable evidence \(incomplete window; never green\)\n\n```\nrun=3002 /,
+    );
+    expect(summary).toMatch(/incomplete: reason=unavailable-evidence/);
   });
 });
