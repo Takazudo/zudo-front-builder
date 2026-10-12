@@ -1,0 +1,5 @@
+/* Independently compiled preview input; zfb supplies wind utilities from
+   the component-root source flags. */
+@layer zw-reset;
+@import "./ui-tokens.css";
+@import "./components.css";

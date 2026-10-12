@@ -67,6 +67,16 @@ export function measuredTotals(normalizedByMode) {
   return totals;
 }
 
+export function assertLinuxX64Provenance(provenance) {
+  if (provenance?.platform?.os !== "linux" || provenance?.platform?.arch !== "x64") {
+    throw new Error(
+      "artifact was measured on " +
+        JSON.stringify(provenance?.platform) +
+        ", not linux-x64; Darwin arm64 uses rebaseline-island-size-darwin.mjs",
+    );
+  }
+}
+
 export function diffCeilings(contract, totals) {
   const missingFixtures = [];
   const rawChanges = [];
@@ -452,6 +462,7 @@ function main() {
     );
   }
   const provenance = measurements.workspace.provenance;
+  for (const mode of MODES) assertLinuxX64Provenance(measurements[mode].provenance);
   const version = JSON.parse(readFileSync("packages/zfb/package.json", "utf8")).version;
   const pnpmLockSha256 = createHash("sha256").update(readFileSync("pnpm-lock.yaml")).digest("hex");
   for (const mode of MODES) {

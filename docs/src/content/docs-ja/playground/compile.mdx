@@ -31,4 +31,4 @@ hide_toc: true
 入力した JSX をレンダリングしたりはしません。解析された `frontmatter` はモジュールソースと
 分けて表示され、通常のコンパイルエラーや Markdown エラーは diagnostics リストに表示されます。
 
-アプリケーションでソースを評価するには、ホスト、JSX ランタイム、components map を用意します。[ブラウザー Markdown プレビューのガイド](../guides/browser-markdown-preview.mdx)でその方法を説明します。この playground の出力が `preact/jsx-runtime` または `react/jsx-runtime` をインポートするのは、公開済みの 2.x コンパイラーを使っているためです。v3 のエミッタは `@takazudo/zfb/zudo-react/jsx-runtime` を使います。v3 の指定子はガイド、現行のオプションと結果の契約は [zfb-md-wasm API リファレンス](../api/md-wasm.mdx)を参照してください。
+アプリケーションでソースを評価するには、ホスト、JSX ランタイム、components map を用意します。[ブラウザー Markdown プレビューのガイド](../guides/browser-markdown-preview.mdx)でその方法を説明します。この playground の出力は、エミッタ唯一の JSX ランタイムである `@takazudo/zfb/zudo-react/jsx-runtime` をインポートします。別のランタイムを選ぶ `jsxRuntime` オプションはありません。この指定子の解決方法はガイド、現行のオプションと結果の契約は [zfb-md-wasm API リファレンス](../api/md-wasm.mdx)を参照してください。

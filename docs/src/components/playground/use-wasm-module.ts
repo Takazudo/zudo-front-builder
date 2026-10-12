@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { signal, type ReadonlySignal, type Scope } from "@takazudo/zfb/zudo-react";
 
 /** One retryable promise cache. Create one loader for each WASM entry point. */
 export function createModuleLoader<T>(load: () => Promise<T>): () => Promise<T> {
@@ -92,13 +92,13 @@ export function createWasmModuleRunner<TModule, TArgs extends unknown[], TResult
   return { run, retry, dispose };
 }
 
-export interface UseWasmModuleOptions<TModule, TArgs extends unknown[], TResult> {
+export interface WasmModuleOptions<TModule, TArgs extends unknown[], TResult> {
   loadModule: () => Promise<TModule>;
   execute: (module: TModule, ...args: TArgs) => Promise<TResult> | TResult;
 }
 
-export interface UseWasmModuleValue<TArgs extends unknown[], TResult> {
-  state: WasmModuleState<TResult>;
+export interface WasmModuleValue<TArgs extends unknown[], TResult> {
+  state: ReadonlySignal<WasmModuleState<TResult>>;
   run: (...args: TArgs) => Promise<TResult>;
   retry: () => Promise<TResult>;
 }
@@ -110,33 +110,24 @@ const IDLE_STATE: WasmModuleState<never> = {
 };
 
 /**
- * A client-only state adapter around the lazy loader and request runner.
- * Merely rendering this hook never invokes `loadModule`.
+ * A client-only state adapter around the lazy loader and request runner,
+ * created during component setup. Disposing the owning scope invalidates
+ * in-flight runs. Merely rendering never invokes `loadModule`.
  */
-export function useWasmModule<TModule, TArgs extends unknown[], TResult>({
-  loadModule,
-  execute,
-}: UseWasmModuleOptions<TModule, TArgs, TResult>): UseWasmModuleValue<TArgs, TResult> {
-  const loadModuleRef = useRef(loadModule);
-  const executeRef = useRef(execute);
-  const [state, setState] = useState<WasmModuleState<TResult>>(
-    IDLE_STATE as WasmModuleState<TResult>,
-  );
+export function wasmModule<TModule, TArgs extends unknown[], TResult>(
+  scope: Scope,
+  { loadModule, execute }: WasmModuleOptions<TModule, TArgs, TResult>,
+): WasmModuleValue<TArgs, TResult> {
+  const state = signal<WasmModuleState<TResult>>(IDLE_STATE as WasmModuleState<TResult>);
+  const runner = createWasmModuleRunner<TModule, TArgs, TResult>({
+    loadModule,
+    execute,
+    onStateChange: (next) => {
+      state.value = next;
+    },
+  });
 
-  loadModuleRef.current = loadModule;
-  executeRef.current = execute;
-
-  const runner = useMemo(
-    () =>
-      createWasmModuleRunner<TModule, TArgs, TResult>({
-        loadModule: () => loadModuleRef.current(),
-        execute: (module, ...args) => executeRef.current(module, ...args),
-        onStateChange: setState,
-      }),
-    [],
-  );
-
-  useEffect(() => () => runner.dispose(), [runner]);
+  scope.onCleanup(() => runner.dispose());
 
   return { state, run: runner.run, retry: runner.retry };
 }
