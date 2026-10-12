@@ -158,5 +158,21 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
 
     // ── Shell fields ───────────────────────────────────────────────────
     adapter: "@takazudo/zfb-adapter-cloudflare",
+    // Deep-merged over the package's Wind defaults (sm/lg/xl breakpoints).
+    wind: {
+      // The playground layouts keep their former 768px two-column step.
+      breakpoints: { md: { minWidthPx: 768 } },
+      sources: {
+        exclude: [
+          // Preview samples compile against their own embedded Wind configs.
+          "src/content/docs/zudo-wind/**",
+          "src/content/docs-ja/zudo-wind/**",
+          // Generated starter code for the visitor's own design system.
+          "src/components/playground/design-workshop/model.js",
+        ],
+      },
+      // Design-workshop CSS owns these names, which overlap utility roots.
+      authoredClasses: { "text-button": true, "start-view": true, "start-lower": true },
+    },
   }),
 );

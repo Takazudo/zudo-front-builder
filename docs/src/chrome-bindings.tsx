@@ -1,6 +1,3 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
-
 import { createNavigationChrome } from "./navigation-chrome";
 import { Island } from "@takazudo/zfb";
 import { defineChromeBindings } from "@takazudo/zudo-doc/chrome-bindings";
@@ -11,14 +8,56 @@ import ParsePlayground from "./components/playground/parse-playground";
 import RenderPlayground from "./components/playground/render-playground";
 import WindPreviewEnhancer from "./components/wind-preview-enhancer";
 
-const DesignSystemPlaygroundIsland = () =>
-  Island({ when: "visible", children: <DesignSystemPlayground /> });
+// Component-map entries keep the scanner's Fragment-wrapped fixed-target shape.
+function DesignSystemPlaygroundIsland() {
+  return (
+    <>
+      <Island when="visible">
+        <DesignSystemPlayground />
+      </Island>
+    </>
+  );
+}
 
-const RenderPlaygroundIsland = () => Island({ when: "visible", children: <RenderPlayground /> });
-const CompilePlaygroundIsland = () => Island({ when: "visible", children: <CompilePlayground /> });
-const ParsePlaygroundIsland = () => Island({ when: "visible", children: <ParsePlayground /> });
-const HighlightPlaygroundIsland = () =>
-  Island({ when: "visible", children: <HighlightPlayground /> });
+function RenderPlaygroundIsland() {
+  return (
+    <>
+      <Island when="visible">
+        <RenderPlayground />
+      </Island>
+    </>
+  );
+}
+
+function CompilePlaygroundIsland() {
+  return (
+    <>
+      <Island when="visible">
+        <CompilePlayground />
+      </Island>
+    </>
+  );
+}
+
+function ParsePlaygroundIsland() {
+  return (
+    <>
+      <Island when="visible">
+        <ParsePlayground />
+      </Island>
+    </>
+  );
+}
+
+function HighlightPlaygroundIsland() {
+  return (
+    <>
+      <Island when="visible">
+        <HighlightPlayground />
+      </Island>
+    </>
+  );
+}
 
 const linkClass = "text-fg underline hover:text-accent";
 

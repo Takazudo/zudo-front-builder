@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,10 +8,11 @@ import { describe, expect, it } from "vite-plus/test";
 import viteConfig from "../../vite.config.mjs";
 
 // Formatter ownership contract (#3558): Oxfmt (`vp fmt`) owns the ordinary-code
-// extensions Prettier formatted before; @takazudo/mdx-formatter 1.2.1 alone
-// owns .md and .mdx. The Markdown cases pin 1.2.1's output on this repo's
+// extensions Prettier formatted before; @takazudo/mdx-formatter 1.3.0 alone
+// owns .md and .mdx. The Markdown cases pin 1.3.0's output on this repo's
 // supported syntax, so a formatter drift or a lost `.mdx-formatter.json`
-// setting fails here instead of as a repository-wide reformat.
+// setting fails here instead of as a repository-wide reformat. Since 1.3.0 the
+// CLI skips .gitignore'd paths, so a tracked Markdown file must never match one.
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (path) => readFileSync(join(rootDir, path), "utf8");
@@ -74,15 +76,24 @@ describe("ordinary-code formatting is Oxfmt through vp fmt", () => {
   });
 });
 
-describe("Markdown and MDX belong to the local mdx-formatter 1.2.1", () => {
+describe("Markdown and MDX belong to the local mdx-formatter 1.3.0", () => {
   it("is an exact devDependency invoked through its local bin", () => {
-    expect(packageJson.devDependencies["@takazudo/mdx-formatter"]).toBe("1.2.1");
+    expect(packageJson.devDependencies["@takazudo/mdx-formatter"]).toBe("1.3.0");
     const installed = JSON.parse(read("node_modules/@takazudo/mdx-formatter/package.json"));
-    expect(installed.version).toBe("1.2.1");
+    expect(installed.version).toBe("1.3.0");
     expect(installed.bin).toHaveProperty("mdx-formatter");
     expect(packageJson.scripts["format:mdx"]).toBe(`mdx-formatter --write ${MARKDOWN_GLOB}`);
     expect(packageJson.scripts["format:check:mdx"]).toBe(`mdx-formatter --check ${MARKDOWN_GLOB}`);
     expect(JSON.stringify(packageJson.scripts)).not.toMatch(/dlx/);
+  });
+
+  it("still reaches every tracked Markdown file under its .gitignore discovery", () => {
+    const ignoredTracked = execFileSync(
+      "git",
+      ["ls-files", "--cached", "--ignored", "--exclude-standard", "--", "*.md", "*.mdx"],
+      { cwd: rootDir, encoding: "utf8" },
+    ).trim();
+    expect(ignoredTracked).toBe("");
   });
 
   it("keeps the formatter split in format and format:check", () => {
@@ -177,7 +188,7 @@ describe("Markdown and MDX belong to the local mdx-formatter 1.2.1", () => {
       "---\ntitle:   Foo\n---\n# Hi\n```js\nconst a  =  1\n```\n",
       "---\ntitle: Foo\n---\n# Hi\n\n```js\nconst a  =  1\n```\n",
     ],
-  ])("formats %s as 1.2.1 does, idempotently", async (_name, input, expected) => {
+  ])("formats %s as 1.3.0 does, idempotently", async (_name, input, expected) => {
     const once = await formatMarkdown(input);
     expect(once).toBe(expected);
     expect(await formatMarkdown(once)).toBe(once);

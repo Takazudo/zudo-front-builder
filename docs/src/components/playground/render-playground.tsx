@@ -1,8 +1,6 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
 "use client";
 
-import { useEffect, useRef, useState } from "preact/hooks";
+import { computed, getScope, Show, signal } from "@takazudo/zfb/zudo-react";
 
 import {
   isNoteDirectiveSample,
@@ -14,7 +12,7 @@ import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
 import SamplePicker, { type PlaygroundSample } from "./sample-picker";
-import { createModuleLoader, useWasmModule } from "./use-wasm-module";
+import { createModuleLoader, wasmModule } from "./use-wasm-module";
 import type { PlaygroundDiagnostic } from "./result-types";
 
 type Dialect = "markdown" | "mdx";
@@ -88,91 +86,101 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function RenderPlayground() {
-  const [source, setSource] = useState(SAMPLE.value);
-  const [activeSampleId, setActiveSampleId] = useState<string | undefined>(SAMPLE.id);
-  const [dialect, setDialect] = useState<Dialect>("markdown");
-  const [filename, setFilename] = useState("preview.md");
-  const [gfm, setGfm] = useState({
-    strikethrough: true,
-    table: true,
-    autolinkLiteral: true,
-    taskListItem: true,
-    footnoteDefinition: true,
-  });
-  const [cjkFriendly, setCjkFriendly] = useState(false);
-  const [hardBreaks, setHardBreaks] = useState(false);
-  const [noteDirectiveEnabled, setNoteDirectiveEnabled] = useState(false);
-  const [theme, setTheme] = useState("");
-  const [codeHighlightMode, setCodeHighlightMode] = useState<CodeHighlightMode>("inline");
-  const [classPrefix, setClassPrefix] = useState("hi-");
-  const [displayedResult, setDisplayedResult] = useState<RenderResult | null>(null);
+const loadRenderModule = createModuleLoader<RenderModule>(async () => {
+  const module = await import("@takazudo/zfb-md-wasm/render");
+  return { renderHtml: module.renderHtml };
+});
 
-  const renderLoaderRef = useRef<(() => Promise<RenderModule>) | null>(null);
-  const runSequenceRef = useRef(0);
-  const loadRenderModule = () => {
-    if (renderLoaderRef.current === null) {
-      renderLoaderRef.current = createModuleLoader(async () => {
-        const module = await import("@takazudo/zfb-md-wasm/render");
-        return { renderHtml: module.renderHtml };
-      });
-    }
+const inputClass =
+  "rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2";
 
-    return renderLoaderRef.current();
+export default function RenderPlayground() {
+  const scope = getScope();
+  const source = signal(SAMPLE.value);
+  const activeSampleId = signal<string | undefined>(SAMPLE.id);
+  const dialect = signal<string>("markdown");
+  const filename = signal("preview.md");
+  const gfm = {
+    strikethrough: signal(true),
+    table: signal(true),
+    autolinkLiteral: signal(true),
+    taskListItem: signal(true),
+    footnoteDefinition: signal(true),
   };
+  const cjkFriendly = signal(false);
+  const hardBreaks = signal(false);
+  const noteDirectiveEnabled = signal(false);
+  const theme = signal("");
+  const codeHighlightMode = signal<string>("inline");
+  const classPrefix = signal("hi-");
+  const displayedResult = signal<RenderResult | null>(null);
 
-  const { state, run } = useWasmModule<RenderModule, [string, RenderOptions], RenderResult>({
+  // A run promise still resolves after the island is disposed by a
+  // soft-navigation swap. Invalidate the local result guard so its callback
+  // cannot publish into the old island instance.
+  let runSequence = 0;
+  scope.onCleanup(() => {
+    runSequence += 1;
+  });
+
+  const { state, run } = wasmModule<RenderModule, [string, RenderOptions], RenderResult>(scope, {
     loadModule: loadRenderModule,
     execute: (module, input, options) => module.renderHtml(input, options),
   });
 
-  useEffect(
-    () => () => {
-      // A run promise still resolves after the island is unmounted by a
-      // soft-navigation swap. Invalidate the local result guard so its callback
-      // cannot publish into the old island instance.
-      runSequenceRef.current += 1;
-    },
-    [],
+  const invalidFilename = computed(() => !isValidFilename(filename.value));
+  const classMode = computed(() => codeHighlightMode.value === "class");
+  const pending = computed(() => state.value.status === "loading");
+  const hasRun = computed(() => state.value.status !== "idle");
+  const html = computed(() => displayedResult.value?.html ?? "");
+  const diagnostics = computed(() => displayedResult.value?.diagnostics ?? []);
+  const emptyMessage = computed(() =>
+    state.value.status === "ready" ? "No diagnostics." : undefined,
   );
-
-  const invalidFilename = !isValidFilename(filename);
-  const pending = state.status === "loading";
-  const html = displayedResult?.html ?? "";
-  const diagnostics = displayedResult?.diagnostics ?? [];
-  const trapError = state.status === "error" ? errorMessage(state.error) : null;
+  const trapError = computed(() => {
+    const current = state.value;
+    return current.status === "error" ? errorMessage(current.error) : null;
+  });
+  const hasTrapError = computed(() => trapError.value !== null);
 
   function pickSample(sample: PlaygroundSample) {
-    setSource(sample.value);
-    setActiveSampleId(sample.id);
-    setNoteDirectiveEnabled(isNoteDirectiveSample(sample));
+    source.value = sample.value;
+    activeSampleId.value = sample.id;
+    noteDirectiveEnabled.value = isNoteDirectiveSample(sample);
   }
 
   function runRender() {
-    const runSequence = ++runSequenceRef.current;
-    setDisplayedResult(null);
+    const currentRun = ++runSequence;
+    displayedResult.value = null;
 
-    if (invalidFilename) return;
+    if (invalidFilename.value) return;
 
+    const mode = codeHighlightMode.value as CodeHighlightMode;
     const options: RenderOptions = {
-      filename,
-      dialect,
+      filename: filename.value,
+      dialect: dialect.value as Dialect,
       pipeline: {
-        gfm,
-        cjkFriendly,
-        hardBreaks,
-        ...(noteDirectiveEnabled ? { features: noteDirectiveFeatures(true) } : {}),
-        ...(codeHighlightMode === "class" ? {} : theme ? { theme } : {}),
+        gfm: {
+          strikethrough: gfm.strikethrough.value,
+          table: gfm.table.value,
+          autolinkLiteral: gfm.autolinkLiteral.value,
+          taskListItem: gfm.taskListItem.value,
+          footnoteDefinition: gfm.footnoteDefinition.value,
+        },
+        cjkFriendly: cjkFriendly.value,
+        hardBreaks: hardBreaks.value,
+        ...(noteDirectiveEnabled.value ? { features: noteDirectiveFeatures(true) } : {}),
+        ...(mode === "class" ? {} : theme.value ? { theme: theme.value } : {}),
         codeHighlight: {
-          mode: codeHighlightMode,
-          ...(codeHighlightMode === "class" ? { classPrefix } : {}),
+          mode,
+          ...(mode === "class" ? { classPrefix: classPrefix.value } : {}),
         },
       },
     };
 
-    void run(source, options)
+    void run(source.value, options)
       .then((nextResult) => {
-        if (runSequence === runSequenceRef.current) setDisplayedResult(nextResult);
+        if (currentRun === runSequence) displayedResult.value = nextResult;
       })
       .catch(() => undefined);
   }
@@ -180,13 +188,12 @@ function RenderPlayground() {
   return (
     <PlaygroundShell
       value={source}
-      onInput={(value) => {
-        setSource(value);
-        setActiveSampleId(undefined);
+      onInput={() => {
+        activeSampleId.value = undefined;
       }}
       onRun={runRender}
       pending={pending}
-      hasRun={state.status !== "idle"}
+      hasRun={hasRun}
       labels={{
         input: "Markdown / MDX",
         output: "HTML output",
@@ -197,7 +204,7 @@ function RenderPlayground() {
       }}
       apiReferenceHref="/docs/api/md-wasm/"
       options={
-        <div className="flex flex-col gap-vsp-sm">
+        <div class="flex flex-col gap-vsp-sm">
           <SamplePicker
             samples={SAMPLES}
             activeSampleId={activeSampleId}
@@ -205,143 +212,98 @@ function RenderPlayground() {
             label="Samples"
           />
 
-          <div className="grid grid-cols-1 gap-vsp-sm md:grid-cols-2">
-            <label className="flex flex-col gap-vsp-3xs text-small text-fg">
-              <span className="font-mono">dialect</span>
-              <select
-                className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-                value={dialect}
-                onChange={(event) => setDialect(event.currentTarget.value as Dialect)}
-              >
+          <div class="grid grid-cols-1 gap-vsp-sm md:grid-cols-2">
+            <label class="flex flex-col gap-vsp-3xs text-small text-fg">
+              <span class="font-mono">dialect</span>
+              <select class={inputClass} modelValue={dialect}>
                 <option value="markdown">markdown</option>
                 <option value="mdx">mdx</option>
               </select>
             </label>
 
-            <label className="flex flex-col gap-vsp-3xs text-small text-fg">
-              <span className="font-mono">filename</span>
-              <input
-                className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-                value={filename}
-                aria-invalid={invalidFilename}
-                onInput={(event) => setFilename(event.currentTarget.value)}
-              />
-              {invalidFilename ? (
-                <span className="text-caption text-danger">
-                  Use a filename ending in .md or .mdx.
-                </span>
-              ) : null}
+            <label class="flex flex-col gap-vsp-3xs text-small text-fg">
+              <span class="font-mono">filename</span>
+              <input class={inputClass} modelValue={filename} aria-invalid={invalidFilename} />
+              <Show when={invalidFilename}>
+                {() => (
+                  <span class="text-caption text-danger">
+                    Use a filename ending in .md or .mdx.
+                  </span>
+                )}
+              </Show>
             </label>
           </div>
 
-          <fieldset className="m-0 flex flex-col gap-vsp-2xs border-0 p-0">
-            <legend className="font-mono text-small font-semibold text-fg">pipeline.gfm</legend>
-            <OptionRow
-              label="pipeline.gfm.strikethrough"
-              checked={gfm.strikethrough}
-              onChange={(checked) => setGfm((current) => ({ ...current, strikethrough: checked }))}
-            />
-            <OptionRow
-              label="pipeline.gfm.table"
-              checked={gfm.table}
-              onChange={(checked) => setGfm((current) => ({ ...current, table: checked }))}
-            />
-            <OptionRow
-              label="pipeline.gfm.autolinkLiteral"
-              checked={gfm.autolinkLiteral}
-              onChange={(checked) =>
-                setGfm((current) => ({ ...current, autolinkLiteral: checked }))
-              }
-            />
-            <OptionRow
-              label="pipeline.gfm.taskListItem"
-              checked={gfm.taskListItem}
-              onChange={(checked) => setGfm((current) => ({ ...current, taskListItem: checked }))}
-            />
-            <OptionRow
-              label="pipeline.gfm.footnoteDefinition"
-              checked={gfm.footnoteDefinition}
-              onChange={(checked) =>
-                setGfm((current) => ({ ...current, footnoteDefinition: checked }))
-              }
-            />
+          <fieldset class="m-0 flex flex-col gap-vsp-2xs border-0 p-0">
+            <legend class="font-mono text-small font-semibold text-fg">pipeline.gfm</legend>
+            <OptionRow label="pipeline.gfm.strikethrough" checked={gfm.strikethrough} />
+            <OptionRow label="pipeline.gfm.table" checked={gfm.table} />
+            <OptionRow label="pipeline.gfm.autolinkLiteral" checked={gfm.autolinkLiteral} />
+            <OptionRow label="pipeline.gfm.taskListItem" checked={gfm.taskListItem} />
+            <OptionRow label="pipeline.gfm.footnoteDefinition" checked={gfm.footnoteDefinition} />
           </fieldset>
 
-          <div className="grid grid-cols-1 gap-vsp-2xs md:grid-cols-2">
-            <OptionRow
-              label="pipeline.cjkFriendly"
-              checked={cjkFriendly}
-              onChange={setCjkFriendly}
-            />
-            <OptionRow label="pipeline.hardBreaks" checked={hardBreaks} onChange={setHardBreaks} />
+          <div class="grid grid-cols-1 gap-vsp-2xs md:grid-cols-2">
+            <OptionRow label="pipeline.cjkFriendly" checked={cjkFriendly} />
+            <OptionRow label="pipeline.hardBreaks" checked={hardBreaks} />
           </div>
 
           <OptionRow
             label={'pipeline.features.directives.note = "Note"'}
             checked={noteDirectiveEnabled}
-            onChange={setNoteDirectiveEnabled}
           />
 
-          <label className="flex flex-col gap-vsp-3xs text-small text-fg">
-            <span className="font-mono">pipeline.theme</span>
+          <label class="flex flex-col gap-vsp-3xs text-small text-fg">
+            <span class="font-mono">pipeline.theme</span>
             <input
-              className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 disabled:opacity-50"
-              value={theme}
+              class={`${inputClass} disabled:opacity-50`}
+              modelValue={theme}
               placeholder="built-in default"
-              disabled={codeHighlightMode === "class"}
-              onInput={(event) => setTheme(event.currentTarget.value)}
+              disabled={classMode}
             />
           </label>
 
-          <div className="grid grid-cols-1 gap-vsp-2xs md:grid-cols-2">
-            <label className="flex flex-col gap-vsp-3xs text-small text-fg">
-              <span className="font-mono">pipeline.codeHighlight.mode</span>
-              <select
-                className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-                value={codeHighlightMode}
-                onChange={(event) =>
-                  setCodeHighlightMode(event.currentTarget.value as CodeHighlightMode)
-                }
-              >
+          <div class="grid grid-cols-1 gap-vsp-2xs md:grid-cols-2">
+            <label class="flex flex-col gap-vsp-3xs text-small text-fg">
+              <span class="font-mono">pipeline.codeHighlight.mode</span>
+              <select class={inputClass} modelValue={codeHighlightMode}>
                 <option value="inline">inline</option>
                 <option value="class">class</option>
               </select>
             </label>
 
-            {codeHighlightMode === "class" ? (
-              <label className="flex flex-col gap-vsp-3xs text-small text-fg">
-                <span className="font-mono">pipeline.codeHighlight.classPrefix</span>
-                <input
-                  className="rounded border border-muted bg-surface px-hsp-md py-vsp-xs text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-                  value={classPrefix}
-                  onInput={(event) => setClassPrefix(event.currentTarget.value)}
-                />
-              </label>
-            ) : null}
+            <Show when={classMode}>
+              {() => (
+                <label class="flex flex-col gap-vsp-3xs text-small text-fg">
+                  <span class="font-mono">pipeline.codeHighlight.classPrefix</span>
+                  <input class={inputClass} modelValue={classPrefix} />
+                </label>
+              )}
+            </Show>
           </div>
         </div>
       }
       output={
-        <div className="flex flex-col gap-vsp-sm">
+        <div class="flex flex-col gap-vsp-sm">
           <section aria-label="HTML source">
-            <h3 className="mb-vsp-2xs text-small font-semibold">HTML source</h3>
-            <pre className="m-0 overflow-auto whitespace-pre-wrap break-words">{html}</pre>
+            <h3 class="mb-vsp-2xs text-small font-semibold">HTML source</h3>
+            <pre class="m-0 overflow-auto whitespace-pre-wrap break-words">{html}</pre>
           </section>
           <section aria-label="HTML preview">
-            <h3 className="mb-vsp-2xs text-small font-semibold">Preview</h3>
+            <h3 class="mb-vsp-2xs text-small font-semibold">Preview</h3>
             <iframe
               title="Rendered HTML preview"
-              srcDoc={html}
-              // Preact removes an empty sandbox attribute during hydration. Keep
-              // one harmless, non-empty token so the iframe remains sandboxed;
-              // notably, this list intentionally omits the script permission.
+              srcdoc={html}
+              // Keep one harmless, non-empty token so the iframe stays sandboxed
+              // even if a renderer drops an empty attribute; this list
+              // intentionally omits the script permission.
               sandbox="allow-forms"
               // Chromium moves sequential focus into the child browsing
               // context without exposing :focus or :focus-visible on this
               // element. The preview is passive output and its full source is
               // adjacent, so omit that otherwise invisible keyboard stop.
-              tabIndex={-1}
-              className="block w-full border-0 bg-surface"
+              tabindex={-1}
+              class="block w-full border-0 bg-surface"
             />
           </section>
         </div>
@@ -350,14 +312,14 @@ function RenderPlayground() {
         <DiagnosticsList
           diagnostics={diagnostics}
           label="Render diagnostics"
-          emptyMessage={state.status === "ready" ? "No diagnostics." : undefined}
+          emptyMessage={emptyMessage}
         />
       }
-      trapError={trapError ? <span role="alert">{trapError}</span> : null}
+      trapError={
+        <Show when={hasTrapError}>
+          {() => <span role="alert">{computed(() => trapError.value ?? "")}</span>}
+        </Show>
+      }
     />
   );
 }
-
-(RenderPlayground as { displayName?: string }).displayName = "RenderPlayground";
-
-export default RenderPlayground;
