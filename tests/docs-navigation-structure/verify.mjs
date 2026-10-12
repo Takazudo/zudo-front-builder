@@ -34,6 +34,18 @@ const page = await browser.newPage({
   reducedMotion: "reduce",
 });
 page.on("pageerror", (e) => evidence.errors.push(e.message));
+// Long tasks are observed per document so navigations start only on a quiet
+// main thread (see settled()).
+await page.addInitScript(() => {
+  window.__verifyLongTaskEnd = 0;
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries())
+      window.__verifyLongTaskEnd = Math.max(
+        window.__verifyLongTaskEnd,
+        entry.startTime + entry.duration,
+      );
+  }).observe({ type: "longtask", buffered: true });
+});
 const goto = async (path) => {
   await page.goto(origin + path);
   await page.locator("main").waitFor();
@@ -94,7 +106,17 @@ async function assertScope(root, members, mobile = false, prefix = "/docs/") {
   }
   if (mobile) await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
 }
+// Wide EN pages such as zudo-wind/compatibility spend several seconds in
+// compositor layerization after a swap (also on the pre-migration host). A
+// click landing between those tasks waits behind them, so start navigations
+// only after the main thread has been free of long tasks for one second.
+const settled = () =>
+  page.waitForFunction(() => performance.now() - (window.__verifyLongTaskEnd ?? 0) > 1000, null, {
+    polling: 250,
+    timeout: 60_000,
+  });
 async function soft(path) {
+  await settled();
   await resetScopeState();
   await page.evaluate((path) => {
     window.__structureSwap = false;
@@ -120,6 +142,7 @@ async function soft(path) {
 // A native traversal swaps asynchronously; assert only after the router's swap,
 // as soft() does. WebKit's slower swap otherwise races the next assertion.
 async function traverse(direction) {
+  await settled();
   await resetScopeState();
   await page.evaluate(() => {
     window.__structureSwap = false;
@@ -443,6 +466,11 @@ try {
       await soft(prefix + flex.slug + "/");
       await soft(prefix + "zudo-wind/utilities/grid/");
       await assertScope(flex.slug, flex.members, width < 1024, prefix);
+      // Below 1024px a soft navigation also persists the visited page's ancestors
+      // (zudolab/zudo-doc#4547), which would carry the Utility reference and
+      // Flex & grid branches into the entry view. Reload the current page fresh
+      // so the following soft navigation starts from isolated state.
+      await freshGoto(prefix + "zudo-wind/utilities/grid/");
       for (const slug of ["zudo-wind/compatibility", "zudo-wind/coming-from-tailwind"]) {
         await soft(prefix + slug + "/");
         await assertScope("zudo-wind", WIND_ENTRY_SLUGS, width < 1024, prefix);
