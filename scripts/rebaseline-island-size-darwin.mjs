@@ -3,11 +3,16 @@
 // and schema-2 provenance re-pin (#4170).
 //
 // `--reason release-bump` / `--reason runtime-identity` re-pin a
-// schemaVersion-2 contract to a new package version / lock hashes / runner
-// digests taken from a native Darwin arm64 artifact, with the same policy as
+// schemaVersion-2 contract to a new package version / lock hashes / normalizer
+// digest taken from a native Darwin arm64 artifact (the hard-coded Darwin pins
+// in scripts/__tests__/island-size-budget.test.mjs are rewritten alongside),
+// with the same policy as
 // rebaseline-island-size-linux.mjs: every raw AND gzipNormalized total must be
 // exactly equal to the current contract (zero allowance, increase or decrease),
 // so only provenance fields move. A changed total needs a reviewed decision.
+// Runner digests (runnerSha256) are NOT re-pinnable here: the validator requires
+// the artifact's to equal the contract's, so a runner change needs its own
+// reviewed procedure.
 //
 // `--reason metric-migration` converts the schemaVersion-1 actual-gzip Darwin contract
 // (research/v3-island-size/decision.json) to the schemaVersion-2
@@ -43,11 +48,14 @@ import {
   describeDeltas,
   diffCeilings,
   measuredTotals,
+  rewriteTestBlock,
 } from "./rebaseline-island-size-linux.mjs";
 
 const MODES = ["workspace", "packed"];
 const CONTRACT = "research/v3-island-size/decision.json";
 const README = "research/v3-island-size/README.md";
+const TEST_FILE = "scripts/__tests__/island-size-budget.test.mjs";
+const TEST_ANCHOR = 'it("records the reviewed Darwin arm64 ceilings';
 const PLATFORM = { os: "darwin", arch: "arm64" };
 const METRIC_MIGRATION = "metric-migration";
 const REPIN_REASONS = ["release-bump", "runtime-identity"];
@@ -153,17 +161,20 @@ export function validateDarwinEvidence(
   if (!isRecord(contract) || !samePlatform(contract.platform)) {
     errors.push("contract is not the Darwin arm64 contract");
   }
+  const requires = REASONS[reason]?.requires;
   if (reason === METRIC_MIGRATION) {
-    if (contract?.schemaVersion !== 1 || Object.hasOwn(contract ?? {}, "metric")) {
-      errors.push("contract is not a schemaVersion 1 actual-gzip contract");
+    if (contract?.schemaVersion !== requires || Object.hasOwn(contract ?? {}, "metric")) {
+      errors.push("contract is not a schemaVersion " + requires + " actual-gzip contract");
     }
   } else if (
-    contract?.schemaVersion !== 2 ||
+    contract?.schemaVersion !== requires ||
     contract?.metric !== IDENTITY_NORMALIZED_METRIC ||
     contract?.normalizationVersion !== IDENTITY_NORMALIZATION_VERSION
   ) {
     errors.push(
-      "contract is not a schemaVersion 2 " +
+      "contract is not a schemaVersion " +
+        requires +
+        " " +
         IDENTITY_NORMALIZED_METRIC +
         " v" +
         IDENTITY_NORMALIZATION_VERSION +
@@ -180,12 +191,12 @@ export function validateDarwinEvidence(
     if (p.sourceSha !== expectedSourceSha) {
       errors.push(label + "source SHA " + String(p.sourceSha) + " is not " + expectedSourceSha);
     }
-    if (p.fixtureVersion !== contract.fixtureVersion)
+    if (p.fixtureVersion !== contract?.fixtureVersion)
       errors.push(label + "fixture version differs");
-    if (!sameJson(sortedEntries(p.fixtureSha256), sortedEntries(contract.fixtureSha256))) {
+    if (!sameJson(sortedEntries(p.fixtureSha256), sortedEntries(contract?.fixtureSha256))) {
       errors.push(label + "fixture hashes differ from the contract");
     }
-    if (!sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract.runnerSha256))) {
+    if (!sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract?.runnerSha256))) {
       errors.push(label + "runner hashes differ from the contract");
     }
     for (const [key, expected] of [
@@ -549,6 +560,31 @@ export function repinDarwinContract(contract, totals, evidence, reason) {
   return { contract: next, gzipMoves: moves ?? [], previousVersion };
 }
 
+function replacePin(block, pattern, value, label) {
+  if (!pattern.test(block)) throw new Error("missing Darwin " + label + " pin in " + TEST_FILE);
+  return block.replace(pattern, (_, head) => head + value);
+}
+
+// Rewrites the provenance pins of the Darwin ceiling test to match a re-pinned
+// contract. Ceilings are untouched: a re-pin cannot move them.
+export function rewriteDarwinTestPins(source, contract) {
+  const e = contract.baselineEvidence;
+  const t = contract.toolchain;
+  return rewriteTestBlock(source, TEST_ANCHOR, "Darwin ceiling", (block) =>
+    [
+      [/(darwinContract\.toolchain\.packageVersion\)\.toBe\(\s*)"[^"]+"/, t.packageVersion],
+      [/(darwinContract\.baselineSourceSha\)\.toBe\(\s*)"[^"]+"/, contract.baselineSourceSha],
+      [/(darwinContract\.toolchain\.pnpmLockSha256\)\.toBe\(\s*)"[^"]+"/, t.pnpmLockSha256],
+      [/(darwinContract\.toolchain\.cargoLockSha256\)\.toBe\(\s*)"[^"]+"/, t.cargoLockSha256],
+    ]
+      .map(([pattern, value]) => [pattern, JSON.stringify(value)])
+      .reduce((text, [pattern, value]) => replacePin(text, pattern, value, pattern.source), block)
+      .replace(/(runId: )\d+/, "$1" + e.runId)
+      .replace(/(jobId: )\d+/, "$1" + e.jobId)
+      .replace(/(artifact: \{ id: )\d+/, "$1" + e.artifact.id),
+  );
+}
+
 export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, reason) {
   const e = contract.baselineEvidence;
   const version = contract.toolchain.packageVersion;
@@ -772,6 +808,10 @@ function main() {
     if (mismatches.length > 0) throw new Error("re-pin rejected: " + mismatches.join("; "));
     const result = repinDarwinContract(contract, totals, evidence, args.reason);
     writeFileSync(contractPath, JSON.stringify(result.contract, null, 2) + "\n");
+    writeFileSync(
+      TEST_FILE,
+      rewriteDarwinTestPins(readFileSync(TEST_FILE, "utf8"), result.contract),
+    );
     appendFileSync(
       args.readme ?? README,
       darwinRepinReadmeSection(

@@ -21,17 +21,8 @@ import SamplePicker, { type PlaygroundSample } from "./sample-picker";
 import type { ZfbMdWasmOptions } from "@takazudo/zfb-md-wasm";
 
 import type { PlaygroundDiagnostic } from "./result-types";
+import { createGfmSignals, snapshotGfm, type GfmKey, type GfmSignals } from "./gfm-signals";
 import { createModuleLoader, wasmModule } from "./use-wasm-module";
-
-type GfmKey = "strikethrough" | "table" | "autolinkLiteral" | "taskListItem" | "footnoteDefinition";
-
-interface GfmOptions {
-  strikethrough: boolean;
-  table: boolean;
-  autolinkLiteral: boolean;
-  taskListItem: boolean;
-  footnoteDefinition: boolean;
-}
 
 type CompileOptions = ZfbMdWasmOptions;
 
@@ -40,14 +31,6 @@ interface CompileResult {
   frontmatter: unknown;
   diagnostics: readonly PlaygroundDiagnostic[];
 }
-
-const DEFAULT_GFM: GfmOptions = {
-  strikethrough: true,
-  table: true,
-  autolinkLiteral: true,
-  taskListItem: true,
-  footnoteDefinition: true,
-};
 
 const GFM_OPTIONS: readonly { key: GfmKey; label: string }[] = [
   { key: "strikethrough", label: "gfm.strikethrough" },
@@ -97,8 +80,6 @@ function formatFrontmatter(frontmatter: unknown): string {
 function formatRejectedError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
-type GfmSignals = Record<GfmKey, Signal<boolean>>;
 
 const loadCompileModule = createModuleLoader(() => import("@takazudo/zfb-md-wasm"));
 
@@ -214,13 +195,7 @@ export default function CompilePlayground() {
   const activeSampleId = signal<string | undefined>(COMPILE_SAMPLE.id);
   const development = signal(false);
   const filename = signal("preview.mdx");
-  const gfm: GfmSignals = {
-    strikethrough: signal(DEFAULT_GFM.strikethrough),
-    table: signal(DEFAULT_GFM.table),
-    autolinkLiteral: signal(DEFAULT_GFM.autolinkLiteral),
-    taskListItem: signal(DEFAULT_GFM.taskListItem),
-    footnoteDefinition: signal(DEFAULT_GFM.footnoteDefinition),
-  };
+  const gfm = createGfmSignals();
   const cjkFriendly = signal(false);
   const hardBreaks = signal(false);
   const noteDirectiveEnabled = signal(false);
@@ -243,13 +218,7 @@ export default function CompilePlayground() {
       filename: filename.value,
       development: development.value,
       pipeline: {
-        gfm: {
-          strikethrough: gfm.strikethrough.value,
-          table: gfm.table.value,
-          autolinkLiteral: gfm.autolinkLiteral.value,
-          taskListItem: gfm.taskListItem.value,
-          footnoteDefinition: gfm.footnoteDefinition.value,
-        },
+        gfm: snapshotGfm(gfm),
         cjkFriendly: cjkFriendly.value,
         hardBreaks: hardBreaks.value,
         ...(noteDirectiveEnabled.value ? { features: noteDirectiveFeatures(true) } : {}),

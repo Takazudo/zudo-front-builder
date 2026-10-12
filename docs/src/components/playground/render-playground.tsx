@@ -11,6 +11,7 @@ import {
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
+import { createGfmSignals, snapshotGfm } from "./gfm-signals";
 import SamplePicker, { type PlaygroundSample } from "./sample-picker";
 import { createModuleLoader, wasmModule } from "./use-wasm-module";
 import type { PlaygroundDiagnostic } from "./result-types";
@@ -100,13 +101,7 @@ export default function RenderPlayground() {
   const activeSampleId = signal<string | undefined>(SAMPLE.id);
   const dialect = signal<string>("markdown");
   const filename = signal("preview.md");
-  const gfm = {
-    strikethrough: signal(true),
-    table: signal(true),
-    autolinkLiteral: signal(true),
-    taskListItem: signal(true),
-    footnoteDefinition: signal(true),
-  };
+  const gfm = createGfmSignals();
   const cjkFriendly = signal(false);
   const hardBreaks = signal(false);
   const noteDirectiveEnabled = signal(false);
@@ -160,13 +155,7 @@ export default function RenderPlayground() {
       filename: filename.value,
       dialect: dialect.value as Dialect,
       pipeline: {
-        gfm: {
-          strikethrough: gfm.strikethrough.value,
-          table: gfm.table.value,
-          autolinkLiteral: gfm.autolinkLiteral.value,
-          taskListItem: gfm.taskListItem.value,
-          footnoteDefinition: gfm.footnoteDefinition.value,
-        },
+        gfm: snapshotGfm(gfm),
         cjkFriendly: cjkFriendly.value,
         hardBreaks: hardBreaks.value,
         ...(noteDirectiveEnabled.value ? { features: noteDirectiveFeatures(true) } : {}),

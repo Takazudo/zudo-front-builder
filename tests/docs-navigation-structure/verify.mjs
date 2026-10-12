@@ -276,7 +276,9 @@ async function verifyBroaderTree() {
     // One direct load with the hash: Back to an entry made by a same-document
     // fragment navigation does not restore content (pre-existing router gap).
     const html = await (await tab.request.get(origin + article)).text();
-    const hash = html.match(/<h2[^>]*\bid="?([^"\s>]+)/)[1];
+    const headingMatch = html.match(/<h2[^>]*\bid="?([^"\s>]+)/);
+    assert(headingMatch, `${article}: no <h2 id> in the served HTML to use as the fragment target`);
+    const hash = headingMatch[1];
     await tab.goto(origin + article + "#" + hash);
     await expect(side.locator("[data-sidebar-broaden]")).toHaveText("↑" + text.broaden);
     await expect

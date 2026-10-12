@@ -22,6 +22,7 @@ import {
   parseArgs,
   repinDarwinContract,
   darwinRepinReadmeSection,
+  rewriteDarwinTestPins,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
 
@@ -555,6 +556,43 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
       );
     });
   }
+
+  it("rewrites the Darwin test pins on a re-pin, idempotently, touching nothing else", () => {
+    const repoRoot = join(testDir, "..", "..");
+    const source = readFileSync(
+      join(repoRoot, "scripts/__tests__/island-size-budget.test.mjs"),
+      "utf8",
+    );
+    const current = JSON.parse(
+      readFileSync(join(repoRoot, "research/v3-island-size/decision.json"), "utf8"),
+    );
+    expect(rewriteDarwinTestPins(source, current)).toBe(source);
+
+    const next = structuredClone(current);
+    next.toolchain.packageVersion = "9.9.9";
+    next.toolchain.pnpmLockSha256 = sha("new-pnpm");
+    next.toolchain.cargoLockSha256 = sha("new-cargo");
+    next.baselineSourceSha = "c".repeat(40);
+    next.baselineEvidence.runId = 111;
+    next.baselineEvidence.jobId = 222;
+    next.baselineEvidence.artifact.id = 333;
+    const rewritten = rewriteDarwinTestPins(source, next);
+    for (const pin of [
+      'toolchain.packageVersion).toBe("9.9.9")',
+      JSON.stringify(sha("new-pnpm")),
+      JSON.stringify(sha("new-cargo")),
+      JSON.stringify("c".repeat(40)),
+      "runId: 111,",
+      "jobId: 222,",
+      "artifact: { id: 333 }",
+    ]) {
+      expect(rewritten).toContain(pin);
+    }
+    expect(rewriteDarwinTestPins(rewritten, next)).toBe(rewritten);
+    const outside = (text) => text.slice(0, text.indexOf('it("records the reviewed Darwin arm64'));
+    expect(outside(rewritten)).toBe(outside(source));
+    expect(() => rewriteDarwinTestPins("it('x')", next)).toThrow(/Darwin ceiling test not found/);
+  });
 
   it("rejects a schemaVersion 1 contract, and schema 2 for a metric migration", () => {
     const root = makeArtifact();

@@ -97,7 +97,12 @@ async function runLogged(command, args, { cwd, logName, env }) {
     setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
   }, SUBPROCESS_DEADLINE_MS);
   const code = await new Promise((resolvePromise, rejectPromise) => {
-    child.once("error", rejectPromise);
+    child.once("error", async (error) => {
+      clearTimeout(timer);
+      log.write(`spawn error: ${error?.stack ?? error}\n`);
+      await new Promise((resolveEnd) => log.end(resolveEnd));
+      rejectPromise(error);
+    });
     child.once("close", resolvePromise);
   });
   clearTimeout(timer);
@@ -143,7 +148,9 @@ async function inspectBinary() {
 
 async function verifyPinsAndLockfile() {
   const manifest = await readJson(join(siteSource, "package.json"));
-  const lock = await readJson(join(siteSource, "package-lock.json"));
+  // Hash the file bytes so the recorded digest equals `sha256sum package-lock.json`.
+  const rawLock = await readFile(join(siteSource, "package-lock.json"));
+  const lock = JSON.parse(rawLock.toString("utf8"));
   const pins = manifest.dependencies;
   for (const [name, spec] of Object.entries(pins)) {
     assert(/^\d+\.\d+\.\d+$/.test(spec), `${name} must be an exact version, got ${spec}`);
@@ -168,7 +175,7 @@ async function verifyPinsAndLockfile() {
     );
     integrities[name] = { version, resolved: entry.resolved, integrity: entry.integrity };
   }
-  return { pins, integrities, lockSha256: sha256(JSON.stringify(lock)) };
+  return { pins, integrities, lockSha256: sha256(rawLock) };
 }
 
 // ---------------------------------------------------------------------------
@@ -611,8 +618,13 @@ async function runNestedCopyNegative(installRoot, workRoot) {
   await mkdir(dirname(nested), { recursive: true });
   await cp(join(root, "node_modules/@takazudo/zfb"), nested, { recursive: true });
   const build = await buildCase(root, "negative-nested-package-copy");
-  const diagnostic = build.output.match(/ZR_[A-Z_]+:[^\n]*/)?.[0] ?? null;
-  result.build = { exitCode: build.exitCode, log: build.log, diagnostic };
+  // An unrelated earlier ZR_ line must not mask (or be mistaken for) the fail-closed
+  // diagnostic, so look for ZR_NO_SCOPE specifically; any other ZR_ line is only
+  // reported, and the check below still fails when ZR_NO_SCOPE is absent.
+  const diagnostics = build.output.match(/ZR_[A-Z_]+:[^\n]*/g) ?? [];
+  const diagnostic =
+    diagnostics.find((line) => line.startsWith("ZR_NO_SCOPE:")) ?? diagnostics[0] ?? null;
+  result.build = { exitCode: build.exitCode, log: build.log, diagnostic, diagnostics };
   result.identity = await identityOracle(root);
   result.observedFailures = result.identity.failures;
   const facts = result.identity.facts;
@@ -735,6 +747,11 @@ try {
   console.error(`[published-preset-identity] FAILED: ${error?.message ?? error}`);
 } finally {
   await browser?.close().catch(() => {});
+  // workRoot is scratch (installs and copies); evidence lives in evidenceRoot.
+  if (evidence.workRoot && !process.env.ZFB_PRESET_IDENTITY_KEEP) {
+    await rm(evidence.workRoot, { recursive: true, force: true }).catch(() => {});
+    evidence.workRootRemoved = true;
+  }
   await writeFile(join(evidenceRoot, "evidence.json"), JSON.stringify(evidence, null, 2) + "\n");
   const summary = Object.entries(evidence.cases)
     .map(([name, value]) => `${name}=${value.outcome ?? "incomplete"}`)

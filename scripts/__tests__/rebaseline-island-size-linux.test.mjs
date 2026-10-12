@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   REASONS,
+  actualGzipEvidence,
   describeDeltas,
   diffCeilings,
   measuredTotals,
@@ -114,9 +115,9 @@ describe("rebaseline-island-size-linux", () => {
     expect(next.platformStatus).toContain("Every raw and gzipNormalized total is unchanged");
     expect(next.platformStatus).not.toContain("no-product-code-change");
     expect(next.outcome).not.toBe("no-product-code-change");
-    // The previous contract pins gzipNormalized, so the synthetic +15 actual
-    // gzip has no prior value to compare with and is not reported as movement.
-    expect(gzipEvidence).toEqual([]);
+    // The previous schema-2 contract recorded no actual gzip, so there is no
+    // prior value to compare with: reported as unknown, not as "no movement".
+    expect(gzipEvidence).toBeNull();
     expect(contract.toolchain.packageVersion).not.toBe("9.9.9");
   });
 
@@ -280,13 +281,42 @@ describe("rebaseline-island-size-linux", () => {
     expect(rewriteTestPins(testSource, contract)).toBe(testSource);
   });
 
+  it("reads the previous actual gzip of a schemaVersion 2 contract from recorded evidence", () => {
+    const totals = totalsFrom(contract);
+    expect(actualGzipEvidence(contract, totals)).toBeNull();
+
+    const recorded = structuredClone(contract);
+    recorded.baselineEvidence.actualGzip = Object.fromEntries(
+      ["workspace", "packed"].map((mode) => [
+        mode,
+        Object.fromEntries(Object.entries(totals[mode]).map(([name, row]) => [name, row.gzip])),
+      ]),
+    );
+    expect(actualGzipEvidence(recorded, totals)).toEqual([]);
+    recorded.baselineEvidence.actualGzip.packed["event-only"] -= 7;
+    expect(actualGzipEvidence(recorded, totals)).toEqual([
+      { mode: "packed", fixture: "event-only", delta: 7 },
+    ]);
+
+    const repinned = rebaselineContract(recorded, totals, evidence, "release-bump");
+    expect(repinned.gzipEvidence).toHaveLength(1);
+    expect(repinned.contract.baselineEvidence.actualGzip.packed["event-only"]).toBe(
+      totals.packed["event-only"].gzip,
+    );
+    const noEvidence = rebaselineContract(contract, totals, evidence, "release-bump");
+    expect(noEvidence.gzipEvidence).toBeNull();
+    expect(readmeSection(noEvidence.contract, null, "1.0.0", "release-bump")).toContain(
+      "No previous actual gzip evidence was recorded",
+    );
+  });
+
   it("writes a README section per reason naming the run, source and evidence", () => {
     const {
       contract: next,
       gzipEvidence,
       previousVersion,
     } = rebaselineContract(contract, totalsFrom(contract), evidence, "release-bump");
-    const release = readmeSection(next, gzipEvidence, previousVersion, "release-bump");
+    const release = readmeSection(next, gzipEvidence ?? [], previousVersion, "release-bump");
     expect(release).toContain("## v9.9.9 release baseline");
     expect(release).toContain("actions/runs/1) (job 2)");
     expect(release).toContain("Every raw and `gzipNormalized` total is unchanged");
