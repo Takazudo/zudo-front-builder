@@ -67,6 +67,16 @@ export function measuredTotals(normalizedByMode) {
   return totals;
 }
 
+export function assertLinuxX64Provenance(provenance) {
+  if (provenance?.platform?.os !== "linux" || provenance?.platform?.arch !== "x64") {
+    throw new Error(
+      "artifact was measured on " +
+        JSON.stringify(provenance?.platform) +
+        ", not linux-x64; Darwin arm64 uses rebaseline-island-size-darwin.mjs",
+    );
+  }
+}
+
 export function diffCeilings(contract, totals) {
   const missingFixtures = [];
   const rawChanges = [];
@@ -376,8 +386,8 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     " The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two " +
     "identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and " +
     "`gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git " +
-    "history. The Darwin arm64 contract is unchanged, still measures actual gzip under schemaVersion 1, " +
-    "and needs its separate native remeasurement through `island-size-darwin.yml`.\n";
+    "history. The Darwin arm64 contract is unchanged; it is re-pinned separately from a native " +
+    "`island-size-darwin.yml` artifact by `rebaseline-island-size-darwin.mjs`.\n";
   let body;
   if (reason === "metric-migration") {
     body =
@@ -452,6 +462,7 @@ function main() {
     );
   }
   const provenance = measurements.workspace.provenance;
+  for (const mode of MODES) assertLinuxX64Provenance(measurements[mode].provenance);
   const version = JSON.parse(readFileSync("packages/zfb/package.json", "utf8")).version;
   const pnpmLockSha256 = createHash("sha256").update(readFileSync("pnpm-lock.yaml")).digest("hex");
   for (const mode of MODES) {

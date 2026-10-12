@@ -291,7 +291,9 @@ describe("rebaseline-island-size-linux", () => {
     expect(release).toContain("actions/runs/1) (job 2)");
     expect(release).toContain("Every raw and `gzipNormalized` total is unchanged");
     expect(release).toContain("No actual gzip total moved.");
-    expect(release).toContain("still measures actual gzip under schemaVersion 1");
+    expect(release).toContain(
+      "re-pinned separately from a native `island-size-darwin.yml` artifact",
+    );
 
     const legacy = legacyContract(contract);
     const migration = rebaselineContract(

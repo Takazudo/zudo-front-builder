@@ -24,7 +24,27 @@ import { measuredTotals, rebaselineContract } from "../rebaseline-island-size-li
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
 const sizeDir = join(repoRoot, "research/v3-island-size");
-const baseContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+// Frozen schemaVersion-1 actual-gzip contract (the Darwin contract before its
+// #4169 metric migration). It is the legacy-metric base for the synthetic
+// states below; the lock hashes are re-derived from this checkout so the
+// fixture never ages with pnpm-lock.yaml or Cargo.lock.
+const baseContract = JSON.parse(
+  readFileSync(join(testDir, "fixtures/island-size-darwin-actual-gzip-v1.json"), "utf8"),
+);
+{
+  const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
+  const checkedOutVersion = JSON.parse(
+    readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
+  ).version;
+  baseContract.toolchain.pnpmLockSha256 = pnpmLockHashForContract(
+    lockText,
+    checkedOutVersion,
+    baseContract.toolchain.packageVersion,
+  );
+  baseContract.toolchain.cargoLockSha256 = createHash("sha256")
+    .update(readFileSync(join(repoRoot, "Cargo.lock")))
+    .digest("hex");
+}
 const fixtures = [
   "no-island",
   "event-only",
@@ -494,7 +514,20 @@ describe("island shipped-size budget", () => {
       currentVersion,
       baseContract.toolchain.packageVersion,
     );
-    expect(contractHash).toBe(baseContract.toolchain.pnpmLockSha256);
+    expect(contractHash).toBe(
+      sha(
+        lockText.replaceAll(
+          "specifier: workspace:" + currentVersion,
+          "specifier: workspace:" + baseContract.toolchain.packageVersion,
+        ),
+      ),
+    );
+    // The reviewed Darwin contract must track this checkout's lockfiles, the
+    // same drift guard the Linux contract test enforces through validate().
+    const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(
+      pnpmLockHashForContract(lockText, currentVersion, darwinContract.toolchain.packageVersion),
+    ).toBe(darwinContract.toolchain.pnpmLockSha256);
     expect(
       pnpmLockHashForContract(
         lockText.replace("lockfileVersion:", "unexpectedLockfileVersion:"),
@@ -541,28 +574,56 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.2.1");
-    expect(darwinContract.allowance).toEqual({ raw: 0, gzip: 0 });
+    expect(darwinContract.toolchain.packageVersion).toBe("4.3.3");
+    expect(darwinContract.schemaVersion).toBe(2);
+    expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
+    expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
+    expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
+    expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
+    expect(darwinContract.baselineSourceSha).toBe("e7d703770d7a8e805a72cad5c947cf59a847a760");
+    expect(darwinContract.baselineEvidence).toMatchObject({
+      event: "ci-artifact",
+      runId: 38264188626,
+      jobId: 114862063309,
+      artifact: { id: 11754721284 },
+    });
+    // Lock hashes come from the native release-bump re-pin (#4170); the
+    // ceilings below are the unchanged #4169 metric-migration values.
+    expect(darwinContract.toolchain.pnpmLockSha256).toBe(
+      "eb76880355e6512ef8c5846062c6ff6f357db977a9cc54e32d3ee52ac6314389",
+    );
+    expect(darwinContract.toolchain.cargoLockSha256).toBe(
+      "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
+    );
     expect(darwinContract.ceilings.workspace).toEqual({
-      "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66792, gzip: 22249 },
-      "scalar-signal": { raw: 66800, gzip: 22256 },
-      "show-for": { raw: 66949, gzip: 22322 },
-      model: { raw: 66791, gzip: 22249 },
-      "blog-theme": { raw: 67144, gzip: 22374 },
-      "json-api": { raw: 66950, gzip: 22335 },
-      "multi-island": { raw: 67072, gzip: 22341 },
+      "no-island": { raw: 0, gzipNormalized: 0 },
+      "event-only": { raw: 66792, gzipNormalized: 22235 },
+      "scalar-signal": { raw: 66800, gzipNormalized: 22240 },
+      "show-for": { raw: 66949, gzipNormalized: 22310 },
+      model: { raw: 66791, gzipNormalized: 22235 },
+      "blog-theme": { raw: 67144, gzipNormalized: 22359 },
+      "json-api": { raw: 66950, gzipNormalized: 22319 },
+      "multi-island": { raw: 67072, gzipNormalized: 22324 },
     });
     expect(darwinContract.ceilings.packed).toEqual({
-      "no-island": { raw: 0, gzip: 0 },
-      "event-only": { raw: 66854, gzip: 22267 },
-      "scalar-signal": { raw: 66862, gzip: 22284 },
-      "show-for": { raw: 67011, gzip: 22342 },
-      model: { raw: 66853, gzip: 22272 },
-      "blog-theme": { raw: 67206, gzip: 22410 },
-      "json-api": { raw: 67012, gzip: 22360 },
-      "multi-island": { raw: 67134, gzip: 22365 },
+      "no-island": { raw: 0, gzipNormalized: 0 },
+      "event-only": { raw: 66854, gzipNormalized: 22254 },
+      "scalar-signal": { raw: 66862, gzipNormalized: 22269 },
+      "show-for": { raw: 67011, gzipNormalized: 22329 },
+      model: { raw: 66853, gzipNormalized: 22259 },
+      "blog-theme": { raw: 67206, gzipNormalized: 22390 },
+      "json-api": { raw: 67012, gzipNormalized: 22343 },
+      "multi-island": { raw: 67134, gzipNormalized: 22349 },
     });
+    // Raw totals equal the frozen actual-gzip contract's; only the metric moved.
+    for (const mode of ["workspace", "packed"]) {
+      for (const [fixture, ceiling] of Object.entries(darwinContract.ceilings[mode])) {
+        expect(ceiling.raw).toBe(baseContract.ceilings[mode][fixture].raw);
+        expect(ceiling.gzipNormalized).toBeLessThanOrEqual(
+          baseContract.ceilings[mode][fixture].gzip,
+        );
+      }
+    }
     const state = makeState(darwinContract.platform, darwinContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });
   });

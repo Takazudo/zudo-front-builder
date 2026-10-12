@@ -51,6 +51,8 @@
 //     (and restores scroll) on a persisted restore — see the `onPageShow` block below.
 //   - `derivePopDirection` hardens the popstate forward/back calc against an unchanged or
 //     missing/NaN `state.index` that a bfcache restore can leave behind (#1076).
+//   - `onPopState` restores the page for a stateless (browser-created) entry whose
+//     pathname is not the rendered one, instead of always ignoring it (#4165).
 
 import {
   doPreparation,
@@ -79,6 +81,10 @@ type State = {
   scrollX: number;
   scrollY: number;
 };
+// The entry a popstate traversal landed on. `null` is a browser-created entry
+// (hash link, `location.hash`) that carries no router state: still a traverse,
+// but with no saved scroll, so the location settles like a fresh arrival.
+type TraversedState = State | null;
 type Navigation = {
   controller: AbortController;
   domCommitStarted: boolean;
@@ -214,6 +220,10 @@ let parser: DOMParser;
 // you can figure it using an index. On pushState the index is incremented so you
 // can use that to determine popstate if going forward or back.
 let currentHistoryIndex = 0;
+// True after a popstate landed on a stateless entry without adopting an index:
+// the tracked index still names the entry the router pushed from it, so a
+// Forward onto that entry arrives with an equal index.
+let onUnindexedEntry = false;
 
 // Once-guard for the navigation bookkeeping below. `init()` sets it too, so a
 // later ensureNavigationState() can never clobber the activation-time seed.
@@ -367,12 +377,14 @@ const UNCHANGED: LocationWrite = { status: "unchanged" };
 const writeLocationEntry = (
   to: URL,
   options: Options,
-  historyState: State | undefined,
+  historyState: TraversedState | undefined,
   early: EarlyCommit,
   insideNativeViewTransition: boolean,
 ): LocationWrite => {
   // A traverse already moved the browser; a srcdoc restriction is not retried.
-  if (historyState || early === "tolerated" || to.href === location.href) return UNCHANGED;
+  if (historyState !== undefined || early === "tolerated" || to.href === location.href) {
+    return UNCHANGED;
+  }
   const replace = options.history === "replace" || early === "committed";
   let result: HistoryWriteResult;
   if (replace) {
@@ -394,7 +406,10 @@ const writeLocationEntry = (
     if (insideNativeViewTransition) return { status: "rejected", replace: false };
     const index = currentHistoryIndex + 1;
     result = tryPushState({ ...options.state, index, scrollX: 0, scrollY: 0 }, "", to.href);
-    if (result.outcome === "committed") currentHistoryIndex = index;
+    if (result.outcome === "committed") {
+      currentHistoryIndex = index;
+      onUnindexedEntry = false;
+    }
   }
   return result.outcome === "rejected"
     ? { status: "rejected", replace, error: result.error }
@@ -404,7 +419,7 @@ const writeLocationEntry = (
 // Settle the page on its new location after the entry was written: re-point
 // the "from" URL and set the scroll position according to the hash fragment
 // (or the traversed entry's saved scroll).
-const settleLocation = (to: URL, from: URL, historyState?: State) => {
+const settleLocation = (to: URL, from: URL, historyState?: TraversedState) => {
   const intraPage = samePage(from, to);
 
   let scrolledToTop = false;
@@ -551,7 +566,10 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     // dialog. #1398.
     const index = currentHistoryIndex + 1;
     write = tryPushState({ ...options.state, index, scrollX, scrollY }, "", to.href);
-    if (write.outcome === "committed") currentHistoryIndex = index;
+    if (write.outcome === "committed") {
+      currentHistoryIndex = index;
+      onUnindexedEntry = false;
+    }
   }
 
   // The browser kept the old URL: report it with the browser's own error and
@@ -608,7 +626,7 @@ async function updateDOM(
   options: Options,
   currentNavigation: Navigation,
   currentTransition: Transition,
-  historyState: State | undefined,
+  historyState: TraversedState | undefined,
   fallback: Fallback | undefined,
   historyCommit: HistoryCommitPlan,
 ): Promise<DOMUpdateOutcome> {
@@ -795,7 +813,7 @@ async function transition(
   from: URL,
   to: URL,
   options: Options,
-  historyState?: State,
+  historyState?: TraversedState,
   hasUAVisualTransition = false,
 ) {
   // The most recent navigation always has precedence
@@ -817,11 +835,8 @@ async function transition(
     return;
   }
 
-  const navigationType = historyState
-    ? "traverse"
-    : options.history === "replace"
-      ? "replace"
-      : "push";
+  const navigationType =
+    historyState !== undefined ? "traverse" : options.history === "replace" ? "replace" : "push";
 
   if (navigationType !== "traverse") {
     updateScrollPosition({ scrollX, scrollY });
@@ -1182,14 +1197,34 @@ function onPopState(ev: PopStateEvent) {
 
   // History entries without state are created by the browser (e.g. for hash links)
   // Our view transition entries always have state.
-  // Just ignore stateless entries.
-  // The browser will handle navigation fine without our help
   if (ev.state === null) {
+    const to = new URL(location.href);
+    // An entry of the rendered document's pathname is left alone: the browser
+    // has already handled a fragment entry, and a raw `pushState(null, "", "?q=…")`
+    // belongs to the app's own popstate handling. Search is deliberately not
+    // compared, unlike samePage().
+    if (originalLocation.pathname === to.pathname && !currentEntryUnrendered) return;
+    // The entry belongs to a page the live DOM no longer shows (A#frag after a
+    // soft navigation to B): restore it. Without an index the direction is
+    // unknowable, so it takes derivePopDirection's safe default. (#4165)
+    onUnindexedEntry = true;
+    transition(
+      derivePopDirection(Number.NaN, currentHistoryIndex),
+      originalLocation,
+      to,
+      {},
+      null,
+      ev.hasUAVisualTransition,
+    );
     return;
   }
   const state: State = history.state;
   const nextIndex = state.index;
-  const direction: Direction = derivePopDirection(nextIndex, currentHistoryIndex);
+  const direction: Direction =
+    onUnindexedEntry && nextIndex === currentHistoryIndex
+      ? "forward"
+      : derivePopDirection(nextIndex, currentHistoryIndex);
+  onUnindexedEntry = false;
   // Only advance the tracked index when the entry carries a usable index.
   // After a bfcache restore the index can be missing/NaN; clobbering the
   // tracked value with NaN would poison every subsequent direction calc, so
@@ -1250,6 +1285,7 @@ const onPageShow = (ev: PageTransitionEvent) => {
   // `originalLocation` would feed onPopState the wrong origin).
   originalLocation = new URL(location.href);
   currentEntryUnrendered = false;
+  onUnindexedEntry = false;
   const index = history.state?.index;
   if (Number.isFinite(index)) {
     currentHistoryIndex = index;
@@ -1541,6 +1577,7 @@ export function init(_options?: InitOptions): void {
   navigationStateSeeded = true;
   originalLocation = new URL(location.href);
   currentEntryUnrendered = false;
+  onUnindexedEntry = false;
 
   registerNavigationListeners();
 

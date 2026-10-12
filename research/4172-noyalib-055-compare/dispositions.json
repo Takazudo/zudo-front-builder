@@ -1,0 +1,18 @@
+{
+  "verbatim-int": {
+    "disposition": "accepted",
+    "reason": "Documented 0.0.55 YAML 1.2.2 conformance fix: the verbatim tag !<int> names exactly the URI 'int', not tag:yaml.org,2002:int. The new refusal fails closed with a located frontmatter error, nothing silently changes value, and no frontmatter in this repository or the create-zfb templates uses verbatim tags (rg over docs/, crates/zfb/templates/, tests/). Consumer-visible: must be called out in the zfb and zfb-md-wasm changelog lanes when #4173 applies the pin."
+  },
+  "verbatim-core-uri-int": {
+    "disposition": "accepted",
+    "reason": "Documented 0.0.55 conformance fix: !<tag:yaml.org,2002:int> 7 is the core int tag by its full URI and now resolves to 7, where 0.0.53 refused it. Newly accepted input; no previously accepted document changes value."
+  },
+  "verbatim-core-uri-str": {
+    "disposition": "accepted",
+    "reason": "Same conformance fix for the core str tag by full URI: it now resolves to the string \"7\" where 0.0.53 refused it. Newly accepted input; no value change for previously accepted documents."
+  },
+  "alias-depth-over-max": {
+    "disposition": "accepted",
+    "reason": "Documented 0.0.55 resource-safety tightening: an alias can no longer build a value deeper than max_depth (128), matching the existing non-alias depth limit. Only a pathological, more than 128-deep aliased structure is newly refused, with a located error. This strengthens the frontmatter resource boundary and is not a compatibility regression for realistic frontmatter."
+  }
+}

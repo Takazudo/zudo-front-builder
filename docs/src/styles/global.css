@@ -20,6 +20,15 @@
   overflow-wrap: anywhere;
 }
 
+/* Content-table scrollers: during a view-transition soft navigation, Chromium
+   re-layerizes every overflowing scroll container; on the EN compatibility page
+   (23 very tall tables) that was a 4–6 s Layerize freeze. Paint containment keeps
+   each table's layers inside its wrapper, which already clips via overflow-x:auto,
+   so rendering and horizontal scrolling are unchanged. Measured in #4166. */
+.zd-content .overflow-x-auto:has(> table.border-collapse) {
+  contain: paint;
+}
+
 /* ── Your token overrides ──────────────────────────────────────────────
    Override design-token custom properties from the package theme here. */
 :root {
