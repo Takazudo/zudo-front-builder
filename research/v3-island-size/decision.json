@@ -1,9 +1,12 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "metric": "gzip-identity-normalized",
+  "normalizationVersion": 1,
+  "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
   "decisionIssue": 3469,
-  "outcome": "intentional-feature-size-change",
+  "outcome": "metric-migration",
   "selectedOptimizations": [],
-  "baselineSourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
+  "baselineSourceSha": "87a9b722bb35d609001d6cac1337461113e0c98f",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -23,96 +26,150 @@
     "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
   },
   "toolchain": {
-    "packageVersion": "4.2.1",
+    "packageVersion": "4.3.2",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "113d2ec03d688fe05d573b1c4a56b97a55647ccae86b1416b84e8c97e04d9b8d",
-    "cargoLockSha256": "e488faa9fe58e3bf2cee980228761558a44a61eab70c454463ea872b013fec75"
+    "pnpmLockSha256": "6f0472019d08cf4198c9f3bada97a1469302e7ce9ed0b3829fabccbace95d14c",
+    "cargoLockSha256": "24389de92eceaee91be0fce41389f1c06ba70788e340b538278209e6b17ac504"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
     "raw": 0,
-    "gzip": 0
+    "gzipNormalized": 0
   },
   "ceilings": {
     "workspace": {
       "no-island": {
         "raw": 0,
-        "gzip": 0
+        "gzipNormalized": 0
       },
       "event-only": {
         "raw": 66792,
-        "gzip": 22249
+        "gzipNormalized": 22235
       },
       "scalar-signal": {
         "raw": 66800,
-        "gzip": 22256
+        "gzipNormalized": 22240
       },
       "show-for": {
         "raw": 66949,
-        "gzip": 22322
+        "gzipNormalized": 22310
       },
       "model": {
         "raw": 66791,
-        "gzip": 22249
+        "gzipNormalized": 22235
       },
       "blog-theme": {
         "raw": 67144,
-        "gzip": 22374
+        "gzipNormalized": 22359
       },
       "json-api": {
         "raw": 66950,
-        "gzip": 22335
+        "gzipNormalized": 22319
       },
       "multi-island": {
         "raw": 67072,
-        "gzip": 22341
+        "gzipNormalized": 22324
       }
     },
     "packed": {
       "no-island": {
         "raw": 0,
-        "gzip": 0
+        "gzipNormalized": 0
       },
       "event-only": {
         "raw": 66854,
-        "gzip": 22267
+        "gzipNormalized": 22254
       },
       "scalar-signal": {
         "raw": 66862,
-        "gzip": 22284
+        "gzipNormalized": 22269
       },
       "show-for": {
         "raw": 67011,
-        "gzip": 22342
+        "gzipNormalized": 22329
       },
       "model": {
         "raw": 66853,
-        "gzip": 22272
+        "gzipNormalized": 22259
       },
       "blog-theme": {
         "raw": 67206,
-        "gzip": 22410
+        "gzipNormalized": 22390
       },
       "json-api": {
         "raw": 67012,
-        "gzip": 22360
+        "gzipNormalized": 22343
       },
       "multi-island": {
         "raw": 67134,
-        "gzip": 22365
+        "gzipNormalized": 22349
       }
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml once it reaches main; its path-filtered pull_request trigger is a temporary bootstrap. Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 zero-allowance contract records the deferred first-mount render-intent runtime change measured natively in workflow_dispatch run 37982542273 at source b7d161bb3a1adaf605d8934b16773f3e4974ad6d. All nonempty island fixtures gained 465–469 raw bytes and 141–163 gzip bytes against the prior Darwin exact ceilings; no-island stayed 0/0. Workspace and packed eight-fixture matrices each had two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v4.3.2 ceilings on metric gzip-identity-normalized v1, replayed by normalize-identity.mjs over the retained native artifact of workflow_dispatch run 38217794482 at source 87a9b722bb35d609001d6cac1337461113e0c98f. All 16 raw totals are unchanged from the v4.2.1 actual-gzip contract; the gzipNormalized ceilings are new values computed from the saved bytes and are not comparable with any earlier gzip ceiling. This is historical-artifact evidence, not a native measurement of the current source or lockfiles; that verification is tracked in #4170. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
-    "event": "workflow_dispatch",
-    "runId": 37982542273,
-    "jobId": 113996389940,
-    "sourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
-    "note": "Native macOS 15 arm64 run from root PR #4118 head b7d161bb; artifact 11642476321 contains complete workspace and packed eight-fixture matrices with two identical full-dist passes per case, package tarballs and runner provenance. Deferred first-mount render-intent handling adds 465–469 raw bytes per nonempty island entry; no-island remains 0/0. Ceilings equal the measured bytes with zero allowance. The prior Darwin v4.1.0 contract remains in Git history."
+    "event": "ci-artifact-replay",
+    "runId": 38217794482,
+    "jobId": 114706509526,
+    "sourceSha": "87a9b722bb35d609001d6cac1337461113e0c98f",
+    "artifact": {
+      "id": 11733203044,
+      "name": "island-size-darwin-arm64-87a9b722bb35d609001d6cac1337461113e0c98f",
+      "expiresAt": "2026-11-11T07:26:59Z"
+    },
+    "nativeRunner": {
+      "platform": "darwin-arm64",
+      "macOS": "15.7.9 (24G830)",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "node": "v24.14.0",
+      "zlib": "1.3.1-e00f703",
+      "pnpm": "12.8.2",
+      "esbuild": "0.25.12",
+      "hono": "4.12.25",
+      "zfbBinarySha256": "63a8548799381c4f62953fcd5a451cb3c26ec748b4e9eda1e819812bf26f08b1",
+      "esbuildBinarySha256": "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5",
+      "zfbTarballSha256": "f3c04852e792c4fdf0bf0f3ebca1a79000bb39dec46193a35a650ef9c2e74291",
+      "runtimeTarballSha256": "333887e293e12bb516467efdc5652535175f18e53c2f0d5a67fcaac07236d541",
+      "slugifyTarballSha256": "d32f51391b0894d4240d58d42bfa7337a0027f10ae4cdc0e10705ed5fad51aa3"
+    },
+    "migratedFrom": {
+      "schemaVersion": 1,
+      "metric": "gzip",
+      "packageVersion": "4.2.1",
+      "baselineSourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
+      "baselineRunId": 37982542273
+    },
+    "originalCheckerResult": {
+      "exitCode": 1,
+      "logSha256": "f08eeb4d4b6d51e3ab61895d36ca8796f6858e40d1ac0f68d4811098ffee9d87"
+    },
+    "actualGzip": {
+      "workspace": {
+        "blog-theme": 22372,
+        "event-only": 22251,
+        "json-api": 22333,
+        "model": 22252,
+        "multi-island": 22343,
+        "no-island": 0,
+        "scalar-signal": 22256,
+        "show-for": 22325
+      },
+      "packed": {
+        "blog-theme": 22408,
+        "event-only": 22269,
+        "json-api": 22358,
+        "model": 22273,
+        "multi-island": 22362,
+        "no-island": 0,
+        "scalar-signal": 22284,
+        "show-for": 22342
+      }
+    },
+    "note": "Metric migration replayed from the retained native Darwin arm64 artifact of run 38217794482 (job 114706509526) at source 87a9b722bb35d609001d6cac1337461113e0c98f. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. The gzipNormalized ceilings were computed by normalize-identity.mjs v1 over the saved artifact bytes, not converted arithmetically from the v4.2.1 actual-gzip ceilings. Raw totals did not change; actual gzip is kept in baselineEvidence.actualGzip as transfer-size evidence only. The original checker run failed on the old actual-gzip contract by token-only movement and is preserved in the artifact. Lock hashes and package version are those of the artifact's source SHA, not the current checkout. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
