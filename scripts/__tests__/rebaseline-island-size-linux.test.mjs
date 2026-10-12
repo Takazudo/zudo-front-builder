@@ -19,6 +19,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const contract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
+// The cases below build their own actual-gzip evidence; start from a contract that
+// has none, whatever the live contract recorded at its last re-pin.
+delete contract.baselineEvidence.actualGzip;
 const testSource = readFileSync(
   join(root, "scripts/__tests__/island-size-budget.test.mjs"),
   "utf8",
