@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-12T14:28:00Z",
+  "checkedAt": "2026-10-13T00:00:00Z",
   "issue": "https://github.com/Takazudo/zudo-front-builder/issues/4172",
   "sourceBase": "badb68360ed8d28e807f0d3770709da9e9b49529",
   "control": "0.0.53",
@@ -14,7 +14,10 @@
         "yanked": false,
         "tag": "v0.0.53",
         "tagObject": "447dfd54d9e6c4fa37e5a835a140c53b0f21db6c",
-        "commit": "8c6671fc74f04dcb75dac90b424b7976db24368f"
+        "commit": "8c6671fc74f04dcb75dac90b424b7976db24368f",
+        "rustVersion": "1.86.0",
+        "license": "MIT OR Apache-2.0",
+        "archiveSha256MatchesRegistry": true
       },
       "noyalib-serde-yaml": {
         "checksum": "a62fedc8613fa5ba4db669ce4a88fec7227dfd08902995492c2b4b6ee53f24db",
@@ -23,7 +26,10 @@
         "yanked": false,
         "tag": "v0.0.53",
         "tagObject": "684cc5376cc948abc3862e8fdb3fe7d5747eab10",
-        "commit": "4d6794a14a1b434054fc7bb26b07269c44fa611b"
+        "commit": "4d6794a14a1b434054fc7bb26b07269c44fa611b",
+        "rustVersion": "1.86.0",
+        "license": "MIT OR Apache-2.0",
+        "archiveSha256MatchesRegistry": true
       }
     },
     "0.0.55": {
@@ -35,7 +41,10 @@
         "tag": "v0.0.55",
         "tagObject": "65c55452c7f419fbb672d67705269583745928a4",
         "commit": "8adef27f177e03f07ac0e96ea9a8a774b21bee76",
-        "releaseChecksumMatches": true
+        "releaseChecksumMatches": true,
+        "rustVersion": "1.86.0",
+        "license": "MIT OR Apache-2.0",
+        "archiveSha256MatchesRegistry": true
       },
       "noyalib-serde-yaml": {
         "checksum": "4775f0afd3f1d5e55b3779e8e4b7ffde09d690629f6731e4047159a751c17a3b",
@@ -45,15 +54,23 @@
         "tag": "v0.0.55",
         "tagObject": "3cda03c23b0a2cfe27c1b7e548421494c8bd3a72",
         "commit": "21a0ff6424367a0b47b5d3110a6990767395114e",
-        "releaseChecksumMatches": true
+        "releaseChecksumMatches": true,
+        "rustVersion": "1.86.0",
+        "license": "MIT OR Apache-2.0",
+        "archiveSha256MatchesRegistry": true
       }
     }
   },
   "aliasManifest": {
-    "exactCorePin": "=0.0.55",
+    "exactCorePin": {
+      "0.0.53": "=0.0.53",
+      "0.0.55": "=0.0.55"
+    },
     "defaultFeatures": false,
     "features": ["std", "compat-serde-yaml"],
-    "srcLibDiff": "doc comment version string only (re-exports noyalib::compat::serde_yaml::*)"
+    "srcLibDiff": "doc comment version string only (re-exports noyalib::compat::serde_yaml::*)",
+    "buildScript": false,
+    "packagedDiff": "src/lib.rs doc-comment version string, .cargo_vcs_info.json, upstream .github workflow hardening; no code change"
   },
   "coreManifest": {
     "license": "MIT OR Apache-2.0",
@@ -61,12 +78,41 @@
     "normalDependencies": "identical 0.0.53 -> 0.0.55",
     "buildDependencies": "identical",
     "features": "identical",
-    "buildRs": "identical",
-    "devDependencyAdded": "jsonschema 0.58 (dev only)"
+    "buildRs": "byte-identical",
+    "devDependencyAdded": "jsonschema 0.58 (dev only)",
+    "defaultLimits": "ParserLimits::default and ParserProfile::SerdeYaml byte-identical in src/de/config.rs",
+    "serdeYamlCompatConfig": "ParserConfig::serde_yaml_compat body identical; only a new internal stream_tally field (metering) defaults to None"
   },
-  "compatProfile": {
-    "serdeYamlCompatConfig": "identical 0.0.53 -> 0.0.55",
-    "defaultLimits": "identical (max_nodes 250000, max_sequence_length 65536, max_document_length 64 MiB, alias_anchor_ratio 10.0, alias_jump_event_factor 100)",
-    "duplicateKeyChange": "compat::serde_yaml::from_str refuses duplicate keys only when T is noyalib::Value (TypeId check); serde_json::Value keeps last-wins"
+  "checkedBy": "crates.io API + static.crates.io archives (SHA-256 recomputed) + GitHub tag refs/Releases, 2026-10-13; no Cargo compile",
+  "newerPairsObserved": {
+    "0.0.56": {
+      "noyalib": "17cb8fe21481880d02e866e6678da0ce313735b659edf3dfd4beb7fdaca06e77",
+      "noyalib-serde-yaml": "bce484e3ab7c08fa9f1183382e9ff91770651ed15ad8c9aa6ef1f9badd5d6a70",
+      "yanked": false
+    },
+    "0.0.57": {
+      "noyalib": "70b8960f9f4668b69cae4ca71106c84d38ca1ea9f41a9acc20ce55473b967849",
+      "noyalib-serde-yaml": "da3c0f67a13749c254e5e1ad26ffbd1fb924ca4732546acb0c9aa638d3471a6a",
+      "yanked": false
+    },
+    "note": "recorded only; #4161 scopes the owner exception to the exact 0.0.55 pair"
+  },
+  "candidateChanges": {
+    "releaseNotes": "https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.55 (0.0.54 notes cover reader entry points and noyalib-mcp/noya-cli only)",
+    "longFlowLineScanner": "src/parser/scanner.rs: plain-scalar line-end lookahead memoised (line_end_memo) instead of rescanned per scalar; token-queue compaction now shifts only when the consumed prefix is >= half the queue; simple-key staleness tracked with an O(1) amortised live_key_floor. Upstream tests/limits/scanner_complexity.rs uses [[a,...]x n/1000] one-line flow input and asserts an 8x input grows < 24x time. Reaches zfb: frontmatter::parse calls serde_yaml::from_str::<serde_json::Value> -> noyalib::compat::serde_yaml::from_str -> from_str_with_config(serde_yaml_compat) -> this scanner",
+    "implicitFlowKeyLimit": "implicit keys holding a flow collection longer than 1024 chars are refused (block keys and flow-sequence single pairs; scalar keys, explicit ? keys and flow-mapping keys unlimited). zfb deserializes into serde_json::Value, whose map keys must be strings, so these inputs are already refused at 0.0.53; only the error text can differ",
+    "verbatimTags": "!<x> now names exactly the tag x (src/value/tag.rs, de.rs); can change a success value or acceptance on the frontmatter path; probed by verbatim-* cases",
+    "aliasDepth": "an alias can no longer build a value deeper than max_depth (128); can newly refuse a deep alias; probed by alias-depth-over-max",
+    "duplicateKeys": "compat::serde_yaml::from_str switches DuplicateKeyPolicy::Error only when TypeId::of::<T>() == noyalib::Value; zfb targets serde_json::Value, which keeps last-wins (corpus case duplicate-keys pins it)",
+    "readerBudgets": "from_reader now bounded (0.0.54/0.0.55); zfb calls only from_str, so not reached"
+  },
+  "zfbCallSite": {
+    "entrypoint": "zfb_content::frontmatter::extract (crates/zfb-content/src/frontmatter.rs) -> parse -> serde_yaml::from_str::<serde_json::Value>",
+    "otherConsumers": "zfb-md-wasm via frontmatter::extract_from_filename; zfb diagnostics::from_frontmatter_error reads Error::location() and Display"
+  },
+  "lockDelta": {
+    "checkedAt": "2026-10-13",
+    "method": "throwaway detached worktree of 93b73b83, evaluate.py pin + cargo update -p noyalib-serde-yaml --precise 0.0.55 (resolution only), evaluate.py lock; worktree removed",
+    "result": "exactly two Cargo.lock entries change (noyalib, noyalib-serde-yaml: version + checksum); 594 packages; dependency lists unchanged; evaluate.py lock errors=[]"
   }
 }

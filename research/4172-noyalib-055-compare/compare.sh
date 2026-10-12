@@ -5,18 +5,25 @@
 # lane at the committed 0.0.53 pin, swaps only the scratch copy to the 0.0.55
 # pair, verifies the exact two-entry lock delta before compiling, then runs
 # the identical candidate lane. The branch's Cargo.toml / Cargo.lock are never
-# touched. Every command's argv, output, exit and duration land in EVIDENCE.
+# touched (checked at the end). Every command's argv, output, exit and
+# duration land in EVIDENCE. See README.md for the decision rules.
 #
 # Env (all optional):
 #   SOURCE_SHA        commit to evaluate (default: HEAD of this checkout)
 #   EVIDENCE          fresh absolute directory outside the repo
 #                     (default: $HOME/.cache/zfb-4172-yaml-evidence/<utc stamp>)
 #   CARGO_TARGET_DIR  shared target (default: <main checkout>/target)
-#   HEAVY_GUARD       guard script (default: $HOME/.claude/scripts/heavy-guard.sh)
+#   HEAVY_GUARD       guard script (default: $HOME/.claude/scripts/heavy-guard.sh;
+#                     `none` runs unguarded)
+#   HEAVY_MAX_RUN     per-step guard --max-run seconds (default: 5400)
 #   MIN_FREE_GIB      disk preflight (default: 20)
+#   WITH_ZFB_DIAGNOSTICS=1  also run `zfb`'s diagnostics::tests (no-V8 build of
+#                     the whole zfb crate; its build.rs downloads esbuild)
 #   KEEP_SCRATCH=1    keep the scratch worktree for inspection
-#   CI_CANDIDATE_BUDGET_LOG  CI wasm-md budget-step log at the candidate pin,
-#                     forwarded to `evaluate.py summarize`
+#   CI_CANDIDATE_BUDGET_LOG  CI wasm-md budget-step log at the candidate pin
+#   CI_CANDIDATE_RUN  the run URL + head SHA that produced it
+#   DISPOSITIONS      JSON {case: {disposition: accepted|regression, reason}}
+#                     for probe diffs (all three forwarded to summarize)
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -26,21 +33,17 @@ SOURCE_SHA=$(git -C "$REPO" rev-parse "${SOURCE_SHA:-HEAD}")
 EVIDENCE=${EVIDENCE:-$HOME/.cache/zfb-4172-yaml-evidence/$(date -u +%Y%m%dT%H%M%SZ)}
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$MAIN_ROOT/target}
 HEAVY_GUARD=${HEAVY_GUARD:-$HOME/.claude/scripts/heavy-guard.sh}
+HEAVY_MAX_RUN=${HEAVY_MAX_RUN:-5400}
 MIN_FREE_GIB=${MIN_FREE_GIB:-20}
 SCRATCH=$EVIDENCE/src
 EVALUATE=(python3 -I "$HERE/evaluate.py")
 CANDIDATE=0.0.55
 # The probe's timing should reflect an optimized parser without rebuilding
-# the whole dev graph in release; only noyalib's codegen changes.
+# the whole dev graph in release; only noyalib's codegen changes, identically
+# in both lanes. Parser configuration (ParserConfig) is untouched.
 PROBE_CONFIG='profile.dev.package.noyalib.opt-level=3'
 
 die() { printf 'compare.sh: %s\n' "$*" >&2; exit 2; }
-
-case $EVIDENCE in /*) ;; *) die "EVIDENCE must be absolute" ;; esac
-case $EVIDENCE/ in "$MAIN_ROOT"/*) die "EVIDENCE must live outside the repository" ;; esac
-[[ -e $EVIDENCE ]] && die "refusing to reuse evidence directory $EVIDENCE"
-[[ -n ${CI:-} ]] && die "CI is set; the build's --allow-over-ceiling is refused under CI"
-mkdir -p "$EVIDENCE"
 
 # run <dir> <name> <cmd...>: record argv, combined output, exit and seconds.
 run() {
@@ -62,23 +65,29 @@ guarded() {
   if [[ $HEAVY_GUARD == none ]]; then
     run "$dir" "$name" "$@"
   else
-    run "$dir" "$name" bash "$HEAVY_GUARD" --max-run 3600 --label "4172 $(basename "$dir") $name" -- "$@"
+    run "$dir" "$name" bash "$HEAVY_GUARD" --max-run "$HEAVY_MAX_RUN" --label "4172 $(basename "$dir") $name" -- "$@"
   fi
 }
 
 free_bytes() { df -Pk "$1" | awk 'NR == 2 { print $4 * 1024 }'; }
 
+# Native cargo steps use the cargo on PATH (the toolchain the shared target
+# was built with); build.mjs prepends `rustup which rustc`'s directory for the
+# wasm build. Both identities are recorded per lane and must match across lanes.
 capture_toolchain() {
-  local out=$1
+  local out=$1 wasm_bin
+  wasm_bin=$(dirname "$(rustup which rustc 2>/dev/null || echo /nonexistent/rustc)")
   {
     echo "rustc: $(rustc -Vv 2>&1 | tr '\n' ';')"
+    echo "rustc-path: $(command -v rustc)"
     echo "cargo: $(cargo -V 2>&1)"
+    echo "wasm-rustc: $("$wasm_bin/rustc" -Vv 2>&1 | tr '\n' ';')"
     echo "active-toolchain: $(rustup show active-toolchain 2>&1)"
     echo "wasm32: $(rustup target list --installed 2>&1 | grep -c '^wasm32-unknown-unknown$')"
     echo "wasm-bindgen: $(wasm-bindgen --version 2>&1)"
+    echo "wasm-opt: $(crates/zfb-md-wasm/npm/node_modules/.bin/wasm-opt --version 2>&1)"
     echo "node: $(node --version 2>&1)"
     echo "pnpm: $(pnpm --version 2>&1)"
-    echo "cargo-deny: $(cargo deny --version 2>&1)"
     echo "freeBytes: $(free_bytes "$CARGO_TARGET_DIR")"
   } > "$out"
 }
@@ -92,6 +101,7 @@ preflight() {
     command -v sw_vers > /dev/null && echo "macos: $(sw_vers -productVersion)"
     echo "python: $(python3 --version 2>&1)"
     echo "git: $(git --version)"
+    echo "harness: $(cd "$HERE" && shasum -a 256 compare.sh evaluate.py probe.rs provenance.json | tr '\n' ';')"
   } > "$EVIDENCE/environment.txt"
   (cd "$REPO" && capture_toolchain "$EVIDENCE/toolchain-start.txt")
   cat "$EVIDENCE/toolchain-start.txt"
@@ -128,6 +138,13 @@ def fields(name):
 PY
 }
 
+manifest_digest() { (cd "$REPO" && shasum -a 256 Cargo.toml Cargo.lock); }
+BRANCH_MANIFESTS=$(manifest_digest)
+branch_untouched() {
+  printf 'start:\n%s\nend:\n%s\n' "$BRANCH_MANIFESTS" "$(manifest_digest)"
+  [[ $(manifest_digest) == "$BRANCH_MANIFESTS" ]] && git -C "$REPO" diff --quiet HEAD -- Cargo.toml Cargo.lock
+}
+
 cleanup() {
   write_environment_json
   if [[ ${KEEP_SCRATCH:-0} != 1 && -d $SCRATCH ]]; then
@@ -146,11 +163,12 @@ lane() {
   guarded "$dir" error-messages cargo test --locked -p zfb-content --test error_messages
   guarded "$dir" content cargo test --locked -p zfb-content
   guarded "$dir" md-api-ast cargo test --locked -p zfb-md-wasm --test api --test parse_to_ast
-  guarded "$dir" diagnostics cargo test --locked -p zfb --no-default-features --lib diagnostics::tests
+  if [[ ${WITH_ZFB_DIAGNOSTICS:-0} == 1 ]]; then
+    guarded "$dir" diagnostics cargo test --locked -p zfb --no-default-features --lib diagnostics::tests
+  fi
   if guarded "$dir" probe-build cargo build --locked -p zfb-content --example yaml_4172_probe --config "$PROBE_CONFIG"; then
     cp "$CARGO_TARGET_DIR/debug/examples/yaml_4172_probe" "$dir/probe-bin"
-    "$dir/probe-bin" observe > "$dir/probe-observe.jsonl" 2> "$dir/probe-observe.log"
-    printf '%s\n' "$?" > "$dir/probe-observe.exit"
+    run "$dir" probe-observe bash -c '"$1" observe > "$2"' _ "$dir/probe-bin" "$dir/probe-observe.jsonl"
     guarded "$dir" flow "${EVALUATE[@]}" flow --probe "$dir/probe-bin" --out "$dir/flow.json"
   fi
   if guarded "$dir" wasm-build pnpm --filter @takazudo/zfb-md-wasm build --allow-over-ceiling; then
@@ -161,6 +179,9 @@ lane() {
       --build-log "$dir/wasm-build.log" --dist crates/zfb-md-wasm/npm/dist
     if run "$dir" wasm-pack pnpm -C crates/zfb-md-wasm/npm pack --pack-destination "$dir/pack"; then
       mv "$dir"/pack/*.tgz "$dir/pack/zfb-md-wasm.tgz"
+      run "$dir" wasm-packed node crates/zfb-md-wasm/npm/scripts/assert-packed.mjs "$dir/pack/zfb-md-wasm.tgz"
+      run "$dir" wasm-release node scripts/assert-zfb-md-wasm-release.mjs --dist crates/zfb-md-wasm/npm/dist \
+        --package crates/zfb-md-wasm/npm/package.json --tarball "$dir/pack/zfb-md-wasm.tgz"
     fi
     # --update-manifest skips the CI-manifest comparison so this run checks
     # host bytes against the unchanged ceilings; the scratch manifest it
@@ -172,16 +193,34 @@ lane() {
     run "$dir" sizes "${EVALUATE[@]}" sizes --label "$label" --budget-log "$dir/wasm-budget-ceilings.log" \
       --dist "$dir/dist" --tarball "$dir/pack/zfb-md-wasm.tgz" --out "$dir/sizes.json"
   fi
+  git status --porcelain > "$dir/scratch-status.txt"
   printf '%s\n' "$(free_bytes "$CARGO_TARGET_DIR")" > "$dir/free-bytes-after"
 }
 
 summarize() {
-  local args=(--evidence "$EVIDENCE" --out "$EVIDENCE/report.json")
+  local args=(--evidence "$EVIDENCE" --out "$EVIDENCE/result.json")
   [[ -n ${CI_CANDIDATE_BUDGET_LOG:-} ]] && args+=(--ci-candidate-budget-log "$CI_CANDIDATE_BUDGET_LOG")
+  [[ -n ${CI_CANDIDATE_RUN:-} ]] && args+=(--ci-candidate-run "$CI_CANDIDATE_RUN")
+  [[ -n ${DISPOSITIONS:-} ]] && args+=(--dispositions "$DISPOSITIONS")
   write_environment_json
   "${EVALUATE[@]}" summarize "${args[@]}" | tee "$EVIDENCE/decision.txt"
   echo "evidence: $EVIDENCE"
 }
+
+# Re-summarize an existing evidence directory (e.g. once the CI candidate log
+# arrives) without rebuilding anything.
+if [[ ${1:-} == summarize ]]; then
+  [[ -d ${2:-} ]] || die "usage: compare.sh summarize <existing evidence dir>"
+  EVIDENCE=$2
+  summarize
+  exit 0
+fi
+
+case $EVIDENCE in /*) ;; *) die "EVIDENCE must be absolute" ;; esac
+case $EVIDENCE/ in "$MAIN_ROOT"/*) die "EVIDENCE must live outside the repository" ;; esac
+[[ -e $EVIDENCE ]] && die "refusing to reuse evidence directory $EVIDENCE"
+[[ -n ${CI:-} ]] && die "CI is set; the build's --allow-over-ceiling is refused under CI"
+mkdir -p "$EVIDENCE"
 
 echo "evidence: $EVIDENCE"
 run "$EVIDENCE" preflight preflight || { cat "$EVIDENCE/preflight.log"; summarize; exit 1; }
@@ -191,12 +230,15 @@ trap cleanup EXIT
 cd "$SCRATCH" || die "cannot enter $SCRATCH"
 run "$EVIDENCE" pnpm-install pnpm install --frozen-lockfile --prefer-offline || { summarize; exit 1; }
 git diff --exit-code --quiet -- pnpm-lock.yaml || die "pnpm install changed pnpm-lock.yaml"
+# Cargo auto-discovers examples/*.rs, so the probe builds against the real
+# zfb-content library without editing any manifest.
+mkdir -p crates/zfb-content/examples
 cp "$HERE/probe.rs" crates/zfb-content/examples/yaml_4172_probe.rs
 cp Cargo.toml "$EVIDENCE/control-Cargo.toml"
 cp Cargo.lock "$EVIDENCE/control-Cargo.lock"
 ZFB_RELEASE_VERSION=$(node -p "require('./crates/zfb-md-wasm/npm/package.json').version")
 export ZFB_RELEASE_VERSION
-echo "ZFB_RELEASE_VERSION=$ZFB_RELEASE_VERSION" >> "$EVIDENCE/environment.txt"
+echo "ZFB_RELEASE_VERSION: $ZFB_RELEASE_VERSION" >> "$EVIDENCE/environment.txt"
 
 lane control
 
@@ -211,4 +253,5 @@ run "$EVIDENCE" lock-check "${EVALUATE[@]}" lock --control "$EVIDENCE/control-Ca
 lane candidate
 
 capture_toolchain "$EVIDENCE/toolchain-end.txt"
+run "$EVIDENCE" branch-untouched branch_untouched
 summarize

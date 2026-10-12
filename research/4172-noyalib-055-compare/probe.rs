@@ -27,9 +27,9 @@ fn observe_one(yaml: &str) -> Value {
         Ok(fm) => json!({ "kind": "success", "value": fm.value }),
         Err(err) => {
             let location = match &err {
-                FrontmatterError::Yaml(yaml_err) => yaml_err.location().map(|l| {
-                    json!({ "line": l.line(), "column": l.column(), "index": l.index() })
-                }),
+                FrontmatterError::Yaml(yaml_err) => yaml_err
+                    .location()
+                    .map(|l| json!({ "line": l.line(), "column": l.column(), "index": l.index() })),
                 _ => None,
             };
             let display = match &err {
@@ -57,25 +57,55 @@ fn semantic_cases() -> Vec<(&'static str, String)> {
     vec![
         // 0.0.55 "breaking parse behaviour": verbatim tags name the URI exactly.
         ("verbatim-int", "v: !<int> 1\n".into()),
-        ("verbatim-core-uri-int", "v: !<tag:yaml.org,2002:int> 7\n".into()),
-        ("verbatim-core-uri-str", "v: !<tag:yaml.org,2002:str> 7\n".into()),
+        (
+            "verbatim-core-uri-int",
+            "v: !<tag:yaml.org,2002:int> 7\n".into(),
+        ),
+        (
+            "verbatim-core-uri-str",
+            "v: !<tag:yaml.org,2002:str> 7\n".into(),
+        ),
         ("verbatim-local", "v: !<!foo> x\n".into()),
         ("verbatim-uri", "v: !<foo> x\n".into()),
         ("shorthand-local-control", "v: !foo x\n".into()),
         ("secondary-shorthand-control", "v: !!int '5'\n".into()),
         // 0.0.55 "breaking parse behaviour": implicit flow-collection keys
         // are limited to 1024 characters (YAML 1.2.2 §8.2.2 / §7.4.2).
-        ("flow-seq-key-1024-chars", format!("{}    : v\n", seq_key(1020))),
-        ("flow-seq-key-1025-chars", format!("{}     : v\n", seq_key(1020))),
-        ("flow-seq-key-30000-chars", format!("{}: v\n", seq_key(30_000))),
+        (
+            "flow-seq-key-1024-chars",
+            format!("{}    : v\n", seq_key(1020)),
+        ),
+        (
+            "flow-seq-key-1025-chars",
+            format!("{}     : v\n", seq_key(1020)),
+        ),
+        (
+            "flow-seq-key-30000-chars",
+            format!("{}: v\n", seq_key(30_000)),
+        ),
         ("flow-map-key-short", "{a: 1}: v\n".into()),
-        ("flow-pair-in-seq-900", format!("k: [{}: v]\n", seq_key(900))),
-        ("flow-pair-in-seq-1050", format!("k: [{}: v]\n", seq_key(1050))),
-        ("flow-mapping-long-key", format!("k: {{{}: v}}\n", seq_key(30_000))),
+        (
+            "flow-pair-in-seq-900",
+            format!("k: [{}: v]\n", seq_key(900)),
+        ),
+        (
+            "flow-pair-in-seq-1050",
+            format!("k: [{}: v]\n", seq_key(1050)),
+        ),
+        (
+            "flow-mapping-long-key",
+            format!("k: {{{}: v}}\n", seq_key(30_000)),
+        ),
         ("explicit-long-key", format!("? {}\n: v\n", seq_key(3_000))),
         ("multi-line-flow-key", "[a,\n a]: v\n".into()),
-        ("long-plain-scalar-key", format!("{}: v\n", "k".repeat(5_000))),
-        ("long-quoted-scalar-key", format!("\"{}\": v\n", "k".repeat(5_000))),
+        (
+            "long-plain-scalar-key",
+            format!("{}: v\n", "k".repeat(5_000)),
+        ),
+        (
+            "long-quoted-scalar-key",
+            format!("\"{}\": v\n", "k".repeat(5_000)),
+        ),
         // 0.0.55 refuses duplicate keys only for a `noyalib::Value` target;
         // zfb deserializes into `serde_json::Value`.
         ("duplicate-top-level-control", "a: 1\na: 2\n".into()),
@@ -83,9 +113,30 @@ fn semantic_cases() -> Vec<(&'static str, String)> {
         ("duplicate-in-flow-mapping", "m: {a: 1, a: 2}\n".into()),
         // Flow collection at document start is now streamed, not buffered.
         ("flow-seq-at-document-start", "[1, [2, 3], {a: b}]\n".into()),
-        ("flow-strings-with-indicators", "k: [\"a,b\", \"[c]\", \"{d}\", 'e: f']\n".into()),
-        ("merge-key-ordinary-control", "d: &d {x: 1}\np:\n  <<: *d\n".into()),
+        (
+            "flow-strings-with-indicators",
+            "k: [\"a,b\", \"[c]\", \"{d}\", 'e: f']\n".into(),
+        ),
+        (
+            "merge-key-ordinary-control",
+            "d: &d {x: 1}\np:\n  <<: *d\n".into(),
+        ),
+        // 0.0.55 "every loader enforces every limit": an alias can no longer
+        // build a value deeper than `max_depth` (128 under the compat profile).
+        (
+            "alias-depth-under-max-control",
+            format!("a: &x {}\nb: {}\n", nested(40, "1"), nested(40, "*x")),
+        ),
+        (
+            "alias-depth-over-max",
+            format!("a: &x {}\nb: {}\n", nested(70, "1"), nested(70, "*x")),
+        ),
     ]
+}
+
+/// `depth` nested flow sequences around `inner`: `[[…inner…]]`.
+fn nested(depth: usize, inner: &str) -> String {
+    format!("{}{inner}{}", "[".repeat(depth), "]".repeat(depth))
 }
 
 /// One line of nested flow sequences holding `scalars` one-byte scalars, the
@@ -137,7 +188,12 @@ fn flow(shape: &str, scalars: usize) -> Value {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["observe"] => {
             for (name, yaml) in semantic_cases() {
                 let line = json!({
@@ -153,7 +209,9 @@ fn main() {
             println!("{}", flow(shape, scalars));
         }
         _ => {
-            eprintln!("usage: yaml_4172_probe observe | flow <mapping-value|document-start> <scalars>");
+            eprintln!(
+                "usage: yaml_4172_probe observe | flow <mapping-value|document-start> <scalars>"
+            );
             std::process::exit(2);
         }
     }
