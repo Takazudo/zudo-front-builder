@@ -19,6 +19,8 @@ import {
   loadDarwinArtifact,
   migrateDarwinContract,
   parseArgs,
+  repinDarwinContract,
+  darwinRepinReadmeSection,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
 
@@ -255,12 +257,13 @@ describe("rebaseline-island-size-darwin", () => {
     expect(readme).toContain("#4170");
   });
 
-  it("accepts only the metric-migration reason and validates arguments", () => {
+  it("accepts the three reasons and validates arguments", () => {
     expect(parseArgs(Object.entries(args).flatMap(([k, v]) => ["--" + k, v]))["run-id"]).toBe("7");
     const bad = (override) => () =>
       parseArgs(Object.entries({ ...args, ...override }).flatMap(([k, v]) => ["--" + k, v]));
-    expect(bad({ reason: "release-bump" })).toThrow("only the metric migration");
-    expect(bad({ reason: "runtime-identity" })).toThrow("--reason must be metric-migration");
+    expect(bad({ reason: "release-bump" })).not.toThrow();
+    expect(bad({ reason: "runtime-identity" })).not.toThrow();
+    expect(bad({ reason: "other" })).toThrow("--reason must be one of");
     expect(bad({ "source-sha": "abc" })).toThrow("40-character");
     expect(bad({ "run-id": "x" })).toThrow("positive integer");
     expect(bad({ "artifact-expires-at": "never" })).toThrow("ISO timestamp");
@@ -461,5 +464,169 @@ describe("rebaseline-island-size-darwin", () => {
     const changed = normalizeFixtureFiles(edited, "edited");
     expect(changed.shipped.raw).toBeGreaterThan(base.shipped.raw);
     expect(changed.chunks[0].sha256Normalized).not.toBe(base.chunks[0].sha256Normalized);
+  });
+});
+
+// A schemaVersion-2 contract one release behind the synthetic artifact.
+function previousSchema2(root) {
+  const artifact = loadDarwinArtifact(root);
+  const migrated = migrateDarwinContract(
+    contractFor(root),
+    totalsOf(artifact),
+    buildEvidence(args, artifact),
+  );
+  migrated.toolchain.packageVersion = "9.9.8";
+  migrated.toolchain.pnpmLockSha256 = sha("old-pnpm-lock");
+  migrated.toolchain.cargoLockSha256 = sha("old-cargo-lock");
+  migrated.baselineSourceSha = "b".repeat(40);
+  return migrated;
+}
+
+describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
+  for (const reason of ["release-bump", "runtime-identity"]) {
+    it("re-pins only provenance for " + reason, () => {
+      const root = makeArtifact();
+      const artifact = loadDarwinArtifact(root);
+      const contract = previousSchema2(root);
+      expect(validateDarwinEvidence(contract, artifact, SOURCE_SHA, reason)).toEqual([]);
+      const { contract: next, previousVersion } = repinDarwinContract(
+        contract,
+        totalsOf(artifact),
+        buildEvidence({ ...args, reason }, artifact),
+        reason,
+      );
+      expect(previousVersion).toBe("9.9.8");
+      expect(next.ceilings).toEqual(contract.ceilings);
+      expect(next.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
+      expect(next.schemaVersion).toBe(2);
+      expect(next.outcome).toBe(
+        reason === "release-bump" ? "release-version-stamp" : "runtime-identity-repin",
+      );
+      expect(next.baselineSourceSha).toBe(SOURCE_SHA);
+      expect(next.toolchain.packageVersion).toBe(VERSION);
+      expect(next.toolchain.pnpmLockSha256).toBe(sha("pnpm-lock"));
+      expect(next.toolchain.cargoLockSha256).toBe(sha("cargo-lock"));
+      expect(next.baselineEvidence).toMatchObject({
+        event: "ci-artifact",
+        runId: 7,
+        artifact: { id: 9 },
+        repinnedFrom: { packageVersion: "9.9.8", baselineSourceSha: "b".repeat(40) },
+      });
+      const {
+        toolchain: a,
+        baselineSourceSha,
+        outcome,
+        platformStatus,
+        baselineEvidence,
+        normalizerSha256: n,
+        ...rest
+      } = next;
+      const {
+        toolchain: b,
+        baselineSourceSha: _s,
+        outcome: _o,
+        platformStatus: _p,
+        baselineEvidence: _e,
+        normalizerSha256: _n,
+        ...restBefore
+      } = contract;
+      expect(rest).toEqual(restBefore);
+      expect({ ...a, packageVersion: 0, pnpmLockSha256: 0, cargoLockSha256: 0 }).toEqual({
+        ...b,
+        packageVersion: 0,
+        pnpmLockSha256: 0,
+        cargoLockSha256: 0,
+      });
+      expect(darwinRepinReadmeSection(next, [], previousVersion, reason)).toContain(
+        "Darwin v" + VERSION,
+      );
+    });
+  }
+
+  it("rejects a schemaVersion 1 contract, and schema 2 for a metric migration", () => {
+    const root = makeArtifact();
+    const artifact = loadDarwinArtifact(root);
+    expect(validateDarwinEvidence(contractFor(root), artifact, SOURCE_SHA, "release-bump")).toEqual(
+      [expect.stringContaining("not a schemaVersion 2")],
+    );
+    expect(validateDarwinEvidence(previousSchema2(root), artifact, SOURCE_SHA)).toContain(
+      "contract is not a schemaVersion 1 actual-gzip contract",
+    );
+  });
+
+  it("rejects changed raw totals in either direction", () => {
+    const root = makeArtifact();
+    const artifact = loadDarwinArtifact(root);
+    for (const delta of [1, -1]) {
+      const contract = previousSchema2(root);
+      contract.ceilings.workspace["event-only"].raw += delta;
+      expect(() =>
+        repinDarwinContract(
+          contract,
+          totalsOf(artifact),
+          buildEvidence(args, artifact),
+          "release-bump",
+        ),
+      ).toThrow("raw totals changed");
+    }
+  });
+
+  it("rejects changed gzipNormalized totals in either direction", () => {
+    const root = makeArtifact();
+    const artifact = loadDarwinArtifact(root);
+    for (const delta of [1, -1]) {
+      const contract = previousSchema2(root);
+      contract.ceilings.packed["model"].gzipNormalized += delta;
+      expect(() =>
+        repinDarwinContract(
+          contract,
+          totalsOf(artifact),
+          buildEvidence(args, artifact),
+          "runtime-identity",
+        ),
+      ).toThrow("gzipNormalized totals changed");
+    }
+  });
+
+  it("rejects a fixture-set difference", () => {
+    const root = makeArtifact();
+    const artifact = loadDarwinArtifact(root);
+    const contract = previousSchema2(root);
+    delete contract.ceilings.packed["json-api"];
+    expect(() =>
+      repinDarwinContract(
+        contract,
+        totalsOf(artifact),
+        buildEvidence(args, artifact),
+        "release-bump",
+      ),
+    ).toThrow("fixture set differs");
+  });
+
+  it("rejects a Linux artifact and a missing sidecar", () => {
+    const linuxRoot = makeArtifact({ platform: { os: "linux", arch: "x64" } });
+    expect(
+      validateDarwinEvidence(
+        previousSchema2(linuxRoot),
+        loadDarwinArtifact(linuxRoot),
+        SOURCE_SHA,
+        "release-bump",
+      ).join("\n"),
+    ).toContain("measured platform is not darwin-arm64");
+    const root = makeArtifact();
+    rmSync(join(root, "real-workspace", NORMALIZED_SIDECAR));
+    expect(() => loadDarwinArtifact(root)).toThrow("missing");
+  });
+
+  it("rejects a source SHA that is not the artifact's", () => {
+    const root = makeArtifact();
+    expect(
+      validateDarwinEvidence(
+        previousSchema2(root),
+        loadDarwinArtifact(root),
+        "c".repeat(40),
+        "release-bump",
+      ).join("\n"),
+    ).toContain("source SHA");
   });
 });
