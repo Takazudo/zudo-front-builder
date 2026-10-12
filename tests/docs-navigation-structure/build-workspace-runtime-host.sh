@@ -111,9 +111,13 @@ RUNTIME_LINK="$SCRATCH/docs/node_modules/@takazudo/zfb-runtime"
 ls -l "$RUNTIME_LINK" | tee "$EVIDENCE/runtime-link-ls.txt"
 REALPATH="$(cd "$RUNTIME_LINK" && pwd -P)"
 echo "realpath: $REALPATH" | tee "$EVIDENCE/runtime-link-realpath.txt"
-COPIES="$(find "$SCRATCH/node_modules/.pnpm" -maxdepth 1 -name '@takazudo+zfb-runtime@*' | sort)"
+# The resolved graph lives in the lockfile; node_modules/.pnpm can keep an orphaned
+# directory from the pristine install, so it is evidence only.
+find "$SCRATCH/node_modules/.pnpm" -maxdepth 1 -name '@takazudo+zfb-runtime@*' | sort > "$EVIDENCE/runtime-store-dirs.txt"
+COPIES="$(grep -oE "^  '?@takazudo/zfb-runtime@[^(':]+" "$SCRATCH/pnpm-lock.yaml" | sed -E "s/^  '?@takazudo\/zfb-runtime@//" | sort -u)"
 printf '%s\n' "$COPIES" > "$EVIDENCE/runtime-copies.txt"
-[[ "$(printf '%s\n' "$COPIES" | grep -c .)" == 1 ]] || fail "more than one @takazudo/zfb-runtime copy in the scratch install (see runtime-copies.txt); rerun with --with-override"
+[[ "$(printf '%s\n' "$COPIES" | grep -c .)" == 1 ]] || fail "more than one @takazudo/zfb-runtime resolution in the scratch lockfile (see runtime-copies.txt); rerun with --with-override"
+[[ "$COPIES" == file* ]] || fail "the scratch lockfile resolves @takazudo/zfb-runtime to $COPIES, not the packed tarball"
 [[ "$REALPATH" == "$SCRATCH/node_modules/.pnpm/"* ]] || fail "docs runtime resolves outside the scratch pnpm store layout: $REALPATH"
 
 echo '+ pnpm --filter docs build'
