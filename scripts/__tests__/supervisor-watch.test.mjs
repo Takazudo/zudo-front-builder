@@ -135,9 +135,12 @@ const verdictScenarios = [
     fixtures: () => ({ runs: [] }),
   },
   {
-    label: "no-data: the only run is still in progress",
-    exitCode: 1,
-    verdict: "no-data",
+    // An unfinished run inside the settled window is missing evidence, not a
+    // quiet week (#3230).
+    label: "incomplete: the only run is still in progress",
+    exitCode: 3,
+    verdict: "incomplete",
+    detail: "all=incomplete:5/1 main=empty:0/-",
     fixtures: () => ({
       runs: [makeRun({ databaseId: 1001, status: "in_progress" })],
     }),
@@ -187,9 +190,12 @@ const verdictScenarios = [
     }),
   },
   {
-    label: "red infra: gh run list fails",
-    exitCode: 2,
-    verdict: "red",
+    // #3230: a run list that fails before serving any page used to be a
+    // harvester usage error (64 -> red); it is an incomplete window now.
+    label: "incomplete infra: the run list fails before serving any page",
+    exitCode: 3,
+    verdict: "incomplete",
+    detail: "all=incomplete:5/1 main=empty:0/-",
     fixtures: () => ({
       runs: [makeRun({ databaseId: 1001 })],
       failRunList: true,
@@ -370,6 +376,23 @@ const verdictScenarios = [
     fixtures: () => ({
       runs: [makeRun({ databaseId: 1002, headBranch: "feat/x", conclusion: "cancelled" })],
       jobsById: { 1002: cancelledAfterTestsJob(5002) },
+      blobNotFoundJobIds: [5002],
+    }),
+  },
+  {
+    // A silent green job is a red finding (harvester exit 1) that missing
+    // evidence elsewhere must not mask as incomplete.
+    label: "red: every harvested job silent beside a cancelled-404 job (#3230)",
+    exitCode: 2,
+    verdict: "red",
+    detail: "all=red:1/1 main=silent:1/1",
+    fixtures: () => ({
+      runs: [
+        makeRun({ databaseId: 1001, headBranch: "main" }),
+        makeRun({ databaseId: 1002, headBranch: "feat/x", conclusion: "cancelled" }),
+      ],
+      jobsById: { 1001: jobsJson(5001), 1002: cancelledAfterTestsJob(5002) },
+      logsByJobId: { 5001: jobLogNoRecords() },
       blobNotFoundJobIds: [5002],
     }),
   },

@@ -28,6 +28,9 @@ import * as harvester from "../harvest-supervisor-timelines.mjs";
 import {
   DEFAULT_RETRY_DELAY_MS,
   DEFAULT_WINDOW_DAYS,
+  SECONDARY_RATE_LIMIT_DEFAULT_WAIT_MS,
+  SECONDARY_RATE_LIMIT_MAX_WAIT_MS,
+  SETTLE_MARGIN_MINUTES,
   EXIT_INCOMPLETE,
   EXIT_NO_RECORDS,
   EXIT_NO_RUNS,
@@ -205,9 +208,14 @@ describe("parseCliArgs", () => {
     // enumerated by the next one, so consecutive windows overlap by a day.
     expect(DEFAULT_WINDOW_DAYS).toBe(8);
     const options = parseCliArgs([], { now: new Date("2026-10-01T12:00:00Z") });
-    expect(options.since).toBe("2026-09-23T12:00:00Z");
-    // The upper bound is fixed once, at start, so pagination cannot drift.
-    expect(options.until).toBe("2026-10-01T12:00:00Z");
+    // The upper bound is fixed once, at start, so pagination cannot drift,
+    // and sits a settle margin back (#3230): the health job's 90-minute
+    // timeout plus 30 minutes, so ordinary runs in the window have finished.
+    expect(SETTLE_MARGIN_MINUTES).toBe(120);
+    expect(options.until).toBe("2026-10-01T10:00:00Z");
+    // The window keeps its full 8-day length behind that bound.
+    expect(options.since).toBe("2026-09-23T10:00:00Z");
+    expect(options.settleMarginApplied).toBe(true);
     expect(options.limit).toBe(1000);
     expect(options.maxRequests).toBe(950);
     expect(options.branch).toBeUndefined();
@@ -220,7 +228,7 @@ describe("parseCliArgs", () => {
     // this default; a contract change is now a version on the record itself,
     // so a "now" two days past that instant gets the full window, not a
     // floor -- and the constant is gone, not merely unused.
-    const options = parseCliArgs([], { now: new Date("2026-09-10T00:00:00Z") });
+    const options = parseCliArgs([], { now: new Date("2026-09-10T02:00:00Z") });
     expect(options.since).toBe("2026-09-02T00:00:00Z");
     expect(Object.keys(harvester)).not.toContain("IDENTITY_CONTRACT_EPOCH");
   });
@@ -235,7 +243,7 @@ describe("parseCliArgs", () => {
   it("uses the real clock when no now is injected", () => {
     const before = Date.now();
     const options = parseCliArgs([]);
-    const windowMs = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const windowMs = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000 + SETTLE_MARGIN_MINUTES * 60 * 1000;
     // `since` is trimmed to whole seconds, so allow that plus the call's own
     // duration.
     expect(Date.parse(options.since)).toBeGreaterThanOrEqual(before - windowMs - 1000);
@@ -262,6 +270,7 @@ describe("parseCliArgs", () => {
     expect(options).toEqual({
       since: "2026-01-01T00:00:00Z",
       until: "2026-01-02T00:00:00Z",
+      settleMarginApplied: false,
       limit: 5,
       maxRequests: 40,
       branch: "main",
@@ -386,11 +395,11 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     const calls = readCalls(dir);
     // The window's closed interval, with the upper bound fixed at `now`.
     expect(calls).toContain(
-      "api repos/{owner}/{repo}/actions/workflows/health.yml/runs?created=2026-09-06T22:00:00Z..2026-09-08T12:00:00Z&exclude_pull_requests=true&per_page=100&page=1",
+      "api repos/{owner}/{repo}/actions/workflows/health.yml/runs?created=2026-09-06T22:00:00Z..2026-09-08T10:00:00Z&exclude_pull_requests=true&per_page=100&page=1",
     );
     expect(calls.some((line) => line.startsWith("run list"))).toBe(false);
     expect(s.err()).toMatch(
-      /^page: created=2026-09-06T22:00:00Z\.\.2026-09-08T12:00:00Z page=1 returned=1 new=1 total_count=1 exhausted=short-page$/m,
+      /^page: created=2026-09-06T22:00:00Z\.\.2026-09-08T10:00:00Z page=1 returned=1 new=1 total_count=1 exhausted=short-page$/m,
     );
     expect(s.err()).toMatch(
       /^enumeration: complete=yes runs=1 pages=1 partitions=1 duplicates=0 /m,
@@ -534,7 +543,7 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     );
     const earlyLines = early.err().trimEnd().split("\n");
     expect(earlyLines[0]).toBe(
-      "window: since=2026-09-08T00:00:00Z until=2026-09-08T00:00:00Z limit=1000 max-requests=950 branch=all",
+      "window: since=2026-09-08T00:00:00Z until=2026-09-08T00:00:00Z settle-margin=none(--until) limit=1000 max-requests=950 branch=all",
     );
     expect(earlyLines[1]).toMatch(/^warning: --since 2026-09-08T00:00:00Z lies in the future/);
 
@@ -544,7 +553,7 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
       now: new Date("2026-10-01T12:00:00Z"),
     });
     expect(later.err()).toMatch(
-      /^window: since=2026-09-23T12:00:00Z until=2026-10-01T12:00:00Z limit=7 max-requests=950 branch=main$/m,
+      /^window: since=2026-09-23T10:00:00Z until=2026-10-01T10:00:00Z settle-margin=120m limit=7 max-requests=950 branch=main$/m,
     );
     expect(later.err()).not.toMatch(/warning:/);
   });
@@ -626,7 +635,7 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     }
   });
 
-  it("skips a run whose status is not completed, and a completed run with no health job", async () => {
+  it("exit 5: a run still in progress inside the settled window is unavailable; a run with no health job is skipped", async () => {
     const runs = [
       makeRun({ databaseId: 1002, status: "in_progress" }),
       makeRun({ databaseId: 1003, status: "completed" }),
@@ -640,10 +649,12 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
 
-    expect(code).toBe(EXIT_NO_RUNS);
-    expect(s.err()).toMatch(/run=1002 .* job=none skipped=status:in_progress/);
+    // Not a quiet window: the unfinished run may be the one whose
+    // supervisor test fails (#3230).
+    expect(code).toBe(EXIT_INCOMPLETE);
+    expect(s.err()).toMatch(/^run=1002 .* job=none unavailable=in-progress status=in_progress$/m);
     expect(s.err()).toMatch(/run=1003 .* job=none skipped=no-health-job/);
-    expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0/);
+    expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0 unavailable=1 complete=no/);
 
     // Neither skip reason should have triggered a job-log fetch.
     const calls = readCalls(dir);
@@ -767,17 +778,19 @@ describe("runCli", { timeout: REAL_SUBPROCESS_TEST_TIMEOUT_MS }, () => {
     expect(exact.err()).not.toMatch(/incomplete:/);
   });
 
-  it("exit 64: run enumeration failing before any page is a usage error, not partial or no-records", async () => {
+  it("exit 5: run enumeration failing on its first page is an incomplete window, not a usage error", async () => {
     const { dir, stubPath } = setupFixtures({ runs: [], failRunList: true });
     process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
 
-    expect(code).toBe(EXIT_USAGE);
-    expect(s.err()).toMatch(/usage error: run enumeration failed before any page was served/);
+    expect(code).toBe(EXIT_INCOMPLETE);
+    expect(s.err()).not.toMatch(/usage error/);
     expect(s.err()).toMatch(/^incomplete: reason=page-failed .* page=1 error=/m);
-    expect(s.outWriteCount()).toBe(0); // nothing buffered yet -- fails before any run is processed
+    expect(s.err()).toMatch(/^enumeration: complete=no runs=0 pages=0 /m);
+    expect(s.err()).toMatch(/runs=0 harvested=0 failed=0 records=0 unavailable=0 complete=no/);
+    expect(s.outWriteCount()).toBe(0);
   });
 
   it("parses a non-zero record count out of the REAL captured REST body", async () => {
@@ -1281,7 +1294,7 @@ describe(
         EXIT_OK,
       );
       expect(s.err()).toMatch(
-        /^partition: created=2026-08-31T12:00:00Z\.\.2026-09-08T12:00:00Z total_count=5 split=/m,
+        /^partition: created=2026-08-31T10:00:00Z\.\.2026-09-08T10:00:00Z total_count=5 split=/m,
       );
       expect(s.err()).toMatch(/^enumeration: complete=yes runs=5 /m);
       expect(s.err()).not.toMatch(/incomplete:/);
@@ -1462,6 +1475,150 @@ describe(
       ).toHaveLength(1);
     });
 
+    it("exit 1 outranks 5: silent green jobs stay red even when the window is also incomplete", async () => {
+      const runs = [
+        makeRun({ databaseId: 4301 }),
+        makeRun({ databaseId: 4302, conclusion: "cancelled", createdAt: "2026-09-06T00:00:00Z" }),
+      ];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: {
+          4301: [{ id: 8301, name: "health", conclusion: "success" }],
+          4302: [
+            { id: 8302, name: "health", conclusion: "cancelled", steps: [{ name: "Set up job" }] },
+          ],
+        },
+        logsByJobId: { 8301: JOB_LOG_NO_RECORDS },
+        blobNotFoundJobIds: [8302],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_NO_RECORDS);
+      expect(s.err()).toMatch(/^run=4301 .* job=8301 lines=0 failedRecords=0$/m);
+      expect(s.err()).toMatch(/^run=4302 .* unavailable=cancelled-job-log-404 /m);
+      expect(s.err()).toMatch(/complete=no/);
+    });
+
+    it("a CRLF blob-host 404 on a cancelled started job is still unavailable evidence", async () => {
+      const runs = [makeRun({ databaseId: 4114, conclusion: "cancelled" })];
+      const { dir, stubPath } = setupFixtures({
+        runs,
+        jobsById: {
+          4114: [
+            { id: 8114, name: "health", conclusion: "cancelled", steps: [{ name: "Set up job" }] },
+          ],
+        },
+        blobNotFoundCrlfJobIds: [8114],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(/^run=4114 .* job=8114 unavailable=cancelled-job-log-404 /m);
+    });
+
+    it("a total_count that moves once mid-partition re-walks it from page 1 and completes", async () => {
+      const { dir, stubPath } = setupFixtures({
+        ...windowRuns(5),
+        runsPageMarkers: { 2: "total-shift-once" },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_OK);
+      expect(s.err()).toMatch(/^partition-restart: .* page=2 total_count=6 page-1-total_count=5$/m);
+      // Re-reading page 1 is neither a duplicate nor a stalled page.
+      expect(s.err()).toMatch(/^enumeration: complete=yes runs=5 .* duplicates=0 /m);
+      expect(s.err()).not.toMatch(/incomplete:/);
+      expect(s.err()).toMatch(/runs=5 harvested=5 failed=0 records=5 /);
+      // page 1, page 2 (moved), then page 1..3 again.
+      expect(runsPageCalls(dir)).toHaveLength(5);
+    });
+
+    it("a total_count that keeps moving after the one restart is total-count-changed", async () => {
+      const { dir, stubPath } = setupFixtures({
+        ...windowRuns(5),
+        runsPageMarkers: { 2: "total-shift" },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], { ...s, pageSize: 2 })).toBe(EXIT_INCOMPLETE);
+      expect(s.err().match(/^partition-restart: /gm)).toHaveLength(1);
+      expect(s.err()).toMatch(/^incomplete: reason=total-count-changed .* page=2 total_count=6 /m);
+    });
+
+    it("exit 5: a rate-limited first page leaves zero runs and an incomplete window", async () => {
+      const { dir, stubPath } = setupFixtures({
+        ...windowRuns(2),
+        runsPageMarkers: { 1: "rate-limited" },
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+
+      const s = sink();
+      expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_INCOMPLETE);
+      expect(s.err()).toMatch(/^incomplete: reason=rate-limited .* page=1 enumeration stopped$/m);
+      expect(s.err()).toMatch(/runs=0 harvested=0 failed=0 records=0 unavailable=0 complete=no/);
+    });
+
+    it("a secondary rate limit pauses once (60 s default, injected) and then harvests", async () => {
+      const fixtures = windowRuns(1);
+      const { dir, stubPath } = setupFixtures({
+        ...fixtures,
+        secondaryRateLimitedOnceJobIds: [8001],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+      const waits = [];
+
+      const s = sink();
+      const code = await runCli(["--gh", stubPath], {
+        ...s,
+        rateLimitWait: async (ms) => waits.push(ms),
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(waits).toEqual([SECONDARY_RATE_LIMIT_DEFAULT_WAIT_MS]);
+      expect(SECONDARY_RATE_LIMIT_DEFAULT_WAIT_MS).toBe(60000);
+      expect(s.err()).toMatch(/^run=4001 .* lines=1 failedRecords=0$/m);
+    });
+
+    it.each([
+      { retryAfter: 7, expected: 7000 },
+      { retryAfter: 999, expected: SECONDARY_RATE_LIMIT_MAX_WAIT_MS },
+    ])(
+      "honors Retry-After $retryAfter s as a $expected ms pause (capped)",
+      async ({ retryAfter, expected }) => {
+        const { dir, stubPath } = setupFixtures({
+          ...windowRuns(1),
+          secondaryRetryAfterByJobId: { 8001: retryAfter },
+        });
+        process.env.GH_STUB_FIXTURES_DIR = dir;
+        const waits = [];
+
+        const s = sink();
+        expect(
+          await runCli(["--gh", stubPath], { ...s, rateLimitWait: async (ms) => waits.push(ms) }),
+        ).toBe(EXIT_OK);
+        expect(waits).toEqual([expected]);
+      },
+    );
+
+    it("a secondary rate limit that persists after its one pause stops the budget", async () => {
+      const { dir, stubPath } = setupFixtures({
+        ...windowRuns(1),
+        secondaryRateLimitedJobIds: [8001],
+      });
+      process.env.GH_STUB_FIXTURES_DIR = dir;
+      const waits = [];
+
+      const s = sink();
+      expect(
+        await runCli(["--gh", stubPath], { ...s, rateLimitWait: async (ms) => waits.push(ms) }),
+      ).toBe(EXIT_INCOMPLETE);
+      expect(waits).toHaveLength(1);
+      expect(s.err()).toMatch(/^run=4001 .* job=8001 unavailable=rate-limited$/m);
+    });
+
     it("exit 4 stays a genuinely empty, complete window", async () => {
       const { dir, stubPath } = setupFixtures({ runs: [] });
       process.env.GH_STUB_FIXTURES_DIR = dir;
@@ -1477,9 +1634,10 @@ describe(
 
     it("only runs created inside [since, until] are enumerated", async () => {
       const runs = [
-        makeRun({ databaseId: 4201, createdAt: "2026-09-08T12:00:01Z" }),
+        // Just past `until` (now - settle margin) and just before `since`.
+        makeRun({ databaseId: 4201, createdAt: "2026-09-08T10:00:01Z" }),
         makeRun({ databaseId: 4202, createdAt: "2026-09-07T00:00:00Z" }),
-        makeRun({ databaseId: 4203, createdAt: "2026-08-31T11:59:59Z" }),
+        makeRun({ databaseId: 4203, createdAt: "2026-08-31T09:59:59Z" }),
       ];
       const { dir, stubPath } = setupFixtures({
         runs,

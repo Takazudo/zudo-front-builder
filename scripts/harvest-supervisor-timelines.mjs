@@ -85,8 +85,13 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * Window enumeration (#3230)
  * --------------------------
  * The window is a closed interval `[since, until]`; `until` is captured once
- * at start (`--until`, default "now") so pagination cannot drift while new
- * runs are created. Runs are listed through the REST endpoint
+ * at start so pagination cannot drift while new runs are created. Its
+ * default is the start time minus `SETTLE_MARGIN_MINUTES` (120: the `health`
+ * job's 90-minute timeout plus 30 for queueing), so ordinary runs in the
+ * window have finished; `since` defaults to 8 days before `until`. An
+ * explicit `--until` replaces the margin (the `window:` line says which).
+ * A run in the window that is still not `completed` is
+ * `unavailable=in-progress status=<s>` — missing evidence, not a skip. Runs are listed through the REST endpoint
  * `repos/{owner}/{repo}/actions/workflows/health.yml/runs?created=<since>..<until>`
  * page by page (`RUNS_PER_PAGE`), never through `gh run list --limit`, whose
  * output cannot tell "every run in the window" from "the newest <limit> of
@@ -103,8 +108,9 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *     `RUNS_PER_PAGE` results) whose cumulative count equals `total_count`,
  *     or a full page that brings the cumulative count to `total_count`
  *     (an exactly-full final page). Anything else — a failed or malformed
- *     page, a `total_count` that changes between pages or disagrees with the
- *     rows served, a full page adding no new run, more pages than the
+ *     page, a `total_count` that changes between pages (after the partition
+ *     has been re-walked from page 1 once — a `partition-restart:` line —
+ *     still changing) or disagrees with the rows served, a full page adding no new run, more pages than the
  *     ceiling allows — is recorded as an `incomplete:` reason.
  *   - Attempt policy: one sample per run id, from its LATEST attempt. The
  *     runs endpoint lists a run once with its current `run_attempt`, and the
@@ -119,7 +125,13 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *     `DEFAULT_MAX_REQUESTS`); runs it leaves unfetched are
  *     `unavailable=not-attempted:budget-exhausted`. A rate-limit response
  *     that survives the retry stops all further metered calls the same way
- *     (`unavailable=rate-limited` / `not-attempted:rate-limited`).
+ *     (`unavailable=rate-limited` / `not-attempted:rate-limited`). A
+ *     secondary rate limit (or 429) first gets one shared pause per harvest
+ *     — `Retry-After` seconds when gh's output names it, else 60 s, capped
+ *     at 120 s — and only stops the budget if it persists after that.
+ *   - A rate limit, budget stop, or failure on the very first page leaves
+ *     zero runs: that is still an incomplete window (exit 5), never a usage
+ *     error.
  *
  * An incomplete window still harvests and emits every run it did enumerate
  * (a failed record among them must stay visible), but it can never exit 0:
@@ -144,8 +156,9 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * manifest line (emitted as each run completes, so not necessarily in
  * enumeration order), and one final summary line:
  *
- *   window: since=<iso> until=<iso> limit=<n> max-requests=<n> branch=<b|all>
+ *   window: since=<iso> until=<iso> settle-margin=<120m|none(--until)> limit=<n> max-requests=<n> branch=<b|all>
  *   partition: created=<a>..<b> total_count=<t> split=<a>..<m>,<m+1>..<b>
+ *   partition-restart: created=<a>..<b> page=<n> total_count=<t> page-1-total_count=<t1>
  *   page: created=<a>..<b> page=<n> returned=<k> new=<j> total_count=<t>[ exhausted=short-page|total-count]
  *   enumeration: complete=<yes|no> runs=<unique> pages=<p> partitions=<q> duplicates=<d> requests=<used>/<max>
  *   incomplete: reason=<reason> <details>
@@ -165,6 +178,8 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *     never-started job, not retention expiry, not a silent emitter. It is
  *     not waived: it makes the window incomplete. A 404 on any job that was
  *     not cancelled stays an ordinary `error=` (exit 3).
+ *   - `in-progress status=<s>`: a run in the settled window that has not
+ *     completed (no complete log to fetch yet).
  *   - `rate-limited`, `not-attempted:<rate-limited|budget-exhausted>`,
  *     `run-cap`: see the enumeration section above.
  *
@@ -183,7 +198,6 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * the R-A diagnostic block, without re-running the summarizer.
  *
  * Skipped (counts toward neither `harvested` nor `failed`):
- *   - a run whose `status` is not yet `completed` (no complete log to fetch);
  *   - a completed run with no `health` job at all;
  *   - a `health` job that never started (cancelled while still queued by
  *     `cancel-in-progress`, or skipped) — GitHub has no log for it and the
@@ -203,13 +217,15 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *
  * Exit codes (mirrors the summarizer's contract style: distinct codes for
  * distinct situations, never conflating "nothing went wrong" with "there is
- * no data"), in precedence order 3 > 5 > 4 > 1 > 0:
+ * no data"), in precedence order 3 > 1 > 5 > 4 > 0 — a red finding in the
+ * evidence that was collected is never masked by evidence that is missing:
  *
  *   0  the window is complete, every attempted run succeeded, and at least
  *      one record was extracted
  *   1  at least one run was harvested, yet zero records were extracted —
  *      a green `health` job with no `[supervisor-timeline]` lines, i.e. the
- *      emitter (or this parser) went silent
+ *      emitter (or this parser) went silent; reported even when the window
+ *      is also incomplete
  *   3  at least one run failed (its log could not be fetched, saved, or
  *      parsed as `[supervisor-timeline]` records) — a partial harvest,
  *      distinct from 0/1 regardless of how many records the other runs
@@ -220,12 +236,13 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *      or every enumerated run was skipped (see above). A quiet window, not
  *      a silent emitter.
  *   5  the window is incomplete (#3230): an `incomplete:` reason from
- *      enumeration, the run cap, the request budget, a rate limit, or
+ *      enumeration (including a first page that was never served), the run
+ *      cap, the request budget, a rate limit, an in-progress run, or
  *      unavailable cancelled-job evidence. Never success, whatever the
  *      harvested records say; missing started-job samples are not no-data.
- *  64  a usage error (bad flag, an unparsable `--since`/`--until`, run
- *      enumeration failing before a single page was served, or
- *      `--save-dir` could not be created)
+ *  64  a usage error (bad flag, an unparsable or inverted `--since` /
+ *      `--until`, or `--save-dir` could not be created) — never an API
+ *      failure
  *
  * Every gh call is attempted twice with a short pause between, so one
  * transient API failure does not by itself demote a harvest to 3 (or 64) --
@@ -235,8 +252,8 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *
  * In the documented pipeline the shell reports the summarizer's exit code
  * (`$?`), and even under `set -o pipefail` it is the *rightmost* non-zero
- * code that wins — so a harvester 64 (say, an expired gh token) reaches the
- * shell as the summarizer's 1 ("no data"). Read `PIPESTATUS[0]` (bash) or
+ * code that wins — so a harvester 5 (say, an expired gh token failing the
+ * first page) reaches the shell as the summarizer's 1 ("no data"). Read `PIPESTATUS[0]` (bash) or
  * `pipestatus[1]` (zsh), or harvest into a file first, whenever the
  * harvester's own code matters.
  */
@@ -245,10 +262,10 @@ const execFileAsync = promisify(execFile);
 
 const HEALTH_WORKFLOW = "health.yml";
 const HEALTH_JOB_NAME = "health";
-// One weekly cadence plus a day of overlap: a run still in progress at
-// harvest time is skipped this week, and without the overlap its `createdAt`
-// would already sit behind next week's window start, so it would never be
-// enumerated at all. The window is purely rolling: an `env=` identity
+// One weekly cadence plus a day of overlap: a run created in the settle
+// margin (below) is outside this week's window, and without the overlap its
+// `createdAt` could already sit behind next week's window start, so it would
+// never be enumerated at all. The window is purely rolling: an `env=` identity
 // contract change is carried as a version on the record itself (#2933) and
 // the summarizer splits the population by that, so no date floor is needed
 // here to keep the old and new contracts apart. Under this repo's 7-day
@@ -260,6 +277,14 @@ const HEALTH_JOB_NAME = "health";
 // the overlap starts harvesting again if retention is raised to >= 9 days.
 export const DEFAULT_WINDOW_DAYS = 8;
 const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+// The default window ends this long before the harvest starts, so an
+// ordinary `health.yml` run created inside it has finished (#3230): the
+// `health` job's `timeout-minutes: 90` plus 30 minutes for queueing and the
+// run's other jobs. The window keeps its full 8-day length; it just ends
+// earlier. A run in the window that is still not `completed` anyway is
+// `unavailable=in-progress`, never a silent skip.
+export const SETTLE_MARGIN_MINUTES = 120;
+const SETTLE_MARGIN_MS = SETTLE_MARGIN_MINUTES * 60 * 1000;
 // A run cap, not a page size: the window is enumerated page by page and a
 // cap hit is an incomplete window, never a silently truncated one (#3230).
 // Sized above the observed load (454 `health.yml` runs in the 8 days to
@@ -309,8 +334,8 @@ function toIsoSeconds(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function defaultSince(now) {
-  return toIsoSeconds(new Date(now.getTime() - DEFAULT_WINDOW_MS));
+function defaultUntil(now) {
+  return toIsoSeconds(new Date(now.getTime() - SETTLE_MARGIN_MS));
 }
 
 export const EXIT_OK = 0;
@@ -349,8 +374,8 @@ function takeFlagValue(argv, index, flag) {
 
 export function parseCliArgs(argv, { now = new Date() } = {}) {
   const options = {
-    since: defaultSince(now),
-    until: toIsoSeconds(now),
+    since: undefined,
+    until: undefined,
     limit: DEFAULT_LIMIT,
     maxRequests: DEFAULT_MAX_REQUESTS,
     branch: undefined,
@@ -376,11 +401,16 @@ export function parseCliArgs(argv, { now = new Date() } = {}) {
       throw new Error(`unexpected positional argument: ${arg}`);
     }
   }
-  for (const key of ["since", "until"]) {
+  const assertParseable = (key) => {
     if (Number.isNaN(Date.parse(options[key]))) {
       throw new Error(`--${key} is not a parseable ISO-8601 instant: ${options[key]}`);
     }
-  }
+  };
+  options.settleMarginApplied = options.until === undefined;
+  options.until ??= defaultUntil(now);
+  assertParseable("until");
+  options.since ??= toIsoSeconds(new Date(Date.parse(options.until) - DEFAULT_WINDOW_MS));
+  assertParseable("since");
   if (Date.parse(options.since) > Date.parse(options.until)) {
     throw new Error(`--since ${options.since} is after --until ${options.until}`);
   }
@@ -450,15 +480,50 @@ export function createRequestBudget(max) {
   };
 }
 
+function errorText(error) {
+  return `${error.stderr ?? ""} ${error.stdout ?? ""} ${error.message ?? ""}`;
+}
+
 // gh reports both the primary ("API rate limit exceeded ... (HTTP 403)") and
 // the secondary ("You have exceeded a secondary rate limit") limit in its
 // stderr; 429 is the other status GitHub documents for the secondary limit.
 function isRateLimitError(error) {
-  const text = `${error.stderr ?? ""} ${error.stdout ?? ""} ${error.message ?? ""}`;
-  return /rate limit/i.test(text) || /\(HTTP 429\)/.test(text);
+  const text = errorText(error);
+  return /rate limit/i.test(text) || /\(HTTP 429\)|^gh: HTTP 429\r?$/m.test(text);
 }
 
-async function runGh({ gh, retryDelayMs, budget }, args, { metered = true } = {}) {
+function isSecondaryRateLimitError(error) {
+  const text = errorText(error);
+  return /secondary rate limit/i.test(text) || /\(HTTP 429\)|^gh: HTTP 429\r?$/m.test(text);
+}
+
+// GitHub's guidance for a secondary rate limit: wait `Retry-After` seconds
+// when the response names it, otherwise at least a minute. gh only shows the
+// header when it is echoed into its error output, so 60 s is the usual case;
+// the cap keeps one hostile header from eating the job's timeout.
+export const SECONDARY_RATE_LIMIT_DEFAULT_WAIT_MS = 60 * 1000;
+export const SECONDARY_RATE_LIMIT_MAX_WAIT_MS = 120 * 1000;
+
+export function secondaryRateLimitWaitMs(error) {
+  const retryAfter = /retry-after:\s*(\d+)/i.exec(errorText(error));
+  const ms = retryAfter ? Number(retryAfter[1]) * 1000 : SECONDARY_RATE_LIMIT_DEFAULT_WAIT_MS;
+  return Math.min(ms, SECONDARY_RATE_LIMIT_MAX_WAIT_MS);
+}
+
+// One shared pause per harvest: the first lane to hit a secondary limit
+// starts it, every lane that hits one waits on that same pause once and
+// retries, and a limit that persists after it stops the budget as usual.
+function awaitSecondaryRateLimitPause(budget, rateLimitWait, error) {
+  budget.secondaryPause ??= rateLimitWait(secondaryRateLimitWaitMs(error));
+  return budget.secondaryPause;
+}
+
+async function runGh(
+  { gh, retryDelayMs, budget, rateLimitWait = sleep },
+  args,
+  { metered = true } = {},
+) {
+  let waitedForSecondaryLimit = false;
   for (let attempt = 1; ; attempt += 1) {
     if (metered && budget) budget.take();
     try {
@@ -469,6 +534,13 @@ async function runGh({ gh, retryDelayMs, budget }, args, { metered = true } = {}
       return stdout;
     } catch (error) {
       if (isGoneError(error)) throw new LogGoneError(flattenErrorMessage(error));
+      if (budget && !waitedForSecondaryLimit && isSecondaryRateLimitError(error)) {
+        waitedForSecondaryLimit = true;
+        await awaitSecondaryRateLimitPause(budget, rateLimitWait, error);
+        // The pause replaces this attempt's ordinary retry; it is not one.
+        attempt -= 1;
+        continue;
+      }
       if (attempt >= GH_ATTEMPTS) {
         if (isRateLimitError(error)) {
           if (budget && budget.stopReason === null) budget.stopReason = "rate-limited";
@@ -582,10 +654,11 @@ function isGoneStatus(status) {
 // endpoint's 302 target (the Azure blob host) fails, gh 2.88.1 prints a bare
 // "gh: HTTP 404" line followed by the blob's XML error body (captured live on
 // the two #3230 cancelled jobs, 2026-10-12). Both forms are accepted, for the
-// exact status code only, so no other status can be misfiled.
+// exact status code only, so no other status can be misfiled; a CRLF line
+// ending (`\r` before the newline) is tolerated.
 function stderrHasHttpStatus(error, code) {
   if (typeof error.stderr !== "string") return false;
-  return new RegExp(`\\(HTTP ${code}\\)|^gh: HTTP ${code}$`, "m").test(error.stderr);
+  return new RegExp(`\\(HTTP ${code}\\)|^gh: HTTP ${code}\\r?$`, "m").test(error.stderr);
 }
 
 // Recognises a 410 Gone from either half of the OR: the real exec-failure
@@ -677,10 +750,9 @@ async function harvestRun(run, options, stderr) {
     return { kind: "unavailable", rawLines: [] };
   };
 
-  if (run.status !== "completed") {
-    stderr.write(`${base} job=none skipped=status:${run.status}\n`);
-    return skipped;
-  }
+  // Inside a settled window an unfinished run is missing evidence, not a
+  // quiet run: it may be the one whose supervisor test fails (#3230).
+  if (run.status !== "completed") return unavailable(null, `in-progress status=${run.status}`);
 
   let jobId = null;
   try {
@@ -778,7 +850,6 @@ async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
   const byId = new Map();
   const reasons = [];
   const stats = { pages: 0, partitions: 1, duplicates: 0 };
-  let anyPageServed = false;
   const incomplete = (reason, details) => {
     reasons.push(reason);
     stderr.write(`incomplete: reason=${reason} ${details}\n`);
@@ -787,7 +858,6 @@ async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
     runs: [...byId.values()].sort(newestFirst),
     reasons,
     stats,
-    anyPageServed,
   });
 
   const wholeSeconds = (ms) => Math.floor(ms / 1000) * 1000;
@@ -807,6 +877,12 @@ async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
     const label = `created=${from}..${to}`;
     let served = 0;
     let firstTotal = null;
+    // A partition whose total_count moves mid-walk is re-walked from page 1
+    // once (#3230); run ids read in the abandoned pass are re-reads, not
+    // duplicates, and only ids new to the current pass count as progress.
+    let restarted = false;
+    let passIds = new Set();
+    let earlierPassIds = new Set();
 
     for (let page = 1; ; page += 1) {
       if (page > maxPages) {
@@ -843,7 +919,6 @@ async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
         incomplete("malformed-page", `${label} page=${page} run without id/created_at`);
         break;
       }
-      anyPageServed = true;
       stats.pages += 1;
 
       if (page === 1) {
@@ -865,6 +940,17 @@ async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
             `${label} total_count=${firstTotal} ceiling=${queryCeiling} (one second cannot be split)`,
           );
         }
+      } else if (parsed.total_count !== firstTotal && !restarted) {
+        restarted = true;
+        stderr.write(
+          `partition-restart: ${label} page=${page} total_count=${parsed.total_count} page-1-total_count=${firstTotal}\n`,
+        );
+        earlierPassIds = new Set([...earlierPassIds, ...passIds]);
+        passIds = new Set();
+        served = 0;
+        firstTotal = null;
+        page = 0;
+        continue;
       } else if (parsed.total_count !== firstTotal) {
         incomplete(
           "total-count-changed",
@@ -876,13 +962,14 @@ async function enumerateWindow(options, stderr, { pageSize, queryCeiling }) {
       let added = 0;
       for (const raw of parsed.workflow_runs) {
         const run = normalizeRestRun(raw);
-        const previous = byId.get(run.databaseId);
-        if (previous === undefined) {
-          byId.set(run.databaseId, run);
-          added += 1;
-        } else {
-          stats.duplicates += 1;
-          if ((run.attempt ?? 0) > (previous.attempt ?? 0)) byId.set(run.databaseId, run);
+        const id = run.databaseId;
+        const previous = byId.get(id);
+        const reread = earlierPassIds.has(id) && !passIds.has(id);
+        if (passIds.has(id) || (previous !== undefined && !reread)) stats.duplicates += 1;
+        if (!passIds.has(id)) added += 1;
+        passIds.add(id);
+        if (previous === undefined || (run.attempt ?? 0) > (previous.attempt ?? 0)) {
+          byId.set(id, run);
         }
       }
       served += parsed.workflow_runs.length;
@@ -941,6 +1028,9 @@ export async function runCli(
     // handful of stub runs instead of hundreds. Production never passes them.
     pageSize = RUNS_PER_PAGE,
     queryCeiling = QUERY_RESULT_CEILING,
+    // Injectable so a suite can prove the secondary-rate-limit pause without
+    // sleeping a real minute.
+    rateLimitWait = sleep,
   } = {},
 ) {
   let options;
@@ -951,13 +1041,13 @@ export async function runCli(
     return EXIT_USAGE;
   }
   const budget = createRequestBudget(options.maxRequests);
-  options.ghOptions = { gh: options.gh, retryDelayMs, budget };
+  options.ghOptions = { gh: options.gh, retryDelayMs, budget, rateLimitWait };
 
   // The window is the one input a reader of the manifest cannot otherwise
   // recover — and an explicit `--since` can lie in the future, which
   // enumerates nothing and would otherwise read as a quiet week.
   stderr.write(
-    `window: since=${options.since} until=${options.until} limit=${options.limit} max-requests=${options.maxRequests} branch=${options.branch ?? "all"}\n`,
+    `window: since=${options.since} until=${options.until} settle-margin=${options.settleMarginApplied ? `${SETTLE_MARGIN_MINUTES}m` : "none(--until)"} limit=${options.limit} max-requests=${options.maxRequests} branch=${options.branch ?? "all"}\n`,
   );
   if (Date.parse(options.since) > now.getTime()) {
     stderr.write(
@@ -972,13 +1062,9 @@ export async function runCli(
     stderr,
   );
 
+  // A rate limit, budget stop, or failed first page leaves zero runs and an
+  // `incomplete:` reason: an incomplete window (exit 5), not a usage error.
   const enumeration = await enumerateWindow(options, stderr, { pageSize, queryCeiling });
-  if (!enumeration.anyPageServed) {
-    stderr.write(
-      `usage error: run enumeration failed before any page was served (${enumeration.reasons.join(",")})\n`,
-    );
-    return EXIT_USAGE;
-  }
   const reasons = [...enumeration.reasons];
   const enumerated = enumeration.runs;
   const runs = enumerated.slice(0, options.limit);
@@ -1030,9 +1116,11 @@ export async function runCli(
   );
 
   if (failed > 0) return EXIT_PARTIAL;
+  // Green jobs that emitted nothing are a red finding of their own; missing
+  // evidence elsewhere in the window must not mask it.
+  if (harvested > 0 && outputLines.length === 0) return EXIT_NO_RECORDS;
   if (!complete) return EXIT_INCOMPLETE;
   if (harvested === 0) return EXIT_NO_RUNS;
-  if (outputLines.length === 0) return EXIT_NO_RECORDS;
   return EXIT_OK;
 }
 

@@ -39,9 +39,11 @@
 # deliberate trade for noticing an accidental change.
 #
 # NO-DATA IS NEUTRAL, VANISHED TELEMETRY IS RED. A week in which nothing was
-# harvestable (no `health` runs, or only runs that were still in progress /
-# went red before the test step) is quiet (verdict `no-data`) and files
-# nothing. A green `health` job whose log carries zero records is red — that
+# harvestable (no `health` runs, or only runs that went red before the test
+# step) is quiet (verdict `no-data`) and files nothing. A run still in
+# progress is not quiet: the window ends two hours before the harvest so
+# ordinary runs have finished, and one that has not is missing evidence
+# (`incomplete`, #3230). A green `health` job whose log carries zero records is red — that
 # is the emitter or the harvester breaking, i.e. exactly the silent no-op
 # #2902 exists to prevent. The harvester keeps the two apart by exit code.
 #
@@ -112,7 +114,11 @@ jobs:
   watch:
     name: Supervisor timeline watch (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # #3230: the full-window harvest of 2026-10-04..12 took 7m26s locally for
+    # 452 runs at 890 metered requests. The 950-request budget bounds the
+    # runtime, so 30 minutes contains it with retries and the one
+    # secondary-rate-limit pause (<= 2 min), where 15 left too little margin.
+    timeout-minutes: 30
     # A job-level `permissions:` block REPLACES the workflow default, so
     # contents: read must be restated. `actions: read` is what lets this job's
     # GITHUB_TOKEN drive `gh run list` and the harvester's two REST calls
@@ -230,7 +236,7 @@ jobs:
       # script), a job that went red after a green watch (artifact upload),
       # and a cancelled job.
       # Cancelled is included on purpose: a `timeout-minutes` expiry is
-      # reported as `cancelled` too, and a harvester hung on the API past 15
+      # reported as `cancelled` too, and a harvester hung on the API past 30
       # minutes is the one failure this lane must never swallow — the cost is
       # a ping when someone cancels a manual dispatch by hand. A skipped job
       # (nothing ran at all) stays silent.
@@ -242,11 +248,14 @@ jobs:
                && (needs.watch.outputs.verdict == 'green' || needs.watch.outputs.verdict == 'no-data'))
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # The actual verdict (red / incomplete), or the job result when the
+          # script never wrote one -- not a hard-coded "red" (#3230).
+          VERDICT: ${{ needs.watch.outputs.verdict || format('no verdict, job {0}', needs.watch.result) }}
         run: |
           curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
             -H 'Content-Type: application/json' \
             -d "{
-              \"value1\": \"Supervisor watch red\",
+              \"value1\": \"Supervisor watch ${VERDICT}\",
               \"value2\": \"weekly supervisor-timeline harvest (R-A/R-B/identity drift)\",
               \"value3\": \"${RUN_URL}\"
             }" || echo "::warning::IFTTT notification failed"

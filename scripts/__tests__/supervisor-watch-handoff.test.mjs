@@ -163,10 +163,10 @@ describe("supervisor watch workflow handoff and artifacts", () => {
 
     expect(readFileSync(join(result.outDir, "failed-runs.txt"), "utf8")).toBe("");
     expect(readFileSync(join(result.outDir, "harvest-notices.txt"), "utf8")).toContain(
-      `window: since=${SINCE} until=2026-09-08T12:00:00Z`,
+      `window: since=${SINCE} until=2026-09-08T10:00:00Z settle-margin=120m`,
     );
     const enumeration = readFileSync(join(result.outDir, "enumeration.txt"), "utf8");
-    expect(enumeration).toMatch(/^window: since=2026-08-31T12:00:00Z until=2026-09-08T12:00:00Z /m);
+    expect(enumeration).toMatch(/^window: since=2026-08-31T12:00:00Z until=2026-09-08T10:00:00Z /m);
     expect(enumeration).toMatch(
       /^page: .* page=1 returned=2 new=2 total_count=2 exhausted=short-page$/m,
     );

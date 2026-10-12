@@ -53,6 +53,16 @@
 #                           the blob's BlobNotFound XML, stdout is empty, and
 #                           gh exits 1. Only the RequestId/Time values are
 #                           placeholders.
+#   job-<jobId>.blob-notfound-crlf
+#                           the blob-notfound shape with CRLF line endings
+#   job-<jobId>.secondary   if present, that job's log fetch fails every time
+#                           with gh's secondary-rate-limit message (HTTP 403)
+#   job-<jobId>.secondary-once
+#                           the same, for the FIRST fetch only (consumed)
+#   job-<jobId>.secondary-retry-after
+#                           holds a number N: the FIRST fetch fails with the
+#                           secondary-rate-limit message plus a
+#                           "Retry-After: N" line (consumed)
 #   job-<jobId>.blob-gone   if present, the same blob-host shape with
 #                           "gh: HTTP 410" (an expired log reached via the
 #                           302 target).
@@ -155,6 +165,26 @@ if [ "$1" = "api" ]; then
       if [ -f "$FIXDIR/job-$jobId.rate-limited" ]; then
         printf '{"message":"API rate limit exceeded for installation ID 1.","status":"403"}'
         echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2
+        exit 1
+      fi
+      secondary_msg='gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)'
+      if [ -f "$FIXDIR/job-$jobId.secondary" ]; then
+        echo "$secondary_msg" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.secondary-once" ]; then
+        rm "$FIXDIR/job-$jobId.secondary-once"
+        echo "$secondary_msg" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.secondary-retry-after" ]; then
+        retryAfter=$(cat "$FIXDIR/job-$jobId.secondary-retry-after")
+        rm "$FIXDIR/job-$jobId.secondary-retry-after"
+        printf '%s\nRetry-After: %s\n' "$secondary_msg" "$retryAfter" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.blob-notfound-crlf" ]; then
+        printf 'gh: HTTP 404\r\n<?xml version="1.0" encoding="utf-8"?><Error><Code>BlobNotFound</Code><Message>The specified blob does not exist.\r\nRequestId:00000000-0000-0000-0000-000000000000\r\nTime:2026-10-12T05:10:00.0000000Z</Message></Error>' >&2
         exit 1
       fi
       if [ -f "$FIXDIR/job-$jobId.blob-notfound" ]; then

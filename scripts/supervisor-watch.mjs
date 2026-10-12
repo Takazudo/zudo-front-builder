@@ -39,9 +39,11 @@ const execFileAsync = promisify(execFile);
  *
  * AN INCOMPLETE WINDOW IS NEVER GREEN (#3230). The harvester exits 5 when
  * the window could not be enumerated or sampled in full: a run cap, a failed,
- * malformed, or non-progressing run-list page, a rate limit, the request
- * budget, or a started-then-cancelled `health` job whose log answers 404
- * (`unavailable=` manifest lines). Pass A is then `incomplete` and the verdict
+ * malformed, or non-progressing run-list page (the first page included), a
+ * rate limit, the request budget, a run still in progress inside the settled
+ * window, or a started-then-cancelled `health` job whose log answers 404
+ * (`unavailable=` manifest lines). Its own red findings outrank 5: a silent
+ * green job (1) or a failed run (3) is reported as such, so pass A is red. Pass A is then `incomplete` and the verdict
  * is `incomplete` -- unless the evidence that *was* collected is already red
  * (a failed record, R-B, strict-main drift, a silent main job), which stays
  * red. Pass B reads the same incomplete population, so it can never stand in
@@ -348,7 +350,7 @@ export async function runCli(
   );
   const harvestNotices = withFinalNewline(
     matchingLines(manifest, (line) =>
-      /^(window|notice|warning|partition|enumeration|incomplete):/.test(line),
+      /^(window|notice|warning|partition|partition-restart|enumeration|incomplete):/.test(line),
     ),
   );
   // The full enumeration provenance: window bounds, every run-list page and
@@ -356,7 +358,7 @@ export async function runCli(
   // harvester's final count line.
   const enumeration = withFinalNewline(
     matchingLines(manifest, (line) =>
-      /^(window|partition|page|enumeration|incomplete):|^runs=[0-9]+ /.test(line),
+      /^(window|partition|partition-restart|page|enumeration|incomplete):|^runs=[0-9]+ /.test(line),
     ),
   );
   await Promise.all([

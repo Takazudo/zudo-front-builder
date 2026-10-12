@@ -19,8 +19,13 @@
 //   runs-page-<p>.rate-limited  page <p> fails with gh's rate-limit message
 //   runs-page-<p>.repeat        page <p> re-serves page <p - 1>'s rows
 //                               (pagination that stops progressing)
+//   runs-page-<p>.total-shift   page <p> reports total_count + 1 every time
+//   runs-page-<p>.total-shift-once
+//                               page <p> reports total_count + 1 once, and
+//                               the marker is consumed (a run landing or
+//                               vanishing mid-walk, then settling)
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const dir = process.env.GH_STUB_FIXTURES_DIR;
@@ -62,12 +67,17 @@ const matching = JSON.parse(readFileSync(join(dir, "run-list.json"), "utf8"))
       right.databaseId - left.databaseId,
   );
 const servable = matching.slice(0, numberFile("run-list.ceiling") ?? matching.length);
+let totalShift = marker(`runs-page-${page}.total-shift`) ? 1 : 0;
+if (marker(`runs-page-${page}.total-shift-once`)) {
+  rmSync(join(dir, `runs-page-${page}.total-shift-once`));
+  totalShift = 1;
+}
 const servedPage = marker(`runs-page-${page}.repeat`) ? page - 1 : page;
 const rows = servable.slice((servedPage - 1) * perPage, servedPage * perPage);
 
 process.stdout.write(
   JSON.stringify({
-    total_count: numberFile("run-list.total-count") ?? matching.length,
+    total_count: (numberFile("run-list.total-count") ?? matching.length) + totalShift,
     workflow_runs: rows.map((run) => ({
       id: run.databaseId,
       run_attempt: run.attempt,

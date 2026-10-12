@@ -114,7 +114,11 @@ export function setupFixtures({
   runsPageMarkers = {},
   rateLimitedJobIds = [],
   blobNotFoundJobIds = [],
+  blobNotFoundCrlfJobIds = [],
   blobGoneJobIds = [],
+  secondaryRateLimitedJobIds = [],
+  secondaryRateLimitedOnceJobIds = [],
+  secondaryRetryAfterByJobId = {},
 }) {
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.add(dir);
@@ -158,6 +162,18 @@ export function setupFixtures({
     writeFileSync(join(dir, `job-${jobId}.blob-notfound`), "");
   }
   for (const jobId of blobGoneJobIds) writeFileSync(join(dir, `job-${jobId}.blob-gone`), "");
+  for (const jobId of blobNotFoundCrlfJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.blob-notfound-crlf`), "");
+  }
+  for (const jobId of secondaryRateLimitedJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.secondary`), "");
+  }
+  for (const jobId of secondaryRateLimitedOnceJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.secondary-once`), "");
+  }
+  for (const [jobId, seconds] of Object.entries(secondaryRetryAfterByJobId)) {
+    writeFileSync(join(dir, `job-${jobId}.secondary-retry-after`), String(seconds));
+  }
   for (const jobId of rateLimitedJobIds) {
     writeFileSync(join(dir, `job-${jobId}.rate-limited`), "");
   }
