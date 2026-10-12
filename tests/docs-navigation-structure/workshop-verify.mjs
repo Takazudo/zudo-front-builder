@@ -257,9 +257,11 @@ async function wind(page, record, locale) {
     await resetScopeState(page);
     await routeLink(page, prefix + family + "/", page.locator("main")).click();
     await expect(page).toHaveURL(origin + prefix + family + "/");
+    let links;
     await withSidebar(page, mobile, async (sidebar) => {
       // Exactly the group's family pages: no root row and no leaked subtree.
       await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+      links = await sidebarLinks(sidebar, prefix);
       await expect(exactLink(sidebar, prefix + family)).toHaveAttribute("aria-current", "page");
     });
     assert.equal(await page.evaluate(() => window.__windNavigationSentinel), "alive");

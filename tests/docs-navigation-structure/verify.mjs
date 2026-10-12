@@ -52,6 +52,18 @@ const prefixedLinks = (target, prefix) =>
 // extra branches here, and a leaked or expanded subtree fails the assertion.
 // Persistence itself is exercised by verifyBroaderTree().
 const resetScopeState = () => page.evaluate(() => sessionStorage.removeItem("zd-sidebar-scope"));
+const storedScope = () =>
+  page.evaluate(() => JSON.parse(sessionStorage.getItem("zd-sidebar-scope") ?? "null"));
+// A round's first hard load must not adopt state persisted by an earlier round
+// (popstate leaves explicit expansion behind; see the asymmetry check below).
+// Load, clear the key, then reload so the islands also start from fresh memory.
+async function freshGoto(path) {
+  await goto(path);
+  await resetScopeState();
+  await page.reload();
+  await page.locator("main").waitFor();
+  assert.equal(await storedScope().then((state) => state?.selected ?? null), null);
+}
 // The configured local view (06R baseline/Restore view) is exactly the scope
 // root's members, all collapsed except the branch holding the current page. The
 // root row is revealed by one Broaden, where a scope-root page is marked current.
@@ -383,7 +395,7 @@ try {
     type = WIND_UTILITY_GROUPS.find((g) => g.id === "typography");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
-    await goto("/docs/zudo-wind/");
+    await freshGoto("/docs/zudo-wind/");
     for (const slug of [
       "zudo-wind/utilities",
       flex.slug,
@@ -400,18 +412,29 @@ try {
             : flex;
       await assertScope(group.slug, group.members, width < 1024);
     }
+    // Observed upstream (zudo-doc 6.0.1) asymmetry, asserted so a change is noticed:
+    // a soft navigation stores no explicit expansion, while a popstate traversal
+    // stores the current page's ancestor occurrences as expanded.
+    await expect.poll(async () => (await storedScope())?.expansion).toEqual({});
     await traverse("back");
     await assertScope(type.slug, type.members, width < 1024);
     await traverse("back");
     await assertScope(flex.slug, flex.members, width < 1024);
     await traverse("forward");
     await assertScope(type.slug, type.members, width < 1024);
+    // auto/0 = zudo-wind, auto/0/1 = Utility reference, auto/0/1/3 = Typography.
+    await expect
+      .poll(async () => (await storedScope())?.expansion)
+      .toEqual({ "auto/0": true, "auto/0/1": true, "auto/0/1/3": true });
+    evidence.checks.push(
+      `${width}px soft navigation stores no expansion; popstate stores the current page's ancestors`,
+    );
   }
   for (const locale of ["", "/ja"])
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       const prefix = `${locale}/docs/`;
-      await goto(prefix + "zudo-wind/");
+      await freshGoto(prefix + "zudo-wind/");
       // Leave the persisted drawer unopened across several distinct native scopes.
       await soft(prefix + "zudo-wind/utilities/");
       await soft(prefix + flex.slug + "/");
