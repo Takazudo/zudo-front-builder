@@ -56,9 +56,11 @@ export function resolveNavigationScope(currentSlug, navSection) {
 
 /**
  * Rebuild the complete Wind editorial forest from the native nav tree.
- * Every node keeps its native label, href and metadata; only `children` is
- * replaced along configured editorial edges. Nodes outside the membership map
- * keep their native descendants. The input tree is not mutated.
+ * Every node keeps its native label, href and metadata; its children are
+ * exactly its editorial members. A node without membership is an editorial
+ * leaf: its native URL descendants are dropped, as the pre-06R local views
+ * did, so a page reaches the sidebar only through navigation-groups.mjs.
+ * The input tree is not mutated.
  */
 export function buildWindEditorialForest(tree) {
   const nodes = new Map();
@@ -74,7 +76,7 @@ export function buildWindEditorialForest(tree) {
     if (!node?.hasPage || !node.href)
       throw new Error(`Wind editorial navigation requires routed node ${slug}`);
     const members = WIND_EDITORIAL_MEMBERS.get(slug);
-    return { ...node, children: members ? members.map(build) : node.children };
+    return { ...node, children: members ? members.map(build) : [] };
   }
   return [build(WIND_ROOT_SLUG)];
 }

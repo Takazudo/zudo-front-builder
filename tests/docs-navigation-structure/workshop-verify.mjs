@@ -207,6 +207,25 @@ async function workshop(page, record, locale) {
   );
 }
 
+const resetScopeState = (page) =>
+  page.evaluate(() => sessionStorage.removeItem("zd-sidebar-scope"));
+const sidebarLinks = (sidebar, prefix) =>
+  sidebar.locator("[data-sidebar-tree-root] a[href]").evaluateAll(
+    (nodes, prefix) =>
+      nodes
+        .map((node) => node.getAttribute("href"))
+        .filter((href) => href.startsWith(prefix))
+        .map((href) => href.replace(/\/$/, "")),
+    prefix,
+  );
+const exactLink = (sidebar, path) => sidebar.locator(`a[href="${path}"], a[href="${path}/"]`);
+async function withSidebar(page, mobile, check) {
+  const sidebar = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
+  if (mobile) await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
+  await check(sidebar);
+  if (mobile) await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
+}
+
 async function wind(page, record, locale) {
   const prefix = `${locale}/docs/`;
   for (const group of WIND_UTILITY_GROUPS) {
@@ -214,30 +233,35 @@ async function wind(page, record, locale) {
     await page.evaluate(() => {
       window.__windNavigationSentinel = "alive";
     });
+    const mobile = record.width < 1024;
+    const localView = group.members.map((slug) => prefix + slug);
+    // Fresh 06R scope storage per page keeps the exact link list deterministic.
+    await resetScopeState(page);
     await routeLink(page, prefix + group.slug + "/", page.locator("main")).click();
     await expect(page).toHaveURL(origin + prefix + group.slug + "/");
+    await withSidebar(page, mobile, async (sidebar) => {
+      // The group page is the scope root: absent from the local view, current after one Broaden.
+      await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+      await expect(sidebar.locator('[data-sidebar-tree-root] a[aria-current="page"]')).toHaveCount(
+        0,
+      );
+      await sidebar.locator("[data-sidebar-broaden]").click();
+      await expect
+        .poll(async () => (await sidebarLinks(sidebar, prefix))[0])
+        .toBe(prefix + group.slug);
+      await expect(exactLink(sidebar, prefix + group.slug)).toHaveAttribute("aria-current", "page");
+      await sidebar.locator("[data-sidebar-restore]").click();
+      await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+    });
     const family = group.id === "sizing-spacing" ? "zudo-wind/utilities/gap" : group.members[0];
+    await resetScopeState(page);
     await routeLink(page, prefix + family + "/", page.locator("main")).click();
     await expect(page).toHaveURL(origin + prefix + family + "/");
-    const mobile = record.width < 1024;
-    const sidebar = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
-    if (mobile) await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
-    // The configured 06R local view: one top-level row per group member; the
-    // group root itself is revealed by Broaden (verify.mjs covers that).
-    const links = await sidebar.locator("[data-sidebar-tree-root] > div").evaluateAll(
-      (rows, prefix) =>
-        rows
-          .map((row) => row.querySelector("a[href]")?.getAttribute("href") ?? "")
-          .filter((href) => href.startsWith(prefix))
-          .map((href) => href.replace(/\/$/, "")),
-      prefix,
-    );
-    assert.deepEqual(
-      links,
-      group.members.map((slug) => prefix + slug),
-    );
-    if (mobile)
-      await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
+    await withSidebar(page, mobile, async (sidebar) => {
+      // Exactly the group's family pages: no root row and no leaked subtree.
+      await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+      await expect(exactLink(sidebar, prefix + family)).toHaveAttribute("aria-current", "page");
+    });
     assert.equal(await page.evaluate(() => window.__windNavigationSentinel), "alive");
     if (group.id === "sizing-spacing") {
       const preview = page.locator('[data-zfb-island="HtmlPreviewWrapperInner"]').first();

@@ -13,12 +13,15 @@ import {
   buildWindEditorialForest,
   resolveNavigationScope,
 } from "../../docs/src/config/navigation-scope.mjs";
-// The docs importer owns the published zudo-doc graph; the root workspace does not resolve it.
-import {
-  broaderSidebarScope,
-  buildSidebarNavigation,
-  indexSidebarOccurrences,
-} from "../../docs/node_modules/@takazudo/zudo-doc/dist/sidebar-utils/index.js";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+
+// The docs importer owns the published zudo-doc graph (the root workspace does
+// not resolve it), so resolve the public subpath export from docs/package.json.
+const docsRequire = createRequire(new URL("../../docs/package.json", import.meta.url));
+const { broaderSidebarScope, buildSidebarNavigation, indexSidebarOccurrences } = await import(
+  pathToFileURL(docsRequire.resolve("@takazudo/zudo-doc/sidebar-utils")).href
+);
 import { DOCS_ROUTE_MIGRATIONS } from "../../docs/src/config/route-migrations.mjs";
 
 function node(slug, children = []) {
@@ -70,7 +73,11 @@ describe("documentation navigation contracts", () => {
         ...WIND_LEARN_SLUGS.map((slug) => node(slug)),
         node(
           "zudo-wind/utilities",
-          utilities.map((slug) => node(slug)),
+          utilities.map((slug) =>
+            slug === "zudo-wind/utilities/background"
+              ? node(slug, [node("zudo-wind/utilities/background/unassigned")])
+              : node(slug),
+          ),
         ),
         node("zudo-wind/compatibility", [node("zudo-wind/compatibility/nested")]),
         node("zudo-wind/coming-from-tailwind"),
@@ -104,10 +111,15 @@ describe("documentation navigation contracts", () => {
     );
     for (const [index, group] of WIND_UTILITY_GROUPS.entries())
       expect(utilities.children[index].children.map((child) => child.slug)).toEqual(group.members);
-    // Nodes outside the editorial membership keep their native descendants.
-    expect(compatibility.children.map((child) => child.slug)).toEqual([
-      "zudo-wind/compatibility/nested",
-    ]);
+    // Members without editorial membership are leaves: native URL descendants
+    // (unassigned pages) do not leak in, matching the pre-06R local views.
+    expect(compatibility.children).toEqual([]);
+    const surfaces = utilities.children.find((child) => child.slug.endsWith("/surfaces-borders"));
+    const background = surfaces.children.find((child) => child.slug.endsWith("/background"));
+    expect(background.children).toEqual([]);
+    const listed = JSON.stringify(root);
+    expect(listed).not.toContain("compatibility/nested");
+    expect(listed).not.toContain("background/unassigned");
     expect(designSystem.href).toBe("/ja/docs/playground/design-system/");
     const visit = (nodes) => nodes.flatMap((current) => [current, ...visit(current.children)]);
     for (const current of visit([root])) {

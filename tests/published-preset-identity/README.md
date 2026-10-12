@@ -59,8 +59,8 @@ import.
   defined in `packages/zfb/src/zudo-react/reactive.ts`), and the probe-path
   modules (probe, boundary, chrome bindings, the package route source,
   `ThemeToggle`, `Details`) must be present.
-- All emitted `dist/assets/*.js` together must retain exactly one runtime
-  definition site.
+- All emitted scripts under `dist/assets/` (searched recursively) together
+  must retain exactly one runtime definition site.
 
 The definition count alone is not the oracle: it is paired with resolution
 evidence and with browser behavior.
@@ -83,8 +83,8 @@ A liveness timeout or unrelated build error does not count.
 
 | Control | Change | Required failure |
 |---|---|---|
-| `negative-nested-package-copy` | A second copy of the installed `@takazudo/zfb` is nested at `node_modules/@takazudo/zudo-doc/node_modules/@takazudo/zfb`, so zudo-doc's own imports bind to it while the host keeps the owned one | Identity oracle fails (zudo-doc resolves another file, two installed copies, two server runtime roots, two definition sites), **and** the build fails closed with `ZR_NO_SCOPE: getScope requires synchronous setup` because package components call `getScope()` on the copy |
-| `negative-host-mismatched-copy` | The installed `@takazudo/zfb` is copied to `@fixture-negative/zfb-copy`, and only the probe's `signal` import is switched to it | Identity oracle fails (two client and server definition sites, two server roots), **and** the browser oracle fails: the Island mounts, but the host `computed` from the owned runtime cannot track the copy's signals, so both portions stay at `server:0:unset` |
+| `negative-nested-package-copy` | A second copy of the installed `@takazudo/zfb` is nested at `node_modules/@takazudo/zudo-doc/node_modules/@takazudo/zfb`, so zudo-doc's own imports bind to it while the host keeps the owned one | Each named check in `evidence.json` (`checks`) must hold: zudo-doc resolves a different zudo-react file; two installed runtime copies; the build fails closed with `ZR_NO_SCOPE: getScope requires synchronous setup` because package components call `getScope()` on the copy. When the failed build still emitted the server bundle (`bundleArtifacts.serverBundle`), it must also show two server runtime roots and two server definition sites |
+| `negative-host-mismatched-copy` | The installed `@takazudo/zfb` is copied to `@fixture-negative/zfb-copy`, and only the probe's `signal` import is switched to it | Identity oracle fails (two client and server definition sites, two server roots), **and** the browser oracle fails in the targeted way, recorded as named checks: the Island mounts, the hydration step fails, and both the package `<summary>` and the host `<output>` still read `server:0:unset` because the host `computed` from the owned runtime cannot track the copy's signals. Any other browser failure does not count |
 
 ## Provenance: installed packages vs workspace compiler
 

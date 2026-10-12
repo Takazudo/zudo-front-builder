@@ -47,39 +47,42 @@ const prefixedLinks = (target, prefix) =>
         .map((href) => href.replace(/\/$/, "")),
     prefix,
   );
-// Top-level rows of the rendered tree (one per configured root occurrence).
-const topLevelLinks = (target, prefix) =>
-  target.locator("[data-sidebar-tree-root] > div").evaluateAll(
-    (rows, prefix) =>
-      rows
-        .map((row) => row.querySelector("a[href]")?.getAttribute("href") ?? "")
-        .filter((href) => href.startsWith(prefix))
-        .map((href) => href.replace(/\/$/, "")),
-    prefix,
-  );
-// The configured local view (06R baseline/Restore view) is the scope root's
-// members; the editorial root itself is revealed by the first Broaden. Expansion
-// state persists across pages of one navigation context, so descendants of
-// earlier-visited branches may also be open here.
-async function assertScope(members, mobile = false, prefix = "/docs/") {
+// Each local-view check starts from fresh 06R scope storage, so the exact link
+// list is deterministic: persisted expansion from earlier pages cannot open
+// extra branches here, and a leaked or expanded subtree fails the assertion.
+// Persistence itself is exercised by verifyBroaderTree().
+const resetScopeState = () => page.evaluate(() => sessionStorage.removeItem("zd-sidebar-scope"));
+// The configured local view (06R baseline/Restore view) is exactly the scope
+// root's members, all collapsed except the branch holding the current page. The
+// root row is revealed by one Broaden, where a scope-root page is marked current.
+async function assertScope(root, members, mobile = false, prefix = "/docs/") {
   const target = page.locator(mobile ? "[data-zd-mobile-sidebar]" : sidebar);
   if (mobile) {
     await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/, exact: false }).click();
     await expect(target).not.toHaveAttribute("inert");
   }
-  await expect
-    .poll(() => topLevelLinks(target, prefix))
-    .toEqual(members.map((slug) => prefix + slug));
+  const localView = members.map((slug) => prefix + slug);
+  await expect.poll(() => prefixedLinks(target, prefix)).toEqual(localView);
   const current = new URL(page.url()).pathname.replace(/\/$/, "");
-  if (members.some((slug) => prefix + slug === current)) {
-    await expect(target.locator(`a[href="${current}"], a[href="${current}/"]`)).toHaveAttribute(
-      "aria-current",
-      "page",
+  const currentLink = target.locator(`a[href="${current}"], a[href="${current}/"]`);
+  if (localView.includes(current)) {
+    await expect(currentLink).toHaveAttribute("aria-current", "page");
+  } else if (prefix + root === current) {
+    await expect(target.locator('[data-sidebar-tree-root] a[aria-current="page"]')).toHaveCount(0);
+    await target.locator("[data-sidebar-broaden]").click();
+    await expect.poll(async () => (await prefixedLinks(target, prefix))[0]).toBe(current);
+    assert.equal(
+      (await prefixedLinks(target, prefix)).filter((href) => href === current).length,
+      1,
     );
+    await expect(currentLink).toHaveAttribute("aria-current", "page");
+    await target.locator("[data-sidebar-restore]").click();
+    await expect.poll(() => prefixedLinks(target, prefix)).toEqual(localView);
   }
   if (mobile) await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
 }
 async function soft(path) {
+  await resetScopeState();
   await page.evaluate((path) => {
     window.__structureSwap = false;
     document.addEventListener(
@@ -104,6 +107,7 @@ async function soft(path) {
 // A native traversal swaps asynchronously; assert only after the router's swap,
 // as soft() does. WebKit's slower swap otherwise races the next assertion.
 async function traverse(direction) {
+  await resetScopeState();
   await page.evaluate(() => {
     window.__structureSwap = false;
     document.addEventListener(
@@ -394,14 +398,14 @@ try {
           : slug === "zudo-wind/utilities"
             ? { slug, members: WIND_UTILITY_GROUPS.map((g) => g.slug) }
             : flex;
-      await assertScope(group.members, width < 1024);
+      await assertScope(group.slug, group.members, width < 1024);
     }
     await traverse("back");
-    await assertScope(type.members, width < 1024);
+    await assertScope(type.slug, type.members, width < 1024);
     await traverse("back");
-    await assertScope(flex.members, width < 1024);
+    await assertScope(flex.slug, flex.members, width < 1024);
     await traverse("forward");
-    await assertScope(type.members, width < 1024);
+    await assertScope(type.slug, type.members, width < 1024);
   }
   for (const locale of ["", "/ja"])
     for (const width of [1440, 390]) {
@@ -412,13 +416,13 @@ try {
       await soft(prefix + "zudo-wind/utilities/");
       await soft(prefix + flex.slug + "/");
       await soft(prefix + "zudo-wind/utilities/grid/");
-      await assertScope(flex.members, width < 1024, prefix);
+      await assertScope(flex.slug, flex.members, width < 1024, prefix);
       for (const slug of ["zudo-wind/compatibility", "zudo-wind/coming-from-tailwind"]) {
         await soft(prefix + slug + "/");
-        await assertScope(WIND_ENTRY_SLUGS, width < 1024, prefix);
+        await assertScope("zudo-wind", WIND_ENTRY_SLUGS, width < 1024, prefix);
       }
       await soft(prefix + "zudo-wind/learn/");
-      await assertScope(WIND_LEARN_SLUGS, width < 1024, prefix);
+      await assertScope("zudo-wind/learn", WIND_LEARN_SLUGS, width < 1024, prefix);
     }
   evidence.checks.push(
     "Direct/native soft cross-group navigation, unopened/reopened mobile drawer and history scopes",

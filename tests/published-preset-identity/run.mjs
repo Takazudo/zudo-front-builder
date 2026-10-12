@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, statSync } from "node:fs";
 import {
   cp,
   lstat,
@@ -39,6 +39,9 @@ const RUNTIME = "@takazudo/zfb";
 const DEFINITION_SITE =
   /["']@takazudo\/zfb\/zudo-react\/runtime-definition-v1["']\s*:\s*(?:true|!0)/g;
 const PROBE_ROUTE = "/docs/guide/probe";
+const SERVER_TEXT = "server:0:unset";
+const MOUNT_STEP = "island mounts through the package boundary";
+const HYDRATE_STEP = "island hydrates through the package boundary";
 const OTHER_ROUTE = "/docs/guide/other";
 // Modules the probe Island must pull through the package boundary.
 const REQUIRED_SERVER_SOURCES = [
@@ -246,6 +249,17 @@ async function runPackageHooks(installRoot, label) {
   }
 }
 
+// Every emitted script under `dir`, including nested chunk directories.
+async function listScripts(dir) {
+  const files = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...(await listScripts(path)));
+    else if (/\.m?js$/.test(entry.name)) files.push(path);
+  }
+  return files;
+}
+
 // ---------------------------------------------------------------------------
 // Oracle 1: installed resolution + emitted runtime identity
 // ---------------------------------------------------------------------------
@@ -335,8 +349,8 @@ async function identityOracle(installDir) {
     failures.push("client assets are missing");
   } else {
     let sites = 0;
-    for (const name of readdirSync(assets).filter((file) => file.endsWith(".js"))) {
-      sites += [...(await readFile(join(assets, name), "utf8")).matchAll(DEFINITION_SITE)].length;
+    for (const file of await listScripts(assets)) {
+      sites += [...(await readFile(file, "utf8")).matchAll(DEFINITION_SITE)].length;
     }
     facts.clientDefinitionSites = sites;
     check(sites === 1, `client assets retain ${sites} runtime definition sites`);
@@ -435,11 +449,13 @@ async function browserOracle(installRoot, browser) {
       );
       assert(/data-zfb-island="?PresetProbe/.test(html), "PresetProbe island marker missing");
     });
-    await step("island hydrates through the package boundary", async () => {
+    await step(MOUNT_STEP, async () => {
       await page.goto(origin + PROBE_ROUTE);
       await page
         .locator('[data-zfb-island="PresetProbe"][data-zfb-island-mounted]')
         .waitFor({ timeout: 15_000 });
+    });
+    await step(HYDRATE_STEP, async () => {
       await expectBoth(/^active:0:(light|dark)$/);
       await page.waitForFunction(
         () => {
@@ -598,14 +614,31 @@ async function runNestedCopyNegative(installRoot, workRoot) {
   const diagnostic = build.output.match(/ZR_[A-Z_]+:[^\n]*/)?.[0] ?? null;
   result.build = { exitCode: build.exitCode, log: build.log, diagnostic };
   result.identity = await identityOracle(root);
-  const identityFailed = result.identity.failures.some((failure) =>
-    /resolves .*zudo-react|runtime definition sites|roots/.test(failure),
-  );
   result.observedFailures = result.identity.failures;
-  assert(identityFailed, "negative-nested-package-copy: identity oracle did NOT fail");
+  const facts = result.identity.facts;
+  result.checks = {
+    "zudo-doc resolves a different zudo-react file":
+      facts.resolution["@takazudo/zudo-doc"] !== facts.resolution.host,
+    "two installed runtime copies": facts.installedCopies.length === 2,
+    "build fails closed with ZR_NO_SCOPE":
+      build.exitCode !== 0 &&
+      /^ZR_NO_SCOPE: getScope requires synchronous setup/.test(diagnostic ?? ""),
+  };
+  // Bundle-level identity, checked wherever the failed build emitted the artifacts.
+  result.bundleArtifacts = {
+    serverBundle: facts.serverRuntimeRoots !== undefined,
+    clientAssets: facts.clientDefinitionSites !== undefined,
+  };
+  if (result.bundleArtifacts.serverBundle) {
+    result.checks["two server runtime roots"] = facts.serverRuntimeRoots.length === 2;
+    result.checks["two server definition sites"] = facts.serverDefinitionSites === 2;
+  }
+  const missed = Object.entries(result.checks).filter(([, ok]) => !ok);
   assert(
-    build.exitCode !== 0 && diagnostic?.startsWith("ZR_NO_SCOPE"),
-    `negative-nested-package-copy: expected a fail-closed ZR_NO_SCOPE build, got exit ${build.exitCode} (${diagnostic})`,
+    missed.length === 0,
+    `negative-nested-package-copy: did not fail as targeted (${missed
+      .map(([name]) => name)
+      .join(", ")}); build exit ${build.exitCode} (${diagnostic}), facts ${JSON.stringify(facts)}`,
   );
   result.outcome = "expected-failure";
 }
@@ -649,9 +682,24 @@ async function runHostCopyNegative(installRoot, workRoot, browser) {
     result.identity.failures.some((failure) => /runtime definition sites|roots/.test(failure)),
     "negative-host-mismatched-copy: identity oracle did NOT fail",
   );
+  // The targeted failure only: the Island mounts, but the host computed cannot
+  // track the copy's signal, so hydration never leaves the server text.
+  const steps = Object.fromEntries(result.browser.facts.steps.map((entry) => [entry.name, entry]));
+  const finalText = result.browser.facts.finalText ?? {};
+  result.checks = {
+    "island mounted": steps[MOUNT_STEP]?.ok === true,
+    "hydration step failed": steps[HYDRATE_STEP]?.ok === false,
+    "package portion still server text": finalText.summary === SERVER_TEXT,
+    "host portion still server text": finalText.host === SERVER_TEXT,
+  };
+  const missed = Object.entries(result.checks).filter(([, ok]) => !ok);
   assert(
-    result.browser.failures.length > 0,
-    "negative-host-mismatched-copy: browser oracle did NOT fail",
+    missed.length === 0,
+    `negative-host-mismatched-copy: browser oracle did not fail as targeted (${missed
+      .map(([name]) => name)
+      .join(
+        ", ",
+      )}); steps ${JSON.stringify(result.browser.facts.steps)}, final ${JSON.stringify(finalText)}`,
   );
   result.outcome = "expected-failure";
 }
