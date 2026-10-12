@@ -52,7 +52,7 @@
 //   - `derivePopDirection` hardens the popstate forward/back calc against an unchanged or
 //     missing/NaN `state.index` that a bfcache restore can leave behind (#1076).
 //   - `onPopState` restores the page for a stateless (browser-created) entry whose
-//     document is not the one rendered, instead of always ignoring it (#4165).
+//     pathname is not the rendered one, instead of always ignoring it (#4165).
 
 import {
   doPreparation,
@@ -1189,9 +1189,11 @@ function onPopState(ev: PopStateEvent) {
   // Our view transition entries always have state.
   if (ev.state === null) {
     const to = new URL(location.href);
-    // An entry of the document that is rendered: the browser has already
-    // handled it (fragment scroll), so leave it alone.
-    if (samePage(originalLocation, to) && !currentEntryUnrendered) return;
+    // An entry of the rendered document's pathname is left alone: the browser
+    // has already handled a fragment entry, and a raw `pushState(null, "", "?q=…")`
+    // belongs to the app's own popstate handling. Search is deliberately not
+    // compared, unlike samePage().
+    if (originalLocation.pathname === to.pathname && !currentEntryUnrendered) return;
     // The entry belongs to a page the live DOM no longer shows (A#frag after a
     // soft navigation to B): restore it. Without an index the direction is
     // unknowable, so it takes derivePopDirection's safe default. (#4165)

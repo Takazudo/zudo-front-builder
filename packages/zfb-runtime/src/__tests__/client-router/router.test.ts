@@ -1386,6 +1386,30 @@ describe("browser-created (null-state) fragment entries (#4165)", () => {
     scrollSpy.mockRestore();
   });
 
+  it("a null-state entry of the rendered pathname with a different search stays no-fetch / no-swap", async () => {
+    const fetchMock = fetchFragmentPages();
+    await navigate("/frag-a");
+    const aState = { ...(history.state as Record<string, unknown>) };
+    // An app-owned filter UI writing its query through raw History.
+    history.pushState(null, "", "/frag-a?q=foo");
+
+    const liveNode = document.querySelector("#a-only") as HTMLElement;
+    fetchMock.mockClear();
+    const lifecycle = recordLifecycle();
+    const drain = () => new Promise((r) => setTimeout(r, 0));
+
+    traverseTo("/frag-a", aState);
+    await drain();
+    traverseTo("/frag-a?q=foo", null);
+    await drain();
+    lifecycle.stop();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lifecycle.seen).toEqual([]);
+    expect(document.querySelector("#a-only")).toBe(liveNode);
+    expect(location.search).toBe("?q=foo");
+  });
+
   it("a foreign or index-less state on another page still swaps, and a repeated init() adds no second handler", async () => {
     const fetchMock = fetchFragmentPages();
     init();
