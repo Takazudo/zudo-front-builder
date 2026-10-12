@@ -162,7 +162,8 @@ lane() {
   guarded "$dir" budgets cargo test --locked -p zfb-content --test frontmatter_resource_budgets
   guarded "$dir" error-messages cargo test --locked -p zfb-content --test error_messages
   guarded "$dir" content cargo test --locked -p zfb-content
-  guarded "$dir" md-api-ast cargo test --locked -p zfb-md-wasm --test api --test parse_to_ast
+  # env -u: release stamping is for the wasm build only; api.rs asserts the unstamped dev fallback.
+  guarded "$dir" md-api-ast env -u ZFB_RELEASE_VERSION cargo test --locked -p zfb-md-wasm --test api --test parse_to_ast
   if [[ ${WITH_ZFB_DIAGNOSTICS:-0} == 1 ]]; then
     guarded "$dir" diagnostics cargo test --locked -p zfb --no-default-features --lib diagnostics::tests
   fi
