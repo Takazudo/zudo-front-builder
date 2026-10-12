@@ -20,19 +20,13 @@ import type {
 
 import { isNoteDirectiveSample, NOTE_DIRECTIVE_SAMPLE } from "./admonition-sample";
 import DiagnosticsList, { type PlaygroundDiagnostic } from "./diagnostics-list";
+import { createGfmSignals, snapshotGfm, type GfmKey, type GfmSignals } from "./gfm-signals";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
 import SamplePicker, { type PlaygroundSample } from "./sample-picker";
 import { createModuleLoader, wasmModule, type WasmModuleState } from "./use-wasm-module";
 
 type ParseModule = typeof import("@takazudo/zfb-md-wasm/parse");
-
-type GfmField =
-  | "strikethrough"
-  | "table"
-  | "autolinkLiteral"
-  | "taskListItem"
-  | "footnoteDefinition";
 
 interface ParseRunResult {
   ast: MdastRoot | null;
@@ -62,21 +56,13 @@ Hello **world** and [a link](https://example.com).
 
 const PARSE_SAMPLES = [PARSE_SAMPLE, NOTE_DIRECTIVE_SAMPLE] as const;
 
-const GFM_FIELDS: readonly { key: GfmField; label: string }[] = [
+const GFM_FIELDS: readonly { key: GfmKey; label: string }[] = [
   { key: "strikethrough", label: "pipeline.gfm.strikethrough" },
   { key: "table", label: "pipeline.gfm.table" },
   { key: "autolinkLiteral", label: "pipeline.gfm.autolinkLiteral" },
   { key: "taskListItem", label: "pipeline.gfm.taskListItem" },
   { key: "footnoteDefinition", label: "pipeline.gfm.footnoteDefinition" },
 ];
-
-const DEFAULT_GFM: Record<GfmField, boolean> = {
-  strikethrough: true,
-  table: true,
-  autolinkLiteral: true,
-  taskListItem: true,
-  footnoteDefinition: true,
-};
 
 function isAstNode(value: unknown): value is { children?: unknown[]; type: string } {
   return (
@@ -208,7 +194,7 @@ function ParseOptions({
   filename: Signal<string>;
   directives: Signal<boolean>;
   frontmatter: Signal<string>;
-  gfm: Record<GfmField, Signal<boolean>>;
+  gfm: GfmSignals;
   adaptToMdast: Signal<boolean>;
 }) {
   return (
@@ -265,13 +251,7 @@ export default function ParsePlayground() {
   const filename = signal("preview.mdx");
   const directives = signal(false);
   const frontmatter = signal<string>("extract");
-  const gfm: Record<GfmField, Signal<boolean>> = {
-    strikethrough: signal(DEFAULT_GFM.strikethrough),
-    table: signal(DEFAULT_GFM.table),
-    autolinkLiteral: signal(DEFAULT_GFM.autolinkLiteral),
-    taskListItem: signal(DEFAULT_GFM.taskListItem),
-    footnoteDefinition: signal(DEFAULT_GFM.footnoteDefinition),
-  };
+  const gfm = createGfmSignals();
   const adaptToMdast = signal(false);
   const hasRun = signal(false);
   const { state, run } = parseModule(scope);
@@ -283,13 +263,7 @@ export default function ParsePlayground() {
       directives: directives.value,
       frontmatter: frontmatter.value as FrontmatterPolicy,
       pipeline: {
-        gfm: {
-          strikethrough: gfm.strikethrough.value,
-          table: gfm.table.value,
-          autolinkLiteral: gfm.autolinkLiteral.value,
-          taskListItem: gfm.taskListItem.value,
-          footnoteDefinition: gfm.footnoteDefinition.value,
-        },
+        gfm: snapshotGfm(gfm),
       },
     };
     hasRun.value = true;
