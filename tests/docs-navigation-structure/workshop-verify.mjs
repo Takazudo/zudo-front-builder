@@ -222,17 +222,19 @@ async function wind(page, record, locale) {
     const mobile = record.width < 1024;
     const sidebar = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
     if (mobile) await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
-    const links = await sidebar.locator("a[href]").evaluateAll(
-      (nodes, prefix) =>
-        nodes
-          .map((node) => node.getAttribute("href"))
+    // The configured 06R local view: one top-level row per group member; the
+    // group root itself is revealed by Broaden (verify.mjs covers that).
+    const links = await sidebar.locator("[data-sidebar-tree-root] > div").evaluateAll(
+      (rows, prefix) =>
+        rows
+          .map((row) => row.querySelector("a[href]")?.getAttribute("href") ?? "")
           .filter((href) => href.startsWith(prefix))
           .map((href) => href.replace(/\/$/, "")),
       prefix,
     );
     assert.deepEqual(
       links,
-      [group.slug, ...group.members].map((slug) => prefix + slug),
+      group.members.map((slug) => prefix + slug),
     );
     if (mobile)
       await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();

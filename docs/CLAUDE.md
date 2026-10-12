@@ -96,6 +96,20 @@ EN fallback (`isFallback`, EN `docsDir` for doc history). `pages/[locale].tsx` r
 package locale home so the compact site links keep EN-only sections while tag counts stay
 locale-filtered. `pages/index.tsx` is a one-line re-export of the package home.
 
+**Sidebar navigation (06R, #4099):** `src/config/navigation-groups.mjs` is the one editorial
+membership source for both the sidebar and the bilingual overview cards (keep them in sync with
+`node docs/scripts/sync-navigation-indexes.mjs --check`). `navigation-chrome.tsx` hands the
+package's native `buildSidebarNavigation` the complete Wind editorial forest
+(`buildWindEditorialForest` in `navigation-scope.mjs`: Wind → Learn / Utility reference → groups →
+family pages, plus the Design system playground cross-link occurrence) and a `SidebarDefinition`
+whose `initialPath` selects the page's configured local view. Editorial parents come from the
+membership data, never URL segments (`utilities/background` is a URL sibling of
+`utilities/surfaces-borders`). Broaden / Show only this branch / Restore, persistence and
+rendering are zudo-doc's; the host adds no scope state. `initialPath` makes the local view the
+scope root's members, so the first Broaden reveals the root row. `sidebar_initial_expansion:
+collapsed` on both Wind index pages keeps those views compact. Architecture keeps its four
+category groups via `sidebarsConfig.architecture`.
+
 **Extension seam:** to customize a package-owned component (chrome, a specific route, etc.), run
 `npx zudo-doc eject <component>` — this copies the package's implementation into the host tree so
 it can be modified, rather than requiring the host to reconstruct package internals by hand.
