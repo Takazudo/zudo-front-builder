@@ -13,15 +13,31 @@ import {
   buildWindEditorialForest,
   resolveNavigationScope,
 } from "../../docs/src/config/navigation-scope.mjs";
+import { DOCS_ROUTE_MIGRATIONS } from "../../docs/src/config/route-migrations.mjs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 // The docs importer owns the published zudo-doc graph (the root workspace does
 // not resolve it), so resolve the public subpath export from docs/package.json.
 const docsRequire = createRequire(new URL("../../docs/package.json", import.meta.url));
+// A dynamic import is unavoidable here (resolution goes through docs/); a missing
+// docs install must fail loudly with the fix, not as an opaque resolver error.
+async function importSidebarUtils() {
+  try {
+    return await import(
+      pathToFileURL(docsRequire.resolve("@takazudo/zudo-doc/sidebar-utils")).href
+    );
+  } catch (error) {
+    throw new Error(
+      "@takazudo/zudo-doc/sidebar-utils is not resolvable from docs/package.json; the docs " +
+        "workspace must be installed (run `pnpm install` at the repo root): " +
+        (error?.message ?? error),
+      { cause: error },
+    );
+  }
+}
 const { broaderSidebarScope, buildSidebarNavigation, indexSidebarOccurrences, sidebarScopeNodes } =
-  await import(pathToFileURL(docsRequire.resolve("@takazudo/zudo-doc/sidebar-utils")).href);
-import { DOCS_ROUTE_MIGRATIONS } from "../../docs/src/config/route-migrations.mjs";
+  await importSidebarUtils();
 
 function node(slug, children = []) {
   return {
