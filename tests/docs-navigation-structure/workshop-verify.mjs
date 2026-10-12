@@ -234,21 +234,21 @@ async function wind(page, record, locale) {
       window.__windNavigationSentinel = "alive";
     });
     const mobile = record.width < 1024;
-    const localView = group.members.map((slug) => prefix + slug);
+    // 06R node baseline: the linked group root, then its family pages.
+    const localView = [group.slug, ...group.members].map((slug) => prefix + slug);
     // Fresh 06R scope storage per page keeps the exact link list deterministic.
     await resetScopeState(page);
     await routeLink(page, prefix + group.slug + "/", page.locator("main")).click();
     await expect(page).toHaveURL(origin + prefix + group.slug + "/");
     await withSidebar(page, mobile, async (sidebar) => {
-      // The group page is the scope root: absent from the local view, current after one Broaden.
+      // The group page is the linked scope root: listed once and current immediately.
       await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
-      await expect(sidebar.locator('[data-sidebar-tree-root] a[aria-current="page"]')).toHaveCount(
-        0,
-      );
+      await expect(exactLink(sidebar, prefix + group.slug)).toHaveAttribute("aria-current", "page");
+      // The first Broaden reaches Utility reference; Restore returns to the group baseline.
       await sidebar.locator("[data-sidebar-broaden]").click();
       await expect
         .poll(async () => (await sidebarLinks(sidebar, prefix))[0])
-        .toBe(prefix + group.slug);
+        .toBe(prefix + "zudo-wind/utilities");
       await expect(exactLink(sidebar, prefix + group.slug)).toHaveAttribute("aria-current", "page");
       await sidebar.locator("[data-sidebar-restore]").click();
       await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
@@ -259,7 +259,7 @@ async function wind(page, record, locale) {
     await expect(page).toHaveURL(origin + prefix + family + "/");
     let links;
     await withSidebar(page, mobile, async (sidebar) => {
-      // Exactly the group's family pages: no root row and no leaked subtree.
+      // Exactly the linked group root and its family pages: no leaked subtree.
       await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
       links = await sidebarLinks(sidebar, prefix);
       await expect(exactLink(sidebar, prefix + family)).toHaveAttribute("aria-current", "page");

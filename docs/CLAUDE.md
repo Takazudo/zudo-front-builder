@@ -2,8 +2,8 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 4.3.2,
-`@takazudo/zudo-doc` / `zudo-doc-history-server` 6.0.1 and `@takazudo/zdtp` 0.8.6 (#3329). Verify
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 4.3.3,
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 6.1.1 and `@takazudo/zdtp` 0.8.6 (#3329). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
@@ -28,12 +28,14 @@ This register is a keep-list, not a request to add dependencies. Re-check the in
 ## tsconfig.json inlines zudo-doc's base config
 
 `docs/tsconfig.json` copies the `compilerOptions` and `files` of
-`@takazudo/zudo-doc@6.0.1/tsconfig.base.json` instead of extending it (#3556). The upstream file
+`@takazudo/zudo-doc@6.1.1/tsconfig.base.json` instead of extending it (#3556). The upstream file
 sets `baseUrl: "."`, which this host's TypeScript 7 rejects (TS5102) even when inherited through
 `extends`. The copy drops only `baseUrl` and adds `types: ["node"]` (TypeScript 6+ no longer
 auto-loads `@types/*`). It keeps the base's `jsxImportSource: "@takazudo/zfb/zudo-react"` and has no
 `paths`: the old `react` → `preact/compat` aliases are gone, and nothing imports `@/`. When zudo-doc
-is bumped, diff its new `tsconfig.base.json` against this file and carry over any change.
+is bumped, diff its new `tsconfig.base.json` against this file and carry over any change, then
+update its entry in the root `ZUDO_DEPS_PINS.md` (provenance for this copy, the adapted route stubs
+and the identity fixture's generated styleguide files).
 
 ## Setup
 
@@ -105,14 +107,20 @@ family pages, plus the Design system playground cross-link occurrence) and a `Si
 whose `initialPath` selects the page's configured local view. Editorial parents come from the
 membership data, never URL segments (`utilities/background` is a URL sibling of
 `utilities/surfaces-borders`). Broaden / Show only this branch / Restore, persistence and
-rendering are zudo-doc's; the host adds no scope state. `initialPath` makes the local view the
-scope root's members, so the first Broaden reveals the root row. **Accepted deviation from
-#4099's wording (owner choice, 2026-10-12):** the starting view no longer shows the root row, and
-Broaden takes one extra step (Background: Surfaces family pages → Surfaces & borders → Utility
-reference → zudo-wind). zudo-doc 6.0.1 has no `initialPath` mode that selects the node itself;
-#4099 stays open until upstream ships one. `sidebar_initial_expansion:
-collapsed` on both Wind index pages keeps those views compact. Architecture keeps its four
-category groups via `sidebarsConfig.architecture`.
+rendering are zudo-doc's; the host adds no scope state, storage handling or migration.
+`initialPathMode: "node"` (zudo-doc 6.1) makes the configured view the linked scope root itself:
+its overview row appears exactly once, current on its own page, above its members, and Broaden
+moves to its real editorial parent (Background: Surfaces & borders → Utility reference →
+zudo-wind). The Wind index, compatibility and Coming from Tailwind pages start at the Wind root,
+the highest scope, so the native scope toolbar is hidden there; Coming from Tailwind keeps that
+view without being one of its members. zudo-doc 6.1 persists only
+explicit expand/collapse choices (`zd-sidebar-scope`, version 2): automatic path opening is never
+stored, a deliberate collapse survives hash changes, filtering and same-page reload, the next page
+reveals its own path, Restore clears the selection and choices but keeps the filter, and older
+unversioned expansion is discarded once. `sidebar_initial_expansion: collapsed` on both Wind
+index pages keeps those views compact. Architecture keeps its four category groups via
+`sidebarsConfig.architecture`. `tests/docs-navigation-structure/verify.mjs` asserts this contract
+on the served host.
 
 **Extension seam:** to customize a package-owned component (chrome, a specific route, etc.), run
 `npx zudo-doc eject <component>` — this copies the package's implementation into the host tree so
