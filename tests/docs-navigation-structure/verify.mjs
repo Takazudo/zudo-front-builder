@@ -219,7 +219,13 @@ async function soft(path) {
   }, path);
   const clickedAt = await page.evaluate(() => Math.round(performance.now()));
   await page.locator("#verification-link").click();
+  // The router pushes the URL before it swaps, but Playwright learns of a
+  // same-document navigation only when the renderer's main thread is free. On
+  // the wide compatibility page a multi-second stall can sit between pushState
+  // and the swap (#4156; recorded pushState 0.87 s after the click, then a
+  // 6.1 s stall), so wait for the router's swap and then require the exact URL.
   try {
+    await page.waitForFunction(() => window.__structureSwap === true);
     await expect(page).toHaveURL(origin + path);
   } catch (error) {
     // Keep the main-thread timeline for diagnosis (#4156) before failing.
@@ -231,7 +237,6 @@ async function soft(path) {
     });
     throw error;
   }
-  await page.waitForFunction(() => window.__structureSwap === true);
   await page.locator("#verification-link").evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
   await page.locator("main").waitFor();
 }
