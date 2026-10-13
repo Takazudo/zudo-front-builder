@@ -4,6 +4,8 @@ This directory freezes eight small consumer recipes and two measurement paths. `
 
 The recipes are frozen in `fixtures/`: no island; event-only button; scalar signal; Show/For; modelValue binding; a blog menu plus theme toggle; JSON API fetch; and a scalar plus theme-toggle multi-island page. They are controlled current-source recipes, not exact historical #3383 inputs. Do not label their values as reproduced v2/v3 numbers. The multi-island comparison reports the difference from scalar alone, while each page's shipped total deduplicates chunks by filename.
 
+Dependency-graph lock fingerprint (#4187, not yet wired into the contracts): `lock-fingerprint.mjs` hashes only the `pnpm-lock.yaml` content that can produce measured bytes, under the policy in [LOCK-FINGERPRINT-POLICY.md](LOCK-FINGERPRINT-POLICY.md). Run `node research/v3-island-size/lock-fingerprint.mjs --explain` to print the fingerprint and its inclusion inventory.
+
 ## Darwin measurement on CI
 
 `.github/workflows/island-size-darwin.yml` runs the full native Darwin arm64 real measurement on the pinned `macos-15` runner. It builds `zfb` from the checked-out source, packs both SDK packages, and runs the complete eight-fixture workspace and packed matrices. Each case is measured twice and the guard compares the complete saved `dist` inventories. The workflow retains all files under `target/island-size/` in a 30-day `island-size-darwin-arm64-<source-sha>` artifact, including package tarballs, reports, inventories, checker output, and runner provenance.

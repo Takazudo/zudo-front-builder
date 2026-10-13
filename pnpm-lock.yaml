@@ -198,6 +198,9 @@ importers:
       ws:
         specifier: ^8.18.0
         version: 8.18.0
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   crates/zfb-md-wasm/npm:
     dependencies:
