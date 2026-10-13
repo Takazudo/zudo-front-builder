@@ -574,23 +574,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.3.3");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.4.0");
     expect(darwinContract.schemaVersion).toBe(2);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("e7d703770d7a8e805a72cad5c947cf59a847a760");
+    expect(darwinContract.baselineSourceSha).toBe("1224a0ca8501e8260415364c22a9167f6a2470c6");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "ci-artifact",
-      runId: 38264188626,
-      jobId: 114862063309,
-      artifact: { id: 11754721284 },
+      runId: 38334972804,
+      jobId: 115092890361,
+      artifact: { id: 11784961280 },
     });
-    // Lock hashes come from the native release-bump re-pin (#4170); the
+    // Lock hashes come from the native v4.4.0 release-bump re-pin (#4183); the
     // ceilings below are the unchanged #4169 metric-migration values.
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "eb76880355e6512ef8c5846062c6ff6f357db977a9cc54e32d3ee52ac6314389",
+      "efb36af9090f3099d6a98d408e0c1f823cd0a1ab906665b16037f207e53ff0a7",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Issue #4167: build the real docs host against the WORKSPACE-built
 # @takazudo/zfb-runtime (client router at the checked-out SHA) while every other
-# dependency stays the published tuple (zudo-doc 6.1.1, runtime 4.3.3 otherwise).
+# dependency stays the published tuple pinned in docs/package.json.
 # Everything happens in a disposable scratch git worktree of this repository;
 # the real checkout is never installed into or edited.
 #

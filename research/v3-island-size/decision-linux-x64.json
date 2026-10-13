@@ -4,9 +4,9 @@
   "normalizationVersion": 1,
   "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
   "decisionIssue": 3469,
-  "outcome": "release-version-stamp",
+  "outcome": "lockfile-provenance-repin",
   "selectedOptimizations": [],
-  "baselineSourceSha": "69f65c0ff039b064d2b9bb4a476d5c694d8fc980",
+  "baselineSourceSha": "fb0fc5669e084cff9991a01d0686c8bbec69e65a",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -31,7 +31,7 @@
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "ebf4ffa60bfe58b23b375afc9fdc4a5a81b2eaa98e6e1a60d937c6379097eeea",
+    "pnpmLockSha256": "efb36af9090f3099d6a98d408e0c1f823cd0a1ab906665b16037f207e53ff0a7",
     "cargoLockSha256": "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -110,12 +110,12 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 38304213231 at PR merge source 8bc72ba66b29359b8bcf257bdd82df44bb32d2ce (probe head 69f65c0ff039b064d2b9bb4a476d5c694d8fc980). Every raw and gzipNormalized total is unchanged from the v4.3.3 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. no previous actual gzip evidence to compare. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 38337452347 at source fb0fc5669e084cff9991a01d0686c8bbec69e65a after a consumer-only pnpm-lock.yaml change. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the lock hash moved. This is not a release or runtime change. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 38304213231,
-    "jobId": 114994195241,
-    "sourceSha": "8bc72ba66b29359b8bcf257bdd82df44bb32d2ce",
+    "runId": 38337452347,
+    "jobId": 115100653041,
+    "sourceSha": "fb0fc5669e084cff9991a01d0686c8bbec69e65a",
     "actualGzip": {
       "workspace": {
         "blog-theme": 22373,
@@ -138,6 +138,6 @@
         "show-for": 22343
       }
     },
-    "note": "Release probe PR #4182 run for v4.4.0 at PR merge source 8bc72ba66b29359b8bcf257bdd82df44bb32d2ce (probe head 69f65c0ff039b064d2b9bb4a476d5c694d8fc980). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.3.3 contract; no previous actual gzip evidence to compare. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Consumer lockfile probe (probe/4184-linux-lock-evidence) run for #4184 at source fb0fc5669e084cff9991a01d0686c8bbec69e65a. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Consumer-only pnpm-lock.yaml move at unchanged v4.4.0 with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

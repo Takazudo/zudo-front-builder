@@ -8,17 +8,21 @@
 // bump or a runtime source edit that only moves the token leaves every raw and
 // gzipNormalized total unchanged. This script re-derives the totals from the
 // saved artifact bytes (never from measurement.json's claims), refuses any raw
-// change, and under `--reason release-bump` / `--reason runtime-identity`
-// also refuses a gzipNormalized change: a moved normalized total is product
-// code moving and needs a reviewed decision, not a re-pin. `--reason
-// metric-migration` converts a schemaVersion-1 actual-gzip contract to the
-// schemaVersion-2 normalized shape from a replayed artifact.
+// change, and under `--reason release-bump` / `--reason runtime-identity` /
+// `--reason lockfile-provenance` also refuses a gzipNormalized change: a moved
+// normalized total is product code moving and needs a reviewed decision, not a
+// re-pin. `--reason metric-migration` converts a schemaVersion-1 actual-gzip
+// contract to the schemaVersion-2 normalized shape from a replayed artifact.
+// `--reason lockfile-provenance` records a consumer-only pnpm-lock.yaml move
+// (#4184): the producer version and every other reviewed identity input must be
+// unchanged, and only the lock hash may move.
 
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -48,7 +52,61 @@ export const REASONS = Object.freeze({
     heading: "runtime-identity re-pin",
     requires: 2,
   },
+  "lockfile-provenance": {
+    outcome: "lockfile-provenance-repin",
+    heading: "lockfile-provenance re-pin",
+    requires: 2,
+  },
 });
+
+const IDENTITY_TOOLCHAIN_KEYS = ["honoVersion", "esbuildVersion", "nodeVersion", "zlibVersion"];
+
+// The reviewed identity a measurement artifact carries, in contract shape.
+export function measuredIdentity(provenance) {
+  return {
+    fixtureSha256: provenance.fixtureSha256,
+    runnerSha256: provenance.runnerSha256,
+    cargoLockSha256: provenance.cargoLockSha256,
+    toolchain: {
+      honoVersion: provenance.honoPackageVersion,
+      esbuildVersion: provenance.esbuildVersion,
+      nodeVersion: provenance.nodeVersion,
+      zlibVersion: provenance.zlibVersion,
+    },
+  };
+}
+
+// lockfile-provenance may move only pnpmLockSha256: anything else that the
+// contract pins must equal the measured artifact and this checkout.
+export function assertLockfileOnlyMovement(contract, evidence) {
+  const moved = [];
+  if (evidence.version !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  const identity = evidence.identity;
+  if (!identity) {
+    throw new Error("--reason lockfile-provenance needs the artifact's measured identity inputs");
+  }
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  if (!sameHashMaps(identity.runnerSha256, contract.runnerSha256)) moved.push("runnerSha256");
+  if (identity.cargoLockSha256 !== contract.toolchain.cargoLockSha256) {
+    moved.push("cargoLockSha256");
+  }
+  for (const key of IDENTITY_TOOLCHAIN_KEYS) {
+    if (identity.toolchain?.[key] !== contract.toolchain[key]) moved.push("toolchain." + key);
+  }
+  if (moved.length > 0) {
+    throw new Error(
+      "--reason lockfile-provenance allows only pnpm-lock.yaml to move, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change",
+    );
+  }
+  if (evidence.pnpmLockSha256 === contract.toolchain.pnpmLockSha256) {
+    throw new Error(
+      "--reason lockfile-provenance found the contract's pnpm-lock.yaml hash unchanged; nothing to re-pin",
+    );
+  }
+}
 
 // `normalizedByMode` holds normalize-identity.mjs results recomputed from
 // the saved bytes, keyed by mode. Actual gzip rides along as evidence only.
@@ -217,6 +275,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
         " — record a reviewed decision instead",
     );
   }
+  if (reason === "lockfile-provenance") assertLockfileOnlyMovement(contract, evidence);
   const previousVersion = contract.toolchain.packageVersion;
   const gzipEvidence = actualGzipEvidence(contract, totals);
   const next = structuredClone(contract);
@@ -284,6 +343,20 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       gzipSummary +
       "." +
       matrices;
+  } else if (reason === "lockfile-provenance") {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from health run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " after a consumer-only pnpm-lock.yaml change. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the lock hash moved. This is not a release or runtime change. " +
+      gzipSummary +
+      "." +
+      matrices;
   } else {
     next.platformStatus =
       "Linux x64 has exact zero-allowance v" +
@@ -319,11 +392,17 @@ export function rebaselineContract(contract, totals, evidence, reason) {
           " actual-gzip ceilings. Raw totals did not change. Actual gzip stays in the sidecar " +
           "as transfer-size evidence. The manager re-verifies these values on the integrated " +
           "tree in CI."
-        : "Raw and gzipNormalized totals did not change from the v" +
-          previousVersion +
-          " contract; " +
-          gzipSummary +
-          ".") +
+        : reason === "lockfile-provenance"
+          ? "Consumer-only pnpm-lock.yaml move at unchanged v" +
+            previousVersion +
+            " with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; " +
+            gzipSummary +
+            "."
+          : "Raw and gzipNormalized totals did not change from the v" +
+            previousVersion +
+            " contract; " +
+            gzipSummary +
+            ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -443,6 +522,18 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       " contract. These totals alone do not prove byte-identical product code. " +
       evidence +
       closing;
+  } else if (reason === "lockfile-provenance") {
+    body =
+      "The Linux contract was re-pinned at v" +
+      version +
+      " from " +
+      run +
+      " for a consumer-only `pnpm-lock.yaml` change: the producer version, fixtures, runners, " +
+      "`Cargo.lock`, toolchain and normalizer are unchanged, and every raw and `gzipNormalized` " +
+      "total is unchanged. Only the reviewed lock hash moved; this is not a release or runtime " +
+      "change. " +
+      evidence +
+      closing;
   } else {
     body =
       "The Linux contract was re-pinned at v" +
@@ -499,6 +590,9 @@ function main() {
     const p = measurements[mode].provenance;
     if (p.sourceSha !== provenance.sourceSha)
       throw new Error("workspace and packed source SHAs differ");
+    if (JSON.stringify(measuredIdentity(p)) !== JSON.stringify(measuredIdentity(provenance))) {
+      throw new Error("workspace and packed identity inputs differ");
+    }
     if (p.pnpmLockSha256 !== pnpmLockSha256) {
       throw new Error(mode + " artifact lockfile hash differs from this checkout's pnpm-lock.yaml");
     }
@@ -514,6 +608,7 @@ function main() {
     "metric-migration":
       "Metric migration replayed from the retained artifact of health run " + args["run-id"],
     "runtime-identity": "Runtime-identity re-pin run at v" + version,
+    "lockfile-provenance": "Consumer lockfile re-pin run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -527,6 +622,7 @@ function main() {
       runId: Number(args["run-id"]),
       jobId: Number(args["job-id"]),
       runLabel: args.label ?? defaultLabel,
+      identity: measuredIdentity(provenance),
     },
     args.reason,
   );
