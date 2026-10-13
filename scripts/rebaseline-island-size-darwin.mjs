@@ -29,6 +29,19 @@
 // provenance or saved-file inconsistency. It cannot approve growth: every
 // migrated gzipNormalized ceiling must not exceed the previous actual-gzip
 // ceiling it replaces, and a re-pin cannot change any total at all.
+//
+// `--reason fingerprint-migration` (#4187) converts the schemaVersion-2 contract
+// to schemaVersion 3, which pins the dependency-graph fingerprint of
+// pnpm-lock.yaml (research/v3-island-size/lock-fingerprint.mjs) instead of the
+// whole-file hash. The artifact must describe this checkout byte-for-byte
+// (lockfiles, version, fixtures, runners and fingerprint); the runner digests
+// may differ from the old contract only because the runners now record the
+// fingerprint. Totals, package version and normalizer must be unchanged. The
+// artifact's own check-budget run against the schemaVersion-2 contract is
+// expected to fail (a v2 contract rejects a run carrying the fingerprint); it is
+// recorded as evidence, not required to pass. `release-bump` and
+// `runtime-identity` accept a schemaVersion-2 or -3 contract and refuse any
+// fingerprint movement on v3. The Linux-only `lockfile-provenance` is rejected.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
@@ -45,9 +58,13 @@ import {
 } from "../research/v3-island-size/normalize-identity.mjs";
 import {
   REASONS,
+  acceptedSchemas,
+  artifactFingerprintProblem,
+  contractFingerprint,
   describeDeltas,
   diffCeilings,
   measuredTotals,
+  readCheckoutIdentity,
   rewriteTestBlock,
 } from "./rebaseline-island-size-linux.mjs";
 
@@ -59,6 +76,8 @@ const TEST_ANCHOR = 'it("records the reviewed Darwin arm64 ceilings';
 const PLATFORM = { os: "darwin", arch: "arm64" };
 const METRIC_MIGRATION = "metric-migration";
 const REPIN_REASONS = ["release-bump", "runtime-identity"];
+const FINGERPRINT_MIGRATION = "fingerprint-migration";
+const DARWIN_REASONS = [METRIC_MIGRATION, ...REPIN_REASONS, FINGERPRINT_MIGRATION];
 const shaPattern = /^[0-9a-f]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 
@@ -162,18 +181,19 @@ export function validateDarwinEvidence(
     errors.push("contract is not the Darwin arm64 contract");
   }
   const requires = REASONS[reason]?.requires;
+  const schemas = REASONS[reason] ? acceptedSchemas(reason) : [];
   if (reason === METRIC_MIGRATION) {
     if (contract?.schemaVersion !== requires || Object.hasOwn(contract ?? {}, "metric")) {
       errors.push("contract is not a schemaVersion " + requires + " actual-gzip contract");
     }
   } else if (
-    contract?.schemaVersion !== requires ||
+    !schemas.includes(contract?.schemaVersion) ||
     contract?.metric !== IDENTITY_NORMALIZED_METRIC ||
     contract?.normalizationVersion !== IDENTITY_NORMALIZATION_VERSION
   ) {
     errors.push(
       "contract is not a schemaVersion " +
-        requires +
+        schemas.join(" or ") +
         " " +
         IDENTITY_NORMALIZED_METRIC +
         " v" +
@@ -196,8 +216,24 @@ export function validateDarwinEvidence(
     if (!sameJson(sortedEntries(p.fixtureSha256), sortedEntries(contract?.fixtureSha256))) {
       errors.push(label + "fixture hashes differ from the contract");
     }
-    if (!sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract?.runnerSha256))) {
+    // The migration's runners gained the fingerprint, so their digests are
+    // checked against the checkout (checkoutMismatches), not the old contract.
+    if (
+      reason !== FINGERPRINT_MIGRATION &&
+      !sameJson(sortedEntries(p.runnerSha256), sortedEntries(contract?.runnerSha256))
+    ) {
       errors.push(label + "runner hashes differ from the contract");
+    }
+    if (reason === FINGERPRINT_MIGRATION || contract?.schemaVersion === 3) {
+      if (!isRecord(p.dependencyFingerprint)) {
+        errors.push(label + "provenance carries no dependencyFingerprint");
+      }
+    }
+    if (!sameJson(p.dependencyFingerprint, reference.dependencyFingerprint)) {
+      errors.push(label + "dependencyFingerprint differs between workspace and packed");
+    }
+    if (!sameJson(sortedEntries(p.runnerSha256), sortedEntries(reference.runnerSha256))) {
+      errors.push(label + "runnerSha256 differs between workspace and packed");
     }
     for (const [key, expected] of [
       ["nodeVersion", contract.toolchain?.nodeVersion],
@@ -486,11 +522,33 @@ function gzipSummary(moves) {
   );
 }
 
-// Provenance-only re-pin of a schemaVersion-2 contract. Ceilings, metric,
-// fixtures, allowance and proposedCiLane are carried over untouched.
-export function repinDarwinContract(contract, totals, evidence, reason) {
+// `checkout` carries the checkout's {dependencyFingerprint, dependencyFingerprintError}.
+function fingerprintMoves(contract, checkout) {
+  return Object.keys(contractFingerprint({})).filter(
+    (key) => contract.dependencyFingerprint?.[key] !== checkout?.dependencyFingerprint?.[key],
+  );
+}
+
+// Provenance-only re-pin of a schemaVersion-2 or -3 contract. Ceilings, metric,
+// fixtures, allowance, proposedCiLane and a v3 dependencyFingerprint are
+// carried over untouched; a v3 fingerprint movement is refused.
+export function repinDarwinContract(contract, totals, evidence, reason, checkout) {
   if (!REPIN_REASONS.includes(reason)) throw new Error("unknown re-pin --reason " + reason);
   const errors = checkRepinTotals(contract, totals);
+  if (contract.schemaVersion === 3) {
+    const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
+    if (problem) errors.push(problem);
+    const moved = fingerprintMoves(contract, checkout);
+    if (!problem && moved.length > 0) {
+      errors.push(
+        "--reason " +
+          reason +
+          " cannot move the dependency fingerprint (" +
+          moved.join(", ") +
+          " differ from the contract); a dependency-graph change needs a reviewed decision",
+      );
+    }
+  }
   if (errors.length > 0) throw new Error(errors.join("; "));
   const policy = REASONS[reason];
   const previousVersion = contract.toolchain.packageVersion;
@@ -560,6 +618,119 @@ export function repinDarwinContract(contract, totals, evidence, reason) {
   return { contract: next, gzipMoves: moves ?? [], previousVersion };
 }
 
+// schemaVersion 2 -> 3: the whole-file lock pin becomes the dependency-graph
+// fingerprint. Totals, package version, normalizer and Cargo.lock must not move;
+// the runner digests and the recorded lock hash follow the artifact.
+export function migrateDarwinFingerprint(contract, totals, evidence, checkout) {
+  const errors = checkRepinTotals(contract, totals);
+  if (contract.schemaVersion !== 2) {
+    errors.push(
+      "--reason " +
+        FINGERPRINT_MIGRATION +
+        " needs a schemaVersion 2 contract, found schemaVersion " +
+        String(contract.schemaVersion),
+    );
+  }
+  const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
+  if (problem) errors.push(problem);
+  const moved = [];
+  if (evidence.packageVersion !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  if (evidence.cargoLockSha256 !== contract.toolchain.cargoLockSha256) {
+    moved.push("cargoLockSha256");
+  }
+  if (moved.length > 0) {
+    errors.push(
+      "--reason " +
+        FINGERPRINT_MIGRATION +
+        " changes only the lock pin, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change first",
+    );
+  }
+  if (errors.length > 0) throw new Error(errors.join("; "));
+  const fingerprint = contractFingerprint(checkout.dependencyFingerprint);
+  const moves = gzipMovesSince(contract, totals);
+  const next = {};
+  for (const [key, value] of Object.entries(structuredClone(contract))) {
+    next[key] = value;
+    if (key === "schemaVersion") next.schemaVersion = 3;
+    if (key === "normalizerSha256") next.dependencyFingerprint = fingerprint;
+  }
+  next.outcome = FINGERPRINT_MIGRATION;
+  next.baselineSourceSha = evidence.sourceSha;
+  next.runnerSha256 = { ...evidence.runnerSha256 };
+  next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
+  next.toolchain.cargoLockSha256 = evidence.cargoLockSha256;
+  const metric = IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
+  next.platformStatus =
+    "Darwin arm64 has exact zero-allowance v" +
+    evidence.packageVersion +
+    " ceilings on metric " +
+    metric +
+    ", migrated to schemaVersion 3 from the native artifact of workflow_dispatch run " +
+    evidence.runId +
+    " at source " +
+    evidence.sourceSha +
+    ". The contract now pins the dependency-graph fingerprint of pnpm-lock.yaml (policy v" +
+    fingerprint.policyVersion +
+    ", " +
+    fingerprint.parser +
+    ") instead of the whole-file hash, which stays recorded as baseline provenance only. The " +
+    "package version, fixtures, Cargo.lock, toolchain and normalizer are unchanged; the runner " +
+    "digests follow the measured artifact because the runners now record the fingerprint. Every " +
+    "raw and gzipNormalized total is unchanged; equal totals alone do not prove byte-identical " +
+    "product code. " +
+    gzipSummary(moves) +
+    ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
+    "inventories. Other platforms and toolchains are not covered.";
+  next.baselineEvidence = {
+    event: "ci-artifact",
+    runId: evidence.runId,
+    jobId: evidence.jobId,
+    sourceSha: evidence.sourceSha,
+    artifact: {
+      id: evidence.artifactId,
+      name: "island-size-darwin-arm64-" + evidence.sourceSha,
+      expiresAt: evidence.artifactExpiresAt,
+    },
+    nativeRunner: evidence.nativeRunner,
+    migratedFrom: {
+      schemaVersion: contract.schemaVersion,
+      outcome: contract.outcome,
+      baselineSourceSha: contract.baselineSourceSha,
+      baselineRunId: contract.baselineEvidence?.runId,
+    },
+    originalCheckerResult: evidence.originalCheckerResult,
+    actualGzip: actualGzipRows(totals),
+    note:
+      "Dependency-fingerprint migration (schemaVersion 2 to 3) from the native Darwin arm64 " +
+      "artifact of run " +
+      evidence.runId +
+      " (job " +
+      evidence.jobId +
+      ") at source " +
+      evidence.sourceSha +
+      ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
+      "inventories. The fingerprint " +
+      fingerprint.sha256 +
+      " was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; the " +
+      "pnpm-lock.yaml hash is the artifact's own lock, recorded as provenance only. The original " +
+      "checker run compared the artifact with the schemaVersion 2 contract, which cannot accept a " +
+      "run carrying the fingerprint; its result is preserved in the artifact. Raw and " +
+      "gzipNormalized totals did not change from the v" +
+      contract.toolchain.packageVersion +
+      " contract; " +
+      gzipSummary(moves) +
+      ". Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
+  };
+  return {
+    contract: next,
+    gzipMoves: moves ?? [],
+    previousVersion: contract.toolchain.packageVersion,
+  };
+}
+
 function replacePin(block, pattern, value, label) {
   if (!pattern.test(block)) throw new Error("missing Darwin " + label + " pin in " + TEST_FILE);
   return block.replace(pattern, (_, head) => head + value);
@@ -576,9 +747,19 @@ export function rewriteDarwinTestPins(source, contract) {
       [/(darwinContract\.baselineSourceSha\)\.toBe\(\s*)"[^"]+"/, contract.baselineSourceSha],
       [/(darwinContract\.toolchain\.pnpmLockSha256\)\.toBe\(\s*)"[^"]+"/, t.pnpmLockSha256],
       [/(darwinContract\.toolchain\.cargoLockSha256\)\.toBe\(\s*)"[^"]+"/, t.cargoLockSha256],
+      // Scaffolded under `schemaVersion === 3`; required once the contract is v3.
+      ...(contract.schemaVersion === 3
+        ? [
+            [
+              /(darwinContract\.dependencyFingerprint\.sha256\)\.toBe\(\s*)"[^"]+"/,
+              contract.dependencyFingerprint.sha256,
+            ],
+          ]
+        : []),
     ]
       .map(([pattern, value]) => [pattern, JSON.stringify(value)])
       .reduce((text, [pattern, value]) => replacePin(text, pattern, value, pattern.source), block)
+      .replace(/(darwinContract\.schemaVersion\)\.toBe\()\d+/, "$1" + contract.schemaVersion)
       .replace(/(runId: )\d+/, "$1" + e.runId)
       .replace(/(jobId: )\d+/, "$1" + e.jobId)
       .replace(/(artifact: \{ id: )\d+/, "$1" + e.artifact.id),
@@ -619,6 +800,57 @@ export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, r
         describeDeltas(gzipMoves) +
         "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
     " Linux x64 is unaffected.\n"
+  );
+}
+
+export function darwinFingerprintReadmeSection(contract, gzipMoves) {
+  const e = contract.baselineEvidence;
+  const fingerprint = contract.dependencyFingerprint;
+  return (
+    "\n## Darwin v" +
+    contract.toolchain.packageVersion +
+    " " +
+    REASONS[FINGERPRINT_MIGRATION].heading +
+    "\n\n" +
+    "The Darwin arm64 contract moved from schemaVersion 2 to schemaVersion 3 at v" +
+    contract.toolchain.packageVersion +
+    " from the native artifact " +
+    e.artifact.id +
+    " of [workflow_dispatch run " +
+    e.runId +
+    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+    e.runId +
+    ") (job " +
+    e.jobId +
+    ") at source `" +
+    e.sourceSha +
+    "`. It now pins the dependency-graph fingerprint `" +
+    fingerprint.sha256 +
+    "` (policy v" +
+    fingerprint.policyVersion +
+    ", `" +
+    fingerprint.parser +
+    "`, helper `" +
+    fingerprint.helperSha256 +
+    "`; see [LOCK-FINGERPRINT-POLICY.md](LOCK-FINGERPRINT-POLICY.md)) instead of the whole-file " +
+    "`pnpm-lock.yaml` hash. The artifact's lock hash `" +
+    contract.toolchain.pnpmLockSha256 +
+    "` stays recorded in `toolchain.pnpmLockSha256` as baseline provenance only. The package " +
+    "version, fixtures, `Cargo.lock`, toolchain and normalizer are unchanged, the runner digests " +
+    "follow the measured artifact because the runners now record the fingerprint, and every raw " +
+    "and `gzipNormalized` total is unchanged; these totals alone do not prove byte-identical " +
+    "product code. The artifact's own `check-budget.mjs` run against the schemaVersion 2 contract " +
+    "is preserved as evidence (exit code " +
+    String(e.originalCheckerResult?.exitCode) +
+    "); a schemaVersion 2 contract cannot accept a run carrying the fingerprint. " +
+    (gzipMoves.length === 0
+      ? "No actual gzip total moved."
+      : "Actual gzip moved on " +
+        gzipMoves.length +
+        " rows (" +
+        describeDeltas(gzipMoves) +
+        "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
+    " Linux x64 is migrated separately by `rebaseline-island-size-linux.mjs`.\n"
   );
 }
 
@@ -716,8 +948,8 @@ export function parseArgs(argv) {
   if (Number.isNaN(Date.parse(values["artifact-expires-at"]))) {
     throw new Error("--artifact-expires-at must be an ISO timestamp");
   }
-  if (values.reason !== METRIC_MIGRATION && !REPIN_REASONS.includes(values.reason)) {
-    throw new Error("--reason must be one of " + [METRIC_MIGRATION, ...REPIN_REASONS].join(", "));
+  if (!DARWIN_REASONS.includes(values.reason)) {
+    throw new Error("--reason must be one of " + DARWIN_REASONS.join(", "));
   }
   return values;
 }
@@ -734,6 +966,9 @@ export function buildEvidence(args, artifact) {
     packageVersion: p.packageVersion,
     pnpmLockSha256: p.pnpmLockSha256,
     cargoLockSha256: p.cargoLockSha256,
+    dependencyFingerprint: p.dependencyFingerprint,
+    fixtureSha256: p.fixtureSha256,
+    runnerSha256: p.runnerSha256,
     normalizerSha256: normalizerSha256(),
     sourceSha: args["source-sha"],
     runId: Number(args["run-id"]),
@@ -765,6 +1000,8 @@ export function buildEvidence(args, artifact) {
 
 // A re-pin must describe the checkout it lands in, or the next native check
 // on that checkout fails provenance (mirrors the Linux script's checkout check).
+// The lockfile comparisons stay byte-exact: an artifact from another checkout
+// never becomes acceptable because its dependency graph happens to match.
 export function checkoutMismatches(evidence, checkout) {
   const errors = [];
   if (evidence.packageVersion !== checkout.packageVersion) {
@@ -783,12 +1020,29 @@ export function checkoutMismatches(evidence, checkout) {
       errors.push("artifact " + file + " hash differs from this checkout's " + file);
     }
   }
+  const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout);
+  if (problem) errors.push(problem);
+  for (const key of ["fixtureSha256", "runnerSha256"]) {
+    if (
+      checkout[key] !== undefined &&
+      !sameJson(sortedEntries(evidence[key]), sortedEntries(checkout[key]))
+    ) {
+      errors.push("artifact " + key + " differs from this checkout's files");
+    }
+  }
   return errors;
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const contractPath = args.contract ?? CONTRACT;
+// The checkout's identity, read from `root`.
+export function readDarwinCheckout(contract, root = ".") {
+  return readCheckoutIdentity(contract, root);
+}
+
+// `root` is the checkout the contract, test pins and README are rewritten in.
+export function main(argv = process.argv.slice(2), root = ".") {
+  const args = parseArgs(argv);
+  const at = (path) => join(root, path);
+  const contractPath = args.contract ?? at(CONTRACT);
   const contract = JSON.parse(readFileSync(contractPath, "utf8"));
   const artifact = loadDarwinArtifact(args.artifact);
   const problems = validateDarwinEvidence(contract, artifact, args["source-sha"], args.reason);
@@ -800,29 +1054,32 @@ function main() {
   const totals = measuredTotals(normalized);
   const evidence = buildEvidence(args, artifact);
   if (args.reason !== METRIC_MIGRATION) {
-    const mismatches = checkoutMismatches(evidence, {
-      packageVersion: JSON.parse(readFileSync("packages/zfb/package.json", "utf8")).version,
-      pnpmLockSha256: sha256(readFileSync("pnpm-lock.yaml")),
-      cargoLockSha256: sha256(readFileSync("Cargo.lock")),
-    });
+    const checkout = readDarwinCheckout(contract, root);
+    const mismatches = checkoutMismatches(evidence, checkout);
     if (mismatches.length > 0) throw new Error("re-pin rejected: " + mismatches.join("; "));
-    const result = repinDarwinContract(contract, totals, evidence, args.reason);
+    const migration = args.reason === FINGERPRINT_MIGRATION;
+    const result = migration
+      ? migrateDarwinFingerprint(contract, totals, evidence, checkout)
+      : repinDarwinContract(contract, totals, evidence, args.reason, checkout);
     writeFileSync(contractPath, JSON.stringify(result.contract, null, 2) + "\n");
     writeFileSync(
-      TEST_FILE,
-      rewriteDarwinTestPins(readFileSync(TEST_FILE, "utf8"), result.contract),
+      at(TEST_FILE),
+      rewriteDarwinTestPins(readFileSync(at(TEST_FILE), "utf8"), result.contract),
     );
     appendFileSync(
-      args.readme ?? README,
-      darwinRepinReadmeSection(
-        result.contract,
-        result.gzipMoves,
-        result.previousVersion,
-        args.reason,
-      ),
+      args.readme ?? at(README),
+      migration
+        ? darwinFingerprintReadmeSection(result.contract, result.gzipMoves)
+        : darwinRepinReadmeSection(
+            result.contract,
+            result.gzipMoves,
+            result.previousVersion,
+            args.reason,
+          ),
     );
     console.log(
-      "re-pinned Darwin island-size contract to v" +
+      (migration ? "migrated" : "re-pinned") +
+        " Darwin island-size contract to v" +
         result.contract.toolchain.packageVersion +
         " (" +
         args.reason +
@@ -834,7 +1091,7 @@ function main() {
   }
   const next = migrateDarwinContract(contract, totals, evidence);
   writeFileSync(contractPath, JSON.stringify(next, null, 2) + "\n");
-  appendFileSync(args.readme ?? README, darwinReadmeSection(next, contract));
+  appendFileSync(args.readme ?? at(README), darwinReadmeSection(next, contract));
   console.log(
     "migrated Darwin island-size contract to v" +
       next.toolchain.packageVersion +

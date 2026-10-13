@@ -1,14 +1,16 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   REASONS,
   actualGzipEvidence,
+  artifactCheckoutMismatches,
   assertLockfileOnlyMovement,
   describeDeltas,
   diffCeilings,
+  main,
   measuredIdentity,
   measuredTotals,
   parseArgs,
@@ -16,11 +18,18 @@ import {
   rebaselineContract,
   rewriteTestPins,
 } from "../rebaseline-island-size-linux.mjs";
+import {
+  asSchemaV2,
+  ceilingsOf,
+  makeCheckout,
+  writeRuns,
+} from "./fixtures/island-size-checkout.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const contract = JSON.parse(
+const liveContract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
+const contract = asSchemaV2(liveContract);
 // The cases below build their own actual-gzip evidence; start from a contract that
 // has none, whatever the live contract recorded at its last re-pin.
 delete contract.baselineEvidence.actualGzip;
@@ -195,7 +204,7 @@ describe("rebaseline-island-size-linux", () => {
       /--reason metric-migration needs a schemaVersion 1 contract, found schemaVersion 2/,
     );
     expect(() => rebaselineContract(legacy, totals, evidence, "release-bump")).toThrow(
-      /--reason release-bump needs a schemaVersion 2 contract, found schemaVersion 1/,
+      /--reason release-bump needs a schemaVersion 2 or 3 contract, found schemaVersion 1/,
     );
   });
 
@@ -216,6 +225,7 @@ describe("rebaseline-island-size-linux", () => {
       "metric-migration",
       "runtime-identity",
       "lockfile-provenance",
+      "fingerprint-migration",
     ]);
   });
 
@@ -270,7 +280,7 @@ describe("rebaseline-island-size-linux", () => {
       /--head-sha must be/,
     );
     expect(() => parseArgs(ok.map((v) => (v === "release-bump" ? "gzip-shift" : v)))).toThrow(
-      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance/,
+      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration$/,
     );
     expect(() => parseArgs(["--artifact"])).toThrow(/bad argument/);
   });
@@ -288,7 +298,7 @@ describe("rebaseline-island-size-linux", () => {
     );
     const outside = (s) => s.slice(0, s.indexOf('it("records the reviewed Linux x64 ceilings'));
     expect(outside(rewritten)).toBe(outside(testSource));
-    expect(rewriteTestPins(testSource, contract)).toBe(testSource);
+    expect(rewriteTestPins(testSource, liveContract)).toBe(testSource);
   });
 
   it("reads the previous actual gzip of a schemaVersion 2 contract from recorded evidence", () => {
@@ -492,5 +502,401 @@ describe("rebaseline-island-size-linux", () => {
       );
       expect(identity.outcome).toBe("runtime-identity-repin");
     });
+  });
+});
+
+describe("fingerprint-migration (#4187)", () => {
+  const roots = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  // The checkout's full contract-shape fingerprint and the run provenance's
+  // {policyVersion, sha256} subset of it.
+  const fingerprint = {
+    policyVersion: 1,
+    parser: "yaml@2.9.0",
+    helperSha256: "1".repeat(64),
+    sha256: "2".repeat(64),
+  };
+  const artifactFingerprint = { policyVersion: 1, sha256: fingerprint.sha256 };
+  // The runners now record the fingerprint, so their digests moved.
+  const newRunners = { "measure-real.mjs": "3".repeat(64), "measure.mjs": "4".repeat(64) };
+  const migrationEvidence = {
+    ...evidence,
+    version: contract.toolchain.packageVersion,
+    normalizerSha256: contract.normalizerSha256,
+    pnpmLockSha256: "f".repeat(64),
+    runLabel: "Dependency-fingerprint migration run",
+    identity: measuredIdentity({
+      fixtureSha256: { ...contract.fixtureSha256 },
+      runnerSha256: newRunners,
+      cargoLockSha256: contract.toolchain.cargoLockSha256,
+      honoPackageVersion: contract.toolchain.honoVersion,
+      esbuildVersion: contract.toolchain.esbuildVersion,
+      nodeVersion: contract.toolchain.nodeVersion,
+      zlibVersion: contract.toolchain.zlibVersion,
+    }),
+    artifactFingerprint,
+    dependencyFingerprint: fingerprint,
+    dependencyFingerprintError: null,
+  };
+  const migrate = (base = contract, edit = (e) => e, totals = totalsFrom(base)) =>
+    rebaselineContract(base, totals, edit(migrationEvidence), "fingerprint-migration");
+
+  it("migrates schemaVersion 2 to 3, moving only the lock pin and runner digests", () => {
+    const { contract: next, previousVersion } = migrate();
+    expect(Object.keys(next).slice(0, 6)).toEqual([
+      "schemaVersion",
+      "metric",
+      "normalizationVersion",
+      "normalizerSha256",
+      "dependencyFingerprint",
+      "decisionIssue",
+    ]);
+    expect(next.schemaVersion).toBe(3);
+    expect(next.dependencyFingerprint).toEqual(fingerprint);
+    expect(Object.keys(next.dependencyFingerprint)).toEqual([
+      "policyVersion",
+      "parser",
+      "helperSha256",
+      "sha256",
+    ]);
+    expect(next.runnerSha256).toEqual(newRunners);
+    expect(next.toolchain).toEqual({ ...contract.toolchain, pnpmLockSha256: "f".repeat(64) });
+    expect(next.fixtureSha256).toEqual(contract.fixtureSha256);
+    expect(next.normalizerSha256).toBe(contract.normalizerSha256);
+    expect(next.ceilings).toEqual(contract.ceilings);
+    expect(next.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
+    expect(next.outcome).toBe("fingerprint-migration");
+    expect(next.baselineSourceSha).toBe(evidence.headSha);
+    expect(next.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 1,
+      jobId: 2,
+      migratedFrom: {
+        schemaVersion: 2,
+        outcome: contract.outcome,
+        baselineSourceSha: contract.baselineSourceSha,
+        baselineRunId: contract.baselineEvidence.runId,
+      },
+    });
+    expect(next.baselineEvidence.note).toContain("schemaVersion 2 to 3");
+    expect(next.platformStatus).toContain("migrated to schemaVersion 3");
+    expect(next.platformStatus).toContain("recorded as baseline provenance only");
+    expect(next.platformStatus).not.toMatch(/release-bump|release baseline/);
+    // Everything else is carried over untouched.
+    const strip = ({
+      schemaVersion: _v,
+      dependencyFingerprint: _f,
+      runnerSha256: _r,
+      toolchain: _t,
+      outcome: _o,
+      baselineSourceSha: _s,
+      platformStatus: _p,
+      baselineEvidence: _e,
+      ...rest
+    }) => rest;
+    expect(strip(next)).toEqual(strip(contract));
+
+    const section = readmeSection(next, [], previousVersion, "fingerprint-migration");
+    expect(section).toContain(
+      "## v" + contract.toolchain.packageVersion + " dependency-fingerprint migration",
+    );
+    expect(section).toContain("[workflow run 1]");
+    expect(section).toContain("`" + fingerprint.sha256 + "`");
+    expect(section).toContain("`" + "f".repeat(64) + "`");
+    expect(section).toContain("LOCK-FINGERPRINT-POLICY.md");
+    expect(section).toContain("every raw and `gzipNormalized` total is unchanged");
+
+    const pins = rewriteTestPins(testSource, next);
+    expect(pins).toContain("linuxContract.schemaVersion).toBe(3)");
+    expect(rewriteTestPins(pins, next)).toBe(pins);
+  });
+
+  it("refuses a contract that is not schemaVersion 2", () => {
+    const { contract: v3 } = migrate();
+    expect(() => migrate(v3)).toThrow(
+      /--reason fingerprint-migration needs a schemaVersion 2 contract, found schemaVersion 3/,
+    );
+    expect(() => migrate(legacyContract(contract))).toThrow(/found schemaVersion 1/);
+  });
+
+  it("refuses raw, gzipNormalized and fixture-set movement", () => {
+    const raw = totalsFrom(contract, {
+      "packed/model": { raw: contract.ceilings.packed.model.raw + 1 },
+    });
+    expect(() => migrate(contract, undefined, raw)).toThrow(/raw totals changed \(packed\/model\)/);
+    const normalized = totalsFrom(contract, {
+      "workspace/show-for": {
+        gzipNormalized: contract.ceilings.workspace["show-for"].gzipNormalized - 1,
+      },
+    });
+    expect(() => migrate(contract, undefined, normalized)).toThrow(
+      /gzipNormalized totals changed \(workspace\/show-for -1\)/,
+    );
+    const missing = totalsFrom(contract);
+    delete missing.packed["json-api"];
+    expect(() => migrate(contract, undefined, missing)).toThrow(/fixture set differs/);
+  });
+
+  it("refuses an artifact fingerprint that differs from the checkout", () => {
+    expect(() =>
+      migrate(contract, (e) => ({
+        ...e,
+        artifactFingerprint: { ...artifactFingerprint, sha256: "0".repeat(64) },
+      })),
+    ).toThrow(/artifact dependency fingerprint sha256 differs from this checkout's/);
+    expect(() =>
+      migrate(contract, (e) => ({
+        ...e,
+        artifactFingerprint: { ...artifactFingerprint, policyVersion: 2 },
+      })),
+    ).toThrow(/policyVersion differs/);
+    expect(() => migrate(contract, (e) => ({ ...e, artifactFingerprint: undefined }))).toThrow(
+      /must carry dependencyFingerprint with exactly policyVersion and sha256/,
+    );
+    expect(() =>
+      migrate(contract, (e) => ({
+        ...e,
+        artifactFingerprint: { ...artifactFingerprint, parser: "yaml@2.9.0" },
+      })),
+    ).toThrow(/with exactly policyVersion and sha256/);
+    expect(() =>
+      migrate(contract, (e) => ({
+        ...e,
+        dependencyFingerprint: null,
+        dependencyFingerprintError: "UNKNOWN_KEY: x",
+      })),
+    ).toThrow(/checkout dependency fingerprint failed: UNKNOWN_KEY: x/);
+  });
+
+  it.each([
+    ["packageVersion", (e) => ({ ...e, version: "9.9.9" })],
+    ["normalizerSha256", (e) => ({ ...e, normalizerSha256: "e".repeat(64) })],
+    [
+      "fixtureSha256",
+      (e) => ({
+        ...e,
+        identity: {
+          ...e.identity,
+          fixtureSha256: { ...e.identity.fixtureSha256, model: "0".repeat(64) },
+        },
+      }),
+    ],
+    [
+      "cargoLockSha256",
+      (e) => ({ ...e, identity: { ...e.identity, cargoLockSha256: "0".repeat(64) } }),
+    ],
+    [
+      "toolchain.esbuildVersion",
+      (e) => ({
+        ...e,
+        identity: { ...e.identity, toolchain: { ...e.identity.toolchain, esbuildVersion: "0" } },
+      }),
+    ],
+  ])("refuses an unintended %s movement", (name, edit) => {
+    expect(() => migrate(contract, edit)).toThrow(
+      new RegExp("changes only the lock pin, but " + name.replace(".", "\\.") + " differ"),
+    );
+  });
+
+  it("keeps lockfile-provenance on schemaVersion 2 only", () => {
+    const { contract: v3 } = migrate();
+    expect(() =>
+      rebaselineContract(v3, totalsFrom(v3), migrationEvidence, "lockfile-provenance"),
+    ).toThrow(
+      /--reason lockfile-provenance needs a schemaVersion 2 contract, found schemaVersion 3/,
+    );
+  });
+
+  for (const reason of ["release-bump", "runtime-identity"]) {
+    it(reason + " re-pins a schemaVersion 3 contract and never moves its fingerprint", () => {
+      const { contract: v3 } = migrate();
+      const bump = { ...migrationEvidence, version: "9.9.9", pnpmLockSha256: "9".repeat(64) };
+      const { contract: next } = rebaselineContract(v3, totalsFrom(v3), bump, reason);
+      expect(next.schemaVersion).toBe(3);
+      expect(next.dependencyFingerprint).toEqual(v3.dependencyFingerprint);
+      expect(next.runnerSha256).toEqual(v3.runnerSha256);
+      expect(next.toolchain.packageVersion).toBe("9.9.9");
+      expect(next.toolchain.pnpmLockSha256).toBe("9".repeat(64));
+      expect(next.ceilings).toEqual(v3.ceilings);
+
+      // The checkout's graph moved: the artifact agrees with it, the contract does not.
+      const moved = {
+        ...bump,
+        artifactFingerprint: { policyVersion: 1, sha256: "8".repeat(64) },
+        dependencyFingerprint: { ...fingerprint, sha256: "8".repeat(64) },
+      };
+      expect(() => rebaselineContract(v3, totalsFrom(v3), moved, reason)).toThrow(
+        new RegExp(
+          "--reason " + reason + " cannot move the dependency fingerprint \\(sha256 differ",
+        ),
+      );
+      const helper = {
+        ...bump,
+        dependencyFingerprint: { ...fingerprint, helperSha256: "7".repeat(64) },
+      };
+      expect(() => rebaselineContract(v3, totalsFrom(v3), helper, reason)).toThrow(
+        /cannot move the dependency fingerprint \(helperSha256 differ/,
+      );
+      expect(() =>
+        rebaselineContract(v3, totalsFrom(v3), { ...bump, artifactFingerprint: undefined }, reason),
+      ).toThrow(/must carry dependencyFingerprint/);
+    });
+  }
+
+  it("compares the artifact with the checkout byte-for-byte, fingerprint included", () => {
+    const checkout = {
+      packageVersion: "4.4.0",
+      pnpmLockSha256: "a".repeat(64),
+      cargoLockSha256: "b".repeat(64),
+      fixtureSha256: { ...contract.fixtureSha256 },
+      runnerSha256: newRunners,
+      dependencyFingerprint: fingerprint,
+      dependencyFingerprintError: null,
+    };
+    const provenance = {
+      packageVersion: "4.4.0",
+      pnpmLockSha256: "a".repeat(64),
+      cargoLockSha256: "b".repeat(64),
+      fixtureSha256: { ...contract.fixtureSha256 },
+      runnerSha256: { ...newRunners },
+      dependencyFingerprint: { ...artifactFingerprint },
+    };
+    expect(artifactCheckoutMismatches(provenance, checkout, "packed")).toEqual([]);
+    const errors = artifactCheckoutMismatches(
+      {
+        ...provenance,
+        packageVersion: "4.4.1",
+        pnpmLockSha256: "c".repeat(64),
+        cargoLockSha256: "d".repeat(64),
+        fixtureSha256: { ...provenance.fixtureSha256, model: "0".repeat(64) },
+        runnerSha256: contract.runnerSha256,
+        dependencyFingerprint: { ...artifactFingerprint, sha256: "0".repeat(64) },
+      },
+      checkout,
+      "packed",
+    );
+    expect(errors).toEqual([
+      "packed artifact lockfile hash differs from this checkout's pnpm-lock.yaml",
+      "packed artifact measured @takazudo/zfb 4.4.1, not 4.4.0",
+      "packed artifact Cargo.lock hash differs from this checkout's Cargo.lock",
+      "packed artifact fixtureSha256 differs from this checkout's files",
+      "packed artifact runnerSha256 differs from this checkout's files",
+      "packed artifact dependency fingerprint sha256 differs from this checkout's",
+    ]);
+  });
+
+  // An artifact shaped like the merged producers' output: provenance carries the
+  // fingerprint, and its check-budget run against the v2 contract failed.
+  function nativeLinuxArtifact(checkout, edit = (p) => p) {
+    const artifact = join(checkout.root, "artifact");
+    writeRuns(artifact, Object.keys(contract.ceilings.workspace), (mode) =>
+      edit({
+        sourceSha: "b".repeat(40),
+        mode,
+        platform: { os: "linux", arch: "x64" },
+        fixtureVersion: contract.fixtureVersion,
+        fixtureSha256: checkout.fixtureSha256,
+        runnerSha256: checkout.runnerSha256,
+        packageVersion: checkout.version,
+        runtimePackageVersion: checkout.version,
+        honoPackageVersion: contract.toolchain.honoVersion,
+        esbuildVersion: contract.toolchain.esbuildVersion,
+        nodeVersion: contract.toolchain.nodeVersion,
+        zlibVersion: contract.toolchain.zlibVersion,
+        compression: contract.compression,
+        repeats: 2,
+        pnpmLockSha256: checkout.pnpmLockSha256,
+        dependencyFingerprint: {
+          policyVersion: checkout.dependencyFingerprint.policyVersion,
+          sha256: checkout.dependencyFingerprint.sha256,
+        },
+        cargoLockSha256: checkout.cargoLockSha256,
+      }),
+    );
+    writeFileSync(join(artifact, "check-budget.exit-code"), "1\n");
+    writeFileSync(
+      join(artifact, "check-budget.log"),
+      "packed provenance: schema mismatch: schemaVersion 2 contract cannot accept a run carrying dependencyFingerprint\n",
+    );
+    // The live-shaped v2 contract: stale runner digests and whole-file lock hash.
+    const v2 = structuredClone(contract);
+    v2.ceilings = ceilingsOf(artifact);
+    v2.fixtureSha256 = { ...checkout.fixtureSha256 };
+    v2.toolchain.packageVersion = checkout.version;
+    v2.toolchain.cargoLockSha256 = checkout.cargoLockSha256;
+    v2.toolchain.pnpmLockSha256 = "5".repeat(64);
+    v2.runnerSha256 = { "measure-real.mjs": "6".repeat(64), "measure.mjs": "7".repeat(64) };
+    writeFileSync(
+      join(checkout.root, "research/v3-island-size/decision-linux-x64.json"),
+      JSON.stringify(v2, null, 2) + "\n",
+    );
+    return { artifact, v2 };
+  }
+
+  const cli = (artifact, reason = "fingerprint-migration") => [
+    "--artifact",
+    artifact,
+    "--run-id",
+    "41",
+    "--job-id",
+    "42",
+    "--head-sha",
+    "c".repeat(40),
+    "--reason",
+    reason,
+  ];
+
+  it("runs end-to-end on a native artifact whose v2 check-budget run failed", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const checkout = makeCheckout(roots);
+    const { artifact, v2 } = nativeLinuxArtifact(checkout);
+    main(cli(artifact), checkout.root);
+    const written = JSON.parse(
+      readFileSync(join(checkout.root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
+    );
+    expect(written.schemaVersion).toBe(3);
+    expect(written.dependencyFingerprint).toEqual(checkout.dependencyFingerprint);
+    expect(written.runnerSha256).toEqual(checkout.runnerSha256);
+    expect(written.toolchain).toEqual({ ...v2.toolchain, pnpmLockSha256: checkout.pnpmLockSha256 });
+    expect(written.ceilings).toEqual(v2.ceilings);
+    expect(written.baselineEvidence).toMatchObject({
+      runId: 41,
+      jobId: 42,
+      sourceSha: "b".repeat(40),
+    });
+    const pins = readFileSync(
+      join(checkout.root, "scripts/__tests__/island-size-budget.test.mjs"),
+      "utf8",
+    );
+    expect(pins).toContain("linuxContract.schemaVersion).toBe(3)");
+    const readme = readFileSync(join(checkout.root, "research/v3-island-size/README.md"), "utf8");
+    expect(readme).toContain("dependency-fingerprint migration");
+    expect(readme).toContain(checkout.dependencyFingerprint.sha256);
+  });
+
+  it("refuses end-to-end when the artifact fingerprint is not the checkout's", () => {
+    const checkout = makeCheckout(roots);
+    const { artifact } = nativeLinuxArtifact(checkout, (p) => ({
+      ...p,
+      dependencyFingerprint: { ...p.dependencyFingerprint, sha256: "0".repeat(64) },
+    }));
+    expect(() => main(cli(artifact), checkout.root)).toThrow(
+      /workspace artifact dependency fingerprint sha256 differs from this checkout's/,
+    );
+  });
+
+  it("refuses end-to-end when the artifact's runners are not the checkout's", () => {
+    const stale = makeCheckout(roots);
+    const { artifact: oldRunners } = nativeLinuxArtifact(stale, (p) => ({
+      ...p,
+      runnerSha256: { ...p.runnerSha256, "measure.mjs": "0".repeat(64) },
+    }));
+    expect(() => main(cli(oldRunners), stale.root)).toThrow(
+      /workspace artifact runnerSha256 differs from this checkout's files/,
+    );
   });
 });
