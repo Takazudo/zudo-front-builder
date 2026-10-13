@@ -587,7 +587,7 @@ describe("island shipped-size budget", () => {
       jobId: 115092890361,
       artifact: { id: 11784961280 },
     });
-    // Lock hashes come from the native release-bump re-pin (#4170); the
+    // Lock hashes come from the native v4.4.0 release-bump re-pin (#4183); the
     // ceilings below are the unchanged #4169 metric-migration values.
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
       "efb36af9090f3099d6a98d408e0c1f823cd0a1ab906665b16037f207e53ff0a7",

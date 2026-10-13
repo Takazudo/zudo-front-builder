@@ -241,8 +241,18 @@ async function runCase({ locale, viewport, variant }) {
   // A raw query entry on the rendered pathname stays the application's: no swap, no fetch.
   const swapsBeforeQuery = await count(page, "after-swap");
   const fetchesBeforeQuery = sameDocumentFetches(requests, a).length;
-  await page.evaluate(() => history.pushState(null, "", "?verify-raw-query=1"));
+  await page.evaluate(() => {
+    history.pushState(null, "", "?verify-raw-query=1");
+    // Registered after the router's listener: resolves once its popstate handler has run
+    // and had a frame to start any fetch/swap, so the negative checks below are not vacuous.
+    window.__rawQueryPopSettled = new Promise((resolve) =>
+      addEventListener("popstate", () => requestAnimationFrame(() => setTimeout(resolve, 0)), {
+        once: true,
+      }),
+    );
+  });
   await page.goBack();
+  await page.evaluate(() => window.__rawQueryPopSettled);
   await expectArticle(page, a, h1A, `${name} raw query Back`, `#${second}`);
   assert.equal(await count(page, "after-swap"), swapsBeforeQuery, `${name}: raw query swapped`);
   assert.equal(

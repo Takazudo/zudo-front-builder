@@ -22,6 +22,7 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -75,15 +76,6 @@ export function measuredIdentity(provenance) {
   };
 }
 
-function sameHashMap(a, b) {
-  if (!a || !b) return false;
-  const keys = Object.keys(a);
-  return (
-    keys.length === Object.keys(b).length &&
-    keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key])
-  );
-}
-
 // lockfile-provenance may move only pnpmLockSha256: anything else that the
 // contract pins must equal the measured artifact and this checkout.
 export function assertLockfileOnlyMovement(contract, evidence) {
@@ -94,8 +86,8 @@ export function assertLockfileOnlyMovement(contract, evidence) {
   if (!identity) {
     throw new Error("--reason lockfile-provenance needs the artifact's measured identity inputs");
   }
-  if (!sameHashMap(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
-  if (!sameHashMap(identity.runnerSha256, contract.runnerSha256)) moved.push("runnerSha256");
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  if (!sameHashMaps(identity.runnerSha256, contract.runnerSha256)) moved.push("runnerSha256");
   if (identity.cargoLockSha256 !== contract.toolchain.cargoLockSha256) {
     moved.push("cargoLockSha256");
   }
