@@ -20,7 +20,11 @@ import {
   normalizeMeasurement,
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
-import { measuredTotals, rebaselineContract } from "../rebaseline-island-size-linux.mjs";
+import {
+  measuredIdentity,
+  measuredTotals,
+  rebaselineContract,
+} from "../rebaseline-island-size-linux.mjs";
 import { asSchemaV2 } from "./fixtures/island-size-checkout.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -780,6 +784,7 @@ describe("island shipped-size budget", () => {
         runId: 1,
         jobId: 2,
         runLabel: "Synthetic re-pin",
+        identity: measuredIdentity(state.packed.measurement.provenance),
       },
       "release-bump",
     );

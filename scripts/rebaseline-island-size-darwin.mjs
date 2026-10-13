@@ -47,6 +47,13 @@
 // runs the Linux script's shared runFingerprintHelperRepin, which re-pins only
 // `dependencyFingerprint.helperSha256` of both contracts in one run after
 // proving the pinned and new lock-fingerprint.mjs agree on the real lock.
+//
+// `--reason cargo-producer-lock` (#4214, schemaVersion 3) records one reviewed
+// additive Cargo.lock move from a fresh native artifact, through the Linux
+// script's shared proveCargoProducerLock: old and new hashes are bound, every
+// old `[[package]]` record must survive byte-identical, and the additions must
+// equal the `--added-packages` allowlist. Only the Cargo hash and its evidence
+// move. `release-bump` and `runtime-identity` refuse any Cargo.lock movement.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
@@ -62,15 +69,23 @@ import {
   normalizerSha256,
 } from "../research/v3-island-size/normalize-identity.mjs";
 import {
+  CARGO_PRODUCER_LOCK_REASON,
   FINGERPRINT_HELPER_REASON,
   REASONS,
   acceptedSchemas,
+  assertCargoProducerLockMovement,
+  cargoMoveRefusal,
+  cargoTransitionMarkdown,
+  cargoTransitionText,
+  checkCargoProducerLockArgs,
   checkFingerprintHelperArgs,
   artifactFingerprintProblem,
   contractFingerprint,
   describeDeltas,
   diffCeilings,
   measuredTotals,
+  proveCargoProducerLock,
+  readCargoLockEvidence,
   readCheckoutIdentity,
   rewriteTestBlock,
   runFingerprintHelperRepin,
@@ -90,6 +105,7 @@ const DARWIN_REASONS = [
   ...REPIN_REASONS,
   FINGERPRINT_MIGRATION,
   FINGERPRINT_HELPER_REASON,
+  CARGO_PRODUCER_LOCK_REASON,
 ];
 const shaPattern = /^[0-9a-f]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
@@ -548,6 +564,8 @@ function fingerprintMoves(contract, checkout) {
 export function repinDarwinContract(contract, totals, evidence, reason, checkout) {
   if (!REPIN_REASONS.includes(reason)) throw new Error("unknown re-pin --reason " + reason);
   const errors = checkRepinTotals(contract, totals);
+  const cargo = cargoMoveRefusal(reason, evidence.cargoLockSha256, contract);
+  if (cargo) errors.push(cargo);
   if (contract.schemaVersion === 3) {
     const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
     if (problem) errors.push(problem);
@@ -572,7 +590,6 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
   next.baselineSourceSha = evidence.sourceSha;
   next.toolchain.packageVersion = evidence.packageVersion;
   next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
-  next.toolchain.cargoLockSha256 = evidence.cargoLockSha256;
   const metric = IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
   next.platformStatus =
     "Darwin arm64 has exact zero-allowance v" +
@@ -625,7 +642,7 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
       previousVersion +
       " contract; " +
       gzipSummary(moves) +
-      ". Only package version, lock hashes and the normalizer digest were re-pinned. " +
+      ". Only package version, the pnpm-lock.yaml hash and the normalizer digest were re-pinned; Cargo.lock is unchanged. " +
       "Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   return { contract: next, gzipMoves: moves ?? [], previousVersion };
@@ -744,6 +761,145 @@ export function migrateDarwinFingerprint(contract, totals, evidence, checkout) {
   };
 }
 
+// One reviewed additive Cargo.lock move on a schemaVersion-3 contract. The
+// package version, pnpm lock, normalizer and fingerprint must equal the
+// contract (fixtures, runners and toolchain are checked by
+// validateDarwinEvidence); `cargoLock` is readCargoLockEvidence's result.
+export function transitionDarwinCargoLock(contract, totals, evidence, checkout, cargoLock) {
+  const errors = checkRepinTotals(contract, totals);
+  if (contract.schemaVersion !== 3) {
+    errors.push(
+      "--reason " +
+        CARGO_PRODUCER_LOCK_REASON +
+        " needs a schemaVersion 3 contract, found schemaVersion " +
+        String(contract.schemaVersion),
+    );
+  }
+  const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
+  if (problem) errors.push(problem);
+  const moved = fingerprintMoves(contract, checkout).map((key) => "dependencyFingerprint." + key);
+  if (evidence.packageVersion !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  if (evidence.pnpmLockSha256 !== contract.toolchain.pnpmLockSha256) moved.push("pnpmLockSha256");
+  if (!problem && moved.length > 0) {
+    errors.push(
+      "--reason " +
+        CARGO_PRODUCER_LOCK_REASON +
+        " allows only Cargo.lock to move, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change",
+    );
+  }
+  if (errors.length > 0) throw new Error(errors.join("; "));
+  const transition = proveCargoProducerLock({
+    ...cargoLock,
+    contractSha: contract.toolchain.cargoLockSha256,
+    artifactSha: evidence.cargoLockSha256,
+  });
+  const moves = gzipMovesSince(contract, totals);
+  const next = structuredClone(contract);
+  next.outcome = REASONS[CARGO_PRODUCER_LOCK_REASON].outcome;
+  next.baselineSourceSha = evidence.sourceSha;
+  next.toolchain.cargoLockSha256 = transition.newSha;
+  const metric = IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
+  next.platformStatus =
+    "Darwin arm64 has exact zero-allowance v" +
+    evidence.packageVersion +
+    " ceilings on metric " +
+    metric +
+    ", re-pinned from the native artifact of workflow_dispatch run " +
+    evidence.runId +
+    " at source " +
+    evidence.sourceSha +
+    " after a reviewed additive Cargo.lock transition (" +
+    cargoTransitionText(transition) +
+    "). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, " +
+    "toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; " +
+    "only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. " +
+    gzipSummary(moves) +
+    ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
+    "inventories. Other platforms and toolchains are not covered.";
+  next.baselineEvidence = {
+    event: "ci-artifact",
+    runId: evidence.runId,
+    jobId: evidence.jobId,
+    sourceSha: evidence.sourceSha,
+    artifact: {
+      id: evidence.artifactId,
+      name: "island-size-darwin-arm64-" + evidence.sourceSha,
+      expiresAt: evidence.artifactExpiresAt,
+    },
+    nativeRunner: evidence.nativeRunner,
+    repinnedFrom: {
+      schemaVersion: contract.schemaVersion,
+      outcome: contract.outcome,
+      packageVersion: contract.toolchain.packageVersion,
+      baselineSourceSha: contract.baselineSourceSha,
+      baselineRunId: contract.baselineEvidence?.runId,
+    },
+    cargoTransition: transition,
+    originalCheckerResult: evidence.originalCheckerResult,
+    actualGzip: actualGzipRows(totals),
+    note:
+      "Cargo producer-lock transition from the native Darwin arm64 artifact of run " +
+      evidence.runId +
+      " (job " +
+      evidence.jobId +
+      ") at source " +
+      evidence.sourceSha +
+      ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
+      "inventories. Raw and gzipNormalized totals did not change from the v" +
+      contract.toolchain.packageVersion +
+      " contract; " +
+      gzipSummary(moves) +
+      ". The artifact's own check-budget run compared it with the previous Cargo.lock pin and is " +
+      "preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact " +
+      "measurements with zero allowance; earlier ceilings remain in git history.",
+  };
+  assertCargoProducerLockMovement(contract, next);
+  return { contract: next, gzipMoves: moves ?? [] };
+}
+
+export function darwinCargoProducerLockReadmeSection(contract, gzipMoves) {
+  const e = contract.baselineEvidence;
+  return (
+    "\n## Darwin v" +
+    contract.toolchain.packageVersion +
+    " " +
+    REASONS[CARGO_PRODUCER_LOCK_REASON].heading +
+    "\n\n" +
+    "The Darwin arm64 contract recorded a reviewed additive `Cargo.lock` transition at v" +
+    contract.toolchain.packageVersion +
+    " from the native artifact " +
+    e.artifact.id +
+    " of [workflow_dispatch run " +
+    e.runId +
+    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+    e.runId +
+    ") (job " +
+    e.jobId +
+    ") at source `" +
+    e.sourceSha +
+    "`: " +
+    cargoTransitionMarkdown(e.cargoTransition) +
+    " The package version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, " +
+    "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
+    "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
+    "byte-identical product code. The artifact's own `check-budget.mjs` run against the previous " +
+    "pin is preserved as evidence (exit code " +
+    String(e.originalCheckerResult?.exitCode) +
+    "). " +
+    (gzipMoves.length === 0
+      ? "No actual gzip total moved."
+      : "Actual gzip moved on " +
+        gzipMoves.length +
+        " rows (" +
+        describeDeltas(gzipMoves) +
+        "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
+    " Linux x64 is re-pinned separately by `rebaseline-island-size-linux.mjs`.\n"
+  );
+}
+
 function replacePin(block, pattern, value, label) {
   if (!pattern.test(block)) throw new Error("missing Darwin " + label + " pin in " + TEST_FILE);
   return block.replace(pattern, (_, head) => head + value);
@@ -804,7 +960,7 @@ export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, r
     e.sourceSha +
     "`. Every raw and `gzipNormalized` total is unchanged from the v" +
     previousVersion +
-    " contract, so only the package version, lock hashes and normalizer digest moved; these totals alone do not prove byte-identical product code. " +
+    " contract, so only the package version, `pnpm-lock.yaml` hash and normalizer digest moved (`Cargo.lock` is unchanged); these totals alone do not prove byte-identical product code. " +
     (gzipMoves.length === 0
       ? "No actual gzip total moved."
       : "Actual gzip moved on " +
@@ -965,6 +1121,7 @@ export function parseArgs(argv) {
   if (!DARWIN_REASONS.includes(values.reason)) {
     throw new Error("--reason must be one of " + DARWIN_REASONS.join(", "));
   }
+  checkCargoProducerLockArgs(values);
   return values;
 }
 
@@ -1076,9 +1233,18 @@ export function main(argv = process.argv.slice(2), root = ".") {
     const mismatches = checkoutMismatches(evidence, checkout);
     if (mismatches.length > 0) throw new Error("re-pin rejected: " + mismatches.join("; "));
     const migration = args.reason === FINGERPRINT_MIGRATION;
+    const cargo = args.reason === CARGO_PRODUCER_LOCK_REASON;
     const result = migration
       ? migrateDarwinFingerprint(contract, totals, evidence, checkout)
-      : repinDarwinContract(contract, totals, evidence, args.reason, checkout);
+      : cargo
+        ? transitionDarwinCargoLock(
+            contract,
+            totals,
+            evidence,
+            checkout,
+            readCargoLockEvidence(args, root),
+          )
+        : repinDarwinContract(contract, totals, evidence, args.reason, checkout);
     writeFileSync(contractPath, JSON.stringify(result.contract, null, 2) + "\n");
     writeFileSync(
       at(TEST_FILE),
@@ -1088,12 +1254,14 @@ export function main(argv = process.argv.slice(2), root = ".") {
       args.readme ?? at(README),
       migration
         ? darwinFingerprintReadmeSection(result.contract, result.gzipMoves)
-        : darwinRepinReadmeSection(
-            result.contract,
-            result.gzipMoves,
-            result.previousVersion,
-            args.reason,
-          ),
+        : cargo
+          ? darwinCargoProducerLockReadmeSection(result.contract, result.gzipMoves)
+          : darwinRepinReadmeSection(
+              result.contract,
+              result.gzipMoves,
+              result.previousVersion,
+              args.reason,
+            ),
     );
     console.log(
       (migration ? "migrated" : "re-pinned") +

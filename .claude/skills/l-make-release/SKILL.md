@@ -351,7 +351,10 @@ measured in CI before the bump lands on `main`:
   `dependencyFingerprint.helperSha256` movement, so if `lock-fingerprint.mjs` was edited since
   the contracts were pinned, a helper re-pin
   (`node scripts/rebaseline-island-size-linux.mjs --reason fingerprint-helper --base-ref <ref>`,
-  #4198) must land first as its own commit before the release probe.
+  #4198) must land first as its own commit before the release probe. Likewise `release-bump`
+  and `runtime-identity` (both platform scripts) refuse any `Cargo.lock` movement from the
+  contract's `toolchain.cargoLockSha256`; an additive producer-lock change lands first as a
+  reviewed `--reason cargo-producer-lock` transition (#4214) from fresh artifacts.
 - **Wind preview digest.** `docs/public/wind-examples/manifest.json` records
   `compiler.sourceSha256`, which `compilerSourceDigest` in `docs/scripts/wind-preview-assets.mjs`
   computes over every `crates/**/*.{rs,toml,json,css}` file. The bump rewrites
@@ -415,9 +418,12 @@ Before pushing anything to `main`:
      appends a `## v<version> release baseline` section to `research/v3-island-size/README.md`.
      It **refuses** if any raw or `gzipNormalized` total changed, the fixture set differs, the
      artifact's lockfile, version, fixture/runner digests or dependency fingerprint differ from
-     the checkout, or (schemaVersion 3) the checkout's fingerprint differs from the contract's —
+     the checkout, (schemaVersion 3) the checkout's fingerprint differs from the contract's, or
+     the checkout's `Cargo.lock` hash differs from the contract's `toolchain.cargoLockSha256` —
      a moved total is a product size change
-     that needs a reviewed decision, not a release re-pin. Stop and surface it. Run
+     that needs a reviewed decision, not a release re-pin, and a moved `Cargo.lock` must first
+     land as its own reviewed `--reason cargo-producer-lock` transition (#4214) from fresh
+     artifacts on both platforms. Stop and surface it. Run
      `pnpm exec vp fmt` on the changed files.
    - Wind preview digest: after every `crates/` edit above, recompute the digest and write it to
      `docs/public/wind-examples/manifest.json`'s `compiler.sourceSha256`:

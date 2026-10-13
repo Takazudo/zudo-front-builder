@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   ARTIFACT_ARGS,
+  CARGO_PRODUCER_LOCK_MOVEMENT,
   FINGERPRINT_HELPER_MOVEMENT,
   REASONS,
   actualGzipEvidence,
@@ -13,11 +14,14 @@ import {
   assertLockfileOnlyMovement,
   contractDiffKeys,
   describeDeltas,
+  diffCargoLocks,
   diffCeilings,
   main,
   measuredIdentity,
   measuredTotals,
+  parseAddedPackages,
   parseArgs,
+  parseCargoLock,
   proveFingerprintHelper,
   readmeSection,
   rebaselineContract,
@@ -97,6 +101,8 @@ const evidence = {
   runId: 1,
   jobId: 2,
   runLabel: "Release probe run for v9.9.9",
+  // release-bump / runtime-identity compare the measured Cargo.lock with the contract.
+  identity: { cargoLockSha256: contract.toolchain.cargoLockSha256 },
 };
 
 describe("rebaseline-island-size-linux", () => {
@@ -234,6 +240,7 @@ describe("rebaseline-island-size-linux", () => {
       "lockfile-provenance",
       "fingerprint-migration",
       "fingerprint-helper",
+      "cargo-producer-lock",
     ]);
   });
 
@@ -288,7 +295,7 @@ describe("rebaseline-island-size-linux", () => {
       /--head-sha must be/,
     );
     expect(() => parseArgs(ok.map((v) => (v === "release-bump" ? "gzip-shift" : v)))).toThrow(
-      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper$/,
+      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper, cargo-producer-lock$/,
     );
     expect(() => parseArgs(["--artifact"])).toThrow(/bad argument/);
   });
@@ -1243,5 +1250,393 @@ describe("fingerprint-helper (#4198)", () => {
     expect(
       JSON.parse(readFileSync(join(repo.root, "research/v3-island-size/decision.json"), "utf8")),
     ).toEqual(repo.contracts.darwin);
+  });
+});
+
+describe("cargo-producer-lock (#4214)", () => {
+  const roots = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const sha = (text) => createHash("sha256").update(text).digest("hex");
+  const lockDir = join(root, "scripts/__tests__/fixtures/cargo-producer-lock");
+  const oldText = readFileSync(join(lockDir, "old.lock"), "utf8");
+  const newText = readFileSync(join(lockDir, "new.lock"), "utf8");
+  const OLD = sha(oldText);
+  const NEW = sha(newText);
+  const ADDED = ["ctor@0.2.9", "zfb-css-node@0.0.0"];
+  const v3 = structuredClone(liveContract);
+  v3.toolchain.cargoLockSha256 = OLD;
+  const fingerprint = v3.dependencyFingerprint;
+  const cargoEvidence = {
+    ...evidence,
+    version: v3.toolchain.packageVersion,
+    normalizerSha256: v3.normalizerSha256,
+    pnpmLockSha256: v3.toolchain.pnpmLockSha256,
+    runLabel: "Cargo producer-lock transition run",
+    identity: measuredIdentity({
+      fixtureSha256: { ...v3.fixtureSha256 },
+      runnerSha256: { ...v3.runnerSha256 },
+      cargoLockSha256: NEW,
+      honoPackageVersion: v3.toolchain.honoVersion,
+      esbuildVersion: v3.toolchain.esbuildVersion,
+      nodeVersion: v3.toolchain.nodeVersion,
+      zlibVersion: v3.toolchain.zlibVersion,
+    }),
+    artifactFingerprint: { policyVersion: fingerprint.policyVersion, sha256: fingerprint.sha256 },
+    dependencyFingerprint: { ...fingerprint },
+    dependencyFingerprintError: null,
+    cargoLock: {
+      expectedOldSha: OLD,
+      expectedNewSha: NEW,
+      oldText,
+      newText,
+      added: ADDED,
+      oldLockSource: "old.lock",
+    },
+  };
+  const transition = (edit = (e) => e, base = v3, totals = totalsFrom(base)) =>
+    rebaselineContract(base, totals, edit(cargoEvidence), "cargo-producer-lock");
+  // A new lock the checkout and the artifact both carry.
+  const withNew =
+    (text, added = ADDED) =>
+    (e) => ({
+      ...e,
+      identity: { ...e.identity, cargoLockSha256: sha(text) },
+      cargoLock: { ...e.cargoLock, newText: text, expectedNewSha: sha(text), added },
+    });
+
+  it("records the additive transition, moving only the Cargo hash and its evidence", () => {
+    const { contract: next, previousVersion, gzipEvidence } = transition();
+    expect(next.outcome).toBe("cargo-producer-lock-transition");
+    expect(next.toolchain).toEqual({ ...v3.toolchain, cargoLockSha256: NEW });
+    expect(next.ceilings).toEqual(v3.ceilings);
+    expect(next.dependencyFingerprint).toEqual(v3.dependencyFingerprint);
+    expect(next.baselineEvidence.cargoTransition).toEqual({
+      oldSha: OLD,
+      newSha: NEW,
+      added: ADDED,
+      changed: [],
+      removed: [],
+      oldLockSource: "old.lock",
+    });
+    for (const key of contractDiffKeys(v3, next)) {
+      expect(
+        CARGO_PRODUCER_LOCK_MOVEMENT.some(
+          (allowed) => key === allowed || key.startsWith(allowed + "."),
+        ),
+      ).toBe(true);
+    }
+    expect(contractDiffKeys(v3, next)).toContain("toolchain.cargoLockSha256");
+    expect(next.platformStatus).toContain("reviewed additive Cargo.lock transition");
+    expect(next.platformStatus).toContain("ctor@0.2.9, zfb-css-node@0.0.0");
+    expect(next.platformStatus).toContain("only the Cargo.lock hash moved");
+    expect(next.baselineEvidence.note).toContain("Reviewed additive Cargo.lock transition");
+    const section = readmeSection(next, gzipEvidence, previousVersion, "cargo-producer-lock");
+    expect(section).toContain(
+      "## v" + v3.toolchain.packageVersion + " cargo-producer-lock transition",
+    );
+    expect(section).toContain("[workflow run 1]");
+    expect(section).toContain("`" + OLD + "` to `" + NEW + "`");
+    expect(section).toContain("`ctor@0.2.9`, `zfb-css-node@0.0.0`");
+    expect(section).toContain("only `toolchain.cargoLockSha256` moved");
+    expect(rewriteTestPins(testSource, next)).toBe(rewriteTestPins(testSource, v3));
+  });
+
+  it("parses Cargo.lock losslessly and diffs it record by record", () => {
+    const parsed = parseCargoLock(newText, "new");
+    expect(parsed.header).toBe(
+      "# This file is automatically @generated by Cargo.\n# It is not intended for manual editing.\nversion = 4\n\n",
+    );
+    expect(parsed.packages.map(({ id }) => id)).toEqual([
+      "anyhow@1.0.100",
+      "ctor@0.2.9",
+      "zfb-css@0.0.0",
+      "zfb-css-node@0.0.0",
+      "zudo-wind@0.0.0",
+    ]);
+    expect(diffCargoLocks(oldText, newText)).toEqual({
+      problems: [],
+      added: ADDED,
+      changed: [],
+      removed: [],
+      duplicates: [],
+    });
+    expect(() =>
+      parseCargoLock(
+        newText.replace(
+          '\n\n[[package]]\nname = "zudo-wind"',
+          '\n\n\n[[package]]\nname = "zudo-wind"',
+        ),
+        "x",
+      ),
+    ).toThrow(/unexpected record separator/);
+    expect(() => parseCargoLock(newText.replace('name = "ctor"\n', ""), "x")).toThrow(
+      /without name and version/,
+    );
+    expect(() => parseCargoLock(newText.slice(0, -1), "x")).toThrow(/does not end with a newline/);
+  });
+
+  it("refuses moved totals and a fixture-set difference", () => {
+    const raw = totalsFrom(v3, { "packed/model": { raw: v3.ceilings.packed.model.raw + 1 } });
+    expect(() => transition(undefined, v3, raw)).toThrow(/raw totals changed \(packed\/model\)/);
+    const normalized = totalsFrom(v3, {
+      "workspace/model": { gzipNormalized: v3.ceilings.workspace.model.gzipNormalized - 1 },
+    });
+    expect(() => transition(undefined, v3, normalized)).toThrow(/gzipNormalized totals changed/);
+    const missing = totalsFrom(v3);
+    delete missing.workspace["json-api"];
+    expect(() => transition(undefined, v3, missing)).toThrow(/fixture set differs/);
+  });
+
+  it("refuses a moved dependency fingerprint", () => {
+    expect(() =>
+      transition((e) => ({
+        ...e,
+        artifactFingerprint: { ...e.artifactFingerprint, sha256: "8".repeat(64) },
+        dependencyFingerprint: { ...e.dependencyFingerprint, sha256: "8".repeat(64) },
+      })),
+    ).toThrow(/cannot move the dependency fingerprint \(sha256 differ/);
+    expect(() =>
+      transition((e) => ({
+        ...e,
+        artifactFingerprint: { ...e.artifactFingerprint, sha256: "8".repeat(64) },
+      })),
+    ).toThrow(/artifact dependency fingerprint sha256 differs from this checkout's/);
+  });
+
+  it.each([
+    ["packageVersion", (e) => ({ ...e, version: "9.9.9" })],
+    ["normalizerSha256", (e) => ({ ...e, normalizerSha256: "e".repeat(64) })],
+    ["pnpmLockSha256", (e) => ({ ...e, pnpmLockSha256: "f".repeat(64) })],
+    [
+      "runnerSha256",
+      (e) => ({
+        ...e,
+        identity: {
+          ...e.identity,
+          runnerSha256: { ...e.identity.runnerSha256, "measure.mjs": "0".repeat(64) },
+        },
+      }),
+    ],
+    [
+      "toolchain.nodeVersion",
+      (e) => ({
+        ...e,
+        identity: { ...e.identity, toolchain: { ...e.identity.toolchain, nodeVersion: "v0" } },
+      }),
+    ],
+  ])("refuses a %s movement", (name, edit) => {
+    expect(() => transition(edit)).toThrow(
+      new RegExp("allows only Cargo.lock to move, but " + name.replace(".", "\\.") + " differ"),
+    );
+  });
+
+  it("refuses a wrong old or new SHA and an old lock that is not the pinned one", () => {
+    const cargo = (patch) => (e) => ({ ...e, cargoLock: { ...e.cargoLock, ...patch } });
+    expect(() => transition(cargo({ expectedOldSha: "1".repeat(64) }))).toThrow(
+      /the contract pins Cargo.lock [0-9a-f]{64}, not --expected-old-cargo-sha/,
+    );
+    expect(() => transition(cargo({ oldText: oldText + "\n" }))).toThrow(
+      /old.lock hashes to [0-9a-f]{64}, not --expected-old-cargo-sha/,
+    );
+    expect(() => transition(cargo({ expectedNewSha: "2".repeat(64) }))).toThrow(
+      /the checkout's Cargo.lock hashes to [0-9a-f]{64}, not --expected-new-cargo-sha/,
+    );
+    expect(() =>
+      transition((e) => ({ ...e, identity: { ...e.identity, cargoLockSha256: "3".repeat(64) } })),
+    ).toThrow(/the artifact measured Cargo.lock 3{64}, not --expected-new-cargo-sha/);
+  });
+
+  it("refuses a changed or removed record", () => {
+    const changed = newText.replace(
+      'version = "1.0.100"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "a23e',
+      'version = "1.0.100"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "b23e',
+    );
+    expect(() => transition(withNew(changed))).toThrow(/changed records anyhow@1.0.100/);
+    const removed = newText.replace('[[package]]\nname = "zudo-wind"\nversion = "0.0.0"\n', "");
+    expect(() => transition(withNew(removed.replace(/\n\n$/, "\n")))).toThrow(
+      /removed records zudo-wind@0.0.0/,
+    );
+  });
+
+  it("refuses an unexpected or missing addition and a duplicate identity", () => {
+    expect(() => transition(withNew(newText, ["ctor@0.2.9"]))).toThrow(
+      /unexpected additions zfb-css-node@0.0.0/,
+    );
+    expect(() => transition(withNew(newText, [...ADDED, "napi@2.16.17"]))).toThrow(
+      /allowlisted but not added napi@2.16.17/,
+    );
+    const duplicate = newText.replace(
+      '[[package]]\nname = "ctor"',
+      '[[package]]\nname = "anyhow"\nversion = "1.0.100"\nsource = "git+https://example.invalid/anyhow#0"\n\n[[package]]\nname = "ctor"',
+    );
+    expect(() => transition(withNew(duplicate, [...ADDED, "anyhow@1.0.100"]))).toThrow(
+      /duplicate package identities anyhow@1.0.100/,
+    );
+    expect(() => transition(withNew(newText.replace("version = 4", "version = 3")))).toThrow(
+      /the header differs/,
+    );
+  });
+
+  it("refuses a schemaVersion 2 contract and a lock that did not move", () => {
+    expect(() => transition(undefined, asSchemaV2(v3))).toThrow(
+      /--reason cargo-producer-lock needs a schemaVersion 3 contract, found schemaVersion 2/,
+    );
+    const pinnedNew = structuredClone(v3);
+    pinnedNew.toolchain.cargoLockSha256 = NEW;
+    expect(() =>
+      transition(
+        (e) => ({ ...e, cargoLock: { ...e.cargoLock, expectedOldSha: NEW, oldText: newText } }),
+        pinnedNew,
+      ),
+    ).toThrow(/--expected-old-cargo-sha equals --expected-new-cargo-sha; no Cargo.lock move/);
+  });
+
+  for (const reason of ["release-bump", "runtime-identity"]) {
+    it(reason + " refuses any Cargo.lock movement and names cargo-producer-lock", () => {
+      expect(() => rebaselineContract(v3, totalsFrom(v3), cargoEvidence, reason)).toThrow(
+        new RegExp(
+          "--reason " +
+            reason +
+            " cannot move Cargo.lock \\(the artifact and checkout carry " +
+            NEW +
+            ", the contract pins " +
+            OLD +
+            "\\); a reviewed additive producer-lock change needs --reason cargo-producer-lock",
+        ),
+      );
+      const { identity: _identity, ...withoutIdentity } = evidence;
+      expect(() =>
+        rebaselineContract(contract, totalsFrom(contract), withoutIdentity, reason),
+      ).toThrow(/needs the artifact's measured identity inputs/);
+    });
+  }
+
+  it("requires exactly the four Cargo arguments for cargo-producer-lock alone", () => {
+    const base = [
+      "--artifact",
+      "dir",
+      "--run-id",
+      "1",
+      "--job-id",
+      "2",
+      "--head-sha",
+      "c".repeat(40),
+    ];
+    const cargoArgs = {
+      "expected-old-cargo-sha": OLD,
+      "expected-new-cargo-sha": NEW,
+      "old-cargo-lock": "old.lock",
+      "added-packages": ADDED.join(","),
+    };
+    const argv = (reason, extra) => [
+      ...base,
+      "--reason",
+      reason,
+      ...Object.entries(extra).flatMap(([k, v]) => ["--" + k, v]),
+    ];
+    expect(parseArgs(argv("cargo-producer-lock", cargoArgs))).toMatchObject(cargoArgs);
+    for (const key of Object.keys(cargoArgs)) {
+      const { [key]: _drop, ...rest } = cargoArgs;
+      expect(() => parseArgs(argv("cargo-producer-lock", rest))).toThrow("required --" + key);
+      expect(() => parseArgs(argv("release-bump", { [key]: cargoArgs[key] }))).toThrow(
+        "--" + key + " is only for --reason cargo-producer-lock",
+      );
+    }
+    expect(() =>
+      parseArgs(argv("cargo-producer-lock", { ...cargoArgs, "expected-new-cargo-sha": "abc" })),
+    ).toThrow(/--expected-new-cargo-sha must be a 64-character SHA-256/);
+    expect(() =>
+      parseArgs(argv("cargo-producer-lock", { ...cargoArgs, "added-packages": "ctor" })),
+    ).toThrow(/comma-separated list of name@version/);
+    expect(parseAddedPackages("a@1, b@2")).toEqual(["a@1", "b@2"]);
+    expect(() => parseAddedPackages("a@1,b@2,a@1")).toThrow(/--added-packages repeats a@1/);
+    expect(() =>
+      parseArgs([
+        "--reason",
+        "fingerprint-helper",
+        "--base-ref",
+        "HEAD",
+        "--old-cargo-lock",
+        "old.lock",
+      ]),
+    ).toThrow(/takes only --base-ref; remove --old-cargo-lock/);
+  });
+
+  it("runs end to end on a checkout and artifact at the new lock", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const checkout = makeCheckout(roots, { cargoLock: newText });
+    expect(checkout.cargoLockSha256).toBe(NEW);
+    const artifact = join(checkout.root, "artifact");
+    writeRuns(artifact, Object.keys(v3.ceilings.workspace), (mode) => ({
+      sourceSha: "b".repeat(40),
+      mode,
+      platform: { os: "linux", arch: "x64" },
+      fixtureVersion: v3.fixtureVersion,
+      fixtureSha256: checkout.fixtureSha256,
+      runnerSha256: checkout.runnerSha256,
+      packageVersion: checkout.version,
+      runtimePackageVersion: checkout.version,
+      honoPackageVersion: v3.toolchain.honoVersion,
+      esbuildVersion: v3.toolchain.esbuildVersion,
+      nodeVersion: v3.toolchain.nodeVersion,
+      zlibVersion: v3.toolchain.zlibVersion,
+      compression: v3.compression,
+      repeats: 2,
+      pnpmLockSha256: checkout.pnpmLockSha256,
+      dependencyFingerprint: {
+        policyVersion: checkout.dependencyFingerprint.policyVersion,
+        sha256: checkout.dependencyFingerprint.sha256,
+      },
+      cargoLockSha256: checkout.cargoLockSha256,
+    }));
+    const pinned = structuredClone(v3);
+    pinned.ceilings = ceilingsOf(artifact);
+    pinned.fixtureSha256 = { ...checkout.fixtureSha256 };
+    pinned.runnerSha256 = { ...checkout.runnerSha256 };
+    pinned.toolchain.packageVersion = checkout.version;
+    pinned.toolchain.pnpmLockSha256 = checkout.pnpmLockSha256;
+    pinned.dependencyFingerprint = { ...checkout.dependencyFingerprint };
+    const contractPath = join(checkout.root, "research/v3-island-size/decision-linux-x64.json");
+    writeFileSync(contractPath, JSON.stringify(pinned, null, 2) + "\n");
+    const oldPath = join(checkout.root, "old.lock");
+    writeFileSync(oldPath, oldText);
+    const argv = (added = ADDED.join(",")) => [
+      "--artifact",
+      artifact,
+      "--run-id",
+      "51",
+      "--job-id",
+      "52",
+      "--head-sha",
+      "c".repeat(40),
+      "--reason",
+      "cargo-producer-lock",
+      "--expected-old-cargo-sha",
+      OLD,
+      "--expected-new-cargo-sha",
+      NEW,
+      "--old-cargo-lock",
+      oldPath,
+      "--added-packages",
+      added,
+    ];
+    expect(() => main(argv("ctor@0.2.9"), checkout.root)).toThrow(/unexpected additions/);
+    expect(readFileSync(contractPath, "utf8")).toBe(JSON.stringify(pinned, null, 2) + "\n");
+    main(argv(), checkout.root);
+    const written = JSON.parse(readFileSync(contractPath, "utf8"));
+    expect(written.toolchain).toEqual({ ...pinned.toolchain, cargoLockSha256: NEW });
+    expect(written.ceilings).toEqual(pinned.ceilings);
+    expect(written.baselineEvidence).toMatchObject({
+      runId: 51,
+      jobId: 52,
+      cargoTransition: { oldSha: OLD, newSha: NEW, added: ADDED, oldLockSource: oldPath },
+    });
+    const readme = readFileSync(join(checkout.root, "research/v3-island-size/README.md"), "utf8");
+    expect(readme).toContain("cargo-producer-lock transition");
+    expect(readme).toContain("[workflow run 51]");
   });
 });
