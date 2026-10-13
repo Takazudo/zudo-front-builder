@@ -370,7 +370,8 @@ jobs:
       # crates/zfb/binaries/esbuild/esbuild — the slot that
       # zfb_test_utils::locate_esbuild() resolves for the esbuild-gated
       # integration tests run below.
-      - run: cargo build --workspace --all-targets
+      - id: build_binary
+        run: cargo build --workspace --all-targets
 
       - name: Record default-layout binary provenance (#4012)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.default_layout_checkpoint }}
@@ -636,6 +637,7 @@ jobs:
       # browser companion. Keep hydration and host-override assertions in the
       # same job so they exercise the exact artifacts built by nextest.
       - name: Install Chromium for scanner boundary acceptance
+        id: chromium
         if: always()
         run: pnpm exec playwright install --with-deps chromium
 
@@ -688,15 +690,30 @@ jobs:
       # tuple from a frozen lockfile outside the checkout, builds them with this
       # job's branch-built zfb, and checks one runtime identity in bundles and in
       # the Chromium installed above. Both negative controls must fail.
+      # #4177: it still runs after an unrelated earlier failure, but only when
+      # its own prerequisites (build_binary, chromium) succeeded. Otherwise the
+      # next step records an explicit skip, so the prerequisite's red step stays
+      # the only failure instead of a second "ZFB_BIN does not exist". Registry
+      # and install failures inside the fixture remain failures.
       - name: Published-preset runtime identity fixture (#3331)
-        if: ${{ !cancelled() }}
+        id: published_preset
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.chromium.outcome == 'success' }}
         env:
           ZFB_BIN: ${{ github.workspace }}/target/debug/zfb
           ZFB_PRESET_EVIDENCE_DIR: ${{ runner.temp }}/published-preset-identity
         run: node tests/published-preset-identity/run.mjs
 
+      - name: Record published-preset fixture prerequisite skip (#4177)
+        if: ${{ always() && steps.published_preset.outcome == 'skipped' }}
+        env:
+          ZFB_PRESET_EVIDENCE_DIR: ${{ runner.temp }}/published-preset-identity
+          PREREQ_BUILD_BINARY: ${{ steps.build_binary.outcome }}
+          PREREQ_CHROMIUM: ${{ steps.chromium.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: node tests/published-preset-identity/record-skip.mjs
+
       - name: Upload published-preset identity evidence (#3331)
-        if: ${{ !cancelled() }}
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: published-preset-identity

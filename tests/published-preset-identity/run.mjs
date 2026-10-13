@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { consoleOracleFailures, isFatalConsoleMessage } from "./console-policy.mjs";
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(fixtureRoot, "../..");
@@ -414,7 +415,7 @@ async function browserOracle(installRoot, browser) {
   context.setDefaultTimeout(10_000);
   const page = await context.newPage();
   page.on("console", (message) => {
-    if (message.type() === "error" || message.type() === "warning") {
+    if (isFatalConsoleMessage(message.type())) {
       facts.console.push(`${message.type()}: ${message.text()}`);
     }
   });
@@ -538,9 +539,7 @@ async function browserOracle(installRoot, browser) {
         `ledger after return: ${JSON.stringify(counts)}`,
       );
     });
-    if (facts.pageErrors.length) failures.push(`page errors: ${facts.pageErrors.join(" | ")}`);
-    if (facts.console.length)
-      failures.push(`console errors/warnings: ${facts.console.join(" | ")}`);
+    failures.push(...consoleOracleFailures(facts));
   } catch (error) {
     failures.push(String(error?.message ?? error));
   } finally {

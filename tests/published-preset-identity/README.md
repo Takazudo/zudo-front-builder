@@ -10,6 +10,20 @@ Required in the `health` job (`.github/workflows/health.yml`). Missing
 packages, a failed install or a missing browser fail the run; nothing
 self-skips.
 
+## Gating in `health` (#4177)
+
+The step runs when the job is not cancelled **and** its own prerequisites
+succeeded: `steps.build_binary` (the branch `zfb` binary) and `steps.chromium`
+(the Playwright Chromium install). An unrelated earlier failure therefore does
+not stop it. When a prerequisite failed or was skipped, or the job was
+cancelled, the fixture is skipped and `record-skip.mjs` writes
+`evidence.json` with `status: "skipped"`, the reason and each prerequisite's
+outcome, plus a `::notice::`. That record is a skip, not a pass: the
+prerequisite's own failed step keeps the job red, and no second
+`ZFB_BIN does not exist` failure hides it. The evidence upload runs
+`always()`. Registry and install failures inside the fixture still fail the
+step; there is no `continue-on-error`.
+
 ```sh
 ZFB_BIN="$PWD/target/debug/zfb" node tests/published-preset-identity/run.mjs
 ```
@@ -76,6 +90,13 @@ label and, through the package's preference event, the host portion. A
 client-router navigation to another package-routed page disposes the Island
 (cleanup ledger `1/1`, same document). Going back remounts a live Island
 (`2/1`). Any page error, console error or console warning fails.
+
+**Warnings are fatal on purpose** (`console-policy.mjs`, #4177). The positive
+case is controlled: a pinned install, one host Island and no third-party
+scripts, so a console warning is an unexplained change in the published
+presets or the runtime. There is no allowlist and no errors-only mode; a new
+warning is triaged at its source, and the identity, hydration and negative
+control assertions are never relaxed to absorb it.
 
 ## Negative controls (expected failures)
 
