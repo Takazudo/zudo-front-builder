@@ -590,7 +590,7 @@ describe("island shipped-size budget", () => {
     // Lock hashes come from the native release-bump re-pin (#4170); the
     // ceilings below are the unchanged #4169 metric-migration values.
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "eb76880355e6512ef8c5846062c6ff6f357db977a9cc54e32d3ee52ac6314389",
+      "d1531695fc03238d581a6017e9c7bf676c4a658a013e8220771a7f874f7808de",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
