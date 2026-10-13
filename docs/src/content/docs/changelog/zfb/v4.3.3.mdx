@@ -1,0 +1,12 @@
+---
+title: v4.3.3
+sidebar_position: 149
+---
+
+# v4.3.3
+
+Released: 2026-10-12
+
+## Bug Fixes
+
+- The YAML frontmatter parser (`noyalib`/`noyalib-serde-yaml`) moves from 0.0.44 to 0.0.53 to clear [RUSTSEC-2026-0333](https://rustsec.org/advisories/RUSTSEC-2026-0333), "resource budgets not enforced on the typed deserialization path". zfb parses frontmatter through the compatibility profile, which already enforced the default length, depth, alias, node and scalar budgets, so frontmatter accepted by v4.3.2 is still accepted and over-budget frontmatter is still rejected. New tests pin those boundaries (#4159; 6d14afc6, 18c9832c).

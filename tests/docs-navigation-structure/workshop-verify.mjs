@@ -207,6 +207,25 @@ async function workshop(page, record, locale) {
   );
 }
 
+const resetScopeState = (page) =>
+  page.evaluate(() => sessionStorage.removeItem("zd-sidebar-scope"));
+const sidebarLinks = (sidebar, prefix) =>
+  sidebar.locator("[data-sidebar-tree-root] a[href]").evaluateAll(
+    (nodes, prefix) =>
+      nodes
+        .map((node) => node.getAttribute("href"))
+        .filter((href) => href.startsWith(prefix))
+        .map((href) => href.replace(/\/$/, "")),
+    prefix,
+  );
+const exactLink = (sidebar, path) => sidebar.locator(`a[href="${path}"], a[href="${path}/"]`);
+async function withSidebar(page, mobile, check) {
+  const sidebar = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
+  if (mobile) await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
+  await check(sidebar);
+  if (mobile) await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
+}
+
 async function wind(page, record, locale) {
   const prefix = `${locale}/docs/`;
   for (const group of WIND_UTILITY_GROUPS) {
@@ -214,28 +233,37 @@ async function wind(page, record, locale) {
     await page.evaluate(() => {
       window.__windNavigationSentinel = "alive";
     });
+    const mobile = record.width < 1024;
+    // 06R node baseline: the linked group root, then its family pages.
+    const localView = [group.slug, ...group.members].map((slug) => prefix + slug);
+    // Fresh 06R scope storage per page keeps the exact link list deterministic.
+    await resetScopeState(page);
     await routeLink(page, prefix + group.slug + "/", page.locator("main")).click();
     await expect(page).toHaveURL(origin + prefix + group.slug + "/");
+    await withSidebar(page, mobile, async (sidebar) => {
+      // The group page is the linked scope root: listed once and current immediately.
+      await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+      await expect(exactLink(sidebar, prefix + group.slug)).toHaveAttribute("aria-current", "page");
+      // The first Broaden reaches Utility reference; Restore returns to the group baseline.
+      await sidebar.locator("[data-sidebar-broaden]").click();
+      await expect
+        .poll(async () => (await sidebarLinks(sidebar, prefix))[0])
+        .toBe(prefix + "zudo-wind/utilities");
+      await expect(exactLink(sidebar, prefix + group.slug)).toHaveAttribute("aria-current", "page");
+      await sidebar.locator("[data-sidebar-restore]").click();
+      await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+    });
     const family = group.id === "sizing-spacing" ? "zudo-wind/utilities/gap" : group.members[0];
+    await resetScopeState(page);
     await routeLink(page, prefix + family + "/", page.locator("main")).click();
     await expect(page).toHaveURL(origin + prefix + family + "/");
-    const mobile = record.width < 1024;
-    const sidebar = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
-    if (mobile) await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
-    const links = await sidebar.locator("a[href]").evaluateAll(
-      (nodes, prefix) =>
-        nodes
-          .map((node) => node.getAttribute("href"))
-          .filter((href) => href.startsWith(prefix))
-          .map((href) => href.replace(/\/$/, "")),
-      prefix,
-    );
-    assert.deepEqual(
-      links,
-      [group.slug, ...group.members].map((slug) => prefix + slug),
-    );
-    if (mobile)
-      await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
+    let links;
+    await withSidebar(page, mobile, async (sidebar) => {
+      // Exactly the linked group root and its family pages: no leaked subtree.
+      await expect.poll(() => sidebarLinks(sidebar, prefix)).toEqual(localView);
+      links = await sidebarLinks(sidebar, prefix);
+      await expect(exactLink(sidebar, prefix + family)).toHaveAttribute("aria-current", "page");
+    });
     assert.equal(await page.evaluate(() => window.__windNavigationSentinel), "alive");
     if (group.id === "sizing-spacing") {
       const preview = page.locator('[data-zfb-island="HtmlPreviewWrapperInner"]').first();

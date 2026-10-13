@@ -330,3 +330,169 @@ test("syncHistoryEntry same-pathname (hash) dialog: Forward-reopen preserves scr
   expect(await eventNamesSince(page, s)).toEqual([]);
   expect(await page.evaluate(() => window.scrollY)).toBe(600);
 });
+
+// ===========================================================================
+// Specs 6-8 — fragment entries across a soft navigation (#4165).
+//
+// A → same-document fragment link → soft navigation to B → Back must render A
+// again, not just restore A#fragment in the address bar. frag-a.html carries
+// two links to the same fragment: one the router intercepts (router-managed
+// entry) and one it leaves to the browser (data-zfb-reload), which creates a
+// stateless entry. Before the fix the router ignored every popstate with a
+// null state, so Back to the browser-created entry kept B rendered. Spec 8 is
+// the counterpart: Back/Forward among the rendered document's own fragment
+// entries stays the browser's job (no lifecycle, no swap, live DOM kept).
+// ===========================================================================
+
+const FULL_SWAP = [
+  "zfb:before-preparation",
+  "zfb:after-preparation",
+  "zfb:before-swap",
+  "zfb:after-swap",
+  "zfb:page-load",
+];
+
+/** Collect uncaught page errors and console errors for the whole test. */
+function collectErrors(page) {
+  const errors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+  return errors;
+}
+
+/**
+ * Wait until #frag-target sits at its authored scroll margin below the
+ * viewport top — the position a fragment navigation settles on.
+ */
+async function waitForFragmentSettled(page) {
+  await page.waitForFunction(() => {
+    const target = document.getElementById("frag-target");
+    if (!target) return false;
+    const margin = parseFloat(getComputedStyle(target).scrollMarginTop);
+    return window.scrollY > 0 && Math.abs(target.getBoundingClientRect().top - margin) <= 1;
+  });
+}
+
+async function expectFragmentPageA(page) {
+  const url = new URL(page.url());
+  expect(url.pathname).toBe("/frag-a.html");
+  expect(url.hash).toBe("#frag-target");
+  await expect(page.locator("h1")).toHaveText("Fragment A");
+  await expect(page.locator("#a-only")).toHaveCount(1);
+  await expect(page.locator("#b-only")).toHaveCount(0);
+  await waitForFragmentSettled(page);
+}
+
+async function expectFragmentPageB(page) {
+  expect(new URL(page.url()).pathname).toBe("/frag-b.html");
+  await expect(page.locator("h1")).toHaveText("Fragment B");
+  await expect(page.locator("#b-only")).toHaveCount(1);
+  await expect(page.locator("#a-only")).toHaveCount(0);
+}
+
+for (const variant of [
+  { link: "#native-frag-link", entry: "browser-created", state: "null" },
+  { link: "#router-frag-link", entry: "router-managed", state: "object" },
+]) {
+  test(`fragment entry (${variant.entry}) + soft nav to B: Back restores A at the fragment, Forward/Back repeat cleanly`, async ({
+    page,
+  }) => {
+    const errors = collectErrors(page);
+    await page.goto("/frag-a.html");
+    await waitForInitialLoad(page);
+    const docId = await page.evaluate(() => /** @type {any} */ (window).__docId);
+
+    // Same-document fragment navigation on A: no lifecycle event either way.
+    let s = await seqNow(page);
+    await page.click(variant.link);
+    await page.waitForFunction(() => location.hash === "#frag-target");
+    await waitForFragmentSettled(page);
+    expect(await eventNamesSince(page, s)).toEqual([]);
+    // Pins which kind of entry this variant really exercises.
+    expect(
+      await page.evaluate(() => (history.state === null ? "null" : typeof history.state)),
+    ).toBe(variant.state);
+
+    // Soft navigation to B (the link sits in the fixed nav: no scroll first).
+    s = await seqNow(page);
+    await page.click("#to-frag-b");
+    await waitForNavDone(page, s);
+    await expectFragmentPageB(page);
+    const lengthOnB = await page.evaluate(() => history.length);
+
+    // Back to the A#frag-target entry: A is fetched and swapped back in.
+    s = await seqNow(page);
+    await page.goBack();
+    await waitForNavDone(page, s);
+    expect(await eventNamesSince(page, s)).toEqual(FULL_SWAP);
+    expect(await lastDirectionSince(page, "zfb:before-swap", s)).toBe("back");
+    await expectFragmentPageA(page);
+
+    // Forward to B, then Back again: each traversal swaps exactly once and
+    // nothing is left mid-transition (waitForNavDone checks the attribute).
+    s = await seqNow(page);
+    await page.goForward();
+    await waitForNavDone(page, s);
+    // The direction of a traversal out of an entry without a router index is
+    // not knowable, so only the swap itself is asserted here.
+    expect(await eventNamesSince(page, s)).toEqual(FULL_SWAP);
+    await expectFragmentPageB(page);
+
+    s = await seqNow(page);
+    await page.goBack();
+    await waitForNavDone(page, s);
+    expect(await eventNamesSince(page, s)).toEqual(FULL_SWAP);
+    await expectFragmentPageA(page);
+
+    // No phantom entry: traversals wrote nothing, and one more Back lands on
+    // A's original entry — the rendered document, so no lifecycle at all.
+    expect(await page.evaluate(() => history.length)).toBe(lengthOnB);
+    s = await seqNow(page);
+    await page.goBack();
+    await page.waitForFunction(() => location.hash === "");
+    expect(new URL(page.url()).pathname).toBe("/frag-a.html");
+    expect(await eventNamesSince(page, s)).toEqual([]);
+    await expect(page.locator("#a-only")).toHaveCount(1);
+
+    // Soft navigations only: one JS context, no aborted navigation, no errors.
+    expect(await page.evaluate(() => /** @type {any} */ (window).__docId)).toBe(docId);
+    expect(
+      await page.evaluate(() =>
+        /** @type {any} */ (window).__zfb.events.filter((e) => e.name === "zfb:navigation-aborted"),
+      ),
+    ).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("browser-created fragment entry of the rendered page: Back/Forward stay no-fetch / no-swap (live DOM kept)", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto("/frag-a.html");
+  await waitForInitialLoad(page);
+  const docId = await page.evaluate(() => /** @type {any} */ (window).__docId);
+  // Live DOM marker a body swap would discard.
+  await page.evaluate(() => {
+    /** @type {any} */ (document.getElementById("a-only")).dataset.live = "kept";
+  });
+
+  const s = await seqNow(page);
+  await page.click("#native-frag-link");
+  await page.waitForFunction(() => location.hash === "#frag-target");
+  await waitForFragmentSettled(page);
+  expect(await page.evaluate(() => history.state)).toBeNull();
+
+  await page.goBack();
+  await page.waitForFunction(() => location.hash === "");
+  await page.goForward();
+  await page.waitForFunction(() => location.hash === "#frag-target");
+
+  expect(await eventNamesSince(page, s)).toEqual([]);
+  expect(new URL(page.url()).pathname).toBe("/frag-a.html");
+  await expect(page.locator("#a-only")).toHaveAttribute("data-live", "kept");
+  expect(await page.evaluate(() => /** @type {any} */ (window).__docId)).toBe(docId);
+  expect(errors).toEqual([]);
+});

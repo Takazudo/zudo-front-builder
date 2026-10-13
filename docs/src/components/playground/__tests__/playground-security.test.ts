@@ -1,5 +1,5 @@
-import { h } from "preact";
-import { render } from "preact-render-to-string";
+import { h } from "@takazudo/zfb/zudo-react";
+import { renderToString as render } from "@takazudo/zfb/zudo-react/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import RenderPlayground from "../render-playground";

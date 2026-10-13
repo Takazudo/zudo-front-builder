@@ -430,7 +430,7 @@ function ceilingMetrics(contract) {
     : ["raw", "gzip"];
 }
 
-function sameHashMaps(expected, actual) {
+export function sameHashMaps(expected, actual) {
   return (
     isRecord(expected) &&
     isRecord(actual) &&

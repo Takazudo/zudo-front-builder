@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "decisionIssue": 3469,
+  "outcome": "intentional-feature-size-change",
+  "selectedOptimizations": [],
+  "baselineSourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64"
+  },
+  "fixtureVersion": "v3-islands-1",
+  "fixtureSha256": {
+    "event-only": "2264320634b4c896cd5ad62d3a7cfcd12691d6744226183a6756e262e5045eeb",
+    "scalar-signal": "1f69011b37ca925b4ed9a2868592d150efcf9450f220c7c3fc7d0bd491cdd364",
+    "show-for": "a2288f1a3bf185f9191309ef08dfb768cda0c62f2f56fb66d7d1b0bc97b29c38",
+    "model": "1273665b15a9f7ff0adefb301961f1484690fe95f8c79450fa5387079ed4995c",
+    "blog-menu": "f901991768adc5146562429544de9b1f23f843862efe8f0401e46c297969166a",
+    "theme-toggle": "206d45d5289464398e93943c78e9efb97267eaca7c3314ad9c9877057aeb4af0",
+    "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
+  },
+  "runnerSha256": {
+    "measure-real.mjs": "bae79601c376fce269526bccb1433e05ca187a04d3279594fdef8e1dca171686",
+    "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
+  },
+  "toolchain": {
+    "packageVersion": "4.2.1",
+    "honoVersion": "4.12.25",
+    "esbuildVersion": "0.25.12",
+    "nodeVersion": "v24.14.0",
+    "zlibVersion": "1.3.1-e00f703",
+    "pnpmLockSha256": "113d2ec03d688fe05d573b1c4a56b97a55647ccae86b1416b84e8c97e04d9b8d",
+    "cargoLockSha256": "e488faa9fe58e3bf2cee980228761558a44a61eab70c454463ea872b013fec75"
+  },
+  "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
+  "allowance": {
+    "raw": 0,
+    "gzip": 0
+  },
+  "ceilings": {
+    "workspace": {
+      "no-island": {
+        "raw": 0,
+        "gzip": 0
+      },
+      "event-only": {
+        "raw": 66792,
+        "gzip": 22249
+      },
+      "scalar-signal": {
+        "raw": 66800,
+        "gzip": 22256
+      },
+      "show-for": {
+        "raw": 66949,
+        "gzip": 22322
+      },
+      "model": {
+        "raw": 66791,
+        "gzip": 22249
+      },
+      "blog-theme": {
+        "raw": 67144,
+        "gzip": 22374
+      },
+      "json-api": {
+        "raw": 66950,
+        "gzip": 22335
+      },
+      "multi-island": {
+        "raw": 67072,
+        "gzip": 22341
+      }
+    },
+    "packed": {
+      "no-island": {
+        "raw": 0,
+        "gzip": 0
+      },
+      "event-only": {
+        "raw": 66854,
+        "gzip": 22267
+      },
+      "scalar-signal": {
+        "raw": 66862,
+        "gzip": 22284
+      },
+      "show-for": {
+        "raw": 67011,
+        "gzip": 22342
+      },
+      "model": {
+        "raw": 66853,
+        "gzip": 22272
+      },
+      "blog-theme": {
+        "raw": 67206,
+        "gzip": 22410
+      },
+      "json-api": {
+        "raw": 67012,
+        "gzip": 22360
+      },
+      "multi-island": {
+        "raw": 67134,
+        "gzip": 22365
+      }
+    }
+  },
+  "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml once it reaches main; its path-filtered pull_request trigger is a temporary bootstrap. Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
+  "platformStatus": "Darwin arm64 zero-allowance contract records the deferred first-mount render-intent runtime change measured natively in workflow_dispatch run 37982542273 at source b7d161bb3a1adaf605d8934b16773f3e4974ad6d. All nonempty island fixtures gained 465–469 raw bytes and 141–163 gzip bytes against the prior Darwin exact ceilings; no-island stayed 0/0. Workspace and packed eight-fixture matrices each had two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "baselineEvidence": {
+    "event": "workflow_dispatch",
+    "runId": 37982542273,
+    "jobId": 113996389940,
+    "sourceSha": "b7d161bb3a1adaf605d8934b16773f3e4974ad6d",
+    "note": "Native macOS 15 arm64 run from root PR #4118 head b7d161bb; artifact 11642476321 contains complete workspace and packed eight-fixture matrices with two identical full-dist passes per case, package tarballs and runner provenance. Deferred first-mount render-intent handling adds 465–469 raw bytes per nonempty island entry; no-island remains 0/0. Ceilings equal the measured bytes with zero allowance. The prior Darwin v4.1.0 contract remains in Git history."
+  }
+}

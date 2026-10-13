@@ -8,17 +8,21 @@
 // bump or a runtime source edit that only moves the token leaves every raw and
 // gzipNormalized total unchanged. This script re-derives the totals from the
 // saved artifact bytes (never from measurement.json's claims), refuses any raw
-// change, and under `--reason release-bump` / `--reason runtime-identity`
-// also refuses a gzipNormalized change: a moved normalized total is product
-// code moving and needs a reviewed decision, not a re-pin. `--reason
-// metric-migration` converts a schemaVersion-1 actual-gzip contract to the
-// schemaVersion-2 normalized shape from a replayed artifact.
+// change, and under `--reason release-bump` / `--reason runtime-identity` /
+// `--reason lockfile-provenance` also refuses a gzipNormalized change: a moved
+// normalized total is product code moving and needs a reviewed decision, not a
+// re-pin. `--reason metric-migration` converts a schemaVersion-1 actual-gzip
+// contract to the schemaVersion-2 normalized shape from a replayed artifact.
+// `--reason lockfile-provenance` records a consumer-only pnpm-lock.yaml move
+// (#4184): the producer version and every other reviewed identity input must be
+// unchanged, and only the lock hash may move.
 
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -48,7 +52,61 @@ export const REASONS = Object.freeze({
     heading: "runtime-identity re-pin",
     requires: 2,
   },
+  "lockfile-provenance": {
+    outcome: "lockfile-provenance-repin",
+    heading: "lockfile-provenance re-pin",
+    requires: 2,
+  },
 });
+
+const IDENTITY_TOOLCHAIN_KEYS = ["honoVersion", "esbuildVersion", "nodeVersion", "zlibVersion"];
+
+// The reviewed identity a measurement artifact carries, in contract shape.
+export function measuredIdentity(provenance) {
+  return {
+    fixtureSha256: provenance.fixtureSha256,
+    runnerSha256: provenance.runnerSha256,
+    cargoLockSha256: provenance.cargoLockSha256,
+    toolchain: {
+      honoVersion: provenance.honoPackageVersion,
+      esbuildVersion: provenance.esbuildVersion,
+      nodeVersion: provenance.nodeVersion,
+      zlibVersion: provenance.zlibVersion,
+    },
+  };
+}
+
+// lockfile-provenance may move only pnpmLockSha256: anything else that the
+// contract pins must equal the measured artifact and this checkout.
+export function assertLockfileOnlyMovement(contract, evidence) {
+  const moved = [];
+  if (evidence.version !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  const identity = evidence.identity;
+  if (!identity) {
+    throw new Error("--reason lockfile-provenance needs the artifact's measured identity inputs");
+  }
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  if (!sameHashMaps(identity.runnerSha256, contract.runnerSha256)) moved.push("runnerSha256");
+  if (identity.cargoLockSha256 !== contract.toolchain.cargoLockSha256) {
+    moved.push("cargoLockSha256");
+  }
+  for (const key of IDENTITY_TOOLCHAIN_KEYS) {
+    if (identity.toolchain?.[key] !== contract.toolchain[key]) moved.push("toolchain." + key);
+  }
+  if (moved.length > 0) {
+    throw new Error(
+      "--reason lockfile-provenance allows only pnpm-lock.yaml to move, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change",
+    );
+  }
+  if (evidence.pnpmLockSha256 === contract.toolchain.pnpmLockSha256) {
+    throw new Error(
+      "--reason lockfile-provenance found the contract's pnpm-lock.yaml hash unchanged; nothing to re-pin",
+    );
+  }
+}
 
 // `normalizedByMode` holds normalize-identity.mjs results recomputed from
 // the saved bytes, keyed by mode. Actual gzip rides along as evidence only.
@@ -65,6 +123,16 @@ export function measuredTotals(normalizedByMode) {
     }
   }
   return totals;
+}
+
+export function assertLinuxX64Provenance(provenance) {
+  if (provenance?.platform?.os !== "linux" || provenance?.platform?.arch !== "x64") {
+    throw new Error(
+      "artifact was measured on " +
+        JSON.stringify(provenance?.platform) +
+        ", not linux-x64; Darwin arm64 uses rebaseline-island-size-darwin.mjs",
+    );
+  }
 }
 
 export function diffCeilings(contract, totals) {
@@ -137,19 +205,33 @@ function metricText() {
   return IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
 }
 
-// Actual gzip movement between the previous ceilings and the new measurement,
+// Actual gzip movement between the previous contract and the new measurement,
 // reported as transfer-size evidence; never a ceiling under schemaVersion 2.
-function actualGzipEvidence(contract, totals) {
+// schemaVersion 1 ceilings are actual gzip; schemaVersion 2 ceilings carry only
+// gzipNormalized, so the previous actual gzip is read from the evidence a
+// re-pin records in baselineEvidence.actualGzip. Null when none was recorded.
+export function actualGzipEvidence(contract, totals) {
   const changes = [];
   for (const mode of MODES) {
     for (const [fixture, after] of Object.entries(totals[mode])) {
-      const before = contract.ceilings[mode][fixture];
-      if (!before || typeof before.gzip !== "number") return null;
-      if (before.gzip !== after.gzip)
-        changes.push({ mode, fixture, delta: after.gzip - before.gzip });
+      const before =
+        contract.schemaVersion === 2
+          ? contract.baselineEvidence?.actualGzip?.[mode]?.[fixture]
+          : contract.ceilings[mode][fixture]?.gzip;
+      if (typeof before !== "number") return null;
+      if (before !== after.gzip) changes.push({ mode, fixture, delta: after.gzip - before });
     }
   }
   return changes;
+}
+
+function actualGzipRows(totals) {
+  return Object.fromEntries(
+    MODES.map((mode) => [
+      mode,
+      Object.fromEntries(Object.entries(totals[mode]).map(([name, row]) => [name, row.gzip])),
+    ]),
+  );
 }
 
 export function rebaselineContract(contract, totals, evidence, reason) {
@@ -193,8 +275,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
         " — record a reviewed decision instead",
     );
   }
+  if (reason === "lockfile-provenance") assertLockfileOnlyMovement(contract, evidence);
   const previousVersion = contract.toolchain.packageVersion;
-  const gzipEvidence = actualGzipEvidence(contract, totals) ?? [];
+  const gzipEvidence = actualGzipEvidence(contract, totals);
   const next = structuredClone(contract);
   if (reason === "metric-migration") {
     const migrated = {};
@@ -217,12 +300,14 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
   next.normalizerSha256 = evidence.normalizerSha256;
   const gzipSummary =
-    gzipEvidence.length === 0
-      ? "no actual gzip total moved"
-      : gzipEvidence.length +
-        " actual gzip totals moved by " +
-        deltaRange(gzipEvidence) +
-        " bytes (evidence only, not a ceiling)";
+    gzipEvidence === null
+      ? "no previous actual gzip evidence to compare"
+      : gzipEvidence.length === 0
+        ? "no actual gzip total moved"
+        : gzipEvidence.length +
+          " actual gzip totals moved by " +
+          deltaRange(gzipEvidence) +
+          " bytes (evidence only, not a ceiling)";
   const matrices =
     " Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
     "inventories. Other platforms and toolchains are not covered.";
@@ -258,6 +343,20 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       gzipSummary +
       "." +
       matrices;
+  } else if (reason === "lockfile-provenance") {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from health run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " after a consumer-only pnpm-lock.yaml change. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the lock hash moved. This is not a release or runtime change. " +
+      gzipSummary +
+      "." +
+      matrices;
   } else {
     next.platformStatus =
       "Linux x64 has exact zero-allowance v" +
@@ -278,6 +377,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     runId: evidence.runId,
     jobId: evidence.jobId,
     sourceSha: evidence.sourceSha,
+    actualGzip: actualGzipRows(totals),
     note:
       evidence.runLabel +
       " at " +
@@ -292,11 +392,17 @@ export function rebaselineContract(contract, totals, evidence, reason) {
           " actual-gzip ceilings. Raw totals did not change. Actual gzip stays in the sidecar " +
           "as transfer-size evidence. The manager re-verifies these values on the integrated " +
           "tree in CI."
-        : "Raw and gzipNormalized totals did not change from the v" +
-          previousVersion +
-          " contract; " +
-          gzipSummary +
-          ".") +
+        : reason === "lockfile-provenance"
+          ? "Consumer-only pnpm-lock.yaml move at unchanged v" +
+            previousVersion +
+            " with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; " +
+            gzipSummary +
+            "."
+          : "Raw and gzipNormalized totals did not change from the v" +
+            previousVersion +
+            " contract; " +
+            gzipSummary +
+            ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -314,11 +420,22 @@ function fixtureKey(fixture) {
   return /^[a-z]+$/.test(fixture) ? fixture : JSON.stringify(fixture);
 }
 
-export function rewriteTestPins(source, contract) {
-  const start = source.indexOf(TEST_ANCHOR);
-  if (start < 0) throw new Error("Linux ceiling test not found in " + TEST_FILE);
+// Rewrites one `it(...)` block of the budget test: `edit` maps the block text
+// to its replacement and everything outside the block is returned untouched.
+export function rewriteTestBlock(source, anchor, label, edit) {
+  const start = source.indexOf(anchor);
+  if (start < 0) throw new Error(label + " test not found in " + TEST_FILE);
   const end = source.indexOf("\n  });", start);
-  let block = source.slice(start, end);
+  return source.slice(0, start) + edit(source.slice(start, end)) + source.slice(end);
+}
+
+export function rewriteTestPins(source, contract) {
+  return rewriteTestBlock(source, TEST_ANCHOR, "Linux ceiling", (block) =>
+    rewriteLinuxBlock(block, contract),
+  );
+}
+
+function rewriteLinuxBlock(block, contract) {
   block = block.replace(
     /(linuxContract\.toolchain\.packageVersion\)\.toBe\()"[^"]+"/,
     '$1"' + contract.toolchain.packageVersion + '"',
@@ -346,7 +463,7 @@ export function rewriteTestPins(source, contract) {
       "\n    " +
       block.slice(blockEnd);
   }
-  return source.slice(0, start) + block + source.slice(end);
+  return block;
 }
 
 export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
@@ -363,21 +480,23 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     ") at " +
     sourceText(sourceSha, contract.baselineSourceSha).replace(/([0-9a-f]{40})/g, "`$1`");
   const evidence =
-    gzipEvidence.length === 0
-      ? "No actual gzip total moved."
-      : "Actual gzip moved on " +
-        gzipEvidence.length +
-        " rows by " +
-        deltaRange(gzipEvidence) +
-        " bytes (" +
-        describeDeltas(gzipEvidence) +
-        "); that is transfer-size evidence in the sidecar, not a ceiling.";
+    gzipEvidence === null
+      ? "No previous actual gzip evidence was recorded to compare."
+      : gzipEvidence.length === 0
+        ? "No actual gzip total moved."
+        : "Actual gzip moved on " +
+          gzipEvidence.length +
+          " rows by " +
+          deltaRange(gzipEvidence) +
+          " bytes (" +
+          describeDeltas(gzipEvidence) +
+          "); that is transfer-size evidence in the sidecar, not a ceiling.";
   const closing =
     " The retained `island-size-linux-x64` artifact contains all eight fixtures in both modes with two " +
     "identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and " +
     "`gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git " +
-    "history. The Darwin arm64 contract is unchanged, still measures actual gzip under schemaVersion 1, " +
-    "and needs its separate native remeasurement through `island-size-darwin.yml`.\n";
+    "history. The Darwin arm64 contract is unchanged; it is re-pinned separately from a native " +
+    "`island-size-darwin.yml` artifact by `rebaseline-island-size-darwin.mjs`.\n";
   let body;
   if (reason === "metric-migration") {
     body =
@@ -401,6 +520,18 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       ". Every raw and `gzipNormalized` total is unchanged from the v" +
       previousVersion +
       " contract. These totals alone do not prove byte-identical product code. " +
+      evidence +
+      closing;
+  } else if (reason === "lockfile-provenance") {
+    body =
+      "The Linux contract was re-pinned at v" +
+      version +
+      " from " +
+      run +
+      " for a consumer-only `pnpm-lock.yaml` change: the producer version, fixtures, runners, " +
+      "`Cargo.lock`, toolchain and normalizer are unchanged, and every raw and `gzipNormalized` " +
+      "total is unchanged. Only the reviewed lock hash moved; this is not a release or runtime " +
+      "change. " +
       evidence +
       closing;
   } else {
@@ -452,12 +583,16 @@ function main() {
     );
   }
   const provenance = measurements.workspace.provenance;
+  for (const mode of MODES) assertLinuxX64Provenance(measurements[mode].provenance);
   const version = JSON.parse(readFileSync("packages/zfb/package.json", "utf8")).version;
   const pnpmLockSha256 = createHash("sha256").update(readFileSync("pnpm-lock.yaml")).digest("hex");
   for (const mode of MODES) {
     const p = measurements[mode].provenance;
     if (p.sourceSha !== provenance.sourceSha)
       throw new Error("workspace and packed source SHAs differ");
+    if (JSON.stringify(measuredIdentity(p)) !== JSON.stringify(measuredIdentity(provenance))) {
+      throw new Error("workspace and packed identity inputs differ");
+    }
     if (p.pnpmLockSha256 !== pnpmLockSha256) {
       throw new Error(mode + " artifact lockfile hash differs from this checkout's pnpm-lock.yaml");
     }
@@ -473,6 +608,7 @@ function main() {
     "metric-migration":
       "Metric migration replayed from the retained artifact of health run " + args["run-id"],
     "runtime-identity": "Runtime-identity re-pin run at v" + version,
+    "lockfile-provenance": "Consumer lockfile re-pin run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -486,6 +622,7 @@ function main() {
       runId: Number(args["run-id"]),
       jobId: Number(args["job-id"]),
       runLabel: args.label ?? defaultLabel,
+      identity: measuredIdentity(provenance),
     },
     args.reason,
   );
@@ -501,7 +638,7 @@ function main() {
       " (" +
       args.reason +
       "): " +
-      (describeDeltas(result.gzipEvidence) || "no actual gzip change") +
+      (describeDeltas(result.gzipEvidence ?? []) || "no actual gzip change") +
       " (actual gzip, evidence only)",
   );
 }

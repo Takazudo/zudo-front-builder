@@ -1,0 +1,15 @@
+---
+title: v4.4.0
+sidebar_position: 36
+---
+
+# v4.4.0
+
+Released: 2026-10-13
+
+## Bug Fixes
+
+- The YAML frontmatter parser (`noyalib`/`noyalib-serde-yaml`) moves from 0.0.53 to 0.0.55. Frontmatter with a long single-line flow collection now parses in near-linear time instead of roughly quadratic time; at 240,000 flow entries it is about 57× faster. Frontmatter far above the node budget is now refused in milliseconds. The immutable YAML differential corpus and the frontmatter resource budgets pass unchanged (#4161, #4172, #4173; 61892946).
+- Parser behavior that changes with 0.0.55, all documented upstream and verified through `frontmatter::extract`: a verbatim tag such as `v: !<int> 1` now names exactly the tag `int` (YAML 1.2.2) and is refused, where 0.0.53 read it as the core int; the full-URI forms `!<tag:yaml.org,2002:int>` and `!<tag:yaml.org,2002:str>` are now accepted; an alias that would build a value deeper than 128 levels is refused; and an implicit flow-collection key longer than 1,024 characters reports a new error text (it was already refused). No previously accepted frontmatter changes value (61892946).
+- Artifact sizes change with the parser. Compared with v4.3.3, `finalWasm` grows by 2,670 bytes (default), 2,605 bytes (render-only) and 2,352 bytes (parse-only). gzip-9 grows by 1,842, 742 and 1,385 bytes respectively. highlight-only `finalWasm` is unchanged and its gzip-9 moves by 1 byte. Every artifact stays under its unchanged ceiling (0593376b).
+- All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so all four SHA-256 digests change for v4.4.0. Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.4.0-shipped-artifacts.json` Release asset.

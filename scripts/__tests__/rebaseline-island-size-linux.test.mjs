@@ -5,8 +5,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   REASONS,
+  actualGzipEvidence,
+  assertLockfileOnlyMovement,
   describeDeltas,
   diffCeilings,
+  measuredIdentity,
   measuredTotals,
   parseArgs,
   readmeSection,
@@ -18,6 +21,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const contract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
+// The cases below build their own actual-gzip evidence; start from a contract that
+// has none, whatever the live contract recorded at its last re-pin.
+delete contract.baselineEvidence.actualGzip;
 const testSource = readFileSync(
   join(root, "scripts/__tests__/island-size-budget.test.mjs"),
   "utf8",
@@ -109,14 +115,14 @@ describe("rebaseline-island-size-linux", () => {
       "PR merge source " + evidence.sourceSha + " (probe head " + evidence.headSha + ")",
     );
     expect(next.baselineEvidence.note).toContain(
-      "Raw and gzipNormalized totals did not change from the v4.3.1 contract",
+      `Raw and gzipNormalized totals did not change from the v${contract.toolchain.packageVersion} contract`,
     );
     expect(next.platformStatus).toContain("Every raw and gzipNormalized total is unchanged");
     expect(next.platformStatus).not.toContain("no-product-code-change");
     expect(next.outcome).not.toBe("no-product-code-change");
-    // The previous contract pins gzipNormalized, so the synthetic +15 actual
-    // gzip has no prior value to compare with and is not reported as movement.
-    expect(gzipEvidence).toEqual([]);
+    // The previous schema-2 contract recorded no actual gzip, so there is no
+    // prior value to compare with: reported as unknown, not as "no movement".
+    expect(gzipEvidence).toBeNull();
     expect(contract.toolchain.packageVersion).not.toBe("9.9.9");
   });
 
@@ -125,7 +131,7 @@ describe("rebaseline-island-size-linux", () => {
       "packed/show-for": { raw: contract.ceilings.packed["show-for"].raw + 1 },
     });
     expect(diffCeilings(contract, totals).rawChanges).toHaveLength(1);
-    for (const reason of ["release-bump", "runtime-identity"]) {
+    for (const reason of ["release-bump", "runtime-identity", "lockfile-provenance"]) {
       expect(() => rebaselineContract(contract, totals, evidence, reason)).toThrow(
         /raw totals changed \(packed\/show-for\)/,
       );
@@ -143,7 +149,7 @@ describe("rebaseline-island-size-linux", () => {
     expect(diffCeilings(contract, totals).normalizedChanges).toEqual([
       { mode: "workspace", fixture: "model", delta: 3 },
     ]);
-    for (const reason of ["release-bump", "runtime-identity"]) {
+    for (const reason of ["release-bump", "runtime-identity", "lockfile-provenance"]) {
       expect(() => rebaselineContract(contract, totals, evidence, reason)).toThrow(
         /gzipNormalized totals changed \(workspace\/model \+3\); the identity token is normalized away, so this is product code moving, not a /,
       );
@@ -164,7 +170,7 @@ describe("rebaseline-island-size-linux", () => {
       { ...evidence, version: "4.3.1" },
       "metric-migration",
     );
-    expect(previousVersion).toBe("4.3.1");
+    expect(previousVersion).toBe(contract.toolchain.packageVersion);
     expect(Object.keys(next).slice(0, 5)).toEqual([
       "schemaVersion",
       "metric",
@@ -205,7 +211,12 @@ describe("rebaseline-island-size-linux", () => {
     expect(next.platformStatus).toContain(
       "equal totals alone do not prove byte-identical product code",
     );
-    expect(Object.keys(REASONS)).toEqual(["release-bump", "metric-migration", "runtime-identity"]);
+    expect(Object.keys(REASONS)).toEqual([
+      "release-bump",
+      "metric-migration",
+      "runtime-identity",
+      "lockfile-provenance",
+    ]);
   });
 
   it("refuses a missing fixture", () => {
@@ -259,7 +270,7 @@ describe("rebaseline-island-size-linux", () => {
       /--head-sha must be/,
     );
     expect(() => parseArgs(ok.map((v) => (v === "release-bump" ? "gzip-shift" : v)))).toThrow(
-      /--reason must be one of release-bump, metric-migration, runtime-identity/,
+      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance/,
     );
     expect(() => parseArgs(["--artifact"])).toThrow(/bad argument/);
   });
@@ -280,18 +291,49 @@ describe("rebaseline-island-size-linux", () => {
     expect(rewriteTestPins(testSource, contract)).toBe(testSource);
   });
 
+  it("reads the previous actual gzip of a schemaVersion 2 contract from recorded evidence", () => {
+    const totals = totalsFrom(contract);
+    expect(actualGzipEvidence(contract, totals)).toBeNull();
+
+    const recorded = structuredClone(contract);
+    recorded.baselineEvidence.actualGzip = Object.fromEntries(
+      ["workspace", "packed"].map((mode) => [
+        mode,
+        Object.fromEntries(Object.entries(totals[mode]).map(([name, row]) => [name, row.gzip])),
+      ]),
+    );
+    expect(actualGzipEvidence(recorded, totals)).toEqual([]);
+    recorded.baselineEvidence.actualGzip.packed["event-only"] -= 7;
+    expect(actualGzipEvidence(recorded, totals)).toEqual([
+      { mode: "packed", fixture: "event-only", delta: 7 },
+    ]);
+
+    const repinned = rebaselineContract(recorded, totals, evidence, "release-bump");
+    expect(repinned.gzipEvidence).toHaveLength(1);
+    expect(repinned.contract.baselineEvidence.actualGzip.packed["event-only"]).toBe(
+      totals.packed["event-only"].gzip,
+    );
+    const noEvidence = rebaselineContract(contract, totals, evidence, "release-bump");
+    expect(noEvidence.gzipEvidence).toBeNull();
+    expect(readmeSection(noEvidence.contract, null, "1.0.0", "release-bump")).toContain(
+      "No previous actual gzip evidence was recorded",
+    );
+  });
+
   it("writes a README section per reason naming the run, source and evidence", () => {
     const {
       contract: next,
       gzipEvidence,
       previousVersion,
     } = rebaselineContract(contract, totalsFrom(contract), evidence, "release-bump");
-    const release = readmeSection(next, gzipEvidence, previousVersion, "release-bump");
+    const release = readmeSection(next, gzipEvidence ?? [], previousVersion, "release-bump");
     expect(release).toContain("## v9.9.9 release baseline");
     expect(release).toContain("actions/runs/1) (job 2)");
     expect(release).toContain("Every raw and `gzipNormalized` total is unchanged");
     expect(release).toContain("No actual gzip total moved.");
-    expect(release).toContain("still measures actual gzip under schemaVersion 1");
+    expect(release).toContain(
+      "re-pinned separately from a native `island-size-darwin.yml` artifact",
+    );
 
     const legacy = legacyContract(contract);
     const migration = rebaselineContract(
@@ -318,5 +360,137 @@ describe("rebaseline-island-size-linux", () => {
     const identity = readmeSection(next, [], previousVersion, "runtime-identity");
     expect(identity).toContain("## v9.9.9 runtime-identity re-pin");
     expect(identity).toContain("These totals alone do not prove byte-identical product code");
+  });
+  describe("lockfile-provenance (#4184)", () => {
+    // A measurement provenance whose identity inputs equal the live contract.
+    const provenance = {
+      fixtureSha256: { ...contract.fixtureSha256 },
+      runnerSha256: { ...contract.runnerSha256 },
+      cargoLockSha256: contract.toolchain.cargoLockSha256,
+      honoPackageVersion: contract.toolchain.honoVersion,
+      esbuildVersion: contract.toolchain.esbuildVersion,
+      nodeVersion: contract.toolchain.nodeVersion,
+      zlibVersion: contract.toolchain.zlibVersion,
+    };
+    const lockEvidence = {
+      ...evidence,
+      version: contract.toolchain.packageVersion,
+      normalizerSha256: contract.normalizerSha256,
+      pnpmLockSha256: "f".repeat(64),
+      runLabel: "Consumer lockfile re-pin run",
+      identity: measuredIdentity(provenance),
+    };
+
+    it("re-pins only the lock hash at an unchanged producer version", () => {
+      const { contract: next, previousVersion } = rebaselineContract(
+        contract,
+        totalsFrom(contract),
+        lockEvidence,
+        "lockfile-provenance",
+      );
+      expect(next.outcome).toBe("lockfile-provenance-repin");
+      expect(next.toolchain).toEqual({ ...contract.toolchain, pnpmLockSha256: "f".repeat(64) });
+      expect(next.fixtureSha256).toEqual(contract.fixtureSha256);
+      expect(next.runnerSha256).toEqual(contract.runnerSha256);
+      expect(next.normalizerSha256).toBe(contract.normalizerSha256);
+      expect(next.ceilings).toEqual(contract.ceilings);
+      expect(next.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
+      expect(next.platformStatus).toContain("consumer-only pnpm-lock.yaml change");
+      expect(next.platformStatus).toContain("This is not a release or runtime change.");
+      expect(next.platformStatus).not.toMatch(/release-bump|release baseline|runtime-identity/);
+      expect(next.baselineEvidence.note).toContain("Consumer-only pnpm-lock.yaml move");
+      const section = readmeSection(next, [], previousVersion, "lockfile-provenance");
+      expect(section).toContain(
+        "## v" + contract.toolchain.packageVersion + " lockfile-provenance re-pin",
+      );
+      expect(section).toContain("consumer-only `pnpm-lock.yaml` change");
+      expect(section).toContain("this is not a release or runtime change");
+      expect(section).not.toContain("release baseline");
+    });
+
+    it("rejects a stale or wrong tuple", () => {
+      expect(() =>
+        rebaselineContract(
+          contract,
+          totalsFrom(contract),
+          { ...lockEvidence, version: "9.9.9" },
+          "lockfile-provenance",
+        ),
+      ).toThrow(/allows only pnpm-lock.yaml to move, but packageVersion differ/);
+      expect(() =>
+        rebaselineContract(
+          contract,
+          totalsFrom(contract),
+          { ...lockEvidence, pnpmLockSha256: contract.toolchain.pnpmLockSha256 },
+          "lockfile-provenance",
+        ),
+      ).toThrow(/hash unchanged; nothing to re-pin/);
+      const { identity: _identity, ...withoutIdentity } = lockEvidence;
+      expect(() => assertLockfileOnlyMovement(contract, withoutIdentity)).toThrow(
+        /needs the artifact's measured identity inputs/,
+      );
+    });
+
+    it.each([
+      ["normalizerSha256", (e) => ({ ...e, normalizerSha256: "e".repeat(64) })],
+      [
+        "fixtureSha256",
+        (e) => ({
+          ...e,
+          identity: {
+            ...e.identity,
+            fixtureSha256: { ...e.identity.fixtureSha256, model: "0".repeat(64) },
+          },
+        }),
+      ],
+      [
+        "runnerSha256",
+        (e) => ({
+          ...e,
+          identity: {
+            ...e.identity,
+            runnerSha256: { ...e.identity.runnerSha256, "measure.mjs": "0".repeat(64) },
+          },
+        }),
+      ],
+      [
+        "cargoLockSha256",
+        (e) => ({ ...e, identity: { ...e.identity, cargoLockSha256: "0".repeat(64) } }),
+      ],
+      [
+        "toolchain.nodeVersion",
+        (e) => ({
+          ...e,
+          identity: { ...e.identity, toolchain: { ...e.identity.toolchain, nodeVersion: "v0" } },
+        }),
+      ],
+    ])("rejects an unintended %s movement", (name, edit) => {
+      expect(() =>
+        rebaselineContract(
+          contract,
+          totalsFrom(contract),
+          edit(lockEvidence),
+          "lockfile-provenance",
+        ),
+      ).toThrow(new RegExp("but " + name.replace(".", "\\.") + " differ"));
+    });
+
+    it("leaves the existing reasons' behavior unchanged", () => {
+      const { contract: release } = rebaselineContract(
+        contract,
+        totalsFrom(contract),
+        evidence,
+        "release-bump",
+      );
+      expect(release.outcome).toBe("release-version-stamp");
+      expect(release.toolchain.packageVersion).toBe("9.9.9");
+      const { contract: identity } = rebaselineContract(
+        contract,
+        totalsFrom(contract),
+        evidence,
+        "runtime-identity",
+      );
+      expect(identity.outcome).toBe("runtime-identity-repin");
+    });
   });
 });
