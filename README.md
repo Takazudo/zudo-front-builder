@@ -30,6 +30,8 @@ This downloads the `x86_64-pc-windows-msvc` binary, verifies its SHA-256 checksu
 
 ## Install via npm (Node required)
 
+For Node.js tools that need CSS directly, use the asynchronous [`compileCss` API](https://takazudomodular.com/pj/zudo-front-builder/docs/api/compile-css/) from `@takazudo/zfb/css` (Node ≥22). It accepts in-memory configuration and uses the same compiler as `zfb css`.
+
 ```sh
 # Scaffold a new site
 pnpm create zfb@latest my-site

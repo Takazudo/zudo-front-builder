@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 
+import { computeLockFingerprint } from "./lock-fingerprint.mjs";
+
 const root = dirname(new URL(import.meta.url).pathname);
 const repo = resolve(root, "../..");
 const fixtures = resolve(root, "fixtures");
@@ -235,6 +237,11 @@ if (
   )
 )
   throw new Error("packed graph did not retain the built zudo-react client module");
+const pnpmLockBytes = readFileSync(join(repo, "pnpm-lock.yaml"));
+const dependencyFingerprint = computeLockFingerprint({
+  lockText: pnpmLockBytes.toString("utf8"),
+  currentVersion: packageJson.version,
+});
 const provenance = {
   sourceSha: pin,
   platform: { os: process.platform, arch: process.arch },
@@ -249,7 +256,11 @@ const provenance = {
   flags:
     "bundle esm splitting tree-shaking browser keep-names minify NODE_ENV=production import.meta.env.PROD=true import.meta.env.DEV=false jsx=automatic",
   packageJsonSha256: sha(readFileSync(join(packageDir, "package.json"))),
-  pnpmLockSha256: sha(readFileSync(join(repo, "pnpm-lock.yaml"))),
+  pnpmLockSha256: sha(pnpmLockBytes),
+  dependencyFingerprint: {
+    policyVersion: dependencyFingerprint.policyVersion,
+    sha256: dependencyFingerprint.sha256,
+  },
   cargoLockSha256: sha(readFileSync(join(repo, "Cargo.lock"))),
   fixtureSha256: Object.fromEntries(source()),
   repeats: 2,

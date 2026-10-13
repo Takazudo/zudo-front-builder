@@ -1,0 +1,119 @@
+---
+title: compileCss
+description: Compile a CSS file in-process from Node.js with in-memory configuration and explicit sources.
+sidebar_position: 10
+---
+
+`compileCss` is an asynchronous, Node-only ESM API. It uses the same Rust compiler as [`zfb css`](cli.mdx), returning CSS directly without invoking the CLI or evaluating a configuration file.
+
+```ts
+import { compileCss } from "@takazudo/zfb/css";
+
+const { css, diagnostics, warnings } = await compileCss({
+  input: "styles/preview.css",
+  projectRoot: "./preview",
+  config: { wind: { reset: "none" } },
+  sources: ["components/**/*.tsx"],
+  noAutoSource: true,
+});
+```
+
+Here `input` is relative to the invocation directory; `sources` is relative to `preview`. The CSS entry can contain authored CSS and imports, including CSS package exports. Compilation preserves zudo-wind utility placement, tokens, reset, dark mode, breakpoints, source extraction, manifests, and framework highlight styles. This API compiles global CSS; it does not enable CSS Modules.
+
+## Runtime and installation
+
+Use Node.js **22.0.0 or newer** and install `@takazudo/zfb` with optional dependencies enabled. The matching, same-version native carrier supplies the addon:
+
+| Platform | Carrier |
+|---|---|
+| macOS arm64 | `@takazudo/zfb-darwin-arm64` |
+| macOS x64 | `@takazudo/zfb-darwin-x64` |
+| Linux GNU arm64 | `@takazudo/zfb-linux-arm64-gnu` |
+| Linux GNU x64 | `@takazudo/zfb-linux-x64-gnu` |
+| Windows x64 MSVC | `@takazudo/zfb-win32-x64-msvc` |
+
+Linux requires glibc; musl is not supported. The addon loads lazily from the installed carrier. A missing or mismatched addon rejects with an actionable error; there is no fallback to a global executable, downloaded package, or source checkout. Root SDK and runtime imports do not load the addon. Do not import this entry in browser, edge, or embedded SDK code.
+
+## Options and path anchors
+
+```ts
+import { compileCss, type CompileCssOptions, type CompileCssResult } from "@takazudo/zfb/css";
+
+const options: CompileCssOptions = {
+  input: "styles/main.css",
+  cwd: "/work/site",
+  projectRoot: ".",
+  configDir: "./config",
+  config: { wind: { reset: "none" }, outDir: "dist" },
+  sources: [],
+  noAutoSource: false,
+  output: "dist/main.css",
+};
+const result: CompileCssResult = await compileCss(options);
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `input` | required | CSS file path, relative to `cwd`. Raw CSS strings and virtual files are not inputs. |
+| `cwd` | captured `process.cwd()` | Invocation directory. A relative value uses the captured working directory. |
+| `projectRoot` | `cwd` | Project/source anchor. A relative value uses `cwd`. |
+| `configDir` | `projectRoot` | Configuration-path anchor. A relative value uses `cwd`. |
+| `config` | CSS defaults | Already-evaluated CSS configuration. |
+| `sources` | `[]` | Explicit source roots or globs, relative to `projectRoot`. An empty array is valid. |
+| `noAutoSource` | `false` | Omit the five conventional roots: `pages`, `components`, `layouts`, `content`, and `src`. |
+| `codeHighlightMode` | configured mode | `"class"` or `"inline"`; the CLI-equivalent framework-highlight override. |
+| `noDefaultHighlightStyles` | `false` | Suppress default framework highlight CSS. |
+| `output` | omitted | Optional destination file, relative to `cwd`. CSS is still returned. |
+
+Each call captures its own working directory; it does not change process-wide cwd or environment. Paths retain filesystem symlink/parent semantics: `link/..` is not collapsed as a JavaScript `path.resolve` operation would collapse it.
+
+Configured `outDir` exclusions and explicit sources use `projectRoot`. Config-authored paths use `configDir`; preset-authored source and manifest paths retain their declaring package. `noAutoSource` retains configured roots and package roots, source exclusions, manifests, safelists, explicit sources, and highlight role classes. Configured output and scratch directories stay excluded. An actual `output` adds an exclusion for that file only, not its parent or source-file siblings.
+
+## Configuration and presets
+
+`CssCompileConfig` reuses the public `wind`, `codeHighlight`, `outDir`, and `presets` types. Pass configuration through this one channel; there is no top-level `wind` option. Omitting `config` uses CSS defaults even when a `zfb.config.ts` or other config file exists nearby. No config file is discovered, evaluated, or manufactured.
+
+You can pass an already-evaluated site config. Only CSS-relevant fields are projected before native conversion, so unrelated plugin or site functions do not prevent compilation. Values within the CSS fields must be serializable configuration data.
+
+```ts
+import { definePreset } from "@takazudo/zfb/config";
+import { compileCss } from "@takazudo/zfb/css";
+
+// Normally exported by the installed package that owns these sources.
+const designPreset = definePreset("@example/design-system", {
+  wind: { sources: { roots: ["./components"] } },
+});
+
+const result = await compileCss({
+  input: "styles/main.css",
+  config: { presets: [designPreset], wind: { reset: "none" } },
+});
+```
+
+Composition is pure and follows existing preset precedence: earlier presets supply defaults, and the main config overrides them. Source declarations retain individual ownership. `definePreset` provenance survives composition; do not author its internal markers yourself. Nested presets are not recursively expanded, matching the existing config contract.
+
+With `config: { wind: false }`, compilation still processes authored/imported CSS and framework highlight styles. It skips utility generation and validation of unused explicit sources.
+
+## Results and failures
+
+Every successful call returns `{ css, diagnostics, warnings }`, including calls with `output`. `warnings` preserves source-plan and configuration warning strings. `diagnostics` preserves structured compiler diagnostics; the API does not print warnings.
+
+Exported types include `CssCompileConfig`, `CompileCssOptions`, `CompileCssResult`, `CssDiagnostic`, and `CssDiagnosticOrigin`. Each diagnostic has a code, severity, message, optional candidate represented by `null`, and an origin containing nullable source ID, path, line, column, byte offset, and label. Columns are one-based byte columns.
+
+```ts
+import { compileCss, CssCompileError } from "@takazudo/zfb/css";
+
+try {
+  const result = await compileCss({ input: "styles/main.css" });
+  consumeCss(result.css); // Your application decides where CSS and warnings go.
+} catch (error) {
+  if (error instanceof CssCompileError) {
+    console.error(error.message, error.code, error.diagnostics);
+  }
+  throw error;
+}
+```
+
+`CssCompileError` exposes `diagnostics` and available primary `code`, `severity`, and `origin`. Failures reject without returning partial successful CSS or stale output. Unresolved directives and companion assets that cannot be emitted as a single CSS result remain errors. Corrected calls can succeed after failure, and concurrent calls keep their roots, configuration, and output paths independent.
+
+Return-only calls write no config, output, cache, or interchange files and do not spawn a subprocess or start a watcher. Explicit output uses atomic replacement and rejects an input/output pair resolving to the same file. Compilation failure preserves a previous output; temporary atomic-write files are used only when output was requested.

@@ -1,0 +1,7 @@
+{
+  "page": "error-boundary-forms",
+  "roots": [
+    { "component": "component.tsx", "props": { "association": "ancestor" }, "mode": "hydrate" },
+    { "component": "component.tsx", "props": { "association": "explicit" }, "mode": "hydrate" }
+  ]
+}

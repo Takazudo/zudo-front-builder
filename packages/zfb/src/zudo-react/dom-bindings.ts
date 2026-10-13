@@ -44,10 +44,14 @@ export function bind<T>(
   let previous = initial;
   const subscription = subscribe(
     () => {
-      const next = source.value;
-      if (Object.is(previous, next)) return;
-      previous = next;
-      apply(next);
+      try {
+        const next = source.value;
+        if (Object.is(previous, next)) return;
+        previous = next;
+        apply(next);
+      } catch (error) {
+        if (!scope.recoverRender(error)) throw error;
+      }
     },
     {
       active: () => scope.active,

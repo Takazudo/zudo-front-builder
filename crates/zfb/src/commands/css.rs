@@ -8,16 +8,16 @@ use zfb_css::{AuthoredCssEngine, CssEmitterOutput, CssEngine, CssEngineOutput, W
 
 use crate::cli::{CssArgs, CssCodeHighlightMode};
 use crate::commands::css_support::{
-    build_standalone_wind_source_plan, command_project_root, configured_wind,
+    build_standalone_wind_source_plan_optional, command_project_root, configured_wind,
     index_standalone_wind_sources, load_command_config, resolve_framework_css_with_options,
     run_css_emitter_without_modules,
 };
-use crate::config::CodeHighlightMode;
+use crate::config::{CodeHighlightMode, Config};
 
 struct CompileRequest {
     engine: ErasedEngine,
     project_root: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     framework_css: Option<String>,
     source_plan: Option<zfb_css::SourcePlan>,
 }
@@ -42,7 +42,11 @@ impl Emitter for ProductionEmitter {
         run_css_emitter_without_modules(
             request.engine,
             &request.project_root,
-            request.output.parent().unwrap_or(&request.project_root),
+            request
+                .output
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or(&request.project_root),
             request.framework_css,
         )
     }
@@ -55,13 +59,72 @@ pub async fn run(args: &CssArgs) -> Result<()> {
     run_from(args, &cwd, &ProductionEmitter).await
 }
 
-async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<()> {
-    let cwd = absolute_path(cwd, cwd);
-    let input = absolute_path(&cwd, &args.input);
-    let output = absolute_path(&cwd, &args.output);
-    let project_root =
-        command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
+/// An isolated in-process compilation request. All paths are anchored per call.
+pub struct CssCompileOptions {
+    pub input: PathBuf,
+    pub cwd: PathBuf,
+    pub project_root: PathBuf,
+    pub config: Config,
+    pub sources: Vec<String>,
+    pub no_auto_source: bool,
+    pub code_highlight_mode: Option<CodeHighlightMode>,
+    pub no_default_highlight_styles: bool,
+    pub output: Option<PathBuf>,
+}
 
+pub struct CssCompileResult {
+    pub css: String,
+    pub diagnostics: Vec<zfb_css::CssDiagnostic>,
+    pub warnings: Vec<String>,
+}
+
+pub fn compile_css(options: CssCompileOptions) -> Result<CssCompileResult> {
+    compile_with(options, &ProductionEmitter)
+}
+
+async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<()> {
+    let project_root =
+        command_project_root(cwd, args.project_root.as_deref(), args.config.as_deref());
+    let config = load_command_config(cwd, &project_root, args.config.as_deref())
+        .await
+        .context("failed to load project configuration for CSS compilation")?;
+    let result = compile_with(
+        CssCompileOptions {
+            input: args.input.clone(),
+            cwd: cwd.to_path_buf(),
+            project_root,
+            config,
+            sources: args.source.clone(),
+            no_auto_source: args.no_auto_source,
+            code_highlight_mode: args.code_highlight_mode.map(|mode| match mode {
+                CssCodeHighlightMode::Class => CodeHighlightMode::Class,
+                CssCodeHighlightMode::Inline => CodeHighlightMode::Inline,
+            }),
+            no_default_highlight_styles: args.no_default_highlight_styles,
+            output: Some(args.output.clone()),
+        },
+        emitter,
+    )?;
+    for warning in result.warnings {
+        crate::output::warn(warning);
+    }
+    for diagnostic in result.diagnostics {
+        if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
+            crate::output::warn(diagnostic.render());
+        }
+    }
+    Ok(())
+}
+
+fn compile_with(options: CssCompileOptions, emitter: &dyn Emitter) -> Result<CssCompileResult> {
+    let input = absolute_path(&options.cwd, &options.input);
+    let output = options
+        .output
+        .as_deref()
+        .map(|path| absolute_path(&options.cwd, path));
+    let project_root = absolute_path(&options.cwd, &options.project_root);
+    let config = options.config;
+    let mut warnings = Vec::new();
     let mut validation_errors = Vec::new();
     if let Err(error) = std::fs::read(&input) {
         validation_errors.push(format!(
@@ -76,7 +139,10 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
         ));
     }
 
-    if paths_resolve_same(&input, &output) {
+    if output
+        .as_deref()
+        .is_some_and(|output| paths_resolve_same(&input, output))
+    {
         validation_errors.push(format!(
             "CSS input and output resolve to the same path: {}",
             input.display()
@@ -84,30 +150,21 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
     }
     bail_collected(std::mem::take(&mut validation_errors))?;
 
-    // Loading config is the command's only project interaction. In
-    // particular, this does not discover pages/content and never starts the
-    // plugin host. A config-less directory returns Config::default() without
-    // evaluating TypeScript or booting V8.
-    let config = load_command_config(&cwd, &project_root, args.config.as_deref())
-        .await
-        .context("failed to load project configuration for CSS compilation")?;
     let (generation_enabled, wind_config) = configured_wind(&config);
 
     let (engine, source_plan) = if generation_enabled {
-        let explicit_sources = resolve_explicit_sources(&project_root, &args.source);
+        let explicit_sources = resolve_explicit_sources(&project_root, &options.sources);
         validation_errors.extend(explicit_source_errors(&explicit_sources));
         bail_collected(validation_errors)?;
         let authored = authored_css_bundle(&input, &project_root)?;
-        let (plan, warnings) = build_standalone_wind_source_plan(
+        let (plan, source_warnings) = build_standalone_wind_source_plan_optional(
             &project_root,
-            &output,
+            output.as_deref(),
             &config,
-            !args.no_auto_source,
+            !options.no_auto_source,
             &explicit_sources,
         )?;
-        for warning in warnings {
-            crate::output::warn(warning);
-        }
+        warnings.extend(source_warnings);
         let indexed = index_standalone_wind_sources(&plan)?;
         let engine = WindEngine::new(wind_config, indexed.candidates, authored)
             .with_diagnostics(indexed.diagnostics)
@@ -121,14 +178,10 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
         )
     };
 
-    let mode_override = args.code_highlight_mode.map(|mode| match mode {
-        CssCodeHighlightMode::Class => CodeHighlightMode::Class,
-        CssCodeHighlightMode::Inline => CodeHighlightMode::Inline,
-    });
     let framework_css = resolve_framework_css_with_options(
         &config,
-        mode_override,
-        args.no_default_highlight_styles,
+        options.code_highlight_mode,
+        options.no_default_highlight_styles,
     );
 
     let emitted = emitter
@@ -140,12 +193,6 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
             source_plan,
         })
         .context("wind CSS compilation failed")?;
-    for diagnostic in &emitted.diagnostics {
-        if diagnostic.severity == zfb_css::CssDiagnosticSeverity::Warning {
-            crate::output::warn(diagnostic.render());
-        }
-    }
-
     let mut output_errors = Vec::new();
     if !emitted.companions.is_empty() {
         let text = String::from_utf8_lossy(&emitted.bytes);
@@ -205,8 +252,16 @@ async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<(
     }
     bail_collected(output_errors)?;
 
-    zfb_build::atomic::atomic_write(&output, &emitted.bytes)
-        .with_context(|| format!("failed to write CSS output {}", output.display()))
+    let css = String::from_utf8(emitted.bytes).context("CSS compiler emitted invalid UTF-8")?;
+    if let Some(output) = output {
+        zfb_build::atomic::atomic_write(&output, css.as_bytes())
+            .with_context(|| format!("failed to write CSS output {}", output.display()))?;
+    }
+    Ok(CssCompileResult {
+        css,
+        diagnostics: emitted.diagnostics,
+        warnings,
+    })
 }
 
 fn bail_collected(errors: Vec<String>) -> Result<()> {
@@ -222,7 +277,7 @@ fn bail_collected(errors: Vec<String>) -> Result<()> {
 
 /// Anchor a path without collapsing `..`: a parent component after a symlink
 /// must be resolved by the filesystem, not against the symlink's lexical path.
-fn absolute_path(base: &Path, path: &Path) -> PathBuf {
+pub fn absolute_path(base: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -406,7 +461,7 @@ mod tests {
         run_css_emitter_without_modules(
             zfb_css::StubCssEngine::new(css),
             &request.project_root,
-            request.output.parent().unwrap(),
+            request.output.as_deref().unwrap().parent().unwrap(),
             request.framework_css,
         )
     }
@@ -489,7 +544,7 @@ mod tests {
             run_css_emitter_without_modules(
                 request.engine,
                 &request.project_root,
-                request.output.parent().unwrap(),
+                request.output.as_deref().unwrap().parent().unwrap(),
                 request.framework_css,
             )
         });

@@ -240,6 +240,13 @@ _npm_publish_dir() {
 
 publish_platform_packages() {
   local mode="$1" dir name version prov
+  # Preflight every carrier before the first irreversible publication.
+  # Recovery of older tags has no CSS export and needs no new artifact.
+  if node -e 'process.exit(require("./packages/zfb/package.json").publishConfig?.exports?.["./css"] ? 0 : 1)'; then
+    for dir in "${PLATFORM_DIRS[@]}"; do
+      [[ -f "$dir/zfb-css.node" ]] || { echo "Missing native CSS artifact: $dir/zfb-css.node" >&2; return 1; }
+    done
+  fi
   for dir in "${PLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"

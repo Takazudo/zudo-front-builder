@@ -108,6 +108,18 @@ The `detect-mac-local` job (A2) auto-detects whether a locally-built macOS-x64
 archive has been pre-uploaded to the draft Release before it was published,
 so no manual re-dispatch is needed.
 
+For SDK revisions exporting `@takazudo/zfb/css`, the native carrier also needs
+`zfb-css.node`. The fast-Mac script emits a separate
+`zfb-css-{semver}-x86_64-apple-darwin.node` and `.sha256`; upload both alongside
+the unchanged single-binary archive and its checksum. Detection and ingestion
+require all four assets. Older recovery tags without the CSS export still use
+the original two assets.
+
+The fast-Mac route must load and compile with the x64 addon before upload.
+Use x64 Node >=22, setting `ZFB_X64_NODE=/absolute/path/to/x64/node` on a Mac
+whose default Node is arm64. Apple Silicon also needs Rosetta for that binary.
+A static CLI version scan does not replace this addon execution gate.
+
 ### Default path (CI-built, fully attested; no pre-upload)
 
 1. Run `/l-make-release` to create the draft Release.

@@ -1,12 +1,18 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "metric": "gzip-identity-normalized",
   "normalizationVersion": 1,
   "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
+  "dependencyFingerprint": {
+    "policyVersion": 1,
+    "parser": "yaml@2.9.0",
+    "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
+    "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
+  },
   "decisionIssue": 3469,
-  "outcome": "lockfile-provenance-repin",
+  "outcome": "cargo-producer-lock-transition",
   "selectedOptimizations": [],
-  "baselineSourceSha": "fb0fc5669e084cff9991a01d0686c8bbec69e65a",
+  "baselineSourceSha": "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -22,8 +28,8 @@
     "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
   },
   "runnerSha256": {
-    "measure-real.mjs": "bae79601c376fce269526bccb1433e05ca187a04d3279594fdef8e1dca171686",
-    "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
+    "measure-real.mjs": "c8be17ee9ffd25738247f9ed6ad650f1969b088c12b2f1bcd52fdc2d25770dca",
+    "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
     "packageVersion": "4.4.0",
@@ -31,8 +37,8 @@
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "efb36af9090f3099d6a98d408e0c1f823cd0a1ab906665b16037f207e53ff0a7",
-    "cargoLockSha256": "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e"
+    "pnpmLockSha256": "6a80d0aa7d1a7e4cae3a48750a78984e8926bdcac16cf1fe1a284edd55612f95",
+    "cargoLockSha256": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -46,32 +52,32 @@
         "gzipNormalized": 0
       },
       "event-only": {
-        "raw": 66792,
-        "gzipNormalized": 22235
+        "raw": 64535,
+        "gzipNormalized": 22195
       },
       "scalar-signal": {
-        "raw": 66800,
-        "gzipNormalized": 22240
+        "raw": 64543,
+        "gzipNormalized": 22213
       },
       "show-for": {
-        "raw": 66949,
-        "gzipNormalized": 22310
+        "raw": 64695,
+        "gzipNormalized": 22272
       },
       "model": {
-        "raw": 66791,
-        "gzipNormalized": 22235
+        "raw": 64534,
+        "gzipNormalized": 22200
       },
       "blog-theme": {
-        "raw": 67144,
-        "gzipNormalized": 22359
+        "raw": 64890,
+        "gzipNormalized": 22334
       },
       "json-api": {
-        "raw": 66950,
-        "gzipNormalized": 22319
+        "raw": 64692,
+        "gzipNormalized": 22284
       },
       "multi-island": {
-        "raw": 67072,
-        "gzipNormalized": 22324
+        "raw": 64814,
+        "gzipNormalized": 22286
       }
     },
     "packed": {
@@ -80,64 +86,80 @@
         "gzipNormalized": 0
       },
       "event-only": {
-        "raw": 66854,
-        "gzipNormalized": 22254
+        "raw": 64548,
+        "gzipNormalized": 22199
       },
       "scalar-signal": {
-        "raw": 66862,
-        "gzipNormalized": 22269
+        "raw": 64556,
+        "gzipNormalized": 22203
       },
       "show-for": {
-        "raw": 67011,
-        "gzipNormalized": 22329
+        "raw": 64708,
+        "gzipNormalized": 22286
       },
       "model": {
-        "raw": 66853,
-        "gzipNormalized": 22259
+        "raw": 64547,
+        "gzipNormalized": 22209
       },
       "blog-theme": {
-        "raw": 67206,
-        "gzipNormalized": 22390
+        "raw": 64903,
+        "gzipNormalized": 22347
       },
       "json-api": {
-        "raw": 67012,
-        "gzipNormalized": 22343
+        "raw": 64705,
+        "gzipNormalized": 22296
       },
       "multi-island": {
-        "raw": 67134,
-        "gzipNormalized": 22349
+        "raw": 64827,
+        "gzipNormalized": 22294
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 38337452347 at source fb0fc5669e084cff9991a01d0686c8bbec69e65a after a consumer-only pnpm-lock.yaml change. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the lock hash moved. This is not a release or runtime change. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 38451538696 at source 05ab82100e8f15fa714db9fd1fb5b8e51b41abaf after a reviewed additive Cargo.lock transition (Cargo.lock 22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e to 2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e adds exactly 7 records (ctor@0.2.9, napi-build@2.6.0, napi-derive-backend@1.0.75, napi-derive@2.16.13, napi-sys@2.4.0, napi@2.16.17, zfb-css-node@0.0.0) with every previous [[package]] record byte-identical and none changed or removed, proved against ./ce865ca3-Cargo.lock). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. 14 actual gzip totals moved by -65 to -19 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 38337452347,
-    "jobId": 115100653041,
-    "sourceSha": "fb0fc5669e084cff9991a01d0686c8bbec69e65a",
+    "runId": 38451538696,
+    "jobId": 115483408987,
+    "sourceSha": "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
+    "cargoTransition": {
+      "oldSha": "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
+      "newSha": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+      "added": [
+        "ctor@0.2.9",
+        "napi-build@2.6.0",
+        "napi-derive-backend@1.0.75",
+        "napi-derive@2.16.13",
+        "napi-sys@2.4.0",
+        "napi@2.16.17",
+        "zfb-css-node@0.0.0"
+      ],
+      "changed": [],
+      "removed": [],
+      "oldLockSource": "./ce865ca3-Cargo.lock"
+    },
     "actualGzip": {
       "workspace": {
-        "blog-theme": 22373,
-        "event-only": 22250,
-        "json-api": 22334,
-        "model": 22252,
-        "multi-island": 22339,
+        "blog-theme": 22354,
+        "event-only": 22210,
+        "json-api": 22296,
+        "model": 22211,
+        "multi-island": 22301,
         "no-island": 0,
-        "scalar-signal": 22254,
-        "show-for": 22325
+        "scalar-signal": 22229,
+        "show-for": 22285
       },
       "packed": {
-        "blog-theme": 22412,
-        "event-only": 22269,
-        "json-api": 22355,
-        "model": 22275,
-        "multi-island": 22365,
+        "blog-theme": 22367,
+        "event-only": 22216,
+        "json-api": 22311,
+        "model": 22227,
+        "multi-island": 22310,
         "no-island": 0,
-        "scalar-signal": 22281,
-        "show-for": 22343
+        "scalar-signal": 22216,
+        "show-for": 22300
       }
     },
-    "note": "Consumer lockfile probe (probe/4184-linux-lock-evidence) run for #4184 at source fb0fc5669e084cff9991a01d0686c8bbec69e65a. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Consumer-only pnpm-lock.yaml move at unchanged v4.4.0 with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Cargo producer-lock transition for the CSS addon (#4150) at H at source 05ab82100e8f15fa714db9fd1fb5b8e51b41abaf. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed additive Cargo.lock transition at unchanged v4.4.0 (Cargo.lock 22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e to 2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e adds exactly 7 records (ctor@0.2.9, napi-build@2.6.0, napi-derive-backend@1.0.75, napi-derive@2.16.13, napi-sys@2.4.0, napi@2.16.17, zfb-css-node@0.0.0) with every previous [[package]] record byte-identical and none changed or removed, proved against ./ce865ca3-Cargo.lock); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; 14 actual gzip totals moved by -65 to -19 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

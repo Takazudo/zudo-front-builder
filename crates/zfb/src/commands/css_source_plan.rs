@@ -21,7 +21,7 @@ pub(crate) struct CssSourcePlanInputs {
     pub project_root: PathBuf,
     pub first_party_root: PathBuf,
     pub configured_output_dir: PathBuf,
-    pub pass_output_dir: PathBuf,
+    pub pass_output_dir: Option<PathBuf>,
     pub default_content_roots: Vec<PathBuf>,
     pub declared_project_roots: Vec<PathBuf>,
     pub package_route_entrypoints: Vec<PathBuf>,
@@ -45,7 +45,7 @@ impl Default for CssSourcePlanInputs {
             project_root: PathBuf::new(),
             first_party_root: PathBuf::new(),
             configured_output_dir: PathBuf::new(),
-            pass_output_dir: PathBuf::new(),
+            pass_output_dir: None,
             default_content_roots: Vec::new(),
             declared_project_roots: Vec::new(),
             package_route_entrypoints: Vec::new(),
@@ -66,11 +66,7 @@ impl Default for CssSourcePlanInputs {
 }
 
 fn absolute(base: &Path, path: &Path) -> PathBuf {
-    zfb_types::normalize_path_lexical(&if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    })
+    super::css::absolute_path(base, path)
 }
 
 fn stable_label(prefix: &str, base: &Path, path: &Path) -> String {
@@ -131,8 +127,8 @@ pub(crate) fn build_css_source_plan(inputs: &CssSourcePlanInputs) -> SourcePlan 
         extraction_options: inputs.extraction_options.clone(),
         ..SourcePlan::default()
     };
-    for path in [&inputs.configured_output_dir, &inputs.pass_output_dir]
-        .into_iter()
+    for path in std::iter::once(&inputs.configured_output_dir)
+        .chain(inputs.pass_output_dir.as_ref())
         .chain(&inputs.zfb_written_roots)
     {
         plan.exclusions.insert(absolute(&project, path));
@@ -618,7 +614,8 @@ pub(crate) fn declared_package_root_watch_paths(
     let Some(WindSetting::Enabled(wind)) = &config.wind else {
         return Vec::new();
     };
-    let project_root = zfb_types::normalize_path_lexical(project_root);
+    let project_root =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     wind.source_declarations()
         .iter()
         .filter(|declaration| !declaration.sources.package_roots.is_empty())
@@ -648,7 +645,8 @@ pub(crate) fn declared_project_root_paths(project_root: &Path, config: &Config) 
     let Some(WindSetting::Enabled(wind)) = &config.wind else {
         return Vec::new();
     };
-    let project_root = zfb_types::normalize_path_lexical(project_root);
+    let project_root =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let mut roots = BTreeSet::new();
     for declaration in wind.source_declarations() {
         if declaration.sources.roots.is_empty() {
@@ -679,7 +677,28 @@ pub(crate) fn gather_css_source_plan_inputs(
     plugin_virtual_modules: &[(String, String)],
     zfb_written_roots: &[PathBuf],
 ) -> Result<CssSourcePlanInputs> {
-    let project_root = zfb_types::normalize_path_lexical(project_root);
+    gather_css_source_plan_inputs_optional(
+        project_root,
+        Some(pass_output_dir),
+        config,
+        package_route_entrypoints,
+        sibling_mirror_roots,
+        plugin_virtual_modules,
+        zfb_written_roots,
+    )
+}
+
+pub(crate) fn gather_css_source_plan_inputs_optional(
+    project_root: &Path,
+    pass_output_dir: Option<&Path>,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    sibling_mirror_roots: &[PathBuf],
+    plugin_virtual_modules: &[(String, String)],
+    zfb_written_roots: &[PathBuf],
+) -> Result<CssSourcePlanInputs> {
+    let project_root =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let first_party_root = zfb_types::first_party::first_party_root_for(&project_root);
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(&project_root);
@@ -762,7 +781,7 @@ pub(crate) fn gather_css_source_plan_inputs(
             .map(|root| project_root.join(root))
             .collect(),
         configured_output_dir: absolute(&project_root, &config.out_dir),
-        pass_output_dir: absolute(&project_root, pass_output_dir),
+        pass_output_dir: pass_output_dir.map(|path| absolute(&project_root, path)),
         root_package_excluded_dirs: if root_package_claimed && root_package_enabled {
             root_package_css_excluded_dirs(&project_root, &first_party_root)
         } else {
@@ -799,7 +818,7 @@ mod tests {
             project_root: project.clone(),
             first_party_root: temp.path().to_path_buf(),
             configured_output_dir: project.join("src/custom-output"),
-            pass_output_dir: project.join("src/assets-current"),
+            pass_output_dir: Some(project.join("src/assets-current")),
             default_content_roots: vec![project.join("src")],
             zfb_written_roots: zfb_types::ScratchLayout::default_for(&project).written_roots(),
             ..Default::default()
@@ -915,7 +934,7 @@ mod tests {
             .remove(&inputs.configured_output_dir);
         without_output_exclusions
             .exclusions
-            .remove(&inputs.pass_output_dir);
+            .remove(inputs.pass_output_dir.as_ref().unwrap());
         let leaked = live(&without_output_exclusions);
         assert!(leaked.contains("p-2"));
         assert!(leaked.contains("p-3"));
@@ -1135,7 +1154,7 @@ mod tests {
         config.wind = Some(WindSetting::Enabled(Box::new(wind)));
         let gathered = gather_css_source_plan_inputs(
             &inputs.project_root,
-            &inputs.pass_output_dir,
+            inputs.pass_output_dir.as_ref().unwrap(),
             &config,
             &[],
             &[],
@@ -1152,7 +1171,9 @@ mod tests {
         assert!(gathered.safelist["app"].contains("m-1"));
         let plan = build_css_source_plan(&gathered);
         assert!(plan.exclusions.contains(&inputs.project_root.join("dist")));
-        assert!(plan.exclusions.contains(&inputs.pass_output_dir));
+        assert!(plan
+            .exclusions
+            .contains(inputs.pass_output_dir.as_ref().unwrap()));
         if let Some(WindSetting::Enabled(wind)) = config.wind.as_mut() {
             wind.sources.root_package = Some(false);
         }
@@ -1188,7 +1209,7 @@ mod tests {
             .collect();
         gather_css_source_plan_inputs(
             &inputs.project_root,
-            &inputs.pass_output_dir,
+            inputs.pass_output_dir.as_ref().unwrap(),
             config,
             &[],
             &[],
@@ -1353,7 +1374,7 @@ mod tests {
         write(&ui, "dist/route.tsx", "p-1");
         write(&project, "packages/local/dist/view.tsx", "p-2");
         write(&project, "packages/local/out/stale.tsx", "p-3");
-        inputs.pass_output_dir = project.join("packages/local/out");
+        inputs.pass_output_dir = Some(project.join("packages/local/out"));
         let config = sources_config(vec![(
             None,
             serde_json::json!({ "packageRoots": ["@scope/ui", "./packages/local", "@scope/ui/dist"] }),
@@ -1605,7 +1626,7 @@ mod tests {
         config.wind = Some(WindSetting::Enabled(Box::new(wind)));
         let error = gather_css_source_plan_inputs(
             &inputs.project_root,
-            &inputs.pass_output_dir,
+            inputs.pass_output_dir.as_ref().unwrap(),
             &config,
             &[],
             &[],

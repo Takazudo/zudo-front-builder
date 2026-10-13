@@ -15,14 +15,35 @@
 // contract to the schemaVersion-2 normalized shape from a replayed artifact.
 // `--reason lockfile-provenance` records a consumer-only pnpm-lock.yaml move
 // (#4184): the producer version and every other reviewed identity input must be
-// unchanged, and only the lock hash may move.
+// unchanged, and only the lock hash may move. `--reason fingerprint-migration`
+// (#4187) converts a schemaVersion-2 contract to schemaVersion 3, which pins the
+// dependency-graph fingerprint of pnpm-lock.yaml (lock-fingerprint.mjs) instead
+// of the whole-file hash: the producer version, normalizer, fixtures, Cargo.lock
+// and toolchain must be unchanged, and only the runner digests (which gained the
+// fingerprint) and the recorded lock hash may follow the measured artifact.
+// `--reason fingerprint-helper --base-ref <ref>` (#4198) takes no artifact and
+// runs nothing natively: it re-pins only `dependencyFingerprint.helperSha256` of
+// BOTH contracts after a comment/formatting edit to lock-fingerprint.mjs, once it
+// has proven that the pinned helper at <ref> and the new helper compute the same
+// fingerprint and inventory on the real lock (repinFingerprintHelper below; the
+// Darwin script reuses it). A helper edit that moves the fingerprint is refused.
+// `--reason cargo-producer-lock` (#4214, schemaVersion 3) records one reviewed
+// additive Cargo.lock move from a fresh artifact: it binds the old and new lock
+// hashes and an explicit `name@version` allowlist, proves every old
+// `[[package]]` record survives byte-identical and that the additions are
+// exactly the allowlist (proveCargoProducerLock below; the Darwin script reuses
+// it), and moves only the Cargo hash and its evidence. `release-bump` and
+// `runtime-identity` refuse any Cargo.lock movement and name this reason.
 
-import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
+import { computeLockFingerprint } from "../research/v3-island-size/lock-fingerprint.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -31,6 +52,7 @@ import {
 } from "../research/v3-island-size/normalize-identity.mjs";
 
 const MODES = ["workspace", "packed"];
+const SIZE_DIR = "research/v3-island-size";
 const CONTRACT = "research/v3-island-size/decision-linux-x64.json";
 const README = "research/v3-island-size/README.md";
 const TEST_FILE = "scripts/__tests__/island-size-budget.test.mjs";
@@ -41,6 +63,7 @@ export const REASONS = Object.freeze({
     outcome: "release-version-stamp",
     heading: "release baseline",
     requires: 2,
+    accepts: [2, 3],
   },
   "metric-migration": {
     outcome: "metric-migration",
@@ -51,13 +74,218 @@ export const REASONS = Object.freeze({
     outcome: "runtime-identity-repin",
     heading: "runtime-identity re-pin",
     requires: 2,
+    accepts: [2, 3],
   },
   "lockfile-provenance": {
     outcome: "lockfile-provenance-repin",
     heading: "lockfile-provenance re-pin",
     requires: 2,
   },
+  "fingerprint-migration": {
+    outcome: "fingerprint-migration",
+    heading: "dependency-fingerprint migration",
+    requires: 2,
+  },
+  "fingerprint-helper": {
+    outcome: "fingerprint-helper-repin",
+    heading: "fingerprint-helper re-pin",
+    requires: 3,
+    accepts: [3],
+  },
+  "cargo-producer-lock": {
+    outcome: "cargo-producer-lock-transition",
+    heading: "cargo-producer-lock transition",
+    requires: 3,
+    accepts: [3],
+  },
 });
+
+export const FINGERPRINT_HELPER_REASON = "fingerprint-helper";
+export const CARGO_PRODUCER_LOCK_REASON = "cargo-producer-lock";
+
+// Contract schema versions a reason may rewrite; `requires` is the oldest.
+export function acceptedSchemas(reason) {
+  const policy = REASONS[reason];
+  return policy.accepts ?? [policy.requires];
+}
+
+// Both identity-normalized schemas carry {raw, gzipNormalized} ceilings.
+function normalizedSchema(contract) {
+  return contract.schemaVersion === 2 || contract.schemaVersion === 3;
+}
+
+const CONTRACT_FINGERPRINT_KEYS = ["policyVersion", "parser", "helperSha256", "sha256"];
+const PROVENANCE_FINGERPRINT_KEYS = ["policyVersion", "sha256"];
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+// The schemaVersion-3 `dependencyFingerprint` block for a checkout, in contract
+// key order. Throws (fail-closed) when lock-fingerprint.mjs rejects the lock.
+export function checkoutFingerprint(lockText, currentVersion, repoRoot) {
+  const fingerprint = computeLockFingerprint({
+    lockText,
+    currentVersion,
+    ...(repoRoot ? { repoRoot } : {}),
+  });
+  return contractFingerprint(fingerprint);
+}
+
+// The four contract keys of a fingerprint, in contract key order.
+export function contractFingerprint(fingerprint) {
+  return Object.fromEntries(CONTRACT_FINGERPRINT_KEYS.map((key) => [key, fingerprint[key]]));
+}
+
+// The checkout's own fixture and runner digests, keyed like the contract maps,
+// so an artifact is compared with what this tree would measure.
+export function checkoutIdentityHashes(contract, root = ".") {
+  const hashMap = (keys, path) =>
+    Object.fromEntries(keys.map((key) => [key, sha256(readFileSync(join(root, path(key))))]));
+  return {
+    fixtureSha256: hashMap(Object.keys(contract.fixtureSha256), (name) =>
+      join(SIZE_DIR, "fixtures", name + ".tsx"),
+    ),
+    runnerSha256: hashMap(Object.keys(contract.runnerSha256), (name) => join(SIZE_DIR, name)),
+  };
+}
+
+// The checkout's identity, read from `root`. A fingerprint failure is kept as
+// dependencyFingerprintError and reported by artifactFingerprintProblem.
+export function readCheckoutIdentity(contract, root = ".") {
+  const at = (path) => join(root, path);
+  const packageVersion = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
+  const lockBytes = readFileSync(at("pnpm-lock.yaml"));
+  const checkout = {
+    packageVersion,
+    pnpmLockSha256: sha256(lockBytes),
+    cargoLockSha256: sha256(readFileSync(at("Cargo.lock"))),
+    ...checkoutIdentityHashes(contract, root),
+    dependencyFingerprint: null,
+    dependencyFingerprintError: null,
+  };
+  try {
+    checkout.dependencyFingerprint = checkoutFingerprint(
+      lockBytes.toString("utf8"),
+      packageVersion,
+      resolve(root),
+    );
+  } catch (error) {
+    checkout.dependencyFingerprintError = error?.message ?? String(error);
+  }
+  return checkout;
+}
+
+// Every reason the artifact's run provenance does not describe this checkout
+// byte-for-byte, or []. A migration relaxes runner equality against the old
+// contract only, never against the measured checkout.
+export function artifactCheckoutMismatches(provenance, checkout, label) {
+  const errors = [];
+  if (provenance.pnpmLockSha256 !== checkout.pnpmLockSha256) {
+    errors.push(label + " artifact lockfile hash differs from this checkout's pnpm-lock.yaml");
+  }
+  if (provenance.packageVersion !== checkout.packageVersion) {
+    errors.push(
+      label +
+        " artifact measured @takazudo/zfb " +
+        provenance.packageVersion +
+        ", not " +
+        checkout.packageVersion,
+    );
+  }
+  if (provenance.cargoLockSha256 !== checkout.cargoLockSha256) {
+    errors.push(label + " artifact Cargo.lock hash differs from this checkout's Cargo.lock");
+  }
+  for (const key of ["fixtureSha256", "runnerSha256"]) {
+    if (!sameHashMaps(checkout[key], provenance[key])) {
+      errors.push(label + " artifact " + key + " differs from this checkout's files");
+    }
+  }
+  const problem = artifactFingerprintProblem(provenance.dependencyFingerprint, checkout);
+  if (problem) errors.push(label + " " + problem);
+  return errors;
+}
+
+// Why an artifact's {policyVersion, sha256} cannot stand for the checkout's
+// fingerprint, or null. An artifact from a different checkout never becomes
+// acceptable merely because its whole-file lock hash is ignored.
+export function artifactFingerprintProblem(artifactFingerprint, checkout) {
+  if (checkout.dependencyFingerprintError) {
+    return "checkout dependency fingerprint failed: " + checkout.dependencyFingerprintError;
+  }
+  const local = checkout.dependencyFingerprint;
+  if (!local) return "checkout dependency fingerprint is unavailable";
+  if (
+    artifactFingerprint === null ||
+    typeof artifactFingerprint !== "object" ||
+    JSON.stringify(Object.keys(artifactFingerprint).sort()) !==
+      JSON.stringify([...PROVENANCE_FINGERPRINT_KEYS].sort())
+  ) {
+    return (
+      "artifact provenance must carry dependencyFingerprint with exactly " +
+      PROVENANCE_FINGERPRINT_KEYS.join(" and ")
+    );
+  }
+  const moved = PROVENANCE_FINGERPRINT_KEYS.filter(
+    (key) => artifactFingerprint[key] !== local[key],
+  );
+  return moved.length === 0
+    ? null
+    : "artifact dependency fingerprint " + moved.join(", ") + " differs from this checkout's";
+}
+
+function contractFingerprintMoves(contract, local) {
+  return CONTRACT_FINGERPRINT_KEYS.filter(
+    (key) => contract.dependencyFingerprint?.[key] !== local?.[key],
+  );
+}
+
+// fingerprint-migration may move only the runner digests and the recorded lock
+// hash; every other reviewed identity input must equal the contract.
+export function assertFingerprintMigrationMovement(contract, evidence) {
+  const identity = evidence.identity;
+  if (!identity) {
+    throw new Error("--reason fingerprint-migration needs the artifact's measured identity inputs");
+  }
+  const problem = artifactFingerprintProblem(evidence.artifactFingerprint, evidence);
+  if (problem) throw new Error("--reason fingerprint-migration: " + problem);
+  const moved = [];
+  if (evidence.version !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  if (identity.cargoLockSha256 !== contract.toolchain.cargoLockSha256) {
+    moved.push("cargoLockSha256");
+  }
+  for (const key of IDENTITY_TOOLCHAIN_KEYS) {
+    if (identity.toolchain?.[key] !== contract.toolchain[key]) moved.push("toolchain." + key);
+  }
+  if (moved.length > 0) {
+    throw new Error(
+      "--reason fingerprint-migration changes only the lock pin, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change first",
+    );
+  }
+}
+
+// release-bump / runtime-identity on a schemaVersion-3 contract: the measured
+// artifact must carry this checkout's fingerprint and the contract's must not move.
+export function assertFingerprintUnchanged(contract, evidence, reason) {
+  const problem = artifactFingerprintProblem(evidence.artifactFingerprint, evidence);
+  if (problem) throw new Error("--reason " + reason + ": " + problem);
+  const moved = contractFingerprintMoves(contract, evidence.dependencyFingerprint);
+  if (moved.length > 0) {
+    throw new Error(
+      "--reason " +
+        reason +
+        " cannot move the dependency fingerprint (" +
+        moved.join(", ") +
+        " differ from the contract); a dependency-graph change needs a reviewed decision, not a " +
+        reason +
+        " re-pin",
+    );
+  }
+}
 
 const IDENTITY_TOOLCHAIN_KEYS = ["honoVersion", "esbuildVersion", "nodeVersion", "zlibVersion"];
 
@@ -108,6 +336,262 @@ export function assertLockfileOnlyMovement(contract, evidence) {
   }
 }
 
+// release-bump / runtime-identity never move Cargo.lock: the measured artifact
+// (which equals the checkout) must carry the contract's Cargo hash.
+export function cargoMoveRefusal(reason, measuredCargoSha, contract) {
+  if (measuredCargoSha === contract.toolchain.cargoLockSha256) return null;
+  return (
+    "--reason " +
+    reason +
+    " cannot move Cargo.lock (the artifact and checkout carry " +
+    String(measuredCargoSha) +
+    ", the contract pins " +
+    contract.toolchain.cargoLockSha256 +
+    "); a reviewed additive producer-lock change needs --reason " +
+    CARGO_PRODUCER_LOCK_REASON +
+    " first"
+  );
+}
+
+function assertCargoUnchanged(contract, evidence, reason) {
+  if (!evidence.identity) {
+    throw new Error("--reason " + reason + " needs the artifact's measured identity inputs");
+  }
+  const refusal = cargoMoveRefusal(reason, evidence.identity.cargoLockSha256, contract);
+  if (refusal) throw new Error(refusal);
+}
+
+export const CARGO_ARGS = Object.freeze([
+  "expected-old-cargo-sha",
+  "expected-new-cargo-sha",
+  "old-cargo-lock",
+  "added-packages",
+]);
+// The only keys a cargo-producer-lock transition may write; baselineEvidence is
+// replaced as a whole.
+export const CARGO_PRODUCER_LOCK_MOVEMENT = Object.freeze([
+  "toolchain.cargoLockSha256",
+  "outcome",
+  "baselineSourceSha",
+  "platformStatus",
+  "baselineEvidence",
+]);
+
+function cargoError(message) {
+  return new Error("--reason " + CARGO_PRODUCER_LOCK_REASON + ": " + message);
+}
+
+// `name@version,...` -> the allowlist, refusing an empty list, a malformed
+// entry or a repeated identity.
+export function parseAddedPackages(text) {
+  const entries = String(text ?? "")
+    .split(",")
+    .map((entry) => entry.trim());
+  if (entries.length === 0 || entries.some((entry) => !/^[^@\s]+@[^@\s]+$/.test(entry))) {
+    throw cargoError("--added-packages must be a comma-separated list of name@version");
+  }
+  const repeated = entries.filter((entry, i) => entries.indexOf(entry) !== i);
+  if (repeated.length > 0) {
+    throw cargoError("--added-packages repeats " + [...new Set(repeated)].join(", "));
+  }
+  return entries;
+}
+
+// `values` are the parsed `--key value` pairs; the Cargo arguments belong to
+// cargo-producer-lock alone, which requires all four.
+export function checkCargoProducerLockArgs(values) {
+  if (values.reason !== CARGO_PRODUCER_LOCK_REASON) {
+    const stray = CARGO_ARGS.filter((key) => Object.hasOwn(values, key));
+    if (stray.length > 0) {
+      throw new Error("--" + stray[0] + " is only for --reason " + CARGO_PRODUCER_LOCK_REASON);
+    }
+    return;
+  }
+  for (const key of CARGO_ARGS) {
+    if (!values[key]) throw new Error("required --" + key);
+  }
+  for (const key of ["expected-old-cargo-sha", "expected-new-cargo-sha"]) {
+    if (!/^[0-9a-f]{64}$/.test(values[key])) {
+      throw new Error("--" + key + " must be a 64-character SHA-256");
+    }
+  }
+  parseAddedPackages(values["added-packages"]);
+}
+
+// Splits a Cargo.lock into its header, its `[[package]]` records and any other
+// section, each record without its trailing blank line. The split is lossless,
+// so a layout it cannot reassemble byte-for-byte is refused.
+export function parseCargoLock(text, label) {
+  if (typeof text !== "string" || !text.endsWith("\n")) {
+    throw cargoError(label + " is empty or does not end with a newline");
+  }
+  const sections = text.split(/(?=^\[)/m);
+  const header = sections[0].startsWith("[") ? "" : sections.shift();
+  const packages = [];
+  const other = [];
+  sections.forEach((section, i) => {
+    const body = section.replace(/\n+$/, "\n");
+    if (section !== (i === sections.length - 1 ? body : body + "\n")) {
+      throw cargoError(
+        label + " has an unexpected record separator near " + JSON.stringify(body.slice(0, 60)),
+      );
+    }
+    if (!body.startsWith("[[package]]\n")) {
+      other.push(body);
+      return;
+    }
+    const name = /^name = "([^"]+)"$/m.exec(body)?.[1];
+    const version = /^version = "([^"]+)"$/m.exec(body)?.[1];
+    if (!name || !version) {
+      throw cargoError(
+        label + " has a [[package]] record without name and version: " + JSON.stringify(body),
+      );
+    }
+    packages.push({ id: name + "@" + version, body });
+  });
+  return { header, packages, other };
+}
+
+function countBodies(packages) {
+  const counts = new Map();
+  for (const { body } of packages) counts.set(body, (counts.get(body) ?? 0) + 1);
+  return counts;
+}
+
+// The record-level diff of two Cargo.lock texts: `added` are new records whose
+// bytes no old record had, `changed` old identities whose bytes moved, and
+// `removed` old identities that are gone. Header and other sections must match.
+export function diffCargoLocks(oldText, newText) {
+  const before = parseCargoLock(oldText, "old Cargo.lock");
+  const after = parseCargoLock(newText, "new Cargo.lock");
+  const problems = [];
+  if (before.header !== after.header) problems.push("the header differs");
+  if (!isDeepStrictEqual(before.other, after.other)) {
+    problems.push("a non-package section differs");
+  }
+  const oldBodies = countBodies(before.packages);
+  const added = [];
+  for (const record of after.packages) {
+    const left = oldBodies.get(record.body) ?? 0;
+    if (left > 0) oldBodies.set(record.body, left - 1);
+    else added.push(record.id);
+  }
+  const newIds = new Set(after.packages.map(({ id }) => id));
+  const changed = [];
+  const removed = [];
+  for (const record of before.packages) {
+    const left = oldBodies.get(record.body) ?? 0;
+    if (left === 0) continue;
+    oldBodies.set(record.body, left - 1);
+    (newIds.has(record.id) ? changed : removed).push(record.id);
+  }
+  const oldIds = new Set(before.packages.map(({ id }) => id));
+  const duplicates = added.filter(
+    (id, i) => added.indexOf(id) !== i || (oldIds.has(id) && !changed.includes(id)),
+  );
+  return { problems, added, changed, removed, duplicates: [...new Set(duplicates)] };
+}
+
+// Proves one reviewed additive Cargo.lock transition and returns the
+// `cargoTransition` evidence, or throws naming every failed check. `contractSha`
+// is the pinned hash, `artifactSha` the measured run's, `newText` the checkout's
+// Cargo.lock and `oldText` the operator-supplied old lock.
+export function proveCargoProducerLock({
+  contractSha,
+  artifactSha,
+  expectedOldSha,
+  expectedNewSha,
+  oldText,
+  newText,
+  added,
+  oldLockSource,
+}) {
+  const problems = [];
+  if (expectedOldSha === expectedNewSha) {
+    problems.push("--expected-old-cargo-sha equals --expected-new-cargo-sha; no Cargo.lock move");
+  }
+  if (contractSha !== expectedOldSha) {
+    problems.push("the contract pins Cargo.lock " + contractSha + ", not --expected-old-cargo-sha");
+  }
+  const oldSha = sha256(oldText ?? "");
+  if (oldSha !== expectedOldSha) {
+    problems.push(oldLockSource + " hashes to " + oldSha + ", not --expected-old-cargo-sha");
+  }
+  const newSha = sha256(newText ?? "");
+  if (newSha !== expectedNewSha) {
+    problems.push(
+      "the checkout's Cargo.lock hashes to " + newSha + ", not --expected-new-cargo-sha",
+    );
+  }
+  if (artifactSha !== expectedNewSha) {
+    problems.push(
+      "the artifact measured Cargo.lock " + String(artifactSha) + ", not --expected-new-cargo-sha",
+    );
+  }
+  if (problems.length > 0) throw cargoError(problems.join("; "));
+  const diff = diffCargoLocks(oldText, newText);
+  const allowlist = [...added].sort();
+  const found = [...diff.added].sort();
+  if (diff.changed.length > 0) problems.push("changed records " + diff.changed.join(", "));
+  if (diff.removed.length > 0) problems.push("removed records " + diff.removed.join(", "));
+  if (diff.duplicates.length > 0) {
+    problems.push("duplicate package identities " + diff.duplicates.join(", "));
+  }
+  problems.push(...diff.problems);
+  const unexpected = found.filter((id) => !allowlist.includes(id));
+  const missing = allowlist.filter((id) => !found.includes(id));
+  if (unexpected.length > 0) problems.push("unexpected additions " + unexpected.join(", "));
+  if (missing.length > 0) problems.push("allowlisted but not added " + missing.join(", "));
+  if (problems.length > 0) {
+    throw cargoError(
+      "the Cargo.lock move is not the reviewed additive transition (" + problems.join("; ") + ")",
+    );
+  }
+  return {
+    oldSha: expectedOldSha,
+    newSha: expectedNewSha,
+    added: found,
+    changed: [],
+    removed: [],
+    oldLockSource,
+  };
+}
+
+// Refuses a cargo-producer-lock rewrite that moved any key outside
+// CARGO_PRODUCER_LOCK_MOVEMENT.
+export function assertCargoProducerLockMovement(before, after) {
+  const moved = contractDiffKeys(before, after).filter(
+    (key) =>
+      !CARGO_PRODUCER_LOCK_MOVEMENT.some(
+        (allowed) => key === allowed || key.startsWith(allowed + "."),
+      ),
+  );
+  if (moved.length > 0) throw cargoError("would move " + moved.join(", ") + "; refusing");
+}
+
+// cargo-producer-lock may move only Cargo.lock: everything else the contract
+// pins must equal the measured artifact and this checkout.
+function assertCargoOnlyMovement(contract, evidence) {
+  const identity = evidence.identity;
+  if (!identity) throw cargoError("needs the artifact's measured identity inputs");
+  const moved = [];
+  if (evidence.version !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  if (evidence.pnpmLockSha256 !== contract.toolchain.pnpmLockSha256) moved.push("pnpmLockSha256");
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  if (!sameHashMaps(identity.runnerSha256, contract.runnerSha256)) moved.push("runnerSha256");
+  for (const key of IDENTITY_TOOLCHAIN_KEYS) {
+    if (identity.toolchain?.[key] !== contract.toolchain[key]) moved.push("toolchain." + key);
+  }
+  if (moved.length > 0) {
+    throw cargoError(
+      "allows only Cargo.lock to move, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change",
+    );
+  }
+}
+
 // `normalizedByMode` holds normalize-identity.mjs results recomputed from
 // the saved bytes, keyed by mode. Actual gzip rides along as evidence only.
 export function measuredTotals(normalizedByMode) {
@@ -140,7 +624,7 @@ export function diffCeilings(contract, totals) {
   const rawChanges = [];
   const normalizedChanges = [];
   const gzipChanges = [];
-  const normalizedContract = contract.schemaVersion === 2;
+  const normalizedContract = normalizedSchema(contract);
   for (const mode of MODES) {
     const ceilings = contract.ceilings[mode];
     const fixtures = new Set([...Object.keys(ceilings), ...Object.keys(totals[mode])]);
@@ -205,19 +689,50 @@ function metricText() {
   return IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
 }
 
+export function cargoTransitionMarkdown(transition) {
+  return (
+    "`Cargo.lock` moved from `" +
+    transition.oldSha +
+    "` to `" +
+    transition.newSha +
+    "` by adding exactly " +
+    transition.added.length +
+    " records (" +
+    transition.added.map((id) => "`" + id + "`").join(", ") +
+    "); every previous `[[package]]` record is byte-identical, the header is unchanged, and no " +
+    "record changed or was removed, proved against `" +
+    transition.oldLockSource +
+    "`."
+  );
+}
+
+export function cargoTransitionText(transition) {
+  return (
+    "Cargo.lock " +
+    transition.oldSha +
+    " to " +
+    transition.newSha +
+    " adds exactly " +
+    transition.added.length +
+    " records (" +
+    transition.added.join(", ") +
+    ") with every previous [[package]] record byte-identical and none changed or removed, proved against " +
+    transition.oldLockSource
+  );
+}
+
 // Actual gzip movement between the previous contract and the new measurement,
-// reported as transfer-size evidence; never a ceiling under schemaVersion 2.
-// schemaVersion 1 ceilings are actual gzip; schemaVersion 2 ceilings carry only
+// reported as transfer-size evidence; never a ceiling under schemaVersion 2/3.
+// schemaVersion 1 ceilings are actual gzip; schemaVersion 2/3 ceilings carry only
 // gzipNormalized, so the previous actual gzip is read from the evidence a
 // re-pin records in baselineEvidence.actualGzip. Null when none was recorded.
 export function actualGzipEvidence(contract, totals) {
   const changes = [];
   for (const mode of MODES) {
     for (const [fixture, after] of Object.entries(totals[mode])) {
-      const before =
-        contract.schemaVersion === 2
-          ? contract.baselineEvidence?.actualGzip?.[mode]?.[fixture]
-          : contract.ceilings[mode][fixture]?.gzip;
+      const before = normalizedSchema(contract)
+        ? contract.baselineEvidence?.actualGzip?.[mode]?.[fixture]
+        : contract.ceilings[mode][fixture]?.gzip;
       if (typeof before !== "number") return null;
       if (before !== after.gzip) changes.push({ mode, fixture, delta: after.gzip - before });
     }
@@ -237,12 +752,16 @@ function actualGzipRows(totals) {
 export function rebaselineContract(contract, totals, evidence, reason) {
   const policy = REASONS[reason];
   if (!policy) throw new Error("unknown --reason " + String(reason));
-  if (contract.schemaVersion !== policy.requires) {
+  if (reason === FINGERPRINT_HELPER_REASON) {
+    throw new Error("--reason fingerprint-helper takes no artifact; use repinFingerprintHelper");
+  }
+  const schemas = acceptedSchemas(reason);
+  if (!schemas.includes(contract.schemaVersion)) {
     throw new Error(
       "--reason " +
         reason +
         " needs a schemaVersion " +
-        policy.requires +
+        schemas.join(" or ") +
         " contract, found schemaVersion " +
         String(contract.schemaVersion),
     );
@@ -276,6 +795,21 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     );
   }
   if (reason === "lockfile-provenance") assertLockfileOnlyMovement(contract, evidence);
+  if (reason === "fingerprint-migration") assertFingerprintMigrationMovement(contract, evidence);
+  if (reason === "release-bump" || reason === "runtime-identity") {
+    assertCargoUnchanged(contract, evidence, reason);
+  }
+  if (contract.schemaVersion === 3) assertFingerprintUnchanged(contract, evidence, reason);
+  let cargoTransition = null;
+  if (reason === CARGO_PRODUCER_LOCK_REASON) {
+    assertCargoOnlyMovement(contract, evidence);
+    if (!evidence.cargoLock) throw cargoError("needs the old and new Cargo.lock evidence");
+    cargoTransition = proveCargoProducerLock({
+      ...evidence.cargoLock,
+      contractSha: contract.toolchain.cargoLockSha256,
+      artifactSha: evidence.identity.cargoLockSha256,
+    });
+  }
   const previousVersion = contract.toolchain.packageVersion;
   const gzipEvidence = actualGzipEvidence(contract, totals);
   const next = structuredClone(contract);
@@ -294,11 +828,25 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     Object.assign(next, migrated);
     next.allowance = { raw: 0, gzipNormalized: 0 };
   }
+  if (reason === "fingerprint-migration") {
+    const migrated = {};
+    for (const [key, value] of Object.entries(next)) {
+      migrated[key] = value;
+      if (key === "schemaVersion") migrated.schemaVersion = 3;
+      if (key === "normalizerSha256") {
+        migrated.dependencyFingerprint = contractFingerprint(evidence.dependencyFingerprint);
+      }
+    }
+    Object.keys(next).forEach((key) => delete next[key]);
+    Object.assign(next, migrated);
+    next.runnerSha256 = { ...evidence.identity.runnerSha256 };
+  }
   next.outcome = policy.outcome;
   next.baselineSourceSha = evidence.headSha;
   next.toolchain.packageVersion = evidence.version;
   next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
   next.normalizerSha256 = evidence.normalizerSha256;
+  if (cargoTransition) next.toolchain.cargoLockSha256 = cargoTransition.newSha;
   const gzipSummary =
     gzipEvidence === null
       ? "no previous actual gzip evidence to compare"
@@ -343,6 +891,24 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       gzipSummary +
       "." +
       matrices;
+  } else if (reason === "fingerprint-migration") {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", migrated to schemaVersion 3 from workflow run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      ". The contract now pins the dependency-graph fingerprint of pnpm-lock.yaml (policy v" +
+      evidence.dependencyFingerprint.policyVersion +
+      ", " +
+      evidence.dependencyFingerprint.parser +
+      ") instead of the whole-file hash, which stays recorded as baseline provenance only. The producer version, fixtures, Cargo.lock, toolchain and normalizer are unchanged; the runner digests follow the measured artifact because the runners now record the fingerprint. Every raw and gzipNormalized total is unchanged. " +
+      gzipSummary +
+      "." +
+      matrices;
   } else if (reason === "lockfile-provenance") {
     next.platformStatus =
       "Linux x64 has exact zero-allowance v" +
@@ -354,6 +920,22 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       " at " +
       sourceText(evidence.sourceSha, evidence.headSha) +
       " after a consumer-only pnpm-lock.yaml change. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the lock hash moved. This is not a release or runtime change. " +
+      gzipSummary +
+      "." +
+      matrices;
+  } else if (reason === CARGO_PRODUCER_LOCK_REASON) {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from workflow run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " after a reviewed additive Cargo.lock transition (" +
+      cargoTransitionText(cargoTransition) +
+      "). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. " +
       gzipSummary +
       "." +
       matrices;
@@ -377,6 +959,17 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     runId: evidence.runId,
     jobId: evidence.jobId,
     sourceSha: evidence.sourceSha,
+    ...(reason === "fingerprint-migration"
+      ? {
+          migratedFrom: {
+            schemaVersion: contract.schemaVersion,
+            outcome: contract.outcome,
+            baselineSourceSha: contract.baselineSourceSha,
+            baselineRunId: contract.baselineEvidence?.runId,
+          },
+        }
+      : {}),
+    ...(cargoTransition ? { cargoTransition } : {}),
     actualGzip: actualGzipRows(totals),
     note:
       evidence.runLabel +
@@ -392,17 +985,35 @@ export function rebaselineContract(contract, totals, evidence, reason) {
           " actual-gzip ceilings. Raw totals did not change. Actual gzip stays in the sidecar " +
           "as transfer-size evidence. The manager re-verifies these values on the integrated " +
           "tree in CI."
-        : reason === "lockfile-provenance"
-          ? "Consumer-only pnpm-lock.yaml move at unchanged v" +
+        : reason === "fingerprint-migration"
+          ? "Dependency-fingerprint migration (schemaVersion 2 to 3) at unchanged v" +
             previousVersion +
-            " with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; " +
+            ": the fingerprint " +
+            evidence.dependencyFingerprint.sha256 +
+            " was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; the pnpm-lock.yaml hash " +
+            evidence.pnpmLockSha256 +
+            " is the artifact's own lock, recorded as provenance only. Raw and gzipNormalized totals did not change; " +
             gzipSummary +
             "."
-          : "Raw and gzipNormalized totals did not change from the v" +
-            previousVersion +
-            " contract; " +
-            gzipSummary +
-            ".") +
+          : reason === "lockfile-provenance"
+            ? "Consumer-only pnpm-lock.yaml move at unchanged v" +
+              previousVersion +
+              " with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; " +
+              gzipSummary +
+              "."
+            : reason === CARGO_PRODUCER_LOCK_REASON
+              ? "Reviewed additive Cargo.lock transition at unchanged v" +
+                previousVersion +
+                " (" +
+                cargoTransitionText(cargoTransition) +
+                "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
+                gzipSummary +
+                "."
+              : "Raw and gzipNormalized totals did not change from the v" +
+                previousVersion +
+                " contract; " +
+                gzipSummary +
+                ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -413,6 +1024,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       };
     }
   }
+  if (cargoTransition) assertCargoProducerLockMovement(contract, next);
   return { contract: next, gzipEvidence, previousVersion };
 }
 
@@ -439,6 +1051,10 @@ function rewriteLinuxBlock(block, contract) {
   block = block.replace(
     /(linuxContract\.toolchain\.packageVersion\)\.toBe\()"[^"]+"/,
     '$1"' + contract.toolchain.packageVersion + '"',
+  );
+  block = block.replace(
+    /(linuxContract\.schemaVersion\)\.toBe\()\d+/,
+    "$1" + contract.schemaVersion,
   );
   for (const mode of MODES) {
     const marker = "linuxContract.ceilings." + mode + ").toEqual({";
@@ -470,8 +1086,13 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
   const { runId, jobId, sourceSha } = contract.baselineEvidence;
   const policy = REASONS[reason];
   const version = contract.toolchain.packageVersion;
+  const runKind =
+    reason === "fingerprint-migration" || reason === CARGO_PRODUCER_LOCK_REASON
+      ? "workflow run "
+      : "health run ";
   const run =
-    "[health run " +
+    "[" +
+    runKind +
     runId +
     "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
     runId +
@@ -522,6 +1143,30 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       " contract. These totals alone do not prove byte-identical product code. " +
       evidence +
       closing;
+  } else if (reason === "fingerprint-migration") {
+    const fingerprint = contract.dependencyFingerprint;
+    body =
+      "The Linux contract moved from schemaVersion 2 to schemaVersion 3 at v" +
+      version +
+      " from " +
+      run +
+      ". It now pins the dependency-graph fingerprint `" +
+      fingerprint.sha256 +
+      "` (policy v" +
+      fingerprint.policyVersion +
+      ", `" +
+      fingerprint.parser +
+      "`, helper `" +
+      fingerprint.helperSha256 +
+      "`; see [LOCK-FINGERPRINT-POLICY.md](LOCK-FINGERPRINT-POLICY.md)) instead of the whole-file " +
+      "`pnpm-lock.yaml` hash. The artifact's lock hash `" +
+      contract.toolchain.pnpmLockSha256 +
+      "` stays recorded in `toolchain.pnpmLockSha256` as baseline provenance only. The producer " +
+      "version, fixtures, `Cargo.lock`, toolchain and normalizer are unchanged, the runner digests " +
+      "follow the measured artifact because the runners now record the fingerprint, and every raw " +
+      "and `gzipNormalized` total is unchanged. " +
+      evidence +
+      closing;
   } else if (reason === "lockfile-provenance") {
     body =
       "The Linux contract was re-pinned at v" +
@@ -532,6 +1177,20 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       "`Cargo.lock`, toolchain and normalizer are unchanged, and every raw and `gzipNormalized` " +
       "total is unchanged. Only the reviewed lock hash moved; this is not a release or runtime " +
       "change. " +
+      evidence +
+      closing;
+  } else if (reason === CARGO_PRODUCER_LOCK_REASON) {
+    body =
+      "The Linux contract recorded a reviewed additive `Cargo.lock` transition at v" +
+      version +
+      " from " +
+      run +
+      ": " +
+      cargoTransitionMarkdown(contract.baselineEvidence.cargoTransition) +
+      " The producer version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, " +
+      "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
+      "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
+      "byte-identical product code. " +
       evidence +
       closing;
   } else {
@@ -548,6 +1207,354 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
   return "\n## v" + version + " " + policy.heading + "\n\n" + body;
 }
 
+const DARWIN_CONTRACT = "research/v3-island-size/decision.json";
+export const FINGERPRINT_HELPER_FILE = SIZE_DIR + "/lock-fingerprint.mjs";
+const INVENTORY_FILE = SIZE_DIR + "/lock-fingerprint-inventory.json";
+const HELPER_CONTRACTS = { linux: CONTRACT, darwin: DARWIN_CONTRACT };
+// The only keys a fingerprint-helper re-pin may write (LOCK-FINGERPRINT-POLICY.md §0).
+export const FINGERPRINT_HELPER_MOVEMENT = Object.freeze([
+  "dependencyFingerprint.helperSha256",
+  "outcome",
+  "platformStatus",
+]);
+const INVENTORY_KEYS = ["importers", "snapshots", "packages", "sections", "counts"];
+const NO_NATIVE_RUN =
+  "no native run: helperSha256 is outside the hashed input and absent from run provenance (#4198)";
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Sorted dotted paths of every leaf that differs between two contracts.
+export function contractDiffKeys(before, after, prefix = "") {
+  if (!isRecord(before) || !isRecord(after)) {
+    return isDeepStrictEqual(before, after) ? [] : [prefix.slice(0, -1)];
+  }
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...keys]
+    .flatMap((key) =>
+      Object.hasOwn(before, key) && Object.hasOwn(after, key)
+        ? contractDiffKeys(before[key], after[key], prefix + key + ".")
+        : [prefix + key],
+    )
+    .sort();
+}
+
+function short(digest) {
+  return String(digest).slice(0, 8);
+}
+
+// Runs one lock-fingerprint.mjs source from a temporary sibling of the real
+// helper, so its `yaml` import and default repo root resolve exactly as the
+// real helper's do; the temporary file is always removed.
+export async function computeWithHelperSource(source, root, lockText, currentVersion) {
+  const path = join(
+    root,
+    SIZE_DIR,
+    ".lock-fingerprint-repin-" + process.pid + "-" + randomBytes(6).toString("hex") + ".mjs",
+  );
+  writeFileSync(path, source);
+  try {
+    const helper = await import(pathToFileURL(path).href);
+    return helper.computeLockFingerprint({ lockText, currentVersion, repoRoot: resolve(root) });
+  } finally {
+    rmSync(path, { force: true });
+  }
+}
+
+function git(root, args) {
+  return execFileSync("git", args, {
+    cwd: root,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+// Gathers the evidence for a fingerprint-helper re-pin: both helpers run on the
+// checkout's lock and packages/zfb version. A failure of the new helper is the
+// checkout's fingerprint error and propagates verbatim.
+export async function proveFingerprintHelper(baseRef, root = ".") {
+  if (typeof baseRef !== "string" || baseRef.length === 0 || baseRef.startsWith("-")) {
+    throw new Error("--base-ref must name a git ref");
+  }
+  const at = (path) => join(root, path);
+  const lockText = readFileSync(at("pnpm-lock.yaml"), "utf8");
+  const currentVersion = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
+  const newSource = readFileSync(at(FINGERPRINT_HELPER_FILE));
+  let baseSource;
+  let baseCommit;
+  try {
+    baseCommit = git(root, ["rev-parse", "--verify", "--quiet", baseRef + "^{commit}"])
+      .toString()
+      .trim();
+    baseSource = git(root, ["show", baseCommit + ":" + FINGERPRINT_HELPER_FILE]);
+  } catch (error) {
+    throw new Error(
+      "cannot read " +
+        FINGERPRINT_HELPER_FILE +
+        " at --base-ref " +
+        baseRef +
+        ": " +
+        (error.stderr?.toString().trim() || error.message),
+      { cause: error },
+    );
+  }
+  const current = await computeWithHelperSource(newSource, root, lockText, currentVersion);
+  let base;
+  try {
+    base = await computeWithHelperSource(baseSource, root, lockText, currentVersion);
+  } catch (error) {
+    base = { error: error?.message ?? String(error) };
+  }
+  return {
+    baseRef,
+    baseCommit,
+    baseHelperSha256: sha256(baseSource),
+    newHelperSha256: sha256(newSource),
+    current,
+    base,
+  };
+}
+
+function helperRepinError(message) {
+  return new Error("--reason fingerprint-helper: " + message);
+}
+
+// Re-pins `dependencyFingerprint.helperSha256` of both contracts (#4198), or
+// throws naming the reason the change needs instead. Pure: `proof` comes from
+// proveFingerprintHelper. Totals are not re-derived; nothing but
+// FINGERPRINT_HELPER_MOVEMENT is written, which the exact-key diff enforces.
+export function repinFingerprintHelper(contracts, proof) {
+  const entries = Object.entries(HELPER_CONTRACTS).map(([name, file]) => {
+    if (!isRecord(contracts?.[name])) throw helperRepinError("missing the " + file + " contract");
+    return { name, file, contract: contracts[name] };
+  });
+  for (const { file, contract } of entries) {
+    if (contract.schemaVersion !== 3 || !isRecord(contract.dependencyFingerprint)) {
+      throw helperRepinError(
+        "needs a schemaVersion 3 contract, found " +
+          String(contract.schemaVersion) +
+          " in " +
+          file +
+          "; migrate with `fingerprint-migration` first",
+      );
+    }
+  }
+  const pinned = entries.map(({ contract }) => contract.dependencyFingerprint.helperSha256);
+  if (pinned[0] !== pinned[1]) {
+    throw helperRepinError(
+      "contracts disagree on helperSha256 (" +
+        entries.map(({ file }, i) => file + " " + pinned[i]).join(", ") +
+        "); fix the contract that is wrong first",
+    );
+  }
+  const { current, base } = proof;
+  for (const { file, contract } of entries) {
+    const fingerprint = contract.dependencyFingerprint;
+    const policyMoves = ["policyVersion", "parser"].filter(
+      (key) => fingerprint[key] !== current[key],
+    );
+    if (policyMoves.length > 0) {
+      throw helperRepinError(
+        "policy identity moved (" +
+          policyMoves.join(", ") +
+          " of " +
+          file +
+          " differ from the new helper's); this is a `fingerprint-policy` change (#4218), not a helper re-pin",
+      );
+    }
+    if (fingerprint.sha256 !== current.sha256) {
+      throw helperRepinError(
+        "fingerprint value moved (" +
+          file +
+          " pins " +
+          fingerprint.sha256 +
+          ", the new helper computes " +
+          current.sha256 +
+          "); a reachable dependency change needs `dependency-graph` (#4218), a policy change needs `fingerprint-policy` (#4218)",
+      );
+    }
+  }
+  if (proof.newHelperSha256 === pinned[0]) {
+    throw helperRepinError("helper unchanged; nothing to re-pin");
+  }
+  if (proof.baseHelperSha256 !== pinned[0]) {
+    throw helperRepinError(
+      "the helper at " +
+        proof.baseRef +
+        " (" +
+        proof.baseHelperSha256 +
+        ") is not the pinned helper (" +
+        pinned[0] +
+        "); pass the ref whose helper the contract pins",
+    );
+  }
+  const disagreement = base.error
+    ? ["the pinned helper failed: " + base.error]
+    : [
+        ...["policyVersion", "parser", "sha256"].filter((key) => base[key] !== current[key]),
+        ...([base, current].every((side) =>
+          isDeepStrictEqual(Object.keys(side.inventory ?? {}).sort(), [...INVENTORY_KEYS].sort()),
+        )
+          ? INVENTORY_KEYS.filter(
+              (key) => !isDeepStrictEqual(base.inventory[key], current.inventory[key]),
+            ).map((key) => "inventory." + key)
+          : ["inventory"]),
+      ];
+  if (disagreement.length > 0) {
+    throw helperRepinError(
+      "old and new helper disagree on the real lock (" +
+        disagreement.join(", ") +
+        "); this is a `fingerprint-policy` change (#4218)",
+    );
+  }
+  const sentence =
+    " Helper re-pinned from " +
+    short(pinned[0]) +
+    " to " +
+    short(proof.newHelperSha256) +
+    " under #4198 at " +
+    proof.baseRef +
+    "; measured inputs and fingerprint unchanged.";
+  const rewritten = {};
+  for (const { name, contract } of entries) {
+    const next = structuredClone(contract);
+    next.dependencyFingerprint.helperSha256 = proof.newHelperSha256;
+    next.outcome = REASONS[FINGERPRINT_HELPER_REASON].outcome;
+    next.platformStatus = contract.platformStatus + sentence;
+    const moved = contractDiffKeys(contract, next);
+    if (moved.some((key) => !FINGERPRINT_HELPER_MOVEMENT.includes(key))) {
+      throw helperRepinError("would move " + moved.join(", ") + "; refusing");
+    }
+    rewritten[name] = next;
+  }
+  return { contracts: rewritten, previousHelperSha256: pinned[0] };
+}
+
+function inventoryCounts(inventory) {
+  return ["importers", "snapshots", "packages"]
+    .map((key) => key + " " + inventory.counts[key].reached + "/" + inventory.counts[key].total)
+    .join(", ");
+}
+
+export function fingerprintHelperProofLines(proof, previousHelperSha256) {
+  return [
+    "base-ref: " + proof.baseRef + " (" + proof.baseCommit + ")",
+    "old helperSha256: " + previousHelperSha256,
+    "new helperSha256: " + proof.newHelperSha256,
+    "sha256 (unchanged): " + proof.current.sha256,
+    "policyVersion: " + proof.current.policyVersion,
+    "parser: " + proof.current.parser,
+    "inventory (identical for both helpers): " + inventoryCounts(proof.current.inventory),
+    NO_NATIVE_RUN,
+  ];
+}
+
+export function fingerprintHelperReadmeSection(contract, proof, previousHelperSha256) {
+  return (
+    "\n## v" +
+    contract.toolchain.packageVersion +
+    " " +
+    REASONS[FINGERPRINT_HELPER_REASON].heading +
+    "\n\n" +
+    "Both contracts re-pinned `dependencyFingerprint.helperSha256` from `" +
+    previousHelperSha256 +
+    "` to `" +
+    proof.newHelperSha256 +
+    "` under [#4198](https://github.com/Takazudo/zudo-front-builder/issues/4198). The pinned helper at `--base-ref " +
+    proof.baseRef +
+    "` (commit `" +
+    proof.baseCommit +
+    "`) and the new helper compute the same fingerprint `" +
+    proof.current.sha256 +
+    "` (policy v" +
+    proof.current.policyVersion +
+    ", `" +
+    proof.current.parser +
+    "`) and the same `--explain` inventory (" +
+    inventoryCounts(proof.current.inventory) +
+    ") on the real lock. No native run: `helperSha256` is outside the hashed input and absent from run provenance. Every other contract key, total and identity input is unchanged.\n"
+  );
+}
+
+// The artifact-less CLI path shared by both platform helpers: one run rewrites
+// both contracts, the inventory and the README together.
+export async function runFingerprintHelperRepin(baseRef, root = ".", log = console.log) {
+  const at = (path) => join(root, path);
+  const contracts = Object.fromEntries(
+    Object.entries(HELPER_CONTRACTS).map(([name, file]) => [
+      name,
+      JSON.parse(readFileSync(at(file), "utf8")),
+    ]),
+  );
+  const proof = await proveFingerprintHelper(baseRef, root);
+  const result = repinFingerprintHelper(contracts, proof);
+  // The helper's CLI guard compares argv[1] with its resolved module path.
+  const helperPath = realpathSync(at(FINGERPRINT_HELPER_FILE));
+  const explain = execFileSync(process.execPath, [helperPath, "--explain"], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const { current } = proof;
+  const expected = {
+    policyVersion: current.policyVersion,
+    parser: current.parser,
+    helperSha256: proof.newHelperSha256,
+    sha256: current.sha256,
+    inventory: current.inventory,
+  };
+  if (!isDeepStrictEqual(JSON.parse(explain.toString()), expected)) {
+    throw helperRepinError("the new helper's --explain output disagrees with the proof");
+  }
+  for (const [name, file] of Object.entries(HELPER_CONTRACTS)) {
+    writeFileSync(at(file), JSON.stringify(result.contracts[name], null, 2) + "\n");
+  }
+  writeFileSync(at(INVENTORY_FILE), explain);
+  appendFileSync(
+    at(README),
+    fingerprintHelperReadmeSection(result.contracts.linux, proof, result.previousHelperSha256),
+  );
+  log(
+    [
+      "fingerprint-helper re-pin of both island-size contracts (#4198):",
+      ...fingerprintHelperProofLines(proof, result.previousHelperSha256).map((line) => "  " + line),
+    ].join("\n"),
+  );
+  return result;
+}
+
+// Arguments that name artifact evidence; the artifact-less reason refuses them all.
+export const ARTIFACT_ARGS = Object.freeze([
+  "artifact",
+  "run-id",
+  "job-id",
+  "head-sha",
+  "source-sha",
+  "artifact-id",
+  "artifact-expires-at",
+  "label",
+]);
+
+// `values` are the parsed `--key value` pairs. fingerprint-helper takes exactly
+// --reason and --base-ref; --base-ref belongs to no other reason.
+export function checkFingerprintHelperArgs(values) {
+  if (values.reason !== FINGERPRINT_HELPER_REASON) {
+    if (Object.hasOwn(values, "base-ref")) {
+      throw new Error("--base-ref is only for --reason fingerprint-helper");
+    }
+    return false;
+  }
+  for (const key of Object.keys(values)) {
+    if (key === "reason" || key === "base-ref") continue;
+    throw new Error(
+      ARTIFACT_ARGS.includes(key)
+        ? "--reason fingerprint-helper takes no artifact (no native run); remove --" + key
+        : "--reason fingerprint-helper takes only --base-ref; remove --" + key,
+    );
+  }
+  if (!values["base-ref"]) throw new Error("required --base-ref");
+  return true;
+}
+
 export function parseArgs(argv) {
   const values = {};
   for (let i = 0; i < argv.length; i += 2) {
@@ -555,6 +1562,7 @@ export function parseArgs(argv) {
       throw new Error("bad argument: " + argv[i]);
     values[argv[i].slice(2)] = argv[i + 1];
   }
+  if (checkFingerprintHelperArgs(values)) return values;
   for (const required of ["artifact", "run-id", "job-id", "head-sha", "reason"]) {
     if (!values[required]) throw new Error("required --" + required);
   }
@@ -568,11 +1576,32 @@ export function parseArgs(argv) {
   if (!Object.hasOwn(REASONS, values.reason)) {
     throw new Error("--reason must be one of " + Object.keys(REASONS).join(", "));
   }
+  checkCargoProducerLockArgs(values);
   return values;
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2));
+// The cargo-producer-lock evidence a CLI run passes to the pure proof: the
+// operator's expected hashes and allowlist, the old lock they supplied and the
+// checkout's own Cargo.lock.
+export function readCargoLockEvidence(args, root) {
+  return {
+    expectedOldSha: args["expected-old-cargo-sha"],
+    expectedNewSha: args["expected-new-cargo-sha"],
+    added: parseAddedPackages(args["added-packages"]),
+    oldText: readFileSync(args["old-cargo-lock"], "utf8"),
+    newText: readFileSync(join(root, "Cargo.lock"), "utf8"),
+    oldLockSource: args["old-cargo-lock"],
+  };
+}
+
+// `root` is the checkout the contract, test pins and README are rewritten in.
+// The artifact-less fingerprint-helper reason returns a promise.
+export function main(argv = process.argv.slice(2), root = ".") {
+  const args = parseArgs(argv);
+  if (args.reason === FINGERPRINT_HELPER_REASON) {
+    return runFingerprintHelperRepin(args["base-ref"], root);
+  }
+  const at = (path) => join(root, path);
   const measurements = {};
   const normalized = {};
   for (const mode of MODES) {
@@ -584,8 +1613,9 @@ function main() {
   }
   const provenance = measurements.workspace.provenance;
   for (const mode of MODES) assertLinuxX64Provenance(measurements[mode].provenance);
-  const version = JSON.parse(readFileSync("packages/zfb/package.json", "utf8")).version;
-  const pnpmLockSha256 = createHash("sha256").update(readFileSync("pnpm-lock.yaml")).digest("hex");
+  const contract = JSON.parse(readFileSync(at(CONTRACT), "utf8"));
+  const checkout = readCheckoutIdentity(contract, root);
+  const { packageVersion: version, pnpmLockSha256 } = checkout;
   for (const mode of MODES) {
     const p = measurements[mode].provenance;
     if (p.sourceSha !== provenance.sourceSha)
@@ -593,22 +1623,17 @@ function main() {
     if (JSON.stringify(measuredIdentity(p)) !== JSON.stringify(measuredIdentity(provenance))) {
       throw new Error("workspace and packed identity inputs differ");
     }
-    if (p.pnpmLockSha256 !== pnpmLockSha256) {
-      throw new Error(mode + " artifact lockfile hash differs from this checkout's pnpm-lock.yaml");
-    }
-    if (p.packageVersion !== version) {
-      throw new Error(
-        mode + " artifact measured @takazudo/zfb " + p.packageVersion + ", not " + version,
-      );
-    }
+    const mismatches = artifactCheckoutMismatches(p, checkout, mode);
+    if (mismatches.length > 0) throw new Error(mismatches.join("; "));
   }
-  const contract = JSON.parse(readFileSync(CONTRACT, "utf8"));
   const defaultLabel = {
     "release-bump": "Release probe run for v" + version,
     "metric-migration":
       "Metric migration replayed from the retained artifact of health run " + args["run-id"],
     "runtime-identity": "Runtime-identity re-pin run at v" + version,
     "lockfile-provenance": "Consumer lockfile re-pin run at v" + version,
+    "fingerprint-migration": "Dependency-fingerprint migration run at v" + version,
+    "cargo-producer-lock": "Cargo producer-lock transition run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -623,13 +1648,22 @@ function main() {
       jobId: Number(args["job-id"]),
       runLabel: args.label ?? defaultLabel,
       identity: measuredIdentity(provenance),
+      artifactFingerprint: provenance.dependencyFingerprint,
+      dependencyFingerprint: checkout.dependencyFingerprint,
+      dependencyFingerprintError: checkout.dependencyFingerprintError,
+      ...(args.reason === CARGO_PRODUCER_LOCK_REASON
+        ? { cargoLock: readCargoLockEvidence(args, root) }
+        : {}),
     },
     args.reason,
   );
-  writeFileSync(CONTRACT, JSON.stringify(result.contract, null, 2) + "\n");
-  writeFileSync(TEST_FILE, rewriteTestPins(readFileSync(TEST_FILE, "utf8"), result.contract));
+  writeFileSync(at(CONTRACT), JSON.stringify(result.contract, null, 2) + "\n");
+  writeFileSync(
+    at(TEST_FILE),
+    rewriteTestPins(readFileSync(at(TEST_FILE), "utf8"), result.contract),
+  );
   appendFileSync(
-    README,
+    at(README),
     readmeSection(result.contract, result.gzipEvidence, result.previousVersion, args.reason),
   );
   console.log(
@@ -646,7 +1680,7 @@ function main() {
 const invokedPath = process.argv[1] && resolve(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
   try {
-    main();
+    await main();
   } catch (error) {
     console.error("rebaseline-island-size-linux: " + error.message);
     process.exit(1);

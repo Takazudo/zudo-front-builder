@@ -10,6 +10,10 @@
  * correctly (e.g. dist/client-router/router.js imports ./events.js →
  * /dist/client-router/events.js).
  *
+ * /list.html is the one templated page: its `{{PAGE}}` placeholders take the
+ * `?page=` query, so every query is a distinct document (#4179). Other queries
+ * are ignored, as for every other fixture page.
+ *
  * This is a sibling of tests/webkit-back-history/serve-fixture.mjs — kept as a
  * separate file so the WebKit T4 harness stays byte-for-byte unchanged. The only
  * difference is FIXTURE_DIR points at this suite's fixture pages.
@@ -22,7 +26,7 @@
  */
 
 import { createServer } from "node:http";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { join, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -83,6 +87,21 @@ const server = createServer((req, res) => {
   if (pathname.startsWith("/zfb-dist/")) {
     const target = safeJoin(ZFB_DIST_DIR, pathname.slice("/zfb-dist/".length));
     if (target && tryServe(res, target)) return;
+  }
+
+  if (pathname === "/list.html") {
+    const page = url.searchParams.get("page") ?? "1";
+    try {
+      const html = readFileSync(join(FIXTURE_DIR, "list.html"), "utf8").replaceAll(
+        "{{PAGE}}",
+        /^\d+$/.test(page) ? page : "1",
+      );
+      res.writeHead(200, { "Content-Type": MIME[".html"] });
+      res.end(html);
+      return;
+    } catch {
+      // No list.html in this fixture root: fall through to the 404 below.
+    }
   }
 
   // / or /foo.html -> fixture/*  (normalise bare / to /index.html)

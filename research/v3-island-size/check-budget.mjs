@@ -13,6 +13,7 @@ import {
   initialJavascript,
   readDirectoryFiles,
 } from "./chunk-inventory.mjs";
+import { computeLockFingerprint } from "./lock-fingerprint.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -57,6 +58,10 @@ const expectedToolchain = {
 };
 const compression =
   "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file";
+const contractFingerprintKeys = ["policyVersion", "parser", "helperSha256", "sha256"];
+const HELPER_REPIN_HINT =
+  "; re-pin with `--reason fingerprint-helper --base-ref <ref>`; a changed fingerprint value needs `dependency-graph`/`fingerprint-policy` (#4218)";
+const provenanceFingerprintKeys = ["policyVersion", "sha256"];
 const shaPattern = /^[0-9a-f]{64}$/;
 const packageVersionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 const sourceShaPattern = /^[0-9a-f]{40}$/;
@@ -278,13 +283,18 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     errors.push("contract: expected a JSON object");
     return;
   }
-  if (contract.schemaVersion !== 1 && contract.schemaVersion !== 2) {
+  if (![1, 2, 3].includes(contract.schemaVersion)) {
     errors.push("contract: unsupported schemaVersion");
   }
   const metrics = ceilingMetrics(contract);
-  if (contract.schemaVersion === 2) {
+  if (identityNormalizedSchema(contract)) {
     if (contract.metric !== IDENTITY_NORMALIZED_METRIC) {
-      errors.push("contract: schemaVersion 2 must declare metric " + IDENTITY_NORMALIZED_METRIC);
+      errors.push(
+        "contract: schemaVersion " +
+          contract.schemaVersion +
+          " must declare metric " +
+          IDENTITY_NORMALIZED_METRIC,
+      );
     }
     if (contract.normalizationVersion !== IDENTITY_NORMALIZATION_VERSION) {
       errors.push(
@@ -297,6 +307,15 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
     }
   } else if (Object.hasOwn(contract, "metric") || Object.hasOwn(contract, "normalizerSha256")) {
     errors.push("contract: schemaVersion 1 measures actual gzip and cannot declare a metric");
+  }
+  if (contract.schemaVersion === 3) {
+    validateContractFingerprint(contract.dependencyFingerprint, errors);
+  } else if (Object.hasOwn(contract, "dependencyFingerprint")) {
+    errors.push(
+      "contract: schemaVersion " +
+        String(contract.schemaVersion) +
+        " cannot declare dependencyFingerprint",
+    );
   }
   if (contract.fixtureVersion !== "v3-islands-1")
     errors.push("contract: unsupported fixtureVersion");
@@ -405,14 +424,18 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   ) {
     errors.push("local measurement runners: SHA-256 values differ from the reviewed contract");
   }
-  if (contract.toolchain?.pnpmLockSha256 !== localInputs.pnpmLockSha256) {
+  // schemaVersion 3 pins only the lock content that can produce measured
+  // bytes; toolchain.pnpmLockSha256 stays recorded but is not compared.
+  if (contract.schemaVersion === 3) {
+    compareLocalFingerprint(contract.dependencyFingerprint, localInputs, errors);
+  } else if (contract.toolchain?.pnpmLockSha256 !== localInputs.pnpmLockSha256) {
     errors.push("local pnpm-lock.yaml: SHA-256 differs from the reviewed contract");
   }
   if (contract.toolchain?.cargoLockSha256 !== localInputs.cargoLockSha256) {
     errors.push("local Cargo.lock: SHA-256 differs from the reviewed contract");
   }
   if (
-    contract.schemaVersion === 2 &&
+    identityNormalizedSchema(contract) &&
     shaPattern.test(contract.normalizerSha256 ?? "") &&
     contract.normalizerSha256 !== localInputs.normalizerSha256
   ) {
@@ -420,8 +443,56 @@ function validateContract(contract, localInputs, runningPlatform, errors) {
   }
 }
 
+function validateContractFingerprint(fingerprint, errors) {
+  if (!isRecord(fingerprint) || !sameKeys(fingerprint, contractFingerprintKeys)) {
+    errors.push(
+      "contract: schemaVersion 3 requires dependencyFingerprint with exactly " +
+        contractFingerprintKeys.join(", "),
+    );
+    return;
+  }
+  if (!Number.isSafeInteger(fingerprint.policyVersion)) {
+    errors.push("contract: invalid dependencyFingerprint policyVersion");
+  }
+  if (typeof fingerprint.parser !== "string" || fingerprint.parser.length === 0) {
+    errors.push("contract: invalid dependencyFingerprint parser");
+  }
+  for (const key of ["helperSha256", "sha256"]) {
+    if (!shaPattern.test(fingerprint[key] ?? "")) {
+      errors.push("contract: invalid dependencyFingerprint " + key);
+    }
+  }
+}
+
+function compareLocalFingerprint(fingerprint, localInputs, errors) {
+  if (localInputs.dependencyFingerprintError) {
+    errors.push("local dependency fingerprint: " + localInputs.dependencyFingerprintError);
+    return;
+  }
+  const local = localInputs.dependencyFingerprint;
+  if (!isRecord(local)) {
+    errors.push("local dependency fingerprint: missing from the repository hash context");
+    return;
+  }
+  if (!isRecord(fingerprint)) return;
+  for (const key of contractFingerprintKeys) {
+    if (fingerprint[key] !== local[key]) {
+      errors.push(
+        "local dependency fingerprint: " +
+          key +
+          " differs from the reviewed contract" +
+          (key === "helperSha256" ? HELPER_REPIN_HINT : ""),
+      );
+    }
+  }
+}
+
+function identityNormalizedSchema(contract) {
+  return contract?.schemaVersion === 2 || contract?.schemaVersion === 3;
+}
+
 export function contractMetric(contract) {
-  return contract?.schemaVersion === 2 ? IDENTITY_NORMALIZED_METRIC : "gzip";
+  return identityNormalizedSchema(contract) ? IDENTITY_NORMALIZED_METRIC : "gzip";
 }
 
 function ceilingMetrics(contract) {
@@ -578,6 +649,7 @@ function validateProvenance(
   ) {
     errors.push(label + ": pnpm lockfile differs from the current checkout");
   }
+  validateProvenanceFingerprint(provenance, label, contract, localInputs, errors);
   if (provenance.cargoLockSha256 !== contract.toolchain?.cargoLockSha256) {
     errors.push(label + ": Cargo lockfile differs from the contract");
   }
@@ -593,6 +665,42 @@ function validateProvenance(
     }
   }
   return provenance;
+}
+
+function validateProvenanceFingerprint(provenance, label, contract, localInputs, errors) {
+  const carried = Object.hasOwn(provenance, "dependencyFingerprint");
+  if (contract.schemaVersion !== 3) {
+    if (carried) {
+      errors.push(
+        label +
+          ": schema mismatch: schemaVersion " +
+          String(contract.schemaVersion) +
+          " contract cannot accept a run carrying dependencyFingerprint",
+      );
+    }
+    return;
+  }
+  if (!carried) {
+    errors.push(
+      label + ": schema mismatch: schemaVersion 3 contract requires dependencyFingerprint",
+    );
+    return;
+  }
+  const fingerprint = provenance.dependencyFingerprint;
+  if (!isRecord(fingerprint) || !sameKeys(fingerprint, provenanceFingerprintKeys)) {
+    errors.push(
+      label +
+        ": dependencyFingerprint must list exactly " +
+        provenanceFingerprintKeys.join(" and "),
+    );
+    return;
+  }
+  const local = localInputs.dependencyFingerprint;
+  for (const key of provenanceFingerprintKeys) {
+    if (fingerprint[key] !== local?.[key]) {
+      errors.push(label + ": dependency fingerprint " + key + " differs from the current checkout");
+    }
+  }
 }
 
 function validateOneResult(mode, fixture, result, artifactCase, contract, normalized, errors) {
@@ -855,6 +963,9 @@ function compareMatchingProvenance(workspace, packed, errors) {
       errors.push("workspace and packed runs have mismatched " + field);
     }
   }
+  if (!sameFingerprint(workspace.dependencyFingerprint, packed.dependencyFingerprint)) {
+    errors.push("workspace and packed runs have mismatched dependencyFingerprint");
+  }
   if (
     workspace.actualInputs?.zfbTarballPackageJsonSha256 !== packed.actualInputs?.packageJsonSha256
   ) {
@@ -866,6 +977,16 @@ function compareMatchingProvenance(workspace, packed, errors) {
   ) {
     errors.push("packed runtime manifest does not match the workspace run's tarball");
   }
+}
+
+function sameFingerprint(left, right) {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    isRecord(left) &&
+    isRecord(right) &&
+    sameKeys(right, Object.keys(left)) &&
+    Object.keys(left).every((key) => left[key] === right[key])
+  );
 }
 
 function validateRun(run, mode, contract, expectedSourceSha, runningPlatform, localInputs, errors) {
@@ -949,7 +1070,9 @@ function validateNormalizedSidecar(run, mode, contract, errors) {
   if (run.normalized === undefined) {
     errors.push(
       mode +
-        ": metric mismatch: schemaVersion 2 contract pins " +
+        ": metric mismatch: schemaVersion " +
+        contract.schemaVersion +
+        " contract pins " +
         IDENTITY_NORMALIZED_METRIC +
         " ceilings but the measurement has no " +
         NORMALIZED_SIDECAR +
@@ -1188,6 +1311,18 @@ function currentLocalInputs(contract) {
     readFileSync(resolve(repoRoot, "packages/zfb/package.json")),
   ).version;
   const pnpmLockText = readFileSync(resolve(repoRoot, "pnpm-lock.yaml"), "utf8");
+  // A fingerprint failure only matters to a schemaVersion-3 contract, so it is
+  // reported there instead of aborting a v1/v2 check.
+  let dependencyFingerprint = null;
+  let dependencyFingerprintError = null;
+  try {
+    const fingerprint = computeLockFingerprint({ lockText: pnpmLockText, currentVersion });
+    dependencyFingerprint = Object.fromEntries(
+      contractFingerprintKeys.map((key) => [key, fingerprint[key]]),
+    );
+  } catch (error) {
+    dependencyFingerprintError = error?.message ?? String(error);
+  }
   return {
     packageVersion: currentVersion,
     fixtureSha256: Object.fromEntries(
@@ -1204,6 +1339,8 @@ function currentLocalInputs(contract) {
     pnpmLockActualSha256: sha256(pnpmLockText),
     cargoLockSha256: hashFile(resolve(repoRoot, "Cargo.lock")),
     normalizerSha256: normalizerSha256(),
+    dependencyFingerprint,
+    dependencyFingerprintError,
   };
 }
 
@@ -1262,7 +1399,7 @@ function main() {
   console.log(
     "Island size budget passed for all eight fixtures in workspace and packed modes (metric " +
       contractMetric(contract) +
-      (contract.schemaVersion === 2 ? " v" + contract.normalizationVersion : "") +
+      (identityNormalizedSchema(contract) ? " v" + contract.normalizationVersion : "") +
       ").",
   );
 }

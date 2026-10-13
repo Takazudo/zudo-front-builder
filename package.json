@@ -58,6 +58,7 @@
     "lefthook": "^2.1.6",
     "wrangler": "4.85.0",
     "ws": "^8.18.0",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "yaml": "2.9.0"
   }
 }

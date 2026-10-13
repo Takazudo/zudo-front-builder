@@ -222,6 +222,18 @@ function openPhotoLightbox(slug: string) {
 
 This changes `pathname`, so the pushed entry no longer matches the page the user came from — pressing Back falls through to a normal cross-page traversal (fetch + swap of the previous page), not the fast-path. `syncHistoryEntry()` only edits the URL bar and the router's bookkeeping; it never fetches or renders anything itself, so an island reading `location.pathname` is what actually shows the lightbox contents while the URL carries it.
 
+### Raw History entries and ownership
+
+Every Back/Forward press lands on an entry that either the router or your app owns. The router decides by comparing the entry's URL with the document the DOM actually shows — not with the address bar, which `syncHistoryEntry()` can point at a URL nothing was rendered for.
+
+- **App-owned same-document entries use `syncHistoryEntry()`.** It keeps the router's bookkeeping in sync, so Back from a hash or same-`search` entry is served by the fast-path. Back from a `syncHistoryEntry()` entry with another pathname is the cross-page swap described above. Back over such an entry onto a fragment entry of the page still in the DOM does not refetch that page.
+- **Fragment entries of the rendered page belong to the browser.** A hash link the router does not handle, or a `location.hash` write, creates an entry with a `null` `history.state`. Back/Forward among those entries only scrolls — no fetch, no swap, no lifecycle event.
+- **A raw `history.pushState(null, "", "?q=…")` on the rendered pathname belongs to your app.** The router leaves such filter or search entries to your own `popstate` handler and does not fetch or swap.
+- **Router-rendered documents are router-owned, even through a `null` entry.** When the router soft-navigated from `/list?page=1#item` to `/list?page=2`, Back to the `#item` entry fetches and swaps page 1 back in, so the rendered page always matches the URL.
+- **A raw `null`-state entry on another pathname is router-owned document navigation.** `history.pushState(null, "", "/app/item/2")` names a document the DOM does not show, so Back/Forward onto it fetches and swaps it like any other page, and islands remount. A raw entry with your own non-null state on another pathname has always been handled this way. There is no opt-out: an island that routes between pathnames itself should write its entries with `syncHistoryEntry()` and expect the cross-page swap on Back.
+
+One edge remains: the router remembers which queries it rendered on a pathname, so a raw push that writes exactly such a query — for example `?page=1` after the router swapped `?page=1` out for `?page=2` — is treated as that document and refetched on Back/Forward. Use `syncHistoryEntry()` for app-owned entries to avoid it.
+
 ## Prefetch strategies
 
 The router can warm up the browser cache before the user clicks a link. Each link is opted in via the `data-zfb-prefetch` attribute.
@@ -458,7 +470,7 @@ This emits `<meta name="zfb-traverse-refetch" content="true">`, which the router
 Putting the whole picture together, a Back or Forward press is served one of three ways:
 
 1. **Same-page fast-path** — described above: the destination shares `pathname`/`search` with the current page, so the router serves it entirely from the live DOM. No fetch, no swap, no remount; island state survives untouched.
-2. **SPA cross-page swap** — the destination is a different page (or the current page opted out via `traverseRefetch`), so the router fetches and swaps like a link click: `<head>`/`<body>` are replaced and islands remount.
+2. **SPA cross-page swap** — the destination is a different page (or the current page opted out via `traverseRefetch`), so the router fetches and swaps like a link click: `<head>`/`<body>` are replaced and islands remount. This includes Back from a `syncHistoryEntry()` entry with another pathname and a raw `null`-state entry that names another document (see [Raw History entries and ownership](#deep-linking-transient-ui-state-with-synchistoryentry-raw-history-entries-and-ownership)); an app's own raw same-pathname query entries are left to the app.
 3. **Browser bfcache restore** — Safari and other WebKit-based browsers can serve a Back/Forward navigation straight from the browser's own back/forward cache instead of re-running any JavaScript on the page, including this router. That restore fires the standard `pageshow` event with `event.persisted: true`; the router listens for it and re-syncs its internal bookkeeping — the tracked history index, the "navigated from" URL, and the scroll position — from the restored `history.state`, so the *next* Back/Forward press is still computed correctly. This is a browser-level restore, not a router mechanism, so — like case 1 — none of the six `zfb:*` lifecycle events fire for it.
 
 ## View Transitions

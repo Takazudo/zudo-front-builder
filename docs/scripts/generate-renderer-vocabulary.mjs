@@ -104,20 +104,42 @@ function requireFragments(source, label, fragments) {
 function parseAliases(source) {
   const blocks = [
     ...source.matchAll(
-      /^const propAliases: Readonly<Record<string, PropAlias>> = \{\n([\s\S]*?)\n\};/gm,
+      /^const propAliases: Readonly<Record<string, PropAlias>> = Object\.fromEntries\(\n([\s\S]*?)\n\);/gm,
     ),
   ];
-  const body = exactOne(blocks, "private propAliases object")[1];
+  const body = exactOne(blocks, "private propAliases encoded table")[1];
+  const match = /^\s*\[\s*"([^"\\]*)",\s*"([^"\\]*)",\s*\]\.flatMap\(([\s\S]*)\),\s*$/.exec(body);
+  if (!match) fail("unsupported propAliases entry shape");
+  const decoder = `(entries, index) =>
+    entries.split(" ").map((entry) => {
+      const [name, spelling = entry.toLowerCase()] = index
+        ? [entry.replace(/[-:]([a-z])/g, (_, letter: string) => letter.toUpperCase()), entry]
+        : entry.split("=");
+      return [name!, { spelling, namespace: index ? "svg" : undefined }];
+    }),`;
+  if (compact(match[3]) !== compact(decoder)) fail("propAliases decoder policy changed");
   const aliases = [];
-  const pattern =
-    /^  ([A-Za-z][A-Za-z0-9]*): \{ spelling: "([A-Za-z0-9:._-]+)"(?:, namespace: "(html|svg)")? \},$/;
-  for (const line of body.split("\n")) {
-    if (!line.trim()) continue;
-    const match = line.match(pattern);
-    if (!match) fail(`unsupported propAliases entry shape: ${line.trim()}`);
-    aliases.push({ name: match[1], spelling: match[2], namespace: match[3] });
+  for (const [index, entries] of match.slice(1, 3).entries()) {
+    for (const entry of entries.split(" ")) {
+      if (index === 0) {
+        const token = /^([A-Za-z][A-Za-z0-9]*)(?:=([A-Za-z0-9:._-]+))?$/.exec(entry);
+        if (!token) fail(`unsupported propAliases entry shape: ${entry}`);
+        aliases.push({
+          name: token[1],
+          spelling: token[2] ?? token[1].toLowerCase(),
+          namespace: undefined,
+        });
+      } else {
+        if (!/^[a-z]+(?:[-:][a-z]+)+$/.test(entry))
+          fail(`unsupported propAliases entry shape: ${entry}`);
+        aliases.push({
+          name: entry.replace(/[-:]([a-z])/g, (_, letter) => letter.toUpperCase()),
+          spelling: entry,
+          namespace: "svg",
+        });
+      }
+    }
   }
-  if (aliases.length === 0) fail("propAliases must contain at least one entry");
   if (new Set(aliases.map(({ name }) => name)).size !== aliases.length)
     fail("propAliases contains duplicate spellings");
   return aliases;
@@ -129,19 +151,18 @@ function validateVocabularySemantics(source) {
     'if (custom) return typeof value === "string" ? undefined : "requires a string";',
     'if (name === "style") return undefined;',
     'if (booleanAttrs.has(name)) return typeof value === "boolean" ? undefined : "requires a boolean";',
-    'if (overloadedBooleanAttrs.has(name)) return typeof value === "string" || typeof value === "boolean" ? undefined : "requires a string or boolean";',
-    'if (enumeratedBooleanAttrs.has(name)) return typeof value === "string" || typeof value === "boolean" ? undefined : "requires a string or boolean";',
+    'if (overloadedBooleanAttrs.has(name) || enumeratedBooleanAttrs.has(name)) return typeof value === "string" || typeof value === "boolean" ? undefined : "requires a string or boolean";',
     'if (numericAttrs.has(name)) return typeof value === "string" || (typeof value === "number" && Number.isFinite(value)) ? undefined : "requires a string or finite number";',
-    'if (stringAttrs.has(name)) return typeof value === "string" ? undefined : "requires a string";',
-    'if (/^on[a-z]/.test(name)) return typeof value === "string" ? undefined : "requires a string";',
+    'if (stringAttrs.has(name) || /^on[a-z]/.test(name)) return typeof value === "string" ? undefined : "requires a string";',
     'typeof value === "boolean" && /^(data-|aria-)/.test(name)',
   ]);
   requireFragments(source, "alias suggestion", [
     "if (/^on[A-Z]/.test(name) || legacyDialect.has(name)) return true;",
     "if (custom) return false;",
-    "alias !== undefined && (!alias.namespace || alias.namespace === namespace) && allowedAliasTarget(alias.spelling, namespace)",
+    "return dialectSuggestion(name, namespace, custom) !== undefined;",
     "if (/^on[A-Z]/.test(name)) return eventSuggestion(name);",
     "if (custom && !legacyDialect.has(name)) return undefined;",
+    "if (!alias || (alias.namespace && alias.namespace !== namespace)) return undefined;",
     "return allowedAliasTarget(alias.spelling, namespace) ? alias.spelling : undefined;",
     'event === "DoubleClick" ? "dblclick" : event.toLowerCase()',
   ]);
@@ -186,8 +207,7 @@ export function validateRendererPolicies(render, hydrate) {
     "/^[A-Za-z_:][A-Za-z0-9_:.-]*$/.test(name)",
     "!custom && !commonAttrs.has(name)",
     "ownNamespace === SVG ? svgAttrs.has(name) : htmlAttrs.has(name)",
-    "!/^data-[\\w.-]+$/.test(name)",
-    "!/^aria-[\\w.-]+$/.test(name)",
+    "!/^(data|aria)-[\\w.-]+$/.test(name)",
     "!/^on[a-z]+$/.test(name)",
     'name.startsWith("on:")',
   ]);
