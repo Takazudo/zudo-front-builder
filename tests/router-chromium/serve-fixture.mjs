@@ -29,9 +29,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 
-const FIXTURE_DIR = join(__dirname, "fixture");
-const DIST_DIR = join(REPO_ROOT, "packages", "zfb-runtime", "dist");
-const ZFB_DIST_DIR = join(REPO_ROOT, "packages", "zfb", "dist");
+// Isolated packed-consumer runs serve installed artifacts through the same harness.
+const FIXTURE_DIR = process.env.ZFB_REGION_FIXTURE_DIR ?? join(__dirname, "fixture");
+const DIST_DIR =
+  process.env.ZFB_REGION_RUNTIME_DIST ?? join(REPO_ROOT, "packages", "zfb-runtime", "dist");
+const ZFB_DIST_DIR = process.env.ZFB_REGION_SDK_DIST ?? join(REPO_ROOT, "packages", "zfb", "dist");
 
 const PORT = parseInt(process.argv[2] ?? "4322", 10);
 
