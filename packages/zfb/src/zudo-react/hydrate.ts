@@ -1,6 +1,15 @@
-import { activateForms, prepareForms, reconcileForms, FormError, type FormPlan } from "./forms.js";
+import { boundaryRenderer, integrity, recoverable } from "./error-boundary-type.js";
+import { islandRootType } from "./island-root-type.js";
+import {
+  activateForms,
+  prepareForms,
+  reconcileForms,
+  formHost,
+  FormError,
+  type FormPlan,
+} from "./forms.js";
 import { Fragment, isDescription, type Child, type Description } from "./description.js";
-import { createScope, withScope, type RuntimeScope } from "./scope.js";
+import { RuntimeScope, withScope } from "./scope.js";
 import { isReactive, read, styleText, setAttribute, bind, listener } from "./dom-bindings.js";
 import {
   createRoot,
@@ -13,8 +22,8 @@ import {
   type RootOwned,
 } from "./root.js";
 import type { ReadonlySignal } from "./reactive-types.js";
-import { subscribe } from "./reactive.js";
-import { batch } from "./scheduler.js";
+import { subscribe, untracked } from "./reactive.js";
+import { batch, enqueue } from "./scheduler.js";
 import { rawHtmlReserved } from "./raw-html.js";
 import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 import type { Key } from "./description.js";
@@ -57,27 +66,41 @@ const shapeAttrs: Record<string, string[]> = {
 const protocol = "zudo-react/1";
 
 type Operation = (map: Map<Node, Node>, cleanups: Array<() => void>) => void;
-interface BuildContext {
+export interface BuildContext {
   readonly document: Document;
   readonly options: RootOptions;
   readonly container: Element;
   readonly root: RuntimeScope;
   scope: RuntimeScope;
   next: number;
+  prefix?: string;
   readonly operations: Operation[];
   readonly forms: FormPlan[];
-  readonly formOwners: Map<FormPlan, Owned>;
-  readonly opaque: Set<Node>;
-  readonly textSlots: Set<Node>;
-  readonly displayOnlyTextareas: Set<Node>;
+  readonly formOwners: WeakMap<FormPlan, Owned>;
+  readonly opaque: WeakSet<Node>;
+  readonly textSlots: WeakSet<Node>;
+  readonly displayOnlyTextareas: WeakSet<Node>;
   readonly dynamicRanges: Array<readonly [Comment, Comment]>;
   collectRootRanges: boolean;
+  readonly errorRanges: WeakMap<
+    Node,
+    (
+      wants: Node[],
+      has: Node[],
+      i: number,
+      j: number,
+      map: Map<Node, Node>,
+      path: string,
+    ) => [number, number]
+  >;
+  readonly replacements: Array<() => void>;
 }
-interface Owned {
+export interface Owned {
   scope: RuntimeScope;
   fragment: DocumentFragment;
   operations: Operation[];
   forms: FormPlan[];
+  formOwners: WeakMap<FormPlan, Owned>;
   cleanups: Array<() => void>;
 }
 function owned(
@@ -95,13 +118,20 @@ function owned(
   const fragment = context.document.createDocumentFragment();
   const operationsStart = context.operations.length;
   const formsStart = context.forms.length;
+  const rangesStart = context.dynamicRanges.length;
   const previous = context.scope;
   context.scope = scope;
   const cleanups: Array<() => void> = [];
   try {
     withScope(scope, () => {
-      scope.onCleanup(() => {
-        for (const cleanup of [...cleanups].reverse()) cleanup();
+      scope.cleanups.push(() => {
+        for (const cleanup of cleanups.splice(0).reverse()) {
+          try {
+            cleanup();
+          } catch (error) {
+            scope.report("ZR_CLEANUP_ERROR", "cleanup", String(error));
+          }
+        }
       });
       const output = factory();
       if (kind)
@@ -112,14 +142,21 @@ function owned(
     });
     const operations = context.operations.splice(operationsStart);
     const forms = initial ? context.forms.slice(formsStart) : context.forms.splice(formsStart);
-    const instance = { scope, fragment, operations, forms, cleanups };
-    if (initial)
-      for (const form of forms)
-        if (!context.formOwners.has(form)) context.formOwners.set(form, instance);
+    const instance: Owned = {
+      scope,
+      fragment,
+      operations,
+      forms,
+      formOwners: context.formOwners,
+      cleanups,
+    };
+    for (const form of forms)
+      if (!context.formOwners.has(form)) context.formOwners.set(form, instance);
     return instance;
   } catch (error) {
     context.operations.length = operationsStart;
     context.forms.length = formsStart;
+    context.dynamicRanges.length = rangesStart;
     scope.dispose();
     throw error;
   } finally {
@@ -134,10 +171,42 @@ function installOwned(
 ): void {
   if (mode === "mount" && instance.forms.length) {
     const bindings = prepareForms(instance.forms, map, "mount", context.container);
-    reconcileForms(bindings, "mount");
-    activateForms(bindings, instance.scope, instance.cleanups, context.options, context.container);
+    reconcileForms(bindings, "mount", context.container);
+    activateOwnedForms(
+      bindings,
+      instance.forms,
+      map,
+      instance.formOwners,
+      context,
+      instance.scope,
+      instance.cleanups,
+    );
   }
   for (const operation of instance.operations) operation(map, instance.cleanups);
+}
+function activateOwnedForms(
+  bindings: ReturnType<typeof prepareForms>,
+  plans: FormPlan[],
+  map: Map<Node, Node>,
+  owners: WeakMap<FormPlan, Owned>,
+  context: BuildContext,
+  scope: RuntimeScope,
+  cleanups: Array<() => void>,
+): void {
+  const byNode = new Map<Node, Owned | undefined>();
+  for (const plan of plans) byNode.set(map.get(plan.element)!, owners.get(plan));
+  const groups = new Map<Owned | undefined, typeof bindings>();
+  for (const binding of bindings) {
+    const owner = byNode.get(binding.node);
+    const group = groups.get(owner) ?? [];
+    group.push(binding);
+    groups.set(owner, group);
+  }
+  // Root-owned bindings initialize first, as in the root adoption path.
+  activateForms(groups.get(undefined) ?? [], scope, cleanups, context.options, context.container);
+  groups.delete(undefined);
+  for (const [owner, group] of groups)
+    activateForms(group, owner!.scope, owner!.cleanups, context.options, context.container);
 }
 function selfMap(fragment: DocumentFragment): Map<Node, Node> {
   const map = new Map<Node, Node>();
@@ -149,24 +218,42 @@ function selfMap(fragment: DocumentFragment): Map<Node, Node> {
   return map;
 }
 class Failure extends Error {
+  declare readonly code: string;
+  declare readonly phase: "setup" | "preflight" | "commit" | "activation";
+  declare readonly expected: string;
+  declare readonly actual: string;
+  declare readonly path: string;
   constructor(
-    readonly code: string,
-    readonly phase: "setup" | "preflight" | "commit" | "activation",
-    readonly expected: string,
-    readonly actual: string,
-    readonly path: string,
+    code: string,
+    phase: Failure["phase"],
+    expected: string,
+    actual: string,
+    path: string,
   ) {
     super(`${code}: ${expected}; got ${actual}`);
+    Object.assign(this, { code, phase, expected, actual, path });
   }
 }
+
 function fail(
   code: string,
   phase: Failure["phase"],
   expected: string,
   actual: string,
   path: string,
+  fatal = false,
 ): never {
-  throw new Failure(code, phase, expected, actual, path);
+  const error = new Failure(code, phase, expected, actual, path);
+  throw fatal ||
+    [
+      "ZR_IDENTITY",
+      "ZR_CANCELLED",
+      "ZR_DUPLICATE_ROOT",
+      "ZR_HYDRATION_MISMATCH",
+      "ZR_NESTED_ISLAND",
+    ].includes(code)
+    ? integrity(error)
+    : error;
 }
 function append(parent: Node, node: Node): void {
   if (node.nodeType === Node.TEXT_NODE && parent.lastChild?.nodeType === Node.TEXT_NODE) {
@@ -179,7 +266,7 @@ function marker(
   kind: string,
   content: () => void,
 ): [Comment, Comment] {
-  const id = context.next++;
+  const id = `${context.prefix ?? ""}${context.next++}`;
   const open = context.document.createComment(`zr:1:${id}:${kind}`);
   parent.appendChild(open);
   content();
@@ -187,7 +274,10 @@ function marker(
   parent.appendChild(close);
   if (kind === "h") context.opaque.add(open);
   if (kind === "t") context.textSlots.add(open);
-  if (context.collectRootRanges && (kind === "t" || kind === "l" || kind.startsWith("s:")))
+  if (
+    context.collectRootRanges &&
+    (kind === "e" || kind === "t" || kind === "l" || kind.startsWith("s:"))
+  )
     context.dynamicRanges.push([open, close]);
   return [open, close];
 }
@@ -221,7 +311,7 @@ function range(start: Node, end: Node): Node[] {
     nodes.push(node);
     if (node === end) return nodes;
   }
-  throw new Error("ZR_REGION_RANGE");
+  throw integrity(new Error("ZR_REGION_RANGE"));
 }
 function removeRange(start: Node, end: Node): void {
   for (const node of range(start, end)) node.parentNode?.removeChild(node);
@@ -264,13 +354,13 @@ function scalar(value: unknown, path: string): string {
   fail("ZR_CHILD", "setup", "scalar", typeof value, path);
 }
 function validateRawHtml(value: unknown, tag: string, path: string): asserts value is string {
+  if (typeof value !== "string") fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path);
   if (
-    typeof value !== "string" ||
     rawHtmlReserved(value, tag) ||
     (tag === "script" && /<\/script/i.test(value)) ||
     (tag === "style" && /<\/style/i.test(value))
   )
-    fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path);
+    fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path, true);
 }
 function children(
   value: unknown,
@@ -315,6 +405,8 @@ function element(
   const childNamespace = tag === "foreignObject" ? HTML : ownNamespace;
   const element = context.document.createElementNS(ownNamespace, tag);
   const props = desc.props;
+  if ("data-zfb-island" in props || "data-zfb-island-skip-ssr" in props)
+    fail("ZR_NESTED_ISLAND", "preflight", "no nested root", tag, path);
   if (tag === "iframe") {
     if (Object.hasOwn(props, "rawHtml"))
       fail("ZR_RAW_HTML", "preflight", "iframe without rawHtml", "rawHtml", path);
@@ -381,35 +473,25 @@ function element(
         fail("ZR_LISTENER", "setup", "native listener", name, path);
       context.operations.push((map, cleanups) => {
         const node = map.get(element) as Element;
+        const eventError = (error: unknown): void =>
+          report(
+            context.options,
+            diagnostic(
+              context.options,
+              "ZR_EVENT_ERROR",
+              "update",
+              `${rootPath(context.container)}${path}`,
+              "handler success",
+              String(error),
+            ),
+          );
         const handler = (event: Event) => {
           try {
             const result: unknown = (original as (event: Event) => unknown)(event);
             if (result && typeof result === "object" && "then" in result)
-              Promise.resolve(result).catch((error) =>
-                report(
-                  context.options,
-                  diagnostic(
-                    context.options,
-                    "ZR_EVENT_ERROR",
-                    "update",
-                    `${rootPath(context.container)}${path}`,
-                    "handler success",
-                    String(error),
-                  ),
-                ),
-              );
+              Promise.resolve(result).catch(eventError);
           } catch (error) {
-            report(
-              context.options,
-              diagnostic(
-                context.options,
-                "ZR_EVENT_ERROR",
-                "update",
-                `${rootPath(context.container)}${path}`,
-                "handler success",
-                String(error),
-              ),
-            );
+            eventError(error);
           }
         };
         node.addEventListener(parsed.name, handler, parsed.capture);
@@ -467,8 +549,7 @@ function element(
       (!custom &&
         !commonAttrs.has(name) &&
         !(ownNamespace === SVG ? svgAttrs.has(name) : htmlAttrs.has(name)) &&
-        !/^data-[\w.-]+$/.test(name) &&
-        !/^aria-[\w.-]+$/.test(name) &&
+        !/^(data|aria)-[\w.-]+$/.test(name) &&
         !/^on[a-z]+$/.test(name))
     )
       fail("ZR_ATTRIBUTE", "setup", "supported attribute", name, path);
@@ -538,7 +619,7 @@ function element(
             const template = context.document.createElement("template");
             template.innerHTML = value;
             if (start.parentNode !== node || end.parentNode !== node)
-              throw new Error("ZR_REGION_RANGE");
+              throw integrity(new Error("ZR_REGION_RANGE"));
             for (const child of range(start, end).slice(1, -1)) node.removeChild(child);
             node.insertBefore(template.content, end);
             previous = value;
@@ -575,6 +656,7 @@ function element(
     setAttribute(element, "checked", read(props.modelValue) === read(props.value));
   parent.appendChild(element);
 }
+
 function render(
   value: unknown,
   parent: Node,
@@ -632,6 +714,31 @@ function render(
     return;
   }
   if (!isDescription(value)) fail("ZR_CHILD", "setup", "description", typeof value, path);
+  if ((value.type as unknown) === islandRootType)
+    fail("ZR_NESTED_ISLAND", "preflight", "no nested root", "island", path);
+  const boundary = boundaryRenderer(value.type);
+  if (boundary) {
+    if (restricted.has(parentTag))
+      fail("ZR_UNSUPPORTED_POSITION", "preflight", "flow region", parentTag, path);
+    boundary(value, parent, context, namespace, parentTag, path, {
+      owned,
+      installOwned,
+      selfMap,
+      marker,
+      range,
+      fail,
+      openMarker,
+      matchingClose,
+      recoverable,
+      prepareForms,
+      read,
+      subscribe,
+      untracked,
+      enqueue,
+      formHost,
+    });
+    return;
+  }
   if (value.type === Fragment) {
     marker(context, parent, "f", () =>
       children(value.props.children, parent, context, namespace, parentTag, path),
@@ -668,11 +775,13 @@ function render(
       if (current) installOwned(current, map, context, "hydrate");
       const subscription = subscribe(
         () => {
-          const next = props.when.value;
-          if (next === shown) return;
-          const factory = next ? props.children : props.fallback;
           let replacement: Owned | null = null;
+          let rendering = true;
           try {
+            const next = props.when.value;
+            if (typeof next !== "boolean") throw new TypeError(`ZR_CHILD: Show.when at ${path}`);
+            if (next === shown) return;
+            const factory = next ? props.children : props.fallback;
             if (factory)
               replacement = owned(
                 context,
@@ -685,9 +794,17 @@ function render(
                 undefined,
                 owner,
               );
+            rendering = false;
             const replacementMap = replacement ? selfMap(replacement.fragment) : null;
             if (replacement && replacement.forms.length)
-              prepareForms(replacement.forms, replacementMap!, "mount", context.container);
+              prepareForms(
+                replacement.forms,
+                replacementMap!,
+                "mount",
+                context.container,
+                current ? [current.scope] : [],
+                start.parentNode,
+              );
             if (current) {
               current.scope.dispose();
               let node = start.nextSibling;
@@ -706,6 +823,9 @@ function render(
             shown = next;
           } catch (error) {
             replacement?.scope.dispose();
+            if (rendering) {
+              if (owner.recoverRender(error)) return;
+            }
             throw error;
           }
         },
@@ -783,12 +903,19 @@ function render(
       const end = map.get(ends[1])!;
       const subscription = subscribe(
         () => {
-          const next = props.each.value;
-          if (!Array.isArray(next)) throw new TypeError(`ZR_CHILD: For.each at ${path}`);
+          let next: readonly unknown[];
           let nextKeys: Key[];
+          try {
+            next = props.each.value;
+            if (!Array.isArray(next)) throw new TypeError(`ZR_CHILD: For.each at ${path}`);
+          } catch (error) {
+            if (owner.recoverRender(error)) return;
+            throw error;
+          }
           try {
             nextKeys = keyed(next, props.by, path);
           } catch (error) {
+            if (owner.recoverRender(error)) return;
             const detail = String(error);
             const code = detail.includes("ZR_DUPLICATE_KEY")
               ? "ZR_DUPLICATE_KEY"
@@ -810,6 +937,7 @@ function render(
           }
           const old = new Map(current.map((entry) => [entry.key, entry]));
           const created: Item[] = [];
+          let rendering = true;
           try {
             const ordered = nextKeys.map((key, index) => {
               const retained = old.get(key);
@@ -839,6 +967,7 @@ function render(
               created.push(entry);
               return entry;
             });
+            rendering = false;
             for (const entry of created)
               if (entry.owned.forms.length)
                 prepareForms(
@@ -846,6 +975,10 @@ function render(
                   selfMap(entry.owned.fragment),
                   "mount",
                   context.container,
+                  current
+                    .filter((item) => !nextKeys.includes(item.key))
+                    .map((item) => item.owned.scope),
+                  end.parentNode,
                 );
             for (const entry of current)
               if (!nextKeys.includes(entry.key)) {
@@ -882,6 +1015,9 @@ function render(
             current = ordered;
           } catch (error) {
             for (const entry of created) entry.owned.scope.dispose();
+            if (rendering) {
+              if (owner.recoverRender(error)) return;
+            }
             throw error;
           }
         },
@@ -1002,21 +1138,29 @@ function significant(nodes: Node[], pre: boolean): Node[] {
           node.nodeType !== Node.TEXT_NODE || normalize(node.textContent ?? "", false) !== "",
       );
 }
+const openingMarker =
+  /^zr:1:((?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))*):(c|f|t|h|l|s:[01]|i:[ns](?:[0-9a-f]{2})*|e)$/;
+function openMarker(node: Node): RegExpExecArray | null {
+  return node.nodeType === Node.COMMENT_NODE ? openingMarker.exec(node.textContent ?? "") : null;
+}
 function matchingClose(nodes: Node[], start: number): number {
-  const open = nodes[start]!.textContent ?? "";
-  const id = /^zr:1:(\d+):/.exec(open)?.[1];
-  if (id === undefined) return -1;
-  let depth = 0;
+  const first = openMarker(nodes[start]!);
+  if (!first) return -1;
+  const stack = [first[1]!];
   for (let i = start + 1; i < nodes.length; i++) {
-    const value = nodes[i]!.textContent;
-    if (value?.startsWith("zr:1:")) depth++;
-    else if (value?.startsWith("/zr:1:")) {
-      if (depth) depth--;
-      else return value === `/zr:1:${id}` ? i : -1;
-    }
+    const node = nodes[i]!;
+    if (node.nodeType !== Node.COMMENT_NODE) continue;
+    const value = node.textContent ?? "";
+    const open = openMarker(node);
+    if (open) stack.push(open[1]!);
+    else if (value.startsWith("/zr:1:")) {
+      if (value !== `/zr:1:${stack.pop()}`) return -1;
+      if (!stack.length) return i;
+    } else if (value.includes("zr:1:")) return -1;
   }
   return -1;
 }
+
 function compareChildren(
   expected: Node,
   actual: Node,
@@ -1033,6 +1177,12 @@ function compareChildren(
     const wanted = wants[i]!;
     const found = has[j]!;
     const childPath = `${path}/${wanted.nodeName.toLowerCase()}[${i}]`;
+    const boundary = context.errorRanges.get(wanted);
+    if (boundary) {
+      compare(wanted, found, map, context, childPath, pre);
+      [i, j] = boundary(wants, has, i, j, map, childPath);
+      continue;
+    }
     if (context.opaque.has(wanted)) {
       compare(wanted, found, map, context, childPath, pre);
       const wantedEnd = matchingClose(wants, i);
@@ -1134,7 +1284,7 @@ function execute(
         "different child component",
         rootPath(container),
       );
-    scope = createScope({
+    scope = new RuntimeScope({
       component: options.identity.component,
       reporter: (value) => report(options, value),
       protocol,
@@ -1150,28 +1300,20 @@ function execute(
       next: 0,
       operations: [],
       forms: [],
-      formOwners: new Map(),
-      opaque: new Set(),
-      textSlots: new Set(),
-      displayOnlyTextareas: new Set(),
+      formOwners: new WeakMap(),
+      opaque: new WeakSet(),
+      textSlots: new WeakSet(),
+      displayOnlyTextareas: new WeakSet(),
+      errorRanges: new WeakMap(),
+      replacements: [],
       dynamicRanges: [],
       collectRootRanges: true,
     };
     const fragment = container.ownerDocument.createDocumentFragment();
     render(node, fragment, context, HTML, "", rootPath(container));
     context.collectRootRanges = false;
-    const built = [...fragment.childNodes];
-    const map = new Map<Node, Node>();
+    const map = mode === "hydrate" ? new Map<Node, Node>() : selfMap(fragment);
     if (mode === "hydrate") compareChildren(fragment, container, map, context, rootPath(container));
-    else {
-      for (const expected of built) {
-        const visit = (item: Node): void => {
-          map.set(item, item);
-          for (const child of item.childNodes) visit(child);
-        };
-        visit(expected);
-      }
-    }
     const formBindings = prepareForms(context.forms, map, mode, container);
     if (options.signal?.aborted || !container.isConnected)
       fail(
@@ -1181,22 +1323,22 @@ function execute(
         "aborted or disconnected",
         rootPath(container),
       );
-    reconcileForms(formBindings, mode);
+    reconcileForms(formBindings, mode, context.container);
     if (mode === "mount") container.replaceChildren(fragment);
+    else for (const replace of context.replacements) replace();
+    context.replacements.length = 0;
     committed = true;
     for (const operation of context.operations) operation(map, cleanups);
-    const formOwnerByNode = new Map<Node, Owned>();
-    for (const [plan, owner] of context.formOwners)
-      formOwnerByNode.set(map.get(plan.element)!, owner);
-    const rootForms = formBindings.filter((binding) => !formOwnerByNode.has(binding.node));
-    activateForms(rootForms, scope, cleanups, options, container);
-    const ownedForms = new Map<Owned, typeof formBindings>();
-    for (const binding of formBindings) {
-      const owner = formOwnerByNode.get(binding.node);
-      if (owner) ownedForms.set(owner, [...(ownedForms.get(owner) ?? []), binding]);
-    }
-    for (const [owner, bindings] of ownedForms)
-      activateForms(bindings, owner.scope, owner.cleanups, options, container);
+    activateOwnedForms(
+      formBindings,
+      context.forms,
+      map,
+      context.formOwners,
+      context,
+      scope,
+      cleanups,
+    );
+    context.forms.length = 0;
     const owned = rootOwned(container, context, map);
     context.dynamicRanges.length = 0;
     const handle = createRoot(container, options, scope, cleanups, owned);
@@ -1259,4 +1401,22 @@ export function hydrate(node: Child, container: Element, options: RootOptions): 
 }
 export function mount(node: Child, container: Element, options: RootOptions): RootHandle | null {
   return execute(node, container, options, "mount");
+}
+
+export interface BoundaryHost {
+  owned: typeof owned;
+  installOwned: typeof installOwned;
+  selfMap: typeof selfMap;
+  marker: typeof marker;
+  range: typeof range;
+  fail: typeof fail;
+  openMarker: typeof openMarker;
+  matchingClose: typeof matchingClose;
+  recoverable: typeof recoverable;
+  prepareForms: typeof prepareForms;
+  read: typeof read;
+  subscribe: typeof subscribe;
+  untracked: typeof untracked;
+  enqueue: typeof enqueue;
+  formHost: typeof formHost;
 }

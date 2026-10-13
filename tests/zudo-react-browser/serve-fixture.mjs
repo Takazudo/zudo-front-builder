@@ -68,6 +68,14 @@ const server = createServer((request, response) => {
     return;
   }
 
+  // Chromium may request an icon outside page resource timing. Keep that
+  // optional browser request from adding a 404 to strict console assertions.
+  if (pathname === "/favicon.ico") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
   if (pathname.startsWith("/zfb-dist/")) {
     const target = safeJoin(SDK_DIST_DIR, pathname.slice("/zfb-dist/".length));
     if (target && tryServe(response, target)) return;

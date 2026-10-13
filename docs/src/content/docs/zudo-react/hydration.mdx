@@ -52,13 +52,43 @@ The zfb island boundary requires one registered synchronous function component. 
 
 Preflight compares parsed structure, namespaces, range identity, expected text, and form-control shape. It does not compare the raw HTML source, so attribute order, quote style, and equivalent entity spellings do not matter after parsing. Ordinary attributes are preserved during adoption and are not mismatch inputs; later reactive writes apply the value owned by the binding. Wrapper identity and form-control shape remain strict, including type, multiple, radio name/value, option value, and form association.
 
-Ordinary text comparison normalizes HTML line endings, then collapses runs of ASCII HTML whitespace and trims ASCII spaces for matching only. NBSP and other Unicode whitespace are preserved. Preformatted text is compared exactly after HTML newline normalization. Whitespace-only text nodes outside dynamic text regions are ignored. Raw HTML contents are opaque. Existing elements and nonempty text are never recreated just to make their spelling match.
+Ordinary text comparison normalizes HTML line endings, then collapses runs of ASCII HTML whitespace and trims ASCII spaces for matching only. NBSP and other Unicode whitespace are preserved. Preformatted text is compared exactly after HTML newline normalization. Whitespace-only text nodes outside dynamic text regions are ignored. Raw HTML contents are opaque. Outside an explicit ErrorBoundary region, existing elements and nonempty text are never recreated just to make their spelling match.
 
 Form controls are read before any model is written. Dirty values, checked state, selection, and focus are not hydration mismatches. The forms guide explains how the browser's current value wins at activation.
 
-Failures such as ZR_HYDRATION_MISMATCH, ZR_IDENTITY, ZR_PROPS, ZR_UNSUPPORTED_POSITION, ZR_DUPLICATE_ROOT, and ZR_CANCELLED report a diagnostic and return null. A preflight failure leaves the server DOM and user state unchanged. Hydration does not silently fall back to mount. The affected island stays inert; other roots are isolated and may continue.
+Failures such as ZR_HYDRATION_MISMATCH, ZR_IDENTITY, ZR_PROPS, ZR_UNSUPPORTED_POSITION, ZR_DUPLICATE_ROOT, and ZR_CANCELLED report a diagnostic and return null. A preflight failure leaves the server DOM and user state unchanged. Hydration does not silently fall back to a root-wide mount. The affected island stays inert; other roots are isolated and may continue.
 
 Diagnostics include the component, DOM path, phase, expected and actual summaries, protocol, and build. They do not include complete props, raw HTML, input values, or secrets by default.
+
+## Boundary hydration
+
+ErrorBoundary is an explicit local replacement region. During hydration the client makes a fresh
+attempt and stages replacement of only the boundary's interior. Even when both server and client
+succeed, that interior is recreated; its server DOM identity, focus, selection, and edits made
+before hydration are not retained. Elements and state outside the region follow ordinary adoption.
+
+| Server result | Client attempt | Hydrated boundary |
+| --- | --- | --- |
+| Healthy subtree | Fails | Client fallback |
+| Fallback | Fails | Client fallback |
+| Fallback | Succeeds | Fresh healthy client subtree |
+| Healthy subtree | Succeeds | Fresh healthy client subtree |
+
+The boundary's balanced markers have a local numbering namespace. The number of descendants in a
+failed or successful attempt cannot shift following sibling markers. Hydration validates marker
+grammar, nesting, namespace ownership, and duplicate identities before discarding server content.
+Malformed markers and nested islands remain root failures. Replacement waits until the whole
+root has passed preflight; a later sibling mismatch or cancellation leaves the server DOM intact.
+
+Fresh boundary form controls initialize from their client models. Retained sibling controls keep
+ordinary hydration semantics, including dirty values. When a model is shared between fresh and
+retained controls, the retained controls' live values win; in a mixed radio group, a checked retained
+option wins, otherwise a model-selected fresh option remains selected. Form-group validation still
+runs across the root and remains diagnostic rather than being attributed to one boundary.
+
+Use ErrorBoundary only in flow positions that preserve comment regions. As with Show and For,
+it is not supported inside select, option, title, or table-structural contexts. See
+[Local subtree recovery](./scopes-and-lifecycle.mdx#local-subtree-recovery) for setup, reset, and error phases.
 
 ## Respect HTML parser contexts
 

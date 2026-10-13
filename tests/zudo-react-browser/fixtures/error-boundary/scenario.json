@@ -1,0 +1,16 @@
+{
+  "page": "error-boundary",
+  "roots": [
+    { "component": "component.tsx", "props": { "id": "interactive" }, "mode": "hydrate" },
+    {
+      "component": "component.tsx",
+      "props": { "id": "server-failed", "failOn": "server" },
+      "mode": "hydrate"
+    },
+    {
+      "component": "component.tsx",
+      "props": { "id": "client-failed", "failOn": "client" },
+      "mode": "hydrate"
+    }
+  ]
+}
