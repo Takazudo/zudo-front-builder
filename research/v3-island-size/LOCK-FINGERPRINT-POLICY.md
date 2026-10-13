@@ -10,7 +10,7 @@ Decided under [#4210](https://github.com/Takazudo/zudo-front-builder/issues/4210
 
 | Reason | May move in `dependencyFingerprint` | Native evidence | Status |
 | --- | --- | --- | --- |
-| `fingerprint-helper` | `helperSha256` only | none (T1-only; proves old blob at `--base-ref` = pinned value, and old vs new helper give identical `sha256` + `--explain` inventory on the real lock) | implemented by S4 [#4213](https://github.com/Takazudo/zudo-front-builder/issues/4213) |
+| `fingerprint-helper` | `helperSha256` only | none (T1-only; proves old blob at `--base-ref` = pinned value, and old vs new helper give identical `sha256` + `--explain` inventory on the real lock) | implemented (S4 [#4213](https://github.com/Takazudo/zudo-front-builder/issues/4213)) |
 | `dependency-graph` | `sha256` only | fresh, both platforms, totals unchanged | deferred: [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218) (item 9a) |
 | `fingerprint-policy` | `policyVersion` + `parser` + `sha256` + `helperSha256`, only together with a `policyVersion` increment | fresh, both platforms, totals unchanged | deferred: [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218) |
 | `release-bump`, `runtime-identity`, `lockfile-provenance`, `fingerprint-migration` | none (all four keys refused) | as today | unchanged |

@@ -42,6 +42,11 @@
 // recorded as evidence, not required to pass. `release-bump` and
 // `runtime-identity` accept a schemaVersion-2 or -3 contract and refuse any
 // fingerprint movement on v3. The Linux-only `lockfile-provenance` is rejected.
+//
+// `--reason fingerprint-helper --base-ref <ref>` (#4198) takes no artifact: it
+// runs the Linux script's shared runFingerprintHelperRepin, which re-pins only
+// `dependencyFingerprint.helperSha256` of both contracts in one run after
+// proving the pinned and new lock-fingerprint.mjs agree on the real lock.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
@@ -57,8 +62,10 @@ import {
   normalizerSha256,
 } from "../research/v3-island-size/normalize-identity.mjs";
 import {
+  FINGERPRINT_HELPER_REASON,
   REASONS,
   acceptedSchemas,
+  checkFingerprintHelperArgs,
   artifactFingerprintProblem,
   contractFingerprint,
   describeDeltas,
@@ -66,6 +73,7 @@ import {
   measuredTotals,
   readCheckoutIdentity,
   rewriteTestBlock,
+  runFingerprintHelperRepin,
 } from "./rebaseline-island-size-linux.mjs";
 
 const MODES = ["workspace", "packed"];
@@ -77,7 +85,12 @@ const PLATFORM = { os: "darwin", arch: "arm64" };
 const METRIC_MIGRATION = "metric-migration";
 const REPIN_REASONS = ["release-bump", "runtime-identity"];
 const FINGERPRINT_MIGRATION = "fingerprint-migration";
-const DARWIN_REASONS = [METRIC_MIGRATION, ...REPIN_REASONS, FINGERPRINT_MIGRATION];
+const DARWIN_REASONS = [
+  METRIC_MIGRATION,
+  ...REPIN_REASONS,
+  FINGERPRINT_MIGRATION,
+  FINGERPRINT_HELPER_REASON,
+];
 const shaPattern = /^[0-9a-f]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 
@@ -935,6 +948,7 @@ export function parseArgs(argv) {
       throw new Error("bad argument: " + argv[i]);
     values[argv[i].slice(2)] = argv[i + 1];
   }
+  if (checkFingerprintHelperArgs(values)) return values;
   for (const required of REQUIRED) {
     if (!values[required]) throw new Error("required --" + required);
   }
@@ -1039,8 +1053,12 @@ export function readDarwinCheckout(contract, root = ".") {
 }
 
 // `root` is the checkout the contract, test pins and README are rewritten in.
+// The artifact-less fingerprint-helper reason returns a promise.
 export function main(argv = process.argv.slice(2), root = ".") {
   const args = parseArgs(argv);
+  if (args.reason === FINGERPRINT_HELPER_REASON) {
+    return runFingerprintHelperRepin(args["base-ref"], root);
+  }
   const at = (path) => join(root, path);
   const contractPath = args.contract ?? at(CONTRACT);
   const contract = JSON.parse(readFileSync(contractPath, "utf8"));
@@ -1116,7 +1134,7 @@ export function main(argv = process.argv.slice(2), root = ".") {
 const invokedPath = process.argv[1] && resolve(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
   try {
-    main();
+    await main();
   } catch (error) {
     console.error("rebaseline-island-size-darwin: " + error.message);
     process.exit(1);

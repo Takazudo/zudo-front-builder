@@ -21,11 +21,19 @@
 // of the whole-file hash: the producer version, normalizer, fixtures, Cargo.lock
 // and toolchain must be unchanged, and only the runner digests (which gained the
 // fingerprint) and the recorded lock hash may follow the measured artifact.
+// `--reason fingerprint-helper --base-ref <ref>` (#4198) takes no artifact and
+// runs nothing natively: it re-pins only `dependencyFingerprint.helperSha256` of
+// BOTH contracts after a comment/formatting edit to lock-fingerprint.mjs, once it
+// has proven that the pinned helper at <ref> and the new helper compute the same
+// fingerprint and inventory on the real lock (repinFingerprintHelper below; the
+// Darwin script reuses it). A helper edit that moves the fingerprint is refused.
 
-import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
 import { computeLockFingerprint } from "../research/v3-island-size/lock-fingerprint.mjs";
@@ -71,7 +79,15 @@ export const REASONS = Object.freeze({
     heading: "dependency-fingerprint migration",
     requires: 2,
   },
+  "fingerprint-helper": {
+    outcome: "fingerprint-helper-repin",
+    heading: "fingerprint-helper re-pin",
+    requires: 3,
+    accepts: [3],
+  },
 });
+
+export const FINGERPRINT_HELPER_REASON = "fingerprint-helper";
 
 // Contract schema versions a reason may rewrite; `requires` is the oldest.
 export function acceptedSchemas(reason) {
@@ -434,6 +450,9 @@ function actualGzipRows(totals) {
 export function rebaselineContract(contract, totals, evidence, reason) {
   const policy = REASONS[reason];
   if (!policy) throw new Error("unknown --reason " + String(reason));
+  if (reason === FINGERPRINT_HELPER_REASON) {
+    throw new Error("--reason fingerprint-helper takes no artifact; use repinFingerprintHelper");
+  }
   const schemas = acceptedSchemas(reason);
   if (!schemas.includes(contract.schemaVersion)) {
     throw new Error(
@@ -829,6 +848,354 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
   return "\n## v" + version + " " + policy.heading + "\n\n" + body;
 }
 
+const DARWIN_CONTRACT = "research/v3-island-size/decision.json";
+export const FINGERPRINT_HELPER_FILE = SIZE_DIR + "/lock-fingerprint.mjs";
+const INVENTORY_FILE = SIZE_DIR + "/lock-fingerprint-inventory.json";
+const HELPER_CONTRACTS = { linux: CONTRACT, darwin: DARWIN_CONTRACT };
+// The only keys a fingerprint-helper re-pin may write (LOCK-FINGERPRINT-POLICY.md §0).
+export const FINGERPRINT_HELPER_MOVEMENT = Object.freeze([
+  "dependencyFingerprint.helperSha256",
+  "outcome",
+  "platformStatus",
+]);
+const INVENTORY_KEYS = ["importers", "snapshots", "packages", "sections", "counts"];
+const NO_NATIVE_RUN =
+  "no native run: helperSha256 is outside the hashed input and absent from run provenance (#4198)";
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Sorted dotted paths of every leaf that differs between two contracts.
+export function contractDiffKeys(before, after, prefix = "") {
+  if (!isRecord(before) || !isRecord(after)) {
+    return isDeepStrictEqual(before, after) ? [] : [prefix.slice(0, -1)];
+  }
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...keys]
+    .flatMap((key) =>
+      Object.hasOwn(before, key) && Object.hasOwn(after, key)
+        ? contractDiffKeys(before[key], after[key], prefix + key + ".")
+        : [prefix + key],
+    )
+    .sort();
+}
+
+function short(digest) {
+  return String(digest).slice(0, 8);
+}
+
+// Runs one lock-fingerprint.mjs source from a temporary sibling of the real
+// helper, so its `yaml` import and default repo root resolve exactly as the
+// real helper's do; the temporary file is always removed.
+export async function computeWithHelperSource(source, root, lockText, currentVersion) {
+  const path = join(
+    root,
+    SIZE_DIR,
+    ".lock-fingerprint-repin-" + process.pid + "-" + randomBytes(6).toString("hex") + ".mjs",
+  );
+  writeFileSync(path, source);
+  try {
+    const helper = await import(pathToFileURL(path).href);
+    return helper.computeLockFingerprint({ lockText, currentVersion, repoRoot: resolve(root) });
+  } finally {
+    rmSync(path, { force: true });
+  }
+}
+
+function git(root, args) {
+  return execFileSync("git", args, {
+    cwd: root,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+// Gathers the evidence for a fingerprint-helper re-pin: both helpers run on the
+// checkout's lock and packages/zfb version. A failure of the new helper is the
+// checkout's fingerprint error and propagates verbatim.
+export async function proveFingerprintHelper(baseRef, root = ".") {
+  if (typeof baseRef !== "string" || baseRef.length === 0 || baseRef.startsWith("-")) {
+    throw new Error("--base-ref must name a git ref");
+  }
+  const at = (path) => join(root, path);
+  const lockText = readFileSync(at("pnpm-lock.yaml"), "utf8");
+  const currentVersion = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
+  const newSource = readFileSync(at(FINGERPRINT_HELPER_FILE));
+  let baseSource;
+  let baseCommit;
+  try {
+    baseCommit = git(root, ["rev-parse", "--verify", "--quiet", baseRef + "^{commit}"])
+      .toString()
+      .trim();
+    baseSource = git(root, ["show", baseCommit + ":" + FINGERPRINT_HELPER_FILE]);
+  } catch (error) {
+    throw new Error(
+      "cannot read " +
+        FINGERPRINT_HELPER_FILE +
+        " at --base-ref " +
+        baseRef +
+        ": " +
+        (error.stderr?.toString().trim() || error.message),
+      { cause: error },
+    );
+  }
+  const current = await computeWithHelperSource(newSource, root, lockText, currentVersion);
+  let base;
+  try {
+    base = await computeWithHelperSource(baseSource, root, lockText, currentVersion);
+  } catch (error) {
+    base = { error: error?.message ?? String(error) };
+  }
+  return {
+    baseRef,
+    baseCommit,
+    baseHelperSha256: sha256(baseSource),
+    newHelperSha256: sha256(newSource),
+    current,
+    base,
+  };
+}
+
+function helperRepinError(message) {
+  return new Error("--reason fingerprint-helper: " + message);
+}
+
+// Re-pins `dependencyFingerprint.helperSha256` of both contracts (#4198), or
+// throws naming the reason the change needs instead. Pure: `proof` comes from
+// proveFingerprintHelper. Totals are not re-derived; nothing but
+// FINGERPRINT_HELPER_MOVEMENT is written, which the exact-key diff enforces.
+export function repinFingerprintHelper(contracts, proof) {
+  const entries = Object.entries(HELPER_CONTRACTS).map(([name, file]) => {
+    if (!isRecord(contracts?.[name])) throw helperRepinError("missing the " + file + " contract");
+    return { name, file, contract: contracts[name] };
+  });
+  for (const { file, contract } of entries) {
+    if (contract.schemaVersion !== 3 || !isRecord(contract.dependencyFingerprint)) {
+      throw helperRepinError(
+        "needs a schemaVersion 3 contract, found " +
+          String(contract.schemaVersion) +
+          " in " +
+          file +
+          "; migrate with `fingerprint-migration` first",
+      );
+    }
+  }
+  const pinned = entries.map(({ contract }) => contract.dependencyFingerprint.helperSha256);
+  if (pinned[0] !== pinned[1]) {
+    throw helperRepinError(
+      "contracts disagree on helperSha256 (" +
+        entries.map(({ file }, i) => file + " " + pinned[i]).join(", ") +
+        "); fix the contract that is wrong first",
+    );
+  }
+  const { current, base } = proof;
+  for (const { file, contract } of entries) {
+    const fingerprint = contract.dependencyFingerprint;
+    const policyMoves = ["policyVersion", "parser"].filter(
+      (key) => fingerprint[key] !== current[key],
+    );
+    if (policyMoves.length > 0) {
+      throw helperRepinError(
+        "policy identity moved (" +
+          policyMoves.join(", ") +
+          " of " +
+          file +
+          " differ from the new helper's); this is a `fingerprint-policy` change (#4218), not a helper re-pin",
+      );
+    }
+    if (fingerprint.sha256 !== current.sha256) {
+      throw helperRepinError(
+        "fingerprint value moved (" +
+          file +
+          " pins " +
+          fingerprint.sha256 +
+          ", the new helper computes " +
+          current.sha256 +
+          "); a reachable dependency change needs `dependency-graph` (#4218), a policy change needs `fingerprint-policy` (#4218)",
+      );
+    }
+  }
+  if (proof.newHelperSha256 === pinned[0]) {
+    throw helperRepinError("helper unchanged; nothing to re-pin");
+  }
+  if (proof.baseHelperSha256 !== pinned[0]) {
+    throw helperRepinError(
+      "the helper at " +
+        proof.baseRef +
+        " (" +
+        proof.baseHelperSha256 +
+        ") is not the pinned helper (" +
+        pinned[0] +
+        "); pass the ref whose helper the contract pins",
+    );
+  }
+  const disagreement = base.error
+    ? ["the pinned helper failed: " + base.error]
+    : [
+        ...["policyVersion", "parser", "sha256"].filter((key) => base[key] !== current[key]),
+        ...([base, current].every((side) =>
+          isDeepStrictEqual(Object.keys(side.inventory ?? {}).sort(), [...INVENTORY_KEYS].sort()),
+        )
+          ? INVENTORY_KEYS.filter(
+              (key) => !isDeepStrictEqual(base.inventory[key], current.inventory[key]),
+            ).map((key) => "inventory." + key)
+          : ["inventory"]),
+      ];
+  if (disagreement.length > 0) {
+    throw helperRepinError(
+      "old and new helper disagree on the real lock (" +
+        disagreement.join(", ") +
+        "); this is a `fingerprint-policy` change (#4218)",
+    );
+  }
+  const sentence =
+    " Helper re-pinned from " +
+    short(pinned[0]) +
+    " to " +
+    short(proof.newHelperSha256) +
+    " under #4198 at " +
+    proof.baseRef +
+    "; measured inputs and fingerprint unchanged.";
+  const rewritten = {};
+  for (const { name, contract } of entries) {
+    const next = structuredClone(contract);
+    next.dependencyFingerprint.helperSha256 = proof.newHelperSha256;
+    next.outcome = REASONS[FINGERPRINT_HELPER_REASON].outcome;
+    next.platformStatus = contract.platformStatus + sentence;
+    const moved = contractDiffKeys(contract, next);
+    if (moved.some((key) => !FINGERPRINT_HELPER_MOVEMENT.includes(key))) {
+      throw helperRepinError("would move " + moved.join(", ") + "; refusing");
+    }
+    rewritten[name] = next;
+  }
+  return { contracts: rewritten, previousHelperSha256: pinned[0] };
+}
+
+function inventoryCounts(inventory) {
+  return ["importers", "snapshots", "packages"]
+    .map((key) => key + " " + inventory.counts[key].reached + "/" + inventory.counts[key].total)
+    .join(", ");
+}
+
+export function fingerprintHelperProofLines(proof, previousHelperSha256) {
+  return [
+    "base-ref: " + proof.baseRef + " (" + proof.baseCommit + ")",
+    "old helperSha256: " + previousHelperSha256,
+    "new helperSha256: " + proof.newHelperSha256,
+    "sha256 (unchanged): " + proof.current.sha256,
+    "policyVersion: " + proof.current.policyVersion,
+    "parser: " + proof.current.parser,
+    "inventory (identical for both helpers): " + inventoryCounts(proof.current.inventory),
+    NO_NATIVE_RUN,
+  ];
+}
+
+export function fingerprintHelperReadmeSection(contract, proof, previousHelperSha256) {
+  return (
+    "\n## v" +
+    contract.toolchain.packageVersion +
+    " " +
+    REASONS[FINGERPRINT_HELPER_REASON].heading +
+    "\n\n" +
+    "Both contracts re-pinned `dependencyFingerprint.helperSha256` from `" +
+    previousHelperSha256 +
+    "` to `" +
+    proof.newHelperSha256 +
+    "` under [#4198](https://github.com/Takazudo/zudo-front-builder/issues/4198). The pinned helper at `--base-ref " +
+    proof.baseRef +
+    "` (commit `" +
+    proof.baseCommit +
+    "`) and the new helper compute the same fingerprint `" +
+    proof.current.sha256 +
+    "` (policy v" +
+    proof.current.policyVersion +
+    ", `" +
+    proof.current.parser +
+    "`) and the same `--explain` inventory (" +
+    inventoryCounts(proof.current.inventory) +
+    ") on the real lock. No native run: `helperSha256` is outside the hashed input and absent from run provenance. Every other contract key, total and identity input is unchanged.\n"
+  );
+}
+
+// The artifact-less CLI path shared by both platform helpers: one run rewrites
+// both contracts, the inventory and the README together.
+export async function runFingerprintHelperRepin(baseRef, root = ".", log = console.log) {
+  const at = (path) => join(root, path);
+  const contracts = Object.fromEntries(
+    Object.entries(HELPER_CONTRACTS).map(([name, file]) => [
+      name,
+      JSON.parse(readFileSync(at(file), "utf8")),
+    ]),
+  );
+  const proof = await proveFingerprintHelper(baseRef, root);
+  const result = repinFingerprintHelper(contracts, proof);
+  // The helper's CLI guard compares argv[1] with its resolved module path.
+  const helperPath = realpathSync(at(FINGERPRINT_HELPER_FILE));
+  const explain = execFileSync(process.execPath, [helperPath, "--explain"], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const { current } = proof;
+  const expected = {
+    policyVersion: current.policyVersion,
+    parser: current.parser,
+    helperSha256: proof.newHelperSha256,
+    sha256: current.sha256,
+    inventory: current.inventory,
+  };
+  if (!isDeepStrictEqual(JSON.parse(explain.toString()), expected)) {
+    throw helperRepinError("the new helper's --explain output disagrees with the proof");
+  }
+  for (const [name, file] of Object.entries(HELPER_CONTRACTS)) {
+    writeFileSync(at(file), JSON.stringify(result.contracts[name], null, 2) + "\n");
+  }
+  writeFileSync(at(INVENTORY_FILE), explain);
+  appendFileSync(
+    at(README),
+    fingerprintHelperReadmeSection(result.contracts.linux, proof, result.previousHelperSha256),
+  );
+  log(
+    [
+      "fingerprint-helper re-pin of both island-size contracts (#4198):",
+      ...fingerprintHelperProofLines(proof, result.previousHelperSha256).map((line) => "  " + line),
+    ].join("\n"),
+  );
+  return result;
+}
+
+// Arguments that name artifact evidence; the artifact-less reason refuses them all.
+export const ARTIFACT_ARGS = Object.freeze([
+  "artifact",
+  "run-id",
+  "job-id",
+  "head-sha",
+  "source-sha",
+  "artifact-id",
+  "artifact-expires-at",
+  "label",
+]);
+
+// `values` are the parsed `--key value` pairs. fingerprint-helper takes exactly
+// --reason and --base-ref; --base-ref belongs to no other reason.
+export function checkFingerprintHelperArgs(values) {
+  if (values.reason !== FINGERPRINT_HELPER_REASON) {
+    if (Object.hasOwn(values, "base-ref")) {
+      throw new Error("--base-ref is only for --reason fingerprint-helper");
+    }
+    return false;
+  }
+  for (const key of Object.keys(values)) {
+    if (key === "reason" || key === "base-ref") continue;
+    throw new Error(
+      ARTIFACT_ARGS.includes(key)
+        ? "--reason fingerprint-helper takes no artifact (no native run); remove --" + key
+        : "--reason fingerprint-helper takes only --base-ref; remove --" + key,
+    );
+  }
+  if (!values["base-ref"]) throw new Error("required --base-ref");
+  return true;
+}
+
 export function parseArgs(argv) {
   const values = {};
   for (let i = 0; i < argv.length; i += 2) {
@@ -836,6 +1203,7 @@ export function parseArgs(argv) {
       throw new Error("bad argument: " + argv[i]);
     values[argv[i].slice(2)] = argv[i + 1];
   }
+  if (checkFingerprintHelperArgs(values)) return values;
   for (const required of ["artifact", "run-id", "job-id", "head-sha", "reason"]) {
     if (!values[required]) throw new Error("required --" + required);
   }
@@ -853,8 +1221,12 @@ export function parseArgs(argv) {
 }
 
 // `root` is the checkout the contract, test pins and README are rewritten in.
+// The artifact-less fingerprint-helper reason returns a promise.
 export function main(argv = process.argv.slice(2), root = ".") {
   const args = parseArgs(argv);
+  if (args.reason === FINGERPRINT_HELPER_REASON) {
+    return runFingerprintHelperRepin(args["base-ref"], root);
+  }
   const at = (path) => join(root, path);
   const measurements = {};
   const normalized = {};
@@ -930,7 +1302,7 @@ export function main(argv = process.argv.slice(2), root = ".") {
 const invokedPath = process.argv[1] && resolve(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
   try {
-    main();
+    await main();
   } catch (error) {
     console.error("rebaseline-island-size-linux: " + error.message);
     process.exit(1);
