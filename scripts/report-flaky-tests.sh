@@ -93,6 +93,8 @@ def report(message):
 
 valid = zero = suites_count = testcases = failures = errors = skipped = 0
 flaky = set()
+outcomes = {"failure", "error", "skipped", "flakyFailure"}
+output_tags = {"system-out", "system-err"}
 for path in sys.argv[1:]:
     try:
         tree = ET.parse(path)
@@ -109,6 +111,14 @@ for path in sys.argv[1:]:
     parents = {child: parent for parent in root.iter() for child in parent}
     if root.tag not in ("testsuite", "testsuites") or any(
         (node.tag == "testcase" and parents.get(node).tag != "testsuite")
+        or (node.tag == "testcase" and any(
+            child.tag not in outcomes | output_tags | {"properties"}
+            for child in node
+        ))
+        or (node.tag in outcomes and parents[node].tag != "testcase")
+        or (node.tag in outcomes and any(
+            child.tag not in output_tags for child in node
+        ))
         or (node.tag == "testcase" and node.find("flakyFailure") is not None
             and not (node.get("classname") or node.get("name")))
         or (node is not root and node.tag in ("testsuite", "testsuites")
