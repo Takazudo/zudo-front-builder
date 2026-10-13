@@ -66,7 +66,7 @@ or unrelated branch was imported.
 | SDK 787 tests/typecheck and all-target workspace build | Historical pass; revalidate relevant current package/dependency/runtime input closure. |
 | Docs check/build/HTML (672 pages) | Historical pass; invalidated by current docs host migration, dependencies, content and config. |
 | Linux x64 release | Missing success, retaining failed pre-compilation attempt below. |
-| Linux arm64 release | Missing success, retaining failed image-extraction attempt below. |
+| Linux arm64 release | Original image-extraction failure retained. Current release addon build/stage and GLIBC ceiling succeeded after retries; actual arm64 Node load and complete CLI/carrier acceptance remain missing. |
 | Darwin arm64/x64, fast-Mac and Windows MSVC | Never executed in the earlier Linux session; missing, not invalidated successes. |
 | CSS workflow source review / syntax | Source-identical recipe may inform review; syntax does not establish artifact execution. Current-head required CI remains missing. |
 
@@ -89,8 +89,32 @@ then **failed**, exit 101 after 259 seconds, because build.rs could not find
 failure, not another disk failure or a carrier pass. The manager then authorized
 `PATH=/tmp/zfb-tools:$PATH corepack pnpm install --offline --frozen-lockfile` in
 this worktree: **passed**, pnpm 12.8.2, 334 reused packages, zero downloads and no
-lockfile change. The manager owns the next native retry and its separate result.
-No image pin changed.
+lockfile change. Subsequent attempts used the unchanged recipe and source inputs:
+
+| Log in `/tmp/zfb-evidence/` | Observed outcome |
+| --- | --- |
+| `css-linux-arm64-retry.log` | **Failed**, guard exit 101, 64 seconds: build.rs's esbuild 0.25.12 download failed after its fifth attempt. |
+| `css-linux-arm64-retry2.log` | Rust release compilation completed (19.42 seconds), but the helper **failed**, guard exit 127, 27 seconds, because host `node` was absent from PATH during Cargo target-directory resolution. Not a successful staging result. |
+| `css-linux-arm64-retry3.log` | After restoring the full managed PATH, helper **passed**, guard exit 0, 8 seconds (warm Rust release work 0.32 seconds); addon staged successfully. This is pass-after-retries evidence, not a clean first-attempt pass. |
+
+Between the download failure and retry2, the manager staged esbuild from the exact
+`@esbuild/linux-arm64@0.25.12` npm tarball into the existing ignored binary slot.
+The extracted executable SHA-256
+`840ad255d6fd587b126d8b2d59ab506d8562785b9bc76249dc3b0e1bdd2ca449`
+matches `crates/zfb/build.rs`; both later logs confirm its checksum and skip the
+download. This digest identifies the executable, not the tarball. No recipe,
+source, lockfile or image pin changed.
+
+The resulting `aarch64-unknown-linux-gnu` release library and staged addon have
+identical SHA-256:
+`9abb30e17ea6c49ce314fe70703538c1ad9a5263f3c5335afd1f0928b76132cd`.
+Read-only inspection of `packages/zfb-linux-arm64-gnu/zfb-css.node` confirms the
+highest required symbol is **GLIBC_2.30**, within the <=2.34 ceiling. The producing
+library is `/workspace/zfb-build/css-release/aarch64-unknown-linux-gnu/release/libzfb_css_node.so`.
+This establishes release addon production/staging and the symbol ceiling only.
+Actual arm64 Node load/compile, release CLI execution and packed carrier acceptance
+are **not run**: this host has neither `qemu-aarch64` nor registered binfmt support.
+The five-carrier acceptance row remains incomplete.
 
 ## Executor admission and shared preparation
 
@@ -141,7 +165,7 @@ do not dispatch the publishing release workflow to obtain these checks.
 | Carrier / Rust target | Build and execution capability | Current evidence |
 | --- | --- | --- |
 | linux-x64-gnu / x86_64-unknown-linux-gnu | Docker + unchanged cross recipe; x64 Node 22.0.0, native or explicitly recorded emulation; objdump GLIBC <=2.34 | Missing release artifact/load; original dnf failure retained |
-| linux-arm64-gnu / aarch64-unknown-linux-gnu | Docker + unchanged cross recipe; arm64 Node 22.0.0 on arm64 host or QEMU; record which; objdump GLIBC <=2.34 | Missing release artifact/load; original disk failure retained |
+| linux-arm64-gnu / aarch64-unknown-linux-gnu | Docker + unchanged cross recipe; arm64 Node 22.0.0 on arm64 host or QEMU; record which; objdump GLIBC <=2.34 | Release addon built/staged after retries; GLIBC_2.30 and hash recorded. Node load/compile, CLI and packed carrier not run; original disk failure retained |
 | darwin-arm64 / aarch64-apple-darwin | macOS SDK/linker and arm64 Node >=22; native arm64 execution (for example a capable macos-15 runner) | Missing |
 | darwin-x64 / x86_64-apple-darwin | macOS SDK/linker and x64 Node >=22; Intel native or Apple Silicon Rosetta, explicitly identified | Missing, including fast-Mac producer |
 | win32-x64-msvc / x86_64-pc-windows-msvc | Windows x64 MSVC toolchain/SDK, bash and x64 Node >=22; actual Windows DLL load/compile | Missing |
@@ -198,8 +222,9 @@ CLI and addon present, CLI mode 0755 on Unix, addon bytes equal to the executed
 bytes. Record SHA-256 for the native release library, staged addon, staged CLI,
 carrier tarball, SDK/slugify tarballs and installer archive/checksum files. On
 Windows use `Get-FileHash -Algorithm SHA256`; elsewhere `sha256sum` or
-`shasum -a 256`. There are **no current artifact hashes to report** at this
-checkpoint; blank artifact rows must remain missing rather than invented.
+`shasum -a 256`. The current arm64 release library/staged-addon hash is recorded
+above. Other current artifact hashes, including CLI and packed tarballs, remain
+missing; do not fill those rows from historical or registry bytes.
 
 ## Exact macOS-only work and portable fast-Mac work
 
