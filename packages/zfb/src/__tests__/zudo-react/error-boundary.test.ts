@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   ErrorBoundary,
   For,
@@ -957,4 +957,48 @@ it("does not subscribe disposed rendering jobs to fallback model reads", async (
   expect(subscriberCount(model)).toBe(1);
   handle.unmount();
   expect(subscriberCount(model)).toBe(0);
+});
+
+it("uses the owning renderer state for a boundary from another package copy", async () => {
+  vi.resetModules();
+  const { ErrorBoundary: ForeignBoundary } = await import("../../zudo-react/error-boundary.js");
+  expect(ForeignBoundary).not.toBe(ErrorBoundary);
+  const resetKey = signal(0);
+  const when = signal(false);
+  let cleaned = 0;
+  let original: unknown;
+  const failure = new Error("foreign boundary child");
+  function Demo() {
+    return ForeignBoundary({
+      resetKey,
+      children: () => {
+        getScope().onCleanup(() => cleaned++);
+        return Show({
+          when,
+          children: () => {
+            throw failure;
+          },
+        });
+      },
+      fallback: (error) => {
+        original = error;
+        return "recovered";
+      },
+    });
+  }
+  const root = host(h(Demo, null), true);
+  const handle = mount(h(Demo, null), root, options())!;
+  expect(handle).not.toBeNull();
+  resetKey.value++;
+  await flush();
+  expect(cleaned).toBe(1);
+  when.value = true;
+  await flush();
+  expect(original).toBe(failure);
+  expect(root.textContent).toBe("recovered");
+  expect(cleaned).toBe(2);
+  expect(subscriberCount(when)).toBe(0);
+  expect(diagnostics).toEqual([]);
+  handle.unmount();
+  expect(subscriberCount(resetKey)).toBe(0);
 });
