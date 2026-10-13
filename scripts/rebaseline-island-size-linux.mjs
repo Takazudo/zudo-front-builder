@@ -27,6 +27,13 @@
 // has proven that the pinned helper at <ref> and the new helper compute the same
 // fingerprint and inventory on the real lock (repinFingerprintHelper below; the
 // Darwin script reuses it). A helper edit that moves the fingerprint is refused.
+// `--reason cargo-producer-lock` (#4214, schemaVersion 3) records one reviewed
+// additive Cargo.lock move from a fresh artifact: it binds the old and new lock
+// hashes and an explicit `name@version` allowlist, proves every old
+// `[[package]]` record survives byte-identical and that the additions are
+// exactly the allowlist (proveCargoProducerLock below; the Darwin script reuses
+// it), and moves only the Cargo hash and its evidence. `release-bump` and
+// `runtime-identity` refuse any Cargo.lock movement and name this reason.
 
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -85,9 +92,16 @@ export const REASONS = Object.freeze({
     requires: 3,
     accepts: [3],
   },
+  "cargo-producer-lock": {
+    outcome: "cargo-producer-lock-transition",
+    heading: "cargo-producer-lock transition",
+    requires: 3,
+    accepts: [3],
+  },
 });
 
 export const FINGERPRINT_HELPER_REASON = "fingerprint-helper";
+export const CARGO_PRODUCER_LOCK_REASON = "cargo-producer-lock";
 
 // Contract schema versions a reason may rewrite; `requires` is the oldest.
 export function acceptedSchemas(reason) {
@@ -322,6 +336,262 @@ export function assertLockfileOnlyMovement(contract, evidence) {
   }
 }
 
+// release-bump / runtime-identity never move Cargo.lock: the measured artifact
+// (which equals the checkout) must carry the contract's Cargo hash.
+export function cargoMoveRefusal(reason, measuredCargoSha, contract) {
+  if (measuredCargoSha === contract.toolchain.cargoLockSha256) return null;
+  return (
+    "--reason " +
+    reason +
+    " cannot move Cargo.lock (the artifact and checkout carry " +
+    String(measuredCargoSha) +
+    ", the contract pins " +
+    contract.toolchain.cargoLockSha256 +
+    "); a reviewed additive producer-lock change needs --reason " +
+    CARGO_PRODUCER_LOCK_REASON +
+    " first"
+  );
+}
+
+function assertCargoUnchanged(contract, evidence, reason) {
+  if (!evidence.identity) {
+    throw new Error("--reason " + reason + " needs the artifact's measured identity inputs");
+  }
+  const refusal = cargoMoveRefusal(reason, evidence.identity.cargoLockSha256, contract);
+  if (refusal) throw new Error(refusal);
+}
+
+export const CARGO_ARGS = Object.freeze([
+  "expected-old-cargo-sha",
+  "expected-new-cargo-sha",
+  "old-cargo-lock",
+  "added-packages",
+]);
+// The only keys a cargo-producer-lock transition may write; baselineEvidence is
+// replaced as a whole.
+export const CARGO_PRODUCER_LOCK_MOVEMENT = Object.freeze([
+  "toolchain.cargoLockSha256",
+  "outcome",
+  "baselineSourceSha",
+  "platformStatus",
+  "baselineEvidence",
+]);
+
+function cargoError(message) {
+  return new Error("--reason " + CARGO_PRODUCER_LOCK_REASON + ": " + message);
+}
+
+// `name@version,...` -> the allowlist, refusing an empty list, a malformed
+// entry or a repeated identity.
+export function parseAddedPackages(text) {
+  const entries = String(text ?? "")
+    .split(",")
+    .map((entry) => entry.trim());
+  if (entries.length === 0 || entries.some((entry) => !/^[^@\s]+@[^@\s]+$/.test(entry))) {
+    throw cargoError("--added-packages must be a comma-separated list of name@version");
+  }
+  const repeated = entries.filter((entry, i) => entries.indexOf(entry) !== i);
+  if (repeated.length > 0) {
+    throw cargoError("--added-packages repeats " + [...new Set(repeated)].join(", "));
+  }
+  return entries;
+}
+
+// `values` are the parsed `--key value` pairs; the Cargo arguments belong to
+// cargo-producer-lock alone, which requires all four.
+export function checkCargoProducerLockArgs(values) {
+  if (values.reason !== CARGO_PRODUCER_LOCK_REASON) {
+    const stray = CARGO_ARGS.filter((key) => Object.hasOwn(values, key));
+    if (stray.length > 0) {
+      throw new Error("--" + stray[0] + " is only for --reason " + CARGO_PRODUCER_LOCK_REASON);
+    }
+    return;
+  }
+  for (const key of CARGO_ARGS) {
+    if (!values[key]) throw new Error("required --" + key);
+  }
+  for (const key of ["expected-old-cargo-sha", "expected-new-cargo-sha"]) {
+    if (!/^[0-9a-f]{64}$/.test(values[key])) {
+      throw new Error("--" + key + " must be a 64-character SHA-256");
+    }
+  }
+  parseAddedPackages(values["added-packages"]);
+}
+
+// Splits a Cargo.lock into its header, its `[[package]]` records and any other
+// section, each record without its trailing blank line. The split is lossless,
+// so a layout it cannot reassemble byte-for-byte is refused.
+export function parseCargoLock(text, label) {
+  if (typeof text !== "string" || !text.endsWith("\n")) {
+    throw cargoError(label + " is empty or does not end with a newline");
+  }
+  const sections = text.split(/(?=^\[)/m);
+  const header = sections[0].startsWith("[") ? "" : sections.shift();
+  const packages = [];
+  const other = [];
+  sections.forEach((section, i) => {
+    const body = section.replace(/\n+$/, "\n");
+    if (section !== (i === sections.length - 1 ? body : body + "\n")) {
+      throw cargoError(
+        label + " has an unexpected record separator near " + JSON.stringify(body.slice(0, 60)),
+      );
+    }
+    if (!body.startsWith("[[package]]\n")) {
+      other.push(body);
+      return;
+    }
+    const name = /^name = "([^"]+)"$/m.exec(body)?.[1];
+    const version = /^version = "([^"]+)"$/m.exec(body)?.[1];
+    if (!name || !version) {
+      throw cargoError(
+        label + " has a [[package]] record without name and version: " + JSON.stringify(body),
+      );
+    }
+    packages.push({ id: name + "@" + version, body });
+  });
+  return { header, packages, other };
+}
+
+function countBodies(packages) {
+  const counts = new Map();
+  for (const { body } of packages) counts.set(body, (counts.get(body) ?? 0) + 1);
+  return counts;
+}
+
+// The record-level diff of two Cargo.lock texts: `added` are new records whose
+// bytes no old record had, `changed` old identities whose bytes moved, and
+// `removed` old identities that are gone. Header and other sections must match.
+export function diffCargoLocks(oldText, newText) {
+  const before = parseCargoLock(oldText, "old Cargo.lock");
+  const after = parseCargoLock(newText, "new Cargo.lock");
+  const problems = [];
+  if (before.header !== after.header) problems.push("the header differs");
+  if (!isDeepStrictEqual(before.other, after.other)) {
+    problems.push("a non-package section differs");
+  }
+  const oldBodies = countBodies(before.packages);
+  const added = [];
+  for (const record of after.packages) {
+    const left = oldBodies.get(record.body) ?? 0;
+    if (left > 0) oldBodies.set(record.body, left - 1);
+    else added.push(record.id);
+  }
+  const newIds = new Set(after.packages.map(({ id }) => id));
+  const changed = [];
+  const removed = [];
+  for (const record of before.packages) {
+    const left = oldBodies.get(record.body) ?? 0;
+    if (left === 0) continue;
+    oldBodies.set(record.body, left - 1);
+    (newIds.has(record.id) ? changed : removed).push(record.id);
+  }
+  const oldIds = new Set(before.packages.map(({ id }) => id));
+  const duplicates = added.filter(
+    (id, i) => added.indexOf(id) !== i || (oldIds.has(id) && !changed.includes(id)),
+  );
+  return { problems, added, changed, removed, duplicates: [...new Set(duplicates)] };
+}
+
+// Proves one reviewed additive Cargo.lock transition and returns the
+// `cargoTransition` evidence, or throws naming every failed check. `contractSha`
+// is the pinned hash, `artifactSha` the measured run's, `newText` the checkout's
+// Cargo.lock and `oldText` the operator-supplied old lock.
+export function proveCargoProducerLock({
+  contractSha,
+  artifactSha,
+  expectedOldSha,
+  expectedNewSha,
+  oldText,
+  newText,
+  added,
+  oldLockSource,
+}) {
+  const problems = [];
+  if (expectedOldSha === expectedNewSha) {
+    problems.push("--expected-old-cargo-sha equals --expected-new-cargo-sha; no Cargo.lock move");
+  }
+  if (contractSha !== expectedOldSha) {
+    problems.push("the contract pins Cargo.lock " + contractSha + ", not --expected-old-cargo-sha");
+  }
+  const oldSha = sha256(oldText ?? "");
+  if (oldSha !== expectedOldSha) {
+    problems.push(oldLockSource + " hashes to " + oldSha + ", not --expected-old-cargo-sha");
+  }
+  const newSha = sha256(newText ?? "");
+  if (newSha !== expectedNewSha) {
+    problems.push(
+      "the checkout's Cargo.lock hashes to " + newSha + ", not --expected-new-cargo-sha",
+    );
+  }
+  if (artifactSha !== expectedNewSha) {
+    problems.push(
+      "the artifact measured Cargo.lock " + String(artifactSha) + ", not --expected-new-cargo-sha",
+    );
+  }
+  if (problems.length > 0) throw cargoError(problems.join("; "));
+  const diff = diffCargoLocks(oldText, newText);
+  const allowlist = [...added].sort();
+  const found = [...diff.added].sort();
+  if (diff.changed.length > 0) problems.push("changed records " + diff.changed.join(", "));
+  if (diff.removed.length > 0) problems.push("removed records " + diff.removed.join(", "));
+  if (diff.duplicates.length > 0) {
+    problems.push("duplicate package identities " + diff.duplicates.join(", "));
+  }
+  problems.push(...diff.problems);
+  const unexpected = found.filter((id) => !allowlist.includes(id));
+  const missing = allowlist.filter((id) => !found.includes(id));
+  if (unexpected.length > 0) problems.push("unexpected additions " + unexpected.join(", "));
+  if (missing.length > 0) problems.push("allowlisted but not added " + missing.join(", "));
+  if (problems.length > 0) {
+    throw cargoError(
+      "the Cargo.lock move is not the reviewed additive transition (" + problems.join("; ") + ")",
+    );
+  }
+  return {
+    oldSha: expectedOldSha,
+    newSha: expectedNewSha,
+    added: found,
+    changed: [],
+    removed: [],
+    oldLockSource,
+  };
+}
+
+// Refuses a cargo-producer-lock rewrite that moved any key outside
+// CARGO_PRODUCER_LOCK_MOVEMENT.
+export function assertCargoProducerLockMovement(before, after) {
+  const moved = contractDiffKeys(before, after).filter(
+    (key) =>
+      !CARGO_PRODUCER_LOCK_MOVEMENT.some(
+        (allowed) => key === allowed || key.startsWith(allowed + "."),
+      ),
+  );
+  if (moved.length > 0) throw cargoError("would move " + moved.join(", ") + "; refusing");
+}
+
+// cargo-producer-lock may move only Cargo.lock: everything else the contract
+// pins must equal the measured artifact and this checkout.
+function assertCargoOnlyMovement(contract, evidence) {
+  const identity = evidence.identity;
+  if (!identity) throw cargoError("needs the artifact's measured identity inputs");
+  const moved = [];
+  if (evidence.version !== contract.toolchain.packageVersion) moved.push("packageVersion");
+  if (evidence.normalizerSha256 !== contract.normalizerSha256) moved.push("normalizerSha256");
+  if (evidence.pnpmLockSha256 !== contract.toolchain.pnpmLockSha256) moved.push("pnpmLockSha256");
+  if (!sameHashMaps(identity.fixtureSha256, contract.fixtureSha256)) moved.push("fixtureSha256");
+  if (!sameHashMaps(identity.runnerSha256, contract.runnerSha256)) moved.push("runnerSha256");
+  for (const key of IDENTITY_TOOLCHAIN_KEYS) {
+    if (identity.toolchain?.[key] !== contract.toolchain[key]) moved.push("toolchain." + key);
+  }
+  if (moved.length > 0) {
+    throw cargoError(
+      "allows only Cargo.lock to move, but " +
+        moved.join(", ") +
+        " differ from the contract; use the reason that matches the change",
+    );
+  }
+}
+
 // `normalizedByMode` holds normalize-identity.mjs results recomputed from
 // the saved bytes, keyed by mode. Actual gzip rides along as evidence only.
 export function measuredTotals(normalizedByMode) {
@@ -419,6 +689,38 @@ function metricText() {
   return IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
 }
 
+export function cargoTransitionMarkdown(transition) {
+  return (
+    "`Cargo.lock` moved from `" +
+    transition.oldSha +
+    "` to `" +
+    transition.newSha +
+    "` by adding exactly " +
+    transition.added.length +
+    " records (" +
+    transition.added.map((id) => "`" + id + "`").join(", ") +
+    "); every previous `[[package]]` record is byte-identical, the header is unchanged, and no " +
+    "record changed or was removed, proved against `" +
+    transition.oldLockSource +
+    "`."
+  );
+}
+
+export function cargoTransitionText(transition) {
+  return (
+    "Cargo.lock " +
+    transition.oldSha +
+    " to " +
+    transition.newSha +
+    " adds exactly " +
+    transition.added.length +
+    " records (" +
+    transition.added.join(", ") +
+    ") with every previous [[package]] record byte-identical and none changed or removed, proved against " +
+    transition.oldLockSource
+  );
+}
+
 // Actual gzip movement between the previous contract and the new measurement,
 // reported as transfer-size evidence; never a ceiling under schemaVersion 2/3.
 // schemaVersion 1 ceilings are actual gzip; schemaVersion 2/3 ceilings carry only
@@ -494,7 +796,20 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   }
   if (reason === "lockfile-provenance") assertLockfileOnlyMovement(contract, evidence);
   if (reason === "fingerprint-migration") assertFingerprintMigrationMovement(contract, evidence);
+  if (reason === "release-bump" || reason === "runtime-identity") {
+    assertCargoUnchanged(contract, evidence, reason);
+  }
   if (contract.schemaVersion === 3) assertFingerprintUnchanged(contract, evidence, reason);
+  let cargoTransition = null;
+  if (reason === CARGO_PRODUCER_LOCK_REASON) {
+    assertCargoOnlyMovement(contract, evidence);
+    if (!evidence.cargoLock) throw cargoError("needs the old and new Cargo.lock evidence");
+    cargoTransition = proveCargoProducerLock({
+      ...evidence.cargoLock,
+      contractSha: contract.toolchain.cargoLockSha256,
+      artifactSha: evidence.identity.cargoLockSha256,
+    });
+  }
   const previousVersion = contract.toolchain.packageVersion;
   const gzipEvidence = actualGzipEvidence(contract, totals);
   const next = structuredClone(contract);
@@ -531,6 +846,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   next.toolchain.packageVersion = evidence.version;
   next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
   next.normalizerSha256 = evidence.normalizerSha256;
+  if (cargoTransition) next.toolchain.cargoLockSha256 = cargoTransition.newSha;
   const gzipSummary =
     gzipEvidence === null
       ? "no previous actual gzip evidence to compare"
@@ -607,6 +923,22 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       gzipSummary +
       "." +
       matrices;
+  } else if (reason === CARGO_PRODUCER_LOCK_REASON) {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from workflow run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " after a reviewed additive Cargo.lock transition (" +
+      cargoTransitionText(cargoTransition) +
+      "). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. " +
+      gzipSummary +
+      "." +
+      matrices;
   } else {
     next.platformStatus =
       "Linux x64 has exact zero-allowance v" +
@@ -637,6 +969,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
           },
         }
       : {}),
+    ...(cargoTransition ? { cargoTransition } : {}),
     actualGzip: actualGzipRows(totals),
     note:
       evidence.runLabel +
@@ -668,11 +1001,19 @@ export function rebaselineContract(contract, totals, evidence, reason) {
               " with every other reviewed identity input unchanged; raw and gzipNormalized totals did not change; " +
               gzipSummary +
               "."
-            : "Raw and gzipNormalized totals did not change from the v" +
-              previousVersion +
-              " contract; " +
-              gzipSummary +
-              ".") +
+            : reason === CARGO_PRODUCER_LOCK_REASON
+              ? "Reviewed additive Cargo.lock transition at unchanged v" +
+                previousVersion +
+                " (" +
+                cargoTransitionText(cargoTransition) +
+                "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
+                gzipSummary +
+                "."
+              : "Raw and gzipNormalized totals did not change from the v" +
+                previousVersion +
+                " contract; " +
+                gzipSummary +
+                ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -683,6 +1024,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       };
     }
   }
+  if (cargoTransition) assertCargoProducerLockMovement(contract, next);
   return { contract: next, gzipEvidence, previousVersion };
 }
 
@@ -744,7 +1086,10 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
   const { runId, jobId, sourceSha } = contract.baselineEvidence;
   const policy = REASONS[reason];
   const version = contract.toolchain.packageVersion;
-  const runKind = reason === "fingerprint-migration" ? "workflow run " : "health run ";
+  const runKind =
+    reason === "fingerprint-migration" || reason === CARGO_PRODUCER_LOCK_REASON
+      ? "workflow run "
+      : "health run ";
   const run =
     "[" +
     runKind +
@@ -832,6 +1177,20 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       "`Cargo.lock`, toolchain and normalizer are unchanged, and every raw and `gzipNormalized` " +
       "total is unchanged. Only the reviewed lock hash moved; this is not a release or runtime " +
       "change. " +
+      evidence +
+      closing;
+  } else if (reason === CARGO_PRODUCER_LOCK_REASON) {
+    body =
+      "The Linux contract recorded a reviewed additive `Cargo.lock` transition at v" +
+      version +
+      " from " +
+      run +
+      ": " +
+      cargoTransitionMarkdown(contract.baselineEvidence.cargoTransition) +
+      " The producer version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, " +
+      "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
+      "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
+      "byte-identical product code. " +
       evidence +
       closing;
   } else {
@@ -1217,7 +1576,22 @@ export function parseArgs(argv) {
   if (!Object.hasOwn(REASONS, values.reason)) {
     throw new Error("--reason must be one of " + Object.keys(REASONS).join(", "));
   }
+  checkCargoProducerLockArgs(values);
   return values;
+}
+
+// The cargo-producer-lock evidence a CLI run passes to the pure proof: the
+// operator's expected hashes and allowlist, the old lock they supplied and the
+// checkout's own Cargo.lock.
+export function readCargoLockEvidence(args, root) {
+  return {
+    expectedOldSha: args["expected-old-cargo-sha"],
+    expectedNewSha: args["expected-new-cargo-sha"],
+    added: parseAddedPackages(args["added-packages"]),
+    oldText: readFileSync(args["old-cargo-lock"], "utf8"),
+    newText: readFileSync(join(root, "Cargo.lock"), "utf8"),
+    oldLockSource: args["old-cargo-lock"],
+  };
 }
 
 // `root` is the checkout the contract, test pins and README are rewritten in.
@@ -1259,6 +1633,7 @@ export function main(argv = process.argv.slice(2), root = ".") {
     "runtime-identity": "Runtime-identity re-pin run at v" + version,
     "lockfile-provenance": "Consumer lockfile re-pin run at v" + version,
     "fingerprint-migration": "Dependency-fingerprint migration run at v" + version,
+    "cargo-producer-lock": "Cargo producer-lock transition run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -1276,6 +1651,9 @@ export function main(argv = process.argv.slice(2), root = ".") {
       artifactFingerprint: provenance.dependencyFingerprint,
       dependencyFingerprint: checkout.dependencyFingerprint,
       dependencyFingerprintError: checkout.dependencyFingerprintError,
+      ...(args.reason === CARGO_PRODUCER_LOCK_REASON
+        ? { cargoLock: readCargoLockEvidence(args, root) }
+        : {}),
     },
     args.reason,
   );

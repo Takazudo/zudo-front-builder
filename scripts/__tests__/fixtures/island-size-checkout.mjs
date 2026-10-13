@@ -56,7 +56,8 @@ export function write(root, relative, bytes) {
 }
 
 // Returns the checkout root and the identity a native run of it would record.
-export function makeCheckout(roots) {
+// `cargoLock` replaces the copied Cargo.lock with the given text.
+export function makeCheckout(roots, { cargoLock } = {}) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-checkout-"));
   roots.push(root);
   const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
@@ -77,6 +78,7 @@ export function makeCheckout(roots) {
     copy(root, relative);
   }
   copy(root, "packages/zfb/package.json");
+  if (cargoLock !== undefined) write(root, "Cargo.lock", cargoLock);
   const fixtureSha256 = {};
   for (const name of [
     "event-only",

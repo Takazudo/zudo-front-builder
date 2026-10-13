@@ -179,8 +179,10 @@ function localizedNote(value, locale, field) {
 // changing the pinned utility compatibility catalog. MDX ignored-attribute
 // context boundaries likewise do not change utility compatibility rows (#3721).
 // The noyalib 0.0.53 and 0.0.55 pins (#4159, #4173) move only Cargo.toml/Cargo.lock.
+// The CSS addon (#4149) adds only disjoint Cargo.lock entries; reviewed Wind
+// sources, resolved dependency graph, support pin and utility catalog are unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "49b12a56aa81e15a4c88b6a0a58648f8610eac196afa5a1cf1a94544e73b1d90";
+  "38ddeeefb6e867870d5714a49fa656909604951fc6125e5669882c475d2f8218";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

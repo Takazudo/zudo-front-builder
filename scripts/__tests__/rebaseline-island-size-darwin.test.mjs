@@ -19,6 +19,7 @@ import {
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import {
+  CARGO_PRODUCER_LOCK_MOVEMENT,
   FINGERPRINT_HELPER_MOVEMENT,
   assertLinuxX64Provenance,
   contractDiffKeys,
@@ -28,6 +29,7 @@ import {
   buildEvidence,
   checkMigrationTotals,
   checkoutMismatches,
+  darwinCargoProducerLockReadmeSection,
   darwinFingerprintReadmeSection,
   darwinReadmeSection,
   loadDarwinArtifact,
@@ -38,6 +40,7 @@ import {
   repinDarwinContract,
   darwinRepinReadmeSection,
   rewriteDarwinTestPins,
+  transitionDarwinCargoLock,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
 import { asSchemaV2, makeCheckout, makeHelperCheckout } from "./fixtures/island-size-checkout.mjs";
@@ -494,7 +497,8 @@ describe("rebaseline-island-size-darwin", () => {
   });
 });
 
-// A schemaVersion-2 contract one release behind the synthetic artifact.
+// A schemaVersion-2 contract one release behind the synthetic artifact, at the
+// same Cargo.lock: release-bump and runtime-identity never move it.
 function previousSchema2(root) {
   const artifact = loadDarwinArtifact(root);
   const migrated = migrateDarwinContract(
@@ -504,7 +508,6 @@ function previousSchema2(root) {
   );
   migrated.toolchain.packageVersion = "9.9.8";
   migrated.toolchain.pnpmLockSha256 = sha("old-pnpm-lock");
-  migrated.toolchain.cargoLockSha256 = sha("old-cargo-lock");
   migrated.baselineSourceSha = "b".repeat(40);
   return migrated;
 }
@@ -612,6 +615,25 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
       });
       expect(darwinRepinReadmeSection(next, [], previousVersion, reason)).toContain(
         "Darwin v" + VERSION,
+      );
+      // The artifact's Cargo.lock is no longer copied over the pin unchecked.
+      const stale = structuredClone(contract);
+      stale.toolchain.cargoLockSha256 = sha("old-cargo-lock");
+      expect(() =>
+        repinDarwinContract(
+          stale,
+          totalsOf(artifact),
+          buildEvidence({ ...args, reason }, artifact),
+          reason,
+        ),
+      ).toThrow(
+        "--reason " +
+          reason +
+          " cannot move Cargo.lock (the artifact and checkout carry " +
+          sha("cargo-lock") +
+          ", the contract pins " +
+          sha("old-cargo-lock") +
+          "); a reviewed additive producer-lock change needs --reason cargo-producer-lock",
       );
     });
   }
@@ -1148,5 +1170,219 @@ describe("rebaseline-island-size-darwin fingerprint-helper (#4198)", () => {
       /contracts disagree on helperSha256 .*; fix the contract that is wrong first/,
     );
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(darwin);
+  });
+});
+
+// The proof's full refusal matrix is covered in rebaseline-island-size-linux.test.mjs;
+// these cases prove the Darwin entry point binds the same evidence and writes
+// only the Cargo hash and its evidence.
+describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
+  const lockDir = join(testDir, "fixtures/cargo-producer-lock");
+  const oldText = readFileSync(join(lockDir, "old.lock"), "utf8");
+  const newText = readFileSync(join(lockDir, "new.lock"), "utf8");
+  const OLD = sha(oldText);
+  const NEW = sha(newText);
+  const ADDED = ["ctor@0.2.9", "zfb-css-node@0.0.0"];
+  const fingerprint = {
+    policyVersion: 1,
+    parser: "yaml@2.9.0",
+    helperSha256: "1".repeat(64),
+    sha256: "2".repeat(64),
+  };
+  const checkout = { dependencyFingerprint: fingerprint, dependencyFingerprintError: null };
+  const cargoArgs = { ...args, reason: "cargo-producer-lock" };
+  const cargoLock = {
+    expectedOldSha: OLD,
+    expectedNewSha: NEW,
+    oldText,
+    newText,
+    added: ADDED,
+    oldLockSource: "old.lock",
+  };
+
+  // A schemaVersion-3 contract at the artifact's version and pnpm lock, pinning
+  // the old Cargo.lock, and a native artifact measured at the new one.
+  function fixture({ tweak } = {}) {
+    const root = makeArtifact({
+      tweak: (p, mode) => {
+        p.cargoLockSha256 = NEW;
+        p.dependencyFingerprint = { policyVersion: 1, sha256: fingerprint.sha256 };
+        tweak?.(p, mode);
+      },
+    });
+    const artifact = loadDarwinArtifact(root);
+    const contract = previousSchema2(root);
+    contract.schemaVersion = 3;
+    contract.dependencyFingerprint = { ...fingerprint };
+    contract.toolchain.packageVersion = VERSION;
+    contract.toolchain.pnpmLockSha256 = sha("pnpm-lock");
+    contract.toolchain.cargoLockSha256 = OLD;
+    return { root, artifact, contract };
+  }
+  const run = (contract, artifact, { evidence, check = checkout, lock = cargoLock } = {}) =>
+    transitionDarwinCargoLock(
+      contract,
+      totalsOf(artifact),
+      evidence ?? buildEvidence(cargoArgs, artifact),
+      check,
+      lock,
+    );
+
+  it("moves only the Cargo hash and its evidence", () => {
+    const { artifact, contract } = fixture();
+    expect(validateDarwinEvidence(contract, artifact, SOURCE_SHA, "cargo-producer-lock")).toEqual(
+      [],
+    );
+    const { contract: next, gzipMoves } = run(contract, artifact);
+    expect(next.outcome).toBe("cargo-producer-lock-transition");
+    expect(next.toolchain).toEqual({ ...contract.toolchain, cargoLockSha256: NEW });
+    expect(next.ceilings).toEqual(contract.ceilings);
+    expect(next.dependencyFingerprint).toEqual(fingerprint);
+    expect(next.baselineEvidence).toMatchObject({
+      event: "ci-artifact",
+      runId: 7,
+      artifact: { id: 9 },
+      cargoTransition: {
+        oldSha: OLD,
+        newSha: NEW,
+        added: ADDED,
+        changed: [],
+        removed: [],
+        oldLockSource: "old.lock",
+      },
+      originalCheckerResult: { exitCode: 1 },
+    });
+    for (const key of contractDiffKeys(contract, next)) {
+      expect(
+        CARGO_PRODUCER_LOCK_MOVEMENT.some(
+          (allowed) => key === allowed || key.startsWith(allowed + "."),
+        ),
+      ).toBe(true);
+    }
+    expect(next.platformStatus).toContain("only the Cargo.lock hash moved");
+    const readme = darwinCargoProducerLockReadmeSection(next, gzipMoves);
+    expect(readme).toContain("## Darwin v" + VERSION + " cargo-producer-lock transition");
+    expect(readme).toContain("`" + OLD + "` to `" + NEW + "`");
+    expect(readme).toContain("exit code 1");
+  });
+
+  it("refuses schemaVersion 2, moved totals, version, pnpm lock or fingerprint", () => {
+    const { artifact, contract } = fixture();
+    const v2 = asSchemaV2(contract);
+    expect(validateDarwinEvidence(v2, artifact, SOURCE_SHA, "cargo-producer-lock")).toContain(
+      "contract is not a schemaVersion 3 gzip-identity-normalized v1 contract",
+    );
+    expect(() => run(v2, artifact)).toThrow(
+      "--reason cargo-producer-lock needs a schemaVersion 3 contract, found schemaVersion 2",
+    );
+    const grown = structuredClone(contract);
+    grown.ceilings.packed.model.gzipNormalized += 1;
+    expect(() => run(grown, artifact)).toThrow("gzipNormalized totals changed");
+    const raw = structuredClone(contract);
+    raw.ceilings.workspace["event-only"].raw -= 1;
+    expect(() => run(raw, artifact)).toThrow("raw totals changed");
+    for (const [key, value] of [
+      ["packageVersion", "9.9.8"],
+      ["pnpmLockSha256", sha("other-pnpm")],
+    ]) {
+      const moved = structuredClone(contract);
+      moved.toolchain[key] = value;
+      expect(() => run(moved, artifact)).toThrow(
+        "allows only Cargo.lock to move, but " + key + " differ",
+      );
+    }
+    expect(() => run({ ...contract, normalizerSha256: "e".repeat(64) }, artifact)).toThrow(
+      "but normalizerSha256 differ",
+    );
+    expect(() =>
+      run(contract, artifact, {
+        check: { dependencyFingerprint: { ...fingerprint, helperSha256: "9".repeat(64) } },
+      }),
+    ).toThrow("but dependencyFingerprint.helperSha256 differ");
+    expect(() =>
+      run(contract, artifact, {
+        check: { dependencyFingerprint: { ...fingerprint, sha256: "3".repeat(64) } },
+      }),
+    ).toThrow("artifact dependency fingerprint sha256 differs from this checkout's");
+  });
+
+  it("refuses a non-additive or unallowlisted lock move and a wrong SHA", () => {
+    const { artifact, contract } = fixture();
+    expect(() =>
+      run(contract, artifact, { lock: { ...cargoLock, added: ["ctor@0.2.9"] } }),
+    ).toThrow("unexpected additions zfb-css-node@0.0.0");
+    expect(() =>
+      run(contract, artifact, { lock: { ...cargoLock, expectedOldSha: "1".repeat(64) } }),
+    ).toThrow("the contract pins Cargo.lock " + OLD + ", not --expected-old-cargo-sha");
+    const other = fixture({ tweak: (p) => (p.cargoLockSha256 = sha("other-cargo")) });
+    expect(() => run(other.contract, other.artifact)).toThrow(
+      "the artifact measured Cargo.lock " + sha("other-cargo") + ", not --expected-new-cargo-sha",
+    );
+  });
+
+  it("takes the four Cargo arguments for cargo-producer-lock alone", () => {
+    const cli = {
+      ...cargoArgs,
+      "expected-old-cargo-sha": OLD,
+      "expected-new-cargo-sha": NEW,
+      "old-cargo-lock": "old.lock",
+      "added-packages": ADDED.join(","),
+    };
+    const argv = (values) => Object.entries(values).flatMap(([k, v]) => ["--" + k, v]);
+    expect(parseArgs(argv(cli))).toMatchObject(cli);
+    const { "added-packages": _a, ...withoutAdded } = cli;
+    expect(() => parseArgs(argv(withoutAdded))).toThrow("required --added-packages");
+    expect(() =>
+      parseArgs(argv({ ...args, reason: "release-bump", "old-cargo-lock": "old.lock" })),
+    ).toThrow("--old-cargo-lock is only for --reason cargo-producer-lock");
+  });
+
+  it("runs end to end against a disposable checkout at the new lock", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const repo = makeCheckout(roots, { cargoLock: newText });
+    const fingerprintOf = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
+    const root = makeArtifact({
+      version: repo.version,
+      tweak: (p) => {
+        p.fixtureSha256 = repo.fixtureSha256;
+        p.runnerSha256 = repo.runnerSha256;
+        p.pnpmLockSha256 = repo.pnpmLockSha256;
+        p.cargoLockSha256 = repo.cargoLockSha256;
+        p.dependencyFingerprint = fingerprintOf;
+      },
+    });
+    const contract = previousSchema2(root);
+    contract.schemaVersion = 3;
+    contract.dependencyFingerprint = { ...repo.dependencyFingerprint };
+    contract.fixtureSha256 = repo.fixtureSha256;
+    contract.runnerSha256 = repo.runnerSha256;
+    contract.toolchain.packageVersion = repo.version;
+    contract.toolchain.pnpmLockSha256 = repo.pnpmLockSha256;
+    contract.toolchain.cargoLockSha256 = OLD;
+    const contractPath = join(repo.root, "research/v3-island-size/decision.json");
+    writeFileSync(contractPath, JSON.stringify(contract, null, 2) + "\n");
+    const oldPath = join(repo.root, "old.lock");
+    writeFileSync(oldPath, oldText);
+    const argv = Object.entries({
+      ...cargoArgs,
+      artifact: root,
+      "expected-old-cargo-sha": OLD,
+      "expected-new-cargo-sha": NEW,
+      "old-cargo-lock": oldPath,
+      "added-packages": ADDED.join(","),
+    }).flatMap(([k, v]) => ["--" + k, v]);
+    main(argv, repo.root);
+    const written = JSON.parse(readFileSync(contractPath, "utf8"));
+    expect(written.toolchain).toEqual({ ...contract.toolchain, cargoLockSha256: NEW });
+    expect(written.ceilings).toEqual(contract.ceilings);
+    expect(written.baselineEvidence.cargoTransition).toMatchObject({ oldSha: OLD, newSha: NEW });
+    const pins = readFileSync(
+      join(repo.root, "scripts/__tests__/island-size-budget.test.mjs"),
+      "utf8",
+    );
+    expect(pins).toContain(JSON.stringify(NEW));
+    expect(readFileSync(join(repo.root, "research/v3-island-size/README.md"), "utf8")).toContain(
+      "cargo-producer-lock transition",
+    );
   });
 });

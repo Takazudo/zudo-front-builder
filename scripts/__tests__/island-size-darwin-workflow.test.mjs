@@ -6,10 +6,19 @@ import { describe, expect, it } from "vite-plus/test";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workflow = readFileSync(join(root, ".github/workflows/island-size-darwin.yml"), "utf8");
 
-const jobStart = workflow.indexOf("\n  measure-darwin:");
-const linuxStart = workflow.indexOf("\n  measure-linux:");
-const darwin = workflow.slice(jobStart, linuxStart);
-const linux = workflow.slice(linuxStart);
+// Each top-level job's text, from its `  <name>:` line to the next job's, so an
+// assertion on one job can never be satisfied by a later one.
+const jobsText = workflow.slice(workflow.indexOf("\njobs:\n"));
+const jobNames = [...jobsText.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)].map((match) => match[1]);
+function jobText(name) {
+  const start = jobsText.search(new RegExp("^ {2}" + name + ":$", "m"));
+  const next = jobNames[jobNames.indexOf(name) + 1];
+  const end = next ? jobsText.search(new RegExp("^ {2}" + next + ":$", "m")) : jobsText.length;
+  return jobsText.slice(start, end);
+}
+const darwin = jobText("measure-darwin");
+const linux = jobText("measure-linux");
+const carriers = jobText("css-carriers");
 
 function expectOrdered(job) {
   const measure = job.indexOf("measure-real.mjs");
@@ -38,6 +47,12 @@ describe("island-size native workflow wiring", () => {
     expect(workflow).toMatch(
       /platform:\n\s+description: .+\n\s+required: false\n\s+default: darwin-arm64\n\s+type: choice\n\s+options:\n\s+- darwin-arm64\n\s+- linux-x64\n\s+- both\n/,
     );
+  });
+
+  it("declares exactly the two measure jobs and the CSS carrier lane, in order", () => {
+    expect(jobNames).toEqual(["measure-darwin", "measure-linux", "css-carriers"]);
+    expect(linux).not.toContain("css-carrier");
+    expect(darwin).not.toContain("css-carrier");
   });
 
   it("gates each job on inputs.platform", () => {
@@ -76,5 +91,23 @@ describe("island-size native workflow wiring", () => {
     expect(linux).toMatch(/Upload complete Linux x64 island-size evidence\s+if: always\(\)/);
     expect(linux).toContain("name: island-size-linux-x64-${{ steps.context.outputs.source_sha }}");
     expect(linux).toContain("path: target/island-size/");
+  });
+
+  it("keeps the CSS carrier lane independent of the platform measure jobs", () => {
+    for (const input of ["css_carriers", "css_windows_only"]) {
+      expect(workflow).toMatch(
+        new RegExp(
+          "\\n {6}" +
+            input +
+            ":\\n\\s+description: .+\\n\\s+required: false\\n\\s+default: false\\n\\s+type: boolean\\n",
+        ),
+      );
+    }
+    expect(carriers).toContain("if: ${{ inputs.css_carriers }}");
+    expect(carriers).not.toContain("inputs.platform");
+    expect(carriers).toContain("uses: ./.github/workflows/css-carrier-verification.yml");
+    expect(carriers).toContain("source_sha: ${{ inputs.ref }}");
+    expect(carriers).toContain("windows_only: ${{ inputs.css_windows_only }}");
+    expect(carriers).not.toContain("check-budget.mjs");
   });
 });

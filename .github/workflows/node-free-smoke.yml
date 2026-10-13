@@ -271,6 +271,9 @@ jobs:
       - name: Build zfb binary (cross)
         run: cross build -p zfb --release --target ${{ matrix.platform.target }}
 
+      - name: Build native CSS addon (cross)
+        run: bash scripts/build-css-node.sh ${{ matrix.platform.target }} cross
+
       # GLIBC 2.34 = Amazon Linux 2023 / RHEL 9-class (#3623). Keep this value
       # identical to release.yml's step. Lower it only with a measured objdump
       # result; never raise it without an issue.
@@ -298,6 +301,7 @@ jobs:
       # One compile, two uploads — JSON variant and TS variant both need the binary.
       - name: Stage binary for smoke containers
         run: |
+          cp target/${{ matrix.platform.target }}/release/libzfb_css_node.so tests/smoke/node-free/zfb-css.node
           cp target/${{ matrix.platform.target }}/release/zfb \
              tests/smoke/node-free/zfb-bin
           cp target/${{ matrix.platform.target }}/release/zfb \
@@ -447,11 +451,21 @@ jobs:
           name: smoke-binary-amd64
           path: smoke-ctx
 
+      - name: Install CSS API verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace
+          pnpm exec playwright install --with-deps chromium
+
       - name: Pack, override, scaffold, build, and assert (packed clean-room)
         env:
           ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
+          ZFB_LINUX_X64_CSS_ADDON: ${{ github.workspace }}/smoke-ctx/zfb-css.node
           ZFB_SMOKE_DIST_OUT: ${{ github.workspace }}/showcase-dist
-        run: bash scripts/smoke-packed-clean-room.sh
+          ZFB_CSS_API_BROWSER: "1"
+        run: |
+          bash scripts/smoke-packed-clean-room.sh
+          bash scripts/smoke-css-api-packed.sh
 
       # Separate package-boundary confirmation for #3484. The zfb-runtime
       # tarball declares Hono; a strict pnpm consumer must resolve it from that
