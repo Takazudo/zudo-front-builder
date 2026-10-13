@@ -341,7 +341,7 @@ jobs:
         with:
           toolchain: 1.99.0
 
-      # Own prefix-key: health's shared-key serves a different build command.
+      # Own cache prefix: health's workspace-all-targets cache serves a different build command.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           prefix-key: "v1-island-size-linux"
