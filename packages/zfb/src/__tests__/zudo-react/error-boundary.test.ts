@@ -1059,3 +1059,62 @@ describe("late recovery service ownership", () => {
     },
   );
 });
+
+it.each(["mount", "hydrate"] as const)(
+  "preserves the complete radio group on native form reset after %s and boundary replacement",
+  async (mode) => {
+    const model = signal<string | null>("outside");
+    const resetKey = signal(0);
+    function Demo() {
+      return h(
+        "form",
+        null,
+        h("input", { type: "radio", name: "choice", value: "outside", modelValue: model }),
+        ErrorBoundary({
+          resetKey,
+          children: () =>
+            h("input", { type: "radio", name: "choice", value: "inside", modelValue: model }),
+          fallback: () => "failed",
+        }),
+      );
+    }
+    const root = host(h(Demo, null), mode === "mount");
+    const handle = (mode === "mount" ? mount : hydrate)(h(Demo, null), root, options())!;
+    expect(handle).not.toBeNull();
+    const form = root.querySelector("form")!;
+    const outside = root.querySelector<HTMLInputElement>('input[value="outside"]')!;
+    for (let cycle = 0; cycle < 3; cycle++) {
+      if (cycle) {
+        resetKey.value++;
+        await flush();
+      }
+      const inside = root.querySelector<HTMLInputElement>('input[value="inside"]')!;
+      outside.defaultChecked = true;
+      inside.defaultChecked = false;
+      model.value = "inside";
+      await flush();
+      form.reset();
+      await Promise.resolve();
+      await flush();
+      expect(model.value).toBe("outside");
+      expect(outside.checked).toBe(true);
+      expect(inside.checked).toBe(false);
+      expect(root.querySelector('input[value="outside"]')).toBe(outside);
+    }
+    model.value = "inside";
+    await flush();
+    form.addEventListener("reset", (event) => event.preventDefault(), { once: true });
+    form.dispatchEvent(new Event("reset", { cancelable: true }));
+    await Promise.resolve();
+    await flush();
+    expect(model.value).toBe("inside");
+    expect(outside.checked).toBe(false);
+    // Disposal before the native-reset microtask makes every owned listener inert.
+    form.reset();
+    handle.unmount();
+    await Promise.resolve();
+    await flush();
+    expect(model.value).toBe("inside");
+    expect(diagnostics).toEqual([]);
+  },
+);

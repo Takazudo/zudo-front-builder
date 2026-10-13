@@ -7,6 +7,29 @@ import {
   releaseScenario,
 } from "./browser-helpers.mjs";
 
+async function expectNativeResetPreservesSibling(page, id) {
+  await page.evaluate((key) => {
+    document.querySelector(`#outside-${key}`).defaultChecked = true;
+    document.querySelector(`#inside-${key}`).defaultChecked = false;
+  }, id);
+  await page.locator(`#inside-${id}`).check();
+  await expect(page.locator(`#model-${id}`)).toHaveText("inside");
+  await page.evaluate((key) => {
+    const form = document.querySelector(`#form-${key}`);
+    form.addEventListener("reset", (event) => event.preventDefault(), { once: true });
+    form.reset();
+  }, id);
+  await flush(page);
+  await expect(page.locator(`#model-${id}`)).toHaveText("inside");
+  await expect(page.locator(`#inside-${id}`)).toBeChecked();
+  await expect(page.locator(`#outside-${id}`)).not.toBeChecked();
+  await page.evaluate((key) => document.querySelector(`#form-${key}`).reset(), id);
+  await flush(page);
+  await expect(page.locator(`#model-${id}`)).toHaveText("outside");
+  await expect(page.locator(`#outside-${id}`)).toBeChecked();
+  await expect(page.locator(`#inside-${id}`)).not.toBeChecked();
+}
+
 test("native ancestor/explicit form radio groups survive boundary resets and detach stale nested listeners", async ({
   page,
 }) => {
@@ -35,6 +58,7 @@ test("native ancestor/explicit form radio groups survive boundary resets and det
       await expect(inside).toBeChecked();
       await outside.check();
       await expect(page.locator(`#model-${id}`)).toHaveText("outside");
+      await expectNativeResetPreservesSibling(page, id);
 
       for (let cycle = 1; cycle <= 3; cycle++) {
         await page.evaluate((key) => {
@@ -45,6 +69,7 @@ test("native ancestor/explicit form radio groups survive boundary resets and det
         await expect(inside).not.toBeChecked();
         await expect(outside).toBeChecked();
         await expect(page.locator(`#model-${id}`)).toHaveText("outside");
+        await expectNativeResetPreservesSibling(page, id);
 
         expect(
           await page.evaluate((key) => {

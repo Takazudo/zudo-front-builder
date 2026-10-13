@@ -402,7 +402,17 @@ export function activateForms(
     const onReset = (event: Event) =>
       queueMicrotask(() => {
         if (!active || event.defaultPrevented) return;
-        readModels(groupBindings(members));
+        // A boundary owns only part of a native radio group. Read all current
+        // members after the browser reset, not just this scope's unchecked part.
+        // Keep ownership-local listeners so disposing a replaced attempt still
+        // cancels its queued reset work.
+        const recovery = formRecoveries.get(container);
+        const current = recovery
+          ? [
+              ...new Set(members.flatMap((binding) => recovery.members(binding) ?? [binding])),
+            ].filter((binding) => binding.node.form === form)
+          : members;
+        readModels(groupBindings(current));
       });
     form.addEventListener("reset", onReset);
     cleanups.push(() => {
