@@ -107,36 +107,53 @@ test("native ancestor/explicit form radio groups survive boundary resets and det
       await expect(page.locator(`#inner-fallback-${id}`)).toHaveText("Inner fallback");
       await expect(page.locator(`#outer-fallback-${id}`)).toHaveCount(0);
       await expect(inside).toHaveCount(0);
-      expect(
-        await page.evaluate(
-          async ({ key, rootIndex }) => {
-            const before = window.__boundaryFormsBefore[key];
-            for (const old of before.stale) {
-              old.checked = true;
-              old.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-            const harness = window.__zudoReactBrowser;
-            await harness.flush();
-            const entry = harness.roots[rootIndex];
-            entry.root.dispose();
-            entry.root.dispose();
-            return {
-              model: entry.result[key].model.value,
-              activations: entry.result[key].activations,
-              cleanups: entry.result[key].cleanups,
-              retainedOutside: before.outside === document.querySelector(`#outside-${key}`),
-              diagnostics: entry.diagnostics,
-            };
-          },
-          { key: id, rootIndex: index },
-        ),
-      ).toEqual({
+      const beforeDisposal = await page.evaluate(
+        async ({ key, rootIndex }) => {
+          const before = window.__boundaryFormsBefore[key];
+          for (const old of before.stale) {
+            old.checked = true;
+            old.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          const harness = window.__zudoReactBrowser;
+          await harness.flush();
+          const entry = harness.roots[rootIndex];
+          return {
+            model: entry.result[key].model.value,
+            activations: entry.result[key].activations,
+            cleanups: entry.result[key].cleanups,
+            retainedOutside: before.outside === document.querySelector(`#outside-${key}`),
+            diagnostics: entry.diagnostics,
+          };
+        },
+        { key: id, rootIndex: index },
+      );
+      // Recovery itself must release the failed radio attempt. Root disposal
+      // cannot be allowed to mask delayed cleanup.
+      expect(beforeDisposal).toEqual({
         model: "outside",
         activations: 4,
         cleanups: 4,
         retainedOutside: true,
         diagnostics: [],
       });
+      const afterDisposal = await page.evaluate(
+        ({ key, rootIndex }) => {
+          const entry = window.__zudoReactBrowser.roots[rootIndex];
+          entry.root.dispose();
+          entry.root.dispose();
+          return {
+            model: entry.result[key].model.value,
+            activations: entry.result[key].activations,
+            cleanups: entry.result[key].cleanups,
+            retainedOutside:
+              window.__boundaryFormsBefore[key].outside ===
+              document.querySelector(`#outside-${key}`),
+            diagnostics: entry.diagnostics,
+          };
+        },
+        { key: id, rootIndex: index },
+      );
+      expect(afterDisposal).toEqual(beforeDisposal);
     }
     expectNoBrowserErrors(state.errors);
   } finally {
