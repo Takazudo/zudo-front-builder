@@ -198,6 +198,8 @@ XMLEOF
 printf '<testsuite name="empty" tests="0"/>\n' > "$TMP_DIR/zero.xml"
 printf '<testsuites/>\n' > "$TMP_DIR/empty-container.xml"
 printf '<testsuite><testcase>\n' > "$TMP_DIR/malformed.xml"
+printf '<?xml version="1.0" encoding="NO-SUCH-ENCODING"?><testsuite/>\n' > "$TMP_DIR/unknown-encoding.xml"
+printf '<?xml version="1.0" encoding="UTF-32"?><testsuite/>\n' > "$TMP_DIR/unsupported-encoding.xml"
 printf '<document><testsuite><testcase/></testsuite></document>\n' > "$TMP_DIR/non-junit.xml"
 printf '<testsuites><testcase name="orphan"/></testsuites>\n' > "$TMP_DIR/invalid-structure.xml"
 printf '<testsuite><unknown/></testsuite>\n' > "$TMP_DIR/unknown-structure.xml"
@@ -251,7 +253,7 @@ contains 'suites=2; testcases=4; failures=1; errors=1; skipped=1; flaky-tests=0'
 contains 'Zero flakes does not establish that all tests passed.' 'does not claim a successful test run'
 no_issues
 
-for KIND in malformed non-junit invalid-structure unknown-structure invalid-identity \
+for KIND in malformed unknown-encoding unsupported-encoding non-junit invalid-structure unknown-structure invalid-identity \
   unknown-testcase wrapped-retry wrapped-failure wrapped-skipped misplaced-retry unknown-outcome; do
   CASE="$KIND evidence"
   run_dry "$TMP_DIR/$KIND.xml"
@@ -283,7 +285,7 @@ for KIND in zero empty-container; do
   not_clean
 done
 
-for KIND in missing malformed zero; do
+for KIND in missing malformed unknown-encoding unsupported-encoding zero; do
   CASE="valid plus $KIND"
   run_dry "$CLEAN_FIXTURE" "$TMP_DIR/$KIND.xml"
   contains 'coverage=partial;' 'partial coverage'
@@ -292,7 +294,7 @@ for KIND in missing malformed zero; do
   no_issues
 done
 
-for KIND in missing malformed wrapped-retry; do
+for KIND in missing malformed unknown-encoding unsupported-encoding wrapped-retry; do
   CASE="duplicate real flakes plus $KIND"
   run_dry "$FIXTURE" "$FIXTURE" "$TMP_DIR/$KIND.xml"
   contains 'coverage=partial; valid-reports=2/3' 'partial coverage preserves valid reports'

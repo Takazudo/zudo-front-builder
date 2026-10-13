@@ -101,7 +101,7 @@ for path in sys.argv[1:]:
     except FileNotFoundError:
         report(f"JUnit input {path!r}: unavailable (missing)")
         continue
-    except ET.ParseError as exc:
+    except (ET.ParseError, LookupError, ValueError) as exc:
         report(f"JUnit input {path!r}: invalid evidence (malformed XML: {exc})")
         continue
     except OSError as exc:
