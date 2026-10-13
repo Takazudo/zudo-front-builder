@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-producer-lock-transition",
+  "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
+  "baselineSourceSha": "dee7d83b0ea45bd32dbe0c6a7f91846ffb3335f3",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -32,12 +32,12 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "4.4.0",
+    "packageVersion": "4.5.0",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "6a80d0aa7d1a7e4cae3a48750a78984e8926bdcac16cf1fe1a284edd55612f95",
+    "pnpmLockSha256": "56e687fe05e0b84949881583381551b060cd357f43b0bf6b6bf0b27c2cc95b9a",
     "cargoLockSha256": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -116,50 +116,34 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 38451538696 at source 05ab82100e8f15fa714db9fd1fb5b8e51b41abaf after a reviewed additive Cargo.lock transition (Cargo.lock 22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e to 2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e adds exactly 7 records (ctor@0.2.9, napi-build@2.6.0, napi-derive-backend@1.0.75, napi-derive@2.16.13, napi-sys@2.4.0, napi@2.16.17, zfb-css-node@0.0.0) with every previous [[package]] record byte-identical and none changed or removed, proved against ./ce865ca3-Cargo.lock). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. 14 actual gzip totals moved by -65 to -19 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.5.0 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 38473455816 at PR merge source fafd4a2fbf1dca98ec346794fee3563bdbc18317 (probe head dee7d83b0ea45bd32dbe0c6a7f91846ffb3335f3). Every raw and gzipNormalized total is unchanged from the v4.4.0 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 12 actual gzip totals moved by -5 to +3 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 38451538696,
-    "jobId": 115483408987,
-    "sourceSha": "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
-    "cargoTransition": {
-      "oldSha": "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
-      "newSha": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
-      "added": [
-        "ctor@0.2.9",
-        "napi-build@2.6.0",
-        "napi-derive-backend@1.0.75",
-        "napi-derive@2.16.13",
-        "napi-sys@2.4.0",
-        "napi@2.16.17",
-        "zfb-css-node@0.0.0"
-      ],
-      "changed": [],
-      "removed": [],
-      "oldLockSource": "./ce865ca3-Cargo.lock"
-    },
+    "runId": 38473455816,
+    "jobId": 115558149355,
+    "sourceSha": "fafd4a2fbf1dca98ec346794fee3563bdbc18317",
     "actualGzip": {
       "workspace": {
-        "blog-theme": 22354,
+        "blog-theme": 22351,
         "event-only": 22210,
-        "json-api": 22296,
-        "model": 22211,
-        "multi-island": 22301,
+        "json-api": 22298,
+        "model": 22214,
+        "multi-island": 22300,
         "no-island": 0,
-        "scalar-signal": 22229,
-        "show-for": 22285
+        "scalar-signal": 22227,
+        "show-for": 22286
       },
       "packed": {
-        "blog-theme": 22367,
-        "event-only": 22216,
+        "blog-theme": 22368,
+        "event-only": 22213,
         "json-api": 22311,
-        "model": 22227,
-        "multi-island": 22310,
+        "model": 22223,
+        "multi-island": 22305,
         "no-island": 0,
-        "scalar-signal": 22216,
-        "show-for": 22300
+        "scalar-signal": 22219,
+        "show-for": 22299
       }
     },
-    "note": "Cargo producer-lock transition for the CSS addon (#4150) at H at source 05ab82100e8f15fa714db9fd1fb5b8e51b41abaf. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed additive Cargo.lock transition at unchanged v4.4.0 (Cargo.lock 22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e to 2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e adds exactly 7 records (ctor@0.2.9, napi-build@2.6.0, napi-derive-backend@1.0.75, napi-derive@2.16.13, napi-sys@2.4.0, napi@2.16.17, zfb-css-node@0.0.0) with every previous [[package]] record byte-identical and none changed or removed, proved against ./ce865ca3-Cargo.lock); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; 14 actual gzip totals moved by -65 to -19 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Release probe PR #4221 run for v4.5.0 at PR merge source fafd4a2fbf1dca98ec346794fee3563bdbc18317 (probe head dee7d83b0ea45bd32dbe0c6a7f91846ffb3335f3). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.4.0 contract; 12 actual gzip totals moved by -5 to +3 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
