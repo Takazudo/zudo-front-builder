@@ -12,6 +12,7 @@ import {
   pnpmLockHashForContract,
   validateIslandSizeBudget,
 } from "../../research/v3-island-size/check-budget.mjs";
+import { computeLockFingerprint } from "../../research/v3-island-size/lock-fingerprint.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -24,27 +25,42 @@ import { measuredTotals, rebaselineContract } from "../rebaseline-island-size-li
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
 const sizeDir = join(repoRoot, "research/v3-island-size");
-// Frozen schemaVersion-1 actual-gzip contract (the Darwin contract before its
-// #4169 metric migration). It is the legacy-metric base for the synthetic
-// states below; the lock hashes are re-derived from this checkout so the
-// fixture never ages with pnpm-lock.yaml or Cargo.lock.
-const baseContract = JSON.parse(
-  readFileSync(join(testDir, "fixtures/island-size-darwin-actual-gzip-v1.json"), "utf8"),
-);
-{
-  const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
-  const checkedOutVersion = JSON.parse(
-    readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
-  ).version;
-  baseContract.toolchain.pnpmLockSha256 = pnpmLockHashForContract(
-    lockText,
+const realLockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
+const checkedOutVersion = JSON.parse(
+  readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
+).version;
+const runnerFiles = ["measure-real.mjs", "measure.mjs"];
+// Re-derive the checkout-bound input pins (lockfiles and runner sources) so a
+// synthetic contract never ages with them; the live-contract tests below keep
+// guarding the reviewed pins themselves.
+function withCheckoutPins(source) {
+  const contract = structuredClone(source);
+  contract.toolchain.pnpmLockSha256 = pnpmLockHashForContract(
+    realLockText,
     checkedOutVersion,
-    baseContract.toolchain.packageVersion,
+    contract.toolchain.packageVersion,
   );
-  baseContract.toolchain.cargoLockSha256 = createHash("sha256")
+  contract.toolchain.cargoLockSha256 = createHash("sha256")
     .update(readFileSync(join(repoRoot, "Cargo.lock")))
     .digest("hex");
+  contract.runnerSha256 = Object.fromEntries(
+    runnerFiles.map((name) => [
+      name,
+      createHash("sha256")
+        .update(readFileSync(join(sizeDir, name)))
+        .digest("hex"),
+    ]),
+  );
+  return contract;
 }
+// Frozen schemaVersion-1 actual-gzip contract (the Darwin contract before its
+// #4169 metric migration). It is the legacy-metric base for the synthetic
+// states below.
+const baseContract = withCheckoutPins(
+  JSON.parse(
+    readFileSync(join(testDir, "fixtures/island-size-darwin-actual-gzip-v1.json"), "utf8"),
+  ),
+);
 const fixtures = [
   "no-island",
   "event-only",
@@ -64,21 +80,29 @@ const fixtureFiles = [
   "theme-toggle",
   "json-api",
 ];
-const runnerFiles = ["measure-real.mjs", "measure.mjs"];
 const tempRoots = [];
+const fingerprintCache = new Map();
 
 function sha(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function checkoutFingerprint(lockText = realLockText) {
+  if (!fingerprintCache.has(lockText)) {
+    const { policyVersion, parser, helperSha256, sha256 } = computeLockFingerprint({
+      lockText,
+      currentVersion: checkedOutVersion,
+    });
+    fingerprintCache.set(lockText, { policyVersion, parser, helperSha256, sha256 });
+  }
+  return { ...fingerprintCache.get(lockText) };
+}
+
 function currentLocalInputs(
   contract = baseContract,
   packageVersion = contract.toolchain.packageVersion,
+  lockText = realLockText,
 ) {
-  const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
-  const checkedOutVersion = JSON.parse(
-    readFileSync(join(repoRoot, "packages/zfb/package.json"), "utf8"),
-  ).version;
   const contractLockHash = pnpmLockHashForContract(
     lockText,
     checkedOutVersion,
@@ -100,7 +124,38 @@ function currentLocalInputs(
       packageVersion === contract.toolchain.packageVersion ? contractLockHash : sha(lockText),
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
     normalizerSha256: normalizerSha256(),
+    dependencyFingerprint: checkoutFingerprint(lockText),
+    dependencyFingerprintError: null,
   };
+}
+
+// Same identity-normalized metric as schemaVersion 2, plus the dependency
+// fingerprint that replaces the whole-file lock compare.
+function v3Contract(base = baseContract) {
+  const contract = structuredClone(base);
+  contract.schemaVersion = 3;
+  contract.metric = IDENTITY_NORMALIZED_METRIC;
+  contract.normalizationVersion = IDENTITY_NORMALIZATION_VERSION;
+  contract.normalizerSha256 = normalizerSha256();
+  contract.dependencyFingerprint = checkoutFingerprint();
+  contract.allowance = { raw: 0, gzipNormalized: 0 };
+  for (const mode of ["workspace", "packed"]) {
+    for (const [fixture, ceiling] of Object.entries(contract.ceilings[mode])) {
+      contract.ceilings[mode][fixture] = { raw: ceiling.raw, gzipNormalized: ceiling.gzip };
+    }
+  }
+  return contract;
+}
+
+// A lock edit confined to the excluded docs importer: the whole file moves,
+// the dependency fingerprint does not.
+function unrelatedLockText() {
+  const edited = realLockText.replace(
+    /(\n {2}docs:\n {4}dependencies:\n {6}[^\n]+:\n {8}specifier: )([^\n]+)/,
+    "$1'$2 || >=0'",
+  );
+  expect(edited).not.toBe(realLockText);
+  return edited;
 }
 
 // Synthetic fixtures carry the compiler-owned identity shape the normalizer
@@ -322,7 +377,16 @@ function makePackageInputs(root, packageVersion = baseContract.toolchain.package
   };
 }
 
-function provenance(mode, sourceSha, localInputs, packageInputs, platform) {
+function provenance(mode, sourceSha, localInputs, packageInputs, platform, schemaVersion) {
+  const fingerprint =
+    schemaVersion === 3
+      ? {
+          dependencyFingerprint: {
+            policyVersion: localInputs.dependencyFingerprint.policyVersion,
+            sha256: localInputs.dependencyFingerprint.sha256,
+          },
+        }
+      : {};
   return {
     sourceSha,
     mode,
@@ -353,15 +417,27 @@ function provenance(mode, sourceSha, localInputs, packageInputs, platform) {
     compression: baseContract.compression,
     repeats: 2,
     pnpmLockSha256: localInputs.pnpmLockActualSha256,
+    ...fingerprint,
     cargoLockSha256: localInputs.cargoLockSha256,
   };
 }
 
-function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform, normalized) {
+function normalizedSchema(schemaVersion) {
+  return schemaVersion === 2 || schemaVersion === 3;
+}
+
+function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform, schemaVersion) {
   const outDir = join(root, mode);
   mkdirSync(outDir, { recursive: true });
   const measurement = {
-    provenance: provenance(mode, sourceSha, localInputs, packageInputs[mode], platform),
+    provenance: provenance(
+      mode,
+      sourceSha,
+      localInputs,
+      packageInputs[mode],
+      platform,
+      schemaVersion,
+    ),
     results: {},
   };
   for (const fixture of fixtures) {
@@ -375,7 +451,7 @@ function buildMode(root, mode, sourceSha, localInputs, packageInputs, platform, 
   writeFileSync(join(outDir, "report.md"), "synthetic measurement report\n");
   const jsonPath = join(outDir, "measurement.json");
   writeFileSync(jsonPath, JSON.stringify(measurement, null, 2) + "\n");
-  if (normalized) writeSidecar(jsonPath);
+  if (normalizedSchema(schemaVersion)) writeSidecar(jsonPath);
   return { jsonPath, run: loadRun(jsonPath) };
 }
 
@@ -406,7 +482,7 @@ function makeState(
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
-  const normalized = base.schemaVersion === 2;
+  const normalized = normalizedSchema(base.schemaVersion);
   const localInputs = currentLocalInputs(base, packageVersion);
   const packageInputs = makePackageInputs(root, packageVersion);
   const workspace = buildMode(
@@ -416,7 +492,7 @@ function makeState(
     localInputs,
     packageInputs,
     platform,
-    normalized,
+    base.schemaVersion,
   );
   const packed = buildMode(
     root,
@@ -425,7 +501,7 @@ function makeState(
     localInputs,
     packageInputs,
     platform,
-    normalized,
+    base.schemaVersion,
   );
   const contract = structuredClone(base);
   for (const mode of ["workspace", "packed"]) {
@@ -490,13 +566,22 @@ function rewriteMeasurement(state, mode) {
   const resultDir = join(dirname(jsonPath), "event-only", "pass-1");
   measurement.results["event-only"] = summarizeFiles("event-only", readPassFiles(resultDir));
   writeFileSync(jsonPath, JSON.stringify(measurement, null, 2) + "\n");
-  if (state.contract.schemaVersion === 2) writeSidecar(jsonPath);
+  if (normalizedSchema(state.contract.schemaVersion)) writeSidecar(jsonPath);
   reload(state, mode);
 }
 
+// A synthetic schemaVersion-2 state shaped like the live Linux contract; its
+// checkout-bound pins are re-derived, so it exercises the v2 metric and the v2
+// whole-file lock compare rather than the reviewed live pins.
 function linuxState() {
-  const linuxContract = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+  const linuxContract = withCheckoutPins(
+    JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8")),
+  );
   return makeState(linuxContract.platform, linuxContract);
+}
+
+function v3State() {
+  return makeState(baseContract.platform, v3Contract());
 }
 
 afterEach(() => {
@@ -524,10 +609,16 @@ describe("island shipped-size budget", () => {
     );
     // The reviewed Darwin contract must track this checkout's lockfiles, the
     // same drift guard the Linux contract test enforces through validate().
+    // A schemaVersion-3 contract tracks the dependency fingerprint instead of
+    // the whole file, so an unrelated lock bump does not redden this check.
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
-    expect(
-      pnpmLockHashForContract(lockText, currentVersion, darwinContract.toolchain.packageVersion),
-    ).toBe(darwinContract.toolchain.pnpmLockSha256);
+    if (darwinContract.schemaVersion === 3) {
+      expect(darwinContract.dependencyFingerprint).toEqual(checkoutFingerprint(lockText));
+    } else {
+      expect(
+        pnpmLockHashForContract(lockText, currentVersion, darwinContract.toolchain.packageVersion),
+      ).toBe(darwinContract.toolchain.pnpmLockSha256);
+    }
     expect(
       pnpmLockHashForContract(
         lockText.replace("lockfileVersion:", "unexpectedLockfileVersion:"),
@@ -686,6 +777,177 @@ describe("island shipped-size budget", () => {
     );
     state.contract = contract;
     expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("accepts a schemaVersion-3 contract pinned by the dependency fingerprint", () => {
+    const state = v3State();
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+    expect(state.workspace.normalized.metric).toBe(IDENTITY_NORMALIZED_METRIC);
+    expect(state.packed.measurement.provenance.dependencyFingerprint).toEqual({
+      policyVersion: state.contract.dependencyFingerprint.policyVersion,
+      sha256: state.contract.dependencyFingerprint.sha256,
+    });
+
+    const overflow = v3State();
+    overflow.contract.ceilings.packed.model.gzipNormalized -= 1;
+    expect(validate(overflow).errors.join("\n")).toContain(
+      "packed model v24.14.0 gzip-identity-normalized v1",
+    );
+
+    const withoutSidecar = v3State();
+    rmSync(join(dirname(withoutSidecar.workspacePath), NORMALIZED_SIDECAR));
+    reload(withoutSidecar, "workspace");
+    expect(validate(withoutSidecar).errors.join("\n")).toContain(
+      "workspace: metric mismatch: schemaVersion 3 contract pins gzip-identity-normalized ceilings but the measurement has no measurement.normalized.json sidecar",
+    );
+  });
+
+  it("rejects a schemaVersion-3 contract with a stale dependency fingerprint sha256", () => {
+    const state = v3State();
+    state.contract.dependencyFingerprint.sha256 = "0".repeat(64);
+    expect(validate(state).errors).toEqual([
+      "local dependency fingerprint: sha256 differs from the reviewed contract",
+    ]);
+  });
+
+  it("rejects a schemaVersion-3 contract with a different fingerprint policyVersion", () => {
+    const state = v3State();
+    state.contract.dependencyFingerprint.policyVersion += 1;
+    expect(validate(state).errors).toEqual([
+      "local dependency fingerprint: policyVersion differs from the reviewed contract",
+    ]);
+  });
+
+  it("rejects a schemaVersion-3 contract with a different fingerprint helperSha256", () => {
+    const state = v3State();
+    state.contract.dependencyFingerprint.helperSha256 = "1".repeat(64);
+    expect(validate(state).errors).toEqual([
+      "local dependency fingerprint: helperSha256 differs from the reviewed contract",
+    ]);
+  });
+
+  it("rejects a schemaVersion-3 contract with a different fingerprint parser", () => {
+    const state = v3State();
+    state.contract.dependencyFingerprint.parser = "yaml@2.8.0";
+    expect(validate(state).errors).toEqual([
+      "local dependency fingerprint: parser differs from the reviewed contract",
+    ]);
+  });
+
+  it("allows dependencyFingerprint only on a schemaVersion-3 contract", () => {
+    const v2WithFingerprint = linuxState();
+    v2WithFingerprint.contract.dependencyFingerprint = checkoutFingerprint();
+    expect(validate(v2WithFingerprint).errors).toContain(
+      "contract: schemaVersion 2 cannot declare dependencyFingerprint",
+    );
+
+    const v1WithFingerprint = makeState();
+    v1WithFingerprint.contract.dependencyFingerprint = checkoutFingerprint();
+    expect(validate(v1WithFingerprint).errors).toContain(
+      "contract: schemaVersion 1 cannot declare dependencyFingerprint",
+    );
+
+    const v3Without = v3State();
+    delete v3Without.contract.dependencyFingerprint;
+    expect(validate(v3Without).errors).toContain(
+      "contract: schemaVersion 3 requires dependencyFingerprint with exactly policyVersion, parser, helperSha256, sha256",
+    );
+
+    const v3Malformed = v3State();
+    v3Malformed.contract.dependencyFingerprint.policyVersion = "1";
+    v3Malformed.contract.dependencyFingerprint.sha256 = "not-a-sha";
+    const malformed = validate(v3Malformed).errors;
+    expect(malformed).toContain("contract: invalid dependencyFingerprint policyVersion");
+    expect(malformed).toContain("contract: invalid dependencyFingerprint sha256");
+
+    const v3BadLock = v3State();
+    v3BadLock.contract.toolchain.pnpmLockSha256 = "stale";
+    expect(validate(v3BadLock).errors).toContain("contract: invalid toolchain pnpmLockSha256");
+  });
+
+  it("rejects run provenance whose dependency fingerprint mismatches the contract schema or checkout", () => {
+    const stale = v3State();
+    stale.packed.measurement.provenance.dependencyFingerprint.sha256 = "0".repeat(64);
+    const staleErrors = validate(stale).errors;
+    expect(staleErrors).toContain(
+      "packed provenance: dependency fingerprint sha256 differs from the current checkout",
+    );
+    expect(staleErrors).toContain(
+      "workspace and packed runs have mismatched dependencyFingerprint",
+    );
+
+    const otherPolicy = v3State();
+    otherPolicy.workspace.measurement.provenance.dependencyFingerprint.policyVersion += 1;
+    expect(validate(otherPolicy).errors).toContain(
+      "workspace provenance: dependency fingerprint policyVersion differs from the current checkout",
+    );
+
+    const missing = v3State();
+    delete missing.workspace.measurement.provenance.dependencyFingerprint;
+    expect(validate(missing).errors).toContain(
+      "workspace provenance: schema mismatch: schemaVersion 3 contract requires dependencyFingerprint",
+    );
+
+    const extraKey = v3State();
+    extraKey.packed.measurement.provenance.dependencyFingerprint.parser = "yaml@2.9.0";
+    expect(validate(extraKey).errors).toContain(
+      "packed provenance: dependencyFingerprint must list exactly policyVersion and sha256",
+    );
+
+    const carriedOnV2 = linuxState();
+    carriedOnV2.packed.measurement.provenance.dependencyFingerprint = {
+      policyVersion: carriedOnV2.localInputs.dependencyFingerprint.policyVersion,
+      sha256: carriedOnV2.localInputs.dependencyFingerprint.sha256,
+    };
+    expect(validate(carriedOnV2).errors).toContain(
+      "packed provenance: schema mismatch: schemaVersion 2 contract cannot accept a run carrying dependencyFingerprint",
+    );
+  });
+
+  it("rejects workspace and packed runs that disagree on the dependency fingerprint", () => {
+    const state = v3State();
+    const fingerprint = state.packed.measurement.provenance.dependencyFingerprint;
+    state.packed.measurement.provenance.dependencyFingerprint = {
+      ...fingerprint,
+      sha256: "f".repeat(64),
+    };
+    expect(validate(state).errors).toEqual([
+      "packed provenance: dependency fingerprint sha256 differs from the current checkout",
+      "workspace and packed runs have mismatched dependencyFingerprint",
+    ]);
+  });
+
+  it("ignores an unrelated whole-file lock change on schemaVersion 3 but still pins the run to the checkout", () => {
+    const editedLock = unrelatedLockText();
+    expect(checkoutFingerprint(editedLock)).toEqual(checkoutFingerprint());
+    expect(sha(editedLock)).not.toBe(sha(realLockText));
+
+    const state = v3State();
+    const contractVersion = state.contract.toolchain.packageVersion;
+    state.localInputs = currentLocalInputs(state.contract, contractVersion, editedLock);
+    expect(state.localInputs.pnpmLockSha256).not.toBe(state.contract.toolchain.pnpmLockSha256);
+    // The runs were measured against the old lock bytes: byte-exact run-vs-checkout
+    // provenance still rejects them even though the contract compare passes.
+    expect(validate(state).errors).toEqual([
+      "workspace provenance: pnpm lockfile differs from the current checkout",
+      "packed provenance: pnpm lockfile differs from the current checkout",
+    ]);
+    for (const mode of ["workspace", "packed"]) {
+      state[mode].measurement.provenance.pnpmLockSha256 = state.localInputs.pnpmLockActualSha256;
+    }
+    expect(validate(state)).toEqual({ errors: [], passed: true });
+  });
+
+  it("keeps the whole-file lock compare for a schemaVersion-2 contract", () => {
+    const state = linuxState();
+    const contractVersion = state.contract.toolchain.packageVersion;
+    state.localInputs = currentLocalInputs(state.contract, contractVersion, unrelatedLockText());
+    for (const mode of ["workspace", "packed"]) {
+      state[mode].measurement.provenance.pnpmLockSha256 = state.localInputs.pnpmLockActualSha256;
+    }
+    expect(validate(state).errors).toEqual([
+      "local pnpm-lock.yaml: SHA-256 differs from the reviewed contract",
+    ]);
   });
 
   it("compares a schemaVersion-2 contract against gzipNormalized recomputed from bytes", () => {

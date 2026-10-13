@@ -17,6 +17,8 @@ import { basename, dirname, join, normalize, relative, resolve } from "node:path
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import { computeLockFingerprint } from "./lock-fingerprint.mjs";
+
 const scriptPath = fileURLToPath(import.meta.url);
 const root = dirname(scriptPath);
 const repoRoot = resolve(root, "../..");
@@ -229,6 +231,11 @@ for (const [label, ids] of Object.entries(cases).filter(
     },
   };
 }
+const pnpmLockBytes = readFileSync(join(repoRoot, "pnpm-lock.yaml"));
+const dependencyFingerprint = computeLockFingerprint({
+  lockText: pnpmLockBytes.toString("utf8"),
+  currentVersion: packageJson.version,
+});
 const report = {
   provenance: {
     sourceSha,
@@ -265,7 +272,11 @@ const report = {
     compression:
       "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
     repeats: 2,
-    pnpmLockSha256: sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
+    pnpmLockSha256: sha(pnpmLockBytes),
+    dependencyFingerprint: {
+      policyVersion: dependencyFingerprint.policyVersion,
+      sha256: dependencyFingerprint.sha256,
+    },
     cargoLockSha256: sha(readFileSync(join(repoRoot, "Cargo.lock"))),
   },
   results,
