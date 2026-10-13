@@ -683,8 +683,8 @@ describe("island shipped-size budget", () => {
       jobId: 115483409348,
       artifact: { id: 11841267531 },
     });
-    // Lock hashes come from the native v4.4.0 fingerprint migration (#4194); the
-    // ceilings below are the unchanged #4169 metric-migration values.
+    // pnpmLockSha256 comes from the native v4.4.0 fingerprint migration (#4194);
+    // cargoLockSha256 and the ceilings below follow run 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
       "6a80d0aa7d1a7e4cae3a48750a78984e8926bdcac16cf1fe1a284edd55612f95",
     );
