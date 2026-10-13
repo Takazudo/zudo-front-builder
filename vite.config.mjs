@@ -55,6 +55,8 @@ export default defineConfig({
       // Real emitted island bytes copied from the v4.3.1 Linux x64 artifact
       // (#4131); the identity-normalization tests hash and gzip them as-is.
       "scripts/__tests__/fixtures/island-size/**",
+      // Byte-exact `lock-fingerprint.mjs --explain` output (#4194); must equal a fresh run.
+      "research/v3-island-size/lock-fingerprint-inventory.json",
       // zudo-sg CLI output; the fixture runs `gen-* --check` against these exact bytes.
       "tests/published-preset-identity/site/src/styleguide/",
       "_temp-resource/",

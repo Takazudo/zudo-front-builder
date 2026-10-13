@@ -1,12 +1,18 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "metric": "gzip-identity-normalized",
   "normalizationVersion": 1,
   "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
+  "dependencyFingerprint": {
+    "policyVersion": 1,
+    "parser": "yaml@2.9.0",
+    "helperSha256": "a36ee24f832aa97e5f16b9076dfaa1da04c78add4c03e58423c11617e0441628",
+    "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
+  },
   "decisionIssue": 3469,
-  "outcome": "release-version-stamp",
+  "outcome": "fingerprint-migration",
   "selectedOptimizations": [],
-  "baselineSourceSha": "1224a0ca8501e8260415364c22a9167f6a2470c6",
+  "baselineSourceSha": "2299409c504a0c79c88f130704165452201d526b",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -22,8 +28,8 @@
     "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
   },
   "runnerSha256": {
-    "measure-real.mjs": "bae79601c376fce269526bccb1433e05ca187a04d3279594fdef8e1dca171686",
-    "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
+    "measure-real.mjs": "c8be17ee9ffd25738247f9ed6ad650f1969b088c12b2f1bcd52fdc2d25770dca",
+    "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
     "packageVersion": "4.4.0",
@@ -31,7 +37,7 @@
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "efb36af9090f3099d6a98d408e0c1f823cd0a1ab906665b16037f207e53ff0a7",
+    "pnpmLockSha256": "6a80d0aa7d1a7e4cae3a48750a78984e8926bdcac16cf1fe1a284edd55612f95",
     "cargoLockSha256": "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -110,16 +116,16 @@
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml (dispatch-only; the temporary pull_request bootstrap was removed under #4170). Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, re-pinned (release-bump) from the native artifact of workflow_dispatch run 38334972804 at source 1224a0ca8501e8260415364c22a9167f6a2470c6. Every raw and gzipNormalized total is unchanged from the v4.3.3 contract; equal totals alone do not prove byte-identical product code. 13 actual gzip totals moved (workspace show-for +2, event-only and model +1, blog-theme, json-api and scalar-signal -1; packed blog-theme +3, model +2, multi-island +1, event-only -1, scalar-signal and show-for -2, json-api -3; evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, migrated to schemaVersion 3 from the native artifact of workflow_dispatch run 38360046821 at source 2299409c504a0c79c88f130704165452201d526b. The contract now pins the dependency-graph fingerprint of pnpm-lock.yaml (policy v1, yaml@2.9.0) instead of the whole-file hash, which stays recorded as baseline provenance only. The package version, fixtures, Cargo.lock, toolchain and normalizer are unchanged; the runner digests follow the measured artifact because the runners now record the fingerprint. Every raw and gzipNormalized total is unchanged; equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci-artifact",
-    "runId": 38334972804,
-    "jobId": 115092890361,
-    "sourceSha": "1224a0ca8501e8260415364c22a9167f6a2470c6",
+    "runId": 38360046821,
+    "jobId": 115171828468,
+    "sourceSha": "2299409c504a0c79c88f130704165452201d526b",
     "artifact": {
-      "id": 11784961280,
-      "name": "island-size-darwin-arm64-1224a0ca8501e8260415364c22a9167f6a2470c6",
-      "expiresAt": "2026-11-12T02:02:12Z"
+      "id": 11794767452,
+      "name": "island-size-darwin-arm64-2299409c504a0c79c88f130704165452201d526b",
+      "expiresAt": "2026-11-12T07:00:55Z"
     },
     "nativeRunner": {
       "platform": "darwin-arm64",
@@ -131,22 +137,21 @@
       "pnpm": "12.8.2",
       "esbuild": "0.25.12",
       "hono": "4.12.25",
-      "zfbBinarySha256": "ade3b94a1da67f02d8790420b4719cc80cb06e6fd08fa3b4d04ef5b756806367",
+      "zfbBinarySha256": "536aaa97ada7372505c2094c8aaf741ae9530ef36fbebf232aa6e2c34ff711d3",
       "esbuildBinarySha256": "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5",
       "zfbTarballSha256": "864bb4c8116025277a6b037ffd22bb2b2a96163f61b35d78a3cb4284b6c48974",
       "runtimeTarballSha256": "f29aee0bce6d6d38611568f161c8b1771b5450a948f619bd367e6fe34bde4db7",
       "slugifyTarballSha256": "73ab4935b02fa018c4301b53487a2d349a008d2a73f01ccdc458765304570618"
     },
-    "repinnedFrom": {
+    "migratedFrom": {
       "schemaVersion": 2,
       "outcome": "release-version-stamp",
-      "packageVersion": "4.3.3",
-      "baselineSourceSha": "e7d703770d7a8e805a72cad5c947cf59a847a760",
-      "baselineRunId": 38264188626
+      "baselineSourceSha": "1224a0ca8501e8260415364c22a9167f6a2470c6",
+      "baselineRunId": 38334972804
     },
     "originalCheckerResult": {
       "exitCode": 1,
-      "logSha256": "ec93c25a88486619641f9d3f9ac47c555d03d0a91cd16f3e0eafc886f25cc926"
+      "logSha256": "31cb9bef33b3479e1f4e459c2dc09a2b6d3e5fe35a75a87400dc59dcd6a9fc03"
     },
     "actualGzip": {
       "workspace": {
@@ -170,6 +175,6 @@
         "show-for": 22343
       }
     },
-    "note": "Re-pin (release-bump) from the native Darwin arm64 artifact of run 38334972804 (job 115092890361) at source 1224a0ca8501e8260415364c22a9167f6a2470c6. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.3.3 contract; 13 actual gzip totals moved (workspace show-for +2, event-only and model +1, blog-theme, json-api and scalar-signal -1; packed blog-theme +3, model +2, multi-island +1, event-only -1, scalar-signal and show-for -2, json-api -3; evidence only, not a ceiling). Only package version, lock hashes and the normalizer digest were re-pinned. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Dependency-fingerprint migration (schemaVersion 2 to 3) from the native Darwin arm64 artifact of run 38360046821 (job 115171828468) at source 2299409c504a0c79c88f130704165452201d526b. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. The fingerprint e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95 was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; the pnpm-lock.yaml hash is the artifact's own lock, recorded as provenance only. The original checker run compared the artifact with the schemaVersion 2 contract, which cannot accept a run carrying the fingerprint; its result is preserved in the artifact. Raw and gzipNormalized totals did not change from the v4.4.0 contract; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

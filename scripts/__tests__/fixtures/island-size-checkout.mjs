@@ -37,6 +37,15 @@ function copy(root, relative) {
   copyFileSync(from, join(root, relative));
 }
 
+// The live contracts are schemaVersion 3 since #4194; cases that exercise the
+// schemaVersion-2 paths start from the same contract without its fingerprint.
+export function asSchemaV2(contract) {
+  const v2 = structuredClone(contract);
+  delete v2.dependencyFingerprint;
+  v2.schemaVersion = 2;
+  return v2;
+}
+
 export function write(root, relative, bytes) {
   const path = join(root, relative);
   mkdirSync(dirname(path), { recursive: true });
