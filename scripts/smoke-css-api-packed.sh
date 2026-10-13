@@ -30,7 +30,8 @@ cp tests/css-api/consumer.ts "$room/consumer.ts"
 # Typechecking is against installed declarations, with only Node types supplied
 # from the tooling dependency tree. No paths/baseUrl/workspace SDK aliases.
 "$repo/packages/zfb/node_modules/.bin/tsc" --noEmit --strict --skipLibCheck --module nodenext --target es2022 --types node --typeRoots "$repo/packages/zfb/node_modules/@types" "$room/consumer.ts"
-ZFB_CSS_API_ROOM="$room" ZFB_CSS_API_REPO="$repo" ZFB_CSS_API_CLI="$ZFB_LINUX_X64_BINARY" node "$room/consumer.mjs"
+# Artifact downloads lose executable mode; parity uses the identical staged CLI.
+ZFB_CSS_API_ROOM="$room" ZFB_CSS_API_REPO="$repo" ZFB_CSS_API_CLI="$repo/packages/zfb-linux-x64-gnu/zfb" node "$room/consumer.mjs"
 cp tests/css-api/readonly.mjs "$room/readonly.mjs"
 mkdir "$room/readonly-project"
 cp crates/zfb/tests/fixtures/css-determinism/entry.css "$room/readonly-project/entry.css"
