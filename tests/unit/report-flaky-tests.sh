@@ -202,6 +202,12 @@ printf '<document><testsuite><testcase/></testsuite></document>\n' > "$TMP_DIR/n
 printf '<testsuites><testcase name="orphan"/></testsuites>\n' > "$TMP_DIR/invalid-structure.xml"
 printf '<testsuite><unknown/></testsuite>\n' > "$TMP_DIR/unknown-structure.xml"
 printf '<testsuite><testcase><flakyFailure/></testcase></testsuite>\n' > "$TMP_DIR/invalid-identity.xml"
+printf '<testsuite><testcase name="sample" classname="c"><unknown/></testcase></testsuite>\n' > "$TMP_DIR/unknown-testcase.xml"
+printf '<testsuite><testcase name="sample" classname="c"><wrapper><flakyFailure/></wrapper></testcase></testsuite>\n' > "$TMP_DIR/wrapped-retry.xml"
+printf '<testsuite><testcase name="sample" classname="c"><wrapper><failure/></wrapper></testcase></testsuite>\n' > "$TMP_DIR/wrapped-failure.xml"
+printf '<testsuite><testcase name="sample" classname="c"><wrapper><skipped/></wrapper></testcase></testsuite>\n' > "$TMP_DIR/wrapped-skipped.xml"
+printf '<testsuite><testcase name="sample" classname="c"><system-out><flakyFailure/></system-out></testcase></testsuite>\n' > "$TMP_DIR/misplaced-retry.xml"
+printf '<testsuite><testcase name="sample" classname="c"><failure><unknown/></failure></testcase></testsuite>\n' > "$TMP_DIR/unknown-outcome.xml"
 
 run_dry() {
   if OUTPUT=$(DRY_RUN=1 "$SCRIPT" "$@" 2>&1); then STATUS=0; else STATUS=$?; fi
@@ -245,7 +251,8 @@ contains 'suites=2; testcases=4; failures=1; errors=1; skipped=1; flaky-tests=0'
 contains 'Zero flakes does not establish that all tests passed.' 'does not claim a successful test run'
 no_issues
 
-for KIND in malformed non-junit invalid-structure unknown-structure invalid-identity; do
+for KIND in malformed non-junit invalid-structure unknown-structure invalid-identity \
+  unknown-testcase wrapped-retry wrapped-failure wrapped-skipped misplaced-retry unknown-outcome; do
   CASE="$KIND evidence"
   run_dry "$TMP_DIR/$KIND.xml"
   contains 'invalid evidence' 'explicit invalid diagnostic'
@@ -285,7 +292,7 @@ for KIND in missing malformed zero; do
   no_issues
 done
 
-for KIND in missing malformed; do
+for KIND in missing malformed wrapped-retry; do
   CASE="duplicate real flakes plus $KIND"
   run_dry "$FIXTURE" "$FIXTURE" "$TMP_DIR/$KIND.xml"
   contains 'coverage=partial; valid-reports=2/3' 'partial coverage preserves valid reports'
