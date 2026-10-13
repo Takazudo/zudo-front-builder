@@ -686,6 +686,13 @@ describe("island shipped-size budget", () => {
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
     );
+    // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
+    // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
+    if (darwinContract.schemaVersion === 3) {
+      expect(darwinContract.dependencyFingerprint.sha256).toBe(
+        "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95",
+      );
+    }
     expect(darwinContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
       "event-only": { raw: 66792, gzipNormalized: 22235 },
