@@ -273,8 +273,9 @@ async function verifyBroaderTree() {
     const side = tab.locator(sidebar);
     const text = labels[locale];
     const article = prefix + "zudo-wind/utilities/background/";
-    // One direct load with the hash: Back to an entry made by a same-document
-    // fragment navigation does not restore content (pre-existing router gap).
+    // One direct load with the hash as the starting state. It began as a workaround for
+    // the 4.3.3 fragment-history gap (#4165, fixed in 4.4.0); fragment-history-verify.mjs
+    // covers that behavior.
     const html = await (await tab.request.get(origin + article)).text();
     const headingMatch = html.match(/<h2[^>]*\bid="?([^"\s>]+)/);
     assert(headingMatch, `${article}: no <h2 id> in the served HTML to use as the fragment target`);
