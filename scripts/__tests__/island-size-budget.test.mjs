@@ -21,6 +21,7 @@ import {
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import { measuredTotals, rebaselineContract } from "../rebaseline-island-size-linux.mjs";
+import { asSchemaV2 } from "./fixtures/island-size-checkout.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -575,7 +576,7 @@ function rewriteMeasurement(state, mode) {
 // whole-file lock compare rather than the reviewed live pins.
 function linuxState() {
   const linuxContract = withCheckoutPins(
-    JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8")),
+    asSchemaV2(JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"))),
   );
   return makeState(linuxContract.platform, linuxContract);
 }
@@ -666,22 +667,22 @@ describe("island shipped-size budget", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
     expect(darwinContract.toolchain.packageVersion).toBe("4.4.0");
-    expect(darwinContract.schemaVersion).toBe(2);
+    expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("1224a0ca8501e8260415364c22a9167f6a2470c6");
+    expect(darwinContract.baselineSourceSha).toBe("2299409c504a0c79c88f130704165452201d526b");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "ci-artifact",
-      runId: 38334972804,
-      jobId: 115092890361,
-      artifact: { id: 11784961280 },
+      runId: 38360046821,
+      jobId: 115171828468,
+      artifact: { id: 11794767452 },
     });
-    // Lock hashes come from the native v4.4.0 release-bump re-pin (#4183); the
+    // Lock hashes come from the native v4.4.0 fingerprint migration (#4194); the
     // ceilings below are the unchanged #4169 metric-migration values.
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "efb36af9090f3099d6a98d408e0c1f823cd0a1ab906665b16037f207e53ff0a7",
+      "6a80d0aa7d1a7e4cae3a48750a78984e8926bdcac16cf1fe1a284edd55612f95",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "22fa610bce310ce2860f55e2a50adf1d3fd2792b88d04fc679b3c1ac8556ca5e",
@@ -732,7 +733,7 @@ describe("island shipped-size budget", () => {
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
     expect(linuxContract.toolchain.packageVersion).toBe("4.4.0");
-    expect(linuxContract.schemaVersion).toBe(2);
+    expect(linuxContract.schemaVersion).toBe(3);
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(linuxContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(linuxContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);

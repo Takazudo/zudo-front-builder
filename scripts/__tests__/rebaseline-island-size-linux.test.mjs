@@ -18,12 +18,18 @@ import {
   rebaselineContract,
   rewriteTestPins,
 } from "../rebaseline-island-size-linux.mjs";
-import { ceilingsOf, makeCheckout, writeRuns } from "./fixtures/island-size-checkout.mjs";
+import {
+  asSchemaV2,
+  ceilingsOf,
+  makeCheckout,
+  writeRuns,
+} from "./fixtures/island-size-checkout.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const contract = JSON.parse(
+const liveContract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
+const contract = asSchemaV2(liveContract);
 // The cases below build their own actual-gzip evidence; start from a contract that
 // has none, whatever the live contract recorded at its last re-pin.
 delete contract.baselineEvidence.actualGzip;
@@ -292,7 +298,7 @@ describe("rebaseline-island-size-linux", () => {
     );
     const outside = (s) => s.slice(0, s.indexOf('it("records the reviewed Linux x64 ceilings'));
     expect(outside(rewritten)).toBe(outside(testSource));
-    expect(rewriteTestPins(testSource, contract)).toBe(testSource);
+    expect(rewriteTestPins(testSource, liveContract)).toBe(testSource);
   });
 
   it("reads the previous actual gzip of a schemaVersion 2 contract from recorded evidence", () => {

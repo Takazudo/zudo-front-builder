@@ -28,7 +28,7 @@ import {
   rewriteDarwinTestPins,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
-import { makeCheckout } from "./fixtures/island-size-checkout.mjs";
+import { asSchemaV2, makeCheckout } from "./fixtures/island-size-checkout.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
@@ -977,8 +977,8 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       join(repoRoot, "scripts/__tests__/island-size-budget.test.mjs"),
       "utf8",
     );
-    const current = JSON.parse(
-      readFileSync(join(repoRoot, "research/v3-island-size/decision.json"), "utf8"),
+    const current = asSchemaV2(
+      JSON.parse(readFileSync(join(repoRoot, "research/v3-island-size/decision.json"), "utf8")),
     );
     const v3 = {
       ...structuredClone(current),
@@ -992,9 +992,13 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     expect(rewriteDarwinTestPins(rewritten, v3)).toBe(rewritten);
     const outside = (text) => text.slice(0, text.indexOf('it("records the reviewed Darwin arm64'));
     expect(outside(rewritten)).toBe(outside(source));
-    const unpinned = source.replace(/darwinContract\.dependencyFingerprint\.sha256\)/, "x)");
+    const unpin = (text) => text.replace(/darwinContract\.dependencyFingerprint\.sha256\)/, "x)");
+    const unpinned = unpin(source);
     expect(() => rewriteDarwinTestPins(unpinned, v3)).toThrow(/missing Darwin .* pin/);
-    expect(rewriteDarwinTestPins(unpinned, current)).toBe(unpinned);
+    // A schemaVersion-2 rewrite never needs or touches the fingerprint pin.
+    expect(rewriteDarwinTestPins(unpinned, current)).toBe(
+      unpin(rewriteDarwinTestPins(source, current)),
+    );
   });
 
   it("runs end-to-end against a disposable checkout", () => {
