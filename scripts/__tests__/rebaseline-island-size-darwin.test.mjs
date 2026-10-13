@@ -266,6 +266,8 @@ describe("rebaseline-island-size-darwin", () => {
     expect(bad({ reason: "release-bump" })).not.toThrow();
     expect(bad({ reason: "runtime-identity" })).not.toThrow();
     expect(bad({ reason: "other" })).toThrow("--reason must be one of");
+    // The Linux-only consumer-lock reason (#4184) is not a Darwin re-pin reason.
+    expect(bad({ reason: "lockfile-provenance" })).toThrow("--reason must be one of");
     expect(bad({ "source-sha": "abc" })).toThrow("40-character");
     expect(bad({ "run-id": "x" })).toThrow("positive integer");
     expect(bad({ "artifact-expires-at": "never" })).toThrow("ISO timestamp");
