@@ -7,6 +7,16 @@ on:
         description: Source ref to measure (defaults to the dispatching ref)
         required: false
         type: string
+      css_carriers:
+        description: Also verify the five CSS native carriers (ref must be a full source SHA)
+        required: false
+        default: false
+        type: boolean
+      css_windows_only:
+        description: Limit CSS carrier verification to the Windows row
+        required: false
+        default: false
+        type: boolean
       enforce:
         description: Fail the run when the measured totals exceed decision.json
         required: false
@@ -565,3 +575,14 @@ jobs:
           path: target/island-size/
           if-no-files-found: error
           retention-days: 30
+
+  # Independent evidence lane: measure-darwin and measure-linux still run per `platform`,
+  # whether or not the CSS carriers are verified.
+  css-carriers:
+    if: ${{ inputs.css_carriers }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/css-carrier-verification.yml
+    with:
+      source_sha: ${{ inputs.ref }}
+      windows_only: ${{ inputs.css_windows_only }}

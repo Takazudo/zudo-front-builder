@@ -13,7 +13,8 @@
   "files": [
     "zfb",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "zfb-css.node"
   ],
   "repository": {
     "type": "git",

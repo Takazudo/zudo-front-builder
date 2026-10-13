@@ -83,6 +83,10 @@
     "./zudo-react/testing": {
       "types": "./src/zudo-react/testing.ts",
       "default": "./src/zudo-react/testing.ts"
+    },
+    "./css": {
+      "types": "./src/css.ts",
+      "default": "./src/css.ts"
     }
   },
   "bin": {
@@ -166,6 +170,10 @@
       "./zudo-react/testing": {
         "types": "./dist/zudo-react/testing.d.ts",
         "default": "./dist/zudo-react/testing.js"
+      },
+      "./css": {
+        "types": "./dist/css.d.ts",
+        "default": "./dist/css.js"
       }
     }
   },

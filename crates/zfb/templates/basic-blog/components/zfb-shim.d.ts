@@ -23,6 +23,10 @@ declare module "zfb/config" {
   export * from "@takazudo/zfb/config";
 }
 
+declare module "zfb/css" {
+  export * from "@takazudo/zfb/css";
+}
+
 declare module "zfb/plugins" {
   export * from "@takazudo/zfb/plugins";
 }
