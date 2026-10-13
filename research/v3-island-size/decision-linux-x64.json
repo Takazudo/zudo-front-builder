@@ -52,32 +52,32 @@
         "gzipNormalized": 0
       },
       "event-only": {
-        "raw": 66792,
-        "gzipNormalized": 22235
+        "raw": 64535,
+        "gzipNormalized": 22195
       },
       "scalar-signal": {
-        "raw": 66800,
-        "gzipNormalized": 22240
+        "raw": 64543,
+        "gzipNormalized": 22213
       },
       "show-for": {
-        "raw": 66949,
-        "gzipNormalized": 22310
+        "raw": 64695,
+        "gzipNormalized": 22272
       },
       "model": {
-        "raw": 66791,
-        "gzipNormalized": 22235
+        "raw": 64534,
+        "gzipNormalized": 22200
       },
       "blog-theme": {
-        "raw": 67144,
-        "gzipNormalized": 22359
+        "raw": 64890,
+        "gzipNormalized": 22334
       },
       "json-api": {
-        "raw": 66950,
-        "gzipNormalized": 22319
+        "raw": 64692,
+        "gzipNormalized": 22284
       },
       "multi-island": {
-        "raw": 67072,
-        "gzipNormalized": 22324
+        "raw": 64814,
+        "gzipNormalized": 22286
       }
     },
     "packed": {
@@ -86,32 +86,32 @@
         "gzipNormalized": 0
       },
       "event-only": {
-        "raw": 66854,
-        "gzipNormalized": 22254
+        "raw": 64548,
+        "gzipNormalized": 22199
       },
       "scalar-signal": {
-        "raw": 66862,
-        "gzipNormalized": 22269
+        "raw": 64556,
+        "gzipNormalized": 22203
       },
       "show-for": {
-        "raw": 67011,
-        "gzipNormalized": 22329
+        "raw": 64708,
+        "gzipNormalized": 22286
       },
       "model": {
-        "raw": 66853,
-        "gzipNormalized": 22259
+        "raw": 64547,
+        "gzipNormalized": 22209
       },
       "blog-theme": {
-        "raw": 67206,
-        "gzipNormalized": 22390
+        "raw": 64903,
+        "gzipNormalized": 22347
       },
       "json-api": {
-        "raw": 67012,
-        "gzipNormalized": 22343
+        "raw": 64705,
+        "gzipNormalized": 22296
       },
       "multi-island": {
-        "raw": 67134,
-        "gzipNormalized": 22349
+        "raw": 64827,
+        "gzipNormalized": 22294
       }
     }
   },

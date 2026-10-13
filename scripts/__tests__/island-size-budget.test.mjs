@@ -700,28 +700,29 @@ describe("island shipped-size budget", () => {
     }
     expect(darwinContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 66792, gzipNormalized: 22235 },
-      "scalar-signal": { raw: 66800, gzipNormalized: 22240 },
-      "show-for": { raw: 66949, gzipNormalized: 22310 },
-      model: { raw: 66791, gzipNormalized: 22235 },
-      "blog-theme": { raw: 67144, gzipNormalized: 22359 },
-      "json-api": { raw: 66950, gzipNormalized: 22319 },
-      "multi-island": { raw: 67072, gzipNormalized: 22324 },
+      "event-only": { raw: 64535, gzipNormalized: 22195 },
+      "scalar-signal": { raw: 64543, gzipNormalized: 22213 },
+      "show-for": { raw: 64695, gzipNormalized: 22272 },
+      model: { raw: 64534, gzipNormalized: 22200 },
+      "blog-theme": { raw: 64890, gzipNormalized: 22334 },
+      "json-api": { raw: 64692, gzipNormalized: 22284 },
+      "multi-island": { raw: 64814, gzipNormalized: 22286 },
     });
     expect(darwinContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 66854, gzipNormalized: 22254 },
-      "scalar-signal": { raw: 66862, gzipNormalized: 22269 },
-      "show-for": { raw: 67011, gzipNormalized: 22329 },
-      model: { raw: 66853, gzipNormalized: 22259 },
-      "blog-theme": { raw: 67206, gzipNormalized: 22390 },
-      "json-api": { raw: 67012, gzipNormalized: 22343 },
-      "multi-island": { raw: 67134, gzipNormalized: 22349 },
+      "event-only": { raw: 64548, gzipNormalized: 22199 },
+      "scalar-signal": { raw: 64556, gzipNormalized: 22203 },
+      "show-for": { raw: 64708, gzipNormalized: 22286 },
+      model: { raw: 64547, gzipNormalized: 22209 },
+      "blog-theme": { raw: 64903, gzipNormalized: 22347 },
+      "json-api": { raw: 64705, gzipNormalized: 22296 },
+      "multi-island": { raw: 64827, gzipNormalized: 22294 },
     });
-    // Raw totals equal the frozen actual-gzip contract's; only the metric moved.
+    // Raw totals never exceed the frozen actual-gzip contract's; #4203's runtime
+    // rework (observed at run 38451538696) lowered them, and the metric moved.
     for (const mode of ["workspace", "packed"]) {
       for (const [fixture, ceiling] of Object.entries(darwinContract.ceilings[mode])) {
-        expect(ceiling.raw).toBe(baseContract.ceilings[mode][fixture].raw);
+        expect(ceiling.raw).toBeLessThanOrEqual(baseContract.ceilings[mode][fixture].raw);
         expect(ceiling.gzipNormalized).toBeLessThanOrEqual(
           baseContract.ceilings[mode][fixture].gzip,
         );
@@ -744,23 +745,23 @@ describe("island shipped-size budget", () => {
     expect(linuxContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 66792, gzipNormalized: 22235 },
-      "scalar-signal": { raw: 66800, gzipNormalized: 22240 },
-      "show-for": { raw: 66949, gzipNormalized: 22310 },
-      model: { raw: 66791, gzipNormalized: 22235 },
-      "blog-theme": { raw: 67144, gzipNormalized: 22359 },
-      "json-api": { raw: 66950, gzipNormalized: 22319 },
-      "multi-island": { raw: 67072, gzipNormalized: 22324 },
+      "event-only": { raw: 64535, gzipNormalized: 22195 },
+      "scalar-signal": { raw: 64543, gzipNormalized: 22213 },
+      "show-for": { raw: 64695, gzipNormalized: 22272 },
+      model: { raw: 64534, gzipNormalized: 22200 },
+      "blog-theme": { raw: 64890, gzipNormalized: 22334 },
+      "json-api": { raw: 64692, gzipNormalized: 22284 },
+      "multi-island": { raw: 64814, gzipNormalized: 22286 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 66854, gzipNormalized: 22254 },
-      "scalar-signal": { raw: 66862, gzipNormalized: 22269 },
-      "show-for": { raw: 67011, gzipNormalized: 22329 },
-      model: { raw: 66853, gzipNormalized: 22259 },
-      "blog-theme": { raw: 67206, gzipNormalized: 22390 },
-      "json-api": { raw: 67012, gzipNormalized: 22343 },
-      "multi-island": { raw: 67134, gzipNormalized: 22349 },
+      "event-only": { raw: 64548, gzipNormalized: 22199 },
+      "scalar-signal": { raw: 64556, gzipNormalized: 22203 },
+      "show-for": { raw: 64708, gzipNormalized: 22286 },
+      model: { raw: 64547, gzipNormalized: 22209 },
+      "blog-theme": { raw: 64903, gzipNormalized: 22347 },
+      "json-api": { raw: 64705, gzipNormalized: 22296 },
+      "multi-island": { raw: 64827, gzipNormalized: 22294 },
     });
     const state = makeState(linuxContract.platform, linuxContract);
     expect(validate(state)).toEqual({ errors: [], passed: true });
