@@ -45,16 +45,18 @@ The two halves are worth keeping straight when something doesn't work:
 
 ### Fallback modes
 
-The `fallback` prop controls what happens in browsers that do not support `document.startViewTransition` (Firefox and older Safari at the time of writing):
+The `fallback` prop controls what happens in browsers that do not support `document.startViewTransition`:
 
 - **`"animate"`** — simulates the transition using CSS animations. zfb sets `data-zfb-transition-fallback="old"` on `<html>` before the swap and `"new"` after. Target these with CSS to replicate the fade/slide you defined for native View Transitions.
 - **`"swap"`** — immediately swaps head and body with no animation.
 - **`"none"`** — skips the router entirely; same-origin links fall back to full-page browser navigation.
 
 ```tsx
-{/* No animation, not even a simulated one */}
+{/* Use full document navigation when native View Transitions are unavailable */}
 <ClientRouter fallback="none" />
 ```
+
+`fallback` is not a universal native-animation switch: on a native-capable browser, `fallback="none"` and `fallback="swap"` do not disable native View Transitions. Native snapshot CSS and simulated fallback CSS are separate policies. The simulated path also serves special cases such as `formData` navigations; it cannot reproduce the native snapshot tree.
 
 ### Preserving runtime `<html>` attributes
 
@@ -461,25 +463,119 @@ Putting the whole picture together, a Back or Forward press is served one of thr
 
 ## View Transitions
 
-When the browser supports `document.startViewTransition` (Chrome 111+, Edge 111+), the router wraps every swap in a native View Transition. The transition plays the browser's default cross-fade unless you add CSS `view-transition-name` declarations.
+When the browser supports `document.startViewTransition`, eligible cross-page swaps use a native View Transition. Naming a region creates independently styled snapshots; **`view-transition-name` alone does not remove the browser's default fade**. Not every navigation takes this path: same-page traversal can avoid a swap, a browser-provided visual traversal uses the simulated swap path, and navigations carrying `formData` use the simulated transition for history safety.
 
-### CSS opt-in
+### Three independent controls
 
-Name the elements you want to animate independently:
+| Choice | Mechanism | What it controls |
+|---|---|---|
+| Visual identity | CSS `view-transition-name` | Which old/new snapshots represent the same region. Names must be unique within each rendered page. |
+| DOM and island persistence | `data-zfb-transition-persist`, `<Island persist>` | Whether a node or live island instance survives. Changed props still follow the existing remount contract. |
+| Animation policy | Native pseudo-element CSS | Native defaults, authored motion, or an explicitly stationary region. |
+
+A replaced static element or remounted island can remain visually stationary. Conversely, preserving a DOM node does not remove it from an animated snapshot or suppress animation. Keep incoming content fresh; `persistProps` is not an animation fix.
+
+### Stationary regions with animated content
+
+Apply this example-owned CSS on every participating page. Keep the region's layout and dimensions stable across navigation:
 
 ```css
-/* Shared element transition — the header animates from its old position to its new one */
-header {
-  view-transition-name: site-header;
+header { view-transition-name: global-region; }
+main { view-transition-name: content-region; }
+
+/* Disable geometry interpolation AND both snapshot animations. */
+::view-transition-group(global-region),
+::view-transition-old(global-region),
+::view-transition-new(global-region) {
+  animation: none;
+  mix-blend-mode: normal;
 }
 
-/* Page content fades/slides as a named region */
-main {
-  view-transition-name: page-content;
+/* Consumer-owned example motion; zfb supplies no motion preset. */
+::view-transition-old(content-region) {
+  animation: content-out 300ms ease both;
+}
+::view-transition-new(content-region) {
+  animation: content-in 300ms ease both;
+}
+@keyframes content-out {
+  to { opacity: 0; transform: translateX(24px); }
+}
+@keyframes content-in {
+  from { opacity: 0; transform: translateX(-24px); }
 }
 ```
 
-Standard `::view-transition-old` and `::view-transition-new` pseudo-elements are available for custom animation keyframes.
+The group normally interpolates size and position; disabling only old/new fades does not disable that interpolation. The old/new rules also cover one-sided entry and exit. This recipe assumes opaque region backgrounds. When both snapshots exist, normal blending lets opaque incoming pixels cover the outgoing image immediately; transparent pixels can still reveal stale outgoing content. Consumers with transparent regions must design and verify their snapshot compositing separately. When only the old snapshot exists, it remains stationary until the transition ends, then disappears.
+
+`view-transition-name: none` means “no separate named snapshot,” not “no animation.” That content remains in an ancestor or root snapshot and follows its motion. Give protected regions their own names, and account for any consumer-authored ancestor/group animation or nested transition grouping. Suppressing interpolation does **not** promise fixed screen coordinates when the destination layout changes.
+
+### Context-keyed secondary regions
+
+Consumers decide what constitutes the same context. For example, render `view-transition-name: context-alpha` on both pages within one section, and `context-beta` in another. A matching name produces paired old/new images; changed names produce one-sided exit/entry images. A consumer can keep paired images stationary and explicitly animate only the one-sided case:
+
+```css
+::view-transition-group(context-alpha),
+::view-transition-group(context-beta),
+::view-transition-old(context-alpha),
+::view-transition-new(context-alpha),
+::view-transition-old(context-beta),
+::view-transition-new(context-beta) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(context-alpha):only-child,
+::view-transition-old(context-beta):only-child {
+  animation: content-out 300ms ease both;
+}
+::view-transition-new(context-alpha):only-child,
+::view-transition-new(context-beta):only-child {
+  animation: content-in 300ms ease both;
+}
+```
+
+These are example names, not reserved zfb regions or category rules. DOM persistence keys are a separate choice. Use unique, valid CSS identifiers when generating names.
+
+Honor reduced-motion preferences in the authored animation policy, including rules with more specific named selectors:
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+```
+
+### Observing the active transition
+
+Use the existing `zfb:before-swap` event's `viewTransition`. Register asynchronous observers and return; the native update callback must finish before `ready` can fulfill. Do not await `ready` from an overridden `event.swap` or other work that the update callback waits for.
+
+```ts
+import { isTransitionBeforeSwapEvent } from "@takazudo/zfb-runtime/client-router";
+
+document.addEventListener("zfb:before-swap", (event) => {
+  if (!isTransitionBeforeSwapEvent(event)) return;
+  const transition = event.viewTransition;
+  void transition.ready.then(
+    () => console.log("Snapshot animations ready"),
+    (error) => console.log("Visual transition skipped or unavailable", error),
+  );
+  void transition.updateCallbackDone.then(
+    () => console.log("DOM update completed"),
+    (error) => console.error("DOM update failed", error),
+  );
+  void transition.finished.then(
+    () => console.log("Transition finished"),
+    (error) => console.error("Transition failed", error),
+  );
+});
+```
+
+A rejected native `ready` does not by itself mean the DOM update failed: a skipped animation can still fulfill `updateCallbackDone` and `finished`. The simulated path exposes similar promises, but has no native snapshot tree and different timing; its `ready` follows the DOM update. `zfb:page-load` is not proof that native animation has finished.
+
+The regression example in `tests/router-chromium/build-native-regions-fixture.mjs` covers static replacement, an island inside a persisted ancestor, and public `<Island persist>` with fresh props. Its browser spec inspects existing native group/old/new layers and captures active frames with animations allowed, with animated-content and deliberately broken-rule controls. `check-native-regions-packed.mjs` repeats that proof using isolated local tarballs and public exports. These checks establish the recipe without a new runtime API; they do not establish a historical version regression or validate any consumer's complete application.
 
 ### Feature detection
 

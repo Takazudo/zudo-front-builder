@@ -45,16 +45,18 @@ zfb のプロジェクトでは、このコンポーネントをマウントす�
 
 ### フォールバックモード
 
-`fallback` プロパティは、`document.startViewTransition` をサポートしないブラウザ（執筆時点では Firefox と古い Safari）での挙動を制御します。
+`fallback` プロパティは、`document.startViewTransition` をサポートしないブラウザでの挙動を制御します。
 
 - **`"animate"`** — CSS アニメーションでトランジションをシミュレートします。zfb はスワップ前に `<html>` へ `data-zfb-transition-fallback="old"` を、スワップ後に `"new"` を設定します。ネイティブの View Transitions 向けに定義したフェードやスライドを再現するには、これらを CSS でターゲットにしてください。
 - **`"swap"`** — アニメーションなしで、即座に head と body を入れ替えます。
 - **`"none"`** — ルーターを完全にスキップします。同一オリジンのリンクは完全なページ遷移にフォールバックします。
 
 ```tsx
-{/* No animation, not even a simulated one */}
+{/* ネイティブ View Transitions がない場合は通常のページ遷移を使う */}
 <ClientRouter fallback="none" />
 ```
+
+`fallback` はネイティブアニメーション全体の切り替えではありません。ネイティブ対応ブラウザでは、`fallback="none"` や `fallback="swap"` でもネイティブの View Transitions は無効になりません。ネイティブスナップショットの CSS と、シミュレート経路の CSS は別の方針です。シミュレート経路は `formData` を伴うナビゲーションなどの特別な場合にも使われ、ネイティブのスナップショットツリーを再現するものではありません。
 
 ### ランタイムの `<html>` 属性を保持する
 
@@ -461,25 +463,119 @@ document.addEventListener("zfb:before-preparation", (e) => {
 
 ## View Transitions
 
-ブラウザが `document.startViewTransition` をサポートしている場合（Chrome 111+、Edge 111+）、ルーターはすべてのスワップをネイティブの View Transition でラップします。CSS の `view-transition-name` 宣言を追加しない限り、トランジションはブラウザのデフォルトのクロスフェードを再生します。
+ブラウザが `document.startViewTransition` をサポートしている場合、対象となるページ間スワップではネイティブの View Transition を使います。名前を付けるとスナップショットを個別にスタイル指定できますが、**`view-transition-name` だけではブラウザ標準のフェードは消えません**。すべてのナビゲーションがこの経路を通るわけではありません。同一ページ内トラバーサルではスワップ自体を省略でき、ブラウザ自身が視覚的な遷移を提供する場合はシミュレート経路でスワップします。`formData` を伴うナビゲーションも履歴の安全性のためシミュレート経路を使います。
 
-### CSS でのオプトイン
+### 独立した三つの制御
 
-独立してアニメーションさせたい要素に名前を付けます。
+| 選択 | 仕組み | 制御するもの |
+|---|---|---|
+| 視覚的な同一性 | CSS の `view-transition-name` | どの旧・新スナップショットを同じ領域として扱うか。各ページ内で名前は一意である必要があります。 |
+| DOM と島の永続化 | `data-zfb-transition-persist` と `<Island persist>` | ノードや島のインスタンスを維持するか。props が変わった場合は既存の再マウント契約に従います。 |
+| アニメーション方針 | ネイティブ疑似要素への CSS | ブラウザ標準、利用側が定義した動き、または明示的な静止。 |
+
+静的要素の置換や島の再マウントが起きても、その領域を視覚的に静止させられます。逆に、DOM ノードの永続化だけではアニメーションするスナップショットから分離されず、動きも抑制されません。受信した内容は新しく保ってください。`persistProps` はアニメーションの修正手段ではありません。
+
+### 一部の領域を静止させて本文を動かす
+
+次は利用側が所有する CSS の例です。遷移に参加する全ページに適用し、領域のレイアウトと寸法をページ間で安定させます。
 
 ```css
-/* Shared element transition — the header animates from its old position to its new one */
-header {
-  view-transition-name: site-header;
+header { view-transition-name: global-region; }
+main { view-transition-name: content-region; }
+
+/* グループの位置・寸法の補間と、両画像のアニメーションを止める */
+::view-transition-group(global-region),
+::view-transition-old(global-region),
+::view-transition-new(global-region) {
+  animation: none;
+  mix-blend-mode: normal;
 }
 
-/* Page content fades/slides as a named region */
-main {
-  view-transition-name: page-content;
+/* 利用側の動きの例。zfb のモーションプリセットではない */
+::view-transition-old(content-region) {
+  animation: content-out 300ms ease both;
+}
+::view-transition-new(content-region) {
+  animation: content-in 300ms ease both;
+}
+@keyframes content-out {
+  to { opacity: 0; transform: translateX(24px); }
+}
+@keyframes content-in {
+  from { opacity: 0; transform: translateX(-24px); }
 }
 ```
 
-カスタムなアニメーションのキーフレーム用に、標準の `::view-transition-old` と `::view-transition-new` 疑似要素が利用できます。
+通常、グループは寸法と位置を補間します。old/new のフェードだけを止めても、この補間は止まりません。old/new の規則は片側だけ存在する登場・退場にも適用されます。この例は領域の背景が不透明であることを前提にしています。両画像がある場合、通常の合成では新しい不透明なピクセルが古い画像を即座に覆いますが、透明な部分には古い内容が透けて見えることがあります。透明な領域を使う場合は、利用側でスナップショットの合成を設計し、別途検証してください。古い画像だけがある場合は、トランジション終了まで静止したまま残り、その後消えます。
+
+`view-transition-name: none` は「独立した名前付きスナップショットを作らない」という意味で、「アニメーションしない」ではありません。その内容は祖先やルートのスナップショットに含まれ、その動きに従います。静止させる領域には独立した名前を付け、利用側が定義した祖先・グループの動きやネストしたトランジショングループも考慮してください。補間の抑制は、遷移先でレイアウトが変わっても画面上の座標が固定されるという保証ではありません。
+
+### コンテキストごとに名前を変える補助領域
+
+同じコンテキストの定義は利用側が決めます。たとえば、同じセクション内では両ページに `view-transition-name: context-alpha` を出力し、別セクションでは `context-beta` にします。同名なら旧・新の画像が対になり、名前が変われば片側だけの退場・登場になります。対になった画像は静止させ、片側だけの場合に明示的な動きを付けられます。
+
+```css
+::view-transition-group(context-alpha),
+::view-transition-group(context-beta),
+::view-transition-old(context-alpha),
+::view-transition-new(context-alpha),
+::view-transition-old(context-beta),
+::view-transition-new(context-beta) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(context-alpha):only-child,
+::view-transition-old(context-beta):only-child {
+  animation: content-out 300ms ease both;
+}
+::view-transition-new(context-alpha):only-child,
+::view-transition-new(context-beta):only-child {
+  animation: content-in 300ms ease both;
+}
+```
+
+名前は例であり、zfb が予約する領域名やカテゴリ規則ではありません。DOM の永続化キーは別の選択です。名前を生成する場合は、一意で有効な CSS 識別子を使ってください。
+
+利用側のアニメーション方針では、動きを減らす設定も尊重します。より詳細度の高い名前付きセレクタの規則にも適用してください。
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+```
+
+### 実行中のトランジションを観測する
+
+既存の `zfb:before-swap` イベントの `viewTransition` を使います。非同期の観測処理を登録したら、その場で戻ってください。ネイティブの更新コールバックが完了するまで `ready` は完了できません。差し替えた `event.swap` や、更新コールバックが待つ処理の中で `ready` を await しないでください。
+
+```ts
+import { isTransitionBeforeSwapEvent } from "@takazudo/zfb-runtime/client-router";
+
+document.addEventListener("zfb:before-swap", (event) => {
+  if (!isTransitionBeforeSwapEvent(event)) return;
+  const transition = event.viewTransition;
+  void transition.ready.then(
+    () => console.log("スナップショットのアニメーション準備完了"),
+    (error) => console.log("視覚的な遷移がスキップされたか利用できない", error),
+  );
+  void transition.updateCallbackDone.then(
+    () => console.log("DOM 更新完了"),
+    (error) => console.error("DOM 更新失敗", error),
+  );
+  void transition.finished.then(
+    () => console.log("トランジション完了"),
+    (error) => console.error("トランジション失敗", error),
+  );
+});
+```
+
+ネイティブの `ready` が reject されただけでは、DOM 更新失敗とは判断できません。アニメーションをスキップしても `updateCallbackDone` と `finished` は fulfill できます。シミュレート経路も似た Promise を公開しますが、ネイティブのスナップショットツリーはなく、タイミングも異なります。その `ready` は DOM 更新に続きます。`zfb:page-load` はネイティブアニメーションの終了を証明しません。
+
+回帰テスト用の `tests/router-chromium/build-native-regions-fixture.mjs` は、静的要素の置換、永続化された祖先内の島、公開 API の `<Island persist>` と新しい props を扱います。ブラウザの spec は実在する group/old/new レイヤーを調べ、アニメーションを許可した実行中のフレームを撮影します。動く本文を正の対照とし、保護規則を意図的に削除する負の対照も含みます。`check-native-regions-packed.mjs` は隔離環境のローカル tarball と公開エクスポートで同じ検証を行います。新しいランタイム API なしでこの手法を検証するものであり、過去のバージョン間の回帰や、利用側アプリケーション全体の正しさを証明するものではありません。
 
 ### 機能検出
 
