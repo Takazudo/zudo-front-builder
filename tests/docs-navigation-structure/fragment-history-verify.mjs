@@ -41,12 +41,17 @@ const routes = (locale) => ({
 
 const browser = await browserType.launch();
 
-// Router lifecycle log on the live document: every zfb:* event with the URL it saw.
+// Router lifecycle log on the live document: every zfb:* event with the URL it saw
+// and, where the event carries one, the router's navigation direction.
 const installLifecycleProbe = () => {
   window.__lifecycle = [];
   for (const name of ["before-swap", "after-swap", "page-load", "navigation-aborted"])
-    document.addEventListener(`zfb:${name}`, () =>
-      window.__lifecycle.push({ name, at: location.pathname + location.hash }),
+    document.addEventListener(`zfb:${name}`, (event) =>
+      window.__lifecycle.push({
+        name,
+        at: location.pathname + location.hash,
+        direction: event.direction ?? null,
+      }),
     );
 };
 const count = (page, name) =>
@@ -117,11 +122,22 @@ async function softTo(page, path, step) {
   await page.locator("#verification-link").evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
 }
 
+// The swap a traversal triggers must report the matching direction (#4165: Forward
+// onto the entry pushed from an unindexed fragment entry is "forward").
 async function traverse(page, direction, step) {
   const before = await count(page, "after-swap");
   await (direction === "back" ? page.goBack() : page.goForward());
   await waitForSwaps(page, before, step);
+  const reported = await page.evaluate(
+    () => window.__lifecycle.findLast((e) => e.name === "before-swap")?.direction,
+  );
+  assert.equal(reported, direction, `${step}: router direction`);
 }
+
+// Router fetches of the rendered document itself; a same-page fragment or raw query
+// entry must add none (prefetches of other pages are irrelevant here).
+const sameDocumentFetches = (requests, path) =>
+  requests.filter((r) => r.type === "fetch" && new URL(r.url).pathname === path);
 
 async function runCase({ locale, viewport, variant }) {
   const name = `${locale || "en"}-${viewport.name}-${variant}`;
@@ -131,6 +147,10 @@ async function runCase({ locale, viewport, variant }) {
     reducedMotion: "reduce",
   });
   const page = await context.newPage();
+  const requests = [];
+  page.on("request", (request) =>
+    requests.push({ url: request.url(), type: request.resourceType() }),
+  );
   const errors = [];
   page.on("pageerror", (e) => errors.push(`${name}: ${e.message}`));
   // Prove which bytes the browser executed: every served script holding the router.
@@ -178,6 +198,12 @@ async function runCase({ locale, viewport, variant }) {
   await expectArticle(page, a, h1A, `${name} fragment`, hash);
   await expectAnchorSettled(page, target, `${name} fragment`);
   const swapsAfterFragment = await count(page, "after-swap");
+  assert.equal(swapsAfterFragment, 0, `${name}: a same-page fragment entry must not swap`);
+  assert.deepEqual(
+    sameDocumentFetches(requests, a),
+    [],
+    `${name}: a fragment entry must not fetch`,
+  );
 
   await softTo(page, b, `${name} A->B`);
   const h1B = (await page.locator("main h1").first().innerText()).trim();
@@ -211,6 +237,19 @@ async function runCase({ locale, viewport, variant }) {
   }, second);
   await expectArticle(page, a, h1A, `${name} second fragment`, `#${second}`);
   await expectAnchorSettled(page, second, `${name} second fragment`);
+
+  // A raw query entry on the rendered pathname stays the application's: no swap, no fetch.
+  const swapsBeforeQuery = await count(page, "after-swap");
+  const fetchesBeforeQuery = sameDocumentFetches(requests, a).length;
+  await page.evaluate(() => history.pushState(null, "", "?verify-raw-query=1"));
+  await page.goBack();
+  await expectArticle(page, a, h1A, `${name} raw query Back`, `#${second}`);
+  assert.equal(await count(page, "after-swap"), swapsBeforeQuery, `${name}: raw query swapped`);
+  assert.equal(
+    sameDocumentFetches(requests, a).length,
+    fetchesBeforeQuery,
+    `${name}: raw query fetched`,
+  );
 
   const lifecycle = await page.evaluate(() => window.__lifecycle);
   await context.close();
