@@ -636,9 +636,13 @@ jobs:
       # scanner_boundary_acceptance preserves its production dist for this
       # browser companion. Keep hydration and host-override assertions in the
       # same job so they exercise the exact artifacts built by nextest.
+      # #4200: scanner, SDK-alias, linked-probe and published-preset consumers
+      # all need this run's native build. Wind has its own browser install below;
+      # wasm-md-browser installs in its own job. Keep valid consumers available
+      # after unrelated failures, without installing after an unbuilt binary.
       - name: Install Chromium for scanner boundary acceptance
         id: chromium
-        if: always()
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Scanner boundary acceptance (Chromium)
@@ -671,11 +675,26 @@ jobs:
       # workspace while reusing this job's branch-built zfb binary and the
       # Chromium installation above. The script preserves fixture and
       # phase/browser evidence under RUNNER_TEMP, including on failure.
+      # #4200: use current-run outcomes; an old cached executable is not proof
+      # of a successful build. Real probe/install/hydration failures stay fatal.
       - name: Linked-package token identity probe and hydration (#3931)
-        if: always()
+        id: linked_probe
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.chromium.outcome == 'success' }}
         env:
           ZFB_PROBE_EVIDENCE_DIR: ${{ runner.temp }}/linked-package-token-probe
         run: node scripts/linked-package-token-probe.mjs
+
+      # Cleanup/upload are attempted on failure or cancellation. A hard cancel
+      # can interrupt them too; absent evidence is unavailable, never a pass.
+      - name: Record linked-package token probe prerequisite skip (#4200)
+        if: ${{ always() && steps.linked_probe.outcome == 'skipped' }}
+        env:
+          ZFB_PROBE_EVIDENCE_DIR: ${{ runner.temp }}/linked-package-token-probe
+          PROBE_OUTCOME: ${{ steps.linked_probe.outcome }}
+          PREREQ_BUILD_BINARY: ${{ steps.build_binary.outcome }}
+          PREREQ_CHROMIUM: ${{ steps.chromium.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/linked-package-token-probe-skip.mjs
 
       - name: Upload linked-package token probe evidence (#3931)
         if: always()
