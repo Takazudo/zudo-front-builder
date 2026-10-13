@@ -64,9 +64,14 @@
         syncHistoryEntry scroll-stamping fix needs a real-browser proof for.
       -->
       <button id="open-dialog-samepage">Open Same-Page Modal</button>
+      <!--
+        A browser-created (null-state) fragment entry under the dialog (#4179):
+        data-zfb-reload leaves the click to the browser.
+      -->
+      <a href="#gallery-top" id="native-frag-link" data-zfb-reload>Top (browser)</a>
     </nav>
     <main>
-      <h1>Sync Dialog</h1>
+      <h1 id="gallery-top">Sync Dialog</h1>
       <!-- Tall enough to actually scroll in a real viewport. -->
       <div style="height: 3000px"></div>
     </main>
