@@ -93,6 +93,30 @@ function assertPackedExports(directory) {
     `if (typeof globalThis.document !== "undefined") throw new Error("unexpected DOM global");\nconst server = await import("@takazudo/zfb/zudo-react/server");\nif (Object.keys(server).sort().join(",") !== "islandRoot,renderToString,serializeProps") throw new Error("unexpected server entry exports");\nif (typeof globalThis.document !== "undefined") throw new Error("server entry touched the DOM");\n`,
   );
   run(process.execPath, [probe], directory);
+  const boundaryProbe = join(directory, "error-boundary-import-probe.mjs");
+  writeFileSync(
+    boundaryProbe,
+    `import { ErrorBoundary, h, isDescription } from "@takazudo/zfb/zudo-react";
+import { renderToString } from "@takazudo/zfb/zudo-react/server";
+const failure = new Error("packed boundary failure");
+let fallbacks = 0;
+function Throws() { throw failure; }
+const boundary = ErrorBoundary({
+  children: () => [h("i", null, "discard failed output"), h(Throws, null)],
+  fallback: (error, reset) => {
+    if (error !== failure || typeof reset !== "function") throw new Error("packed boundary lost its caught value/reset callback");
+    fallbacks++;
+    return h("p", { id: "packed-fallback" }, "recovered child");
+  },
+});
+if (!isDescription(boundary)) throw new Error("packed ErrorBoundary must return an owned description");
+const html = renderToString(h("section", null, h("b", { id: "packed-healthy" }, "healthy sibling"), boundary));
+if (fallbacks !== 1 || !html.includes('id="packed-fallback"') || !html.includes("recovered child") || !html.includes('id="packed-healthy"') || html.includes("discard failed output")) throw new Error("packed boundary SSR rollback/recovery failed");
+if (typeof globalThis.document !== "undefined") throw new Error("packed boundary/server import touched the DOM");
+`,
+  );
+  run(process.execPath, [boundaryProbe], directory);
+  console.log("packed public ErrorBoundary import and SSR rollback: PASS");
   const slugProbe = join(directory, "slugify-import-probe.mjs");
   const parityFixture = resolve(repoDir, "crates/zfb-content/tests/fixtures/slugify-parity.json");
   writeFileSync(

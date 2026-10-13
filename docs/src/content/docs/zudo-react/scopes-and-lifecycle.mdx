@@ -64,6 +64,70 @@ The client root handle exposes hydrate and render outcomes together with its ide
 
 Server rendering owns a temporary scope graph and always disposes it when the render ends, including on error. Put request-specific mutable state inside rendering rather than in module-level variables.
 
+## Local subtree recovery
+
+Use ErrorBoundary around a component that may fail while preparing or rendering its content.
+It replaces that region with a fallback and keeps siblings mounted and interactive. Returning
+an inert description inside an ordinary component's try/catch cannot catch a descendant that
+will execute later in the renderer.
+
+~~~tsx
+import { ErrorBoundary, signal } from "@takazudo/zfb/zudo-react";
+
+function EditorPreview() {
+  const revision = signal(0);
+
+  return (
+    <main>
+      <ErrorBoundary
+        resetKey={revision}
+        children={() => <DocumentPreview />}
+        fallback={(error, reset) => (
+          <button type="button" on:click={() => reset()}>
+            Preview failed. Retry
+          </button>
+        )}
+      />
+      <EditorToolbar />
+    </main>
+  );
+}
+~~~
+
+Update revision after changing the preview input, or use the fallback's reset callback. The
+children and fallback props are factories, consistent with Show's branch ownership. Synchronous
+setup can use getScope inside either factory. Reset runs a fresh attempt in the commit queue;
+multiple pending requests coalesce. A resetKey change uses Object.is and resets healthy content
+as well as failed content. Merely reading signals during setup does not subscribe the boundary
+to them. Reset callbacks become inert when their boundary is disposed.
+
+The failed attempt's scopes are disposed and detached before rendering the fallback. Cleanup,
+listeners, refs, subscriptions, and queued work belong to that attempt; retries create fresh
+resources. The healthy siblings keep their own scopes and DOM. Cleanup errors remain diagnostic
+and do not prevent the remaining cleanups. Unmount disposes the current attempt or fallback.
+A fallback renders under the enclosing recovery owner, so errors in it propagate outward. An
+unhandled error keeps the existing root or scheduler diagnostics and original error detail.
+
+| Phase | Recovery behavior |
+| --- | --- |
+| Descendant synchronous component setup, children factory, and ordinary per-node render validation | Nearest ErrorBoundary |
+| Renderer-scheduled Show/For source reads, key functions, and new branch/item rendering | Nearest ErrorBoundary |
+| Reactive text, attribute, style, and ordinary rawHtml rendering | Nearest ErrorBoundary |
+| Boundary retry preparation | This boundary; a failing fallback propagates outward |
+| Aggregate form validation, including cross-control model/radio-group checks and final server radio validation | Existing root-owned validation; groups can span boundaries |
+| Event handlers, effects, activation callbacks, cleanup, and asynchronous rejections | Existing handling; not caught by ErrorBoundary |
+| Island identity, props transport, nested islands, reserved rawHtml, or malformed protocol/range markers | Integrity failure; never hidden by a fallback |
+
+A synchronous component returning a promise is an invalid render result; catching that validation
+error does not observe or recover a later promise rejection. Keep explicit async error handling
+in the application. Arbitrary external side effects are not reversed by a boundary.
+
+Server rendering discards a failed attempt's partial HTML and restores its renderer bookkeeping
+before rendering fallback. Hydration always recreates the boundary's interior from the client
+attempt while adopting surrounding siblings. This includes healthy server/client agreement;
+form edits and node identity inside the boundary do not survive hydration. See
+[Boundary hydration](./hydration.mdx#boundary-hydration) before placing editable controls inside it.
+
 ## See also
 
 - [Reactivity](./reactivity.mdx)
