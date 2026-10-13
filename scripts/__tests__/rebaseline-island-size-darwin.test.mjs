@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +18,12 @@ import {
   normalizeMeasurementDirectory,
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
-import { assertLinuxX64Provenance, measuredTotals } from "../rebaseline-island-size-linux.mjs";
+import {
+  FINGERPRINT_HELPER_MOVEMENT,
+  assertLinuxX64Provenance,
+  contractDiffKeys,
+  measuredTotals,
+} from "../rebaseline-island-size-linux.mjs";
 import {
   buildEvidence,
   checkMigrationTotals,
@@ -28,7 +40,7 @@ import {
   rewriteDarwinTestPins,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
-import { asSchemaV2, makeCheckout } from "./fixtures/island-size-checkout.mjs";
+import { asSchemaV2, makeCheckout, makeHelperCheckout } from "./fixtures/island-size-checkout.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
@@ -275,7 +287,7 @@ describe("rebaseline-island-size-darwin", () => {
     expect(bad({ reason: "runtime-identity" })).not.toThrow();
     expect(bad({ reason: "fingerprint-migration" })).not.toThrow();
     expect(bad({ reason: "other" })).toThrow(
-      "--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration",
+      "--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper",
     );
     // The Linux-only consumer-lock reason (#4184) is not a Darwin re-pin reason.
     expect(bad({ reason: "lockfile-provenance" })).toThrow("--reason must be one of");
@@ -1069,5 +1081,72 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     expect(() => main(otherArgv, repo.root)).toThrow(
       "artifact pnpm-lock.yaml hash differs from this checkout's pnpm-lock.yaml",
     );
+  });
+});
+
+// The shared re-pin and its full refusal matrix are covered in
+// rebaseline-island-size-linux.test.mjs; these cases prove the Darwin entry
+// point reaches the same artifact-less path and rewrites both contracts.
+describe("rebaseline-island-size-darwin fingerprint-helper (#4198)", () => {
+  const helperArgv = (ref = "HEAD") => ["--reason", "fingerprint-helper", "--base-ref", ref];
+
+  it("takes only --base-ref and refuses every Darwin artifact argument", () => {
+    expect(parseArgs(helperArgv("main"))).toEqual({
+      reason: "fingerprint-helper",
+      "base-ref": "main",
+    });
+    for (const key of Object.keys(args).filter((key) => key !== "reason")) {
+      expect(() => parseArgs([...helperArgv(), "--" + key, args[key]])).toThrow(
+        "--reason fingerprint-helper takes no artifact (no native run); remove --" + key,
+      );
+    }
+    for (const key of ["contract", "readme", "force"]) {
+      expect(() => parseArgs([...helperArgv(), "--" + key, "x"])).toThrow(
+        "--reason fingerprint-helper takes only --base-ref; remove --" + key,
+      );
+    }
+    expect(() => parseArgs(helperArgv().slice(0, 2))).toThrow("required --base-ref");
+    expect(() =>
+      parseArgs(Object.entries({ ...args, "base-ref": "main" }).flatMap(([k, v]) => ["--" + k, v])),
+    ).toThrow("--base-ref is only for --reason fingerprint-helper");
+    expect(() => repinDarwinContract(legacy, {}, {}, "fingerprint-helper", {})).toThrow(
+      "unknown re-pin --reason fingerprint-helper",
+    );
+  });
+
+  it("re-pins both contracts end to end, moving only the allowed keys", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const repo = makeHelperCheckout(roots);
+    appendFileSync(repo.helperPath, "// maintenance comment\n");
+    const newHelper = sha(readFileSync(repo.helperPath));
+    await main(helperArgv(), repo.root);
+    for (const [name, file] of [
+      ["darwin", "decision.json"],
+      ["linux", "decision-linux-x64.json"],
+    ]) {
+      const written = JSON.parse(
+        readFileSync(join(repo.root, "research/v3-island-size", file), "utf8"),
+      );
+      expect(contractDiffKeys(repo.contracts[name], written)).toEqual(FINGERPRINT_HELPER_MOVEMENT);
+      expect(written.dependencyFingerprint.helperSha256).toBe(newHelper);
+      expect(written.dependencyFingerprint.sha256).toBe(repo.dependencyFingerprint.sha256);
+      expect(JSON.stringify(written.ceilings)).toBe(JSON.stringify(repo.contracts[name].ceilings));
+      expect(JSON.stringify(written.baselineEvidence)).toBe(
+        JSON.stringify(repo.contracts[name].baselineEvidence),
+      );
+    }
+  });
+
+  it("refuses contracts that disagree on helperSha256 and writes nothing", async () => {
+    const repo = makeHelperCheckout(roots);
+    appendFileSync(repo.helperPath, "// maintenance comment\n");
+    const path = join(repo.root, "research/v3-island-size/decision.json");
+    const darwin = structuredClone(repo.contracts.darwin);
+    darwin.dependencyFingerprint.helperSha256 = "9".repeat(64);
+    writeFileSync(path, JSON.stringify(darwin, null, 2) + "\n");
+    await expect(main(helperArgv(), repo.root)).rejects.toThrow(
+      /contracts disagree on helperSha256 .*; fix the contract that is wrong first/,
+    );
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(darwin);
   });
 });

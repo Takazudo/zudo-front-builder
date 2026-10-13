@@ -9,7 +9,10 @@
 // three measured packages. LOCK-FINGERPRINT-POLICY.md (next to this file) is
 // the authoritative specification; any change to selection, classification,
 // normalization or canonical form is a FINGERPRINT_POLICY_VERSION bump, and
-// these bytes are pinned separately by `helperSha256`.
+// these bytes are pinned separately by `helperSha256`. A comment, formatting or
+// documentation edit here moves only `helperSha256`; re-pin it with
+// `scripts/rebaseline-island-size-linux.mjs --reason fingerprint-helper
+// --base-ref <ref>` (#4198), which refuses any edit that moves the fingerprint.
 //
 // Fail-closed by construction: every record in both documents is schema
 // checked (including unreached ones), and any unknown key, unsupported YAML

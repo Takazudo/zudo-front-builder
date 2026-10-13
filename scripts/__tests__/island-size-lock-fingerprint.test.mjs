@@ -32,6 +32,7 @@ import {
   computeLockFingerprint,
   fingerprintHelperSha256,
 } from "../../research/v3-island-size/lock-fingerprint.mjs";
+import { computeWithHelperSource } from "../rebaseline-island-size-linux.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -647,6 +648,28 @@ describe("helper identity", () => {
     const copy = join(tempDir(), "lock-fingerprint.mjs");
     writeFileSync(copy, `${readFileSync(helperPath, "utf8")}// mutated\n`);
     expect(fingerprintHelperSha256(copy)).not.toBe(digest);
+  });
+
+  // #4198: a comment-only edit is helper maintenance, re-pinned by
+  // `--reason fingerprint-helper`, because it cannot move the fingerprint.
+  it("keeps the fingerprint and inventory when only a comment is added", async () => {
+    const source = `${readFileSync(helperPath, "utf8")}// maintenance comment\n`;
+    const current = computeLockFingerprint({ lockText: realLock, currentVersion: REAL_VERSION });
+    const edited = await computeWithHelperSource(source, repoRoot, realLock, REAL_VERSION);
+    expect(edited.sha256).toBe(current.sha256);
+    expect(edited.inventory).toEqual(current.inventory);
+    expect(edited.helperSha256).toBe(sha(source));
+    expect(edited.helperSha256).not.toBe(current.helperSha256);
+  });
+
+  it("commits lock-fingerprint-inventory.json byte-for-byte as --explain prints it", () => {
+    const explain = execFileSync(process.execPath, [helperPath, "--explain"], { encoding: "utf8" });
+    expect(
+      readFileSync(
+        join(repoRoot, "research/v3-island-size/lock-fingerprint-inventory.json"),
+        "utf8",
+      ),
+    ).toBe(explain);
   });
 });
 

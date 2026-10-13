@@ -347,7 +347,11 @@ measured in CI before the bump lands on `main`:
   byte-for-byte. A pure version-stamp bump can move the `zudo_react_build` token; since #4131
   the metric normalizes that token away, so such a bump should not fail `health` (v4.1.0
   through v4.3.1 each needed a follow-up actual-gzip rebaseline commit). The contract still has
-  to record the new version, which is the probe's job below.
+  to record the new version, which is the probe's job below. `release-bump` refuses any
+  `dependencyFingerprint.helperSha256` movement, so if `lock-fingerprint.mjs` was edited since
+  the contracts were pinned, a helper re-pin
+  (`node scripts/rebaseline-island-size-linux.mjs --reason fingerprint-helper --base-ref <ref>`,
+  #4198) must land first as its own commit before the release probe.
 - **Wind preview digest.** `docs/public/wind-examples/manifest.json` records
   `compiler.sourceSha256`, which `compilerSourceDigest` in `docs/scripts/wind-preview-assets.mjs`
   computes over every `crates/**/*.{rs,toml,json,css}` file. The bump rewrites

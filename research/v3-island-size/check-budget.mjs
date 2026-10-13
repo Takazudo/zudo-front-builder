@@ -59,6 +59,8 @@ const expectedToolchain = {
 const compression =
   "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file";
 const contractFingerprintKeys = ["policyVersion", "parser", "helperSha256", "sha256"];
+const HELPER_REPIN_HINT =
+  "; re-pin with `--reason fingerprint-helper --base-ref <ref>`; a changed fingerprint value needs `dependency-graph`/`fingerprint-policy` (#4218)";
 const provenanceFingerprintKeys = ["policyVersion", "sha256"];
 const shaPattern = /^[0-9a-f]{64}$/;
 const packageVersionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
@@ -475,7 +477,12 @@ function compareLocalFingerprint(fingerprint, localInputs, errors) {
   if (!isRecord(fingerprint)) return;
   for (const key of contractFingerprintKeys) {
     if (fingerprint[key] !== local[key]) {
-      errors.push("local dependency fingerprint: " + key + " differs from the reviewed contract");
+      errors.push(
+        "local dependency fingerprint: " +
+          key +
+          " differs from the reviewed contract" +
+          (key === "helperSha256" ? HELPER_REPIN_HINT : ""),
+      );
     }
   }
 }

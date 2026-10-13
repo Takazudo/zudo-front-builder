@@ -1,27 +1,34 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  ARTIFACT_ARGS,
+  FINGERPRINT_HELPER_MOVEMENT,
   REASONS,
   actualGzipEvidence,
   artifactCheckoutMismatches,
   assertLockfileOnlyMovement,
+  contractDiffKeys,
   describeDeltas,
   diffCeilings,
   main,
   measuredIdentity,
   measuredTotals,
   parseArgs,
+  proveFingerprintHelper,
   readmeSection,
   rebaselineContract,
+  repinFingerprintHelper,
   rewriteTestPins,
 } from "../rebaseline-island-size-linux.mjs";
 import {
   asSchemaV2,
   ceilingsOf,
   makeCheckout,
+  makeHelperCheckout,
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
 
@@ -226,6 +233,7 @@ describe("rebaseline-island-size-linux", () => {
       "runtime-identity",
       "lockfile-provenance",
       "fingerprint-migration",
+      "fingerprint-helper",
     ]);
   });
 
@@ -280,7 +288,7 @@ describe("rebaseline-island-size-linux", () => {
       /--head-sha must be/,
     );
     expect(() => parseArgs(ok.map((v) => (v === "release-bump" ? "gzip-shift" : v)))).toThrow(
-      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration$/,
+      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper$/,
     );
     expect(() => parseArgs(["--artifact"])).toThrow(/bad argument/);
   });
@@ -898,5 +906,342 @@ describe("fingerprint-migration (#4187)", () => {
     expect(() => main(cli(oldRunners), stale.root)).toThrow(
       /workspace artifact runnerSha256 differs from this checkout's files/,
     );
+  });
+});
+
+describe("fingerprint-helper (#4198)", () => {
+  const roots = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const PINNED = "1".repeat(64);
+  const NEW = "2".repeat(64);
+  const fingerprint = {
+    policyVersion: 1,
+    parser: "yaml@2.9.0",
+    helperSha256: PINNED,
+    sha256: "3".repeat(64),
+  };
+  const darwinLive = JSON.parse(
+    readFileSync(join(root, "research/v3-island-size/decision.json"), "utf8"),
+  );
+  const pinnedTo = (base) => ({
+    ...structuredClone(base),
+    dependencyFingerprint: { ...fingerprint },
+    outcome: "release-version-stamp",
+  });
+  const contracts = () => ({ linux: pinnedTo(liveContract), darwin: pinnedTo(darwinLive) });
+  const inventory = {
+    importers: ["packages/zfb"],
+    snapshots: ["hono@4.12.25"],
+    packages: ["hono@4.12.25"],
+    sections: { environment: ["importers"], project: ["importers"] },
+    counts: {
+      importers: { reached: 1, total: 2 },
+      snapshots: { reached: 1, total: 3 },
+      packages: { reached: 1, total: 3 },
+    },
+  };
+  const helperResult = (helperSha256) => ({
+    policyVersion: 1,
+    parser: "yaml@2.9.0",
+    helperSha256,
+    sha256: fingerprint.sha256,
+    inventory: structuredClone(inventory),
+  });
+  const proof = (edit = (p) => p) =>
+    edit({
+      baseRef: "base/x",
+      baseCommit: "c".repeat(40),
+      baseHelperSha256: PINNED,
+      newHelperSha256: NEW,
+      current: helperResult(NEW),
+      base: helperResult(PINNED),
+    });
+
+  it("moves only helperSha256, outcome and platformStatus of both contracts", () => {
+    const before = contracts();
+    const { contracts: after, previousHelperSha256 } = repinFingerprintHelper(before, proof());
+    expect(previousHelperSha256).toBe(PINNED);
+    for (const name of ["linux", "darwin"]) {
+      expect(contractDiffKeys(before[name], after[name])).toEqual([
+        "dependencyFingerprint.helperSha256",
+        "outcome",
+        "platformStatus",
+      ]);
+      expect(after[name].dependencyFingerprint).toEqual({ ...fingerprint, helperSha256: NEW });
+      expect(after[name].outcome).toBe("fingerprint-helper-repin");
+      expect(after[name].platformStatus).toBe(
+        before[name].platformStatus +
+          " Helper re-pinned from 11111111 to 22222222 under #4198 at base/x; measured inputs and fingerprint unchanged.",
+      );
+      for (const key of [
+        "ceilings",
+        "allowance",
+        "baselineEvidence",
+        "toolchain",
+        "runnerSha256",
+      ]) {
+        expect(JSON.stringify(after[name][key])).toBe(JSON.stringify(before[name][key]));
+      }
+      expect(Object.keys(after[name])).toEqual(Object.keys(before[name]));
+    }
+    expect(FINGERPRINT_HELPER_MOVEMENT).toEqual([
+      "dependencyFingerprint.helperSha256",
+      "outcome",
+      "platformStatus",
+    ]);
+  });
+
+  it.each([
+    ["normalizerSha256", (c) => (c.normalizerSha256 = "0".repeat(64))],
+    ["fixtureSha256", (c) => (c.fixtureSha256.model = "0".repeat(64))],
+    ["runnerSha256", (c) => (c.runnerSha256["measure.mjs"] = "0".repeat(64))],
+    ["toolchain.pnpmLockSha256", (c) => (c.toolchain.pnpmLockSha256 = "0".repeat(64))],
+    ["toolchain.cargoLockSha256", (c) => (c.toolchain.cargoLockSha256 = "0".repeat(64))],
+    ["toolchain.packageVersion", (c) => (c.toolchain.packageVersion = "0.0.0")],
+    ["baselineSourceSha", (c) => (c.baselineSourceSha = "0".repeat(40))],
+    ["a ceiling", (c) => (c.ceilings.packed.model.raw += 1)],
+  ])("never writes %s: an identity input is carried over byte for byte", (_name, edit) => {
+    const before = contracts();
+    edit(before.linux);
+    edit(before.darwin);
+    const { contracts: after } = repinFingerprintHelper(before, proof());
+    for (const name of ["linux", "darwin"]) {
+      expect(contractDiffKeys(before[name], after[name])).toEqual(FINGERPRINT_HELPER_MOVEMENT);
+    }
+  });
+
+  it.each([
+    [
+      "sha256 moved",
+      (c) => (c.linux.dependencyFingerprint.sha256 = "4".repeat(64)),
+      (p) => p,
+      /fingerprint value moved \(research\/v3-island-size\/decision-linux-x64\.json pins 4{64}.*`dependency-graph` \(#4218\), a policy change needs `fingerprint-policy` \(#4218\)/,
+    ],
+    [
+      "policyVersion moved",
+      (c) => c,
+      (p) => ({ ...p, current: { ...p.current, policyVersion: 2 } }),
+      /policy identity moved \(policyVersion of .*`fingerprint-policy` change \(#4218\), not a helper re-pin/,
+    ],
+    [
+      "parser moved",
+      (c) => c,
+      (p) => ({ ...p, current: { ...p.current, parser: "yaml@2.9.1" } }),
+      /policy identity moved \(parser of .*`fingerprint-policy`/,
+    ],
+    [
+      "helper and sha256 moved together",
+      (c) => c,
+      (p) => ({ ...p, current: { ...p.current, sha256: "5".repeat(64) } }),
+      /fingerprint value moved .*`fingerprint-policy` \(#4218\)/,
+    ],
+    [
+      "a schemaVersion 2 contract",
+      (c) => (c.darwin = asSchemaV2(c.darwin)),
+      (p) => p,
+      /needs a schemaVersion 3 contract, found 2 in research\/v3-island-size\/decision\.json; migrate with `fingerprint-migration` first/,
+    ],
+    [
+      "an unchanged helper",
+      (c) => c,
+      (p) => ({ ...p, newHelperSha256: PINNED, current: helperResult(PINNED) }),
+      /helper unchanged; nothing to re-pin/,
+    ],
+    [
+      "a base-ref helper that is not the pin",
+      (c) => c,
+      (p) => ({ ...p, baseHelperSha256: "6".repeat(64) }),
+      /the helper at base\/x \(6{64}\) is not the pinned helper \(1{64}\); pass the ref whose helper the contract pins/,
+    ],
+    [
+      "an old/new inventory difference",
+      (c) => c,
+      (p) => {
+        p.base.inventory.snapshots.push("yaml@2.9.0");
+        return p;
+      },
+      /old and new helper disagree on the real lock \(inventory\.snapshots\); this is a `fingerprint-policy` change \(#4218\)/,
+    ],
+    [
+      "an old/new count difference",
+      (c) => c,
+      (p) => {
+        p.current.inventory.counts.packages.total += 1;
+        return p;
+      },
+      /disagree on the real lock \(inventory\.counts\)/,
+    ],
+    [
+      "an old/new sha256 difference",
+      (c) => c,
+      (p) => ({ ...p, base: { ...p.base, sha256: "7".repeat(64) } }),
+      /old and new helper disagree on the real lock \(sha256\); this is a `fingerprint-policy` change/,
+    ],
+    [
+      "a pinned helper that fails on the real lock",
+      (c) => c,
+      (p) => ({ ...p, base: { error: "UNKNOWN_KEY: x" } }),
+      /disagree on the real lock \(the pinned helper failed: UNKNOWN_KEY: x\)/,
+    ],
+    [
+      "contracts that disagree on helperSha256",
+      (c) => (c.darwin.dependencyFingerprint.helperSha256 = "8".repeat(64)),
+      (p) => p,
+      /contracts disagree on helperSha256 \(.*\); fix the contract that is wrong first/,
+    ],
+    [
+      "one platform's contract only",
+      (c) => delete c.darwin,
+      (p) => p,
+      /missing the research\/v3-island-size\/decision\.json contract/,
+    ],
+  ])("refuses %s", (_name, editContracts, editProof, message) => {
+    const before = contracts();
+    editContracts(before);
+    expect(() => repinFingerprintHelper(before, proof(editProof))).toThrow(message);
+  });
+
+  it("refuses every artifact argument and takes only --base-ref", () => {
+    const ok = ["--reason", "fingerprint-helper", "--base-ref", "main"];
+    expect(parseArgs(ok)).toEqual({ reason: "fingerprint-helper", "base-ref": "main" });
+    for (const key of ARTIFACT_ARGS) {
+      expect(() => parseArgs([...ok, "--" + key, "x"])).toThrow(
+        "--reason fingerprint-helper takes no artifact (no native run); remove --" + key,
+      );
+    }
+    for (const key of ["force", "ignore-provenance", "contract"]) {
+      expect(() => parseArgs([...ok, "--" + key, "1"])).toThrow(
+        "--reason fingerprint-helper takes only --base-ref; remove --" + key,
+      );
+    }
+    expect(() => parseArgs(ok.slice(0, 2))).toThrow("required --base-ref");
+    expect(() =>
+      parseArgs([
+        "--artifact",
+        "dir",
+        "--run-id",
+        "1",
+        "--job-id",
+        "2",
+        "--head-sha",
+        "d".repeat(40),
+        "--reason",
+        "release-bump",
+        "--base-ref",
+        "main",
+      ]),
+    ).toThrow("--base-ref is only for --reason fingerprint-helper");
+    expect(() => rebaselineContract(liveContract, {}, evidence, "fingerprint-helper")).toThrow(
+      /takes no artifact/,
+    );
+  });
+
+  it("re-pins both contracts end to end after a comment-only helper edit", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const repo = makeHelperCheckout(roots);
+    appendFileSync(repo.helperPath, "// maintenance comment\n");
+    const newHelper = createHash("sha256").update(readFileSync(repo.helperPath)).digest("hex");
+    await main(["--reason", "fingerprint-helper", "--base-ref", "HEAD"], repo.root);
+    const read = (file) =>
+      JSON.parse(readFileSync(join(repo.root, "research/v3-island-size", file), "utf8"));
+    for (const [name, file] of [
+      ["linux", "decision-linux-x64.json"],
+      ["darwin", "decision.json"],
+    ]) {
+      const written = read(file);
+      expect(contractDiffKeys(repo.contracts[name], written)).toEqual(FINGERPRINT_HELPER_MOVEMENT);
+      expect(written.dependencyFingerprint).toEqual({
+        ...repo.dependencyFingerprint,
+        helperSha256: newHelper,
+      });
+    }
+    // The CLI writes `--explain` output; its exact bytes are guarded on the real
+    // repository by island-size-lock-fingerprint.test.mjs.
+    const inventoryFile = JSON.parse(
+      readFileSync(
+        join(repo.root, "research/v3-island-size/lock-fingerprint-inventory.json"),
+        "utf8",
+      ),
+    );
+    expect(inventoryFile).toEqual({
+      ...repo.dependencyFingerprint,
+      helperSha256: newHelper,
+      inventory: inventoryFile.inventory,
+    });
+    expect(inventoryFile.inventory.counts.importers.reached).toBe(8);
+    const readme = readFileSync(join(repo.root, "research/v3-island-size/README.md"), "utf8");
+    expect(readme).toContain("fingerprint-helper re-pin");
+    expect(readme).toContain("`" + newHelper + "`");
+    const printed = log.mock.calls.flat().join("\n");
+    for (const fragment of [
+      "base-ref: HEAD (",
+      "old helperSha256: " + repo.dependencyFingerprint.helperSha256,
+      "new helperSha256: " + newHelper,
+      "sha256 (unchanged): " + repo.dependencyFingerprint.sha256,
+      "policyVersion: 1",
+      "parser: yaml@2.9.0",
+      "inventory (identical for both helpers): importers 8/",
+      "no native run: helperSha256 is outside the hashed input and absent from run provenance (#4198)",
+    ]) {
+      expect(printed).toContain(fragment);
+    }
+    // A second run finds the new helper already pinned.
+    await expect(
+      main(["--reason", "fingerprint-helper", "--base-ref", "HEAD"], repo.root),
+    ).rejects.toThrow(/helper unchanged; nothing to re-pin/);
+  });
+
+  it("refuses end to end a helper edit that moves the fingerprint", async () => {
+    const repo = makeHelperCheckout(roots);
+    const source = readFileSync(repo.helperPath, "utf8");
+    writeFileSync(
+      repo.helperPath,
+      source.replace("sha256: sha256(canonical),", "sha256: sha256(canonical + ' '),"),
+    );
+    await expect(
+      main(["--reason", "fingerprint-helper", "--base-ref", "HEAD"], repo.root),
+    ).rejects.toThrow(/fingerprint value moved .*`fingerprint-policy` \(#4218\)/);
+    const unchanged = readFileSync(
+      join(repo.root, "research/v3-island-size/decision-linux-x64.json"),
+      "utf8",
+    );
+    expect(JSON.parse(unchanged)).toEqual(repo.contracts.linux);
+  });
+
+  it("refuses end to end a base-ref whose helper is not the pinned one", async () => {
+    const repo = makeHelperCheckout(roots);
+    appendFileSync(repo.helperPath, "// first edit\n");
+    repo.git("commit", "-qam", "unpinned edit");
+    appendFileSync(repo.helperPath, "// second edit\n");
+    await expect(
+      main(["--reason", "fingerprint-helper", "--base-ref", "HEAD"], repo.root),
+    ).rejects.toThrow(/the helper at HEAD .* is not the pinned helper/);
+    await expect(proveFingerprintHelper("no-such-ref", repo.root)).rejects.toThrow(
+      /cannot read research\/v3-island-size\/lock-fingerprint\.mjs at --base-ref no-such-ref/,
+    );
+  });
+
+  it("surfaces a checkout fingerprint error verbatim and writes nothing", async () => {
+    const repo = makeHelperCheckout(roots);
+    appendFileSync(repo.helperPath, "// comment\n");
+    const lock = join(repo.root, "pnpm-lock.yaml");
+    writeFileSync(
+      lock,
+      readFileSync(lock, "utf8").replace("lockfileVersion: '9.0'", "lockfileVersion: '8.0'"),
+    );
+    await expect(
+      main(["--reason", "fingerprint-helper", "--base-ref", "HEAD"], repo.root),
+    ).rejects.toMatchObject({
+      name: "LockFingerprintError",
+      code: "LOCKFILE_VERSION",
+      message: "LOCKFILE_VERSION: environment lockfileVersion must be the string '9.0'",
+    });
+    expect(
+      JSON.parse(readFileSync(join(repo.root, "research/v3-island-size/decision.json"), "utf8")),
+    ).toEqual(repo.contracts.darwin);
   });
 });

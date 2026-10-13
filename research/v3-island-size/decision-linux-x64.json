@@ -6,11 +6,11 @@
   "dependencyFingerprint": {
     "policyVersion": 1,
     "parser": "yaml@2.9.0",
-    "helperSha256": "a36ee24f832aa97e5f16b9076dfaa1da04c78add4c03e58423c11617e0441628",
+    "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "fingerprint-migration",
+  "outcome": "fingerprint-helper-repin",
   "selectedOptimizations": [],
   "baselineSourceSha": "2299409c504a0c79c88f130704165452201d526b",
   "platform": {
@@ -116,7 +116,7 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, migrated to schemaVersion 3 from workflow run 38360046821 at source 2299409c504a0c79c88f130704165452201d526b. The contract now pins the dependency-graph fingerprint of pnpm-lock.yaml (policy v1, yaml@2.9.0) instead of the whole-file hash, which stays recorded as baseline provenance only. The producer version, fixtures, Cargo.lock, toolchain and normalizer are unchanged; the runner digests follow the measured artifact because the runners now record the fingerprint. Every raw and gzipNormalized total is unchanged. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.4.0 ceilings on metric gzip-identity-normalized v1, migrated to schemaVersion 3 from workflow run 38360046821 at source 2299409c504a0c79c88f130704165452201d526b. The contract now pins the dependency-graph fingerprint of pnpm-lock.yaml (policy v1, yaml@2.9.0) instead of the whole-file hash, which stays recorded as baseline provenance only. The producer version, fixtures, Cargo.lock, toolchain and normalizer are unchanged; the runner digests follow the measured artifact because the runners now record the fingerprint. Every raw and gzipNormalized total is unchanged. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered. Helper re-pinned from a36ee24f to c1cec11a under #4198 at base/release-convergence-4-5-0; measured inputs and fingerprint unchanged.",
   "baselineEvidence": {
     "event": "ci",
     "runId": 38360046821,

@@ -2,6 +2,7 @@
 // rebaseline helpers' end-to-end tests (#4193). The checkout copies only what
 // the helpers read: lockfiles, the fingerprinted importer manifests, the size
 // fixtures/runners, the budget test file and an empty README.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -9,8 +10,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,4 +187,50 @@ export function ceilingsOf(root) {
       ];
     }),
   );
+}
+
+// A disposable git checkout for the artifact-less fingerprint-helper re-pin
+// (#4198): the real helper committed at HEAD, both live contracts pinning this
+// checkout's fingerprint, and `yaml` resolvable from the helper's directory.
+// Edit `helperPath` afterwards to model the new helper.
+export function makeHelperCheckout(roots) {
+  const checkout = makeCheckout(roots);
+  const { root } = checkout;
+  const helper = SIZE_DIR + "/lock-fingerprint.mjs";
+  copy(root, helper);
+  const yamlDir = dirname(createRequire(import.meta.url).resolve("yaml/package.json"));
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+  symlinkSync(yamlDir, join(root, "node_modules", "yaml"), "dir");
+  const contracts = {};
+  for (const [name, file] of [
+    ["linux", "decision-linux-x64.json"],
+    ["darwin", "decision.json"],
+  ]) {
+    const contract = JSON.parse(readFileSync(join(repoRoot, SIZE_DIR, file), "utf8"));
+    contract.dependencyFingerprint = { ...checkout.dependencyFingerprint };
+    // Last re-pinned by another reason, so the re-pin visibly moves `outcome`.
+    contract.outcome = "release-version-stamp";
+    write(root, SIZE_DIR + "/" + file, JSON.stringify(contract, null, 2) + "\n");
+    contracts[name] = contract;
+  }
+  const git = (...args) =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=zfb-test",
+        "-c",
+        "user.email=zfb-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        ...args,
+      ],
+      { cwd: root, stdio: "pipe" },
+    );
+  git("init", "-q");
+  git("add", helper);
+  git("commit", "-qm", "pinned helper");
+  return { ...checkout, contracts, helperPath: join(root, helper), git };
 }

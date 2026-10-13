@@ -830,7 +830,7 @@ describe("island shipped-size budget", () => {
     const state = v3State();
     state.contract.dependencyFingerprint.helperSha256 = "1".repeat(64);
     expect(validate(state).errors).toEqual([
-      "local dependency fingerprint: helperSha256 differs from the reviewed contract",
+      "local dependency fingerprint: helperSha256 differs from the reviewed contract; re-pin with `--reason fingerprint-helper --base-ref <ref>`; a changed fingerprint value needs `dependency-graph`/`fingerprint-policy` (#4218)",
     ]);
   });
 
