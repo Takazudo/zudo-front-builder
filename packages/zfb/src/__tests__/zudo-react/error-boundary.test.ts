@@ -1002,3 +1002,60 @@ it("uses the owning renderer state for a boundary from another package copy", as
   handle.unmount();
   expect(subscriberCount(resetKey)).toBe(0);
 });
+
+describe("late recovery service ownership", () => {
+  it.each(["Show", "For"] as const)(
+    "installs the first boundary after %s activation",
+    async (kind) => {
+      const visible = signal(false);
+      const entries = signal<number[]>([]);
+      const model = signal<string | null>("outside");
+      const resetKey = signal(0);
+      const boundary = () =>
+        ErrorBoundary({
+          resetKey,
+          children: () =>
+            h("input", { type: "radio", name: "late", value: "inside", modelValue: model }),
+          fallback: () => "fallback",
+        });
+      function Demo() {
+        return h(
+          "form",
+          null,
+          h("input", { type: "radio", name: "late", value: "outside", modelValue: model }),
+          kind === "Show"
+            ? Show({ when: visible, children: boundary })
+            : For({ each: entries, by: (value) => value, children: boundary }),
+        );
+      }
+      const node = h(Demo, null);
+      const container = host(node, true);
+      const handle = mount(node, container, options())!;
+      const outside = container.querySelector('[value="outside"]');
+      visible.value = true;
+      entries.value = [1];
+      await flush();
+      const inside = container.querySelector('[value="inside"]');
+      expect(inside).not.toBeNull();
+      resetKey.value++;
+      await flush();
+      expect(container.querySelector('[value="inside"]')).not.toBe(inside);
+      expect(container.querySelector('[value="outside"]')).toBe(outside);
+      expect((outside as HTMLInputElement).checked).toBe(true);
+      expect(model.value).toBe("outside");
+      expect(diagnostics).toEqual([]);
+      handle.unmount();
+      expect(subscriberCount(model)).toBe(0);
+      expect(subscriberCount(resetKey)).toBe(0);
+      // A new root lifetime on the same container installs and cleans its own service.
+      const remounted = mount(node, container, options())!;
+      expect(remounted).not.toBeNull();
+      resetKey.value++;
+      await flush();
+      expect(diagnostics).toEqual([]);
+      remounted.unmount();
+      expect(subscriberCount(model)).toBe(0);
+      expect(subscriberCount(resetKey)).toBe(0);
+    },
+  );
+});

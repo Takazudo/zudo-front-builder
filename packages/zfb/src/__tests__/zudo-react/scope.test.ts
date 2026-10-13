@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it } from "vite-plus/test";
-import { createScope, getScope, withScope } from "../../zudo-react/scope.js";
+import { RuntimeScope, createScope, getScope, withScope } from "../../zudo-react/scope.js";
 import { signal } from "../../zudo-react/reactive.js";
 import { flush } from "../../zudo-react/scheduler.js";
 
@@ -168,4 +168,43 @@ it("activates following siblings when an activation disposes its own scope", () 
   root.activate();
   expect(activated).toBe(1);
   root.dispose();
+});
+
+it("exposes the same internal scope with its full public lifecycle on demand", async () => {
+  const codes: string[] = [];
+  const root = new RuntimeScope({ component: "Lazy", reporter: (value) => codes.push(value.code) });
+  const seen: string[] = [];
+  withScope(root, () => {
+    const scope = getScope();
+    expect(scope).toBe(root);
+    expect(getScope()).toBe(scope);
+    scope.onCleanup(() => {
+      seen.push("cleanup");
+    });
+    scope.onActivate(() => {
+      seen.push("activate");
+      return () => Promise.resolve();
+    });
+    scope.effect(() => {
+      seen.push("effect");
+      return () => {
+        seen.push("effect cleanup");
+      };
+    });
+    const child = root.child("Child");
+    withScope(child, () =>
+      child.onActivate(() => {
+        seen.push("child");
+      }),
+    );
+  });
+  root.activate();
+  await flush();
+  expect(seen).toEqual(["child", "activate", "effect"]);
+  expect(() => root.onCleanup(() => {})).toThrow("ZR_SCOPE_SETUP");
+  root.dispose();
+  root.dispose();
+  expect(seen).toEqual(["child", "activate", "effect", "effect cleanup", "cleanup"]);
+  expect(codes).toEqual(["ZR_ASYNC_CLEANUP"]);
+  expect(root.abortSignal.aborted).toBe(true);
 });

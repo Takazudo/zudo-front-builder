@@ -1,6 +1,8 @@
 import type { Child, Description } from "./description.js";
 import type { BoundaryHost, BuildContext, Owned } from "./hydrate.js";
 import { boundaryProps } from "./error-boundary-type.js";
+import { createFormRecovery } from "./form-recovery.js";
+import type { RuntimeScope } from "./scope.js";
 import type { Job } from "./scheduler.js";
 
 // Each attempt has its own collection lifetime. Failed descriptions, markers,
@@ -30,9 +32,29 @@ export function renderErrorBoundary(
     read,
     subscribe,
     untracked,
-    withScope,
     enqueue,
   } = host;
+  context.root.recovery ??= (scope, error) => {
+    let attempted = false;
+    for (let owner: RuntimeScope | undefined = scope; owner; owner = owner.parent) {
+      if (!recoverable(error)) throw error;
+      if (!owner.active || !owner.renderRecovery) continue;
+      attempted = true;
+      try {
+        const commit = untracked(() => owner.renderRecovery!(error));
+        return () => untracked(commit);
+      } catch (next) {
+        error = next;
+      }
+    }
+    if (attempted) throw error;
+    return undefined;
+  };
+  const { recoveries } = host.formHost;
+  if (!recoveries.has(context.container)) {
+    recoveries.set(context.container, createFormRecovery(context.container, host.formHost));
+    context.root.cleanups.push(() => recoveries.delete(context.container));
+  }
   const props = boundaryProps(value);
   const owner = context.scope.child("ErrorBoundary");
   const prefix = `${context.prefix ?? ""}${context.next}.`;
@@ -131,9 +153,7 @@ export function renderErrorBoundary(
       try {
         replacement = untracked(() => prepare(false));
       } catch (error) {
-        const recover = owner.recoverRender(error);
-        if (!recover) throw error;
-        recover();
+        if (!owner.recoverRender(error)) throw error;
         return;
       }
       commit(replacement);
@@ -201,7 +221,7 @@ export function renderErrorBoundary(
           { active: () => owner.active, report: job.report },
         );
         subscription.run();
-        withScope(owner, () => owner.onCleanup(() => subscription.dispose()));
+        owner.cleanups.push(() => subscription.dispose());
       }
     });
   } catch (error) {
