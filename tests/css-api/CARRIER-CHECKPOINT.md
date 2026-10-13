@@ -1,4 +1,16 @@
-# CSS API carrier checkpoint — #4149 / #4150
+# Historical CSS API carrier checkpoint — #4149 / #4150
+
+**Historical scope:** The status, missing rows and route assessment below record
+the 2026-10-13 checkpoint at source
+`900aff3158cf12c8c1010997ad29b66044af704e`, including its original failures.
+They do not describe current carrier verification. Later native evidence uses
+frozen source `a7eb7143514057e66636e894c9c16635da8b4b96`; see the
+[completed Mac and carrier checkpoint in #4150](https://github.com/Takazudo/zudo-front-builder/issues/4150#issuecomment-6146121168)
+and subsequent issue updates for the current evidence ledger. The
+[targeted Windows follow-up](https://github.com/Takazudo/zudo-front-builder/actions/runs/38401050774)
+uses that same source with workflow/recorder
+`605faea1666afbce0cc5d0a4f40b4973ca43df0a`; its result remains pending at this
+documentation update. This historical notice changes no compiled inputs.
 
 Status: source reconciled; carrier acceptance **not verified**. This is the
 2026-10-13 continuation checkpoint, not a release instruction or permission to
@@ -291,7 +303,13 @@ Linux cannot execute the Darwin addon: the producing Mac's real x64 Node smoke
 and its exact hash must accompany the replay. No release/tag creation, `--upload`,
 provenance downgrade, or publishing route is authorized by this recipe.
 
-## Existing CI routes and their limits
+## Historical CI route audit at 900aff3
+
+This route assessment is preserved for the original checkpoint. Later authorized
+nonpublishing verification wiring in
+[`island-size-darwin.yml`](../../.github/workflows/island-size-darwin.yml) and
+[`css-carrier-verification.yml`](../../.github/workflows/css-carrier-verification.yml)
+supersedes the route gap below; the linked #4150 ledger records its execution.
 
 | Existing route at the candidate | What it can establish | Limitation/action |
 | --- | --- | --- |
