@@ -33,6 +33,9 @@ const fixtureRoot = join(testDir, "fixtures/island-size");
 const linuxContract = JSON.parse(
   readFileSync(join(repoRoot, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
+// The v4.3.1 fixture bytes always measure these totals; they equal the Linux ceilings
+// recorded for v4.3.1 and are no longer the live contract ceilings after #4203 lowered them.
+const V431_MULTI_ISLAND = { raw: 67072, gzipNormalized: 22324 };
 const ENTRY = "assets/islands-dca258ba.js";
 const REAL_TOKEN = "d1cbd3e6cdd9d75e";
 const tempRoots = [];
@@ -342,12 +345,12 @@ describe("identity normalization boundaries (L1)", () => {
 });
 
 describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () => {
-  it("reproduces the committed Linux workspace multi-island ceiling from the fixture bytes", () => {
+  it("reproduces the v4.3.1 Linux workspace multi-island total from the fixture bytes", () => {
     const result = normalizeFixtureFiles(fixtureFiles("multi-island"), "multi-island");
     expect(result.shipped).toEqual({
-      raw: linuxContract.ceilings.workspace["multi-island"].raw,
+      raw: V431_MULTI_ISLAND.raw,
       gzip: 22337,
-      gzipNormalized: linuxContract.ceilings.workspace["multi-island"].gzipNormalized,
+      gzipNormalized: V431_MULTI_ISLAND.gzipNormalized,
     });
     expect(result.chunks[0].sha256).toBe(
       "dca258bafc72ce5b5d53c9aaf4e151b253b402805fe0013aca33f9b8fb4cff09",
@@ -376,7 +379,7 @@ describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () =
   it("(b) still measures unrelated strings, code edits, and extra chunks", () => {
     const original = fixtureFiles("multi-island");
     const baseline = normalizeFixtureFiles(original, "multi-island");
-    const ceiling = linuxContract.ceilings.workspace["multi-island"];
+    const ceiling = V431_MULTI_ISLAND;
 
     let seed = 0x3471b00b;
     const noise = Buffer.alloc(96);
@@ -420,7 +423,7 @@ describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () =
       "no-island": fixtureFiles("no-island"),
     };
     expect(normalize(cases).results["multi-island"].shipped.gzipNormalized).toBe(
-      linuxContract.ceilings.workspace["multi-island"].gzipNormalized,
+      V431_MULTI_ISLAND.gzipNormalized,
     );
     for (const [field, tamper] of [
       ["gzip", (result) => (result.chunks[0].gzip -= 1)],
@@ -540,7 +543,7 @@ describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () =
       shipped: {
         raw: 67072,
         gzip: 22337,
-        gzipNormalized: linuxContract.ceilings.workspace["multi-island"].gzipNormalized,
+        gzipNormalized: V431_MULTI_ISLAND.gzipNormalized,
       },
     });
     expect(sidecar.results["no-island"].shipped).toEqual({ raw: 0, gzip: 0, gzipNormalized: 0 });
