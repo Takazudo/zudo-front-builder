@@ -7,6 +7,11 @@ on:
         description: Source ref to measure (defaults to the dispatching ref)
         required: false
         type: string
+      css_carriers:
+        description: Also verify the five CSS native carriers (ref must be a full source SHA)
+        required: false
+        default: false
+        type: boolean
       enforce:
         description: Fail the run when the measured totals exceed decision.json
         required: false
@@ -284,3 +289,12 @@ jobs:
           path: target/island-size/
           if-no-files-found: error
           retention-days: 30
+
+  # Independent evidence lane: the original enforced measure job still runs.
+  css-carriers:
+    if: ${{ inputs.css_carriers }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/css-carrier-verification.yml
+    with:
+      source_sha: ${{ inputs.ref }}

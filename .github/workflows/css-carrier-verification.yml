@@ -1,0 +1,271 @@
+name: CSS carrier verification
+
+# Called only by the existing dispatch-only island-size-darwin workflow.
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact commit containing the measured CSS source
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  WORKFLOW_SHA: ${{ github.workflow_sha }}
+  WORKFLOW_REF: ${{ github.workflow_ref }}
+  RUSTUP_TOOLCHAIN: 1.99.0
+  CARGO_INCREMENTAL: 0
+  CARGO_BUILD_JOBS: 1
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate exact source before selected checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_sha must be exactly 40 lowercase hexadecimal characters' >&2; exit 1; }
+          test "$GITHUB_REPOSITORY" = Takazudo/zudo-front-builder
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Offline checksum and packed-byte contract fixtures
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 scripts/test-css-carrier-verification.py
+
+  native:
+    needs: validate
+    name: CSS carrier (${{ matrix.carrier }})
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - host: macos-15
+            target: aarch64-apple-darwin
+            carrier: darwin-arm64
+            builder: cargo
+            library: libzfb_css_node.dylib
+            runtime: darwin/arm64
+            node_arch: arm64
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+            carrier: darwin-x64
+            builder: cargo
+            library: libzfb_css_node.dylib
+            runtime: darwin/x64
+            node_arch: x64
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            carrier: linux-x64-gnu
+            builder: cross
+            library: libzfb_css_node.so
+            runtime: linux/x64
+            node_arch: x64
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            carrier: linux-arm64-gnu
+            builder: cross
+            library: libzfb_css_node.so
+            runtime: linux/arm64
+            node_arch: x64
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            carrier: win32-x64-msvc
+            builder: cargo
+            library: zfb_css_node.dll
+            runtime: win32/x64
+            node_arch: x64
+    env:
+      CSS_TARGET: ${{ matrix.target }}
+      CSS_CARRIER: ${{ matrix.carrier }}
+      CSS_BUILDER: ${{ matrix.builder }}
+      CSS_LIBRARY: ${{ matrix.library }}
+      CSS_EXPECTED_RUNTIME: ${{ matrix.runtime }}
+      CSS_EVIDENCE_ID: ${{ matrix.carrier }}
+      # Logging only: preserves the selected cross Docker command/image in logs.
+      CROSS_DEBUG: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .css-verification-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: ${{ matrix.builder == 'cargo' }}
+        with:
+          node-version: 22.0.0
+          architecture: ${{ matrix.node_arch }}
+      - name: Keep exact native load runtime
+        if: ${{ matrix.builder == 'cargo' }}
+        shell: bash
+        run: echo "ZFB_LOAD_NODE=$(node -p process.execPath)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+          targets: ${{ matrix.target }}
+      - name: Existing Linux cross builder
+        if: ${{ matrix.builder == 'cross' }}
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: cross@0.2.5
+      - name: Existing ARM QEMU executor
+        if: ${{ matrix.carrier == 'linux-arm64-gnu' }}
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+        with:
+          platforms: arm64
+      - name: Build, pack and actually load the selected carrier
+        shell: bash
+        run: bash .css-verification-tooling/scripts/verify-css-carrier.sh native
+      - name: Retain native evidence including failed attempts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: css-carrier-${{ matrix.carrier }}-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/css-carrier-${{ matrix.carrier }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  fast-mac:
+    needs: validate
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    env:
+      CSS_TARGET: x86_64-apple-darwin
+      CSS_CARRIER: darwin-x64
+      CSS_LIBRARY: libzfb_css_node.dylib
+      CSS_EXPECTED_RUNTIME: darwin/x64
+      CSS_EVIDENCE_ID: fast-mac
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .css-verification-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.0.0
+          architecture: x64
+      - name: Keep actual Intel Node22 runtime for producer and load
+        shell: bash
+        run: |
+          node -e 'if (process.platform !== "darwin" || process.arch !== "x64") throw Error("native Intel host required")'
+          echo "ZFB_X64_NODE=$(node -p process.execPath)" >> "$GITHUB_ENV"
+          echo "ZFB_LOAD_NODE=$(node -p process.execPath)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+      - name: Native fast-Mac producer (local files only)
+        shell: bash
+        run: bash .css-verification-tooling/scripts/verify-css-carrier.sh fast-mac
+      - name: Retain producer bytes and native execution proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: css-fast-mac-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/css-carrier-fast-mac/
+          if-no-files-found: error
+          retention-days: 7
+
+  fast-mac-ingestion:
+    needs: [validate, fast-mac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CSS_CARRIER: darwin-x64
+      CSS_EVIDENCE_ID: fast-mac-ingestion
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .css-verification-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: css-fast-mac-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/css-fast-mac-received
+      - name: Independently check both checksums, staged/packed bytes and reject faults
+        shell: bash
+        env:
+          CSS_RECEIVED: ${{ runner.temp }}/css-fast-mac-received
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: bash .css-verification-tooling/scripts/verify-css-carrier.sh ingestion
+      - name: Retain ingestion and negative-case evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: css-fast-mac-ingestion-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/css-carrier-fast-mac-ingestion/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-size:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CSS_EVIDENCE_ID: linux-size
+      CSS_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .css-verification-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.0
+      - name: Execute unchanged health size recipes without earlier workspace test gates
+        shell: bash
+        run: bash .css-verification-tooling/scripts/verify-css-carrier.sh linux-size
+      - name: Retain Linux size outputs even when their unchanged checker rejects them
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: css-linux-size-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/css-carrier-linux-size/
+            target/island-size/
+          if-no-files-found: error
+          retention-days: 7
