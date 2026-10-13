@@ -1,5 +1,5 @@
 import { subscribe, untracked, type Subscription } from "./reactive.js";
-import { recoverable } from "./error-boundary.js";
+import { recoverable } from "./error-boundary-type.js";
 import { enqueue, type Job } from "./scheduler.js";
 import type { Cleanup, Diagnostic, Reporter, Scope } from "./index.js";
 

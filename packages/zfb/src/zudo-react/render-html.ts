@@ -1,4 +1,4 @@
-import { boundaryProps, isErrorBoundary, integrity, recoverable } from "./error-boundary.js";
+import { boundaryProps, boundaryRenderer, integrity, recoverable } from "./error-boundary-type.js";
 import { serializeStyle } from "./style.js";
 import {
   Fragment,
@@ -524,7 +524,7 @@ function renderValue(
     return island(value, context, namespace, parent);
   if (value.type === Fragment)
     return region(context, "f", () => children(value.props.children, context, namespace, parent));
-  if (isErrorBoundary(value.type)) {
+  if (boundaryRenderer(value.type)) {
     if (
       parent in tableChildren ||
       ["select", "optgroup", "option", "title", "textarea", "script", "style"].includes(parent)
