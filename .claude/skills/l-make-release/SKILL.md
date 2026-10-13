@@ -339,11 +339,15 @@ measured in CI before the bump lands on `main`:
 - **Linux island size.** `health.yml`'s `Measure and enforce Linux x64 island-size budgets` step
   builds the island runtime with the `packages/zfb` version embedded, and
   `research/v3-island-size/decision-linux-x64.json` holds exact zero-allowance `raw` and
-  `gzipNormalized` ceilings plus the pinned package version, lockfile hash, and normalizer hash.
-  A pure version-stamp bump can move the `zudo_react_build` token; since #4131
+  `gzipNormalized` ceilings plus the pinned package version and normalizer hash. A
+  schemaVersion 3 contract (#4187) pins the lockfile through its dependency-graph fingerprint
+  (`research/v3-island-size/lock-fingerprint.mjs`), which normalizes lockstep
+  `workspace:<version>` specifiers, so the bump leaves it unchanged; the whole-file lock hash is
+  recorded as provenance only, while each run's own lock hash must still equal the checkout
+  byte-for-byte. A pure version-stamp bump can move the `zudo_react_build` token; since #4131
   the metric normalizes that token away, so such a bump should not fail `health` (v4.1.0
   through v4.3.1 each needed a follow-up actual-gzip rebaseline commit). The contract still has
-  to record the new version and lockfile hash, which is the probe's job below.
+  to record the new version, which is the probe's job below.
 - **Wind preview digest.** `docs/public/wind-examples/manifest.json` records
   `compiler.sourceSha256`, which `compilerSourceDigest` in `docs/scripts/wind-preview-assets.mjs`
   computes over every `crates/**/*.{rs,toml,json,css}` file. The bump rewrites
@@ -359,7 +363,9 @@ Before pushing anything to `main`:
    lockstep bump to it — Steps 4b–4d below (`packages/zfb/package.json`, then
    `node scripts/sync-platform-versions.mjs`, then `pnpm install --lockfile-only`). The branch
    must carry exactly the version and lockfile bytes the bump commit will carry, because the
-   island-size contract pins both. Push it and open a draft PR targeting `main`. The
+   island-size contract pins the version and the measured run must match the checkout's
+   lockfile byte-for-byte (the contract itself pins the lock's dependency fingerprint, which the
+   lockstep bump does not move). Push it and open a draft PR targeting `main`. The
    `crates/zfb-md-wasm/**` change makes `health.yml` run `wasm-md (default)`; the `health` job
    always runs the island-size step.
 2. **md-wasm:** read the `wasm-md (default)` job's run URL, head SHA, and the `Enforce
@@ -376,7 +382,7 @@ Before pushing anything to `main`:
    away, so the step is expected to **pass** on this first push. Download its
    `island-size-linux-x64` artifact (uploaded with `if: always()`) and note the `health` run ID,
    job ID, and the probe branch's head SHA. Run the helper below even on a pass: the contract must
-   record the new version, lockfile hash, and evidence. If the step **failed**, a raw or
+   record the new version and evidence. If the step **failed**, a raw or
    `gzipNormalized` total moved — that is product code moving, not a version stamp. The helper
    refuses it; stop and surface it as a reviewed decision instead of re-pinning.
 4. On the disposable branch, write the rehearsal commit:
@@ -396,14 +402,17 @@ Before pushing anything to `main`:
 
      It re-derives every total from the artifact's saved pass bytes with
      `research/v3-island-size/normalize-identity.mjs` (never from `measurement.json`'s claims),
-     keeps the `raw`/`gzipNormalized` ceilings, updates the pinned version, lockfile hash,
-     normalizer hash, `platformStatus`, and `baselineEvidence` (outcome `release-version-stamp`),
+     keeps the `raw`/`gzipNormalized` ceilings, updates the pinned version, the recorded
+     lockfile hash (provenance only on a schemaVersion 3 contract), normalizer hash,
+     `platformStatus`, and `baselineEvidence` (outcome `release-version-stamp`),
      and sets `baselineSourceSha` to the probe head (the PR's synthetic merge commit that CI
      measured is kept on no branch, but `refs/pull/<pr>/head` stays reachable and has the
      identical tree), rewrites the pins in `scripts/__tests__/island-size-budget.test.mjs`, and
      appends a `## v<version> release baseline` section to `research/v3-island-size/README.md`.
-     It **refuses** if any raw or `gzipNormalized` total changed, the fixture set differs, or the
-     artifact's lockfile/version differ from the checkout — a moved total is a product size change
+     It **refuses** if any raw or `gzipNormalized` total changed, the fixture set differs, the
+     artifact's lockfile, version, fixture/runner digests or dependency fingerprint differ from
+     the checkout, or (schemaVersion 3) the checkout's fingerprint differs from the contract's —
+     a moved total is a product size change
      that needs a reviewed decision, not a release re-pin. Stop and surface it. Run
      `pnpm exec vp fmt` on the changed files.
    - Wind preview digest: after every `crates/` edit above, recompute the digest and write it to
