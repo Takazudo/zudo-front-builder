@@ -75,31 +75,91 @@ ensure_label() {
     "${GH_REPO_ARGS[@]}" 2>/dev/null || true
 }
 
-# ── Extract flaky testcases from the given JUnit XML file(s) ────────────────
-# Prints one line per flaky testcase as "<classname>\t<name>". A testcase is
+# ── Inspect evidence and extract flaky testcases ──────────────────────────
+# Prints one deduped test identity per line on stdout; evidence diagnostics
+# go to stderr so they cannot be mistaken for test identities. A testcase is
 # flaky iff it has a nested <flakyFailure> element — nextest's marker for
 # "failed on an earlier try, passed on the last try" (see the captured
-# fixture for the real shape). Missing/unparsable files are skipped, not
-# fatal — an early compile failure can leave no JUnit report at all, and this
-# script must never be why the CI run breaks.
+# fixture for the real shape). Missing/invalid inputs reduce coverage, never
+# establish a clean result. Counts describe observed elements, not suite
+# aggregate attributes (which overlap in nested suites).
 extract_flaky() {
   python3 - "$@" <<'PYEOF'
 import sys
 import xml.etree.ElementTree as ET
 
+def report(message):
+    print(message, file=sys.stderr)
+
+valid = zero = suites_count = testcases = failures = errors = skipped = 0
+flaky = set()
 for path in sys.argv[1:]:
     try:
         tree = ET.parse(path)
-    except (FileNotFoundError, ET.ParseError, OSError):
+    except FileNotFoundError:
+        report(f"JUnit input {path!r}: unavailable (missing)")
+        continue
+    except ET.ParseError as exc:
+        report(f"JUnit input {path!r}: invalid evidence (malformed XML: {exc})")
+        continue
+    except OSError as exc:
+        report(f"JUnit input {path!r}: unavailable (unreadable: {exc})")
         continue
     root = tree.getroot()
-    suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
-    for suite in suites:
-        for tc in suite.findall("testcase"):
-            if tc.find("flakyFailure") is not None:
-                classname = tc.get("classname", "")
-                name = tc.get("name", "")
-                print(f"{classname}\t{name}")
+    parents = {child: parent for parent in root.iter() for child in parent}
+    if root.tag not in ("testsuite", "testsuites") or any(
+        (node.tag == "testcase" and parents.get(node).tag != "testsuite")
+        or (node.tag == "testcase" and node.find("flakyFailure") is not None
+            and not (node.get("classname") or node.get("name")))
+        or (node is not root and node.tag in ("testsuite", "testsuites")
+            and parents[node].tag not in ("testsuite", "testsuites"))
+        or (node.tag in ("testsuite", "testsuites") and any(
+            child.tag not in (
+                "testsuite", "testsuites", "properties", "system-out", "system-err",
+                *(("testcase",) if node.tag == "testsuite" else ()),
+            ) for child in node
+        ))
+        for node in root.iter()
+    ):
+        report(f"JUnit input {path!r}: invalid evidence (unsupported JUnit root/structure)")
+        continue
+    suites = list(root.iter("testsuite"))
+    cases = [tc for suite in suites for tc in suite.findall("testcase")]
+    valid += 1
+    zero += not cases
+    suites_count += len(suites)
+    testcases += len(cases)
+    failed = sum(tc.find("failure") is not None for tc in cases)
+    errored = sum(tc.find("error") is not None for tc in cases)
+    ignored = sum(tc.find("skipped") is not None for tc in cases)
+    failures += failed
+    errors += errored
+    skipped += ignored
+    report(f"JUnit input {path!r}: {'valid' if cases else 'zero-test evidence'}; "
+           f"suites={len(suites)}; testcases={len(cases)}; failures={failed}; "
+           f"errors={errored}; skipped={ignored}")
+    for tc in cases:
+        if tc.find("flakyFailure") is not None:
+            classname = tc.get("classname", "")
+            name = tc.get("name", "")
+            flaky.add(f"{classname}::{name}")
+
+coverage = "complete" if valid == len(sys.argv) - 1 and not zero else "partial"
+if not testcases:
+    coverage = "not-evaluated"
+report(f"JUnit evidence: coverage={coverage}; valid-reports={valid}/{len(sys.argv) - 1}; "
+       f"zero-test-reports={zero}; suites={suites_count}; testcases={testcases}; "
+       f"failures={failures}; errors={errors}; skipped={skipped}; flaky-tests={len(flaky)}")
+if not valid:
+    report("Flaky tests not evaluated: no usable JUnit evidence.")
+elif not testcases:
+    report("Flaky tests not evaluated: valid reports contain zero testcases.")
+elif not flaky:
+    report(f"No flakes found in inspected reports (coverage={coverage}; "
+           f"valid-reports={valid}; testcases={testcases}). "
+           "Zero flakes does not establish that all tests passed.")
+for test_id in sorted(flaky):
+    print(test_id)
 PYEOF
 }
 
@@ -128,7 +188,7 @@ title = sys.argv[1]
 try:
     issues = json.load(sys.stdin)
 except Exception:
-    issues = []
+    sys.exit(1)
 for issue in issues:
     if issue.get("title") == title:
         print(issue["number"])
@@ -136,23 +196,27 @@ for issue in issues:
 ' "$title"
 }
 
-FLAKY_LIST="$(extract_flaky "$@" | sort -u)"
+if ! FLAKY_LIST="$(extract_flaky "$@")"; then
+  echo "::warning::Flaky tests not evaluated: JUnit extraction unavailable or failed; no reliable extraction result."
+  printf 'Unavailable extraction input: %q\n' "$@"
+  exit 0
+fi
 
 if [ -z "$FLAKY_LIST" ]; then
-  echo "No flaky tests detected."
   exit 0
 fi
 
 ensure_label
 
-printf '%s\n' "$FLAKY_LIST" | while IFS=$'\t' read -r classname name; do
-  [ -z "$classname" ] && [ -z "$name" ] && continue
-  test_id="${classname}::${name}"
+printf '%s\n' "$FLAKY_LIST" | while IFS= read -r test_id; do
   title="flaky: ${test_id}"
 
   echo "::warning::Flaky test detected (pass-on-retry): ${test_id} — run: ${RUN_URL}"
 
-  existing_number="$(issue_number_for_title "$title")"
+  if ! existing_number="$(issue_number_for_title "$title")"; then
+    echo "::warning::could not check existing flaky-test issue for ${test_id}; issue write not attempted"
+    continue
+  fi
 
   if [ -n "$existing_number" ]; then
     body="Flaky again.
