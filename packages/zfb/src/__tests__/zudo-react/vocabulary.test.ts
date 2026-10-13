@@ -191,10 +191,31 @@ describe("finite HTML/SVG vocabulary", () => {
       ),
     ).toThrow(/words set htmlTags/);
     expect(() =>
+      extractVocabulary(vocabularySource.replace("className=class", "className==class")),
+    ).toThrow(/unsupported propAliases entry shape/);
+    expect(() =>
       extractVocabulary(
-        vocabularySource.replace('className: { spelling: "class" },', 'className: "class",'),
+        vocabularySource.replace("className=class", "className=class className=class"),
+      ),
+    ).toThrow(/duplicate spellings/);
+    for (const [original, changed] of [
+      ["entry.toLowerCase()", "entry.toUpperCase()"],
+      ['entry.split("=")', 'entry.split(":")'],
+      ['namespace: index ? "svg" : undefined', 'namespace: index ? undefined : "svg"'],
+      ["letter.toUpperCase()", "letter.toLowerCase()"],
+    ])
+      expect(() => extractVocabulary(vocabularySource.replace(original!, changed!))).toThrow(
+        /decoder policy changed/,
+      );
+    expect(() =>
+      extractVocabulary(
+        vocabularySource.replace('"stroke-width fill-rule', '"stroke--width fill-rule'),
       ),
     ).toThrow(/unsupported propAliases entry shape/);
+    expect(() =>
+      extractVocabulary(vocabularySource.replace("Object.fromEntries(", "Object.values(")),
+    ).toThrow(/private propAliases encoded table/);
+
     expect(() =>
       extractVocabulary(
         vocabularySource.replace(
@@ -203,6 +224,15 @@ describe("finite HTML/SVG vocabulary", () => {
         ),
       ),
     ).toThrow(/alias suggestion policy changed/);
+    expect(() =>
+      extractVocabulary(
+        vocabularySource.replace(
+          "if (!alias || (alias.namespace && alias.namespace !== namespace)) return undefined;",
+          "if (!alias) return undefined;",
+        ),
+      ),
+    ).toThrow(/alias suggestion policy changed/);
+
     expect(() =>
       validateRendererPolicies(
         renderSource.replace(

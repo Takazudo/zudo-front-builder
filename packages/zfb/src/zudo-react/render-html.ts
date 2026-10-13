@@ -13,7 +13,7 @@ import { rawHtmlReserved } from "./raw-html.js";
 import type { IslandIdentity } from "./index.js";
 import { readSnapshot } from "./reactive.js";
 import type { ReadonlySignal } from "./reactive-types.js";
-import { createScope, withScope, type RuntimeScope } from "./scope.js";
+import { RuntimeScope, withScope } from "./scope.js";
 import { emptyChildren, normalizeProps } from "./props-transport.js";
 import { islandRootType } from "./island-root-type.js";
 import type { IslandOptions, RenderOptions } from "./server.js";
@@ -733,7 +733,7 @@ function validateRadioGroups(context: Context): void {
       fail("ZR_MODEL_VALUE", context, `radio has no option ${group.value}`);
 }
 export function renderHtml(node: Child, options: RenderOptions): string {
-  const root = createScope({ component: options.island?.component ?? "<root>" });
+  const root = new RuntimeScope({ component: options.island?.component ?? "<root>" });
   const context: Context = {
     radioGroups: new Map(),
     radioNames: new Map(),

@@ -40,11 +40,7 @@ export function attributeError(name: string, value: unknown, custom: boolean): s
   if (custom) return typeof value === "string" ? undefined : "requires a string";
   if (name === "style") return undefined; // style has its own object validator.
   if (booleanAttrs.has(name)) return typeof value === "boolean" ? undefined : "requires a boolean";
-  if (overloadedBooleanAttrs.has(name))
-    return typeof value === "string" || typeof value === "boolean"
-      ? undefined
-      : "requires a string or boolean";
-  if (enumeratedBooleanAttrs.has(name))
+  if (overloadedBooleanAttrs.has(name) || enumeratedBooleanAttrs.has(name))
     return typeof value === "string" || typeof value === "boolean"
       ? undefined
       : "requires a string or boolean";
@@ -52,8 +48,8 @@ export function attributeError(name: string, value: unknown, custom: boolean): s
     return typeof value === "string" || (typeof value === "number" && Number.isFinite(value))
       ? undefined
       : "requires a string or finite number";
-  if (stringAttrs.has(name)) return typeof value === "string" ? undefined : "requires a string";
-  if (/^on[a-z]/.test(name)) return typeof value === "string" ? undefined : "requires a string";
+  if (stringAttrs.has(name) || /^on[a-z]/.test(name))
+    return typeof value === "string" ? undefined : "requires a string";
   if (
     typeof value === "string" ||
     (typeof value === "number" && Number.isFinite(value)) ||
@@ -83,46 +79,22 @@ export function attributeNamespace(name: string): string | null {
 
 type PropAlias = {
   readonly spelling: string;
-  readonly namespace?: Namespace;
+  readonly namespace?: Namespace | undefined;
 };
 
-const propAliases: Readonly<Record<string, PropAlias>> = {
-  className: { spelling: "class" },
-  htmlFor: { spelling: "for" },
-  charSet: { spelling: "charset" },
-  dateTime: { spelling: "datetime" },
-  tabIndex: { spelling: "tabindex" },
-  readOnly: { spelling: "readonly" },
-  autoComplete: { spelling: "autocomplete" },
-  autoFocus: { spelling: "autofocus" },
-  maxLength: { spelling: "maxlength" },
-  minLength: { spelling: "minlength" },
-  crossOrigin: { spelling: "crossorigin" },
-  srcSet: { spelling: "srcset" },
-  acceptCharset: { spelling: "accept-charset" },
-  httpEquiv: { spelling: "http-equiv" },
-  encType: { spelling: "enctype" },
-  noValidate: { spelling: "novalidate" },
-  formNoValidate: { spelling: "formnovalidate" },
-  colSpan: { spelling: "colspan" },
-  rowSpan: { spelling: "rowspan" },
-  referrerPolicy: { spelling: "referrerpolicy" },
-  allowFullScreen: { spelling: "allowfullscreen" },
-  autoPlay: { spelling: "autoplay" },
-  contentEditable: { spelling: "contenteditable" },
-  spellCheck: { spelling: "spellcheck" },
-  accessKey: { spelling: "accesskey" },
-  dangerouslySetInnerHTML: { spelling: "rawHtml" },
-  strokeWidth: { spelling: "stroke-width", namespace: "svg" },
-  fillRule: { spelling: "fill-rule", namespace: "svg" },
-  clipRule: { spelling: "clip-rule", namespace: "svg" },
-  strokeLinecap: { spelling: "stroke-linecap", namespace: "svg" },
-  strokeLinejoin: { spelling: "stroke-linejoin", namespace: "svg" },
-  stopColor: { spelling: "stop-color", namespace: "svg" },
-  stopOpacity: { spelling: "stop-opacity", namespace: "svg" },
-  xlinkHref: { spelling: "xlink:href", namespace: "svg" },
-  xmlLang: { spelling: "xml:lang", namespace: "svg" },
-};
+const propAliases: Readonly<Record<string, PropAlias>> = Object.fromEntries(
+  [
+    "className=class htmlFor=for charSet dateTime tabIndex readOnly autoComplete autoFocus maxLength minLength crossOrigin srcSet acceptCharset=accept-charset httpEquiv=http-equiv encType noValidate formNoValidate colSpan rowSpan referrerPolicy allowFullScreen autoPlay contentEditable spellCheck accessKey dangerouslySetInnerHTML=rawHtml",
+    "stroke-width fill-rule clip-rule stroke-linecap stroke-linejoin stop-color stop-opacity xlink:href xml:lang",
+  ].flatMap((entries, index) =>
+    entries.split(" ").map((entry) => {
+      const [name, spelling = entry.toLowerCase()] = index
+        ? [entry.replace(/[-:]([a-z])/g, (_, letter: string) => letter.toUpperCase()), entry]
+        : entry.split("=");
+      return [name!, { spelling, namespace: index ? "svg" : undefined }];
+    }),
+  ),
+);
 
 const legacyDialect = words(
   "className htmlFor charSet dateTime tabIndex readOnly strokeWidth dangerouslySetInnerHTML",
@@ -144,12 +116,7 @@ function eventSuggestion(name: string): string {
 export function isDialectProp(name: string, namespace: Namespace, custom: boolean): boolean {
   if (/^on[A-Z]/.test(name) || legacyDialect.has(name)) return true;
   if (custom) return false;
-  const alias = propAliases[name];
-  return (
-    alias !== undefined &&
-    (!alias.namespace || alias.namespace === namespace) &&
-    allowedAliasTarget(alias.spelling, namespace)
-  );
+  return dialectSuggestion(name, namespace, custom) !== undefined;
 }
 
 export function dialectSuggestion(
