@@ -16,6 +16,44 @@ import tarfile
 
 VERSION = "4.4.0"
 CARRIERS = ("darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-x64-gnu", "win32-x64-msvc")
+CARRIER_ROWS = [
+    {"host": "macos-15", "target": "aarch64-apple-darwin", "carrier": "darwin-arm64", "builder": "cargo", "library": "libzfb_css_node.dylib", "runtime": "darwin/arm64", "node_arch": "arm64"},
+    {"host": "macos-15-intel", "target": "x86_64-apple-darwin", "carrier": "darwin-x64", "builder": "cargo", "library": "libzfb_css_node.dylib", "runtime": "darwin/x64", "node_arch": "x64"},
+    {"host": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "carrier": "linux-x64-gnu", "builder": "cross", "library": "libzfb_css_node.so", "runtime": "linux/x64", "node_arch": "x64"},
+    {"host": "ubuntu-latest", "target": "aarch64-unknown-linux-gnu", "carrier": "linux-arm64-gnu", "builder": "cross", "library": "libzfb_css_node.so", "runtime": "linux/arm64", "node_arch": "x64"},
+    {"host": "windows-latest", "target": "x86_64-pc-windows-msvc", "carrier": "win32-x64-msvc", "builder": "cargo", "library": "zfb_css_node.dll", "runtime": "win32/x64", "node_arch": "x64"},
+]
+
+
+def carrier_matrix(windows_only):
+    if windows_only not in ("true", "false"):
+        raise ValueError("windows_only must be a boolean")
+    return {"include": [row for row in CARRIER_ROWS if windows_only == "false" or row["carrier"] == "win32-x64-msvc"]}
+
+
+def windows_toolchain(text):
+    """Require actual developer-environment and compiler/linker records."""
+    records = {"discovery": "default VS developer environment; no build recipe override"}
+    if not re.search(r"(?m)^discovery=" + re.escape(records["discovery"]) + r"\s*$", text):
+        raise ValueError("missing Windows toolchain discovery record")
+    for name in ("VCToolsVersion", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "compilerPath", "linkerPath"):
+        matches = re.findall(r"(?m)^" + name + r"=([^\r\n]*)", text)
+        if len(matches) != 1 or not matches[0].strip():
+            raise ValueError(f"missing/ambiguous Windows toolchain record: {name}")
+        records[name] = matches[0].strip()
+    for name in ("VCToolsInstallDir", "WindowsSdkDir", "compilerPath", "linkerPath"):
+        if not re.match(r"^[A-Za-z]:\\", records[name]):
+            raise ValueError(f"Windows toolchain path must be absolute: {name}")
+    tools = records["VCToolsInstallDir"].rstrip("\\").lower() + "\\"
+    for name, executable in (("compilerPath", "cl.exe"), ("linkerPath", "link.exe")):
+        if not records[name].lower().startswith(tools) or not records[name].lower().endswith("\\" + executable):
+            raise ValueError(f"Windows toolchain executable must use the selected MSVC toolset: {name}")
+    for name, banner in (("compilerVersion", "C/C++ Optimizing Compiler"), ("linkerVersion", "Incremental Linker")):
+        match = re.search(r"Microsoft \(R\) " + re.escape(banner) + r" Version ([0-9]+(?:\.[0-9]+)+)", text)
+        if match is None:
+            raise ValueError(f"missing Windows toolchain version: {name}")
+        records[name] = match.group(1)
+    return records
 
 
 def digest(value):
@@ -137,7 +175,11 @@ def stage_consumer(pack_directory, carrier, room):
 
 def main(args):
     command, *values = args
-    if command == "snapshot":
+    if command == "matrix":
+        print(json.dumps(carrier_matrix(values[0]), separators=(",", ":")))
+    elif command == "windows-toolchain":
+        save(values[1], windows_toolchain(Path(values[0]).read_text(encoding="utf-8-sig")))
+    elif command == "snapshot":
         save(values[0], tracked_snapshot())
     elif command == "assert-source":
         if tracked_snapshot() != json.loads(Path(values[0]).read_text()):

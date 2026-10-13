@@ -8,6 +8,11 @@ on:
         description: Exact commit containing the measured CSS source
         required: true
         type: string
+      windows_only:
+        description: Run only the existing Windows carrier row
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -24,6 +29,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Validate exact source before selected checkout
         shell: bash
@@ -39,6 +46,15 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python3 scripts/test-css-carrier-verification.py
+      - name: Select existing carrier rows
+        id: matrix
+        env:
+          CSS_WINDOWS_ONLY: ${{ inputs.windows_only }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          matrix="$(python3 scripts/css-carrier-verification.py matrix "$CSS_WINDOWS_ONLY")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   native:
     needs: validate
@@ -48,43 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 5
-      matrix:
-        include:
-          - host: macos-15
-            target: aarch64-apple-darwin
-            carrier: darwin-arm64
-            builder: cargo
-            library: libzfb_css_node.dylib
-            runtime: darwin/arm64
-            node_arch: arm64
-          - host: macos-15-intel
-            target: x86_64-apple-darwin
-            carrier: darwin-x64
-            builder: cargo
-            library: libzfb_css_node.dylib
-            runtime: darwin/x64
-            node_arch: x64
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            carrier: linux-x64-gnu
-            builder: cross
-            library: libzfb_css_node.so
-            runtime: linux/x64
-            node_arch: x64
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            carrier: linux-arm64-gnu
-            builder: cross
-            library: libzfb_css_node.so
-            runtime: linux/arm64
-            node_arch: x64
-          - host: windows-latest
-            target: x86_64-pc-windows-msvc
-            carrier: win32-x64-msvc
-            builder: cargo
-            library: zfb_css_node.dll
-            runtime: win32/x64
-            node_arch: x64
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     env:
       CSS_TARGET: ${{ matrix.target }}
       CSS_CARRIER: ${{ matrix.carrier }}
@@ -147,6 +127,7 @@ jobs:
 
   fast-mac:
     needs: validate
+    if: ${{ !inputs.windows_only }}
     runs-on: macos-15-intel
     timeout-minutes: 120
     env:
@@ -198,6 +179,7 @@ jobs:
 
   fast-mac-ingestion:
     needs: [validate, fast-mac]
+    if: ${{ !inputs.windows_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -239,6 +221,7 @@ jobs:
 
   linux-size:
     needs: validate
+    if: ${{ !inputs.windows_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:

@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      css_windows_only:
+        description: Limit CSS carrier verification to the Windows row
+        required: false
+        default: false
+        type: boolean
       enforce:
         description: Fail the run when the measured totals exceed decision.json
         required: false
@@ -298,3 +303,4 @@ jobs:
     uses: ./.github/workflows/css-carrier-verification.yml
     with:
       source_sha: ${{ inputs.ref }}
+      windows_only: ${{ inputs.css_windows_only }}

@@ -83,34 +83,53 @@ JS
     sw_vers; xcodebuild -version; xcrun --show-sdk-path; xcrun --show-sdk-version; xcrun clang --version
   elif [[ "$RUNNER_OS" == Windows ]]; then
     cmd //c ver
-    powershell -NoProfile -Command - <<'PS'
+    cat > "$out/windows-toolchain.ps1" <<'PS'
 $ErrorActionPreference = 'Stop'
 Get-CimInstance Win32_OperatingSystem | Format-List Caption,Version,OSArchitecture
 $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vs)) { throw 'Cannot discover Visual Studio' }
 $devcmd = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
+if (-not (Test-Path $devcmd)) { throw 'Missing Visual Studio developer environment' }
 $record = @"
 @echo off
 call "$devcmd" -arch=x64 -host_arch=x64 >nul
 if errorlevel 1 exit /b 1
 if not defined VCToolsVersion exit /b 1
+if not defined VCToolsInstallDir exit /b 1
+if not defined WindowsSdkDir exit /b 1
 if not defined WindowsSDKVersion exit /b 1
 echo discovery=default VS developer environment; no build recipe override
-set VCTools
-set WindowsSdk
-where cl
+echo VCToolsVersion=%VCToolsVersion%
+echo VCToolsInstallDir=%VCToolsInstallDir%
+echo WindowsSdkDir=%WindowsSdkDir%
+echo WindowsSDKVersion=%WindowsSDKVersion%
+where cl >nul
 if errorlevel 1 exit /b 1
-where link
+where link >nul
 if errorlevel 1 exit /b 1
+set "CSS_COMPILER_PATH="
+set "CSS_LINKER_PATH="
+for /f "delims=" %%I in ('where cl') do if not defined CSS_COMPILER_PATH set "CSS_COMPILER_PATH=%%I"
+for /f "delims=" %%I in ('where link') do if not defined CSS_LINKER_PATH set "CSS_LINKER_PATH=%%I"
+echo compilerPath=%CSS_COMPILER_PATH%
+echo linkerPath=%CSS_LINKER_PATH%
 cl /Bv 2>&1
 echo compiler_version_probe_exit=%ERRORLEVEL% (no source compilation requested)
 link /? 2>&1
 exit /b 0
 "@
-$path = Join-Path $env:RUNNER_TEMP 'css-carrier-selected-msvc.cmd'
-[System.IO.File]::WriteAllText($path, $record.Replace("`n", "`r`n"))
+$path = Join-Path $PSScriptRoot 'windows-toolchain.cmd'
+[System.IO.File]::WriteAllText($path, ($record -replace '\r?\n', "`r`n"))
 & cmd /d /c $path
 if ($LASTEXITCODE -ne 0) { throw 'Cannot record default-selected MSVC/SDK environment' }
 PS
+    set +e
+    powershell -NoProfile -NonInteractive -File "$(cygpath -w "$out/windows-toolchain.ps1")" > "$out/windows-toolchain.txt" 2>&1
+    windows_status=$?
+    set -e
+    cat "$out/windows-toolchain.txt"
+    if [[ "$windows_status" != 0 ]]; then echo 'Windows toolchain capture process failed' >&2; exit "$windows_status"; fi
+    check windows-toolchain "$out/windows-toolchain.txt" "$out/windows-toolchain.json"
   else
     cat /etc/os-release; cc --version; ld --version
   fi

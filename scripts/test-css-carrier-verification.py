@@ -28,6 +28,19 @@ def checksum(directory, name):
     (directory / (name + ".sha256")).write_text(verification.digest((directory / name).read_bytes()) + "  " + name + "\n")
 
 
+WINDOWS_RECORD = r"""discovery=default VS developer environment; no build recipe override
+VCToolsVersion=14.51.36231
+VCToolsInstallDir=C:\VS\VC\Tools\MSVC\14.51.36231\
+WindowsSdkDir=C:\Program Files (x86)\Windows Kits\10\
+WindowsSDKVersion=10.0.26100.0\
+compilerPath=C:\VS\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe
+linkerPath=C:\VS\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\link.exe
+Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36231 for x64
+compiler_version_probe_exit=2 (no source compilation requested)
+Microsoft (R) Incremental Linker Version 14.51.36231.0
+"""
+
+
 class Contracts(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -44,6 +57,52 @@ class Contracts(unittest.TestCase):
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    def test_windows_capture_requires_every_selected_record_and_version(self):
+        records = verification.windows_toolchain(WINDOWS_RECORD.replace("\n", "\r\n"))
+        self.assertEqual(records["compilerVersion"], "19.51.36231")
+        self.assertEqual(records["linkerVersion"], "14.51.36231.0")
+        log = self.room / "windows-toolchain.txt"
+        output = self.room / "windows-toolchain.json"
+        log.write_text(WINDOWS_RECORD, encoding="utf-8-sig")
+        verification.main(["windows-toolchain", str(log), str(output)])
+        self.assertEqual(json.loads(output.read_text()), records)
+        # The observed silent PowerShell stdin failure emitted OS/Rust only.
+        with self.assertRaisesRegex(ValueError, "missing Windows toolchain"):
+            verification.windows_toolchain("Microsoft Windows [Version 10.0.26100]\nrustc1.99.0\n")
+        log.write_text("Microsoft Windows [Version 10.0.26100]\nrustc1.99.0\n")
+        output.unlink()
+        with self.assertRaises(ValueError):
+            verification.main(["windows-toolchain", str(log), str(output)])
+        self.assertFalse(output.exists())
+        for line in WINDOWS_RECORD.splitlines():
+            if line.startswith("compiler_version_probe_exit="):
+                continue
+            with self.subTest(missing=line):
+                with self.assertRaises(ValueError):
+                    verification.windows_toolchain(WINDOWS_RECORD.replace(line + "\n", ""))
+
+    def test_windows_capture_rejects_empty_duplicate_or_wrong_toolset_paths(self):
+        for replacement in [
+            WINDOWS_RECORD.replace("VCToolsVersion=14.51.36231", "VCToolsVersion="),
+            WINDOWS_RECORD + "WindowsSDKVersion=10.0.26100.0\\\n",
+            WINDOWS_RECORD.replace("compilerPath=C:\\VS", "compilerPath=C:\\OtherVS"),
+            WINDOWS_RECORD.replace("linkerPath=C:\\VS", "linkerPath=relative\\VS"),
+        ]:
+            with self.assertRaises(ValueError):
+                verification.windows_toolchain(replacement)
+
+    def test_windows_only_matrix_selects_existing_row_and_keeps_all_default(self):
+        default = verification.carrier_matrix("false")["include"]
+        self.assertEqual(len(default), 5)
+        self.assertEqual({row["carrier"] for row in default}, set(verification.CARRIERS))
+        windows = verification.carrier_matrix("true")["include"]
+        self.assertEqual(windows, [row for row in default if row["carrier"] == "win32-x64-msvc"])
+        self.assertEqual(windows[0]["host"], "windows-latest")
+        self.assertEqual(windows[0]["target"], "x86_64-pc-windows-msvc")
+        for invalid in ["", "windows", "True", "1"]:
+            with self.assertRaises(ValueError):
+                verification.carrier_matrix(invalid)
 
     def test_archive_and_addon_have_independent_checksums(self):
         cli, addon, hashes = verification.fast_mac_bytes(self.received)
