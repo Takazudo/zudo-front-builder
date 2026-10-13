@@ -1,3 +1,5 @@
+import { boundaryProps, isErrorBoundary, integrity, recoverable } from "./error-boundary.js";
+import { islandRootType } from "./island-root-type.js";
 import { activateForms, prepareForms, reconcileForms, FormError, type FormPlan } from "./forms.js";
 import { Fragment, isDescription, type Child, type Description } from "./description.js";
 import { createScope, withScope, type RuntimeScope } from "./scope.js";
@@ -13,8 +15,8 @@ import {
   type RootOwned,
 } from "./root.js";
 import type { ReadonlySignal } from "./reactive-types.js";
-import { subscribe } from "./reactive.js";
-import { batch } from "./scheduler.js";
+import { subscribe, untracked } from "./reactive.js";
+import { batch, enqueue, type Job } from "./scheduler.js";
 import { rawHtmlReserved } from "./raw-html.js";
 import { Show, For, showProps, forProps, keyed, keyPayload, view } from "./structure.js";
 import type { Key } from "./description.js";
@@ -64,20 +66,24 @@ interface BuildContext {
   readonly root: RuntimeScope;
   scope: RuntimeScope;
   next: number;
+  prefix?: string;
   readonly operations: Operation[];
   readonly forms: FormPlan[];
-  readonly formOwners: Map<FormPlan, Owned>;
-  readonly opaque: Set<Node>;
-  readonly textSlots: Set<Node>;
-  readonly displayOnlyTextareas: Set<Node>;
+  readonly formOwners: WeakMap<FormPlan, Owned>;
+  readonly opaque: WeakSet<Node>;
+  readonly textSlots: WeakSet<Node>;
+  readonly displayOnlyTextareas: WeakSet<Node>;
   readonly dynamicRanges: Array<readonly [Comment, Comment]>;
   collectRootRanges: boolean;
+  readonly errorRanges: WeakSet<Node>;
+  readonly replacements: Array<() => void>;
 }
 interface Owned {
   scope: RuntimeScope;
   fragment: DocumentFragment;
   operations: Operation[];
   forms: FormPlan[];
+  formOwners: WeakMap<FormPlan, Owned>;
   cleanups: Array<() => void>;
 }
 function owned(
@@ -95,13 +101,20 @@ function owned(
   const fragment = context.document.createDocumentFragment();
   const operationsStart = context.operations.length;
   const formsStart = context.forms.length;
+  const rangesStart = context.dynamicRanges.length;
   const previous = context.scope;
   context.scope = scope;
   const cleanups: Array<() => void> = [];
   try {
     withScope(scope, () => {
       scope.onCleanup(() => {
-        for (const cleanup of [...cleanups].reverse()) cleanup();
+        for (const cleanup of cleanups.splice(0).reverse()) {
+          try {
+            cleanup();
+          } catch (error) {
+            scope.report("ZR_CLEANUP_ERROR", "cleanup", String(error));
+          }
+        }
       });
       const output = factory();
       if (kind)
@@ -112,14 +125,21 @@ function owned(
     });
     const operations = context.operations.splice(operationsStart);
     const forms = initial ? context.forms.slice(formsStart) : context.forms.splice(formsStart);
-    const instance = { scope, fragment, operations, forms, cleanups };
-    if (initial)
-      for (const form of forms)
-        if (!context.formOwners.has(form)) context.formOwners.set(form, instance);
+    const instance: Owned = {
+      scope,
+      fragment,
+      operations,
+      forms,
+      formOwners: context.formOwners,
+      cleanups,
+    };
+    for (const form of forms)
+      if (!context.formOwners.has(form)) context.formOwners.set(form, instance);
     return instance;
   } catch (error) {
     context.operations.length = operationsStart;
     context.forms.length = formsStart;
+    context.dynamicRanges.length = rangesStart;
     scope.dispose();
     throw error;
   } finally {
@@ -135,7 +155,16 @@ function installOwned(
   if (mode === "mount" && instance.forms.length) {
     const bindings = prepareForms(instance.forms, map, "mount", context.container);
     reconcileForms(bindings, "mount");
-    activateForms(bindings, instance.scope, instance.cleanups, context.options, context.container);
+    const owners = new Map<Node, Owned>();
+    for (const plan of instance.forms)
+      owners.set(map.get(plan.element)!, instance.formOwners.get(plan) ?? instance);
+    const groups = new Map<Owned, typeof bindings>();
+    for (const binding of bindings) {
+      const owner = owners.get(binding.node)!;
+      groups.set(owner, [...(groups.get(owner) ?? []), binding]);
+    }
+    for (const [owner, group] of groups)
+      activateForms(group, owner.scope, owner.cleanups, context.options, context.container);
   }
   for (const operation of instance.operations) operation(map, instance.cleanups);
 }
@@ -165,8 +194,19 @@ function fail(
   expected: string,
   actual: string,
   path: string,
+  fatal = false,
 ): never {
-  throw new Failure(code, phase, expected, actual, path);
+  const error = new Failure(code, phase, expected, actual, path);
+  throw fatal ||
+    [
+      "ZR_IDENTITY",
+      "ZR_CANCELLED",
+      "ZR_DUPLICATE_ROOT",
+      "ZR_HYDRATION_MISMATCH",
+      "ZR_NESTED_ISLAND",
+    ].includes(code)
+    ? integrity(error)
+    : error;
 }
 function append(parent: Node, node: Node): void {
   if (node.nodeType === Node.TEXT_NODE && parent.lastChild?.nodeType === Node.TEXT_NODE) {
@@ -179,7 +219,7 @@ function marker(
   kind: string,
   content: () => void,
 ): [Comment, Comment] {
-  const id = context.next++;
+  const id = `${context.prefix ?? ""}${context.next++}`;
   const open = context.document.createComment(`zr:1:${id}:${kind}`);
   parent.appendChild(open);
   content();
@@ -187,7 +227,10 @@ function marker(
   parent.appendChild(close);
   if (kind === "h") context.opaque.add(open);
   if (kind === "t") context.textSlots.add(open);
-  if (context.collectRootRanges && (kind === "t" || kind === "l" || kind.startsWith("s:")))
+  if (
+    context.collectRootRanges &&
+    (kind === "e" || kind === "t" || kind === "l" || kind.startsWith("s:"))
+  )
     context.dynamicRanges.push([open, close]);
   return [open, close];
 }
@@ -221,7 +264,7 @@ function range(start: Node, end: Node): Node[] {
     nodes.push(node);
     if (node === end) return nodes;
   }
-  throw new Error("ZR_REGION_RANGE");
+  throw integrity(new Error("ZR_REGION_RANGE"));
 }
 function removeRange(start: Node, end: Node): void {
   for (const node of range(start, end)) node.parentNode?.removeChild(node);
@@ -264,13 +307,13 @@ function scalar(value: unknown, path: string): string {
   fail("ZR_CHILD", "setup", "scalar", typeof value, path);
 }
 function validateRawHtml(value: unknown, tag: string, path: string): asserts value is string {
+  if (typeof value !== "string") fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path);
   if (
-    typeof value !== "string" ||
     rawHtmlReserved(value, tag) ||
     (tag === "script" && /<\/script/i.test(value)) ||
     (tag === "style" && /<\/style/i.test(value))
   )
-    fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path);
+    fail("ZR_RAW_HTML", "setup", "valid rawHtml", typeof value, path, true);
 }
 function children(
   value: unknown,
@@ -315,6 +358,8 @@ function element(
   const childNamespace = tag === "foreignObject" ? HTML : ownNamespace;
   const element = context.document.createElementNS(ownNamespace, tag);
   const props = desc.props;
+  if ("data-zfb-island" in props || "data-zfb-island-skip-ssr" in props)
+    fail("ZR_NESTED_ISLAND", "preflight", "no nested root", tag, path);
   if (tag === "iframe") {
     if (Object.hasOwn(props, "rawHtml"))
       fail("ZR_RAW_HTML", "preflight", "iframe without rawHtml", "rawHtml", path);
@@ -538,7 +583,7 @@ function element(
             const template = context.document.createElement("template");
             template.innerHTML = value;
             if (start.parentNode !== node || end.parentNode !== node)
-              throw new Error("ZR_REGION_RANGE");
+              throw integrity(new Error("ZR_REGION_RANGE"));
             for (const child of range(start, end).slice(1, -1)) node.removeChild(child);
             node.insertBefore(template.content, end);
             previous = value;
@@ -574,6 +619,161 @@ function element(
   if (tag === "input" && read(props.type) === "radio" && props.modelValue !== undefined)
     setAttribute(element, "checked", read(props.modelValue) === read(props.value));
   parent.appendChild(element);
+}
+// Each attempt has its own collection lifetime. Failed descriptions, markers,
+// provisional forms and operations cannot remain reachable through the root.
+function errorBoundary(
+  value: Description,
+  parent: Node,
+  context: BuildContext,
+  namespace: string,
+  parentTag: string,
+  path: string,
+): void {
+  if (restricted.has(parentTag))
+    fail("ZR_UNSUPPORTED_POSITION", "preflight", "flow region", parentTag, path);
+  const props = boundaryProps(value);
+  const owner = context.scope.child("ErrorBoundary");
+  const prefix = `${context.prefix ?? ""}${context.next}.`;
+  let current: Owned;
+  let installed = false;
+  let requested = false;
+  let start: Node;
+  let end: Node;
+  let lastKey = props.resetKey && read(props.resetKey);
+  const clear = (): void => {
+    for (const node of range(start, end).slice(1, -1)) node.parentNode!.removeChild(node);
+  };
+  const attempt = (factory: () => Child, initial: boolean): Owned => {
+    const local: BuildContext = {
+      ...context,
+      scope: owner,
+      next: 0,
+      prefix,
+      operations: [],
+      forms: [],
+      formOwners: new WeakMap(),
+      opaque: new WeakSet(),
+      textSlots: new WeakSet(),
+      displayOnlyTextareas: new WeakSet(),
+      dynamicRanges: [],
+      collectRootRanges: false,
+      errorRanges: new WeakSet(),
+      replacements: [],
+    };
+    const instance = owned(
+      local,
+      "ErrorBoundary attempt",
+      namespace,
+      parentTag,
+      path,
+      factory,
+      true,
+    );
+    if (initial) {
+      context.forms.push(...instance.forms);
+      for (const form of instance.forms)
+        context.formOwners.set(form, local.formOwners.get(form) ?? instance);
+    }
+    local.forms.length = 0;
+    return instance;
+  };
+  const fallback = (error: unknown, initial: boolean): Owned => {
+    if (!recoverable(error)) throw error;
+    return attempt(() => props.fallback(error, reset), initial);
+  };
+  const prepare = (initial: boolean): Owned => {
+    let replacement: Owned;
+    try {
+      replacement = attempt(props.children, initial);
+    } catch (error) {
+      return fallback(error, initial);
+    }
+    replacement.scope.renderRecovery = (error) => {
+      // Disposal makes all work from this attempt inert in the current pass.
+      current.scope.dispose();
+      const next = fallback(error, false);
+      return () => commit(next);
+    };
+    return replacement;
+  };
+  const commit = (replacement: Owned): void => {
+    const map = selfMap(replacement.fragment);
+    try {
+      prepareForms(
+        replacement.forms,
+        map,
+        "mount",
+        context.container,
+        [current.scope],
+        start.parentNode,
+      );
+    } catch (error) {
+      replacement.scope.dispose();
+      throw error;
+    }
+    current.scope.dispose();
+    clear();
+    end.parentNode!.insertBefore(replacement.fragment, end);
+    current = replacement;
+    installOwned(current, map, context, "mount");
+    if (owner.isActivated) current.scope.activate();
+  };
+  const job: Job = {
+    id: `ErrorBoundary:${owner.id}`,
+    phase: "commit",
+    active: () => owner.active && installed,
+    run: () => {
+      requested = false;
+      if (props.resetKey) lastKey = read(props.resetKey);
+      let replacement: Owned;
+      try {
+        replacement = untracked(() => prepare(false));
+      } catch (error) {
+        const recover = owner.recoverRender(error);
+        if (!recover) throw error;
+        recover();
+        return;
+      }
+      commit(replacement);
+    },
+    report: (code, actual) => owner.report(code, "update", actual),
+  };
+  function reset(): void {
+    if (requested || !job.active()) return;
+    requested = true;
+    enqueue(job);
+  }
+  try {
+    const ends = marker(context, parent, "e", () => {
+      current = untracked(() => prepare(true));
+      parent.appendChild(current.fragment);
+    });
+    context.errorRanges.add(ends[0]);
+    context.operations.push((map, cleanups) => {
+      start = map.get(ends[0])!;
+      end = map.get(ends[1])!;
+      installOwned(current, map, context, "hydrate");
+      installed = true;
+      if (props.resetKey) {
+        const key = props.resetKey;
+        const subscription = subscribe(
+          () => {
+            const next = key.value;
+            if (Object.is(lastKey, next)) return;
+            lastKey = next;
+            reset();
+          },
+          { active: () => owner.active, report: job.report },
+        );
+        subscription.run();
+        withScope(owner, () => owner.onCleanup(() => subscription.dispose()));
+      }
+    });
+  } catch (error) {
+    owner.dispose();
+    throw error;
+  }
 }
 function render(
   value: unknown,
@@ -632,6 +832,12 @@ function render(
     return;
   }
   if (!isDescription(value)) fail("ZR_CHILD", "setup", "description", typeof value, path);
+  if ((value.type as unknown) === islandRootType)
+    fail("ZR_NESTED_ISLAND", "preflight", "no nested root", "island", path);
+  if (isErrorBoundary(value.type)) {
+    errorBoundary(value, parent, context, namespace, parentTag, path);
+    return;
+  }
   if (value.type === Fragment) {
     marker(context, parent, "f", () =>
       children(value.props.children, parent, context, namespace, parentTag, path),
@@ -668,11 +874,13 @@ function render(
       if (current) installOwned(current, map, context, "hydrate");
       const subscription = subscribe(
         () => {
-          const next = props.when.value;
-          if (next === shown) return;
-          const factory = next ? props.children : props.fallback;
           let replacement: Owned | null = null;
+          let rendering = true;
           try {
+            const next = props.when.value;
+            if (typeof next !== "boolean") throw new TypeError(`ZR_CHILD: Show.when at ${path}`);
+            if (next === shown) return;
+            const factory = next ? props.children : props.fallback;
             if (factory)
               replacement = owned(
                 context,
@@ -685,9 +893,17 @@ function render(
                 undefined,
                 owner,
               );
+            rendering = false;
             const replacementMap = replacement ? selfMap(replacement.fragment) : null;
             if (replacement && replacement.forms.length)
-              prepareForms(replacement.forms, replacementMap!, "mount", context.container);
+              prepareForms(
+                replacement.forms,
+                replacementMap!,
+                "mount",
+                context.container,
+                current ? [current.scope] : [],
+                start.parentNode,
+              );
             if (current) {
               current.scope.dispose();
               let node = start.nextSibling;
@@ -706,6 +922,13 @@ function render(
             shown = next;
           } catch (error) {
             replacement?.scope.dispose();
+            if (rendering) {
+              const recover = owner.recoverRender(error);
+              if (recover) {
+                recover();
+                return;
+              }
+            }
             throw error;
           }
         },
@@ -783,12 +1006,27 @@ function render(
       const end = map.get(ends[1])!;
       const subscription = subscribe(
         () => {
-          const next = props.each.value;
-          if (!Array.isArray(next)) throw new TypeError(`ZR_CHILD: For.each at ${path}`);
+          let next: readonly unknown[];
           let nextKeys: Key[];
+          try {
+            next = props.each.value;
+            if (!Array.isArray(next)) throw new TypeError(`ZR_CHILD: For.each at ${path}`);
+          } catch (error) {
+            const recover = owner.recoverRender(error);
+            if (recover) {
+              recover();
+              return;
+            }
+            throw error;
+          }
           try {
             nextKeys = keyed(next, props.by, path);
           } catch (error) {
+            const recover = owner.recoverRender(error);
+            if (recover) {
+              recover();
+              return;
+            }
             const detail = String(error);
             const code = detail.includes("ZR_DUPLICATE_KEY")
               ? "ZR_DUPLICATE_KEY"
@@ -810,6 +1048,7 @@ function render(
           }
           const old = new Map(current.map((entry) => [entry.key, entry]));
           const created: Item[] = [];
+          let rendering = true;
           try {
             const ordered = nextKeys.map((key, index) => {
               const retained = old.get(key);
@@ -839,6 +1078,7 @@ function render(
               created.push(entry);
               return entry;
             });
+            rendering = false;
             for (const entry of created)
               if (entry.owned.forms.length)
                 prepareForms(
@@ -846,6 +1086,10 @@ function render(
                   selfMap(entry.owned.fragment),
                   "mount",
                   context.container,
+                  current
+                    .filter((item) => !nextKeys.includes(item.key))
+                    .map((item) => item.owned.scope),
+                  end.parentNode,
                 );
             for (const entry of current)
               if (!nextKeys.includes(entry.key)) {
@@ -882,6 +1126,13 @@ function render(
             current = ordered;
           } catch (error) {
             for (const entry of created) entry.owned.scope.dispose();
+            if (rendering) {
+              const recover = owner.recoverRender(error);
+              if (recover) {
+                recover();
+                return;
+              }
+            }
             throw error;
           }
         },
@@ -1002,20 +1253,58 @@ function significant(nodes: Node[], pre: boolean): Node[] {
           node.nodeType !== Node.TEXT_NODE || normalize(node.textContent ?? "", false) !== "",
       );
 }
+const openingMarker =
+  /^zr:1:((?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))*):(c|f|t|h|l|s:[01]|i:[ns](?:[0-9a-f]{2})*|e)$/;
+function openMarker(node: Node): RegExpExecArray | null {
+  return node.nodeType === Node.COMMENT_NODE ? openingMarker.exec(node.textContent ?? "") : null;
+}
 function matchingClose(nodes: Node[], start: number): number {
-  const open = nodes[start]!.textContent ?? "";
-  const id = /^zr:1:(\d+):/.exec(open)?.[1];
-  if (id === undefined) return -1;
-  let depth = 0;
+  const first = openMarker(nodes[start]!);
+  if (!first) return -1;
+  const stack = [first[1]!];
   for (let i = start + 1; i < nodes.length; i++) {
-    const value = nodes[i]!.textContent;
-    if (value?.startsWith("zr:1:")) depth++;
-    else if (value?.startsWith("/zr:1:")) {
-      if (depth) depth--;
-      else return value === `/zr:1:${id}` ? i : -1;
-    }
+    const node = nodes[i]!;
+    if (node.nodeType !== Node.COMMENT_NODE) continue;
+    const value = node.textContent ?? "";
+    const open = openMarker(node);
+    if (open) stack.push(open[1]!);
+    else if (value.startsWith("/zr:1:")) {
+      if (value !== `/zr:1:${stack.pop()}`) return -1;
+      if (!stack.length) return i;
+    } else if (value.includes("zr:1:")) return -1;
   }
   return -1;
+}
+function validateBoundaryMarkers(nodes: Node[], prefix: string, path: string): void {
+  const seen = new Set<string>();
+  const invalid = (): never =>
+    fail("ZR_HYDRATION_MISMATCH", "preflight", "balanced boundary markers", "invalid marker", path);
+  const visit = (children: Node[], namespace: string): void => {
+    const stack: Array<{ id: string; namespace: string }> = [];
+    for (const node of children) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        visit([...node.childNodes], namespace);
+        continue;
+      }
+      if (node.nodeType !== Node.COMMENT_NODE) continue;
+      const value = node.textContent ?? "";
+      const open = openMarker(node);
+      if (open) {
+        const id = open[1]!;
+        if (!id.startsWith(namespace) || id.slice(namespace.length).includes(".") || seen.has(id))
+          invalid();
+        seen.add(id);
+        stack.push({ id, namespace });
+        if (open[2] === "e") namespace = `${id}.`;
+      } else if (value.startsWith("/zr:1:")) {
+        const frame = stack.pop();
+        if (!frame || value !== `/zr:1:${frame.id}`) invalid();
+        namespace = frame!.namespace;
+      } else if (value.includes("zr:1:")) invalid();
+    }
+    if (stack.length) invalid();
+  };
+  visit(nodes, prefix);
 }
 function compareChildren(
   expected: Node,
@@ -1033,6 +1322,36 @@ function compareChildren(
     const wanted = wants[i]!;
     const found = has[j]!;
     const childPath = `${path}/${wanted.nodeName.toLowerCase()}[${i}]`;
+    if (context.errorRanges.has(wanted)) {
+      compare(wanted, found, map, context, childPath, pre);
+      const wantedEnd = matchingClose(wants, i);
+      const foundEnd = matchingClose(has, j);
+      if (wantedEnd < 0 || foundEnd < 0)
+        fail(
+          "ZR_HYDRATION_MISMATCH",
+          "preflight",
+          "balanced boundary",
+          "missing marker",
+          childPath,
+        );
+      validateBoundaryMarkers(has.slice(j + 1, foundEnd), `${openMarker(found)![1]}.`, childPath);
+      const close = has[foundEnd]!;
+      map.set(wants[wantedEnd]!, close);
+      const mapFresh = (node: Node): void => {
+        map.set(node, node);
+        for (const child of node.childNodes) mapFresh(child);
+      };
+      // Include whitespace nodes too: significant() is only a comparison view.
+      const allFresh = range(wanted, wants[wantedEnd]!).slice(1, -1);
+      for (const node of allFresh) mapFresh(node);
+      context.replacements.push(() => {
+        for (const node of range(found, close).slice(1, -1)) node.parentNode!.removeChild(node);
+        for (const node of allFresh) close.parentNode!.insertBefore(node, close);
+      });
+      i = wantedEnd + 1;
+      j = foundEnd + 1;
+      continue;
+    }
     if (context.opaque.has(wanted)) {
       compare(wanted, found, map, context, childPath, pre);
       const wantedEnd = matchingClose(wants, i);
@@ -1150,10 +1469,12 @@ function execute(
       next: 0,
       operations: [],
       forms: [],
-      formOwners: new Map(),
-      opaque: new Set(),
-      textSlots: new Set(),
-      displayOnlyTextareas: new Set(),
+      formOwners: new WeakMap(),
+      opaque: new WeakSet(),
+      textSlots: new WeakSet(),
+      displayOnlyTextareas: new WeakSet(),
+      errorRanges: new WeakSet(),
+      replacements: [],
       dynamicRanges: [],
       collectRootRanges: true,
     };
@@ -1183,11 +1504,16 @@ function execute(
       );
     reconcileForms(formBindings, mode);
     if (mode === "mount") container.replaceChildren(fragment);
+    else for (const replace of context.replacements) replace();
+    context.replacements.length = 0;
     committed = true;
     for (const operation of context.operations) operation(map, cleanups);
     const formOwnerByNode = new Map<Node, Owned>();
-    for (const [plan, owner] of context.formOwners)
-      formOwnerByNode.set(map.get(plan.element)!, owner);
+    for (const plan of context.forms) {
+      const owner = context.formOwners.get(plan);
+      if (owner) formOwnerByNode.set(map.get(plan.element)!, owner);
+    }
+    context.forms.length = 0;
     const rootForms = formBindings.filter((binding) => !formOwnerByNode.has(binding.node));
     activateForms(rootForms, scope, cleanups, options, container);
     const ownedForms = new Map<Owned, typeof formBindings>();

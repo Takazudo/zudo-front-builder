@@ -6,10 +6,19 @@ import type { RuntimeScope } from "./scope.js";
 import { diagnostic, report, rootPath, type RootOptions } from "./root.js";
 
 const compositionKey = Symbol.for("@takazudo/zfb/zudo-react/composition-v1");
-const radioOwners = new WeakMap<
-  Document,
-  Set<{ root: Element; name: string; form: HTMLFormElement | null }>
->();
+const controlOwners = new WeakMap<Document, Set<ControlOwner>>();
+interface ControlOwner {
+  root: Element;
+  name: string;
+  form: HTMLFormElement | null;
+  binding: Binding;
+  scope: RuntimeScope;
+}
+function within(scope: RuntimeScope, parents: readonly RuntimeScope[]): boolean {
+  for (let current: RuntimeScope | undefined = scope; current; current = current.parent)
+    if (parents.includes(current)) return true;
+  return false;
+}
 type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 type Model = Signal<string | boolean | null>;
 export interface FormPlan {
@@ -20,6 +29,8 @@ export interface FormPlan {
 interface Binding {
   node: Control;
   model: Model;
+  fresh: boolean;
+  live: boolean;
   kind: "text" | "textarea" | "checkbox" | "select" | "radio";
   read(): string | boolean | null;
   write(value: string | boolean | null): void;
@@ -167,8 +178,35 @@ export function prepareForms(
   map: Map<Node, Node>,
   mode: "hydrate" | "mount",
   container: Element,
+  replacing: readonly RuntimeScope[] = [],
+  parent?: Node | null,
 ): Binding[] {
   const bindings: Binding[] = [];
+  const installed = [...(controlOwners.get(container.ownerDocument) ?? [])].filter(
+    (entry) => entry.root === container && entry.scope.active && !within(entry.scope, replacing),
+  );
+  // Fresh boundary controls still sit in the provisional tree during preflight.
+  // Resolve their ancestor form through the hydration map for group identity.
+  const plannedForms = new Map<string, Node>();
+  for (const plan of plans) {
+    const node = map.get(plan.element) as Element;
+    if (node.localName === "form" && node.id && !plannedForms.has(node.id))
+      plannedForms.set(node.id, node);
+  }
+  const form = (node: HTMLInputElement): Node | null => {
+    const id = node.getAttribute("form");
+    if (id !== null) {
+      const target = plannedForms.get(id) ?? container.ownerDocument.getElementById(id);
+      return target instanceof Element && target.localName === "form" ? target : null;
+    }
+    const ancestor = node.closest("form");
+    if (ancestor) return map.get(ancestor) ?? ancestor;
+    return parent instanceof Element
+      ? parent.localName === "form"
+        ? parent
+        : parent.closest("form")
+      : null;
+  };
   const groupByModel = new Map<Model, Binding[]>();
   const namedRadios = new Map<string, Model>();
   for (const plan of plans) {
@@ -230,14 +268,27 @@ export function prepareForms(
         const radio = node as HTMLInputElement;
         if (!radio.name || typeof props.value !== "string")
           error("ZR_MODEL_UNSUPPORTED", path, "radio requires static name and value");
-        const owners = radioOwners.get(node.ownerDocument);
+        const owners = controlOwners.get(node.ownerDocument);
         if (
           [...(owners ?? [])].some(
             (entry) =>
-              entry.root !== container && entry.name === radio.name && entry.form === radio.form,
+              entry.root !== container &&
+              entry.binding.kind === "radio" &&
+              entry.name === radio.name &&
+              entry.form === form(radio),
           )
         )
           error("ZR_MODEL_CONFLICT", path, "same-name radio owned by another root");
+        if (
+          installed.some(
+            (entry) =>
+              entry.binding.kind === "radio" &&
+              entry.name === radio.name &&
+              entry.form === form(radio) &&
+              entry.binding.model !== model,
+          )
+        )
+          error("ZR_MODEL_CONFLICT", path, "same-name radios use different models");
         const key = `${radio.name}\u0000${radio.getAttribute("form") ?? ""}`;
         const prior = namedRadios.get(key);
         if (prior && prior !== model)
@@ -247,6 +298,8 @@ export function prepareForms(
       const binding: Binding = {
         node: node as Control,
         model,
+        fresh: mode === "hydrate" && node === plan.element,
+        live: false,
         kind: controlKind!,
         path,
         ...adapterFor(controlKind!, node as Control, path),
@@ -258,35 +311,57 @@ export function prepareForms(
     }
   }
   for (const [model, group] of groupByModel) {
-    const radios = group.every((binding) => binding.kind === "radio");
-    if (group.some((binding) => binding.kind === "radio") && !radios)
+    const related = installed
+      .filter((entry) => entry.binding.model === model)
+      .map((entry) => entry.binding);
+    const complete = [...group, ...related];
+    const radios = complete.every((binding) => binding.kind === "radio");
+    if (complete.some((binding) => binding.kind === "radio") && !radios)
       error("ZR_MODEL_CONFLICT", group[0]!.path, "radio and non-radio share model");
     if (radios) {
-      const nodes = group.map((binding) => binding.node as HTMLInputElement);
+      const nodes = complete.map((binding) => binding.node as HTMLInputElement);
       const names = new Set(
         nodes.map((node) => `${node.name}\u0000${node.getAttribute("form") ?? ""}`),
       );
       const optionValues = nodes.map((node) => node.value);
       if (
         names.size !== 1 ||
-        new Set(nodes.map((node) => node.form)).size !== 1 ||
+        new Set(nodes.map(form)).size !== 1 ||
         new Set(optionValues).size !== optionValues.length
       )
         error("ZR_MODEL_CONFLICT", group[0]!.path, "radio group membership or duplicate value");
-      if (mode === "mount" && model.value !== null && !optionValues.includes(model.value as string))
+      if (
+        (mode === "mount" || group.every((binding) => binding.fresh)) &&
+        model.value !== null &&
+        !optionValues.includes(model.value as string)
+      )
         error("ZR_MODEL_VALUE", group[0]!.path, "radio model has no option");
-      if (mode === "hydrate" && nodes.filter((node) => node.checked).length > 1)
+      if (
+        mode === "hydrate" &&
+        group.filter((binding) => !binding.fresh && (binding.node as HTMLInputElement).checked)
+          .length > 1
+      )
         error("ZR_MODEL_CONFLICT", group[0]!.path, "multiple checked radios");
     } else if (
       mode === "hydrate" &&
-      group.some((binding) => !Object.is(binding.read(), group[0]!.read()))
+      group
+        .filter((binding) => !binding.fresh)
+        .some((binding, _, adopted) => !Object.is(binding.read(), adopted[0]!.read()))
     )
       error("ZR_MODEL_CONFLICT", group[0]!.path, "shared model controls disagree");
     if (radios) {
       for (const binding of group) {
         const originalWrite = binding.write;
         binding.write = (value) => {
-          if (value !== null && !optionValuesFor(group).includes(value as string))
+          const current = binding.live
+            ? [...(controlOwners.get(container.ownerDocument) ?? [])]
+                .filter(
+                  (entry) =>
+                    entry.root === container && entry.scope.active && entry.binding.model === model,
+                )
+                .map((entry) => entry.binding)
+            : complete;
+          if (value !== null && !optionValuesFor(current).includes(value as string))
             error("ZR_MODEL_VALUE", binding.path, "radio model has no option");
           originalWrite(value);
         };
@@ -302,10 +377,19 @@ export function reconcileForms(bindings: Binding[], mode: "hydrate" | "mount"): 
   if (mode === "hydrate")
     batch(() => {
       for (const [model, group] of groups) {
-        model.value =
-          group[0]!.kind === "radio"
-            ? (group.find((binding) => binding.read() !== null)?.read() ?? null)
-            : group[0]!.read();
+        const adopted = group.filter((binding) => !binding.fresh);
+        if (adopted.length)
+          model.value =
+            adopted[0]!.kind === "radio"
+              ? (adopted.find((binding) => binding.read() !== null)?.read() ??
+                (group.some(
+                  (binding) =>
+                    binding.fresh && (binding.node as HTMLInputElement).value === model.value,
+                )
+                  ? model.value
+                  : null))
+              : adopted[0]!.read();
+        for (const binding of group) if (binding.fresh) binding.write(model.value);
       }
     });
   else for (const [model, group] of groups) for (const binding of group) binding.write(model.value);
@@ -318,20 +402,28 @@ export function activateForms(
   container: Element,
 ): void {
   const byForm = new Map<HTMLFormElement, Binding[]>();
-  const owned =
-    radioOwners.get(container.ownerDocument) ??
-    new Set<{ root: Element; name: string; form: HTMLFormElement | null }>();
-  radioOwners.set(container.ownerDocument, owned);
-  const registrations: Array<{ root: Element; name: string; form: HTMLFormElement | null }> = [];
-  for (const binding of bindings)
-    if (binding.kind === "radio") {
-      const node = binding.node as HTMLInputElement;
-      const registration = { root: container, name: node.name, form: node.form };
-      registrations.push(registration);
-      owned.add(registration);
-    }
+  const owned = controlOwners.get(container.ownerDocument) ?? new Set<ControlOwner>();
+  controlOwners.set(container.ownerDocument, owned);
+  const registrations: ControlOwner[] = [];
+  for (const binding of bindings) {
+    const node = binding.node as HTMLInputElement;
+    const registration = {
+      root: container,
+      name: node.name,
+      form: (node.hasAttribute("form")
+        ? node.ownerDocument.getElementById(node.getAttribute("form")!)
+        : node.closest("form")) as HTMLFormElement | null,
+      binding,
+      scope,
+    };
+    registrations.push(registration);
+    owned.add(registration);
+  }
   cleanups.push(() => {
-    for (const registration of registrations) owned.delete(registration);
+    for (const registration of registrations) {
+      registration.binding.live = false;
+      owned.delete(registration);
+    }
   });
   for (const binding of bindings) {
     const { node, model } = binding;
@@ -412,6 +504,7 @@ export function activateForms(
       },
     );
     subscription.run();
+    binding.live = true;
     cleanups.push(() => subscription.dispose());
     const form = node.form;
     if (form) byForm.set(form, [...(byForm.get(form) ?? []), binding]);

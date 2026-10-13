@@ -153,3 +153,19 @@ it("diagnoses promise-valued cleanup", async () => {
   scope.dispose();
   expect(codes).toEqual(["ZR_ASYNC_CLEANUP", "ZR_ASYNC_CLEANUP"]);
 });
+
+it("activates following siblings when an activation disposes its own scope", () => {
+  const root = createScope({ component: "Root" });
+  const first = root.child("First");
+  const second = root.child("Second");
+  let activated = 0;
+  withScope(first, () => first.onActivate(() => first.dispose()));
+  withScope(second, () =>
+    second.onActivate(() => {
+      activated++;
+    }),
+  );
+  root.activate();
+  expect(activated).toBe(1);
+  root.dispose();
+});

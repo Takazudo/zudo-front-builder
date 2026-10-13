@@ -97,6 +97,31 @@ export function For<T>(props: ForProps<T>): Description;
 
 For creates owned keyed item regions with readonly item and index signals; see [Conditionals and lists](./conditionals-and-lists.mdx).
 
+### ErrorBoundary
+
+~~~ts
+export interface ErrorBoundaryProps {
+  children: () => Child;
+  fallback: (error: unknown, reset: () => void) => Child;
+  resetKey?: ReadonlySignal<unknown>;
+}
+export function ErrorBoundary(props: ErrorBoundaryProps): Description;
+~~~
+
+ErrorBoundary owns a replaceable subtree. Its children factory runs for each attempt. The
+nearest boundary renders its fallback after a descendant synchronous setup or render failure.
+The fallback receives the original thrown value and a boundary-owned reset callback. A fallback
+failure propagates to an enclosing boundary; it cannot catch itself.
+
+Calling reset queues a fresh attempt. Changing resetKey's readable value also queues a fresh
+attempt, including when the current attempt is healthy. Values use Object.is comparison;
+unchanged values never retry. Requests pending together are coalesced into one attempt. Reset
+is inert after disposal. Server rendering never retries; its reset callback is inert.
+
+See [Local subtree recovery](./scopes-and-lifecycle.mdx#local-subtree-recovery) for a complete
+example, caught phases, and lifecycle guarantees, and [Boundary hydration](./hydration.mdx#boundary-hydration)
+for the deliberate local remount policy.
+
 ### Key
 
 ~~~ts

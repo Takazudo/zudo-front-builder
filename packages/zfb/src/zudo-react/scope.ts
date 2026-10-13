@@ -1,4 +1,5 @@
 import { subscribe, untracked, type Subscription } from "./reactive.js";
+import { recoverable } from "./error-boundary.js";
 import { enqueue, type Job } from "./scheduler.js";
 import type { Cleanup, Diagnostic, Reporter, Scope } from "./index.js";
 
@@ -34,6 +35,7 @@ export class RuntimeScope implements Scope {
   private readonly cleanups: Cleanup[] = [];
   private readonly activations: Array<() => void | Cleanup> = [];
   private readonly effects: Array<{ start: () => void; dispose: () => void }> = [];
+  renderRecovery: ((error: unknown) => () => void) | undefined;
   private controller: AbortController | undefined;
   private live = true;
   private activated = false;
@@ -155,10 +157,28 @@ export class RuntimeScope implements Scope {
     if (!this.live) throw new Error("ZR_SCOPE_DISPOSED");
     return new RuntimeScope({ component, parent: this });
   }
+  // Recovery prepares under a catch, but commits/activates outside it. A failing
+  // fallback is therefore offered to the next owner; activation is never caught.
+  recoverRender(error: unknown): (() => void) | undefined {
+    let attempted = false;
+    for (let owner: RuntimeScope | undefined = this; owner; owner = owner.parent) {
+      if (!recoverable(error)) throw error;
+      if (!owner.active || !owner.renderRecovery) continue;
+      attempted = true;
+      try {
+        const commit = untracked(() => owner.renderRecovery!(error));
+        return () => untracked(commit);
+      } catch (next) {
+        error = next;
+      }
+    }
+    if (attempted) throw error;
+    return undefined;
+  }
   activate(): void {
     if (!this.live || this.activated) return;
     try {
-      for (const child of this.children) child.activate();
+      for (const child of [...this.children]) child.activate();
     } catch (error) {
       this.dispose();
       throw error;
@@ -180,6 +200,11 @@ export class RuntimeScope implements Scope {
   dispose(): void {
     if (!this.live) return;
     this.live = false;
+    if (this.parent) {
+      const index = this.parent.children.indexOf(this);
+      if (index >= 0) this.parent.children.splice(index, 1);
+    }
+    this.renderRecovery = undefined;
     this.controller?.abort();
     for (const child of [...this.children].reverse()) child.dispose();
     this.children.length = 0;

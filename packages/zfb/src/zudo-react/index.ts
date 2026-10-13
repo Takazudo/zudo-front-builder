@@ -18,6 +18,7 @@ export { signal, computed } from "./reactive.js";
 export { batch, flush } from "./scheduler.js";
 export { getScope } from "./scope.js";
 export { Show, For } from "./structure.js";
+export { ErrorBoundary, type ErrorBoundaryProps } from "./error-boundary.js";
 
 export type Cleanup = () => void;
 export interface Scope {

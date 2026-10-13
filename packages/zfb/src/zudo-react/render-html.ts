@@ -1,3 +1,4 @@
+import { boundaryProps, isErrorBoundary, integrity, recoverable } from "./error-boundary.js";
 import { serializeStyle } from "./style.js";
 import {
   Fragment,
@@ -59,6 +60,7 @@ interface Context {
   identity: IslandIdentity | undefined;
   boundary: boolean;
   next: number;
+  prefix?: string;
   scope: RuntimeScope;
   path: string;
   node?: Description | undefined;
@@ -85,6 +87,7 @@ function fail(
   context: Context,
   detail: string,
   spelling?: RenderDiagnostic["spelling"],
+  fatal = false,
 ): never {
   const component = context.identity?.component ?? "static render";
   const site = context.node && descriptionSite(context.node);
@@ -95,9 +98,13 @@ function fail(
     ...(spelling && { spelling }),
     ...(site && { site }),
   };
-  throw Object.assign(new TypeError(`${code}: ${detail} at ${context.path} in ${component}`), {
-    diagnostic,
-  });
+  const error = Object.assign(
+    new TypeError(`${code}: ${detail} at ${context.path} in ${component}`),
+    { diagnostic },
+  );
+  throw fatal || code.startsWith("ZR_ISLAND_") || code === "ZR_NESTED_ISLAND"
+    ? integrity(error)
+    : error;
 }
 function reactive(value: unknown): value is ReadonlySignal<unknown> {
   return (
@@ -112,7 +119,7 @@ function read(value: unknown): unknown {
 }
 function region(context: Context, kind: string, content: () => string): string {
   if (!context.identity) return content();
-  const id = context.next++;
+  const id = `${context.prefix ?? ""}${context.next++}`;
   return `<!--zr:1:${id}:${kind}-->${content()}<!--/zr:1:${id}-->`;
 }
 function at<T>(context: Context, part: string, fn: () => T): T {
@@ -434,12 +441,13 @@ function element(
       fail("ZR_RAW_HTML", context, `${tag} requires static rawHtml`);
     const payload = read(raw);
     if (typeof payload !== "string") fail("ZR_RAW_HTML", context, `${tag} requires string rawHtml`);
-    if (rawHtmlReserved(payload, tag)) fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml");
+    if (rawHtmlReserved(payload, tag))
+      fail("ZR_RAW_HTML", context, "reserved boundary in rawHtml", undefined, true);
     if (
       (tag === "script" && /<\/script/i.test(payload)) ||
       (tag === "style" && /<\/style/i.test(payload))
     )
-      fail("ZR_RAW_HTML", context, `closing ${tag} in rawHtml`);
+      fail("ZR_RAW_HTML", context, `closing ${tag} in rawHtml`, undefined, true);
     content = tag === "script" || tag === "style" ? payload : region(context, "h", () => payload);
   } else if (
     tag === "textarea" &&
@@ -516,6 +524,50 @@ function renderValue(
     return island(value, context, namespace, parent);
   if (value.type === Fragment)
     return region(context, "f", () => children(value.props.children, context, namespace, parent));
+  if (isErrorBoundary(value.type)) {
+    if (
+      parent in tableChildren ||
+      ["select", "optgroup", "option", "title", "textarea", "script", "style"].includes(parent)
+    )
+      fail("ZR_PARSER_CONTEXT", context, parent);
+    const props = boundaryProps(value);
+    const prefix = `${context.prefix ?? ""}${context.next}.`;
+    return region(context, "e", () => {
+      const attempt = (factory: () => Child): string => {
+        const scope = context.scope.child("ErrorBoundary");
+        const local: Context = {
+          ...context,
+          scope,
+          next: 0,
+          prefix,
+          radioGroups: new Map(
+            [...context.radioGroups].map(([key, group]) => [
+              key,
+              { ...group, options: new Set(group.options) },
+            ]),
+          ),
+          radioNames: new Map(context.radioNames),
+          ...(context.selectSeen && { selectSeen: new Set(context.selectSeen) }),
+        };
+        try {
+          const output = withScope(scope, () => render(factory(), local, namespace, parent));
+          context.radioGroups = local.radioGroups;
+          context.radioNames = local.radioNames;
+          context.nextFormId = local.nextFormId;
+          return output;
+        } catch (error) {
+          scope.dispose();
+          throw error;
+        }
+      };
+      try {
+        return attempt(props.children);
+      } catch (error) {
+        if (!recoverable(error)) throw error;
+        return attempt(() => props.fallback(error, () => {}));
+      }
+    });
+  }
   if (isShowType(value.type)) {
     if (
       parent in tableChildren ||
@@ -627,8 +679,10 @@ function island(
     props = normalizeProps(child.props);
     payload = JSON.stringify(props);
   } catch (error) {
-    throw new TypeError(
-      `ZR_ISLAND_PROPS ${component}: ${error instanceof Error ? error.message : String(error)}`,
+    throw integrity(
+      new TypeError(
+        `ZR_ISLAND_PROPS ${component}: ${error instanceof Error ? error.message : String(error)}`,
+      ),
     );
   }
   const when = options.when ?? "load";
