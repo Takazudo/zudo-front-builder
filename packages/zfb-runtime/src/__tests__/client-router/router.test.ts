@@ -1451,6 +1451,175 @@ describe("browser-created (null-state) fragment entries (#4165)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(document.title).toBe("Frag A");
   });
+
+  // #4179 items 1–2: the null-state guard compares against the document the
+  // DOM actually shows, and a different search on that pathname is restored
+  // only when the router itself rendered and left it. Each test uses its own
+  // pathname: the router's departed-document memory is module state.
+  describe("query-bearing documents and syncHistoryEntry aliases (#4179)", () => {
+    function fetchListPages() {
+      const fetchMock = vi.fn(async (url: RequestInfo) => {
+        const u = new URL(String(url), location.href);
+        return htmlResponse(
+          pageHtml(`List ${u.pathname}${u.search}`, `<p id="page">${u.search || "none"}</p>`),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    const drain = () => new Promise((r) => setTimeout(r, 0));
+    const routerState = () => ({ ...(history.state as Record<string, unknown>) });
+    const fetchedUrls = (fetchMock: ReturnType<typeof fetchListPages>) =>
+      fetchMock.mock.calls.map((c) => {
+        const u = new URL(String(c[0]), location.href);
+        return u.pathname + u.search;
+      });
+
+    // Restores the page through one fetch + full lifecycle; returns the seen events.
+    async function traverseExpectingSwap(path: string, state: Record<string, unknown> | null) {
+      const lifecycle = recordLifecycle();
+      const loaded = nextPageLoad();
+      traverseTo(path, state);
+      await loaded;
+      lifecycle.stop();
+      return lifecycle.seen;
+    }
+
+    // Leaves the live DOM alone: no fetch, no lifecycle event, same node.
+    async function traverseExpectingNoSwap(
+      fetchMock: ReturnType<typeof fetchListPages>,
+      path: string,
+      state: Record<string, unknown> | null,
+    ) {
+      const liveNode = document.querySelector("#page");
+      fetchMock.mockClear();
+      const lifecycle = recordLifecycle();
+      traverseTo(path, state);
+      await drain();
+      lifecycle.stop();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(lifecycle.seen).toEqual([]);
+      expect(document.querySelector("#page")).toBe(liveNode);
+    }
+
+    it("(a)(b) Back to a null ?page=1#item entry after a router query nav restores page 1, Forward swaps page 2 back", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qa-list?page=1");
+      browserFragmentNavigation("/qa-list?page=1#item");
+      await navigate("/qa-list?page=2");
+      const page2 = routerState();
+      expect(document.querySelector("#page")?.textContent).toBe("?page=2");
+
+      fetchMock.mockClear();
+      let seen = await traverseExpectingSwap("/qa-list?page=1#item", null);
+      expect(fetchedUrls(fetchMock)).toEqual(["/qa-list?page=1"]);
+      expect(seen).toEqual(["before-preparation:traverse:back", "after-swap", "page-load"]);
+      expect(document.querySelector("#page")?.textContent).toBe("?page=1");
+      expect(location.search).toBe("?page=1");
+      expect(location.hash).toBe("#item");
+
+      fetchMock.mockClear();
+      seen = await traverseExpectingSwap("/qa-list?page=2", page2);
+      expect(fetchedUrls(fetchMock)).toEqual(["/qa-list?page=2"]);
+      expect(seen).toEqual(["before-preparation:traverse:forward", "after-swap", "page-load"]);
+      expect(document.querySelector("#page")?.textContent).toBe("?page=2");
+    });
+
+    it("(c) a raw ?q= entry after a router query nav on the same pathname stays app-owned", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qc-list?page=1");
+      await navigate("/qc-list?page=2");
+      const page2 = routerState();
+      // An app-owned filter UI writing its query through raw History.
+      history.pushState(null, "", "/qc-list?q=foo");
+
+      await traverseExpectingNoSwap(fetchMock, "/qc-list?page=2", page2);
+      await traverseExpectingNoSwap(fetchMock, "/qc-list?q=foo", null);
+      expect(location.search).toBe("?q=foo");
+      expect(document.querySelector("#page")?.textContent).toBe("?page=2");
+    });
+
+    it("(d) a raw ?q= entry after a soft nav from another pathname stays app-owned", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qd-other");
+      await navigate("/qd-list");
+      const listState = routerState();
+      history.pushState(null, "", "/qd-list?q=foo");
+
+      await traverseExpectingNoSwap(fetchMock, "/qd-list", listState);
+      await traverseExpectingNoSwap(fetchMock, "/qd-list?q=foo", null);
+      expect(document.querySelector("#page")?.textContent).toBe("none");
+    });
+
+    it("(e) Back over a syncHistoryEntry() pathname alias to a null fragment entry keeps the live page", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qe-gallery");
+      const galleryState = routerState();
+      browserFragmentNavigation("/qe-gallery#a");
+      syncHistoryEntry("/qe-photos/x/");
+
+      // Back from the alias to the fragment entry, then to the gallery's own
+      // entry: both name the rendered document, so neither refetches it.
+      await traverseExpectingNoSwap(fetchMock, "/qe-gallery#a", null);
+      await traverseExpectingNoSwap(fetchMock, "/qe-gallery", galleryState);
+      expect(document.title).toBe("List /qe-gallery");
+    });
+
+    it("(e) a persisted pageshow on a syncHistoryEntry() alias does not relabel the rendered document", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qe-bf-gallery");
+      browserFragmentNavigation("/qe-bf-gallery#a");
+      syncHistoryEntry("/qe-bf-photos/x/");
+      const pageshow = new Event("pageshow");
+      Object.defineProperty(pageshow, "persisted", { value: true });
+      window.dispatchEvent(pageshow);
+
+      await traverseExpectingNoSwap(fetchMock, "/qe-bf-gallery#a", null);
+      // The alias pathname itself is still another document to the router.
+      fetchMock.mockClear();
+      await traverseExpectingSwap("/qe-bf-other#z", null);
+      expect(fetchedUrls(fetchMock)).toEqual(["/qe-bf-other"]);
+    });
+
+    it("(f) ?page=1#item → ?page=2#item → ?page=3: every router-rendered page is restored across repeated Back/Forward", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qf-list?page=1");
+      const page1 = routerState();
+      browserFragmentNavigation("/qf-list?page=1#item");
+      await navigate("/qf-list?page=2");
+      const page2 = routerState();
+      browserFragmentNavigation("/qf-list?page=2#item");
+      await navigate("/qf-list?page=3");
+      const page3 = routerState();
+      const shown = () => document.querySelector("#page")?.textContent;
+
+      for (let round = 0; round < 2; round++) {
+        fetchMock.mockClear();
+        await traverseExpectingSwap("/qf-list?page=2#item", null);
+        expect(shown()).toBe("?page=2");
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=2", page2);
+        fetchMock.mockClear();
+        // A single "last departed query" would remember only ?page=3 here.
+        await traverseExpectingSwap("/qf-list?page=1#item", null);
+        expect(fetchedUrls(fetchMock)).toEqual(["/qf-list?page=1"]);
+        expect(shown()).toBe("?page=1");
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=1", page1);
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=1#item", null);
+
+        fetchMock.mockClear();
+        let seen = await traverseExpectingSwap("/qf-list?page=2", page2);
+        expect(seen[0]).toBe("before-preparation:traverse:forward");
+        expect(shown()).toBe("?page=2");
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=2#item", null);
+        fetchMock.mockClear();
+        seen = await traverseExpectingSwap("/qf-list?page=3", page3);
+        expect(seen[0]).toBe("before-preparation:traverse:forward");
+        expect(fetchedUrls(fetchMock)).toEqual(["/qf-list?page=3"]);
+        expect(shown()).toBe("?page=3");
+      }
+    });
+  });
 });
 
 describe("island lifecycle ordering during navigate()", () => {

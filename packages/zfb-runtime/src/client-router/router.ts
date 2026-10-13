@@ -52,7 +52,8 @@
 //   - `derivePopDirection` hardens the popstate forward/back calc against an unchanged or
 //     missing/NaN `state.index` that a bfcache restore can leave behind (#1076).
 //   - `onPopState` restores the page for a stateless (browser-created) entry whose
-//     pathname is not the rendered one, instead of always ignoring it (#4165).
+//     pathname is not the rendered one, instead of always ignoring it (#4165), and
+//     for one naming a query the router rendered and left on that pathname (#4179).
 
 import {
   doPreparation,
@@ -144,6 +145,30 @@ let originalLocation: URL;
 // address bar then names a page the live DOM is not, so URL equality must not be
 // taken as "already rendered" until a swap settles the location.
 let currentEntryUnrendered = false;
+// The document the live DOM actually shows. Unlike `originalLocation`, only a
+// fresh page or a committed swap moves it: syncHistoryEntry(), raw History
+// writes and rejected/early URL writes name a URL, not a rendered document.
+let renderedLocation: URL;
+// Documents (pathname + search) a committed swap replaced, oldest first. A
+// stateless entry naming one of them on the rendered pathname is a page the
+// router itself rendered there, not an app's raw `?q=` entry. Bounded so a
+// long session cannot grow it without limit; an evicted document's stateless
+// entry is then left alone, as it was before #4179.
+const departedDocuments = new Set<string>();
+const DEPARTED_DOCUMENTS_LIMIT = 50;
+const documentKey = (url: URL) => url.pathname + url.search;
+
+function commitRenderedLocation(to: URL): void {
+  const departed = documentKey(renderedLocation);
+  if (departed !== documentKey(to)) {
+    departedDocuments.delete(departed);
+    departedDocuments.add(departed);
+    if (departedDocuments.size > DEPARTED_DOCUMENTS_LIMIT) {
+      departedDocuments.delete(departedDocuments.values().next().value!);
+    }
+  }
+  renderedLocation = new URL(to.href);
+}
 
 // Route announcer — ported from Astro's announce(). Each navigation appends a fresh
 // aria-live <div> (after removing any prior announcer, so exactly one ever exists) and
@@ -247,6 +272,7 @@ function ensureNavigationState(): void {
   if (navigationStateSeeded || !inBrowser) return;
   navigationStateSeeded = true;
   originalLocation = new URL(location.href);
+  renderedLocation = new URL(location.href);
   const index = history.state?.index;
   if (Number.isFinite(index)) currentHistoryIndex = index;
 }
@@ -723,6 +749,7 @@ async function updateDOM(
   }
 
   const swapEvent = swapResult.event;
+  commitRenderedLocation(swapEvent.to);
   settleLocation(swapEvent.to, swapEvent.from, historyState);
   triggerEvent("zfb:after-swap");
 
@@ -1199,14 +1226,18 @@ function onPopState(ev: PopStateEvent) {
   // Our view transition entries always have state.
   if (ev.state === null) {
     const to = new URL(location.href);
-    // An entry of the rendered document's pathname is left alone: the browser
-    // has already handled a fragment entry, and a raw `pushState(null, "", "?q=…")`
-    // belongs to the app's own popstate handling. Search is deliberately not
-    // compared, unlike samePage().
-    if (originalLocation.pathname === to.pathname && !currentEntryUnrendered) return;
+    if (!currentEntryUnrendered && !nullEntryNeedsRestore(to)) {
+      // A fragment entry of the rendered document: the browser has already
+      // handled it, and this URL is now where the router is. (A raw `?q=`
+      // entry is not re-pointed: Back to the router's own entry of this
+      // document must stay a same-page traverse.)
+      if (documentKey(to) === documentKey(renderedLocation)) originalLocation = to;
+      return;
+    }
     // The entry belongs to a page the live DOM no longer shows (A#frag after a
-    // soft navigation to B): restore it. Without an index the direction is
-    // unknowable, so it takes derivePopDirection's safe default. (#4165)
+    // soft navigation to B, or /list?page=1#item after the router swapped in
+    // ?page=2): restore it. Without an index the direction is unknowable, so
+    // it takes derivePopDirection's safe default. (#4165, #4179)
     onUnindexedEntry = true;
     transition(
       derivePopDirection(Number.NaN, currentHistoryIndex),
@@ -1240,6 +1271,22 @@ function onPopState(ev: PopStateEvent) {
     state,
     ev.hasUAVisualTransition,
   );
+}
+
+// Whether a stateless popstate entry names a document other than the one the
+// live DOM shows (#4179). Compared against the RENDERED document, never the
+// last-known URL that syncHistoryEntry() moves without rendering:
+//   - another pathname: router-owned document navigation, restore it;
+//   - the rendered pathname and search: a fragment entry, the browser's job;
+//   - the rendered pathname, another search: restore it only if the router
+//     itself rendered and left that document. Any other search is an app's
+//     raw `pushState(null, "", "?q=…")`, which owns its own Back/Forward.
+// Residual: a raw push of exactly a search the router rendered and left is
+// restored too; app-owned entries should use syncHistoryEntry().
+function nullEntryNeedsRestore(to: URL): boolean {
+  if (to.pathname !== renderedLocation.pathname) return true;
+  if (to.search === renderedLocation.search) return false;
+  return departedDocuments.has(documentKey(to));
 }
 
 // Decide forward vs back from the popped entry's index against the last
@@ -1284,6 +1331,9 @@ const onPageShow = (ev: PageTransitionEvent) => {
   // both here so the next transition() gets the correct `from` URL (a stale
   // `originalLocation` would feed onPopState the wrong origin).
   originalLocation = new URL(location.href);
+  // `renderedLocation` is deliberately NOT re-seeded: the bfcache restores the
+  // DOM and this module's state together, so it still names the shown
+  // document, while the URL may be a syncHistoryEntry() alias of it.
   currentEntryUnrendered = false;
   onUnindexedEntry = false;
   const index = history.state?.index;
@@ -1573,7 +1623,10 @@ export function init(_options?: InitOptions): void {
   // Where we came from, for the first transition() of this page. Re-seeded
   // unconditionally at activation (as module evaluation used to do), so it
   // reflects the URL at activation time even if an init-less navigate() or
-  // syncHistoryEntry() already primed it via ensureNavigationState().
+  // syncHistoryEntry() already primed it via ensureNavigationState(). The
+  // rendered document is seeded only once: after an init-less
+  // syncHistoryEntry() the URL is an alias, not the document in the DOM.
+  if (!navigationStateSeeded) renderedLocation = new URL(location.href);
   navigationStateSeeded = true;
   originalLocation = new URL(location.href);
   currentEntryUnrendered = false;
