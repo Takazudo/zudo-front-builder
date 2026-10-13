@@ -6,6 +6,17 @@ The recipes are frozen in `fixtures/`: no island; event-only button; scalar sign
 
 Dependency-graph lock fingerprint (#4187, not yet wired into the contracts): `lock-fingerprint.mjs` hashes only the `pnpm-lock.yaml` content that can produce measured bytes, under the policy in [LOCK-FINGERPRINT-POLICY.md](LOCK-FINGERPRINT-POLICY.md). Run `node research/v3-island-size/lock-fingerprint.mjs --explain` to print the fingerprint and its inclusion inventory.
 
+## Native collection workflow
+
+`.github/workflows/island-size-darwin.yml` (display name `island-size-native`) collects native island-size evidence for both platforms from one `workflow_dispatch` entry point. The `platform` input selects the lane: `darwin-arm64` (default, job `measure-darwin` on `macos-15`), `linux-x64` (job `measure-linux` on `ubuntu-24.04`), or `both`. The Linux lane mirrors the island-size recipe in `health.yml` (build, pack, two `measure-real.mjs` runs, `normalize-identity.mjs`, `check-budget.mjs --contract research/v3-island-size/decision-linux-x64.json`) but does not run `pnpm test:workspace` first, so evidence can be collected while the T1 drift guard is red. It uploads a 30-day `island-size-linux-x64-<source-sha>` artifact.
+
+The filename stays `island-size-darwin.yml` on purpose: `gh workflow run` only accepts a workflow path already registered on the default branch, and GitHub then uses the dispatched ref's file content and declared inputs. A new workflow file would be undispatchable until it reached `main`.
+
+```sh
+gh workflow run island-size-darwin.yml --ref <branch> -f ref=<sha> -f platform=both -f enforce=false   # collect
+gh workflow run island-size-darwin.yml --ref <branch> -f ref=<sha> -f platform=both -f enforce=true    # enforce
+```
+
 ## Darwin measurement on CI
 
 `.github/workflows/island-size-darwin.yml` runs the full native Darwin arm64 real measurement on the pinned `macos-15` runner. It builds `zfb` from the checked-out source, packs both SDK packages, and runs the complete eight-fixture workspace and packed matrices. Each case is measured twice and the guard compares the complete saved `dist` inventories. The workflow retains all files under `target/island-size/` in a 30-day `island-size-darwin-arm64-<source-sha>` artifact, including package tarballs, reports, inventories, checker output, and runner provenance.
