@@ -204,7 +204,7 @@ This epic edits no `health.yml` test wiring (per `crates/CLAUDE.md`); this topic
 
 ## 8c. Parser-bytes boundary
 
-The parser is pinned by the identity string `yaml@2.9.0` only. The installed `yaml` package bytes and integrity are **not** part of the fingerprint, because they live under the excluded root importer. This is accepted: the fingerprint is computed over canonical semantic content, so the parser's bytes do not change its value. A parser bug would surface as a parse error or a different canonical value, both of which fail closed, and replacing the parser is a `parser` identity change, which is an explicit policy bump.
+The parser is pinned by the identity string `yaml@2.9.0` only. The installed `yaml` package bytes and integrity are **not** part of the fingerprint, because they live under the excluded root importer. This is accepted: the fingerprint is computed over canonical semantic content, so the parser's bytes do not change its value. A parser bug would surface as a parse error or a different canonical value, both of which fail closed, and replacing the parser is a `parser` identity change, which is an explicit policy bump. The helper refuses to run when the installed `yaml` package version differs from the pinned `parser` identity, so a root `yaml` bump cannot change the parser behind an unchanged identity string.
 
 ## 9. Unresolved owner choices (kept open on purpose)
 

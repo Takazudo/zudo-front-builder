@@ -60,12 +60,11 @@ import {
   REASONS,
   acceptedSchemas,
   artifactFingerprintProblem,
-  checkoutFingerprint,
-  checkoutIdentityHashes,
   contractFingerprint,
   describeDeltas,
   diffCeilings,
   measuredTotals,
+  readCheckoutIdentity,
   rewriteTestBlock,
 } from "./rebaseline-island-size-linux.mjs";
 
@@ -1034,30 +1033,9 @@ export function checkoutMismatches(evidence, checkout) {
   return errors;
 }
 
-// The checkout's identity, read from `root`; the fingerprint error is kept so
-// only the reasons that need the fingerprint fail on it.
+// The checkout's identity, read from `root`.
 export function readDarwinCheckout(contract, root = ".") {
-  const at = (path) => join(root, path);
-  const packageVersion = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
-  const lockBytes = readFileSync(at("pnpm-lock.yaml"));
-  const checkout = {
-    packageVersion,
-    pnpmLockSha256: sha256(lockBytes),
-    cargoLockSha256: sha256(readFileSync(at("Cargo.lock"))),
-    ...checkoutIdentityHashes(contract, root),
-    dependencyFingerprint: null,
-    dependencyFingerprintError: null,
-  };
-  try {
-    checkout.dependencyFingerprint = checkoutFingerprint(
-      lockBytes.toString("utf8"),
-      packageVersion,
-      resolve(root),
-    );
-  } catch (error) {
-    checkout.dependencyFingerprintError = error?.message ?? String(error);
-  }
-  return checkout;
+  return readCheckoutIdentity(contract, root);
 }
 
 // `root` is the checkout the contract, test pins and README are rewritten in.

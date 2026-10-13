@@ -17,6 +17,7 @@
 // instead of returning a partial fingerprint.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -99,6 +100,14 @@ function hasOwn(object, key) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// FINGERPRINT_PARSER is a pinned identity, so refuse to fingerprint with any other installed yaml.
+function assertInstalledParser() {
+  const { version } = createRequire(import.meta.url)("yaml/package.json");
+  if (`yaml@${version}` !== FINGERPRINT_PARSER) {
+    fail("PARSER_IDENTITY", `installed yaml@${version} is not the pinned ${FINGERPRINT_PARSER}`);
+  }
 }
 
 export function fingerprintHelperSha256(path = scriptPath) {
@@ -486,6 +495,7 @@ export function collectBuildInputs(importerPaths, repoRoot = defaultRepoRoot) {
     } catch (error) {
       fail("BUILD_INPUT", `${importer}/package.json is unreadable: ${error.message}`);
     }
+    if (!isRecord(manifest)) fail("BUILD_INPUT", `${importer}/package.json must be an object`);
     const scripts = manifest.scripts ?? {};
     if (!isRecord(scripts))
       fail("BUILD_INPUT", `${importer}/package.json scripts must be an object`);
@@ -509,6 +519,7 @@ export function computeLockFingerprint({ lockText, currentVersion, repoRoot = de
   if (typeof currentVersion !== "string" || currentVersion.length === 0) {
     fail("INVALID_INPUT", "currentVersion must be the non-empty packages/zfb version");
   }
+  assertInstalledParser();
   const [environment, project] = parseLock(lockText);
   checkEnvironmentDocument(environment);
   checkProjectDocument(project);

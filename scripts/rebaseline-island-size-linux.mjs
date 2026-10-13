@@ -120,6 +120,32 @@ export function checkoutIdentityHashes(contract, root = ".") {
   };
 }
 
+// The checkout's identity, read from `root`. A fingerprint failure is kept as
+// dependencyFingerprintError and reported by artifactFingerprintProblem.
+export function readCheckoutIdentity(contract, root = ".") {
+  const at = (path) => join(root, path);
+  const packageVersion = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
+  const lockBytes = readFileSync(at("pnpm-lock.yaml"));
+  const checkout = {
+    packageVersion,
+    pnpmLockSha256: sha256(lockBytes),
+    cargoLockSha256: sha256(readFileSync(at("Cargo.lock"))),
+    ...checkoutIdentityHashes(contract, root),
+    dependencyFingerprint: null,
+    dependencyFingerprintError: null,
+  };
+  try {
+    checkout.dependencyFingerprint = checkoutFingerprint(
+      lockBytes.toString("utf8"),
+      packageVersion,
+      resolve(root),
+    );
+  } catch (error) {
+    checkout.dependencyFingerprintError = error?.message ?? String(error);
+  }
+  return checkout;
+}
+
 // Every reason the artifact's run provenance does not describe this checkout
 // byte-for-byte, or []. A migration relaxes runner equality against the old
 // contract only, never against the measured checkout.
@@ -841,27 +867,9 @@ export function main(argv = process.argv.slice(2), root = ".") {
   }
   const provenance = measurements.workspace.provenance;
   for (const mode of MODES) assertLinuxX64Provenance(measurements[mode].provenance);
-  const version = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
-  const lockBytes = readFileSync(at("pnpm-lock.yaml"));
-  const pnpmLockSha256 = sha256(lockBytes);
   const contract = JSON.parse(readFileSync(at(CONTRACT), "utf8"));
-  const checkout = {
-    packageVersion: version,
-    pnpmLockSha256,
-    cargoLockSha256: sha256(readFileSync(at("Cargo.lock"))),
-    ...checkoutIdentityHashes(contract, root),
-    dependencyFingerprint: null,
-    dependencyFingerprintError: null,
-  };
-  try {
-    checkout.dependencyFingerprint = checkoutFingerprint(
-      lockBytes.toString("utf8"),
-      version,
-      resolve(root),
-    );
-  } catch (error) {
-    checkout.dependencyFingerprintError = error?.message ?? String(error);
-  }
+  const checkout = readCheckoutIdentity(contract, root);
+  const { packageVersion: version, pnpmLockSha256 } = checkout;
   for (const mode of MODES) {
     const p = measurements[mode].provenance;
     if (p.sourceSha !== provenance.sourceSha)
