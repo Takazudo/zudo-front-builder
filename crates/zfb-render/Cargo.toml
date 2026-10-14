@@ -3,6 +3,9 @@ name = "zfb-render"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
+# Internal workspace crate; the island-size cargo-internal-rewire re-pin proves
+# "unpublished" from this field, never from the crate name (#4258).
+publish = false
 description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orchestrator"
 
 [lib]

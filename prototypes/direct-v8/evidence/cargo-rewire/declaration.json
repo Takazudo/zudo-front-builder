@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "producer": "zfb",
+  "oldCargoLockSha256": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+  "newCargoLockSha256": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+  "added": [
+    {
+      "id": "zfb-js-host@0.0.0",
+      "manifest": "crates/zfb-js-host/Cargo.toml",
+      "sha256": "db19fe3fbf64e46f40ffecb7cd5abe2ec0c05bef0f446d78fa5bdae7d8bc92bc",
+      "dependencies": [
+        "base64",
+        "getrandom 0.3.4",
+        "reqwest",
+        "serde",
+        "serde_json",
+        "sha1",
+        "sha2",
+        "thiserror",
+        "tokio",
+        "url",
+        "v8"
+      ]
+    }
+  ],
+  "changed": [
+    {
+      "id": "zfb-render@0.0.0",
+      "manifest": "crates/zfb-render/Cargo.toml",
+      "oldSha256": "fe8968d7ef6e23a8ba5ef4feeca4a2e207406015c1a7110b9cb8e5a45a67fe8e",
+      "newSha256": "ac163abe391c942887f03553960d104837c874d5d3ca33cbe26b71829d92ed67",
+      "removedDependencies": ["sha1", "sha2"],
+      "addedDependencies": ["zfb-js-host"]
+    }
+  ],
+  "closure": {
+    "added": ["zfb-js-host@0.0.0"],
+    "changed": []
+  }
+}
