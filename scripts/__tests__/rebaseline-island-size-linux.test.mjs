@@ -52,6 +52,7 @@ import {
   asSchemaV2,
   ceilingsOf,
   gitIn,
+  landStaged,
   makeCheckout,
   makeGitCheckout,
   makeGraphCheckout,
@@ -2282,6 +2283,7 @@ describe("dependency-graph (#4218)", () => {
       "head-sha": HEAD,
       "source-sha": SOURCE,
       reason: "dependency-graph",
+      stage: join(tempDir("zfb-graph-stage-"), "stage"),
       ...extra,
     })
       .filter(([, value]) => value !== undefined)
@@ -2296,7 +2298,10 @@ describe("dependency-graph (#4218)", () => {
   it("re-pins only the fingerprint sha256 end to end and regenerates the inventory", async () => {
     quiet();
     expect(repo.dependencyFingerprint.sha256).not.toBe(repo.priorFingerprint.sha256);
-    await main(argv(), repo.root);
+    const stage = join(tempDir("zfb-graph-stage-"), "stage");
+    await main(argv({ stage }), repo.root);
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    landStaged(stage, repo.root);
     const next = written();
     const moved = contractDiffKeys(pinned, next);
     expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
@@ -2458,6 +2463,12 @@ describe("dependency-graph (#4218)", () => {
       message: /real-workspace: measurement\.normalized\.json source\.sha256 .*\(stale sidecar\)/,
     },
     {
+      name: "a sidecar whose normalizer.sha256 was tampered",
+      tamper: sidecar("packed", (s) => (s.normalizer.sha256 = "0".repeat(64))),
+      message:
+        "real-packed: measurement.normalized.json normalizer.sha256 differs from the current normalizer; refusing",
+    },
+    {
       name: "a --source-sha that is not the artifact's",
       args: { "source-sha": "d".repeat(40) },
       message: /workspace artifact measured source b{40}, not --source-sha/,
@@ -2533,6 +2544,15 @@ describe("dependency-graph (#4218)", () => {
     expect(() => parseArgs(["--reason", "dependency-graph", "--artifact"])).toThrow(
       /bad argument: --artifact/,
     );
+  });
+
+  it("refuses to run without --stage, in parseArgs, before reading or writing anything", async () => {
+    const message =
+      "--reason dependency-graph re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)";
+    expect(() => parseArgs(argv({ stage: undefined }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    await expect(main(argv({ stage: undefined }), repo.root)).rejects.toThrow(message);
+    unchanged(before);
   });
 
   it("stages every output outside the checkout and refuses an unpaired --apply", async () => {
@@ -2708,6 +2728,31 @@ describe("fingerprintPolicyRefusal (#4218)", () => {
       "--reason fingerprint-policy: policy identity line not found in LOCK-FINGERPRINT-POLICY.md",
     );
   });
+
+  it("refuses a document with more than one policy identity line", () => {
+    const line = 'Policy identity: `policyVersion: 1`, `parser: "yaml@2.9.0"`.';
+    for (const second of [line, "Policy identity: (malformed)"]) {
+      expect(() =>
+        rewritePolicyIdentity("# Policy\n\n" + line + "\n\n" + second + "\n", local),
+      ).toThrow(
+        "--reason fingerprint-policy: 2 policy identity lines in LOCK-FINGERPRINT-POLICY.md; expected exactly one",
+      );
+    }
+  });
+
+  it("round-trips a parser that needs JSON escapes or carries a replacement pattern", () => {
+    const doc =
+      '# Policy\n\nPolicy identity: `policyVersion: 1`, `parser: "yaml@2.9.0"`. Any change.\n';
+    const escaped = { policyVersion: 2, parser: 'yaml@2.9.0+"q"\\$&' };
+    const next = rewritePolicyIdentity(doc, escaped);
+    expect(next).toBe(
+      '# Policy\n\nPolicy identity: `policyVersion: 2`, `parser: "yaml@2.9.0+\\"q\\"\\\\$&"`. Any change.\n',
+    );
+    expect(rewritePolicyIdentity(next, escaped)).toBe(next);
+    expect(rewritePolicyIdentity(next, { policyVersion: 3, parser: "yaml@3.0.0" })).toBe(
+      '# Policy\n\nPolicy identity: `policyVersion: 3`, `parser: "yaml@3.0.0"`. Any change.\n',
+    );
+  });
 });
 
 // End-to-end CLI runs against one test-fixture checkout — synthetic prior
@@ -2811,6 +2856,7 @@ describe("fingerprint-policy (#4218)", () => {
       "head-sha": HEAD,
       "source-sha": SOURCE,
       reason: "fingerprint-policy",
+      stage: join(tempDir("zfb-policy-stage-"), "stage"),
       ...extra,
     })
       .filter(([, value]) => value !== undefined)
@@ -2833,7 +2879,10 @@ describe("fingerprint-policy (#4218)", () => {
     expect(LIVE_POLICY_VERSION).toBe(1);
     expect(repo.priorFingerprint.policyVersion).toBe(1);
     expect(repo.dependencyFingerprint.policyVersion).toBe(2);
-    await main(argv(), repo.root);
+    const stage = join(tempDir("zfb-policy-stage-"), "stage");
+    await main(argv({ stage }), repo.root);
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    landStaged(stage, repo.root);
     const next = written();
     const moved = contractDiffKeys(pinned, next);
     expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
@@ -2935,6 +2984,36 @@ describe("fingerprint-policy (#4218)", () => {
     );
   });
 
+  it("refuses to run without --stage, in parseArgs, before reading or writing anything", async () => {
+    const message =
+      "--reason fingerprint-policy re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)";
+    expect(() => parseArgs(argv({ stage: undefined }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    await expect(main(argv({ stage: undefined }), repo.root)).rejects.toThrow(message);
+    unchanged(before);
+  });
+
+  it("round-trips an escaped parser identity from a fixture helper through successive re-pins", async () => {
+    quiet();
+    const other = makePolicyCheckout(roots, { editHelper: policyHelper.v2Escaped });
+    expect(other.dependencyFingerprint.parser).toBe('yaml@2.9.0+"q"\\$&');
+    const otherArtifact = artifactAt(other);
+    writeFileSync(join(other.root, CONTRACT), contractText(pinnedAt(other, otherArtifact)));
+    const livePolicy = readFileSync(join(other.root, POLICY), "utf8");
+    const stage = join(tempDir("zfb-policy-stage-"), "stage");
+    await main(argv({ artifact: otherArtifact, stage }), other.root);
+    const staged = readFileSync(join(stage, POLICY), "utf8");
+    const line = identityLine(other.dependencyFingerprint);
+    expect(line).toContain('`parser: "yaml@2.9.0+\\"q\\"\\\\$&"`');
+    expect(staged).toBe(livePolicy.replace(identityLine(other.priorFingerprint), () => line));
+    // The next re-pin finds and replaces the escaped line this one wrote.
+    expect(rewritePolicyIdentity(staged, other.dependencyFingerprint)).toBe(staged);
+    const later = { policyVersion: 3, parser: "yaml@3.0.0" };
+    expect(rewritePolicyIdentity(staged, later)).toBe(
+      livePolicy.replace(identityLine(other.priorFingerprint), () => identityLine(later)),
+    );
+  });
+
   it("refuses a helper that exports a version other than the one it computes", async () => {
     quiet();
     const other = makePolicyCheckout(roots, { editHelper: policyHelper.exports3 });
@@ -2993,7 +3072,9 @@ describe("fingerprint-policy (#4218)", () => {
     expect(graph.outcome).toBe("dependency-graph-repin");
     expect(graph.baselineEvidence.repinnedFrom.outcome).toBe(pinned.outcome);
     writeFileSync(at(CONTRACT), contractText(graph));
-    await main(argv(), repo.root);
+    const stage = join(tempDir("zfb-policy-stage-"), "stage");
+    await main(argv({ stage }), repo.root);
+    landStaged(stage, repo.root);
     const next = written();
     expect(next.outcome).toBe("fingerprint-policy");
     expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
@@ -3136,6 +3217,22 @@ describe("fingerprint-policy (#4218)", () => {
       message: "(stale sidecar)",
     },
     {
+      name: "a sidecar whose normalizer.sha256 was tampered",
+      tamper: sidecar("workspace", (s) => (s.normalizer.sha256 = "0".repeat(64))),
+      message:
+        "real-workspace: measurement.normalized.json normalizer.sha256 differs from the current normalizer; refusing",
+    },
+    {
+      name: "two policy identity lines",
+      setup: () =>
+        writeFileSync(
+          at(POLICY),
+          saved[POLICY].toString("utf8") +
+            '\nPolicy identity: `policyVersion: 1`, `parser: "yaml@2.9.0"`.\n',
+        ),
+      message: "2 policy identity lines in LOCK-FINGERPRINT-POLICY.md; expected exactly one",
+    },
+    {
       name: "a --source-sha that is not the artifact's",
       args: { "source-sha": "d".repeat(40) },
       message: "workspace artifact measured source " + SOURCE + ", not --source-sha",
@@ -3185,9 +3282,6 @@ describe("fingerprint-policy (#4218)", () => {
       setup?.();
       const dir = provenance || tamper ? artifactAt(repo, provenance, tamper) : artifact;
       const before = OUTPUTS.map(read);
-      await expect(main(argv({ artifact: dir, ...args }), repo.root)).rejects.toThrow(message);
-      unchanged(before);
-      if (args?.["expected-old-cargo-sha"]) return;
       const stage = tempDir("zfb-policy-refused-stage-");
       await expect(main(argv({ artifact: dir, stage, ...args }), repo.root)).rejects.toThrow(
         message,

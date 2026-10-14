@@ -87,11 +87,14 @@
 // so the Darwin script can stage into the same directory. `--apply <dir>`
 // (either script) writes every staged file once all live and staged hashes
 // still match and a paired reason is staged for both platforms
-// (openOutputSession / applyStage below).
+// (openOutputSession / applyStage below). The paired reasons
+// (`dependency-graph`, `fingerprint-policy`) refuse to run without `--stage`.
 //
 // No file is written before every validation and every rendered output
-// succeeds; `--apply` refuses if any destination moved since staging. There is
-// no force or ignore-provenance option of any kind.
+// succeeds; `--apply` refuses if any destination moved since staging, writes
+// every destination to a temporary sibling first and only then renames them
+// into place, restoring already-renamed files if a rename fails. There is no
+// force or ignore-provenance option of any kind.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -102,6 +105,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -698,22 +702,39 @@ function assertFingerprintPolicyMovement(contract, evidence) {
 }
 
 const POLICY_DOC_NAME = "LOCK-FINGERPRINT-POLICY.md";
-const POLICY_IDENTITY_LINE = /^Policy identity: `policyVersion: \d+`, `parser: "[^"\n]*"`/m;
+// Any line opening with the marker counts, so a malformed duplicate is refused
+// rather than silently left behind.
+const POLICY_IDENTITY_MARKER = /^Policy identity:/gm;
+// The parser is written as a JSON string literal, escapes included, so the
+// pattern accepts exactly what policyIdentityLine() renders.
+const POLICY_IDENTITY_LINE =
+  /^Policy identity: `policyVersion: \d+`, `parser: "(?:[^"\\\n]|\\.)*"`/m;
+
+function policyIdentityLine(fingerprint) {
+  return (
+    "Policy identity: `policyVersion: " +
+    fingerprint.policyVersion +
+    "`, `parser: " +
+    JSON.stringify(fingerprint.parser) +
+    "`"
+  );
+}
 
 // Rewrites the policy identity line of LOCK-FINGERPRINT-POLICY.md to the
-// re-pinned `fingerprint`; refuses a document without exactly that line.
+// re-pinned `fingerprint`; refuses a document without exactly one such line.
 export function rewritePolicyIdentity(source, fingerprint) {
-  if (!POLICY_IDENTITY_LINE.test(source)) {
+  const markers = source.match(POLICY_IDENTITY_MARKER)?.length ?? 0;
+  if (markers > 1) {
+    throw fingerprintPolicyError(
+      markers + " policy identity lines in " + POLICY_DOC_NAME + "; expected exactly one",
+    );
+  }
+  if (markers === 0 || !POLICY_IDENTITY_LINE.test(source)) {
     throw fingerprintPolicyError("policy identity line not found in " + POLICY_DOC_NAME);
   }
-  return source.replace(
-    POLICY_IDENTITY_LINE,
-    "Policy identity: `policyVersion: " +
-      fingerprint.policyVersion +
-      "`, `parser: " +
-      JSON.stringify(fingerprint.parser) +
-      "`",
-  );
+  const line = policyIdentityLine(fingerprint);
+  // A replacer function: `$` in the parser must not be read as a pattern.
+  return source.replace(POLICY_IDENTITY_LINE, () => line);
 }
 
 // Refuses a rewrite of `before` into `after` that moved any key outside
@@ -2372,8 +2393,8 @@ export function regenerateInventory(root, pinned, helper, reason = DEPENDENCY_GR
 
 // Why a saved `measurement.normalized.json` in `modeDir` cannot stand for the
 // saved bytes, or null: it must exist, cite the SHA-256 of the saved
-// measurement.json, and carry results equal to `recomputed` (a fresh
-// normalize-identity.mjs pass over the same bytes).
+// measurement.json and of the current normalizer, and carry results equal to
+// `recomputed` (a fresh normalize-identity.mjs pass over the same bytes).
 export function savedSidecarProblem(modeDir, recomputed) {
   const sidecarPath = join(modeDir, NORMALIZED_SIDECAR);
   if (!existsSync(sidecarPath)) return "missing " + NORMALIZED_SIDECAR;
@@ -2388,6 +2409,9 @@ export function savedSidecarProblem(modeDir, recomputed) {
     return (
       NORMALIZED_SIDECAR + " source.sha256 is not the saved measurement.json's (stale sidecar)"
     );
+  }
+  if (sidecar?.normalizer?.sha256 !== normalizerSha256()) {
+    return NORMALIZED_SIDECAR + " normalizer.sha256 differs from the current normalizer";
   }
   if (!isDeepStrictEqual(sidecar.results, JSON.parse(JSON.stringify(recomputed.results)))) {
     return NORMALIZED_SIDECAR + " results disagree with the recomputation from the saved bytes";
@@ -2580,11 +2604,67 @@ export function openOutputSession(root, stageDir) {
 // The platform names a stage run records; a paired reason needs both.
 export const STAGE_PLATFORMS = Object.freeze(["linux-x64", "darwin-arm64"]);
 
+// Lands `targets` ({path, target, bytes, original}) in two phases: every
+// destination's bytes go to a sibling temporary file first, then each is
+// renamed over its destination. A failure before the first rename removes the
+// temporary files and changes nothing; a failed rename restores the
+// destinations already renamed from their `original` bytes (null: the file did
+// not exist), best effort, and reports what it could not restore. `io` swaps
+// the write and rename for a test that forces a failure.
+function landAll(targets, label, io) {
+  const temps = [];
+  try {
+    for (const { target, bytes } of targets) {
+      temps.push(target + ".apply-" + randomBytes(8).toString("hex") + ".tmp");
+      io.writeFileSync(temps.at(-1), bytes);
+    }
+  } catch (error) {
+    for (const temp of temps) rmSync(temp, { force: true });
+    throw new Error(
+      label + ": could not write a temporary file (" + error.message + "); nothing was applied",
+      { cause: error },
+    );
+  }
+  let renamed = 0;
+  try {
+    for (; renamed < targets.length; renamed++)
+      io.renameSync(temps[renamed], targets[renamed].target);
+  } catch (error) {
+    const unrestored = [];
+    for (const { path, target, original } of targets.slice(0, renamed)) {
+      try {
+        if (original === null) rmSync(target, { force: true });
+        else writeFileSync(target, original);
+      } catch {
+        unrestored.push(path);
+      }
+    }
+    for (const temp of temps.slice(renamed)) rmSync(temp, { force: true });
+    throw new Error(
+      label +
+        ": renaming " +
+        targets[renamed].path +
+        " into place failed (" +
+        error.message +
+        "); " +
+        (unrestored.length === 0
+          ? "restored the " + renamed + " destination(s) already renamed, so nothing was applied"
+          : "could not restore " + unrestored.join(", ") + "; restore them from git"),
+      { cause: error },
+    );
+  }
+}
+
 // `--apply <dir>`: re-validates that every live destination still hashes to
 // its manifest "live" value and every staged file to its "staged" value, and
-// that a paired reason was staged for both platforms; then writes every
-// destination. Any mismatch writes nothing.
-export function applyStage(stageDir, root = ".", log = console.log) {
+// that a paired reason was staged for both platforms; then lands every
+// destination through landAll. Any mismatch writes nothing.
+export function applyStage(
+  stageDir,
+  root = ".",
+  log = console.log,
+  io = { writeFileSync, renameSync },
+) {
   const label = "--apply " + stageDir;
   checkStageLocation(root, stageDir, STAGEABLE_FILES, label);
   const manifest = readStageManifest(stageDir, label, true);
@@ -2608,27 +2688,46 @@ export function applyStage(stageDir, root = ".", log = console.log) {
       );
     }
   }
-  const moved = paths.filter(
-    (path) => hashOrNull(resolve(root, path)) !== manifest.destinations[path].live,
-  );
+  // Each destination's real file, so a symlinked destination is written through.
+  const targets = paths.map((path) => {
+    const target = realTarget(resolve(root, path));
+    return { path, target, original: existsSync(target) ? readFileSync(target) : null };
+  });
+  const moved = targets
+    .filter(
+      ({ path, original }) =>
+        (original === null ? null : sha256(original)) !== manifest.destinations[path].live,
+    )
+    .map(({ path }) => path);
   if (moved.length > 0) {
     throw new Error(label + ": " + moved.join(", ") + " moved since staging; nothing was applied");
   }
-  const bytes = paths.map((path) => readFileSync(join(stageDir, path)));
-  paths.forEach((path, i) => {
-    if (sha256(bytes[i]) !== manifest.destinations[path].staged) {
+  for (const entry of targets) {
+    entry.bytes = readFileSync(join(stageDir, entry.path));
+    if (sha256(entry.bytes) !== manifest.destinations[entry.path].staged) {
       throw new Error(
-        label + ": the staged " + path + " changed after staging; nothing was applied",
+        label + ": the staged " + entry.path + " changed after staging; nothing was applied",
       );
     }
-  });
-  paths.forEach((path, i) => writeFileSync(resolve(root, path), bytes[i]));
+  }
+  landAll(targets, label, io);
   log(
     "applied " +
       paths.length +
       " staged files (" +
       manifest.runs.map((run) => run.platform + " " + run.reason).join(", ") +
       ")",
+  );
+}
+
+// A paired reason moves files both platforms share, so one platform never
+// writes them live: each stages into one directory, and `--apply` lands both.
+export function checkPairedReasonStage(values) {
+  if (!PAIRED_REASONS.includes(values.reason) || Object.hasOwn(values, "stage")) return;
+  throw new Error(
+    "--reason " +
+      values.reason +
+      " re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)",
   );
 }
 
@@ -2744,6 +2843,7 @@ export function parseArgs(argv) {
   if (Object.hasOwn(values, "stage") && !values.stage) {
     throw new Error("--stage needs a directory");
   }
+  checkPairedReasonStage(values);
   checkCargoProducerLockArgs(values);
   checkPreviousContractRefArgs(values);
   return values;

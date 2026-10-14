@@ -4,6 +4,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -57,6 +59,7 @@ import {
   asSchemaV2,
   ceilingsOf,
   gitIn,
+  landStaged,
   makeCheckout,
   makeGitCheckout,
   makeGraphCheckout,
@@ -1907,6 +1910,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       ...args,
       artifact: darwinArtifact,
       reason: "dependency-graph",
+      stage: join(tempDir("zfb-graph-stage-"), "stage"),
       ...extra,
     })
       .filter(([, value]) => value !== undefined)
@@ -1920,7 +1924,9 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       "source-sha": LINUX_SOURCE,
       reason: "dependency-graph",
       ...extra,
-    }).flatMap(([key, value]) => ["--" + key, value]);
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
   const quiet = () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1931,7 +1937,10 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
 
   it("re-pins only the fingerprint sha256 end to end and rewrites the Darwin pins", async () => {
     quiet();
-    await main(darwinArgv(), repo.root);
+    const stage = join(tempDir("zfb-graph-stage-"), "stage");
+    await main(darwinArgv({ stage }), repo.root);
+    unchanged(live());
+    landStaged(stage, repo.root);
     const next = contractOf(DARWIN);
     const moved = contractDiffKeys(darwinPinned, next);
     expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
@@ -2076,6 +2085,17 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       "real-packed: measurement.normalized.json results disagree with the recomputation from the saved bytes",
     ],
     [
+      "a sidecar whose normalizer.sha256 was tampered",
+      () => {
+        const path = join(darwinArtifact, "real-packed", NORMALIZED_SIDECAR);
+        const sidecar = JSON.parse(readFileSync(path, "utf8"));
+        sidecar.normalizer.sha256 = "0".repeat(64);
+        writeFileSync(path, JSON.stringify(sidecar));
+      },
+      {},
+      "real-packed: measurement.normalized.json normalizer.sha256 differs from the current normalizer; refusing",
+    ],
+    [
       "a --source-sha that is not the artifact's",
       null,
       { "source-sha": "d".repeat(40) },
@@ -2116,6 +2136,16 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     } finally {
       writeFileSync(sidecarPath, sidecarBytes);
     }
+    unchanged(before);
+  });
+
+  it("refuses to run without --stage, in parseArgs, before reading or writing anything", async () => {
+    const message =
+      "--reason dependency-graph re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)";
+    expect(() => parseArgs(darwinArgv({ stage: undefined }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ stage: undefined }), repo.root)).rejects.toThrow(message);
+    await expect(linuxMain(linuxArgv({ stage: undefined }), repo.root)).rejects.toThrow(message);
     unchanged(before);
   });
 
@@ -2177,6 +2207,52 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
       /moved since staging; nothing was applied/,
     );
+  });
+
+  // No temporary file is left beside any destination.
+  const noTemps = () => {
+    for (const dir of new Set(OUTPUTS.map((file) => dirname(at(file))))) {
+      expect(readdirSync(dir).filter((name) => name.includes(".apply-"))).toEqual([]);
+    }
+  };
+
+  it("changes nothing when writing a temporary file fails during --apply", async () => {
+    quiet();
+    const stage = await stagePair();
+    let writes = 0;
+    const io = {
+      writeFileSync(path, bytes) {
+        if (++writes === OUTPUTS.length) throw new Error("injected write failure");
+        writeFileSync(path, bytes);
+      },
+      renameSync,
+    };
+    expect(() => applyStage(stage, repo.root, () => {}, io)).toThrow(
+      /could not write a temporary file \(injected write failure\); nothing was applied/,
+    );
+    unchanged(live());
+    noTemps();
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+  });
+
+  it("restores the destinations already renamed when a rename fails during --apply", async () => {
+    quiet();
+    const stage = await stagePair();
+    let renames = 0;
+    const io = {
+      writeFileSync,
+      renameSync(from, to) {
+        if (++renames === 3) throw new Error("injected rename failure");
+        renameSync(from, to);
+      },
+    };
+    expect(() => applyStage(stage, repo.root, () => {}, io)).toThrow(
+      /renaming .* into place failed \(injected rename failure\); restored the 2 destination\(s\) already renamed, so nothing was applied/,
+    );
+    unchanged(live());
+    noTemps();
   });
 
   it("refuses --apply when a live destination moved after staging", async () => {
@@ -2264,6 +2340,11 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
   const contractOf = (file) => JSON.parse(read(file).toString("utf8"));
   const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
   const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+  const policyTempDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), "zfb-policy-stage-"));
+    policyRoots.push(dir);
+    return dir;
+  };
 
   function darwinArtifactAt(tweak) {
     const dir = makeArtifact({
@@ -2343,7 +2424,13 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
   });
 
   const darwinArgv = (extra = {}) =>
-    Object.entries({ ...args, artifact: darwinArtifact, reason: "fingerprint-policy", ...extra })
+    Object.entries({
+      ...args,
+      artifact: darwinArtifact,
+      reason: "fingerprint-policy",
+      stage: join(policyTempDir(), "stage"),
+      ...extra,
+    })
       .filter(([, value]) => value !== undefined)
       .flatMap(([key, value]) => ["--" + key, value]);
   const linuxArgv = (extra = {}) =>
@@ -2365,7 +2452,10 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
 
   it("re-pins the four fingerprint keys end to end and rewrites the policy identity line", async () => {
     quiet();
-    await main(darwinArgv(), repo.root);
+    const stage = join(policyTempDir(), "stage");
+    await main(darwinArgv({ stage }), repo.root);
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    landStaged(stage, repo.root);
     const next = contractOf(DARWIN);
     expect(
       contractDiffKeys(darwinPinned, next).filter((key) => !key.startsWith("baselineEvidence.")),
@@ -2509,6 +2599,15 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
     setup?.();
     const before = OUTPUTS.map(read);
     await expect(main(darwinArgv(extra), repo.root)).rejects.toThrow(message);
+    unchanged(before);
+  });
+
+  it("refuses to run without --stage, in parseArgs, before reading or writing anything", async () => {
+    const message =
+      "--reason fingerprint-policy re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)";
+    expect(() => parseArgs(darwinArgv({ stage: undefined }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ stage: undefined }), repo.root)).rejects.toThrow(message);
     unchanged(before);
   });
 
