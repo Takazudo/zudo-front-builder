@@ -66,6 +66,36 @@ It deliberately has no unsafe Send/Sync implementation and no general op or
 serialization framework. Do not load both independent V8 initializers in one
 process; use the separate runners.
 
+## Reproducible acceptance entry point
+
+`accept.py` runs the whole selected Linux acceptance from one command and
+refuses anything that is not the intended executable:
+
+```sh
+python3 -I -B prototypes/direct-v8/accept.py --output target/direct-v8-accept-<n> \
+  --guard "$HOME/.claude/scripts/heavy-guard.sh" \
+  --icu-archive <already fetched deno_core_icudata-0.77.0.crate>   # optional; otherwise fetched \
+  --generated --esbuild <pinned esbuild 0.25.12> --chromium <installed browser>
+```
+
+It prepares the checksum-pinned ICU data, builds the baseline and candidate
+runners with their exact feature commands (plus the outer-config example),
+runs the native library tests, hashes both runners and sends each a probe
+request whose receipt must name the right engine and return the right value,
+then runs the config, services, HTTP, modules and outer-config gates and, with
+`--generated`, builds the postprocessor, the normal CLI and the wrapper test
+binary, prepares a fresh frozen snapshot and runs the generated-input gate
+with the explicit browser. After every gate both runner digests are re-read;
+a changed executable fails the run. The target directory comes from
+`cargo metadata`, so a machine-wide `target-dir` is honored. Every step,
+command, exit code, duration, executable digest and gate count is written to
+`<output>/acceptance.json`; the gates' own JSON lands beside it. A missing
+executable, a runner that exits 2 because its feature is off (the all-targets
+trap above), a wrong engine identity or a failed probe is refused, and there is
+never a baseline/Node/Deno fallback. `python3 -I -B prototypes/direct-v8/test_accept.py`
+covers those refusals with shell-script stand-ins and no second target
+directory.
+
 ## Recorded phase-1 gates
 
 Async native services/cancellation and module/Worker parity are implemented and

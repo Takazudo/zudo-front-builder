@@ -90,6 +90,17 @@ class VerifyRunnerTest(unittest.TestCase):
 
 
 class ParsersTest(unittest.TestCase):
+    def test_reads_a_pass_from_either_report_shape(self):
+        self.assertTrue(accept.report_passed({"passed": True, "rows": []}))
+        self.assertFalse(accept.report_passed({"passed": False}))
+        self.assertFalse(accept.report_passed({"passed": "yes"}))
+        self.assertTrue(accept.report_passed({"results": [{"passed": True}, {"passed": True}]}))
+        self.assertFalse(accept.report_passed({"results": [{"passed": True}, {"passed": False}]}))
+        self.assertFalse(accept.report_passed({"results": []}))
+        self.assertFalse(accept.report_passed({"corpus_sha256": "x"}))
+        self.assertFalse(accept.report_passed(None))
+
+
     def test_parses_the_cargo_test_summary(self):
         self.assertEqual(accept.parse_test_result("x\ntest result: ok. 40 passed; 0 failed; 0 ignored\n"),
                          {"status": "ok", "passed": 40, "failed": 0})

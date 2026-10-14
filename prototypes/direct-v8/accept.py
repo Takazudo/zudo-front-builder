@@ -236,10 +236,24 @@ class Acceptance:
             passed = False
         report_path = Path(report_path or output)
         report = json.loads(report_path.read_text()) if report_path.is_file() else None
-        summary = {"output": str(report_path), "passed": passed and report is not None
-                   and report.get("passed") is True,
+        summary = {"output": str(report_path), "passed": passed and report_passed(report),
                    "counts": counts(report) if report is not None else None}
         return summary
+
+
+def report_passed(report):
+    """Whether a checker's JSON report records a pass.
+
+    check-http.py, check-outer-config.py and check-generated.py write a
+    top-level `passed`; check-config.py and check-modules.py write one
+    `passed` per engine under `results`, and every engine must have passed.
+    """
+    if not isinstance(report, dict):
+        return False
+    if "passed" in report:
+        return report["passed"] is True
+    results = report.get("results")
+    return bool(results) and all(isinstance(r, dict) and r.get("passed") is True for r in results)
 
 
 def engine_counts(report):
