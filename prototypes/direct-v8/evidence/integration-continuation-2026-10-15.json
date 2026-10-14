@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "scope": "Wind freshness and documentation continuation; not native acceptance or live activation",
+  "sourceBeforeContinuation": "1170596fc09de6ad8e3f7a0f33349e310320f2a5",
+  "wind": {
+    "originalCheck": {
+      "exitCode": 1,
+      "stderr": "Stale wind preview asset: manifest.json; regenerate assets"
+    },
+    "build": {
+      "command": "bash /home/takazudo/.codex/scripts/heavy-guard.sh -- cargo build --locked -p zfb --no-default-features",
+      "rustc": "1.95.0 (59807616e 2026-04-14)",
+      "targetDirectorySource": "cargo metadata --no-deps --format-version 1",
+      "targetDirectory": "/home/takazudo/.cargo-target",
+      "compiler": "/home/takazudo/.cargo-target/debug/zfb",
+      "compilerSha256": "530983bcb04bbcfdc67eb42985fe67a1bf22290252edbf82b16a861c779f0b89",
+      "guardVerdict": "PASS",
+      "exitCode": 0,
+      "guardSeconds": 231,
+      "warnings": 29
+    },
+    "generation": {
+      "command": "node docs/scripts/wind-preview-assets.mjs --compiler /home/takazudo/.cargo-target/debug/zfb",
+      "exitCode": 0,
+      "samples": 173,
+      "completeDiff": "Only manifest.json compiler.sourceSha256; CSS, HTML, inventory, examples and expected diagnostics unchanged",
+      "oldSourceSha256": "4747bce883bead918936662710aa8e0069f78e242ea9f8e25d5d0b706e5a4636",
+      "newSourceSha256": "d25f005a138b148e235ba08ce1bb074b88151e48a547d0f695dbae597d02c73c"
+    },
+    "finalCheck": {
+      "exitCode": 0,
+      "stdout": "Wind previews fresh: 173 samples (including diagnostic fixtures)"
+    },
+    "generatorTests": {
+      "passed": 19,
+      "failed": 0
+    }
+  },
+  "acceptanceRefusalUnitTests": {
+    "passed": 10,
+    "failed": 0,
+    "synthetic": true
+  },
+  "historicalNativeReplay": {
+    "source": "34ffcba76fa54e88745656c609b2e5a178ae4227",
+    "receipt": "acceptance-linux-2026-10-14.json",
+    "reused": true,
+    "reason": "No runtime, Cargo, harness, corpus or producer input changes; docs and generated compiler provenance only. Not a new native execution at this continuation head."
+  },
+  "originalCI": {
+    "head": "1170596fc09de6ad8e3f7a0f33349e310320f2a5",
+    "docsRun": 38583948009,
+    "freshnessJob": 115920879338,
+    "freshnessConclusion": "failure",
+    "docsBuildAndRootSubpathBrowser": "success",
+    "healthRun": 38583948103,
+    "healthJob": 115920818230,
+    "healthConclusion": "failure",
+    "rootScriptsPassed": 909,
+    "rootScriptsFailed": 2,
+    "linuxArtifact": "absent",
+    "nativeBuildAndMeasurement": "upstream-skipped"
+  },
+  "boundaries": {
+    "liveActivation": false,
+    "nativeDispatch": false,
+    "merge": false,
+    "nativeReplayRerun": false
+  }
+}
