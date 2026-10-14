@@ -12,7 +12,7 @@ the shared service regression tests continue to protect the normal host.
 Requirements: repository-pinned pnpm, installed Rust toolchain, Python 3, and
 the normal native V8 build prerequisites. Use the repository heavy guard for
 native builds. In this portable managed session its path is
-`/workspace/portable-codex-home-v51/.codex/scripts/heavy-guard.sh`; on another
+`/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh`; on another
 host use that host's published guard, without creating another queue.
 
 From the repository root, prepare the exact baseline ICU data. This fetches a
@@ -73,7 +73,7 @@ refuses anything that is not the intended executable:
 
 ```sh
 python3 -I -B prototypes/direct-v8/accept.py --output target/direct-v8-accept-<n> \
-  --guard "$HOME/.claude/scripts/heavy-guard.sh" \
+  --guard <this-host-published-heavy-guard> \
   --icu-archive <already fetched deno_core_icudata-0.77.0.crate>   # optional; otherwise fetched \
   --generated --esbuild <pinned esbuild 0.25.12> --chromium <installed browser>
 ```

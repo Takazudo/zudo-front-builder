@@ -1,5 +1,85 @@
 //! Native process tests. Baseline comparison runs in a separate executable.
 use super::{bootstrap, NativeError, NativeHost};
+use std::cell::RefCell;
+use std::sync::{Arc, Weak};
+
+#[derive(Default)]
+struct ConstructionProbe {
+    queue: Weak<super::platform::ForegroundQueue>,
+    fail_bootstrap: bool,
+}
+
+thread_local! {
+    static CONSTRUCTION: RefCell<ConstructionProbe> = RefCell::default();
+}
+
+pub(super) fn observe_construction(queue: &Arc<super::platform::ForegroundQueue>) {
+    CONSTRUCTION.with(|probe| probe.borrow_mut().queue = Arc::downgrade(queue));
+}
+
+pub(super) fn prepare_bootstrap(scope: &mut v8::PinScope) {
+    if CONSTRUCTION.with(|probe| probe.borrow().fail_bootstrap) {
+        let source = v8::String::new(
+            scope,
+            "Object.defineProperty(globalThis, 'queueMicrotask', {value: 1, configurable: false});",
+        )
+        .unwrap();
+        v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+    }
+}
+
+fn observed_queue() -> Weak<super::platform::ForegroundQueue> {
+    CONSTRUCTION.with(|probe| probe.borrow().queue.clone())
+}
+
+#[test]
+fn foreground_queue_is_destroyed_after_successful_host_drop() {
+    let host = NativeHost::new_config().unwrap();
+    let queue = observed_queue();
+    assert!(queue.upgrade().is_some());
+    drop(host);
+    assert!(!super::platform::is_registered(&queue));
+    assert!(
+        queue.upgrade().is_none(),
+        "foreground queue still has an owner"
+    );
+}
+
+#[test]
+fn foreground_queue_is_destroyed_after_construction_failures_and_recovery() {
+    for _ in 0..4 {
+        CONSTRUCTION.with(|probe| probe.borrow_mut().fail_bootstrap = true);
+        let bootstrap_error = NativeHost::new_config().err().unwrap();
+        CONSTRUCTION.with(|probe| probe.borrow_mut().fail_bootstrap = false);
+        assert!(matches!(bootstrap_error, NativeError::Bootstrap(_)));
+        assert!(!super::platform::is_registered(&observed_queue()));
+        assert!(
+            observed_queue().upgrade().is_none(),
+            "pre-transfer queue retained"
+        );
+        for source in ["function {", "throw new Error('polyfill-marker')"] {
+            let error = NativeHost::new_config_with_polyfills(source).err().unwrap();
+            assert!(matches!(error, NativeError::Evaluation(_)));
+            assert!(!super::platform::is_registered(&observed_queue()));
+            assert!(
+                observed_queue().upgrade().is_none(),
+                "post-transfer queue retained"
+            );
+        }
+        assert_eq!(
+            evaluate_config_bundle("export default {fresh:true};").unwrap(),
+            serde_json::json!({"fresh":true})
+        );
+        assert!(!super::platform::is_registered(&observed_queue()));
+        assert!(
+            observed_queue().upgrade().is_none(),
+            "recovered host queue retained"
+        );
+    }
+}
 
 fn evaluate_config_bundle(source: &str) -> Result<serde_json::Value, NativeError> {
     tokio::runtime::Builder::new_current_thread()

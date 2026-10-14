@@ -38,18 +38,63 @@ The historical native acceptance receipt
 `evidence/acceptance-linux-2026-10-14.json` binds clean source
 `34ffcba76fa54e88745656c609b2e5a178ae4227`. Through prepared-input source
 `1170596fc09de6ad8e3f7a0f33349e310320f2a5`, the intervening changes are
-prototype documentation and evidence only. This continuation refreshes Wind
+prototype documentation and evidence only. The previous integration-gap continuation refreshed Wind
 preview generated assets and activation documentation and reconciles integrated
 main changes: #4253's draft-preview guard and #4256's dev-server asset-serving
 repair. The latter changes compiler source inputs, so Wind is rebuilt and
 regenerated from the refreshed workspace; compiler-input equality is not claimed.
-Independent review confirmed that the exercised standalone host, typed-config,
+At that historical checkpoint, independent review confirmed that the exercised standalone host, typed-config,
 build-generated producer, harness and corpus paths remain unchanged. That scoped
 input equivalence supports reuse of the native replay, not a claim that it
 executed this continuation's final head or verified the changed dev-server paths.
 It also does not constitute Linux/Darwin island-size evidence. Final-head CI,
 dev-server checks and genuine generated-asset freshness are reported separately
-in the PR.
+in the PR. The lifecycle changes below invalidate that reuse for the current
+source and require a fresh acceptance replay.
+
+## Current refresh and three distinct graph proofs (2026-10-14)
+
+The lifecycle continuation refreshed actually integrated main at
+`fbb7921d8fb3f28d859bbd4cf5737759f547866a` (v4.5.1). The refresh is
+`1accd515cf99140f78a9808b39b95a4036f4e70c`; the following restoration
+`3e11f6a1` preserves an upstream raw Markdown fixture that the commit hook
+incorrectly formatted despite its existing exclusion. Wind assets were genuinely
+regenerated from the combined compiler. These upstream changes include the npm
+release stamps, pnpm lock and the Linux predecessor contract; this task does not
+create or reverse those changes. Cargo.lock and the prepared rewire declaration
+retain the hashes above. All prepared evidence remains source-bound: equality
+of these two hashes alone does not validate changed predecessor contracts.
+
+The current Linux predecessor contract is available from immutable main commit
+`fbb7921d8fb3f28d859bbd4cf5737759f547866a`, SHA-256
+`133e7ffb4109d4f81004247ddd52a2c955e441b4a6e8f70c7653a372cae9eba5`.
+It records v4.5.1 and pnpm lock
+`ee4accdbbbe22851c41ac529d492fbb6c03b007061ed0042068b2551731b5817`.
+Darwin's contract remains SHA-256
+`d19b7d3ce9770776255c33d7ae2a3c5c3f6c7b6b9e6738918e0f1601b179d63d`.
+Future paired activation must review this platform-specific predecessor state,
+source/manifests/closures and compatible new measurements together; historical
+v4.5.0 infrastructure measurements do not authorize admission at the refreshed
+runtime source. Never rewrite identities or substitute old lock bytes.
+
+Keep these proofs separate:
+
+1. **Default producer transition.** The old/new Cargo closure receipts and
+   `record-cargo-producer-closure.mjs` in held #4259 validate the declared
+   internal rewire for the existing default producer. That recorder uses
+   workspace-wide metadata resolution and has no feature-selection arguments.
+   Its receipts are not an exact opt-in candidate CLI graph.
+2. **Standalone candidate.** `record-graph.py` selects the direct-V8 host package,
+   target and features, and excludes Deno plus `zfb-render`/`zfb-build`. Native
+   runner identity and execution supplement this bounded graph proof.
+3. **Future actual CLI.** After separately authorized implementation, record the
+   normal/build dependency closure bound to the actual `zfb` executable build
+   command, target and exact nondefault feature selection. Verify no Deno runtime
+   crates or `serde_v8` enter that selected build. The CLI legitimately uses
+   `zfb-render` and `zfb-build`; do not copy the standalone host's exclusions.
+   Neither the existing default-producer recorder nor a workspace-wide metadata
+   graph proves this future condition. No recorder semantics change or new graph
+   framework is part of this continuation.
 
 ## 2. Ordered activation procedure
 
@@ -249,8 +294,8 @@ After phase one is accepted and the producer transition is admitted:
 2. **Render factory / threaded adapter.** Implement `EmbeddedV8HostFactory` and
    `ThreadedV8Host` on the direct host with owned DTOs across the pinned
    thread, one process initializer, deterministic ICU preparation, and prove
-   the candidate CLI's selected graph excludes Deno runtime crates
-   (`record-cargo-producer-closure.mjs` on the opt-in feature).
+   the candidate CLI's selected graph excludes Deno runtime crates using
+   evidence bound to the actual feature-exact CLI build command described above.
 3. **Dev lifecycle.** Start-before-swap, failed-replacement rollback and finite
    shutdown through the existing dev supervision tests, plus reload under the
    direct host. Standalone-host evidence from this branch does not prove any

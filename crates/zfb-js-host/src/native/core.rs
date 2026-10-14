@@ -63,11 +63,14 @@ impl NativeHost {
         bootstrap::initialize().map_err(NativeError::Bootstrap)?;
         let mut isolate = v8::Isolate::new(Default::default());
         let (foreground_key, foreground) = platform::ForegroundQueue::register(&isolate);
+        #[cfg(test)]
+        super::tests::observe_construction(&foreground);
         // Until `Self` owns the queue (and its Drop closes the entry), an early
         // return must not leave the registry entry behind (review #4258).
         let registered = ForegroundRegistration {
             queue: foreground.clone(),
             key: foreground_key,
+            armed: true,
         };
         let services = services.map(|state| Rc::new(RefCell::new(state)));
         if let Some(state) = &services {
@@ -85,6 +88,8 @@ impl NativeHost {
             v8::scope!(let scope, &mut isolate);
             let context = v8::Context::new(scope, Default::default());
             let scope = &mut v8::ContextScope::new(scope, context);
+            #[cfg(test)]
+            super::tests::prepare_bootstrap(scope);
             bootstrap::install(scope).map_err(NativeError::Bootstrap)?;
             if services.is_some() {
                 bridge::install(scope).map_err(NativeError::Bootstrap)?;
@@ -139,17 +144,20 @@ impl NativeHost {
 struct ForegroundRegistration {
     queue: Arc<platform::ForegroundQueue>,
     key: usize,
+    armed: bool,
 }
 
 impl ForegroundRegistration {
-    fn disarm(self) {
-        std::mem::forget(self);
+    fn disarm(mut self) {
+        self.armed = false;
     }
 }
 
 impl Drop for ForegroundRegistration {
     fn drop(&mut self) {
-        self.queue.close(self.key);
+        if self.armed {
+            self.queue.close(self.key);
+        }
     }
 }
 
