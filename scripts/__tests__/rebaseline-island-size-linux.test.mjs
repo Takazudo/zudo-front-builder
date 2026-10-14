@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,15 +17,19 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-p
 import {
   ARTIFACT_ARGS,
   CARGO_PRODUCER_LOCK_MOVEMENT,
+  DEPENDENCY_GRAPH_MOVEMENT,
   FINGERPRINT_HELPER_MOVEMENT,
   REASONS,
   actualGzipEvidence,
+  applyStage,
   artifactCheckoutMismatches,
+  assertAllowedMovement,
   assertLockfileOnlyMovement,
   contractDiffKeys,
   describeDeltas,
   diffCargoLocks,
   diffCeilings,
+  helperExplainBytes,
   main,
   measuredIdentity,
   measuredTotals,
@@ -38,9 +51,11 @@ import {
   gitIn,
   makeCheckout,
   makeGitCheckout,
+  makeGraphCheckout,
   makeHelperCheckout,
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
+import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const liveContract = JSON.parse(
@@ -270,6 +285,7 @@ describe("rebaseline-island-size-linux", () => {
       "fingerprint-migration",
       "fingerprint-helper",
       "cargo-producer-lock",
+      "dependency-graph",
     ]);
   });
 
@@ -324,7 +340,7 @@ describe("rebaseline-island-size-linux", () => {
       /--head-sha must be/,
     );
     expect(() => parseArgs(ok.map((v) => (v === "release-bump" ? "gzip-shift" : v)))).toThrow(
-      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper, cargo-producer-lock$/,
+      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph$/,
     );
     expect(() => parseArgs(["--artifact"])).toThrow(/bad argument/);
   });
@@ -781,6 +797,22 @@ describe("fingerprint-migration (#4187)", () => {
           "--reason " + reason + " cannot move the dependency fingerprint \\(sha256 differ",
         ),
       );
+      // The refusal names the reasons that own each fingerprint key (#4218).
+      expect(() => rebaselineContract(v3, totalsFrom(v3), moved, reason)).toThrow(
+        /a reachable dependency change needs `--reason dependency-graph` \(#4218\) and a policy or parser change needs `fingerprint-policy` \(#4218\), not a /,
+      );
+      // dependency-graph's allowlisted keys stay refused under this reason.
+      for (const key of DEPENDENCY_GRAPH_MOVEMENT.filter((k) => k.startsWith("dependency"))) {
+        const [, field] = key.split(".");
+        const edited = {
+          ...bump,
+          artifactFingerprint: { policyVersion: 1, sha256: "8".repeat(64) },
+          dependencyFingerprint: { ...fingerprint, [field]: "8".repeat(64) },
+        };
+        expect(() => rebaselineContract(v3, totalsFrom(v3), edited, reason)).toThrow(
+          "cannot move the dependency fingerprint (" + field + " differ",
+        );
+      }
       const helper = {
         ...bump,
         dependencyFingerprint: { ...fingerprint, helperSha256: "7".repeat(64) },
@@ -1675,7 +1707,7 @@ describe("cargo-producer-lock (#4214)", () => {
       expect(() =>
         parseArgs([...base, "--reason", reason, "--previous-contract-ref", "main"]),
       ).toThrow(
-        "--previous-contract-ref is only for --reason release-bump, runtime-identity, lockfile-provenance, cargo-producer-lock",
+        "--previous-contract-ref is only for --reason release-bump, runtime-identity, lockfile-provenance, cargo-producer-lock, dependency-graph",
       );
     }
     expect(() =>
@@ -2108,5 +2140,458 @@ describe("git-backed provenance (#4219)", () => {
     expect(sections[1]).not.toMatch(/release/i);
     // Neither contract was at HEAD: digest only, each time with a notice.
     expect(notices).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("assertAllowedMovement (#4218)", () => {
+  const before = {
+    outcome: "a",
+    dependencyFingerprint: { sha256: "1", helperSha256: "2" },
+    baselineEvidence: { runId: 1 },
+    nested: { a: 1, b: 2 },
+  };
+  it("matches exact keys, a trailing-dot prefix and baselineEvidence as a whole", () => {
+    const after = structuredClone(before);
+    after.outcome = "b";
+    after.dependencyFingerprint.sha256 = "3";
+    after.baselineEvidence = { runId: 2, repinnedFrom: { x: 1 } };
+    after.nested.a = 9;
+    expect(() =>
+      assertAllowedMovement(
+        "dependency-graph",
+        ["outcome", "dependencyFingerprint.sha256", "baselineEvidence", "nested."],
+        before,
+        after,
+      ),
+    ).not.toThrow();
+    // `dependencyFingerprint` alone is an exact key, not a prefix.
+    after.dependencyFingerprint.helperSha256 = "4";
+    expect(() =>
+      assertAllowedMovement(
+        "dependency-graph",
+        ["outcome", "dependencyFingerprint", "baselineEvidence", "nested."],
+        before,
+        after,
+      ),
+    ).toThrow(
+      "--reason dependency-graph: would move dependencyFingerprint.helperSha256, dependencyFingerprint.sha256; refusing",
+    );
+  });
+});
+
+// End-to-end CLI runs against one test-fixture checkout — synthetic prior
+// graph, not native evidence: its pnpm-lock.yaml has one reachable snapshot
+// moved, the contract pins the real lock's (prior) fingerprint, and the
+// artifact was measured at the checkout carrying the new graph.
+describe("dependency-graph (#4218)", () => {
+  const roots = [];
+  const CONTRACT = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const INVENTORY = "research/v3-island-size/lock-fingerprint-inventory.json";
+  const OUTPUTS = [CONTRACT, TEST, README, INVENTORY];
+  const SOURCE = "b".repeat(40);
+  const HEAD = "c".repeat(40);
+  let repo;
+  let artifact;
+  let pinned;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const written = () => JSON.parse(read(CONTRACT).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+  const tempDir = (prefix) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    roots.push(dir);
+    return dir;
+  };
+
+  // A Linux artifact measured at the checkout; `edit` adjusts each mode's
+  // provenance and `tamper` the saved files afterwards.
+  function linuxArtifact(edit, tamper) {
+    const dir = tempDir("zfb-graph-artifact-");
+    writeRuns(dir, Object.keys(liveContract.ceilings.workspace), (mode) => {
+      const provenance = {
+        sourceSha: SOURCE,
+        mode,
+        platform: { os: "linux", arch: "x64" },
+        fixtureVersion: liveContract.fixtureVersion,
+        fixtureSha256: repo.fixtureSha256,
+        runnerSha256: repo.runnerSha256,
+        packageVersion: repo.version,
+        runtimePackageVersion: repo.version,
+        honoPackageVersion: liveContract.toolchain.honoVersion,
+        esbuildVersion: liveContract.toolchain.esbuildVersion,
+        nodeVersion: liveContract.toolchain.nodeVersion,
+        zlibVersion: liveContract.toolchain.zlibVersion,
+        compression: liveContract.compression,
+        repeats: 2,
+        pnpmLockSha256: repo.pnpmLockSha256,
+        dependencyFingerprint: {
+          policyVersion: repo.dependencyFingerprint.policyVersion,
+          sha256: repo.dependencyFingerprint.sha256,
+        },
+        cargoLockSha256: repo.cargoLockSha256,
+      };
+      edit?.(provenance, mode);
+      return provenance;
+    });
+    tamper?.(dir);
+    return dir;
+  }
+
+  beforeAll(() => {
+    const version = JSON.parse(readFileSync(join(root, "packages/zfb/package.json"), "utf8"));
+    const moved = moveReachableSnapshot(
+      readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
+      version.version,
+    );
+    repo = makeGraphCheckout(roots, { pnpmLock: moved.lockText });
+    artifact = linuxArtifact();
+    pinned = structuredClone(liveContract);
+    pinned.ceilings = ceilingsOf(artifact);
+    pinned.fixtureSha256 = { ...repo.fixtureSha256 };
+    pinned.runnerSha256 = { ...repo.runnerSha256 };
+    pinned.toolchain.packageVersion = repo.version;
+    pinned.toolchain.pnpmLockSha256 = repo.priorPnpmLockSha256;
+    pinned.toolchain.cargoLockSha256 = repo.cargoLockSha256;
+    pinned.dependencyFingerprint = { ...repo.priorFingerprint };
+    writeFileSync(at(CONTRACT), contractText(pinned));
+    saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const argv = (extra = {}) =>
+    Object.entries({
+      artifact,
+      "run-id": "71",
+      "job-id": "72",
+      "head-sha": HEAD,
+      "source-sha": SOURCE,
+      reason: "dependency-graph",
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    return vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const unchanged = (before) =>
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+
+  it("re-pins only the fingerprint sha256 end to end and regenerates the inventory", () => {
+    quiet();
+    expect(repo.dependencyFingerprint.sha256).not.toBe(repo.priorFingerprint.sha256);
+    main(argv(), repo.root);
+    const next = written();
+    const moved = contractDiffKeys(pinned, next);
+    expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
+      "baselineSourceSha",
+      "dependencyFingerprint.sha256",
+      "outcome",
+      "platformStatus",
+      "toolchain.pnpmLockSha256",
+    ]);
+    expect(moved.some((key) => key.startsWith("baselineEvidence."))).toBe(true);
+    expect(() =>
+      assertAllowedMovement("dependency-graph", DEPENDENCY_GRAPH_MOVEMENT, pinned, next),
+    ).not.toThrow();
+    expect(next.dependencyFingerprint).toEqual({
+      ...pinned.dependencyFingerprint,
+      sha256: repo.dependencyFingerprint.sha256,
+    });
+    expect(next.toolchain).toEqual({ ...pinned.toolchain, pnpmLockSha256: repo.pnpmLockSha256 });
+    expect(next.ceilings).toEqual(pinned.ceilings);
+    expect(next.outcome).toBe("dependency-graph-repin");
+    expect(next.baselineSourceSha).toBe(HEAD);
+    expect(next.baselineEvidence).toMatchObject({ event: "ci", runId: 71, jobId: 72 });
+    expect(next.baselineEvidence.sourceSha).toBe(SOURCE);
+    expect(next.baselineEvidence.fingerprintTransition).toEqual({
+      policyVersion: 1,
+      oldSha256: repo.priorFingerprint.sha256,
+      newSha256: repo.dependencyFingerprint.sha256,
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.baselineEvidence.note.startsWith("Dependency-graph re-pin run at v")).toBe(true);
+    expect(next.platformStatus).toContain(
+      "equal totals alone do not prove byte-identical product code",
+    );
+    expect(next.platformStatus).toContain(
+      "PR merge source " + SOURCE + " (probe head " + HEAD + ")",
+    );
+    // The inventory is the checkout's own --explain output, byte for byte.
+    expect(read(INVENTORY).equals(helperExplainBytes(repo.root))).toBe(true);
+    expect(read(INVENTORY).equals(saved[INVENTORY])).toBe(false);
+    const readme = read(README).toString("utf8");
+    expect(readme.startsWith(saved[README].toString("utf8"))).toBe(true);
+    expect(readme).toContain("## v" + repo.version + " dependency-graph re-pin");
+    expect(readme).toContain(
+      "`" + repo.priorFingerprint.sha256 + "` to `" + repo.dependencyFingerprint.sha256 + "`",
+    );
+    expect(readme).toContain("[workflow run 71]");
+    expect(read(TEST).toString("utf8")).toBe(rewriteTestPins(saved[TEST].toString("utf8"), next));
+  });
+
+  // Each refusal leaves the contract, the budget test, the README and the inventory unchanged.
+  const fingerprintKey = (key, value) => ({
+    name: "a moved " + key,
+    contract: (c) => (c.dependencyFingerprint[key] = value),
+    message: new RegExp(
+      "--reason dependency-graph moves only dependencyFingerprint\\.sha256, but " +
+        key +
+        " differ from the contract; .*`fingerprint-policy` \\(#4218\\)",
+    ),
+  });
+  const identity = (name, edit) => ({
+    name: "a changed " + name,
+    contract: edit,
+    message: new RegExp(
+      "--reason dependency-graph moves only dependencyFingerprint\\.sha256, but " +
+        name.replace(".", "\\.") +
+        " differ from the contract",
+    ),
+  });
+  const sidecar = (mode, edit) => (dir) => {
+    const path = join(dir, "real-" + mode, "measurement.normalized.json");
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    edit(value);
+    writeFileSync(path, JSON.stringify(value));
+  };
+  it.each([
+    {
+      name: "an unchanged sha256 (no-op)",
+      contract: (c) => (c.dependencyFingerprint = { ...repo.dependencyFingerprint }),
+      message:
+        "--reason dependency-graph: the contract already pins this fingerprint; nothing to re-pin",
+    },
+    fingerprintKey("policyVersion", 2),
+    fingerprintKey("parser", "yaml@2.8.0"),
+    fingerprintKey("helperSha256", "1".repeat(64)),
+    {
+      name: "raw +1",
+      contract: (c) => (c.ceilings.workspace.model.raw -= 1),
+      message: /raw totals changed \(workspace\/model\); this is not a dependency-graph re-pin/,
+    },
+    {
+      name: "raw -1",
+      contract: (c) => (c.ceilings.packed.model.raw += 1),
+      message: /raw totals changed \(packed\/model\)/,
+    },
+    {
+      name: "gzipNormalized +1",
+      contract: (c) => (c.ceilings.workspace["show-for"].gzipNormalized -= 1),
+      message: /gzipNormalized totals changed \(workspace\/show-for \+1\)/,
+    },
+    {
+      name: "gzipNormalized -1",
+      contract: (c) => (c.ceilings.packed["json-api"].gzipNormalized += 1),
+      message: /gzipNormalized totals changed \(packed\/json-api -1\)/,
+    },
+    {
+      name: "a changed Cargo.lock",
+      contract: (c) => (c.toolchain.cargoLockSha256 = "0".repeat(64)),
+      message:
+        /--reason dependency-graph cannot move Cargo\.lock .*needs --reason cargo-producer-lock first/,
+    },
+    identity("packageVersion", (c) => (c.toolchain.packageVersion = "0.0.1")),
+    ...["honoVersion", "esbuildVersion", "nodeVersion", "zlibVersion"].map((key) =>
+      identity("toolchain." + key, (c) => (c.toolchain[key] = "0.0.0-test")),
+    ),
+    {
+      name: "a changed fixture set",
+      contract: (c) => (c.ceilings.workspace.extra = { raw: 1, gzipNormalized: 1 }),
+      message: /fixture set differs from the contract \(workspace\/extra\)/,
+    },
+    identity("fixtureSha256", (c) => (c.fixtureSha256.model = "0".repeat(64))),
+    identity("runnerSha256", (c) => (c.runnerSha256["measure.mjs"] = "0".repeat(64))),
+    identity("normalizerSha256", (c) => (c.normalizerSha256 = "e".repeat(64))),
+    identity("allowance", (c) => (c.allowance = { raw: 1, gzipNormalized: 0 })),
+    identity("metric", (c) => (c.metric = "gzip")),
+    {
+      name: "a schemaVersion 2 contract",
+      contract: (c) => {
+        delete c.dependencyFingerprint;
+        c.schemaVersion = 2;
+      },
+      message: /--reason dependency-graph needs a schemaVersion 3 contract, found schemaVersion 2/,
+    },
+    {
+      name: "a wrong-platform artifact",
+      provenance: (p) => (p.platform = { os: "darwin", arch: "arm64" }),
+      message: /not linux-x64; Darwin arm64 uses rebaseline-island-size-darwin\.mjs/,
+    },
+    {
+      name: "a workspace/packed fingerprint mismatch",
+      provenance: (p, mode) => {
+        if (mode === "packed") p.dependencyFingerprint.sha256 = "0".repeat(64);
+      },
+      message: /packed artifact dependency fingerprint sha256 differs from this checkout's/,
+    },
+    {
+      name: "an artifact fingerprint that is not the checkout's",
+      provenance: (p) => (p.dependencyFingerprint.sha256 = "0".repeat(64)),
+      message: /workspace artifact dependency fingerprint sha256 differs from this checkout's/,
+    },
+    {
+      name: "a sidecar whose results were edited",
+      tamper: sidecar("packed", (s) => (s.results.model.shipped.gzipNormalized -= 1)),
+      message:
+        /real-packed: measurement\.normalized\.json results disagree with the recomputation from the saved bytes/,
+    },
+    {
+      name: "a sidecar whose source.sha256 is stale",
+      tamper: sidecar("workspace", (s) => (s.source.sha256 = "0".repeat(64))),
+      message: /real-workspace: measurement\.normalized\.json source\.sha256 .*\(stale sidecar\)/,
+    },
+    {
+      name: "a --source-sha that is not the artifact's",
+      args: { "source-sha": "d".repeat(40) },
+      message: /workspace artifact measured source b{40}, not --source-sha/,
+    },
+    {
+      name: "a cargo-only flag",
+      args: { "added-packages": "ctor@0.2.9" },
+      message: "--added-packages is only for --reason cargo-producer-lock",
+    },
+    {
+      name: "a missing test-pin anchor",
+      setup: () =>
+        writeFileSync(
+          at(TEST),
+          saved[TEST].toString("utf8").replace("records the reviewed Linux x64 ceilings", "x"),
+        ),
+      message: /Linux ceiling test not found/,
+    },
+    {
+      name: "a missing measurement.json",
+      tamper: (dir) => rmSync(join(dir, "real-packed", "measurement.json")),
+      message: "artifact is missing real-packed/measurement.json",
+    },
+    {
+      name: "a missing measurement.normalized.json",
+      tamper: (dir) => rmSync(join(dir, "real-workspace", "measurement.normalized.json")),
+      message: "real-workspace: missing measurement.normalized.json; refusing",
+    },
+    {
+      name: "a missing fixture directory",
+      tamper: (dir) => rmSync(join(dir, "real-workspace", "model"), { recursive: true }),
+      message: /saved case directories differ from measurement\.json results/,
+    },
+    {
+      name: "an extra fixture directory",
+      tamper: (dir) => {
+        for (const pass of ["pass-1", "pass-2"]) {
+          mkdirSync(join(dir, "real-packed", "extra", pass), { recursive: true });
+        }
+      },
+      message: /saved case directories differ from measurement\.json results/,
+    },
+  ])(
+    "refuses $name and writes nothing",
+    ({ contract: edit, provenance, tamper, args, setup, message }) => {
+      quiet();
+      if (edit) {
+        const contract = structuredClone(pinned);
+        edit(contract);
+        writeFileSync(at(CONTRACT), contractText(contract));
+      }
+      setup?.();
+      const dir = provenance || tamper ? linuxArtifact(provenance, tamper) : artifact;
+      const before = OUTPUTS.map(read);
+      expect(() => main(argv({ artifact: dir, ...args }), repo.root)).toThrow(message);
+      unchanged(before);
+    },
+  );
+
+  it.each([
+    ["an unknown --reason", { reason: "dependency-graphs" }, /--reason must be one of /],
+    ["an empty --reason", { reason: "" }, "required --reason"],
+    ["a missing --source-sha", { "source-sha": undefined }, "required --source-sha"],
+    ["a malformed --source-sha", { "source-sha": "abc" }, /--source-sha must be a full 40/],
+    ["a missing --run-id", { "run-id": undefined }, "required --run-id"],
+    ["an empty --stage", { stage: "" }, "--stage needs a directory"],
+  ])("refuses %s in parseArgs, before reading anything", (_name, extra, message) => {
+    const missing = join(tmpdir(), "zfb-no-such-artifact-" + process.pid);
+    expect(() => parseArgs(argv({ artifact: missing, ...extra }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    expect(() => main(argv({ artifact: missing, ...extra }), repo.root)).toThrow(message);
+    unchanged(before);
+    expect(() => parseArgs(["--reason", "dependency-graph", "--artifact"])).toThrow(
+      /bad argument: --artifact/,
+    );
+  });
+
+  it("stages every output outside the checkout and refuses an unpaired --apply", () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-stage-"), "stage");
+    main(argv({ stage }), repo.root);
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    const manifest = JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+    expect(Object.keys(manifest.destinations)).toEqual([...OUTPUTS].sort());
+    expect(manifest.runs).toEqual([
+      {
+        reason: "dependency-graph",
+        platform: "linux-x64",
+        sourceSha: SOURCE,
+        runId: 71,
+        artifactId: null,
+      },
+    ]);
+    const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    for (const file of OUTPUTS) {
+      expect(manifest.destinations[file]).toEqual({
+        live: sha(saved[file]),
+        staged: sha(readFileSync(join(stage, file))),
+      });
+    }
+    expect(JSON.parse(readFileSync(join(stage, CONTRACT), "utf8")).outcome).toBe(
+      "dependency-graph-repin",
+    );
+    expect(() => applyStage(stage, repo.root)).toThrow(
+      /--reason dependency-graph is not staged for darwin-arm64; stage both platforms into the same directory first \(nothing was applied\)/,
+    );
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    // A refused re-pin leaves an empty stage directory empty.
+    const empty = tempDir("zfb-graph-stage-empty-");
+    const contract = structuredClone(pinned);
+    contract.dependencyFingerprint = { ...repo.dependencyFingerprint };
+    writeFileSync(at(CONTRACT), contractText(contract));
+    expect(() => main(argv({ stage: empty }), repo.root)).toThrow(/nothing to re-pin/);
+    expect(readdirSync(empty)).toEqual([]);
+  });
+
+  it.each([
+    ["the checkout itself", () => repo.root, /resolves to or contains the checkout/],
+    [
+      "a parent of the checkout",
+      () => join(repo.root, ".."),
+      /resolves to or contains the checkout/,
+    ],
+    [
+      "a directory holding a live destination",
+      () => join(repo.root, "research"),
+      /the stage directory contains the live destination research\/v3-island-size\//,
+    ],
+    [
+      "a directory whose research/ links to the checkout's",
+      () => {
+        const dir = tempDir("zfb-graph-stage-alias-");
+        symlinkSync(join(repo.root, "research"), join(dir, "research"), "dir");
+        return dir;
+      },
+      /the staged research\/v3-island-size\/.* aliases the live destination/,
+    ],
+  ])("refuses a stage directory that is %s", (_name, dirOf, message) => {
+    quiet();
+    const before = OUTPUTS.map(read);
+    expect(() => main(argv({ stage: dirOf() }), repo.root)).toThrow(message);
+    unchanged(before);
   });
 });

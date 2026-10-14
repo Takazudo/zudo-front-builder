@@ -22,7 +22,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { parseAllDocuments, stringify } from "yaml";
 
 import {
   FINGERPRINT_PARSER,
@@ -33,6 +32,7 @@ import {
   fingerprintHelperSha256,
 } from "../../research/v3-island-size/lock-fingerprint.mjs";
 import { computeWithHelperSource } from "../rebaseline-island-size-linux.mjs";
+import { addPackage, mutate, renameVersion } from "./fixtures/island-size-lock-mutations.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -79,47 +79,6 @@ function fixtureHash(lockText, options = {}) {
 
 function realHash(lockText, options = {}) {
   return computeLockFingerprint({ lockText, currentVersion: REAL_VERSION, ...options }).sha256;
-}
-
-// Re-serializes both documents through plain JS, so a mutation is expressed on
-// the parsed lock instead of on fragile text offsets.
-function mutate(lockText, change) {
-  const documents = parseAllDocuments(lockText).map((document) => document.toJS());
-  change(documents[0], documents[1]);
-  return documents.map((document) => `---\n${stringify(document, { lineWidth: 0 })}`).join("\n");
-}
-
-function renameVersion(project, name, from, to) {
-  const matches = (value) => value === from || value.startsWith(`${from}(`);
-  const swap = (value) => `${to}${value.slice(from.length)}`;
-  const rekey = (records) => {
-    for (const key of Object.keys(records)) {
-      const prefix = `${name}@`;
-      if (key.startsWith(prefix) && matches(key.slice(prefix.length))) {
-        records[`${prefix}${swap(key.slice(prefix.length))}`] = records[key];
-        delete records[key];
-      }
-    }
-  };
-  rekey(project.packages);
-  rekey(project.snapshots);
-  for (const importer of Object.values(project.importers)) {
-    for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
-      const edge = importer[section]?.[name];
-      if (edge && matches(edge.version)) edge.version = swap(edge.version);
-    }
-  }
-  for (const snapshot of Object.values(project.snapshots)) {
-    for (const section of ["dependencies", "optionalDependencies"]) {
-      const value = snapshot?.[section]?.[name];
-      if (value && matches(value)) snapshot[section][name] = swap(value);
-    }
-  }
-}
-
-function addPackage(project, key, snapshot = {}) {
-  project.packages[key] = { resolution: { integrity: `sha512-${key}==` } };
-  project.snapshots[key] = snapshot;
 }
 
 function expectFailure(run, code) {
