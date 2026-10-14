@@ -1,0 +1,171 @@
+# Temporary verification artifact for draft #4120, not a new required CI tier.
+# Branch-only, read-only, no deploy/publish/automatic commit. Remove before adoption.
+name: Rolldown post-sync verification (#4120)
+
+on:
+  push:
+    branches: [prototype/318-rolldown-native]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rolldown-4120-continuation
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'Takazudo/zudo-front-builder'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+
+      - name: Retain exact source for review
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rolldown-source" "$RUNNER_TEMP/rolldown-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/rolldown-source/source-sha.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/rolldown-source/source.tar.gz"
+          sha256sum "$RUNNER_TEMP/rolldown-source/source.tar.gz" > "$RUNNER_TEMP/rolldown-source/SHA256SUMS"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: rolldown-4120-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/rolldown-source/
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24.14.0"
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: rolldown-4120-debug-no-debuginfo
+
+      - name: Install frozen workspace and record identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          { git rev-parse HEAD; rustc -vV; node -v; pnpm -v; uname -a; df -h .; sha256sum Cargo.lock pnpm-lock.yaml; } | tee "$RUNNER_TEMP/rolldown-evidence/identity.txt"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/rolldown-evidence/cargo-metadata.json"
+          cargo tree --locked -p zudo-wind --edges normal,build,features > "$RUNNER_TEMP/rolldown-evidence/wind-dependencies.txt"
+          git diff --exit-code -- Cargo.lock pnpm-lock.yaml
+
+      - name: Verify reviewed Wind sources and library
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=fbb7921d8fb3f28d859bbd4cf5737759f547866a
+          git cat-file -e "$base^{commit}"
+          git diff --exit-code "$base" HEAD -- crates/zudo-wind Cargo.toml
+          git show "$base:Cargo.lock" > "$RUNNER_TEMP/rolldown-evidence/main-Cargo.lock"
+          cargo test --locked -p zudo-wind --lib 2>&1 | tee "$RUNNER_TEMP/rolldown-evidence/wind-tests.log"
+          node --input-type=module <<'NODE' | tee "$RUNNER_TEMP/rolldown-evidence/wind-source-digest.json"
+          import { createHash } from 'node:crypto';
+          import { readFileSync, readdirSync } from 'node:fs';
+          const paths = [];
+          function walk(dir) {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              const path = `${dir}/${entry.name}`;
+              if (entry.isDirectory()) walk(path);
+              else if (entry.isFile()) paths.push(path);
+              else throw new Error(`Unsupported Wind source path ${path}`);
+            }
+          }
+          walk('crates/zudo-wind');
+          paths.push('Cargo.toml', 'Cargo.lock');
+          paths.sort();
+          if (paths.length !== 100) throw new Error(`Unexpected source count ${paths.length}`);
+          const hash = createHash('sha256');
+          for (const path of paths) hash.update(path).update('\0').update(readFileSync(path)).update('\0');
+          console.log(JSON.stringify({ paths: paths.length, digest: hash.digest('hex'), purpose: 'candidate provenance only; review required, no live pin changed' }, null, 2));
+          NODE
+
+      - name: Generate genuine Wind preview candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p zfb --no-default-features 2>&1 | tee "$RUNNER_TEMP/rolldown-evidence/wind-compiler.log"
+          node --test docs/scripts/__tests__/wind-preview-assets.test.mjs 2>&1 | tee "$RUNNER_TEMP/rolldown-evidence/wind-preview-tests.log"
+          node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" 2>&1 | tee "$RUNNER_TEMP/rolldown-evidence/wind-generation.log"
+          node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" --check
+          git diff --binary -- docs/public/wind-examples > "$RUNNER_TEMP/rolldown-evidence/wind-preview.patch"
+          cp docs/public/wind-examples/manifest.json "$RUNNER_TEMP/rolldown-evidence/wind-preview-manifest.json"
+          git diff --name-only | tee "$RUNNER_TEMP/rolldown-evidence/generated-files.txt"
+          git diff --exit-code -- Cargo.lock pnpm-lock.yaml
+
+      - name: Retain generated candidate before native compilation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: rolldown-4120-wind-${{ github.run_id }}
+          path: ${{ runner.temp }}/rolldown-evidence/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Prepare pinned native fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ZFB_PROTOTYPE_TOOLS="$PWD/target/rolldown-tools"
+          export ZFB_ESBUILD_BIN="$ZFB_PROTOTYPE_TOOLS/node_modules/@esbuild/linux-x64/bin/esbuild"
+          export PLAYWRIGHT_BROWSERS_PATH="$PWD/target/rolldown-browsers"
+          printf 'ZFB_PROTOTYPE_TOOLS=%s\nZFB_ESBUILD_BIN=%s\nPLAYWRIGHT_BROWSERS_PATH=%s\n' "$ZFB_PROTOTYPE_TOOLS" "$ZFB_ESBUILD_BIN" "$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
+          npm install --prefix "$ZFB_PROTOTYPE_TOOLS" --no-audit --no-fund hono@4.12.8 @playwright/test@1.58.2 @esbuild/linux-x64@0.25.12
+          "$ZFB_PROTOTYPE_TOOLS/node_modules/.bin/playwright" install --with-deps chromium
+          pnpm -C packages/zfb-slugify build
+          pnpm -C packages/zfb build
+          pnpm -C packages/zfb-runtime build
+          node prototypes/rolldown/prepare.mjs
+
+      - name: Build exact opt-in CLI and examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype --features zfb/rolldown-prototype,zfb-build/rolldown-prototype,zfb-islands/rolldown-prototype,zfb-rolldown-prototype/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared 2>&1 | tee "$RUNNER_TEMP/rolldown-evidence/native-build.log"
+          sha256sum target/debug/zfb target/debug/examples/{rolldown_production,rolldown_ssr,rolldown_browser,prepared} | tee "$RUNNER_TEMP/rolldown-evidence/native-binaries.txt"
+
+      - name: Run native and default contract selections
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p zfb-islands --features rolldown-prototype --lib client_script
+          cargo test --locked -p zfb-islands --features rolldown-prototype --lib read_back_outdir
+          env -u ZFB_ROLLDOWN_PROTOTYPE ZFB_DEV_TIMING=1 cargo test --locked -p zfb-islands --features rolldown-prototype --test integration client_script -- --ignored
+          ZFB_ROLLDOWN_PROTOTYPE=1 ZFB_DEV_TIMING=1 cargo test --locked -p zfb-islands --features rolldown-prototype --test integration client_script -- --ignored
+          env -u ZFB_ROLLDOWN_PROTOTYPE ZFB_DEV_TIMING=1 cargo test --locked -p zfb --features rolldown-prototype --test client_bundling_cross_pipeline real_binary_build_and_dev_cover_client_bundling_contract -- --ignored --exact
+          ZFB_ROLLDOWN_PROTOTYPE=1 ZFB_DEV_TIMING=1 cargo test --locked -p zfb --features rolldown-prototype --test client_bundling_cross_pipeline real_binary_build_and_dev_cover_client_bundling_contract -- --ignored --exact
+          node prototypes/rolldown/gate.mjs
+          node prototypes/rolldown/client-scripts.mjs
+          node prototypes/rolldown/verify.mjs
+          node prototypes/rolldown/production.mjs
+          git diff --exit-code -- Cargo.lock pnpm-lock.yaml
+
+      - name: Retain native evidence including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: rolldown-4120-native-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/rolldown-evidence/
+            target/rolldown-client-scripts/*/evidence/
+            target/rolldown-production/*/evidence/
+            target/rolldown-prototype/*.json
+          retention-days: 7
+          if-no-files-found: error
