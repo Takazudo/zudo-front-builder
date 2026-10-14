@@ -49,7 +49,7 @@ Node ≥ 20 でもこのパッケージをロードできます — パッケー
 を除外しながら `zfb-content` と `syntect-fancy` を意図的に保持します。parse は syntect-free
 ではありません。
 
-| インポート | gzip-9 wasm（4.5.0） | 正確なランタイム値 | 型の面 | 使う場面 |
+| インポート | gzip-9 wasm（4.5.1） | 正確なランタイム値 | 型の面 | 使う場面 |
 | --- | ---: | --- | --- | --- |
 | `@takazudo/zfb-md-wasm` | 1,522,071 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | compile/render/parse/raw-mdast/highlight の現在の完全な型セット | MDX をコンパイル、または複数の API を使う場合 |
 | `@takazudo/zfb-md-wasm/highlight` | 817,815 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換 |
@@ -463,7 +463,7 @@ parseButton.addEventListener("click", async () => {
 
 ### 出荷アーティファクトのサイズと上限
 
-出荷された **4.5.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+出荷された **4.5.1** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
 wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
 グルーコードのバイト数とその gzip です:
 
@@ -479,7 +479,7 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 [153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 880,000 B、
 render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
 いずれも上限の内側で出荷されており、上限までの余裕は root 77,929 B、highlight 62,185 B、
-render 4,919 B、parse 39,083 B です。これらは永続的な保証ではなく 4.5.0 の測定値です —
+render 4,919 B、parse 39,083 B です。これらは永続的な保証ではなく 4.5.1 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 **サイズは保証されますが、コンテンツダイジェストは保証されません。** 上記のバイトサイズは
@@ -555,7 +555,7 @@ const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
 
 ## バンドルサイズ
 
-出荷された **4.5.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+出荷された **4.5.1** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
 wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
 グルーコードのバイト数とその gzip です:
 
@@ -571,7 +571,7 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 [153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 880,000 B、
 render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
 いずれも上限の内側で出荷されており、上限までの余裕は root 77,929 B、highlight 62,185 B、
-render 4,919 B、parse 39,083 B です。これらは永続的な保証ではなく 4.5.0 の測定値です —
+render 4,919 B、parse 39,083 B です。これらは永続的な保証ではなく 4.5.1 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 [出荷アーティファクトのサイズと上限](#直接的なセマンティックコードハイライト-出荷アーティファクトのサイズと上限)
