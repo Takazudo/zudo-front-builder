@@ -65,6 +65,22 @@
 // merge source distinct from the probe `--head-sha`) and a saved
 // measurement.normalized.json that agrees with the saved bytes.
 //
+// `--reason fingerprint-policy` (#4218, schemaVersion 3) is the policy-version
+// counterpart: the four `dependencyFingerprint` keys may move only together
+// with an exact one-step `policyVersion` increment that equals the checkout
+// helper's exported FINGERPRINT_POLICY_VERSION, and `parser` / `helperSha256`
+// must be the checkout helper's own (fingerprintPolicyRefusal below). Run
+// provenance carries only {policyVersion, sha256}, so `parser` and
+// `helperSha256` are proven against the checkout helper, never attested by the
+// artifact. Every dependency-graph refusal applies unchanged, only
+// FINGERPRINT_POLICY_MOVEMENT is written, and the policy identity line of
+// LOCK-FINGERPRINT-POLICY.md is rewritten with the contract.
+//
+// Every fingerprint computation, the helper's exported identity and the
+// `--explain` inventory come from the lock-fingerprint.mjs inside the selected
+// checkout root (loadCheckoutHelper below); in the repository itself that is
+// the same file as the static helper.
+//
 // `--stage <dir>` writes every output under <dir> instead, plus a
 // stage-manifest.json binding each destination's live and staged SHA-256; the
 // shared test, README and inventory files already staged there are the input,
@@ -94,7 +110,6 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
-import { computeLockFingerprint } from "../research/v3-island-size/lock-fingerprint.mjs";
 import {
   IDENTITY_NORMALIZATION_VERSION,
   IDENTITY_NORMALIZED_METRIC,
@@ -156,6 +171,12 @@ export const REASONS = Object.freeze({
     requires: 3,
     accepts: [3],
   },
+  "fingerprint-policy": {
+    outcome: "fingerprint-policy",
+    heading: "fingerprint-policy re-pin",
+    requires: 3,
+    accepts: [3],
+  },
 });
 
 export const FINGERPRINT_HELPER_REASON = "fingerprint-helper";
@@ -171,11 +192,30 @@ export const DEPENDENCY_GRAPH_MOVEMENT = Object.freeze([
   "platformStatus",
   "baselineEvidence",
 ]);
+export const FINGERPRINT_POLICY_REASON = "fingerprint-policy";
+// The only keys a fingerprint-policy re-pin may write; baselineEvidence is
+// replaced as a whole.
+export const FINGERPRINT_POLICY_MOVEMENT = Object.freeze([
+  "dependencyFingerprint.policyVersion",
+  "dependencyFingerprint.parser",
+  "dependencyFingerprint.sha256",
+  "dependencyFingerprint.helperSha256",
+  "toolchain.pnpmLockSha256",
+  "outcome",
+  "baselineSourceSha",
+  "platformStatus",
+  "baselineEvidence",
+]);
 // Reasons whose artifact must carry the operator's --source-sha and a saved
 // normalizer sidecar that agrees with the saved bytes.
-export const SOURCE_BOUND_REASONS = Object.freeze([DEPENDENCY_GRAPH_REASON]);
+export const SOURCE_BOUND_REASONS = Object.freeze([
+  DEPENDENCY_GRAPH_REASON,
+  FINGERPRINT_POLICY_REASON,
+]);
 // Reasons that are applied only once both platforms are staged.
-export const PAIRED_REASONS = Object.freeze([DEPENDENCY_GRAPH_REASON]);
+export const PAIRED_REASONS = Object.freeze([DEPENDENCY_GRAPH_REASON, FINGERPRINT_POLICY_REASON]);
+// Reasons that regenerate lock-fingerprint-inventory.json from the checkout helper.
+export const INVENTORY_REASONS = PAIRED_REASONS;
 
 // Contract schema versions a reason may rewrite; `requires` is the oldest.
 export function acceptedSchemas(reason) {
@@ -195,10 +235,41 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-// The schemaVersion-3 `dependencyFingerprint` block for a checkout, in contract
-// key order. Throws (fail-closed) when lock-fingerprint.mjs rejects the lock.
-export function checkoutFingerprint(lockText, currentVersion, repoRoot) {
-  const fingerprint = computeLockFingerprint({
+export const FINGERPRINT_HELPER_FILE = SIZE_DIR + "/lock-fingerprint.mjs";
+
+// The lock-fingerprint.mjs module of the checkout at `root`, imported from that
+// file (keyed by its bytes, so an edited helper is never served from cache).
+// Every fingerprint, exported identity and inventory a re-pin relies on comes
+// from this module, never from the copy next to this script.
+export async function loadCheckoutHelper(root = ".") {
+  const path = resolve(root, FINGERPRINT_HELPER_FILE);
+  let bytes;
+  try {
+    bytes = readFileSync(path);
+  } catch (error) {
+    throw new Error(
+      "cannot read the checkout's " + FINGERPRINT_HELPER_FILE + ": " + error.message,
+      {
+        cause: error,
+      },
+    );
+  }
+  return import(pathToFileURL(path).href + "?sha256=" + sha256(bytes));
+}
+
+// What a loaded helper exports as its own identity, in contract key order.
+export function helperIdentity(helper) {
+  return {
+    policyVersion: helper.FINGERPRINT_POLICY_VERSION,
+    parser: helper.FINGERPRINT_PARSER,
+    helperSha256: helper.fingerprintHelperSha256(),
+  };
+}
+
+// The schemaVersion-3 `dependencyFingerprint` block a loaded helper computes,
+// in contract key order. Throws (fail-closed) when it rejects the lock.
+export function checkoutFingerprint(helper, lockText, currentVersion, repoRoot) {
+  const fingerprint = helper.computeLockFingerprint({
     lockText,
     currentVersion,
     ...(repoRoot ? { repoRoot } : {}),
@@ -224,9 +295,13 @@ export function checkoutIdentityHashes(contract, root = ".") {
   };
 }
 
-// The checkout's identity, read from `root`. A fingerprint failure is kept as
+// The checkout's identity, read from `root` with `helper`, the checkout's own
+// lock-fingerprint.mjs (loadCheckoutHelper). A fingerprint failure is kept as
 // dependencyFingerprintError and reported by artifactFingerprintProblem.
-export function readCheckoutIdentity(contract, root = ".") {
+export function readCheckoutIdentity(contract, root, helper) {
+  if (!helper || typeof helper.computeLockFingerprint !== "function") {
+    throw new Error("readCheckoutIdentity needs the checkout's loaded lock-fingerprint.mjs");
+  }
   const at = (path) => join(root, path);
   const packageVersion = JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version;
   const lockBytes = readFileSync(at("pnpm-lock.yaml"));
@@ -237,9 +312,11 @@ export function readCheckoutIdentity(contract, root = ".") {
     ...checkoutIdentityHashes(contract, root),
     dependencyFingerprint: null,
     dependencyFingerprintError: null,
+    checkoutHelper: helperIdentity(helper),
   };
   try {
     checkout.dependencyFingerprint = checkoutFingerprint(
+      helper,
       lockBytes.toString("utf8"),
       packageVersion,
       resolve(root),
@@ -420,11 +497,20 @@ export function dependencyGraphIdentityMoves(contract, measured) {
   return moved;
 }
 
-export function dependencyGraphIdentityRefusal(moved) {
+// What each fingerprint re-pin reason may move, for its identity refusal.
+const FINGERPRINT_REASON_SCOPE = {
+  [DEPENDENCY_GRAPH_REASON]: "moves only dependencyFingerprint.sha256",
+  [FINGERPRINT_POLICY_REASON]:
+    "moves only the dependency fingerprint, together with a policyVersion step",
+};
+
+export function dependencyGraphIdentityRefusal(moved, reason = DEPENDENCY_GRAPH_REASON) {
   return (
     "--reason " +
-    DEPENDENCY_GRAPH_REASON +
-    " moves only dependencyFingerprint.sha256, but " +
+    reason +
+    " " +
+    FINGERPRINT_REASON_SCOPE[reason] +
+    ", but " +
     moved.join(", ") +
     " differ from the contract; use the reason that matches the change (a toolchain bump such as Hono needs its own reviewed procedure)"
   );
@@ -458,6 +544,176 @@ export function fingerprintTransitionRecord(contract, local) {
     oldSha256: contract.dependencyFingerprint.sha256,
     newSha256: local.sha256,
   };
+}
+
+function fingerprintPolicyError(message) {
+  return new Error("--reason " + FINGERPRINT_POLICY_REASON + ": " + message);
+}
+
+// Why the contract's fingerprint cannot move to the checkout's `local` under
+// fingerprint-policy, or null. `helper` is the checkout helper's exported
+// identity (helperIdentity): `policyVersion` must step up by exactly one to the
+// helper's FINGERPRINT_POLICY_VERSION, and `parser` and `helperSha256` must be
+// the helper's own. A parser or helper move without a version step is refused.
+export function fingerprintPolicyRefusal(contract, local, helper) {
+  const pinned = contract.dependencyFingerprint;
+  const versions = [pinned?.policyVersion, local?.policyVersion, helper?.policyVersion];
+  if (!versions.every((version) => Number.isSafeInteger(version))) {
+    return (
+      "policyVersion must be an integer in the contract, the checkout fingerprint and the helper's exported FINGERPRINT_POLICY_VERSION, found " +
+      versions.map(String).join(", ")
+    );
+  }
+  const step = local.policyVersion - pinned.policyVersion;
+  if (step === 0) {
+    if (local.parser !== pinned.parser) {
+      return (
+        "parser moved from " +
+        pinned.parser +
+        " to " +
+        local.parser +
+        " without a policyVersion step; a parser change is a policyVersion bump"
+      );
+    }
+    if (local.helperSha256 !== pinned.helperSha256 && local.sha256 === pinned.sha256) {
+      return "helperSha256 moved without a policyVersion step; a helper-only edit needs `fingerprint-helper` (#4198)";
+    }
+    return (
+      "policyVersion did not move; use fingerprint-helper or dependency-graph (the contract and the checkout are both at policy v" +
+      pinned.policyVersion +
+      ")"
+    );
+  }
+  if (step !== 1) {
+    return (
+      "policyVersion must increase by exactly one, but the contract pins v" +
+      pinned.policyVersion +
+      " and the checkout computes v" +
+      local.policyVersion
+    );
+  }
+  if (local.policyVersion !== helper.policyVersion) {
+    return (
+      "the checkout's policyVersion " +
+      local.policyVersion +
+      " does not match the helper's exported FINGERPRINT_POLICY_VERSION " +
+      helper.policyVersion
+    );
+  }
+  if (local.parser !== helper.parser) {
+    return (
+      "the checkout's parser " +
+      local.parser +
+      " does not match the helper's exported FINGERPRINT_PARSER " +
+      helper.parser
+    );
+  }
+  if (local.helperSha256 !== helper.helperSha256) {
+    return "the checkout's helperSha256 does not match the checkout helper's fingerprintHelperSha256()";
+  }
+  return null;
+}
+
+// The fingerprint transition a fingerprint-policy re-pin records in baselineEvidence.
+export function fingerprintPolicyTransitionRecord(contract, local) {
+  return {
+    from: contractFingerprint(contract.dependencyFingerprint),
+    to: contractFingerprint(local),
+  };
+}
+
+function policyText(fingerprint) {
+  return (
+    "policy v" +
+    fingerprint.policyVersion +
+    " (" +
+    fingerprint.parser +
+    ", sha256 " +
+    fingerprint.sha256 +
+    ", helper " +
+    fingerprint.helperSha256 +
+    ")"
+  );
+}
+
+export function fingerprintPolicyTransitionText(transition) {
+  return (
+    "dependency fingerprint " + policyText(transition.from) + " to " + policyText(transition.to)
+  );
+}
+
+function policyMarkdown(fingerprint) {
+  return (
+    "policy v" +
+    fingerprint.policyVersion +
+    " (`" +
+    fingerprint.parser +
+    "`, `" +
+    fingerprint.sha256 +
+    "`, helper `" +
+    fingerprint.helperSha256 +
+    "`)"
+  );
+}
+
+export function fingerprintPolicyTransitionMarkdown(transition) {
+  return (
+    "the dependency fingerprint moved from " +
+    policyMarkdown(transition.from) +
+    " to " +
+    policyMarkdown(transition.to) +
+    " ([LOCK-FINGERPRINT-POLICY.md](LOCK-FINGERPRINT-POLICY.md), whose policy identity line moved with it). `policyVersion` and `sha256` equal the artifact's run provenance; `parser` and `helperSha256` are proven against the checkout's own `lock-fingerprint.mjs`, which the artifact does not attest. `lock-fingerprint-inventory.json` was regenerated from that helper's `--explain`"
+  );
+}
+
+// fingerprint-policy on Linux: the artifact carries this checkout's
+// fingerprint, the contract's fingerprint moves only with a one-step
+// policyVersion increment matching the checkout helper, and every other
+// reviewed identity input, Cargo.lock included, equals the contract.
+function assertFingerprintPolicyMovement(contract, evidence) {
+  const identity = evidence.identity;
+  if (!identity) throw fingerprintPolicyError("needs the artifact's measured identity inputs");
+  const problem = artifactFingerprintProblem(evidence.artifactFingerprint, evidence);
+  if (problem) throw fingerprintPolicyError(problem);
+  if (!isRecord(evidence.checkoutHelper)) {
+    throw fingerprintPolicyError("needs the checkout helper's exported identity");
+  }
+  const refusal = fingerprintPolicyRefusal(
+    contract,
+    evidence.dependencyFingerprint,
+    evidence.checkoutHelper,
+  );
+  if (refusal) throw fingerprintPolicyError(refusal);
+  assertCargoUnchanged(contract, evidence, FINGERPRINT_POLICY_REASON);
+  const moved = dependencyGraphIdentityMoves(contract, {
+    packageVersion: evidence.version,
+    normalizerSha256: evidence.normalizerSha256,
+    fixtureSha256: identity.fixtureSha256,
+    runnerSha256: identity.runnerSha256,
+    toolchain: identity.toolchain,
+  });
+  if (moved.length > 0) {
+    throw new Error(dependencyGraphIdentityRefusal(moved, FINGERPRINT_POLICY_REASON));
+  }
+}
+
+const POLICY_DOC_NAME = "LOCK-FINGERPRINT-POLICY.md";
+const POLICY_IDENTITY_LINE = /^Policy identity: `policyVersion: \d+`, `parser: "[^"\n]*"`/m;
+
+// Rewrites the policy identity line of LOCK-FINGERPRINT-POLICY.md to the
+// re-pinned `fingerprint`; refuses a document without exactly that line.
+export function rewritePolicyIdentity(source, fingerprint) {
+  if (!POLICY_IDENTITY_LINE.test(source)) {
+    throw fingerprintPolicyError("policy identity line not found in " + POLICY_DOC_NAME);
+  }
+  return source.replace(
+    POLICY_IDENTITY_LINE,
+    "Policy identity: `policyVersion: " +
+      fingerprint.policyVersion +
+      "`, `parser: " +
+      JSON.stringify(fingerprint.parser) +
+      "`",
+  );
 }
 
 // Refuses a rewrite of `before` into `after` that moved any key outside
@@ -633,6 +889,7 @@ export const REPINNED_FROM_REASONS = Object.freeze([
   "lockfile-provenance",
   CARGO_PRODUCER_LOCK_REASON,
   DEPENDENCY_GRAPH_REASON,
+  FINGERPRINT_POLICY_REASON,
 ]);
 
 export function checkPreviousContractRefArgs(values, reasons = REPINNED_FROM_REASONS) {
@@ -1103,10 +1360,15 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     assertCargoUnchanged(contract, evidence, reason);
   }
   const dependencyGraph = reason === DEPENDENCY_GRAPH_REASON;
+  const fingerprintPolicy = reason === FINGERPRINT_POLICY_REASON;
   if (dependencyGraph) assertDependencyGraphMovement(contract, evidence);
+  else if (fingerprintPolicy) assertFingerprintPolicyMovement(contract, evidence);
   else if (contract.schemaVersion === 3) assertFingerprintUnchanged(contract, evidence, reason);
   const fingerprintTransition = dependencyGraph
     ? fingerprintTransitionRecord(contract, evidence.dependencyFingerprint)
+    : null;
+  const fingerprintPolicyTransition = fingerprintPolicy
+    ? fingerprintPolicyTransitionRecord(contract, evidence.dependencyFingerprint)
     : null;
   let cargoTransition = null;
   if (reason === CARGO_PRODUCER_LOCK_REASON) {
@@ -1156,6 +1418,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   next.normalizerSha256 = evidence.normalizerSha256;
   if (cargoTransition) next.toolchain.cargoLockSha256 = cargoTransition.newSha;
   if (fingerprintTransition) next.dependencyFingerprint.sha256 = fingerprintTransition.newSha256;
+  if (fingerprintPolicyTransition) {
+    next.dependencyFingerprint = { ...fingerprintPolicyTransition.to };
+  }
   const gzipSummary =
     gzipEvidence === null
       ? "no previous actual gzip evidence to compare"
@@ -1264,6 +1529,22 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       gzipSummary +
       "." +
       matrices;
+  } else if (fingerprintPolicy) {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from workflow run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " after a reviewed fingerprint-policy change (" +
+      fingerprintPolicyTransitionText(fingerprintPolicyTransition) +
+      "), measured on a checkout whose lock-fingerprint.mjs exports the new policy. policyVersion and sha256 equal the artifact's run provenance; parser and helperSha256 are proven against the checkout helper, not attested by the artifact. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the dependency fingerprint and the recorded pnpm-lock.yaml hash moved; equal totals alone do not prove byte-identical product code. " +
+      gzipSummary +
+      "." +
+      matrices;
   } else {
     next.platformStatus =
       "Linux x64 has exact zero-allowance v" +
@@ -1297,6 +1578,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     ...(repinnedFrom ? { repinnedFrom } : {}),
     ...(cargoTransition ? { cargoTransition } : {}),
     ...(fingerprintTransition ? { fingerprintTransition } : {}),
+    ...(fingerprintPolicyTransition ? { fingerprintPolicyTransition } : {}),
     actualGzip: actualGzipRows(totals),
     note:
       evidence.runLabel +
@@ -1344,11 +1626,19 @@ export function rebaselineContract(contract, totals, evidence, reason) {
                   "): the new fingerprint was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
                   gzipSummary +
                   "."
-                : "Raw and gzipNormalized totals did not change from the v" +
-                  previousVersion +
-                  " contract; " +
-                  gzipSummary +
-                  ".") +
+                : fingerprintPolicy
+                  ? "Reviewed fingerprint-policy re-pin at unchanged v" +
+                    previousVersion +
+                    " (" +
+                    fingerprintPolicyTransitionText(fingerprintPolicyTransition) +
+                    "): policyVersion stepped by exactly one to the checkout helper's exported FINGERPRINT_POLICY_VERSION; the new policyVersion and sha256 equal the artifact's, and parser and helperSha256 are the checkout helper's own; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                    gzipSummary +
+                    "."
+                  : "Raw and gzipNormalized totals did not change from the v" +
+                    previousVersion +
+                    " contract; " +
+                    gzipSummary +
+                    ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -1362,6 +1652,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   if (cargoTransition) assertCargoProducerLockMovement(contract, next);
   if (dependencyGraph) {
     assertAllowedMovement(DEPENDENCY_GRAPH_REASON, DEPENDENCY_GRAPH_MOVEMENT, contract, next);
+  }
+  if (fingerprintPolicy) {
+    assertAllowedMovement(FINGERPRINT_POLICY_REASON, FINGERPRINT_POLICY_MOVEMENT, contract, next);
   }
   return { contract: next, gzipEvidence, previousVersion };
 }
@@ -1451,6 +1744,7 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     "fingerprint-migration",
     CARGO_PRODUCER_LOCK_REASON,
     DEPENDENCY_GRAPH_REASON,
+    FINGERPRINT_POLICY_REASON,
   ].includes(reason)
     ? "workflow run "
     : "health run ";
@@ -1481,7 +1775,7 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     "identical full-dist inventories per case. `decision-linux-x64.json` records the `raw` and " +
     "`gzipNormalized` totals as exact ceilings with zero allowance; earlier ceilings remain in git " +
     "history." +
-    (reason === DEPENDENCY_GRAPH_REASON
+    (PAIRED_REASONS.includes(reason)
       ? " The Darwin arm64 contract moves in the same paired change, from its own native " +
         "`island-size-darwin.yml` artifact (`--stage`, then `--apply`).\n"
       : " The Darwin arm64 contract is unchanged; it is re-pinned separately from a native " +
@@ -1575,6 +1869,22 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       "totals alone do not prove byte-identical product code. " +
       evidence +
       closing;
+  } else if (reason === FINGERPRINT_POLICY_REASON) {
+    body =
+      "The Linux contract re-pinned its dependency fingerprint at v" +
+      version +
+      " from " +
+      run +
+      " after a reviewed fingerprint-policy change: " +
+      fingerprintPolicyTransitionMarkdown(contract.baselineEvidence.fingerprintPolicyTransition) +
+      ". `policyVersion` stepped by exactly one to the checkout helper's exported " +
+      "`FINGERPRINT_POLICY_VERSION`. The producer version, fixtures, runners, `Cargo.lock`, " +
+      "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
+      "unchanged; only the four `dependencyFingerprint` keys and the recorded " +
+      "`toolchain.pnpmLockSha256` moved. These totals alone do not prove byte-identical product " +
+      "code. " +
+      evidence +
+      closing;
   } else {
     body =
       "The Linux contract was re-pinned at v" +
@@ -1590,7 +1900,6 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
 }
 
 const DARWIN_CONTRACT = "research/v3-island-size/decision.json";
-export const FINGERPRINT_HELPER_FILE = SIZE_DIR + "/lock-fingerprint.mjs";
 const INVENTORY_FILE = SIZE_DIR + "/lock-fingerprint-inventory.json";
 const HELPER_CONTRACTS = { linux: CONTRACT, darwin: DARWIN_CONTRACT };
 // The only keys a fingerprint-helper re-pin may write (LOCK-FINGERPRINT-POLICY.md §0).
@@ -2035,26 +2344,26 @@ export function helperExplainBytes(root) {
   });
 }
 
-// The regenerated lock-fingerprint-inventory.json for a dependency-graph
-// re-pin: the checkout's `--explain` bytes, kept verbatim once they equal the
-// in-process proof for the same lock, version and build inputs, and once that
-// proof is the fingerprint the re-pinned contract pins.
-export function regenerateInventory(root, pinned) {
+// The regenerated lock-fingerprint-inventory.json for a dependency-graph or
+// fingerprint-policy re-pin: the checkout's `--explain` bytes, kept verbatim
+// once they equal the in-process proof of `helper` (the checkout's own
+// lock-fingerprint.mjs) for the same lock, version and build inputs, and once
+// that proof is the fingerprint the re-pinned contract pins.
+export function regenerateInventory(root, pinned, helper, reason = DEPENDENCY_GRAPH_REASON) {
   const at = (path) => join(root, path);
-  const proof = computeLockFingerprint({
+  const fail = (message) => new Error("--reason " + reason + ": " + message);
+  const proof = helper.computeLockFingerprint({
     lockText: readFileSync(at("pnpm-lock.yaml"), "utf8"),
     currentVersion: JSON.parse(readFileSync(at("packages/zfb/package.json"), "utf8")).version,
     repoRoot: resolve(root),
   });
   if (!isDeepStrictEqual(contractFingerprint(proof), pinned)) {
-    throw dependencyGraphError(
-      "the checkout's fingerprint is not the one the re-pinned contract pins",
-    );
+    throw fail("the checkout's fingerprint is not the one the re-pinned contract pins");
   }
   const explain = helperExplainBytes(root);
   const expected = { ...contractFingerprint(proof), inventory: proof.inventory };
   if (!isDeepStrictEqual(JSON.parse(explain.toString("utf8")), expected)) {
-    throw dependencyGraphError(
+    throw fail(
       "the checkout's lock-fingerprint.mjs --explain output disagrees with the fingerprint proof",
     );
   }
@@ -2087,12 +2396,14 @@ export function savedSidecarProblem(modeDir, recomputed) {
 }
 
 export const STAGE_MANIFEST = "stage-manifest.json";
+export const POLICY_DOC = SIZE_DIR + "/" + POLICY_DOC_NAME;
 // Shared outputs both platforms rewrite: a later stage reads the staged copy.
-export const STAGE_OVERLAY_FILES = Object.freeze([TEST_FILE, README, INVENTORY_FILE]);
+export const STAGE_OVERLAY_FILES = Object.freeze([TEST_FILE, README, INVENTORY_FILE, POLICY_DOC]);
 // Every live file either script can stage, checked before the stage directory is read.
 const STAGEABLE_FILES = [CONTRACT, DARWIN_CONTRACT, ...STAGE_OVERLAY_FILES];
-// Regenerated whole from the checkout, so every stage must produce the same bytes.
-const STAGE_IDENTICAL_FILES = [INVENTORY_FILE];
+// Derived whole from the checkout and the re-pinned identity, so every stage
+// must produce the same bytes.
+const STAGE_IDENTICAL_FILES = [INVENTORY_FILE, POLICY_DOC];
 
 // `path` resolved through every existing symlink, even when its tail does not exist yet.
 function realTarget(path) {
@@ -2478,9 +2789,10 @@ export function readCargoLockEvidence(args, root) {
   };
 }
 
-// `root` is the checkout the contract, test pins and README are rewritten in.
-// The artifact-less fingerprint-helper reason returns a promise.
-export function main(argv = process.argv.slice(2), root = ".") {
+// `root` is the checkout the contract, test pins and README are rewritten in;
+// its own lock-fingerprint.mjs computes every fingerprint. Async: the checkout
+// helper is imported, and the artifact-less fingerprint-helper reason awaits.
+export async function main(argv = process.argv.slice(2), root = ".") {
   const args = parseArgs(argv);
   if (Object.hasOwn(args, "apply")) return applyStage(args.apply, root);
   if (args.reason === FINGERPRINT_HELPER_REASON) {
@@ -2517,7 +2829,8 @@ export function main(argv = process.argv.slice(2), root = ".") {
   }
   const contractBytes = readFileSync(at(CONTRACT));
   const contract = JSON.parse(contractBytes.toString("utf8"));
-  const checkout = readCheckoutIdentity(contract, root);
+  const helper = await loadCheckoutHelper(root);
+  const checkout = readCheckoutIdentity(contract, root, helper);
   const { packageVersion: version, pnpmLockSha256 } = checkout;
   for (const mode of MODES) {
     const p = measurements[mode].provenance;
@@ -2538,6 +2851,7 @@ export function main(argv = process.argv.slice(2), root = ".") {
     "fingerprint-migration": "Dependency-fingerprint migration run at v" + version,
     "cargo-producer-lock": "Cargo producer-lock transition run at v" + version,
     "dependency-graph": "Dependency-graph re-pin run at v" + version,
+    "fingerprint-policy": "Fingerprint-policy re-pin run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -2555,6 +2869,7 @@ export function main(argv = process.argv.slice(2), root = ".") {
       artifactFingerprint: provenance.dependencyFingerprint,
       dependencyFingerprint: checkout.dependencyFingerprint,
       dependencyFingerprintError: checkout.dependencyFingerprintError,
+      checkoutHelper: checkout.checkoutHelper,
       ...(args.reason === CARGO_PRODUCER_LOCK_REASON
         ? { cargoLock: readCargoLockEvidence(args, root) }
         : {}),
@@ -2585,10 +2900,19 @@ export function main(argv = process.argv.slice(2), root = ".") {
         readmeSection(result.contract, result.gzipEvidence, result.previousVersion, args.reason),
     },
   ];
-  if (args.reason === DEPENDENCY_GRAPH_REASON) {
+  if (INVENTORY_REASONS.includes(args.reason)) {
     outputs.push({
       path: INVENTORY_FILE,
-      bytes: regenerateInventory(root, result.contract.dependencyFingerprint),
+      bytes: regenerateInventory(root, result.contract.dependencyFingerprint, helper, args.reason),
+    });
+  }
+  if (args.reason === FINGERPRINT_POLICY_REASON) {
+    outputs.push({
+      path: POLICY_DOC,
+      bytes: rewritePolicyIdentity(
+        session.read(POLICY_DOC).toString("utf8"),
+        result.contract.dependencyFingerprint,
+      ),
     });
   }
   session.commit(outputs, {

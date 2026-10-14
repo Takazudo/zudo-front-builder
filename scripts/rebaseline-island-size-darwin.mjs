@@ -76,6 +76,16 @@
 // shared staging, so both platforms stage into one directory and are applied
 // together.
 //
+// `--reason fingerprint-policy` (#4218, schemaVersion 3) moves the four
+// `dependencyFingerprint` keys only together with an exact one-step
+// `policyVersion` increment that equals the checkout helper's exported
+// FINGERPRINT_POLICY_VERSION (the Linux script's shared
+// fingerprintPolicyRefusal), refuses everything dependency-graph refuses, writes
+// only FINGERPRINT_POLICY_MOVEMENT, regenerates the inventory and rewrites the
+// policy identity line of LOCK-FINGERPRINT-POLICY.md. It is staged and applied
+// in pairs like dependency-graph. The checkout's own lock-fingerprint.mjs
+// (loadCheckoutHelper) computes every fingerprint.
+//
 // No file is written before every validation and every rendered output
 // succeeds; there is no force or ignore-provenance option.
 
@@ -98,6 +108,10 @@ import {
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_HELPER_REASON,
   FINGERPRINT_MOVE_REMEDY,
+  FINGERPRINT_POLICY_MOVEMENT,
+  FINGERPRINT_POLICY_REASON,
+  INVENTORY_REASONS,
+  POLICY_DOC,
   REASONS,
   SOURCE_BOUND_REASONS,
   acceptedSchemas,
@@ -121,6 +135,11 @@ import {
   fingerprintTransitionMarkdown,
   fingerprintTransitionRecord,
   fingerprintTransitionText,
+  fingerprintPolicyRefusal,
+  fingerprintPolicyTransitionMarkdown,
+  fingerprintPolicyTransitionRecord,
+  fingerprintPolicyTransitionText,
+  loadCheckoutHelper,
   measuredTotals,
   openOutputSession,
   previousContractReference,
@@ -129,6 +148,7 @@ import {
   readCheckoutIdentity,
   regenerateInventory,
   repinnedFromRecord,
+  rewritePolicyIdentity,
   rewriteTestBlock,
   runFingerprintHelperRepin,
   savedSidecarProblem,
@@ -151,12 +171,14 @@ const DARWIN_REASONS = [
   FINGERPRINT_HELPER_REASON,
   CARGO_PRODUCER_LOCK_REASON,
   DEPENDENCY_GRAPH_REASON,
+  FINGERPRINT_POLICY_REASON,
 ];
 // The Darwin reasons that record `repinnedFrom` and accept --previous-contract-ref.
 const DARWIN_REPINNED_FROM_REASONS = [
   ...REPIN_REASONS,
   CARGO_PRODUCER_LOCK_REASON,
   DEPENDENCY_GRAPH_REASON,
+  FINGERPRINT_POLICY_REASON,
 ];
 const shaPattern = /^[0-9a-f]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
@@ -1085,6 +1107,154 @@ export function darwinDependencyGraphReadmeSection(contract, gzipMoves) {
   );
 }
 
+// One reviewed fingerprint-policy move on a schemaVersion-3 contract: the
+// artifact carries this checkout's fingerprint, the contract's four
+// fingerprint keys move only with a one-step policyVersion increment that the
+// checkout helper exports (`checkout.checkoutHelper`), and the totals,
+// Cargo.lock, package version, normalizer, fixtures, runners, metric and
+// allowance are unchanged (the toolchain is checked by validateDarwinEvidence).
+// Only FINGERPRINT_POLICY_MOVEMENT is written.
+export function repinDarwinFingerprintPolicy(contract, totals, evidence, checkout) {
+  const reason = FINGERPRINT_POLICY_REASON;
+  const fail = (message) => new Error("--reason " + reason + ": " + message);
+  const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
+  const totalsErrors = checkRepinTotals(contract, totals);
+  if (totalsErrors.length > 0) throw new Error(totalsErrors.join("; "));
+  if (contract.schemaVersion !== 3) {
+    throw new Error(
+      "--reason " +
+        reason +
+        " needs a schemaVersion 3 contract, found schemaVersion " +
+        String(contract.schemaVersion),
+    );
+  }
+  const problem = artifactFingerprintProblem(evidence.dependencyFingerprint, checkout ?? {});
+  if (problem) throw fail(problem);
+  if (!isRecord(checkout.checkoutHelper)) {
+    throw fail("needs the checkout helper's exported identity");
+  }
+  const refusal = fingerprintPolicyRefusal(
+    contract,
+    checkout.dependencyFingerprint,
+    checkout.checkoutHelper,
+  );
+  if (refusal) throw fail(refusal);
+  const cargo = cargoMoveRefusal(reason, evidence.cargoLockSha256, contract);
+  if (cargo) throw new Error(cargo);
+  const moved = dependencyGraphIdentityMoves(contract, {
+    packageVersion: evidence.packageVersion,
+    normalizerSha256: evidence.normalizerSha256,
+    fixtureSha256: evidence.fixtureSha256,
+    runnerSha256: evidence.runnerSha256,
+  });
+  if (moved.length > 0) throw new Error(dependencyGraphIdentityRefusal(moved, reason));
+  const transition = fingerprintPolicyTransitionRecord(contract, checkout.dependencyFingerprint);
+  const moves = gzipMovesSince(contract, totals);
+  const next = structuredClone(contract);
+  next.outcome = REASONS[reason].outcome;
+  next.baselineSourceSha = evidence.sourceSha;
+  next.dependencyFingerprint = { ...transition.to };
+  next.toolchain.pnpmLockSha256 = evidence.pnpmLockSha256;
+  const metric = IDENTITY_NORMALIZED_METRIC + " v" + IDENTITY_NORMALIZATION_VERSION;
+  next.platformStatus =
+    "Darwin arm64 has exact zero-allowance v" +
+    evidence.packageVersion +
+    " ceilings on metric " +
+    metric +
+    ", re-pinned from the native artifact of workflow_dispatch run " +
+    evidence.runId +
+    " at source " +
+    evidence.sourceSha +
+    " after a reviewed fingerprint-policy change (" +
+    fingerprintPolicyTransitionText(transition) +
+    "), measured on a checkout whose lock-fingerprint.mjs exports the new policy. policyVersion " +
+    "and sha256 equal the artifact's run provenance; parser and helperSha256 are proven against " +
+    "the checkout helper, not attested by the artifact. The package version, fixtures, runners, " +
+    "Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total " +
+    "is unchanged; only the dependency fingerprint and the recorded pnpm-lock.yaml hash moved; " +
+    "equal totals alone do not prove byte-identical product code. " +
+    gzipSummary(moves) +
+    ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
+    "inventories. Other platforms and toolchains are not covered.";
+  next.baselineEvidence = {
+    event: "ci-artifact",
+    runId: evidence.runId,
+    jobId: evidence.jobId,
+    sourceSha: evidence.sourceSha,
+    artifact: {
+      id: evidence.artifactId,
+      name: "island-size-darwin-arm64-" + evidence.sourceSha,
+      expiresAt: evidence.artifactExpiresAt,
+    },
+    nativeRunner: evidence.nativeRunner,
+    repinnedFrom,
+    fingerprintPolicyTransition: transition,
+    originalCheckerResult: evidence.originalCheckerResult,
+    actualGzip: actualGzipRows(totals),
+    note:
+      "Fingerprint-policy re-pin from the native Darwin arm64 artifact of run " +
+      evidence.runId +
+      " (job " +
+      evidence.jobId +
+      ") at source " +
+      evidence.sourceSha +
+      ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
+      "inventories. policyVersion stepped by exactly one to the checkout helper's exported " +
+      "FINGERPRINT_POLICY_VERSION; the new policyVersion and sha256 equal the artifact's, and " +
+      "parser and helperSha256 are the checkout helper's own. The artifact's own check-budget " +
+      "run compared it with the previous fingerprint pin and is preserved as evidence. Raw and " +
+      "gzipNormalized totals did not change from the v" +
+      contract.toolchain.packageVersion +
+      " contract; " +
+      gzipSummary(moves) +
+      ". Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
+  };
+  assertAllowedMovement(reason, FINGERPRINT_POLICY_MOVEMENT, contract, next);
+  return { contract: next, gzipMoves: moves ?? [] };
+}
+
+export function darwinFingerprintPolicyReadmeSection(contract, gzipMoves) {
+  const e = contract.baselineEvidence;
+  return (
+    "\n## Darwin v" +
+    contract.toolchain.packageVersion +
+    " " +
+    REASONS[FINGERPRINT_POLICY_REASON].heading +
+    "\n\n" +
+    "The Darwin arm64 contract re-pinned its dependency fingerprint at v" +
+    contract.toolchain.packageVersion +
+    " from the native artifact " +
+    e.artifact.id +
+    " of [workflow_dispatch run " +
+    e.runId +
+    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+    e.runId +
+    ") (job " +
+    e.jobId +
+    ") at source `" +
+    e.sourceSha +
+    "` after a reviewed fingerprint-policy change: " +
+    fingerprintPolicyTransitionMarkdown(e.fingerprintPolicyTransition) +
+    ". `policyVersion` stepped by exactly one to the checkout helper's exported " +
+    "`FINGERPRINT_POLICY_VERSION`. The package version, fixtures, runners, `Cargo.lock`, " +
+    "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
+    "unchanged; only the four `dependencyFingerprint` keys and the recorded " +
+    "`toolchain.pnpmLockSha256` moved. These totals alone do not prove byte-identical product " +
+    "code. The artifact's own `check-budget.mjs` run against the previous fingerprint pin is " +
+    "preserved as evidence (exit code " +
+    String(e.originalCheckerResult?.exitCode) +
+    "). " +
+    (gzipMoves.length === 0
+      ? "No actual gzip total moved."
+      : "Actual gzip moved on " +
+        gzipMoves.length +
+        " rows (" +
+        describeDeltas(gzipMoves) +
+        "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
+    " Linux x64 moves in the same paired change (`--stage`, then `--apply`).\n"
+  );
+}
+
 function replacePin(block, pattern, value, label) {
   if (!pattern.test(block)) throw new Error("missing Darwin " + label + " pin in " + TEST_FILE);
   return block.replace(pattern, (_, head) => head + value);
@@ -1399,15 +1569,16 @@ export function checkoutMismatches(evidence, checkout) {
   return errors;
 }
 
-// The checkout's identity, read from `root`.
-export function readDarwinCheckout(contract, root = ".") {
-  return readCheckoutIdentity(contract, root);
+// The checkout's identity, read from `root` with its own loaded helper.
+export function readDarwinCheckout(contract, root, helper) {
+  return readCheckoutIdentity(contract, root, helper);
 }
 
 // What each artifact reason runs on the loaded evidence: `run` returns
 // {contract, gzipMoves, previousVersion?}, `readme` renders its README section.
 // `checkout` reasons compare the artifact with the checkout and rewrite the
-// Darwin test pins; `inventory` regenerates lock-fingerprint-inventory.json.
+// Darwin test pins; INVENTORY_REASONS regenerate lock-fingerprint-inventory.json
+// and fingerprint-policy also rewrites the policy identity line.
 const DARWIN_HANDLERS = {
   [METRIC_MIGRATION]: {
     checkout: false,
@@ -1458,10 +1629,16 @@ const DARWIN_HANDLERS = {
   },
   [DEPENDENCY_GRAPH_REASON]: {
     checkout: true,
-    inventory: true,
     run: ({ contract, totals, evidence, checkout }) =>
       repinDarwinDependencyGraph(contract, totals, evidence, checkout),
     readme: (result) => darwinDependencyGraphReadmeSection(result.contract, result.gzipMoves),
+    verb: "re-pinned",
+  },
+  [FINGERPRINT_POLICY_REASON]: {
+    checkout: true,
+    run: ({ contract, totals, evidence, checkout }) =>
+      repinDarwinFingerprintPolicy(contract, totals, evidence, checkout),
+    readme: (result) => darwinFingerprintPolicyReadmeSection(result.contract, result.gzipMoves),
     verb: "re-pinned",
   },
 };
@@ -1479,9 +1656,10 @@ function gzipMovesFromCeilings(contract, totals) {
   );
 }
 
-// `root` is the checkout the contract, test pins and README are rewritten in.
-// The artifact-less fingerprint-helper reason returns a promise.
-export function main(argv = process.argv.slice(2), root = ".") {
+// `root` is the checkout the contract, test pins and README are rewritten in;
+// its own lock-fingerprint.mjs computes every fingerprint. Async: the checkout
+// helper is imported, and the artifact-less fingerprint-helper reason awaits.
+export async function main(argv = process.argv.slice(2), root = ".") {
   const args = parseArgs(argv);
   if (Object.hasOwn(args, "apply")) return applyStage(args.apply, root);
   if (args.reason === FINGERPRINT_HELPER_REASON) {
@@ -1504,8 +1682,10 @@ export function main(argv = process.argv.slice(2), root = ".") {
   });
   const evidence = buildEvidence(args, artifact);
   let checkout = null;
+  let helper = null;
   if (handler.checkout) {
-    checkout = readDarwinCheckout(contract, root);
+    helper = await loadCheckoutHelper(root);
+    checkout = readDarwinCheckout(contract, root, helper);
     const mismatches = checkoutMismatches(evidence, checkout);
     if (mismatches.length > 0) throw new Error("re-pin rejected: " + mismatches.join("; "));
   }
@@ -1533,11 +1713,27 @@ export function main(argv = process.argv.slice(2), root = ".") {
         ]
       : []),
     { path: readmePath, bytes: readmeInput + handler.readme(result, { contract }) },
-    ...(handler.inventory
+    ...(INVENTORY_REASONS.includes(args.reason)
       ? [
           {
             path: INVENTORY_FILE,
-            bytes: regenerateInventory(root, result.contract.dependencyFingerprint),
+            bytes: regenerateInventory(
+              root,
+              result.contract.dependencyFingerprint,
+              helper,
+              args.reason,
+            ),
+          },
+        ]
+      : []),
+    ...(args.reason === FINGERPRINT_POLICY_REASON
+      ? [
+          {
+            path: POLICY_DOC,
+            bytes: rewritePolicyIdentity(
+              session.read(POLICY_DOC).toString("utf8"),
+              result.contract.dependencyFingerprint,
+            ),
           },
         ]
       : []),
