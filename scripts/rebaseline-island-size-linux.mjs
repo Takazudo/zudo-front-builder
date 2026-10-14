@@ -49,8 +49,10 @@
 // cites the previous contract bytes: always their SHA-256, plus `commit` and
 // `path` when `git show HEAD:<path>` (or an explicit `--previous-contract-ref`,
 // which must match and never falls back to HEAD) is byte-identical to them.
-// `baselineSourceSha` names the measured source; `contract.commit` names the
-// commit that stores the previous contract file. They are different commits.
+// `baselineSourceSha` names the probe head (`--head-sha`) and
+// `baselineEvidence.sourceSha` the measured source, which differ when
+// health.yml measured a PR merge commit (sourceText); `contract.commit` names
+// the commit that stores the previous contract file. They are different commits.
 //
 // `--reason dependency-graph` (#4218, schemaVersion 3) re-pins a reviewed move
 // of the pnpm dependency graph from a fresh artifact measured at a checkout
@@ -89,6 +91,12 @@
 // still match and a paired reason is staged for both platforms
 // (openOutputSession / applyStage below). The paired reasons
 // (`dependency-graph`, `fingerprint-policy`) refuse to run without `--stage`.
+// A stage directory holds one reason. Each paired run records its transition
+// identity (pairedTransition) and measured source; staging the second platform
+// and `--apply` refuse unless both transitions are equal and Darwin measured
+// the Linux merge source or its probe head (pairedRunsProblem below). A failed
+// staging write leaves a partial stage that both `--apply` and `--stage`
+// refuse; the error says to discard the directory and stage again.
 //
 // No file is written before every validation and every rendered output
 // succeeds; `--apply` refuses if any destination moved since staging, writes
@@ -2490,7 +2498,12 @@ function readStageManifest(dir, label, required) {
     if (required) throw new Error(label + ": no " + STAGE_MANIFEST + " in the stage directory");
     if (files.length > 0) {
       throw new Error(
-        label + ": the stage directory is not empty and has no " + STAGE_MANIFEST + "; refusing",
+        label +
+          ": the stage directory is not empty and has no " +
+          STAGE_MANIFEST +
+          "; refusing (" +
+          STAGE_RECOVERY +
+          ")",
       );
     }
     return null;
@@ -2520,14 +2533,28 @@ function readStageManifest(dir, label, required) {
   for (const [destination, entry] of Object.entries(destinations)) {
     checkGitPath(destination, label + " destination");
     if (hashOrNull(join(dir, destination)) !== entry.staged) {
-      throw new Error(label + ": the staged " + destination + " changed after staging; refusing");
+      throw new Error(
+        label +
+          ": the staged " +
+          destination +
+          " changed after staging; refusing (" +
+          STAGE_RECOVERY +
+          ")",
+      );
     }
   }
   const unlisted = files.filter(
     (file) => file !== STAGE_MANIFEST && !Object.hasOwn(destinations, file),
   );
   if (unlisted.length > 0) {
-    throw new Error(label + ": unlisted files in the stage directory: " + unlisted.join(", "));
+    throw new Error(
+      label +
+        ": unlisted files in the stage directory: " +
+        unlisted.join(", ") +
+        " (" +
+        STAGE_RECOVERY +
+        ")",
+    );
   }
   return manifest;
 }
@@ -2537,8 +2564,12 @@ function readStageManifest(dir, label, required) {
 // output an earlier stage wrote, and `commit` writes every output under
 // `stageDir` (mirroring its repository path) plus a manifest recording, per
 // destination, the live file's SHA-256 at staging time and the staged
-// output's. `commit` validates everything before its first write.
-export function openOutputSession(root, stageDir) {
+// output's. `commit` validates everything before its first write. `io` swaps
+// the staging writes for a test that forces a failure mid-commit: the files
+// are written one by one and the manifest last, so a failed commit can leave a
+// partial stage, which readStageManifest then refuses (unlisted or changed
+// files, or files without a manifest).
+export function openOutputSession(root, stageDir, io = { writeFileSync, mkdirSync }) {
   if (stageDir === undefined) {
     return {
       read: (path) => readFileSync(resolve(root, path)),
@@ -2583,26 +2614,154 @@ export function openOutputSession(root, stageDir) {
           staged: sha256(bytes),
         };
       }
+      const runs = [...(manifest?.runs ?? []), run];
+      const problem = stageRunsProblem(runs);
+      if (problem) throw new Error(label + ": " + problem + " (nothing was staged)");
       const next = {
         stageVersion: 1,
-        runs: [...(manifest?.runs ?? []), run],
+        runs,
         destinations: Object.fromEntries(
           Object.keys(destinations)
             .sort()
             .map((path) => [path, destinations[path]]),
         ),
       };
-      for (const { path, bytes } of outputs) {
-        mkdirSync(dirname(join(stageDir, path)), { recursive: true });
-        writeFileSync(join(stageDir, path), bytes);
+      try {
+        for (const { path, bytes } of outputs) {
+          io.mkdirSync(dirname(join(stageDir, path)), { recursive: true });
+          io.writeFileSync(join(stageDir, path), bytes);
+        }
+        io.writeFileSync(join(stageDir, STAGE_MANIFEST), JSON.stringify(next, null, 2) + "\n");
+      } catch (error) {
+        throw new Error(
+          label +
+            ": staging failed (" +
+            error.message +
+            "); the stage directory may now hold a partial stage, which --apply and --stage refuse: " +
+            STAGE_RECOVERY,
+          { cause: error },
+        );
       }
-      writeFileSync(join(stageDir, STAGE_MANIFEST), JSON.stringify(next, null, 2) + "\n");
     },
   };
 }
 
 // The platform names a stage run records; a paired reason needs both.
 export const STAGE_PLATFORMS = Object.freeze(["linux-x64", "darwin-arm64"]);
+
+const STAGE_RECOVERY = "discard the stage directory and stage again from the start";
+
+// The prior and re-pinned identity a paired run stages. Both platforms must
+// record equal values: one package version, Cargo.lock and dependency
+// fingerprint before, and the same plus one pnpm-lock.yaml after. The prior
+// pnpm-lock.yaml hash is left out because `lockfile-provenance` moves it on
+// Linux alone.
+export function pairedTransition(previous, next) {
+  const identity = (contract) => ({
+    packageVersion: contract.toolchain.packageVersion,
+    cargoLockSha256: contract.toolchain.cargoLockSha256,
+    dependencyFingerprint: contract.dependencyFingerprint,
+  });
+  return {
+    from: identity(previous),
+    to: { ...identity(next), pnpmLockSha256: next.toolchain.pnpmLockSha256 },
+  };
+}
+
+// What a paired reason's stage run records beyond its measured source: the
+// previous contract reference (per platform, never compared: the two contracts
+// are different files) and the transition both runs must share; {} otherwise.
+export function stageRunIdentity(reason, previous, next) {
+  if (!PAIRED_REASONS.includes(reason)) return {};
+  return {
+    previousContract: next.baselineEvidence.repinnedFrom.contract,
+    transition: pairedTransition(previous, next),
+  };
+}
+
+function identityText(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+// Why a paired reason's Linux and Darwin runs are not one re-pin, or null.
+// Their transitions must be equal. Their measured sources may differ in one
+// way only: Linux measures health.yml's PR merge source, whose probe head has
+// the identical tree (sourceText), so Darwin may have measured either that
+// merge source or the Linux probe head; any other source is refused.
+function pairedRunsProblem(reason, linux, darwin) {
+  const problems = [];
+  for (const run of [linux, darwin]) {
+    if (!isRecord(run.transition)) {
+      problems.push(run.platform + " run records no transition identity");
+    }
+  }
+  if (problems.length === 0) {
+    for (const side of ["from", "to"]) {
+      const l = linux.transition[side] ?? {};
+      const d = darwin.transition[side] ?? {};
+      for (const key of new Set([...Object.keys(l), ...Object.keys(d)])) {
+        if (isDeepStrictEqual(l[key], d[key])) continue;
+        problems.push(
+          "transition " +
+            side +
+            "." +
+            key +
+            " differs (linux-x64 " +
+            identityText(l[key]) +
+            ", darwin-arm64 " +
+            identityText(d[key]) +
+            ")",
+        );
+      }
+    }
+  }
+  if (darwin.sourceSha !== linux.sourceSha && darwin.sourceSha !== linux.headSha) {
+    problems.push(
+      "darwin-arm64 measured source " +
+        darwin.sourceSha +
+        " is neither the linux-x64 measured source " +
+        linux.sourceSha +
+        " nor its probe head " +
+        linux.headSha,
+    );
+  }
+  return problems.length === 0
+    ? null
+    : "--reason " +
+        reason +
+        " paired runs disagree: " +
+        problems.join("; ") +
+        "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+}
+
+// Why a stage manifest's `runs` cannot be one stage, or null: a directory
+// holds one reason, a paired reason stages each platform at most once, and
+// once both are staged they must agree (pairedRunsProblem).
+function stageRunsProblem(runs) {
+  const reasons = [...new Set(runs.map((run) => run.reason))].sort();
+  if (reasons.length > 1) {
+    return (
+      "the stage directory mixes --reason " +
+      reasons.join(", ") +
+      "; stage one reason per directory"
+    );
+  }
+  const [reason] = reasons;
+  if (!PAIRED_REASONS.includes(reason)) return null;
+  const unknown = runs.filter((run) => !STAGE_PLATFORMS.includes(run.platform));
+  if (unknown.length > 0) {
+    return "--reason " + reason + " staged an unknown platform " + String(unknown[0].platform);
+  }
+  const [linux, darwin] = STAGE_PLATFORMS.map((platform) =>
+    runs.filter((run) => run.platform === platform),
+  );
+  if (linux.length > 1 || darwin.length > 1) {
+    return "--reason " + reason + " staged a platform twice";
+  }
+  return linux.length === 1 && darwin.length === 1
+    ? pairedRunsProblem(reason, linux[0], darwin[0])
+    : null;
+}
 
 // Lands `targets` ({path, target, bytes, original}) in two phases: every
 // destination's bytes go to a sibling temporary file first, then each is
@@ -2657,8 +2816,10 @@ function landAll(targets, label, io) {
 
 // `--apply <dir>`: re-validates that every live destination still hashes to
 // its manifest "live" value and every staged file to its "staged" value, and
-// that a paired reason was staged for both platforms; then lands every
-// destination through landAll. Any mismatch writes nothing.
+// that the runs are one stage (stageRunsProblem: one reason, and a paired
+// reason staged for both platforms with one transition and one measured
+// candidate); then lands every destination through landAll. Any mismatch
+// writes nothing.
 export function applyStage(
   stageDir,
   root = ".",
@@ -2671,6 +2832,8 @@ export function applyStage(
   const paths = Object.keys(manifest.destinations);
   if (paths.length === 0) throw new Error(label + ": nothing is staged");
   checkStageLocation(root, stageDir, paths, label);
+  const problem = stageRunsProblem(manifest.runs);
+  if (problem) throw new Error(label + ": " + problem + " (nothing was applied)");
   for (const reason of new Set(manifest.runs.map((run) => run.reason))) {
     if (!PAIRED_REASONS.includes(reason)) continue;
     const platforms = manifest.runs
@@ -2892,14 +3055,15 @@ export function readCargoLockEvidence(args, root) {
 // `root` is the checkout the contract, test pins and README are rewritten in;
 // its own lock-fingerprint.mjs computes every fingerprint. Async: the checkout
 // helper is imported, and the artifact-less fingerprint-helper reason awaits.
-export async function main(argv = process.argv.slice(2), root = ".") {
+// `stageIo` is openOutputSession's test seam.
+export async function main(argv = process.argv.slice(2), root = ".", stageIo = undefined) {
   const args = parseArgs(argv);
   if (Object.hasOwn(args, "apply")) return applyStage(args.apply, root);
   if (args.reason === FINGERPRINT_HELPER_REASON) {
     return runFingerprintHelperRepin(args["base-ref"], root);
   }
   const at = (path) => join(root, path);
-  const session = openOutputSession(root, args.stage);
+  const session = openOutputSession(root, args.stage, stageIo);
   const measurements = {};
   const normalized = {};
   for (const mode of MODES) {
@@ -3019,8 +3183,10 @@ export async function main(argv = process.argv.slice(2), root = ".") {
     reason: args.reason,
     platform: "linux-x64",
     sourceSha: provenance.sourceSha,
+    headSha: args["head-sha"],
     runId: Number(args["run-id"]),
     artifactId: args["artifact-id"] === undefined ? null : Number(args["artifact-id"]),
+    ...stageRunIdentity(args.reason, contract, result.contract),
   });
   console.log(
     (args.stage === undefined ? "re-pinned" : "staged") +

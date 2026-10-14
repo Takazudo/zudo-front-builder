@@ -75,6 +75,9 @@
 // verifySidecar). `--stage <dir>` and `--apply <dir>` use the Linux script's
 // shared staging, so both platforms stage into one directory and are applied
 // together; without `--stage` the reason is refused (checkPairedReasonStage).
+// Each run records its transition (stageRunIdentity); both must record one
+// transition, and `--source-sha` must be the Linux run's measured merge source
+// or its probe head, or staging and `--apply` refuse.
 //
 // `--reason fingerprint-policy` (#4218, schemaVersion 3) moves the four
 // `dependencyFingerprint` keys only together with an exact one-step
@@ -153,6 +156,7 @@ import {
   rewriteTestBlock,
   runFingerprintHelperRepin,
   savedSidecarProblem,
+  stageRunIdentity,
 } from "./rebaseline-island-size-linux.mjs";
 
 const MODES = ["workspace", "packed"];
@@ -1661,14 +1665,15 @@ function gzipMovesFromCeilings(contract, totals) {
 // `root` is the checkout the contract, test pins and README are rewritten in;
 // its own lock-fingerprint.mjs computes every fingerprint. Async: the checkout
 // helper is imported, and the artifact-less fingerprint-helper reason awaits.
-export async function main(argv = process.argv.slice(2), root = ".") {
+// `stageIo` is openOutputSession's test seam.
+export async function main(argv = process.argv.slice(2), root = ".", stageIo = undefined) {
   const args = parseArgs(argv);
   if (Object.hasOwn(args, "apply")) return applyStage(args.apply, root);
   if (args.reason === FINGERPRINT_HELPER_REASON) {
     return runFingerprintHelperRepin(args["base-ref"], root);
   }
   const handler = DARWIN_HANDLERS[args.reason];
-  const session = openOutputSession(root, args.stage);
+  const session = openOutputSession(root, args.stage, stageIo);
   const contractPath = args.contract === undefined ? CONTRACT : resolve(args.contract);
   const readmePath = args.readme === undefined ? README : resolve(args.readme);
   const contractBytes = readFileSync(resolve(root, contractPath));
@@ -1746,6 +1751,7 @@ export async function main(argv = process.argv.slice(2), root = ".") {
     sourceSha: args["source-sha"],
     runId: Number(args["run-id"]),
     artifactId: Number(args["artifact-id"]),
+    ...stageRunIdentity(args.reason, contract, result.contract),
   });
   console.log(
     (args.stage === undefined ? handler.verb : "staged") +

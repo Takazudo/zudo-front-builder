@@ -1815,6 +1815,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
   let linuxArtifact;
   let darwinPinned;
   let linuxPinned;
+  let movedLock;
   let saved;
   const at = (relative) => join(repo.root, relative);
   const read = (relative) => readFileSync(at(relative));
@@ -1852,7 +1853,8 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       readFileSync(join(testDir, "../../pnpm-lock.yaml"), "utf8"),
       version,
     );
-    repo = makeGraphCheckout(graphRoots, { pnpmLock: moved.lockText });
+    movedLock = moved.lockText;
+    repo = makeGraphCheckout(graphRoots, { pnpmLock: movedLock });
     darwinArtifact = darwinArtifactAt();
     linuxArtifact = tempDir("zfb-graph-linux-artifact-");
     const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
@@ -1920,7 +1922,8 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       artifact: linuxArtifact,
       "run-id": "71",
       "job-id": "72",
-      "head-sha": "c".repeat(40),
+      // Linux measured the PR merge source of the probe head Darwin measured natively.
+      "head-sha": SOURCE_SHA,
       "source-sha": LINUX_SOURCE,
       reason: "dependency-graph",
       ...extra,
@@ -2189,7 +2192,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     expect(staged(INVENTORY).equals(helperExplainBytes(repo.root))).toBe(true);
     const manifest = JSON.parse(staged("stage-manifest.json").toString("utf8"));
     expect(manifest.runs.map((run) => run.platform)).toEqual(["linux-x64", "darwin-arm64"]);
-    expect(manifest.runs[1]).toEqual({
+    expect(manifest.runs[1]).toMatchObject({
       reason: "dependency-graph",
       platform: "darwin-arm64",
       sourceSha: SOURCE_SHA,
@@ -2296,6 +2299,280 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     await expect(linuxMain(linuxArgv({ stage }), repo.root)).rejects.toThrow(
       "research/v3-island-size/decision-linux-x64.json is already staged",
     );
+  });
+
+  // Paired-run consistency (#4245 finding 1): the two runs must describe one
+  // transition and one measured candidate.
+  const manifestOf = (stage) =>
+    JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+
+  it("records each paired run's transition identity and accepts the probe head or the merge source", async () => {
+    quiet();
+    const stage = await stagePair();
+    const [linuxRun, darwinRun] = manifestOf(stage).runs;
+    const transition = {
+      from: {
+        packageVersion: repo.version,
+        cargoLockSha256: repo.cargoLockSha256,
+        dependencyFingerprint: repo.priorFingerprint,
+      },
+      to: {
+        packageVersion: repo.version,
+        cargoLockSha256: repo.cargoLockSha256,
+        pnpmLockSha256: repo.pnpmLockSha256,
+        dependencyFingerprint: {
+          ...repo.priorFingerprint,
+          sha256: repo.dependencyFingerprint.sha256,
+        },
+      },
+    };
+    expect(linuxRun).toEqual({
+      reason: "dependency-graph",
+      platform: "linux-x64",
+      sourceSha: LINUX_SOURCE,
+      headSha: SOURCE_SHA,
+      runId: 71,
+      artifactId: null,
+      previousContract: { sha256: sha(saved[LINUX]) },
+      transition,
+    });
+    expect(darwinRun).toEqual({
+      reason: "dependency-graph",
+      platform: "darwin-arm64",
+      sourceSha: SOURCE_SHA,
+      runId: 7,
+      artifactId: 9,
+      previousContract: { sha256: sha(saved[DARWIN]) },
+      transition,
+    });
+    // Darwin measured the Linux probe head: allowed.
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+  });
+
+  // Rewrites a staged manifest, standing for a stage directory whose runs were
+  // recorded by hand or by an earlier script: --apply must re-check them.
+  const editRuns = (stage, edit) => {
+    const manifest = manifestOf(stage);
+    edit(manifest.runs);
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+  };
+  const disagree = (problem) =>
+    "--reason dependency-graph paired runs disagree: " +
+    problem +
+    "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+
+  const OTHER_HEAD = "c".repeat(40);
+  const sourceProblem = () =>
+    disagree(
+      "darwin-arm64 measured source " +
+        SOURCE_SHA +
+        " is neither the linux-x64 measured source " +
+        LINUX_SOURCE +
+        " nor its probe head " +
+        OTHER_HEAD,
+    );
+
+  it("refuses to stage a Darwin source that is neither the Linux merge source nor its probe head", async () => {
+    quiet();
+    const problem = sourceProblem();
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage, "head-sha": OTHER_HEAD }), repo.root);
+    const half = readdirSync(stage, { recursive: true }).sort();
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(
+      problem + " (nothing was staged)",
+    );
+    expect(readdirSync(stage, { recursive: true }).sort()).toEqual(half);
+    unchanged(live());
+  });
+
+  it("re-checks the recorded sources on --apply: the Linux merge source is allowed, no other", async () => {
+    quiet();
+    const forged = await stagePair();
+    editRuns(forged, (runs) => (runs[0].headSha = OTHER_HEAD));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      sourceProblem() + " (nothing was applied)",
+    );
+    unchanged(live());
+    editRuns(forged, (runs) => (runs[1].sourceSha = LINUX_SOURCE));
+    applyStage(forged, repo.root, () => {});
+    for (const file of OUTPUTS) {
+      expect(read(file).equals(readFileSync(join(forged, file)))).toBe(true);
+    }
+  });
+
+  it("refuses paired runs that staged different prior identities", async () => {
+    quiet();
+    const stale = structuredClone(darwinPinned);
+    stale.dependencyFingerprint.sha256 = "f".repeat(64);
+    const problem = disagree(
+      "transition from.dependencyFingerprint differs (linux-x64 " +
+        JSON.stringify(repo.priorFingerprint) +
+        ", darwin-arm64 " +
+        JSON.stringify({ ...repo.priorFingerprint, sha256: "f".repeat(64) }) +
+        ")",
+    );
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    writeFileSync(at(DARWIN), contractText(stale));
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(
+      problem + " (nothing was staged)",
+    );
+    writeFileSync(at(DARWIN), saved[DARWIN]);
+    const forged = await stagePair();
+    editRuns(
+      forged,
+      (runs) => (runs[1].transition.from.dependencyFingerprint.sha256 = "f".repeat(64)),
+    );
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      problem + " (nothing was applied)",
+    );
+    unchanged(live());
+  });
+
+  it("refuses paired runs staged from checkouts with different Cargo.lock files", async () => {
+    quiet();
+    // A second checkout of the same graph whose Cargo.lock differs; every
+    // destination Linux staged is byte-identical there, so the live hashes agree.
+    const cargoLock = readFileSync(join(repo.root, "Cargo.lock"), "utf8") + "\n";
+    const other = makeGraphCheckout(graphRoots, { pnpmLock: movedLock, cargoLock });
+    for (const file of [LINUX, TEST, README, INVENTORY]) {
+      writeFileSync(join(other.root, file), read(file));
+    }
+    const otherDarwin = structuredClone(darwinPinned);
+    otherDarwin.toolchain.cargoLockSha256 = other.cargoLockSha256;
+    writeFileSync(join(other.root, DARWIN), contractText(otherDarwin));
+    const otherArtifact = darwinArtifactAt((p) => (p.cargoLockSha256 = other.cargoLockSha256));
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    const before = OUTPUTS.map((file) => readFileSync(join(other.root, file)));
+    await expect(main(darwinArgv({ stage, artifact: otherArtifact }), other.root)).rejects.toThrow(
+      disagree(
+        "transition from.cargoLockSha256 differs (linux-x64 " +
+          repo.cargoLockSha256 +
+          ", darwin-arm64 " +
+          other.cargoLockSha256 +
+          "); transition to.cargoLockSha256 differs (linux-x64 " +
+          repo.cargoLockSha256 +
+          ", darwin-arm64 " +
+          other.cargoLockSha256 +
+          ")",
+      ) + " (nothing was staged)",
+    );
+    await expect(main(["--apply", stage], other.root)).rejects.toThrow(
+      "--reason dependency-graph is not staged for darwin-arm64",
+    );
+    OUTPUTS.forEach((file, i) =>
+      expect(readFileSync(join(other.root, file)).equals(before[i])).toBe(true),
+    );
+  });
+
+  it("refuses --apply for a stage directory that mixes reasons", async () => {
+    quiet();
+    const stage = await stagePair();
+    const manifest = manifestOf(stage);
+    manifest.runs.push({ ...manifest.runs[0], reason: "release-bump" });
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "the stage directory mixes --reason dependency-graph, release-bump; stage one reason per directory (nothing was applied)",
+    );
+    manifest.runs.pop();
+    manifest.runs[1].reason = "fingerprint-policy";
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "the stage directory mixes --reason dependency-graph, fingerprint-policy",
+    );
+    unchanged(live());
+  });
+
+  it("refuses --apply for a paired run staged without a transition identity", async () => {
+    quiet();
+    const stage = await stagePair();
+    const manifest = manifestOf(stage);
+    delete manifest.runs[1].transition;
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "darwin-arm64 run records no transition identity",
+    );
+    unchanged(live());
+  });
+
+  // Partial staging (#4245 finding 3): a write that fails mid-commit leaves a
+  // partial stage directory, which neither --apply nor a later --stage accepts.
+  const failingStageIo = (failAt) => {
+    let writes = 0;
+    return {
+      mkdirSync,
+      writeFileSync(path, bytes) {
+        if (++writes === failAt) throw new Error("injected stage write failure");
+        writeFileSync(path, bytes);
+      },
+    };
+  };
+  const RECOVERY = "discard the stage directory and stage again from the start";
+  const stagingFailed =
+    "staging failed (injected stage write failure); the stage directory may now hold a partial stage, which --apply and --stage refuse: " +
+    RECOVERY;
+
+  it("refuses a first stage that failed mid-write, before its manifest, and recovers from a fresh one", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-partial-"), "stage");
+    await expect(linuxMain(linuxArgv({ stage }), repo.root, failingStageIo(2))).rejects.toThrow(
+      stagingFailed,
+    );
+    expect(readdirSync(stage, { recursive: true }).sort()).toEqual([
+      "research",
+      "research/v3-island-size",
+      "research/v3-island-size/decision-linux-x64.json",
+      "scripts",
+      "scripts/__tests__",
+    ]);
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "no stage-manifest.json in the stage directory",
+    );
+    const noManifest =
+      "the stage directory is not empty and has no stage-manifest.json; refusing (" +
+      RECOVERY +
+      ")";
+    await expect(linuxMain(linuxArgv({ stage }), repo.root)).rejects.toThrow(noManifest);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(noManifest);
+    unchanged(live());
+    // The recovery the errors name: discard the directory and stage both platforms again.
+    rmSync(stage, { recursive: true, force: true });
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await main(darwinArgv({ stage }), repo.root);
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+  });
+
+  it("refuses a second stage that failed after writing a new file", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-partial-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await expect(main(darwinArgv({ stage }), repo.root, failingStageIo(2))).rejects.toThrow(
+      stagingFailed,
+    );
+    const unlisted = "unlisted files in the stage directory: " + DARWIN + " (" + RECOVERY + ")";
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(unlisted);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(unlisted);
+    await expect(linuxMain(linuxArgv({ stage }), repo.root)).rejects.toThrow(unlisted);
+    unchanged(live());
+  });
+
+  it("refuses a second stage whose manifest write failed", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-partial-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    // Every output is written; only the manifest naming the Darwin run is not.
+    await expect(main(darwinArgv({ stage }), repo.root, failingStageIo(5))).rejects.toThrow(
+      stagingFailed,
+    );
+    const changed = "the staged " + README + " changed after staging; refusing (" + RECOVERY + ")";
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(changed);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(changed);
+    unchanged(live());
   });
 
   it("refuses --apply combined with any other argument and a stage directory that aliases the checkout", async () => {
@@ -2438,7 +2715,8 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
       artifact: linuxArtifact,
       "run-id": "71",
       "job-id": "72",
-      "head-sha": "c".repeat(40),
+      // Linux measured the PR merge source of the probe head Darwin measured natively.
+      "head-sha": SOURCE_SHA,
       "source-sha": LINUX_SOURCE,
       reason: "fingerprint-policy",
       ...extra,

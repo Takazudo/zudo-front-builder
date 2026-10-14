@@ -196,6 +196,55 @@ describe("rebaseline-island-size-linux", () => {
     expect(contract.toolchain.packageVersion).not.toBe("9.9.9");
   });
 
+  // #4245 finding 2: when health.yml measured a PR merge source distinct from
+  // the probe head, the merge source is the only measured provenance and the
+  // head keeps baselineSourceSha's historical meaning (the probe head).
+  it("keeps the measured merge source verbatim when it differs from the probe head", () => {
+    expect(evidence.sourceSha).not.toBe(evidence.headSha);
+    const { contract: next } = rebaselineContract(
+      contract,
+      totalsFrom(contract),
+      evidence,
+      "release-bump",
+    );
+    expect(next.baselineSourceSha).toBe(evidence.headSha);
+    expect(next.baselineEvidence.sourceSha).toBe(evidence.sourceSha);
+    const cited =
+      "PR merge source " + evidence.sourceSha + " (probe head " + evidence.headSha + ")";
+    const readme = readmeSection(next, [], contract.toolchain.packageVersion, "release-bump");
+    expect(readme).toContain(
+      "PR merge source `" + evidence.sourceSha + "` (probe head `" + evidence.headSha + "`)",
+    );
+    expect(next.baselineEvidence.note).toContain(cited);
+    expect(next.platformStatus).toContain(cited);
+    // The head is only ever cited as the probe head, never as the measured source.
+    for (const text of [readme, next.baselineEvidence.note, next.platformStatus]) {
+      const plain = text.replaceAll("`", "");
+      expect(plain.split(evidence.headSha).length - 1).toBe(
+        plain.split("probe head " + evidence.headSha).length - 1,
+      );
+    }
+    // A later re-pin cites this one's probe head as its predecessor, unchanged.
+    const later = { ...evidence, sourceSha: "f".repeat(40), headSha: "e".repeat(40), runId: 3 };
+    const { contract: after } = rebaselineContract(next, totalsFrom(next), later, "release-bump");
+    expect(after.baselineEvidence.repinnedFrom.baselineSourceSha).toBe(evidence.headSha);
+    expect(after.baselineEvidence.repinnedFrom.baselineRunId).toBe(evidence.runId);
+    expect(after.baselineEvidence.sourceSha).toBe(later.sourceSha);
+  });
+
+  it("matches the live Linux contract's own head/source record", () => {
+    const { baselineSourceSha, baselineEvidence } = liveContract;
+    expect(baselineEvidence.note).toContain(
+      baselineEvidence.sourceSha === baselineSourceSha
+        ? "source " + baselineSourceSha
+        : "PR merge source " +
+            baselineEvidence.sourceSha +
+            " (probe head " +
+            baselineSourceSha +
+            ")",
+    );
+  });
+
   it("refuses a raw change under every reason", () => {
     const totals = totalsFrom(contract, {
       "packed/show-for": { raw: contract.ceilings.packed["show-for"].raw + 1 },
@@ -2561,17 +2610,35 @@ describe("dependency-graph (#4218)", () => {
     await main(argv({ stage }), repo.root);
     unchanged(OUTPUTS.map((file) => saved[file]));
     const manifest = JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+    const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
     expect(Object.keys(manifest.destinations)).toEqual([...OUTPUTS].sort());
     expect(manifest.runs).toEqual([
       {
         reason: "dependency-graph",
         platform: "linux-x64",
         sourceSha: SOURCE,
+        headSha: HEAD,
         runId: 71,
         artifactId: null,
+        previousContract: { sha256: sha(saved[CONTRACT]) },
+        transition: {
+          from: {
+            packageVersion: pinned.toolchain.packageVersion,
+            cargoLockSha256: pinned.toolchain.cargoLockSha256,
+            dependencyFingerprint: pinned.dependencyFingerprint,
+          },
+          to: {
+            packageVersion: pinned.toolchain.packageVersion,
+            cargoLockSha256: pinned.toolchain.cargoLockSha256,
+            pnpmLockSha256: repo.pnpmLockSha256,
+            dependencyFingerprint: {
+              ...pinned.dependencyFingerprint,
+              sha256: repo.dependencyFingerprint.sha256,
+            },
+          },
+        },
       },
     ]);
-    const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
     for (const file of OUTPUTS) {
       expect(manifest.destinations[file]).toEqual({
         live: sha(saved[file]),

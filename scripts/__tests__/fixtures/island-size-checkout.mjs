@@ -240,9 +240,10 @@ function addHelper(root) {
 // pnpm-lock.yaml is `pnpmLock` (the new graph), with the helper and the live
 // inventory file copied in. `priorFingerprint` is the contract-shape
 // fingerprint the real lock has at this checkout, standing for the graph a
-// contract pinned before the reviewed dependency change.
-export function makeGraphCheckout(roots, { pnpmLock } = {}) {
-  const checkout = makeCheckout(roots, { pnpmLock });
+// contract pinned before the reviewed dependency change. `cargoLock`, when
+// given, replaces the copied Cargo.lock (a second checkout of another tree).
+export function makeGraphCheckout(roots, { pnpmLock, cargoLock } = {}) {
+  const checkout = makeCheckout(roots, { pnpmLock, cargoLock });
   copy(checkout.root, SIZE_DIR + "/lock-fingerprint-inventory.json");
   const prior = computeLockFingerprint({
     lockText: readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8"),
