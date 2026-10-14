@@ -102,4 +102,27 @@ describe("showcase workflow tool provenance", () => {
     expect(deploy).toContain("working-directory: create-zfb-showcase");
     expect(deploy).toContain("../node_modules/.bin/wrangler deploy");
   });
+
+  it("skips draft PRs in the preview job only", () => {
+    const preview = job("showcase-preview");
+    const condition = preview.slice(
+      preview.indexOf("    if: >-\n"),
+      preview.indexOf("    runs-on:"),
+    );
+
+    expect(condition).toBe(
+      "    if: >-\n" +
+        "      github.event_name == 'pull_request' &&\n" +
+        "      github.event.pull_request.head.repo.full_name == github.repository &&\n" +
+        "      github.actor != 'dependabot[bot]' &&\n" +
+        "      !github.event.pull_request.draft\n",
+    );
+    expect(job("showcase-deploy")).not.toContain("pull_request.draft");
+    expect(job("showcase-deploy")).toContain("github.ref == 'refs/heads/main'");
+    expect(job("scaffold-e2e")).not.toContain("pull_request.draft");
+  });
+
+  it("declares no types on the pull_request trigger", () => {
+    expect(workflow).toMatch(/^on:\n {2}pull_request:\n {2}push:\n/m);
+  });
 });
