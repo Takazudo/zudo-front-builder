@@ -279,6 +279,17 @@ fn explicit_source_exclusion_reasons(
 
 fn project_relative_display(project_root: &Path, path: &Path) -> String {
     path.strip_prefix(project_root)
+        .map(Path::to_path_buf)
+        .or_else(|_| {
+            // The gathered project root is canonical, while CLI output and
+            // scratch paths may retain a symlinked cwd or TMPDIR spelling.
+            // Resolve existing ancestors so not-yet-written outputs work too.
+            let project = zfb_types::canonicalize_existing_prefix(project_root)
+                .unwrap_or_else(|| project_root.to_path_buf());
+            let path =
+                zfb_types::canonicalize_existing_prefix(path).unwrap_or_else(|| path.to_path_buf());
+            path.strip_prefix(project).map(Path::to_path_buf)
+        })
         .map(|relative| relative.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())
 }
@@ -830,6 +841,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
+        // Source-plan gathering canonicalizes the project root, including
+        // macOS's default /var -> /private/var temporary-directory alias.
+        let project = std::fs::canonicalize(project).unwrap();
         (temp, project, Config::default())
     }
 
@@ -1045,6 +1059,77 @@ mod tests {
         assert!(
             message.contains("at the --output path `src/generated.tsx`"),
             "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_project_keeps_explicit_source_classification_and_relative_reasons() {
+        let (temp, project, mut config) = project();
+        let alias = temp.path().join("project-alias");
+        std::os::unix::fs::symlink(&project, &alias).unwrap();
+        assert_ne!(alias, project);
+        write_file(&project, "src/a.tsx");
+        write_file(&project, "src/__tests__/b.test.tsx");
+        write_file(&project, "packages/ui/view.tsx");
+        config.wind = Some(WindSetting::Enabled(Box::new(crate::config::WindConfig {
+            sources: serde_json::from_value(serde_json::json!({
+                "exclude": ["src/**/__tests__/**"],
+                "packageRoots": ["./packages/ui"]
+            }))
+            .unwrap(),
+            ..Default::default()
+        })));
+        let (plan, warnings) = build_plan(&alias, &config, "src/**/*.tsx").unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("accepted 1"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("declared by project"),
+            "{}",
+            warnings[0]
+        );
+        assert_eq!(
+            plan.roots
+                .iter()
+                .map(|root| (root.package_root, canonical_or_raw(&root.resolved_path())))
+                .collect::<Vec<_>>(),
+            [
+                (false, project.join("src/a.tsx")),
+                (true, project.join("packages/ui")),
+            ]
+        );
+        for (source, output, reason) in [
+            ("dist/stale.tsx", "dist/out.css", "configured outDir `dist`"),
+            (".zfb/cache.tsx", "dist/out.css", "zfb scratch root `.zfb`"),
+            (
+                "src/generated.tsx",
+                "src/generated.tsx",
+                "--output path `src/generated.tsx`",
+            ),
+        ] {
+            write_file(&project, source);
+            let error = build_standalone_wind_source_plan(
+                &alias,
+                &alias.join(output),
+                &config,
+                false,
+                &[(source.to_owned(), alias.join(source))],
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("all excluded"), "{message}");
+            assert!(message.contains(reason), "{message}");
+        }
+
+        // An output usually does not exist yet, so display must resolve its
+        // existing symlinked ancestors rather than only canonicalizing a file.
+        assert_eq!(
+            project_relative_display(&project, &alias.join("missing/nested/out.css")),
+            "missing/nested/out.css"
+        );
+        assert_eq!(
+            project_relative_display(&alias, &project.join("missing/nested/out.css")),
+            "missing/nested/out.css"
         );
     }
 }

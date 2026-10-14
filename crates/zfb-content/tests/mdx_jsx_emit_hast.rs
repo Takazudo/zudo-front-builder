@@ -1725,3 +1725,46 @@ fn expression_wrapped_table_is_unchanged() {
     );
     assert!(!out.contains("<_components.thead"), "{out}");
 }
+
+// Compact intrinsic tables must be lifted out of the paragraph produced by
+// markdown-rs, on both MDX compilation routes (zfb#4254).
+#[test]
+fn compact_table_emits_without_an_enclosing_paragraph() {
+    let out = emit_with_defaults(
+        "<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>B</td></tr></tbody></table>",
+    );
+    assert!(!out.contains("<_components.p>"), "{out}");
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "thead", "tr", "th", "tbody", "tr", "td"],
+        "{out}"
+    );
+    for tag in ["table", "thead", "tbody", "tr", "th", "td"] {
+        assert!(out.contains(&format!("{tag}: \"{tag}\",")), "{out}");
+    }
+    #[cfg(feature = "compiler")]
+    assert_swc_accepts(&out, "compact-table.tsx");
+}
+
+#[test]
+fn compact_table_preserves_adjacent_markdown_and_inline_jsx() {
+    let out = emit_with_defaults(
+        "Before **bold** <span>inline</span>.\n<table className=\"compact\"><tbody><tr><td>B</td></tr></tbody></table>\nAfter <Badge>x</Badge>.",
+    );
+    assert_eq!(out.matches("<_components.p>").count(), 2, "{out}");
+    let table_start = out.find("<_components.table").expect("table opens");
+    let table_end =
+        out.find("</_components.table>").expect("table closes") + "</_components.table>".len();
+    assert!(
+        out[..table_start].trim_end().ends_with("</_components.p>"),
+        "{out}"
+    );
+    assert!(
+        out[table_end..].trim_start().starts_with("<_components.p>"),
+        "{out}"
+    );
+    assert!(out.contains("<_components.strong>"), "{out}");
+    assert!(out.contains("<_components.span>"), "{out}");
+    assert!(out.contains("<Badge>"), "{out}");
+    assert!(out.contains("className=\"compact\""), "{out}");
+}

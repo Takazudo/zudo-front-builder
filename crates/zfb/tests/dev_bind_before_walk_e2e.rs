@@ -22,17 +22,17 @@
 //! (`SLOW_DIGEST_MS` / `SLOW_ISLANDS_MS`).
 //!
 //! Falsifiability is anchored to the banner-vs-bind ordering, NOT to a
-//! banner-relative response window. The ready banner is printed immediately
+//! banner-relative response window. The listening banner is printed immediately
 //! after a successful `TcpListener::bind`, so in the correct (post-bind)
 //! ordering it lands at boot time, far under `BANNER_DEADLINE`. Reverting the
 //! restructure (running the slow step BEFORE the bind — the pre-#1166 /
 //! pre-#1170 ordering) delays the banner by the injected sleep
-//! (> `BANNER_DEADLINE`), so `wait_for_banner_port` times out and the test
+//! (> `BANNER_DEADLINE`), so `wait_for_binding_port` times out and the test
 //! fails.
 //!
 //! A banner-RELATIVE window can NOT catch a pre-bind step, because the banner
 //! floats with the bind: an earlier shared `SLOW_MS = 12_000` (< the 90s
-//! `BANNER_DEADLINE`) let `wait_for_banner_port` patiently wait out a 12s
+//! `BANNER_DEADLINE`) let `wait_for_binding_port` patiently wait out a 12s
 //! pre-bind digest, after which the `< SLOW_MS` window still passed — so the
 //! two #1166 guards proved nothing about bind ordering. Issue #1174 replaced
 //! `SLOW_MS` with `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) to close that gap, the
@@ -144,7 +144,7 @@ use zfb_test_utils::{
 /// rationale.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-/// Deadline for the dev server to print its ready banner. Boot now does
+/// Deadline for the dev server to print its listening banner. Boot now does
 /// NOT block on the digest/render (that is the whole point), so the
 /// banner — which still follows a successful bind — lands fast. Kept
 /// generous for cold V8 + esbuild boot.
@@ -152,17 +152,17 @@ const BANNER_DEADLINE: Duration = Duration::from_secs(90);
 
 /// The injected digest slow-step for the two bind-before-digest guards
 /// (Test 1 + Test 3, issue #1166). Deliberately set LONGER than
-/// `BANNER_DEADLINE`, exactly like `SLOW_ISLANDS_MS` below. The ready banner is
+/// `BANNER_DEADLINE`, exactly like `SLOW_ISLANDS_MS` below. The listening banner is
 /// printed immediately after a successful bind, so in the correct (post-bind)
 /// ordering it lands at boot time, far under `BANNER_DEADLINE`. If the digest
 /// walk — and this co-located sleep — were moved back BEFORE the bind (the
 /// pre-#1166 ordering these tests guard), the banner would be delayed by
-/// `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) and `wait_for_banner_port` would time
+/// `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) and `wait_for_binding_port` would time
 /// out and fail the test.
 ///
 /// This replaced an earlier shared `SLOW_MS = 12_000` (< `BANNER_DEADLINE`):
 /// because a 12s pre-bind sleep stayed under the 90s banner deadline,
-/// `wait_for_banner_port` patiently waited it out and the banner-relative
+/// `wait_for_binding_port` patiently waited it out and the banner-relative
 /// `< SLOW_MS` window still passed — so the guards were NOT falsifiable for a
 /// pre-bind digest (issue #1174). Anchoring to the banner-vs-bind ordering
 /// fixes that. A green run never waits this out — it answers fast and Drop
@@ -180,7 +180,7 @@ const _: () = assert!(
 /// `SLOW_DIGEST_MS` above, but pinning the islands build's position rather than
 /// the digest's. If the islands build — and this co-located sleep — were moved
 /// back BEFORE the bind, the banner would be delayed by `SLOW_ISLANDS_MS`
-/// (> `BANNER_DEADLINE`) and `wait_for_banner_port` would time out and fail the
+/// (> `BANNER_DEADLINE`) and `wait_for_binding_port` would time out and fail the
 /// test. A green run never waits this out — it answers fast and Drop SIGKILLs
 /// the group — so the large value is free.
 const SLOW_ISLANDS_MS: u64 = 120_000;
@@ -199,7 +199,7 @@ const _: () = assert!(
 /// TWO co-located seams — one before the DEFERRED boot bundle (which runs after
 /// bind, so in the correct ordering the banner lands fast), one before the
 /// EAGER pre-bind bundle (which fires only if the deferral is reverted, delaying
-/// the banner past `BANNER_DEADLINE` so `wait_for_banner_port` times out and
+/// the banner past `BANNER_DEADLINE` so `wait_for_binding_port` times out and
 /// fails). A green run never waits this out — it answers fast and Drop SIGKILLs
 /// the group — so the large value is free.
 const SLOW_BUNDLE_MS: u64 = 120_000;
@@ -215,7 +215,7 @@ const _: () = assert!(
 /// `SLOW_BUNDLE_MS` above, but for a different purpose. `SLOW_BUNDLE_MS` must
 /// exceed `BANNER_DEADLINE` (it's a bind-ordering guard); this constant has no
 /// such requirement — it only needs to outlast the test process reading the
-/// ready banner from the log file and completing the SSE HTTP
+/// listening banner from the log file and completing the SSE HTTP
 /// handshake, done right after the banner and BEFORE the deferred boot
 /// task's bundle call (which sleeps for this long immediately before
 /// publishing). Without this hold, a small/fast-bundling fixture could
@@ -347,24 +347,16 @@ fn dump_logs(stdout_path: &Path, stderr_path: &Path) -> String {
     )
 }
 
-/// Extract the port from the dev ready banner (dev_serve_e2e.rs pattern).
-fn parse_ready_port(log: &str) -> Option<u16> {
-    let mut rest = log;
-    while let Some(idx) = rest.find("http://") {
-        let candidate = &rest[idx + "http://".len()..];
-        let token: &str = candidate.split_whitespace().next().unwrap_or("");
-        if let Some(colon) = token.find(':') {
-            let digits: String = token[colon + 1..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(port) = digits.parse() {
-                return Some(port);
-            }
-        }
-        rest = &rest[idx + "http://".len()..];
-    }
-    None
+/// Extract the actual bound port from the dev listening banner (#4261).
+fn parse_binding_port(log: &str) -> Option<u16> {
+    log.lines().find_map(|line| {
+        let address = line
+            .split_once("listening on ")?
+            .1
+            .split_whitespace()
+            .next()?;
+        address.rsplit_once(':')?.1.parse().ok()
+    })
 }
 
 struct DevSession {
@@ -427,7 +419,8 @@ fn spawn_dev_in_root(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) ->
         .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_POST_ISLANDS_MS")
-        .env_remove("ZFB_DEV_TEST_SLOW_BUNDLE_MS");
+        .env_remove("ZFB_DEV_TEST_SLOW_BUNDLE_MS")
+        .env_remove("ZFB_DEV_TEST_BUNDLE_RELEASE_FILE");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -450,10 +443,10 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
     spawn_dev_in_root(&root, esbuild, extra_env)
 }
 
-/// Wait for the ready banner and return the ephemeral port, or `None`
+/// Wait for the listening banner and return the ephemeral port, or `None`
 /// if the binary refused to start for a known-skip reason (no V8 / no
 /// esbuild). Panics on any other premature exit or banner timeout.
-async fn wait_for_banner_port(session: &mut DevSession) -> Option<u16> {
+async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
     let start = Instant::now();
     loop {
         if let Some(status) = session.guard.try_exit_status() {
@@ -471,17 +464,22 @@ async fn wait_for_banner_port(session: &mut DevSession) -> Option<u16> {
                 return None;
             }
             panic!(
-                "`zfb dev` exited prematurely (status {status:?}) before the ready banner.\n{}",
+                "`zfb dev` exited prematurely (status {status:?}) before the listening banner.\n{}",
                 session.logs(),
             );
         }
-        if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
-            assert_ne!(port, 0, "ready banner printed port 0.\n{}", session.logs());
+        if let Some(port) = parse_binding_port(&read_log(&session.stdout_path)) {
+            assert_ne!(
+                port,
+                0,
+                "listening banner printed port 0.\n{}",
+                session.logs()
+            );
             return Some(port);
         }
         assert!(
             start.elapsed() < BANNER_DEADLINE,
-            "`zfb dev` did not print a parseable ready banner within {}s.\n{}",
+            "`zfb dev` did not print a parseable listening banner within {}s.\n{}",
             BANNER_DEADLINE.as_secs(),
             session.logs(),
         );
@@ -811,7 +809,7 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
 /// (`SLOW_DIGEST_MS` > `BANNER_DEADLINE`) sleeps immediately before the digest
 /// walk, so in the correct ordering the banner lands at boot time; a pre-bind
 /// digest walk would delay the banner past `BANNER_DEADLINE` →
-/// `wait_for_banner_port` times out → the test fails (issue #1166;
+/// `wait_for_binding_port` times out → the test fails (issue #1166;
 /// falsifiability fixed in #1174). Also proves the serve path answers while the
 /// slow step is still in flight.
 #[tokio::test(flavor = "multi_thread")]
@@ -843,7 +841,7 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
     // would delay the banner by SLOW_DIGEST_MS (> BANNER_DEADLINE) and the wait
     // below would time out — that timeout IS the regression signal (the
     // pre-#1166 ordering).
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     // Explicit, clearly-messaged form of the same guarantee (in case the
@@ -852,7 +850,7 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
     let banner_elapsed = spawn_t.elapsed();
     assert!(
         (banner_elapsed.as_millis() as u64) < SLOW_DIGEST_MS,
-        "ready banner appeared {}ms after spawn, but the injected digest slow-step is \
+        "listening banner appeared {}ms after spawn, but the injected digest slow-step is \
          {}ms — the digest walk (and its sleep) ran BEFORE the bind/banner \
          (bind-before-walk regression, the pre-#1166 ordering).\n{}",
         banner_elapsed.as_millis(),
@@ -942,7 +940,7 @@ async fn eager_request_before_render_serves_controlled_body() {
         ],
     );
 
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return;
     };
     let base = format!("http://localhost:{port}");
@@ -1052,15 +1050,15 @@ async fn early_shutdown_before_digest_skips_graph_save() {
 
     // Bind precedes the digest walk: a pre-bind digest (and its co-located
     // sleep) would delay the banner past BANNER_DEADLINE and time out
-    // wait_for_banner_port — that timeout IS the bind-before-walk regression
+    // wait_for_binding_port — that timeout IS the bind-before-walk regression
     // signal (the pre-#1166 ordering).
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return;
     };
     let banner_elapsed = spawn_t.elapsed();
     assert!(
         (banner_elapsed.as_millis() as u64) < SLOW_DIGEST_MS,
-        "ready banner appeared {}ms after spawn, but the injected digest slow-step is \
+        "listening banner appeared {}ms after spawn, but the injected digest slow-step is \
          {}ms — the digest walk ran BEFORE the bind/banner (bind-before-walk \
          regression, the pre-#1166 ordering).\n{}",
         banner_elapsed.as_millis(),
@@ -1171,12 +1169,12 @@ async fn early_shutdown_before_digest_skips_graph_save() {
 /// and sleeps that long right before the deferred islands build. This test
 /// sets `SLOW_ISLANDS_MS` (> `BANNER_DEADLINE`) and checks TWO things:
 ///
-/// 1. **Bind precedes the islands build.** The ready banner is printed
+/// 1. **Bind precedes the islands build.** The listening banner is printed
 ///    immediately after a successful bind, so in the correct (post-bind)
 ///    ordering it lands at boot time — well under `BANNER_DEADLINE`. If the
 ///    islands build (and its co-located sleep) were moved back BEFORE the
 ///    bind, the banner would be delayed by `SLOW_ISLANDS_MS`
-///    (> `BANNER_DEADLINE`) and `wait_for_banner_port` would time out → the
+///    (> `BANNER_DEADLINE`) and `wait_for_binding_port` would time out → the
 ///    test fails. Anchoring to the banner-vs-bind ordering — NOT a
 ///    banner-relative response window — is what makes this falsifiable: a
 ///    banner-relative deadline does NOT catch a pre-bind build, because the
@@ -1218,7 +1216,7 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     // lands at boot time in the correct ordering. A pre-bind islands build
     // would delay the banner by SLOW_ISLANDS_MS (> BANNER_DEADLINE) and the
     // wait below would time out — that timeout IS the regression signal.
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     // Explicit, clearly-messaged form of the same guarantee (in case the
@@ -1227,7 +1225,7 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     let banner_elapsed = spawn_t.elapsed();
     assert!(
         (banner_elapsed.as_millis() as u64) < SLOW_ISLANDS_MS,
-        "ready banner appeared {}ms after spawn, but the injected islands slow-step is \
+        "listening banner appeared {}ms after spawn, but the injected islands slow-step is \
          {}ms — the islands build (and its sleep) ran BEFORE the bind/banner \
          (bind-before-islands regression, issue #1170).\n{}",
         banner_elapsed.as_millis(),
@@ -1316,7 +1314,7 @@ async fn dev_200_document_declares_and_serves_islands_module() {
         ],
     );
 
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     let base = format!("http://localhost:{port}");
@@ -1482,7 +1480,7 @@ async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
         &[("ZFB_DEV_EAGER", "1"), ("ZFB_DEV_TIMING", "1")],
     );
 
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     let base = format!("http://localhost:{port}");
@@ -1673,7 +1671,7 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
     let order_source = "export const ORDER_CLIENT_MARKER = \"ORDER_CLIENT_V1\";\n";
 
     let mut session = spawn_dev_in_root(&root, &esbuild, &[("ZFB_DEV_TIMING", "1")]);
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     let base = format!("http://localhost:{port}");
@@ -1952,7 +1950,7 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
 ///   far under `BANNER_DEADLINE`. ✅
 /// - Reverted ordering (the bug): the boot bundle runs eagerly before bind, so
 ///   the EAGER seam fires before bind, delaying the banner by `SLOW_BUNDLE_MS`
-///   (> `BANNER_DEADLINE`) — `wait_for_banner_port` times out and the test
+///   (> `BANNER_DEADLINE`) — `wait_for_binding_port` times out and the test
 ///   fails. ❌ A single deferred-only seam would NOT catch an un-defer revert
 ///   (the deferred block simply wouldn't run), which is exactly why the eager
 ///   twin exists.
@@ -2008,7 +2006,7 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
     // un-deferred pre-bind bundle would fire the eager seam before bind, delay
     // the banner by SLOW_BUNDLE_MS (> BANNER_DEADLINE), and time out the wait
     // below — that timeout IS the bind-before-bundle regression signal.
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip (no V8 / no esbuild)
     };
     // Explicit, clearly-messaged form of the same guarantee (in case the
@@ -2017,7 +2015,7 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
     let banner_elapsed = spawn_t.elapsed();
     assert!(
         (banner_elapsed.as_millis() as u64) < SLOW_BUNDLE_MS,
-        "ready banner appeared {}ms after spawn, but the injected dev-bundle slow-step is \
+        "listening banner appeared {}ms after spawn, but the injected dev-bundle slow-step is \
          {}ms — the eager dev bundle (and its sleep) ran BEFORE the bind/banner \
          (bind-before-bundle regression, issue #1182).\n{}",
         banner_elapsed.as_millis(),
@@ -2114,7 +2112,7 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
 /// Cold conjunct — issue #1808), so the SAME `ZFB_DEV_TEST_SLOW_BUNDLE_MS`
 /// seam applies; this test holds that window open and asserts TWO things:
 ///
-/// 1. **No accidental eager fallback.** The ready banner still lands at boot
+/// 1. **No accidental eager fallback.** The listening banner still lands at boot
 ///    time (well under `BANNER_DEADLINE`), proving Cold takes the deferred
 ///    branch even without a seed. Falsifiability: if
 ///    `defer_dev_bundle_decision`'s Cold conjunct were reverted (Cold
@@ -2122,7 +2120,7 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
 ///    eager pre-bind bundle path in `boot_dev_renderer` would run instead —
 ///    firing the EAGER `ZFB_DEV_TEST_SLOW_BUNDLE_MS` seam before bind and
 ///    delaying the banner past `BANNER_DEADLINE`, timing out
-///    `wait_for_banner_port`. Observed directly (see the PR/report).
+///    `wait_for_binding_port`. Observed directly (see the PR/report).
 /// 2. **The controlled 404, not a connection error or eager content.**
 ///    `GET /` during the held window must return the controlled
 ///    `DEV_404_BODY` — WITH the live-reload script, so an open tab
@@ -2156,13 +2154,13 @@ async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
     );
 
     // Guarantee 1 (no accidental eager fallback): see doc comment above.
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip (no V8 / no esbuild)
     };
     let banner_elapsed = spawn_t.elapsed();
     assert!(
         (banner_elapsed.as_millis() as u64) < SLOW_BUNDLE_MS,
-        "ready banner appeared {}ms after spawn, but the injected dev-bundle slow-step is \
+        "listening banner appeared {}ms after spawn, but the injected dev-bundle slow-step is \
          {}ms — cold-lazy (ZFB_DEV_BOOT_LAZY=cold) ran the deferred bundle (and its sleep) \
          BEFORE the bind/banner, an accidental eager fallback (issue #1808).\n{}",
         banner_elapsed.as_millis(),
@@ -2215,6 +2213,12 @@ async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
         "the cold dev-404 body must carry the live-reload script — that's what lets an \
          open tab self-heal via the post-publish `pages_stale` broadcast once the bundle \
          lands; got body:\n{body}\n{}",
+        session.logs(),
+    );
+
+    assert!(
+        !read_log(&session.stdout_path).contains("ready on "),
+        "cold boot advertised readiness while route registration was held.\n{}",
         session.logs(),
     );
 
@@ -2271,7 +2275,7 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
         ],
     );
 
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     let base = format!("http://localhost:{port}");
@@ -2423,7 +2427,7 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
 
     let mut session = spawn_dev_in_root(&root, &esbuild, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
 
-    let Some(port) = wait_for_banner_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // known-skip
     };
     let base = format!("http://localhost:{port}");
@@ -2494,6 +2498,11 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
         "a failed deferred Cold bundle must keep framework publication pending"
     );
     assert_eq!(pending["documents"], "pending");
+    assert!(
+        !read_log(&session.stdout_path).contains("ready on "),
+        "a failed cold boot must not announce ready\n{}",
+        session.logs(),
+    );
     let pending_generation = ready_generation(&pending);
 
     // Step 3 — subscribe to SSE BEFORE the fix (broadcast, not a queue: an
@@ -2524,6 +2533,7 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
          source republished (issue #1809's recovery latch).\n{}",
         session.logs(),
     );
+    wait_for_log_line(&session, "ready on ", RENDER_DEADLINE).await;
     let recovered_readiness = wait_for_publication_ready(
         &client,
         &ready_url,
@@ -2577,5 +2587,124 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
         "GET / after cold-bootstrap recovery must serve the freshly-rendered fixture \
          homepage; got body:\n{body}\n{}",
         session.logs(),
+    );
+}
+
+// #4261: readiness must cover Cold's deferred route registration. The release
+// file is an event barrier, not a guessed boot duration. While it is held, HTTP
+// must already serve public files, but the ready banner must be absent. After
+// release, the first request to each actual route must succeed without polling
+// past 404s. Copy the node-free template with no dist or scratch state.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_template_ready_banner_follows_route_registration() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize template root");
+    let template = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/node-free");
+    copy_dir(&template, &root).expect("copy node-free template");
+    assert!(
+        !root.join("dist").exists(),
+        "template must start without a seed"
+    );
+    assert!(
+        !root.join(".zfb-build").exists(),
+        "template must start without scratch state"
+    );
+    fs::create_dir_all(root.join("public")).expect("create public dir");
+    fs::write(root.join("public/boot-probe.txt"), "public-before-ready")
+        .expect("write public probe");
+    // Also cover the issue's literal /posts route alongside the template's
+    // collection-backed dynamic post route.
+    fs::write(
+        root.join("pages/posts/index.tsx"),
+        "export default function Posts() { return <main>posts-ready-4261</main>; }\n",
+    )
+    .expect("write posts listing");
+    let barrier = tempfile::tempdir().expect("barrier outside watched project");
+    let release = barrier.path().join("release");
+    let release_value = release.to_str().expect("UTF-8 release path");
+    let mut session = spawn_dev_in_root(
+        &root,
+        &esbuild,
+        &[("ZFB_DEV_TEST_BUNDLE_RELEASE_FILE", release_value)],
+    );
+    let Some(port) = wait_for_binding_port(&mut session).await else {
+        return;
+    };
+    wait_for_log_line(
+        &session,
+        "deferred bundle waiting for test release",
+        RENDER_DEADLINE,
+    )
+    .await;
+    let base = format!("http://localhost:{port}");
+    let client = client();
+    let public = client
+        .get(format!("{base}/boot-probe.txt"))
+        .send()
+        .await
+        .expect("public request before route registration");
+    assert_eq!(
+        public.status().as_u16(),
+        200,
+        "public before ready\n{}",
+        session.logs()
+    );
+    assert_eq!(
+        public.text().await.expect("public body"),
+        "public-before-ready"
+    );
+    assert!(
+        !read_log(&session.stdout_path).contains("ready on "),
+        "ready banner preceded route registration\n{}",
+        session.logs()
+    );
+    let pending = ready_json(&client, &format!("{base}/__zfb/ready")).await;
+    assert_eq!(pending["ready"], false, "held cold boot must be pending");
+
+    fs::write(&release, "continue").expect("release deferred boot");
+    wait_for_log_line(&session, "ready on ", RENDER_DEADLINE).await;
+    let ready = ready_json(&client, &format!("{base}/__zfb/ready")).await;
+    assert_eq!(
+        ready["ready"], true,
+        "banner and publication readiness must agree"
+    );
+    for (path, marker) in [
+        ("/", "node-free"),
+        ("/posts", "posts-ready-4261"),
+        ("/posts/hello", "Hello"),
+    ] {
+        let response = client
+            .get(format!("{base}{path}"))
+            .timeout(RENDER_DEADLINE)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("first GET {path} failed: {e}\n{}", session.logs()));
+        assert_eq!(
+            response.status().as_u16(),
+            200,
+            "first GET {path} after ready must succeed\n{}",
+            session.logs()
+        );
+        let body = response.text().await.expect("page body");
+        assert!(
+            body.contains(marker),
+            "GET {path} lacks {marker:?}: {body}\n{}",
+            session.logs()
+        );
+    }
+    assert_eq!(
+        read_log(&session.stdout_path).matches("ready on ").count(),
+        1,
+        "readiness is announced once\n{}",
+        session.logs()
     );
 }
