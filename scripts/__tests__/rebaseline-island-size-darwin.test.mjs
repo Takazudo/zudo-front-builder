@@ -21,6 +21,7 @@ import {
   normalizerSha256,
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import {
+  CARGO_INTERNAL_REWIRE_MOVEMENT,
   CARGO_PRODUCER_LOCK_MOVEMENT,
   DEPENDENCY_GRAPH_MOVEMENT,
   FINGERPRINT_HELPER_MOVEMENT,
@@ -52,6 +53,7 @@ import {
   darwinRepinReadmeSection,
   rewriteDarwinTestPins,
   transitionDarwinCargoLock,
+  transitionDarwinCargoRewire,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
 import {
@@ -69,6 +71,17 @@ import {
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
 import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
+import {
+  DARWIN_TARGET,
+  LINUX_TARGET,
+  REWIRE_MANIFESTS as REWIRE_MANIFESTS_FOR_TEST,
+  closureReceipt,
+  rewireDeclaration,
+  rewireLocks,
+  rewireSha,
+  writeRewireInputs,
+  writeRewireManifests,
+} from "./fixtures/island-size-cargo-rewire.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
@@ -332,7 +345,7 @@ describe("rebaseline-island-size-darwin", () => {
     expect(bad({ reason: "runtime-identity" })).not.toThrow();
     expect(bad({ reason: "fingerprint-migration" })).not.toThrow();
     expect(bad({ reason: "other" })).toThrow(
-      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy$/,
+      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire$/,
     );
     // The Linux-only consumer-lock reason (#4184) is not a Darwin re-pin reason.
     expect(bad({ reason: "lockfile-provenance" })).toThrow("--reason must be one of");
@@ -2934,5 +2947,537 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
     expect(Object.keys(manifest.destinations)).toEqual([...OUTPUTS].sort());
     applyStage(stage, repo.root, () => {});
     for (const file of OUTPUTS) expect(read(file).equals(staged(file))).toBe(true);
+  });
+});
+
+// cargo-internal-rewire and paired staging (#4258). Test fixture — synthetic
+// internal rewire, not native evidence: one git-backed checkout whose tag
+// `old-lock` holds the OLD five-record Cargo.lock and whose HEAD holds the NEW
+// lock, both contracts pinning the old lock, the workspace manifests and the
+// reviewed inputs; a native Darwin artifact and a Linux artifact both measured
+// at the new lock. The shared proof refusals are covered on Linux; this suite
+// proves the Darwin handler, the paired stage/apply protocol and its refusals.
+describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging (#4258)", () => {
+  const rewireRoots = [];
+  const { oldText, newText, OLD, NEW } = rewireLocks();
+  const DARWIN = "research/v3-island-size/decision.json";
+  const LINUX = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const OUTPUTS = [DARWIN, LINUX, TEST, README];
+  const LINUX_SOURCE = "b".repeat(40);
+  let repo;
+  let darwinArtifact;
+  let linuxArtifact;
+  let darwinPinned;
+  let linuxPinned;
+  let darwinInputs;
+  let linuxInputs;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const contractOf = (file) => JSON.parse(read(file).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+  const tempDir = (prefix) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    rewireRoots.push(dir);
+    return dir;
+  };
+  const darwinArtifactAt = (tweak) => {
+    const dir = makeArtifact({
+      version: repo.version,
+      tweak: (p, mode) => {
+        p.fixtureSha256 = repo.fixtureSha256;
+        p.runnerSha256 = repo.runnerSha256;
+        p.pnpmLockSha256 = repo.pnpmLockSha256;
+        p.cargoLockSha256 = NEW;
+        p.dependencyFingerprint = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
+        tweak?.(p, mode);
+      },
+    });
+    rewireRoots.push(roots.splice(roots.indexOf(dir), 1)[0]);
+    return dir;
+  };
+
+  beforeAll(() => {
+    repo = makeGitCheckout(rewireRoots, {
+      oldCargoLock: oldText,
+      newCargoLock: newText,
+      prepare: (checkout) => writeRewireManifests(checkout.root),
+    });
+    repo.git("tag", "old-lock");
+    darwinArtifact = darwinArtifactAt();
+    linuxArtifact = tempDir("zfb-rewire-linux-artifact-");
+    const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+    writeRuns(linuxArtifact, Object.keys(liveOf(LINUX).ceilings.workspace), (mode) => ({
+      sourceSha: LINUX_SOURCE,
+      mode,
+      platform: { os: "linux", arch: "x64" },
+      fixtureVersion: liveOf(LINUX).fixtureVersion,
+      fixtureSha256: repo.fixtureSha256,
+      runnerSha256: repo.runnerSha256,
+      packageVersion: repo.version,
+      runtimePackageVersion: repo.version,
+      honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
+      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
+      zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
+      compression: liveOf(LINUX).compression,
+      repeats: 2,
+      pnpmLockSha256: repo.pnpmLockSha256,
+      dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
+      cargoLockSha256: NEW,
+    }));
+    const pin = (contract, artifactDir) => {
+      contract.ceilings = ceilingsOf(artifactDir);
+      contract.fixtureSha256 = { ...repo.fixtureSha256 };
+      contract.runnerSha256 = { ...repo.runnerSha256 };
+      contract.toolchain.packageVersion = repo.version;
+      contract.toolchain.pnpmLockSha256 = repo.pnpmLockSha256;
+      contract.toolchain.cargoLockSha256 = OLD;
+      contract.dependencyFingerprint = { ...repo.dependencyFingerprint };
+      return contract;
+    };
+    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
+    darwinPinned.fixtureVersion = legacy.fixtureVersion;
+    darwinPinned.compression = legacy.compression;
+    darwinPinned.normalizerSha256 = normalizerSha256();
+    for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
+      darwinPinned.toolchain[key] = legacy.toolchain[key];
+    }
+    linuxPinned = pin(liveOf(LINUX), linuxArtifact);
+    writeFileSync(at(DARWIN), contractText(darwinPinned));
+    writeFileSync(at(LINUX), contractText(linuxPinned));
+    darwinInputs = writeRewireInputs(at("research/v3-island-size/rewire-darwin"), DARWIN_TARGET);
+    linuxInputs = writeRewireInputs(at("research/v3-island-size/rewire-linux"), LINUX_TARGET);
+    repo.git("add", "-A");
+    repo.git("commit", "-qm", "test fixture: new Cargo.lock, pinned contracts, rewire inputs");
+    saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of rewireRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const cargoArgs = {
+    reason: "cargo-internal-rewire",
+    "expected-old-cargo-sha": OLD,
+    "expected-new-cargo-sha": NEW,
+    "old-cargo-ref": "old-lock",
+  };
+  const darwinArgv = (extra = {}) =>
+    Object.entries({
+      ...args,
+      artifact: darwinArtifact,
+      ...cargoArgs,
+      ...darwinInputs,
+      stage: join(tempDir("zfb-rewire-stage-"), "stage"),
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const linuxArgv = (extra = {}) =>
+    Object.entries({
+      artifact: linuxArtifact,
+      "run-id": "71",
+      "job-id": "72",
+      // Linux measured the PR merge source of the probe head Darwin measured natively.
+      "head-sha": SOURCE_SHA,
+      "source-sha": LINUX_SOURCE,
+      ...cargoArgs,
+      ...linuxInputs,
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const unchanged = (before) =>
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+  const live = () => OUTPUTS.map((file) => saved[file]);
+  const manifestOf = (stage) =>
+    JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+  const editRuns = (stage, edit) => {
+    const manifest = manifestOf(stage);
+    edit(manifest.runs);
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+  };
+  async function stagePair() {
+    const stage = join(tempDir("zfb-rewire-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await main(darwinArgv({ stage }), repo.root);
+    return stage;
+  }
+  const disagree = (problem) =>
+    "--reason cargo-internal-rewire paired runs disagree: " +
+    problem +
+    "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+
+  it("moves only the Cargo hash and its evidence in the pure Darwin transition", () => {
+    const artifact = loadDarwinArtifact(darwinArtifact);
+    expect(
+      validateDarwinEvidence(darwinPinned, artifact, SOURCE_SHA, "cargo-internal-rewire"),
+    ).toEqual([]);
+    const evidence = evidenceFor({ ...args, reason: "cargo-internal-rewire" }, artifact);
+    const checkout = {
+      dependencyFingerprint: repo.dependencyFingerprint,
+      dependencyFingerprintError: null,
+    };
+    const rewire = {
+      expectedOldSha: OLD,
+      expectedNewSha: NEW,
+      oldText,
+      newText,
+      oldLockSource: { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD },
+      newLockSource: { sha256: NEW },
+      declaration: rewireDeclaration(),
+      declarationSource: { path: "rewire.json", sha256: "1".repeat(64) },
+      closures: {
+        old: { receipt: closureReceipt("old", DARWIN_TARGET), sha256: "2".repeat(64) },
+        new: { receipt: closureReceipt("new", DARWIN_TARGET), sha256: "3".repeat(64) },
+      },
+      target: DARWIN_TARGET,
+      readManifest: (path) => Buffer.from(REWIRE_MANIFESTS_FOR_TEST[path]),
+    };
+    const { contract: next, gzipMoves } = transitionDarwinCargoRewire(
+      darwinPinned,
+      totalsOf(artifact),
+      evidence,
+      checkout,
+      rewire,
+    );
+    expect(next.outcome).toBe("cargo-internal-rewire-transition");
+    expect(next.toolchain).toEqual({ ...darwinPinned.toolchain, cargoLockSha256: NEW });
+    expect(next.ceilings).toEqual(darwinPinned.ceilings);
+    expect(next.dependencyFingerprint).toEqual(darwinPinned.dependencyFingerprint);
+    expect(next.baselineEvidence).toMatchObject({
+      event: "ci-artifact",
+      runId: 7,
+      artifact: { id: 9 },
+      originalCheckerResult: { exitCode: 1 },
+    });
+    expect(next.baselineEvidence.cargoRewire).toMatchObject({
+      oldSha: OLD,
+      newSha: NEW,
+      added: [{ id: "zfb-js-host@0.0.0" }],
+      changed: [
+        {
+          id: "zfb-render@0.0.0",
+          removedDependencies: ["sha2"],
+          addedDependencies: ["zfb-js-host"],
+        },
+      ],
+      closure: { target: DARWIN_TARGET, rows: { old: 5, new: 6, unchanged: 5 } },
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    for (const key of contractDiffKeys(darwinPinned, next)) {
+      expect(
+        CARGO_INTERNAL_REWIRE_MOVEMENT.some(
+          (allowed) => key === allowed || key.startsWith(allowed + "."),
+        ),
+      ).toBe(true);
+    }
+    expect(next.platformStatus).toContain("after a reviewed internal Cargo.lock rewire");
+    expect(next.platformStatus).toContain("only the Cargo.lock hash moved");
+    expect(Array.isArray(gzipMoves)).toBe(true);
+    // Linux receipts are refused for the Darwin target.
+    expect(() =>
+      transitionDarwinCargoRewire(darwinPinned, totalsOf(artifact), evidence, checkout, {
+        ...rewire,
+        closures: {
+          old: { receipt: closureReceipt("old", LINUX_TARGET), sha256: "2".repeat(64) },
+          new: { receipt: closureReceipt("new", LINUX_TARGET), sha256: "3".repeat(64) },
+        },
+      }),
+    ).toThrow(
+      "old closure receipt was recorded for target x86_64-unknown-linux-gnu, not aarch64-apple-darwin",
+    );
+    expect(() =>
+      transitionDarwinCargoRewire(
+        asSchemaV2(darwinPinned),
+        totalsOf(artifact),
+        evidence,
+        checkout,
+        rewire,
+      ),
+    ).toThrow(
+      "--reason cargo-internal-rewire needs a schemaVersion 3 contract, found schemaVersion 2",
+    );
+    const moved = structuredClone(darwinPinned);
+    moved.toolchain.packageVersion = "9.9.8";
+    expect(() =>
+      transitionDarwinCargoRewire(moved, totalsOf(artifact), evidence, checkout, rewire),
+    ).toThrow(
+      "--reason cargo-internal-rewire allows only Cargo.lock to move, but packageVersion differ",
+    );
+  });
+
+  it("stages both platforms with one bound rewire identity and applies them in one step", async () => {
+    quiet();
+    const stage = await stagePair();
+    unchanged(live());
+    const staged = (file) => readFileSync(join(stage, file));
+    const linuxNext = JSON.parse(staged(LINUX).toString("utf8"));
+    const darwinNext = JSON.parse(staged(DARWIN).toString("utf8"));
+    expect(linuxNext.toolchain.cargoLockSha256).toBe(NEW);
+    expect(darwinNext.toolchain.cargoLockSha256).toBe(NEW);
+    expect(darwinNext.baselineEvidence.cargoRewire.closure.target).toBe(DARWIN_TARGET);
+    expect(linuxNext.baselineEvidence.cargoRewire.closure.target).toBe(LINUX_TARGET);
+    // Platform-specific predecessor contract digests differ; the transition and declaration do not.
+    const manifest = manifestOf(stage);
+    const [linuxRun, darwinRun] = manifest.runs;
+    expect(linuxRun.previousContract.sha256).toBe(sha(saved[LINUX]));
+    expect(darwinRun.previousContract.sha256).toBe(sha(saved[DARWIN]));
+    expect(linuxRun.previousContract.sha256).not.toBe(darwinRun.previousContract.sha256);
+    expect(linuxRun.transition).toEqual(darwinRun.transition);
+    expect(linuxRun.rewire).toEqual({
+      declarationSha256: sha(readFileSync(linuxInputs["rewire-declaration"])),
+      oldLockSha256: OLD,
+      newLockSha256: NEW,
+    });
+    expect(darwinRun.rewire).toEqual(linuxRun.rewire);
+    expect(darwinRun).toMatchObject({
+      reason: "cargo-internal-rewire",
+      platform: "darwin-arm64",
+      sourceSha: SOURCE_SHA,
+      runId: 7,
+      artifactId: 9,
+    });
+    expect(Object.keys(manifest.destinations)).toEqual([...OUTPUTS].sort());
+    expect(staged(TEST).toString("utf8")).toBe(
+      rewriteDarwinTestPins(rewriteTestPins(saved[TEST].toString("utf8"), linuxNext), darwinNext),
+    );
+    expect(staged(TEST).toString("utf8")).toContain(JSON.stringify(NEW));
+    const readme = staged(README).toString("utf8");
+    expect(readme.startsWith(saved[README].toString("utf8"))).toBe(true);
+    const linuxAt = readme.indexOf("cargo-internal-rewire transition\n\nThe Linux contract");
+    const darwinAt = readme.indexOf(
+      "## Darwin v" + repo.version + " cargo-internal-rewire transition",
+    );
+    expect(linuxAt).toBeGreaterThan(0);
+    expect(darwinAt).toBeGreaterThan(linuxAt);
+    expect(readme).toContain("Linux x64 moves in the same paired change");
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS) expect(read(file).equals(staged(file))).toBe(true);
+    expect(contractOf(DARWIN).outcome).toBe("cargo-internal-rewire-transition");
+    expect(contractOf(LINUX).outcome).toBe("cargo-internal-rewire-transition");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      /moved since staging; nothing was applied/,
+    );
+  });
+
+  it.each([
+    [
+      "a Linux closure receipt",
+      () => ({ ...linuxInputs }),
+      "old closure receipt was recorded for target x86_64-unknown-linux-gnu, not aarch64-apple-darwin",
+    ],
+    [
+      "a cargo-producer-lock-only flag",
+      () => ({ "added-packages": "zfb-js-host@0.0.0" }),
+      "--added-packages is only for --reason cargo-producer-lock",
+    ],
+    [
+      "a Linux artifact",
+      () => ({ artifact: linuxArtifact }),
+      "artifact is missing runner-provenance.txt",
+    ],
+    [
+      "a --source-sha that is not the artifact's",
+      () => ({ "source-sha": "d".repeat(40) }),
+      "source SHA " + SOURCE_SHA + " is not " + "d".repeat(40),
+    ],
+    [
+      "a missing --stage",
+      () => ({ stage: undefined }),
+      "--reason cargo-internal-rewire re-pins both platforms together and only stages",
+    ],
+    [
+      "a missing --rewire-declaration",
+      () => ({ "rewire-declaration": undefined }),
+      "required --rewire-declaration",
+    ],
+    [
+      "--contract with --stage",
+      () => ({ contract: "x.json" }),
+      "--stage stages the checkout's own files; remove --contract",
+    ],
+  ])("refuses %s end to end and writes nothing", async (_name, extra, message) => {
+    quiet();
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv(extra()), repo.root)).rejects.toThrow(message);
+    unchanged(before);
+  });
+
+  it("refuses an artifact measured at the old lock and totals that moved", async () => {
+    quiet();
+    const stale = darwinArtifactAt((p) => (p.cargoLockSha256 = OLD));
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ artifact: stale }), repo.root)).rejects.toThrow(
+      "artifact Cargo.lock hash differs from this checkout's Cargo.lock",
+    );
+    const grown = structuredClone(darwinPinned);
+    grown.ceilings.packed.model.gzipNormalized += 1;
+    writeFileSync(at(DARWIN), contractText(grown));
+    await expect(main(darwinArgv(), repo.root)).rejects.toThrow(
+      "gzipNormalized totals changed (packed/model -1)",
+    );
+    const raw = structuredClone(darwinPinned);
+    raw.ceilings.workspace["event-only"].raw -= 1;
+    writeFileSync(at(DARWIN), contractText(raw));
+    await expect(main(darwinArgv(), repo.root)).rejects.toThrow(
+      "raw totals changed (workspace/event-only)",
+    );
+    writeFileSync(at(DARWIN), saved[DARWIN]);
+    unchanged(before);
+  });
+
+  it("refuses the second platform and --apply when the declaration digests differ", async () => {
+    quiet();
+    // Byte-different but structurally equivalent declaration: an extra note key.
+    const other = writeRewireInputs(tempDir("zfb-rewire-other-"), DARWIN_TARGET, {
+      declaration: (d) => (d.note = "test fixture: a second declaration document"),
+    });
+    const stage = join(tempDir("zfb-rewire-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    const half = readdirSync(stage, { recursive: true }).sort();
+    const problem = disagree(
+      "rewire declarationSha256 differs (linux-x64 " +
+        sha(readFileSync(linuxInputs["rewire-declaration"])) +
+        ", darwin-arm64 " +
+        sha(readFileSync(other["rewire-declaration"])) +
+        ")",
+    );
+    await expect(main(darwinArgv({ stage, ...other }), repo.root)).rejects.toThrow(
+      problem + " (nothing was staged)",
+    );
+    expect(readdirSync(stage, { recursive: true }).sort()).toEqual(half);
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "--reason cargo-internal-rewire is not staged for darwin-arm64",
+    );
+    unchanged(live());
+    const forged = await stagePair();
+    editRuns(forged, (runs) => (runs[1].rewire.newLockSha256 = "9".repeat(64)));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      disagree(
+        "rewire newLockSha256 differs (linux-x64 " + NEW + ", darwin-arm64 " + "9".repeat(64) + ")",
+      ) + " (nothing was applied)",
+    );
+    editRuns(forged, (runs) => delete runs[1].rewire);
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      "darwin-arm64 run records no rewire identity",
+    );
+    editRuns(forged, (runs) => (runs[0].reason = "cargo-producer-lock"));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      "the stage directory mixes --reason cargo-internal-rewire, cargo-producer-lock",
+    );
+    unchanged(live());
+  });
+
+  it("refuses paired runs whose measured sources, transitions or stage bytes disagree", async () => {
+    quiet();
+    const OTHER_HEAD = "c".repeat(40);
+    const stage = join(tempDir("zfb-rewire-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage, "head-sha": OTHER_HEAD }), repo.root);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(
+      disagree(
+        "darwin-arm64 measured source " +
+          SOURCE_SHA +
+          " is neither the linux-x64 measured source " +
+          LINUX_SOURCE +
+          " nor its probe head " +
+          OTHER_HEAD,
+      ) + " (nothing was staged)",
+    );
+    const forged = await stagePair();
+    editRuns(forged, (runs) => (runs[1].transition.to.cargoLockSha256 = "9".repeat(64)));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      disagree(
+        "transition to.cargoLockSha256 differs (linux-x64 " +
+          NEW +
+          ", darwin-arm64 " +
+          "9".repeat(64) +
+          ")",
+      ) + " (nothing was applied)",
+    );
+    const tampered = await stagePair();
+    appendFileSync(join(tampered, DARWIN), " ");
+    await expect(linuxMain(["--apply", tampered], repo.root)).rejects.toThrow(
+      "the staged research/v3-island-size/decision.json changed after staging; refusing",
+    );
+    const stale = await stagePair();
+    appendFileSync(at(README), "\nmanual edit after staging\n");
+    await expect(main(["--apply", stale], repo.root)).rejects.toThrow(
+      "research/v3-island-size/README.md moved since staging; nothing was applied",
+    );
+    writeFileSync(at(README), saved[README]);
+    unchanged(live());
+  });
+
+  const noTemps = () => {
+    for (const dir of new Set(OUTPUTS.map((file) => dirname(at(file))))) {
+      expect(readdirSync(dir).filter((name) => name.includes(".apply-"))).toEqual([]);
+    }
+  };
+
+  it("changes nothing when a temporary write or a rename fails during --apply, and refuses a partial stage", async () => {
+    quiet();
+    const stage = await stagePair();
+    let writes = 0;
+    expect(() =>
+      applyStage(stage, repo.root, () => {}, {
+        writeFileSync(path, bytes) {
+          if (++writes === OUTPUTS.length) throw new Error("injected write failure");
+          writeFileSync(path, bytes);
+        },
+        renameSync,
+      }),
+    ).toThrow(/could not write a temporary file \(injected write failure\); nothing was applied/);
+    unchanged(live());
+    noTemps();
+    let renames = 0;
+    expect(() =>
+      applyStage(stage, repo.root, () => {}, {
+        writeFileSync,
+        renameSync(from, to) {
+          if (++renames === 3) throw new Error("injected rename failure");
+          renameSync(from, to);
+        },
+      }),
+    ).toThrow(
+      /renaming .* into place failed \(injected rename failure\); restored the 2 destination\(s\) already renamed, so nothing was applied/,
+    );
+    unchanged(live());
+    noTemps();
+    // The recovered stage still lands.
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    // A Darwin stage that fails mid-write leaves a partial stage both scripts refuse.
+    const partial = join(tempDir("zfb-rewire-partial-"), "stage");
+    await linuxMain(linuxArgv({ stage: partial }), repo.root);
+    let stageWrites = 0;
+    await expect(
+      main(darwinArgv({ stage: partial }), repo.root, {
+        mkdirSync,
+        writeFileSync(path, bytes) {
+          if (++stageWrites === 2) throw new Error("injected stage write failure");
+          writeFileSync(path, bytes);
+        },
+      }),
+    ).rejects.toThrow(/staging failed \(injected stage write failure\)/);
+    await expect(main(["--apply", partial], repo.root)).rejects.toThrow(
+      /unlisted files in the stage directory/,
+    );
+    await expect(main(darwinArgv({ stage: partial }), repo.root)).rejects.toThrow(
+      /unlisted files in the stage directory/,
+    );
+    unchanged(live());
   });
 });
