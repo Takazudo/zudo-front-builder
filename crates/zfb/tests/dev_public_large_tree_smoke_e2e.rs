@@ -456,7 +456,7 @@ async fn dev_boots_and_serves_under_large_public_tree() {
     let stderr = read_log(&session.stderr_path);
     assert_eq!(
         stderr
-            .matches("warning: public/assets/styles.css is not served at /assets/styles.css")
+            .matches("public/assets/styles.css is not served at /assets/styles.css")
             .count(),
         1,
         "[#4233] expected exactly one reserved-name boot warning.\n{}",

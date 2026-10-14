@@ -733,9 +733,9 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
             for reserved in crate::assets_containment::reserved_public_asset_files(&public_assets) {
                 let rel = reserved.to_string_lossy().replace('\\', "/");
                 eprintln!(
-                    "zfb dev: warning: public/assets/{rel} is not served at \
-                     {prefix}/assets/{rel} — the name is reserved for zfb's \
-                     generated assets; rename the file"
+                    "zfb dev: warning: {} is not served at {prefix}/assets/{rel} — \
+                     the name is reserved for zfb's generated assets; rename the file",
+                    public_assets.join(&reserved).display(),
                 );
             }
             let mut roots = vec![
