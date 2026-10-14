@@ -1,14 +1,20 @@
 //! Bounded plugin-option feasibility probe, not a production caller.
-//! It deliberately exposes unresolved external/tsconfig semantics for comparison.
+//! Real Node execution in plugin-prebundle.mjs owns the semantic oracles.
+#[cfg(feature = "native")]
+#[path = "plugin_prebundle/packages.rs"]
+mod packages;
+
 #[cfg(feature = "native")]
 fn main() -> anyhow::Result<()> {
     use anyhow::bail;
-    use rolldown::{Bundler, BundlerOptions};
+    use packages::PackageExternals;
+    use rolldown::plugin::Plugin;
+    use rolldown::{Bundler, BundlerOptions, ResolveOptions};
     use rolldown_common::{
-        AddonOutputOption, BundlerTransformOptions, CodeSplittingMode, Either, IsExternal,
-        OutputFormat, Platform, SourceMapType,
+        AddonOutputOption, BundlerTransformOptions, CodeSplittingMode, Either, OutputFormat,
+        Platform, SourceMapType,
     };
-    use std::{path::Path, sync::Arc};
+    use std::path::Path;
 
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
@@ -32,13 +38,12 @@ fn main() -> anyhow::Result<()> {
             target: Some(Either::Left("node22".into())),
             ..Default::default()
         }),
-        // Candidate mapping only. In particular, the differential fixture checks
-        // whether this incorrectly externalizes a tsconfig paths alias before
-        // resolution. Do not copy this predicate into the production adapter.
-        external: Some(IsExternal::Fn(Some(Arc::new(|specifier, _, _| {
-            let bare = !specifier.starts_with('.') && !Path::new(specifier).is_absolute();
-            Box::pin(async move { Ok(bare) })
-        })))),
+        // Resolve local mappings before externalizing packages. This disables
+        // package-directory lookup, NOT tsconfig paths/baseUrl or file lookup.
+        resolve: Some(ResolveOptions {
+            modules: Some(vec![]),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -46,8 +51,11 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let mut bundler = Bundler::with_plugins(options, vec![])
-            .map_err(|error| anyhow::anyhow!("Rolldown options: {error:?}"))?;
+        let mut bundler = Bundler::with_plugins(
+            options,
+            vec![PackageExternals::new_shared(PackageExternals)],
+        )
+        .map_err(|error| anyhow::anyhow!("Rolldown options: {error:?}"))?;
         let result = bundler.write().await.map_err(|errors| {
             anyhow::anyhow!(
                 "{}",

@@ -184,8 +184,11 @@ function localizedNote(value, locale, field) {
 // #4120 post-sync: unchanged Wind sources/catalog; shared-lock dependency changes
 // verified by 117 library tests and 173 regenerated previews (no CSS byte changes).
 // Exact source/CI/artifact provenance: prototypes/rolldown/POST-SYNC.md.
+// #4120 plugin probe: only the prototype root lock edge to the existing pinned
+// resolver changes this closure. Wind sources/catalog and locked subgraph stay
+// unchanged; replay evidence: prototypes/rolldown/PLUGIN-ALIAS-VERIFICATION.md.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "5a08ea9a15e45de6afd6d7adfc6887e217e04d8249290a5ce0a1974b39aaee4c";
+  "c11e6436e2d7760fe88f70f0caaa6676b841c78256914106464d50ba2fc37f69";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

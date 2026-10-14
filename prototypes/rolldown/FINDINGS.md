@@ -1,90 +1,42 @@
 # Rolldown findings — 2026-10-15
 
-**Continue the existing opt-in prototype; do not migrate the live plugin caller yet.** Fresh Linux execution verifies the selected existing client/browser/SSR paths after the main merge. The generated-data repairs are committed. The plugin option probe has one reproduced resolution failure, and plugin cancellation/cleanup parity remains unverified. Overall integration and adoption are not complete.
+**The isolated plugin alias defect is repaired and verified; keep the live plugin caller on esbuild.** The expanded plugin option probe now passes 18 contracts on each real backend. This is a bounded Linux capability result, not production plugin acceptance or permission to adopt Rolldown by default. PR #4120 remains open and draft.
 
-The previous report is preserved byte-for-byte in [the historical findings](FINDINGS-HISTORY-20261012.md). Its older platform and next-step statements describe their named source revisions, not the current state. Historical benchmark files are unchanged; this continuation makes no timing or size-advantage claim.
+## Latest implementation and execution
 
-## Sources and completed repairs
+The native example now delegates local mappings to Rolldown's own resolver before externalizing ordinary unresolved packages. It preserves genuinely external dependencies, including entry-adjacent nested-package lookup. It does not hardcode aliases, implement a second tsconfig resolver, classify every node_modules path as external, or convert configuration/package-import failures into successful external imports.
 
-- Main `fbb7921d8fb3f28d859bbd4cf5737759f547866a` was merged into the existing prototype as `557f65e3c5febc651e05bafc8974b8bbb91737bd`.
-- Fresh native/default verification used `21863e45fa920292e9bf48746f667f00ac6980a1`, which adds only its temporary verification workflow over that merge.
-- Repair commit `9b47cfe5d1f17b182ff3b0f2be1b0830eadc0ec9` updates Wind source/preview provenance and the actual CI-measured WASM rows plus their generated documentation. It leaves both locks, island-size contracts, all ceilings and assertions unchanged.
-- Exact Rolldown revision remains `24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9`. The default esbuild backend, production native adapter, configuration loader and execution hosts are unchanged by this continuation.
+[Plugin alias verification](PLUGIN-ALIAS-VERIFICATION.md) records the complete matrix, source and artifact identities, exact lock change, genuine Wind regeneration, reproduction commands and limitations. [Run 38634288237](https://github.com/Takazudo/zudo-front-builder/actions/runs/38634288237) completed successfully on Linux x86_64 with Rust 1.99.0 and Node 24.14.0. The reviewed source tree is `13a0cdab0c5d71d09427e1bc67984117630ab949`; integration adds these reports and retires the temporary collector without further Rust, lock or generated-asset changes.
 
-[POST-SYNC.md](POST-SYNC.md) records the exact source, toolchain, artifact hashes and repair procedure. The 117 Wind library tests and 19 preview-pipeline tests passed; regenerating all 173 actual previews changed only the compiler fingerprint in the manifest, not CSS bytes. The four refreshed WASM measurements come from the original hosted CI job, not a local build. The eleven-file repair was replayed from pristine inputs and then idempotently; tampered Cargo and manifest inputs were rejected without output mutation.
-
-## Existing native/default verification
-
-[Run 38624226907, job 116059183063](https://github.com/Takazudo/zudo-front-builder/actions/runs/38624226907/job/116059183063) completed successfully on Linux x86_64 with Rust 1.99.0, Node 24.14.0, esbuild 0.25.12, Playwright 1.58.2 and Chromium 143.0.7499.4. The build used the debug profile with two Cargo jobs and disabled incremental/debug-symbol output. These are environment facts, not benchmark conditions supporting a performance claim.
-
-| Selection | Actual outcome |
+| Check | Actual result |
 | --- | --- |
-| Client-script library tests | 14 passed |
-| Output/readback library tests | 5 passed |
-| Ignored islands client-script integration | 5 esbuild + 5 native passed |
-| Exact ignored cross-pipeline test | 1 esbuild + 1 native passed |
-| `gate.mjs` | Native graph, code, maps and unresolved-import checks passed |
-| `client-scripts.mjs` | Both backends passed production/dev/edit/negative cases; native dispatch 3/3 jobs versus esbuild 0/0; zero browser errors |
-| `verify.mjs` | Both backends passed SSR and real Chromium hydration/split/worker/WASM/glue cases |
-| `production.mjs` | Both actual CLI scratch and adapter outputs executed; semantic comparison and second-pass determinism passed |
+| Real esbuild/native plugin differential execution | 18 + 18 passed; zero failures |
+| Native example unit tests | 2 passed |
+| Native prototype library tests | 4 passed |
+| Feature-off prototype all-target check | Passed |
+| Locked no-V8 zfb build | Passed; ordinary graph contains no Rolldown |
+| Wind library tests | 117 passed |
+| Wind preview-pipeline tests | 19 passed; none skipped |
+| Genuine compiled previews and freshness | 173 samples passed; no CSS-byte changes |
+| English and Japanese reference freshness | Both passed |
+| Unreviewed Wind pin and tampered-lock rejection | Both retained and passed |
 
-The production evidence retains WASM values 29/43, CommonJS value 31, MDX/CSS behavior and the scratch throw mapped to `pages/throw.tsx:3:9`. Unsupported SSR copied-resource URLs and the adapter's source-map stripping remain limitations. No zero-test selection is counted as a pass. Earlier WSL and Darwin results remain separate historical evidence; this run does not satisfy Intel or native-Darwin obligations.
+The probe retains all eight original contracts and adds inherited aliases, baseUrl, package-shadowing aliases, aliases into node_modules, dynamic and CommonJS aliases, late-installed packages, package imports and malformed-input failures. Changing real dependencies after bundling proves the emitted modules did not accidentally inline those packages.
 
-## Plugin prebundle capability result
+Only one root dependency entry is added to Cargo.lock: the prototype exposes the already-pinned optional `rolldown_resolver` dependency for typed resolution errors. No crate version or Rolldown revision changes. The exact Rolldown revision remains `24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9`. Wind provenance is refreshed after auditing the exact changed source closure and executing actual tests/previews; compatibility support pins, catalogs, assertions and budgets are unchanged.
 
-The new Rust example and Node harness are isolated verification artifacts:
+## Earlier evidence remains source-specific
 
-- `crates/zfb-rolldown-prototype/examples/plugin_prebundle.rs`
-- `prototypes/rolldown/plugin-prebundle.mjs`
+The [previous findings at cb366ea9](https://github.com/Takazudo/zudo-front-builder/blob/cb366ea9691c2583e354a1fef4e806684e9523ba/prototypes/rolldown/FINDINGS.md) retain the original esbuild 8/8 versus native 7/8 alias failure, its emitted-module diagnosis and prior CI observations. That failure is not reclassified as a pass. The current correction supersedes its next-step wording.
 
-They do not call or modify production `bundle_plugin_entry`. Emitted modules are executed in Node with fixed literal expectations; this is not an actual CLI-to-plugin-runner acceptance test.
+[POST-SYNC.md](POST-SYNC.md) retains the earlier main synchronization, existing native client/browser/SSR execution and generated-data repair evidence at their named sources. Main `fbb7921d8fb3f28d859bbd4cf5737759f547866a` was incorporated by `557f65e3`; the existing broad native verification ran at `21863e45`, and data repairs were committed at `9b47cfe5`. The latest isolated plugin run does not repeat every broad browser/SSR test or remeasure WASM. Earlier Darwin/WSL evidence and [historical findings](FINDINGS-HISTORY-20261012.md) remain separate. No benchmark result is changed or new performance claim made.
 
-At source `9b47cfe5d1f17b182ff3b0f2be1b0830eadc0ec9`, [run 38627815980, job 116071362417](https://github.com/Takazudo/zudo-front-builder/actions/runs/38627815980/job/116071362417) successfully built the native example and executed all sixteen rows. Esbuild passed eight cases; native passed seven and failed one. The job correctly failed overall.
+## Remaining gates and next implementation boundary
 
-| Case | Esbuild | Native candidate |
-| --- | --- | --- |
-| TypeScript entry returns 17 | PASS | PASS |
-| MTS package subpath returns 31 | PASS | PASS |
-| CTS/CommonJS built-in require returns `b` | PASS | PASS |
-| Plugin's own TSX factory configuration | PASS | PASS |
-| Installed plugin's nested dependency returns 73 | PASS | PASS |
-| `tsconfig` paths alias returns 59 | PASS | **FAIL: unresolved external alias** |
-| Deliberate throw maps to authored line 3 | PASS | PASS |
-| Missing relative import fails with its source named | PASS | PASS |
+The production plugin subprocess has deadlines, termination behavior, entry-adjacent staging and file-ownership protections. Native close after successful completion does not establish cancellation of active work, bounded quiescence, or absence of writes after staged files are removed. The current production adapter synchronously joins its scoped thread. Those lifecycle contracts remain unimplemented and unverified for native plugin bundling.
 
-The downloaded artifact `11925320296` was verified against ZIP SHA-256 `67454d600f9da66010a8676062168bcd2559d14e64d92148d24768e9a2bef84c`. Its reports, logs, fixture sources and emitted modules were inspected. Native example SHA-256: `24333d4e9e16db5ba674f0f0418b899eb6a210d9c78f480ed27aa0bca94cb158`. Esbuild SHA-256: `bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014`. The artifact expires on 2026-10-21; the reproduction and substantive outcome remain here.
+The next implementation must independently prove cancellation/quiescence and stage ownership before connecting the real plugin caller, then execute actual CLI-to-plugin-host round trips, failure cleanup and repeated-start cases. Additional resolver cases and platform coverage must be retained as explicit obligations rather than inferred from these 18 contracts. The Windows-specific rooted-path test is present but was not executed by this Linux run.
 
-### Reproduced alias gap
+The island-size Cargo-provenance admission remains a separate integration gate. Earlier Health failures rejected changed producer inputs, not a demonstrated numeric size overflow. This increment does not change island contracts, admission policy, ceilings, support pins or qualifying-platform requirements. Ordinary final-head CI must be read independently; a successful bounded collector is not a declaration that all required workflows are green.
 
-The fixture maps `@local/*` to `./src/*` in its own `tsconfig.json` and exports 59 from `src/value.ts`. Its entry imports `@local/value`. The candidate currently classifies every bare specifier as external before alias resolution. Its emitted module still contains `import { value } from "@local/value"`; Node fails with `ERR_MODULE_NOT_FOUND`. The esbuild control resolves the alias and returns 59.
-
-This is a defect in the candidate external-package mapping, not proof that Rolldown cannot support aliases. The correction must use the real resolver's alias/package semantics while retaining genuinely external packages and their entry-adjacent runtime resolution. Do not hardcode the fixture alias, bundle every package, scan imports with a second resolver, or change the failing expectation to obtain a pass.
-
-Reproduce from the repository root with the recorded toolchain and existing heavy-command guard:
-
-```sh
-npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
-export ZFB_ESBUILD_BIN="$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild"
-cargo build --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle
-node prototypes/rolldown/plugin-prebundle.mjs
-```
-
-The current final command intentionally returns a failure because the supported alias assertion is unsatisfied. Reports are saved under `target/rolldown-plugin-probe/`. Its external-process watchdogs bound the diagnostic run; they are not proof of cancellation inside the production process.
-
-### Lifecycle and rollout boundary
-
-The production plugin path has a subprocess deadline, termination behavior, entry-adjacent staging and file-ownership/sweeping protections. Successful native `close()` after a completed build does not establish cancellation of an active build, bounded quiescence or absence of writes after temporary-file cleanup. The pinned `write`/`close` APIs require a mutable bundler, and the current production adapter synchronously joins its scoped thread. No equivalent cancellation/ownership implementation was produced or verified in this continuation.
-
-Therefore the live plugin caller remains on esbuild. Fix the resolver mapping and independently prove the lifecycle contract before any actual caller integration; retain all positive and negative fixtures. A future CLI-to-plugin-host round trip, failure cleanup and repeated-start tests are still required. There is no new public backend selector or change to the Node plugin host.
-
-## Failure history and remaining integration gate
-
-The first isolated plugin workflow attempt in run `38627387252` failed before compilation: Node setup automatically requested pnpm for caching, but that npm-only job had no pnpm installation. The job was corrected to disable package-manager auto-caching. Its successor compiled and produced the semantic result above; the original setup failure is not reclassified as a runtime result.
-
-The original normal Health run `38621899886` rejected Wind provenance and two island-size Cargo-provenance assertions before later broad workspace verification. The Wind repair addresses its specific mismatch. The island contracts still name a different Cargo producer input; this is not evidence of a measured size overflow. The actual Rolldown dependency delta is not admitted by the existing additive-only Cargo, internal-only rewire or pnpm-only transition reasons. Preserve that rejection until a reviewed transition and qualifying platform evidence are available. No live paired re-pin or Mac dispatch was performed.
-
-Normal CI for repair source `9b47cfe5` passed PR Checks, actionlint and Wind computed styles. At the recorded inspection, the EN/JA reference checks, docs build and docs type-check also passed, while the full Docs, binary/scaffold and Health workflows were still running. Those partial successes are not a final integrated green result; the PR conversation records later observations. No final-source WASM remeasurement or broad workspace success is claimed here.
-
-The one-shot full-native collector, completed data-export job and finite plugin-probe workflow are retired after collecting their named evidence. Existing required workflows, assertions and budgets remain enabled and unchanged. The plugin harness retains its failing oracle for explicit replay; the failed run remains linked, not hidden by a passing replacement gate.
-
-**Disposition:** generated-data repairs implemented and integrated into the draft; selected existing Linux runtime contracts verified at their named source; plugin probe implemented with a reproduced gap; real plugin caller integration and overall adoption not complete. Keep PR #4120 and #318/#4098/#4123/#4124/#4133 open. No merge into main, ready transition, default switch, release, publication or deployment is included.
+The live `bundle_plugin_entry`, shared native adapter, configuration loader, Node plugin host, default backend and independent Deno-exit work remain unchanged. Keep #318/#4098/#4123/#4124/#4133 open. No ready transition, merge into main, release, publication or deployment is included.
