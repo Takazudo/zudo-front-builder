@@ -280,7 +280,7 @@ GitHub separately enforces required checks through a **ruleset** on `main` (id `
 | `Showcase preview (create-zfb, PR)` | T1-adjacent, informational | **Not required** |
 | `Showcase deploy (create-zfb, production)` | **Alerting guard** — runs post-merge, so it detects a bad deploy and cannot prevent one | **Not required** |
 
-Neither showcase job is in ruleset `18452968`, and neither should be added: the preview is skipped entirely on fork and dependabot PRs (no secrets, read-only token), so as a required check it would hang those PRs forever — the same failure mode that kept `Build docs site` out until #2827 wrapped it in the unconditional `Docs gate`.
+Neither showcase job is in ruleset `18452968`, and neither should be added: the preview is skipped entirely on fork, dependabot and draft PRs (no secrets, read-only token; drafts must not upload externally), so as a required check it would hang those PRs forever — the same failure mode that kept `Build docs site` out until #2827 wrapped it in the unconditional `Docs gate`.
 
 Three constraints that are load-bearing, not stylistic:
 
