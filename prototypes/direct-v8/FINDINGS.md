@@ -689,3 +689,57 @@ before returning to JS, per-dispatch budget capture, byte-identical
 `BuildTimeDenied` and transport/limits/digest/alias/Wasm-path code against
 `main`, `DispatchMode` default unchanged, public re-exports intact, `services`
 free of any V8 dependency and `direct-v8` enabled by no other manifest.
+
+## Integration-gap continuation (2026-10-15, #4258)
+
+The genuine Wind preview freshness failure at `1170596f` was reproduced:
+`Stale wind preview asset: manifest.json; regenerate assets` (exit 1).
+A manager-owned guarded `cargo build --locked -p zfb --no-default-features`
+passed (guard PASS, 231 seconds; 29 existing no-default-feature warnings).
+Cargo metadata selected `/home/takazudo/.cargo-target`, not repository-local
+`target/`. The generator and subsequent `--check` used the absolute freshly
+built compiler there and passed for all **173 samples**. The complete generated
+diff changes only `manifest.json`'s compiler source digest (`4747bce8…` →
+`d25f005a…`): CSS, HTML, inventory, sample definitions and diagnostic expectations
+are unchanged. Generator tests passed **19/19**, and acceptance entry-point
+refusal unit tests passed **10/10** using synthetic shell runners.
+
+[The continuation receipt](evidence/integration-continuation-2026-10-15.json)
+retains the original failure, compiler hash/build inputs and check results.
+Original native receipts remain unchanged. The fresh Linux replay at
+`34ffcba76fa54e88745656c609b2e5a178ae4227` is reused because runtime, Cargo,
+harness, corpus and producer inputs have not changed; it is not native execution
+at this continuation's final head. No new browser run is needed for the
+byte-identical CSS/HTML; final-head ordinary Docs CI is reported separately.
+
+The original current-head CI was refreshed, rather than inherited as green:
+[Docs run 38583948009](https://github.com/Takazudo/zudo-front-builder/actions/runs/38583948009)
+passed its build and root/subpath browser checks but failed freshness job
+`115920879338` and therefore Docs gate. Independently,
+[Health job 115920818230](https://github.com/Takazudo/zudo-front-builder/actions/runs/38583948103/job/115920818230)
+failed the two Cargo-provenance assertions (root scripts 909 passed, 2 failed);
+native build, native suites and size measurement were upstream-skipped, and
+`island-size-linux-x64` was absent. No-V8 and all seven md-Wasm feature legs
+passed; the dependent md-Wasm browser was skipped. These remain historical
+results for `1170596f`; the draft PR records this continuation's final-head CI.
+
+[ACTIVATION.md](ACTIVATION.md) now gives the non-circular infrastructure →
+refresh → native collection → paired stage/review → authorized apply/final
+verification route. Existing #4259 tooling revalidated the real declaration
+and both producer closures (496→497 Linux; 480→481 Darwin), and fresh metadata
+matched all four saved semantic row sets. That is lock/manifest/closure proof,
+not native size evidence. Independent review confirmed the Wind-only delta and
+source-bound replay reuse. Live contracts, ceilings, allowances, Cargo/npm locks,
+package versions and runtime behavior are unchanged by this continuation.
+Merges, manual native probes and paired activation remain separately gated.
+
+The independent reachability repair is [draft #4260](https://github.com/Takazudo/zudo-front-builder/pull/4260),
+based on refreshed main `3372fc29` after #4253 integrated the narrow showcase
+draft guard. Its 205 synthetic orchestration/provenance/consumer tests across
+seven suites pass; actionlint 1.7.12, scoped formatting and ignore parity pass.
+Independent review corrected cancellation protection on the linked-watch step
+and added a real-validator old-pin fixture before approval. These are not native
+Linux/Darwin measurements. #4242 refreshes that actually integrated guard only;
+#4234/#4259 remain unmerged. The first combined showcase test run was 7/8 because
+the old branch test expected a different conjunction order; it now asserts the
+exact integrated predicate, with all eight tests passing. No guard was removed.

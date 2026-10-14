@@ -35,9 +35,9 @@ describe("showcase workflow tool provenance", () => {
 
     expect(condition?.trim().split(/\s+&&\s+/)).toEqual([
       "github.event_name == 'pull_request'",
-      "!github.event.pull_request.draft",
       "github.event.pull_request.head.repo.full_name == github.repository",
       "github.actor != 'dependabot[bot]'",
+      "!github.event.pull_request.draft",
     ]);
   });
 
