@@ -25,3 +25,8 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time"], optional =
 url = { version = "2", optional = true }
 base64 = { workspace = true, optional = true }
 v8 = { version = "=147.4.0", optional = true }
+
+[dev-dependencies]
+# The native loopback tests drive real TCP sockets; declare what they use
+# instead of relying on reqwest enabling these tokio features transitively.
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }

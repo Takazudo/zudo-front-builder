@@ -57,6 +57,9 @@ CANDIDATE_BUILD = ["cargo", "build", "--locked", "-p", "zfb-js-host", "--no-defa
                    "--features", "direct-v8", "--example", "direct_v8"]
 CANDIDATE_TESTS = ["cargo", "test", "--locked", "-p", "zfb-js-host", "--no-default-features",
                    "--features", "direct-v8", "--lib"]
+# The shared-services unit tests (limits pins, dispatch mode, shims) compile
+# only with `services`; `cargo test -p zfb-js-host` alone runs none of them.
+SERVICES_TESTS = ["cargo", "test", "--locked", "-p", "zfb-js-host", "--features", "services"]
 OUTER_BUILD = ["cargo", "build", "--locked", "-p", "zfb", "--example", "direct_v8_outer_config"]
 POSTPROCESSOR_BUILD = ["cargo", "build", "--locked", "-p", "zfb-build", "--no-default-features",
                        "--example", "direct_v8_postprocess"]
@@ -317,6 +320,12 @@ def main():
         if not summary or summary["status"] != "ok" or summary["passed"] == 0 or summary["failed"]:
             raise Refusal(f"candidate library tests did not pass with a nonzero count: {summary}")
         report["candidate_lib_tests"] = summary
+        services = acceptance.run("services-tests", SERVICES_TESTS, guarded=True)
+        services_summary = parse_test_result(services.stdout)
+        if not services_summary or services_summary["status"] != "ok" or services_summary["passed"] == 0 \
+                or services_summary["failed"]:
+            raise Refusal(f"shared-services tests did not pass with a nonzero count: {services_summary}")
+        report["services_tests"] = services_summary
         acceptance.run("build-outer-config", OUTER_BUILD, guarded=True)
         examples = target / "debug" / "examples"
         runners = {

@@ -1,6 +1,7 @@
 //! Thread-owned isolate/context and scoped execution primitives.
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::diagnostics::{exception_text, NativeError};
 use super::{bootstrap, bridge, diagnostics, modules, platform, services};
@@ -62,6 +63,12 @@ impl NativeHost {
         bootstrap::initialize().map_err(NativeError::Bootstrap)?;
         let mut isolate = v8::Isolate::new(Default::default());
         let (foreground_key, foreground) = platform::ForegroundQueue::register(&isolate);
+        // Until `Self` owns the queue (and its Drop closes the entry), an early
+        // return must not leave the registry entry behind (review #4258).
+        let registered = ForegroundRegistration {
+            queue: foreground.clone(),
+            key: foreground_key,
+        };
         let services = services.map(|state| Rc::new(RefCell::new(state)));
         if let Some(state) = &services {
             isolate.set_slot(state.clone());
@@ -84,6 +91,7 @@ impl NativeHost {
             }
             v8::Global::new(scope, context)
         };
+        registered.disarm();
         let mut host = Self {
             context,
             modules,
@@ -124,6 +132,24 @@ impl NativeHost {
                 Err(NativeError::Evaluation(exception_text(tc, exception)))
             }
         }
+    }
+}
+
+/// Closes the foreground registry entry unless `NativeHost` took ownership.
+struct ForegroundRegistration {
+    queue: Arc<platform::ForegroundQueue>,
+    key: usize,
+}
+
+impl ForegroundRegistration {
+    fn disarm(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for ForegroundRegistration {
+    fn drop(&mut self) {
+        self.queue.close(self.key);
     }
 }
 
