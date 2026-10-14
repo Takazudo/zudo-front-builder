@@ -34,6 +34,10 @@ mod swc_parse;
 #[cfg(feature = "compiler")]
 use swc_parse::{CompileOptions, SwcPipeline};
 
+#[path = "support/table_tags.rs"]
+mod table_tags;
+use table_tags::{assert_no_structure_paragraph, table_tag_sequence};
+
 fn emit_with_defaults(src: &str) -> String {
     let mut p = Pipeline::with_defaults();
     mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p)
@@ -1594,4 +1598,130 @@ fn manual_wiring_with_setter_keeps_headings_export_in_sync() {
         out.contains("slug: \"foo-moo\""),
         "headings export must follow the declared strategy:\n{out}",
     );
+}
+
+// ── Explicit MDX tables (zfb#4232) ─────────────────────────────────────
+//
+// markdown-rs parses a line with text between its tags as a paragraph of
+// inline JSX, so an explicit `<table>` came out as `table > p > thead` /
+// `tbody > p > tr`, which zudo-react rejects with `ZR_PARSER_CONTEXT`.
+
+const TABLE_REPRO: &str =
+    "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>\n";
+
+/// The exact #4232 source on the pipeline route (md-wasm `compile` and the
+/// native bundler).
+#[test]
+fn explicit_table_sections_emit_without_paragraph_wrappers() {
+    let out = emit_with_defaults(TABLE_REPRO);
+    let seq = table_tag_sequence(&out);
+    assert_eq!(
+        seq,
+        ["table", "thead", "tr", "th", "tbody", "tr", "td"],
+        "{out}"
+    );
+    // Every table tag still routes through `_components` and is registered.
+    for tag in ["table", "thead", "tbody", "tr", "th", "td"] {
+        let needle = format!("{tag}: \"{tag}\",");
+        assert!(out.contains(&needle), "missing `{needle}`:\n{out}");
+    }
+    #[cfg(feature = "compiler")]
+    assert_swc_accepts(&out, "explicit-table.tsx");
+}
+
+/// `<tr>` / `<td>B</td>` / `</tr>` on separate lines gave `tr > p > td`.
+#[test]
+fn explicit_table_exploded_row_emits_without_paragraph_wrappers() {
+    let out = emit_with_defaults("<table>\n<tbody>\n<tr>\n<td>B</td>\n</tr>\n</tbody>\n</table>\n");
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "tbody", "tr", "td"],
+        "{out}"
+    );
+}
+
+/// Blank lines between sections and two rows on consecutive lines (one
+/// paragraph holding both `tr`).
+#[test]
+fn explicit_table_blank_lines_and_multiple_rows_emit_without_paragraph_wrappers() {
+    let out = emit_with_defaults(
+        "<table>\n\n<thead><tr><th>A</th><th>B</th></tr></thead>\n\n<tbody>\n<tr><td>1</td><td>2</td></tr>\n<tr><td>3</td><td>4</td></tr>\n</tbody>\n\n</table>\n",
+    );
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "thead", "tr", "th", "th", "tbody", "tr", "td", "td", "tr", "td", "td"],
+        "{out}"
+    );
+}
+
+#[test]
+fn explicit_table_caption_colgroup_and_tfoot_emit_without_paragraph_wrappers() {
+    let out = emit_with_defaults(
+        "<table>\n<caption>Totals</caption>\n<colgroup><col /></colgroup>\n<tbody>\n<tr><td>1</td></tr>\n</tbody>\n<tfoot><tr><td>Sum</td></tr></tfoot>\n</table>\n",
+    );
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "caption", "colgroup", "col", "tbody", "tr", "td", "tfoot", "tr", "td"],
+        "{out}"
+    );
+}
+
+/// A cell's own paragraph and its inline component are content, not
+/// structure — both survive.
+#[test]
+fn explicit_table_cell_content_keeps_its_paragraph_and_component() {
+    let out = emit_with_defaults(
+        "<table>\n<tbody>\n<tr>\n<td>\n\nCell prose.\n\n</td>\n<td><Badge>x</Badge></td>\n</tr>\n</tbody>\n</table>\n",
+    );
+    let seq = table_tag_sequence(&out);
+    assert_no_structure_paragraph(&seq, &out);
+    let paragraphs: Vec<_> = seq
+        .iter()
+        .enumerate()
+        .filter(|(_, tag)| *tag == "p")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(paragraphs.len(), 1, "{seq:?}\n{out}");
+    assert_eq!(seq[paragraphs[0] - 1], "td", "{seq:?}\n{out}");
+    assert!(out.contains("Cell prose."), "{out}");
+    assert!(out.contains("<Badge>"), "{out}");
+}
+
+/// Markdown paragraphs around the table are untouched.
+#[test]
+fn explicit_table_leaves_surrounding_paragraphs_alone() {
+    let out = emit_with_defaults(
+        "Before.\n\n<table>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>\n\nAfter.\n",
+    );
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "tbody", "tr", "td"],
+        "{out}"
+    );
+    assert_eq!(out.matches("<_components.p>").count(), 2, "{out}");
+}
+
+/// A PascalCase parent is a component zfb cannot see into: its paragraph
+/// stays, even around a lowercase row.
+#[test]
+fn pascal_case_table_component_keeps_its_paragraph() {
+    let out = emit_with_defaults("<Table>\n<tr><td>A</td></tr>\n</Table>\n");
+    assert!(
+        out.contains("<Table><_components.p><_components.tr>"),
+        "a component parent must not be normalised:\n{out}"
+    );
+}
+
+/// The `{ … }`-wrapped spelling never produced the bug and is emitted
+/// verbatim, as before.
+#[test]
+fn expression_wrapped_table_is_unchanged() {
+    let out = emit_with_defaults(
+        "{<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>}\n",
+    );
+    assert!(
+        out.contains("<thead><tr><th>A</th></tr></thead>"),
+        "expression body must stay verbatim:\n{out}"
+    );
+    assert!(!out.contains("<_components.thead"), "{out}");
 }

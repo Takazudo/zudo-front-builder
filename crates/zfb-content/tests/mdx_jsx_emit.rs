@@ -22,6 +22,10 @@ mod swc_parse;
 #[cfg(feature = "compiler")]
 use swc_parse::{CompileOptions, SwcPipeline};
 
+#[path = "support/table_tags.rs"]
+mod table_tags;
+use table_tags::{assert_no_structure_paragraph, table_tag_sequence};
+
 fn emit(src: &str) -> String {
     mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
 }
@@ -698,4 +702,129 @@ fn c1_lowercase_degrade_and_pascal_throw_compose_in_same_document() {
         span_idx < note_throw_idx,
         "span pre-seed (idx {span_idx}) must precede Note throw guard (idx {note_throw_idx})"
     );
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Explicit MDX tables (zfb#4232) — direct (no-pipeline) route
+// ───────────────────────────────────────────────────────────────────
+
+const TABLE_REPRO: &str =
+    "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>\n";
+
+#[test]
+fn explicit_table_sections_emit_without_paragraph_wrappers() {
+    let out = emit(TABLE_REPRO);
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "thead", "tr", "th", "tbody", "tr", "td"],
+        "{out}"
+    );
+    for tag in ["table", "thead", "tbody", "tr", "th", "td"] {
+        let needle = format!("{tag}: \"{tag}\",");
+        assert!(out.contains(&needle), "missing `{needle}`:\n{out}");
+    }
+    #[cfg(feature = "compiler")]
+    assert_swc_accepts(&out, "explicit-table");
+}
+
+#[test]
+fn explicit_table_exploded_row_emits_without_paragraph_wrappers() {
+    let out = emit("<table>\n<tbody>\n<tr>\n<td>B</td>\n</tr>\n</tbody>\n</table>\n");
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "tbody", "tr", "td"],
+        "{out}"
+    );
+}
+
+#[test]
+fn explicit_table_blank_lines_and_multiple_rows_emit_without_paragraph_wrappers() {
+    let out = emit(
+        "<table>\n\n<thead><tr><th>A</th><th>B</th></tr></thead>\n\n<tbody>\n<tr><td>1</td><td>2</td></tr>\n<tr><td>3</td><td>4</td></tr>\n</tbody>\n\n</table>\n",
+    );
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "thead", "tr", "th", "th", "tbody", "tr", "td", "td", "tr", "td", "td"],
+        "{out}"
+    );
+}
+
+#[test]
+fn explicit_table_caption_colgroup_and_tfoot_emit_without_paragraph_wrappers() {
+    let out = emit(
+        "<table>\n<caption>Totals</caption>\n<colgroup><col /></colgroup>\n<tbody>\n<tr><td>1</td></tr>\n</tbody>\n<tfoot><tr><td>Sum</td></tr></tfoot>\n</table>\n",
+    );
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "caption", "colgroup", "col", "tbody", "tr", "td", "tfoot", "tr", "td"],
+        "{out}"
+    );
+}
+
+#[test]
+fn explicit_table_cell_content_keeps_its_paragraph_and_component() {
+    let out = emit(
+        "<table>\n<tbody>\n<tr>\n<td>\n\nCell prose.\n\n</td>\n<td><Badge>x</Badge></td>\n</tr>\n</tbody>\n</table>\n",
+    );
+    let seq = table_tag_sequence(&out);
+    assert_no_structure_paragraph(&seq, &out);
+    let paragraphs: Vec<_> = seq
+        .iter()
+        .enumerate()
+        .filter(|(_, tag)| *tag == "p")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(paragraphs.len(), 1, "{seq:?}\n{out}");
+    assert_eq!(seq[paragraphs[0] - 1], "td", "{seq:?}\n{out}");
+    assert!(out.contains("Cell prose."), "{out}");
+    assert!(out.contains("<Badge>"), "{out}");
+}
+
+#[test]
+fn explicit_table_leaves_surrounding_paragraphs_alone() {
+    let out =
+        emit("Before.\n\n<table>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>\n\nAfter.\n");
+    assert_eq!(
+        table_tag_sequence(&out),
+        ["table", "tbody", "tr", "td"],
+        "{out}"
+    );
+    assert_eq!(out.matches("<_components.p>").count(), 2, "{out}");
+}
+
+#[test]
+fn pascal_case_table_component_keeps_its_paragraph() {
+    let out = emit("<Table>\n<tr><td>A</td></tr>\n</Table>\n");
+    assert!(
+        out.contains("<Table><_components.p><_components.tr>"),
+        "a component parent must not be normalised:\n{out}"
+    );
+}
+
+#[test]
+fn expression_wrapped_table_is_unchanged() {
+    let out = emit(
+        "{<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>}\n",
+    );
+    assert!(
+        out.contains("<thead><tr><th>A</th></tr></thead>"),
+        "expression body must stay verbatim:\n{out}"
+    );
+    assert!(!out.contains("<_components.thead"), "{out}");
+}
+
+/// A parse error inside a cell still names the cell's own line: the
+/// normalisation runs after the parse and moves nodes without rewriting
+/// their positions (pinned at the mdast level by
+/// `zfb_md_ast::table_paragraph`'s `spliced_children_keep_their_positions`).
+#[test]
+fn explicit_table_cell_error_reports_the_cell_line() {
+    let err = mdx_to_jsx_module(
+        "<table>\n<tbody>\n<tr><td>B</tr>\n</tbody>\n</table>\n",
+        MdxJsxOptions::default().with_filename("cell.mdx"),
+    )
+    .expect_err("mismatched closing tag must fail to parse");
+    let PipelineError::Parse(msg) = err;
+    assert!(msg.contains("cell.mdx"), "filename missing in: {msg}");
+    assert!(msg.contains("3:"), "expected the cell's line (3) in: {msg}");
 }
