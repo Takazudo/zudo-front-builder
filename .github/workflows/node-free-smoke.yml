@@ -89,9 +89,10 @@
 #   EVERY main commit, README-only ones included. That is intentional (the
 #   binary build it depends on was already running) and more than
 #   docs-deploy.yml does, which is path-filtered to docs/**.
-# showcase-preview: pull_request from this repo only — fork PRs get no secrets
-#   and a read-only token, and dependabot PRs pass the fork test but still
-#   cannot comment.
+# showcase-preview: non-draft pull_request from this repo only — fork PRs get no
+#   secrets and a read-only token, and dependabot PRs pass the fork test but
+#   still cannot comment. Draft PRs are skipped; ready_for_review is not a
+#   trigger type, so a PR marked ready previews on its next push or reopen.
 
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
@@ -736,12 +737,20 @@ jobs:
     # `permissions:` cannot elevate, so the comment step would 403. There is
     # no .github/dependabot.yml today — this is latent, and costs one line.
     #
+    # Draft PRs get no preview: a draft implementation review must not upload
+    # to Cloudflare. `on.pull_request` declares no `types:`, so
+    # `ready_for_review` does NOT trigger this workflow; a PR marked ready gets
+    # its preview on its next push or reopen. That is deliberate — adding the
+    # type would re-run the binary builds, smokes, scaffold-e2e and browser
+    # smoke on that event just to publish a preview.
+    #
     # Deliberately NOT pull_request_target: under it, PR-authored code would
     # run installed tools and a node script with repository secrets in scope.
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+      github.actor != 'dependabot[bot]' &&
+      !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Job-level, so sibling jobs in this workflow keep the default token
