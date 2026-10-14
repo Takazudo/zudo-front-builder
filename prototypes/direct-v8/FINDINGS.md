@@ -743,3 +743,15 @@ Linux/Darwin measurements. #4242 refreshes that actually integrated guard only;
 #4234/#4259 remain unmerged. The first combined showcase test run was 7/8 because
 the old branch test expected a different conjunction order; it now asserts the
 exact integrated predicate, with all eight tests passing. No guard was removed.
+
+A second concurrent main integration, `ce3c762b` (#4256), changed dev-server
+asset routes and the broad compiler digest. The runtime branch incorporated it
+to resolve the generated-manifest conflict, then rebuilt the genuine no-default
+compiler (guard PASS, 10 seconds) and regenerated/checked all 173 samples again.
+The final digest is `55172c4d…`; the complete generated delta remains manifest
+provenance only. The receipt preserves both builds. Independent review confirmed
+that server dev routes are not exercised by standalone host acceptance or the
+production-build/private-wrapper generated gate; those paths, Cargo inputs and
+harness/corpora remain unchanged. Linked CLI bytes and whole-workspace compiler
+inputs are **not** claimed unchanged. Final ordinary CI covers the integrated
+upstream dev-server change; no new candidate native replay is claimed.

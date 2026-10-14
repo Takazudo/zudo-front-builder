@@ -66,5 +66,20 @@
     "nativeDispatch": false,
     "merge": false,
     "nativeReplayRerun": false
+  },
+  "integratedMainRefresh": {
+    "source": "ce3c762bc2bf95616d840a6912111f482911bf8e",
+    "upstreamPRs": [4253, 4256],
+    "reason": "Resolve concurrent guard/manifest integration and regenerate last from actual combined compiler inputs",
+    "buildCommand": "bash /home/takazudo/.codex/scripts/heavy-guard.sh -- cargo build --locked -p zfb --no-default-features",
+    "buildExitCode": 0,
+    "guardVerdict": "PASS",
+    "guardSeconds": 10,
+    "compilerSha256": "28f7b29941e4636e8233bf242ce485df6c3f8a48673bc8c25c15a9a185313133",
+    "compilerSourceSha256": "55172c4da989c9c2fa4adf8eda3c16531c9a5eb9adf81522fc00dd4f4a2dcd2c",
+    "generationSamples": 173,
+    "checkExitCode": 0,
+    "generatedDiff": "Only compiler.sourceSha256 changed again; CSS/HTML/inventory/diagnostics unchanged",
+    "replayEquivalence": "Upstream changes dev-server routes/assets containment and dev E2E tests, not standalone host/render/config or exercised production build/private-wrapper generated acceptance paths. Linked CLI bytes changed; historical acceptance not relabeled as final-head execution. Independent review confirms no accept.py replay needed."
   }
 }

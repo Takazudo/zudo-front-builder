@@ -5,8 +5,12 @@
 //! - `GET /assets/*path` — static files served via
 //!   [`tower_http::services::ServeDir`] from `<dist_root>/assets/`, or —
 //!   when `dev_assets_root` is set (`zfb dev`, issue #1189) — from
-//!   `<dev_assets_root>/assets/` first with `<dist_root>/assets/` as a
-//!   fallback. See [`crate::assets_containment`].
+//!   `<dev_assets_root>/assets/` first, then the live
+//!   `<public_root>/assets/` (issue #4233, framework-reserved names
+//!   refused), then `<dist_root>/assets/` as a seed fallback (only when
+//!   `dev_dist_seed`). This reserved mount intercepts every `/assets/*`
+//!   request, so the page waterfall's `public/` leg below never sees one.
+//!   See [`crate::assets_containment`].
 //! - `GET /__zfb/livereload.js` — bundled JS that opens a WebSocket
 //!   connection back to this server. Always served with
 //!   `Cache-Control: no-store`.
@@ -68,7 +72,8 @@
 //!   the same `dist/` + `public/` disk fallback chain described above,
 //!   so `public/logo.svg` is reachable at `/foo/logo.svg`),
 //! - `GET /foo/assets/<file>` serves built static assets from
-//!   `<dist_root>/assets/` (or the layered dev-assets roots above),
+//!   `<dist_root>/assets/` (or the layered dev roots above — so
+//!   `public/assets/x.png` answers `/foo/assets/x.png` in dev),
 //! - `GET /foo/__zfb/livereload.js` and `GET /foo/__zfb/reload` serve
 //!   live-reload (and the injected `<script src>` matches),
 //! - plugin-registered dev-middleware paths are auto-prefixed too
@@ -104,7 +109,7 @@ use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use zfb_types::escape_html;
 
-use crate::assets_containment::ContainedAssetsService;
+use crate::assets_containment::{ContainedAssetsService, RootPolicy};
 use crate::embed_handlers::EmbedHandlerSet;
 use crate::inject::inject_livereload_with_prefix;
 use crate::livereload::{sse_response, websocket_session, ReloadTx};
@@ -425,8 +430,10 @@ pub struct AppState {
     /// already covers it and the Dev-gated seed leg is skipped.
     pub dist_root: std::path::PathBuf,
     /// Optional isolated dev-assets root (issue #1189). When `Some`,
-    /// `/assets/*` is served from `<dev_assets_root>/assets/` FIRST and
-    /// falls back to `<dist_root>/assets/` for anything not found there.
+    /// `/assets/*` is served from `<dev_assets_root>/assets/` FIRST, then
+    /// from the live `<public_root>/assets/` (issue #4233), and falls back to
+    /// `<dist_root>/assets/` (only when [`dev_dist_seed`](Self::dev_dist_seed))
+    /// for anything not found there.
     /// `zfb dev` writes its STABLE assets (`styles.css`, `islands.js`,
     /// island chunks, `client/*.js`) into the isolated root so a concurrent
     /// `zfb build` that wipes `dist/` cannot 404 the dev-served stylesheet;
@@ -437,7 +444,10 @@ pub struct AppState {
     /// Whether Dev may read the prebuilt `dist_root` at all (issue #3344).
     /// `false` (`zfb dev` under a scratch dir) skips the `read_from_dist`
     /// seed leg in [`serve_page`] and drops the `<dist_root>/assets/` layer
-    /// behind `dev_assets_root`. No effect outside `ServerMode::Dev`.
+    /// behind `dev_assets_root` and `<public_root>/assets/`. So a file
+    /// deleted from `public/assets/` 404s without a seed, but with a seed
+    /// falls back to the seed's stale `zfb build` copy until the next build
+    /// (dev never cleans the seed). No effect outside `ServerMode::Dev`.
     pub dev_dist_seed: bool,
     /// On-disk page root used as the page-cache fallback in
     /// `serve_page`. `<html_root>/<path>/index.html` and
@@ -452,7 +462,9 @@ pub struct AppState {
     /// in `public/` are reachable at the site root (e.g.
     /// `public/logo.svg` → `/logo.svg`). Matches the production layout
     /// that `zfb build` produces by copying `public/*` straight into
-    /// `dist/`.
+    /// `dist/`. Its `assets/` subtree is unreachable through that
+    /// fallback (the `/assets` mount claims the URLs), so in `zfb dev` it
+    /// is also a layer of the `/assets` mount (issue #4233).
     pub public_root: std::path::PathBuf,
     /// Canonical mount prefix from `zfb.config.ts`'s `base` field, as
     /// returned by [`zfb_types::dev_mount_prefix`]. `None` means the
@@ -692,18 +704,49 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
     // with 404 before ServeDir sees it.  See `assets_containment` module.
     //
     // Issue #1189: in `zfb dev` the isolated dev-assets dir is tried first,
-    // with `dist/assets/` as a boot-lazy-seed fallback, so a concurrent
-    // `zfb build` wiping `dist/` can't 404 dev's stable `/assets/styles.css`.
-    // Preview / embed / tests pass `dev_assets_root = None` → single-root
-    // mount on `dist/assets/`, byte-identical to before.
+    // so a concurrent `zfb build` wiping `dist/` can't 404 dev's stable
+    // `/assets/styles.css`. Preview / embed / tests pass
+    // `dev_assets_root = None` → single-root mount on `dist/assets/`,
+    // byte-identical to before (`zfb build` already copied `public/` there).
+    //
+    // Issue #4233: the live `public/assets/` is the second dev layer. The
+    // reserved `/assets` mount intercepts every `/assets/*` request before the
+    // page waterfall's `public/` leg, so without this layer a user file at
+    // `public/assets/x.png` 404'd until a `zfb build` copied a stale snapshot
+    // into `dist/assets/` (and never under a base prefix, whose build copies
+    // to `dist/<base>/assets/`). Read per request: added/edited files serve
+    // immediately, a deleted one 404s — or, with a dist seed present, falls
+    // back to the seed's stale copy (the seed layer is not cleaned up). It
+    // refuses the framework-owned stable names (`RootPolicy::Public`). Not a
+    // watch root: asset bytes trigger no livereload.
     //
     // Issue #3344: a scratch-dir dev session (`dev_dist_seed == false`) drops
-    // the `dist/assets/` layer — its hashed files carry another build's define.
+    // the `dist/assets/` layer — its hashed files carry another build's
+    // define. Known limitation: that seed layer stays base-unaware (it reads
+    // `dist/assets/`, never `dist/<base>/assets/`).
     let assets_service = match state.dev_assets_root.as_ref() {
-        Some(dev_assets_root) if state.dev_dist_seed => {
-            ContainedAssetsService::layered(vec![dev_assets_root.join("assets"), dist_assets])
+        Some(dev_assets_root) => {
+            let public_assets = state.public_root.join("assets");
+            // One boot-time line per offending file (none when the dir is
+            // missing). Plain stderr: the `zfb` binary installs no tracing
+            // subscriber, so a `tracing::warn!` would never reach the user.
+            for reserved in crate::assets_containment::reserved_public_asset_files(&public_assets) {
+                let rel = reserved.to_string_lossy().replace('\\', "/");
+                eprintln!(
+                    "zfb dev: warning: {} is not served at {prefix}/assets/{rel} — \
+                     the name is reserved for zfb's generated assets; rename the file",
+                    public_assets.join(&reserved).display(),
+                );
+            }
+            let mut roots = vec![
+                (dev_assets_root.join("assets"), RootPolicy::Generated),
+                (public_assets, RootPolicy::Public),
+            ];
+            if state.dev_dist_seed {
+                roots.push((dist_assets, RootPolicy::Generated));
+            }
+            ContainedAssetsService::layered(roots)
         }
-        Some(dev_assets_root) => ContainedAssetsService::new(dev_assets_root.join("assets")),
         None => ContainedAssetsService::new(dist_assets),
     };
 
@@ -3305,6 +3348,393 @@ mod tests {
         assert_eq!(
             get(&router, "/assets/styles-abc123.css").await,
             (StatusCode::OK, "seed{}".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #4233 — `zfb dev` serves the live `public/assets/` through the
+    // contained `/assets` mount: dev-assets → public/assets → dist seed.
+    // -----------------------------------------------------------------------
+
+    /// The `zfb dev` tree for #4233: `dist/`, `html_root`, the isolated
+    /// dev-assets root, and a project `public/` — all real tempdirs, none
+    /// populated.
+    struct PublicAssetsTree {
+        dist: tempfile::TempDir,
+        html: tempfile::TempDir,
+        dev_assets: tempfile::TempDir,
+        public: tempfile::TempDir,
+    }
+
+    impl PublicAssetsTree {
+        fn new() -> Self {
+            Self {
+                dist: tempfile::TempDir::new().unwrap(),
+                html: tempfile::TempDir::new().unwrap(),
+                dev_assets: tempfile::TempDir::new().unwrap(),
+                public: tempfile::TempDir::new().unwrap(),
+            }
+        }
+
+        fn public_assets(&self) -> std::path::PathBuf {
+            self.public.path().join("assets")
+        }
+
+        fn write(dir: &std::path::Path, rel: &str, bytes: &[u8]) {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+
+        fn write_public(&self, rel: &str, bytes: &[u8]) {
+            Self::write(&self.public_assets(), rel, bytes);
+        }
+
+        fn write_dev(&self, rel: &str, bytes: &[u8]) {
+            Self::write(&self.dev_assets.path().join("assets"), rel, bytes);
+        }
+
+        fn write_dist(&self, rel: &str, bytes: &[u8]) {
+            Self::write(&self.dist.path().join("assets"), rel, bytes);
+        }
+
+        /// A Dev `AppState` over this tree: `dist_seed_state` with the
+        /// `public_root` override.
+        fn state(&self, dev_dist_seed: bool) -> AppState {
+            let mut state = dist_seed_state(
+                crate::ServerMode::Dev,
+                self.dist.path(),
+                self.html.path(),
+                Some(self.dev_assets.path()),
+                dev_dist_seed,
+            );
+            state.public_root = self.public.path().to_path_buf();
+            state
+        }
+
+        fn router(&self, dev_dist_seed: bool) -> Router {
+            build_router(self.state(dev_dist_seed))
+        }
+    }
+
+    async fn send(router: &Router, req: Request<Body>) -> Response {
+        router.clone().oneshot(req).await.unwrap()
+    }
+
+    fn header_str(resp: &Response, name: header::HeaderName) -> String {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// The issue's repro: no `dist/` at all, `public/assets/example.png`
+    /// must answer `/assets/example.png` with its bytes and MIME, with and
+    /// without the dist seed (scratch dir), and SVG keeps its own type.
+    #[tokio::test]
+    async fn dev_serves_public_assets_without_dist() {
+        let tree = PublicAssetsTree::new();
+        std::fs::remove_dir(tree.dist.path()).unwrap();
+        let png: &[u8] = b"\x89PNG\r\n\x1a\nexample";
+        tree.write_public("example.png", png);
+        tree.write_public(
+            "icons/logo.svg",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        );
+
+        for dev_dist_seed in [true, false] {
+            let router = tree.router(dev_dist_seed);
+            let resp = send(
+                &router,
+                Request::builder()
+                    .uri("/assets/example.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK, "seed={dev_dist_seed}");
+            assert_eq!(header_str(&resp, header::CONTENT_TYPE), "image/png");
+            let body = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+            assert_eq!(&body[..], png, "seed={dev_dist_seed}");
+
+            let resp = send(
+                &router,
+                Request::builder()
+                    .uri("/assets/icons/logo.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK, "seed={dev_dist_seed}");
+            assert_eq!(header_str(&resp, header::CONTENT_TYPE), "image/svg+xml");
+        }
+    }
+
+    #[tokio::test]
+    async fn dev_public_assets_head_returns_headers_without_body() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("example.png", b"0123456789");
+        let router = tree.router(false);
+        let resp = send(
+            &router,
+            Request::builder()
+                .method(Method::HEAD)
+                .uri("/assets/example.png")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(header_str(&resp, header::CONTENT_TYPE), "image/png");
+        assert_eq!(header_str(&resp, header::CONTENT_LENGTH), "10");
+        let body = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+        assert!(
+            body.is_empty(),
+            "HEAD must carry no body ({} bytes)",
+            body.len()
+        );
+    }
+
+    /// Range and conditional requests reach ServeDir intact through the
+    /// public layer (ServeDir emits `Last-Modified`, not `ETag`, so an
+    /// `If-None-Match` is ignored exactly as on the other roots).
+    #[tokio::test]
+    async fn dev_public_assets_keep_range_and_conditional_handling() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("data.png", b"0123456789");
+        let router = tree.router(true);
+
+        let resp = send(
+            &router,
+            Request::builder()
+                .uri("/assets/data.png")
+                .header(header::RANGE, "bytes=2-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(header_str(&resp, header::CONTENT_RANGE), "bytes 2-5/10");
+        assert_eq!(body_string(resp).await, "2345");
+
+        let resp = send(
+            &router,
+            Request::builder()
+                .uri("/assets/data.png")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let last_modified = header_str(&resp, header::LAST_MODIFIED);
+        assert!(
+            !last_modified.is_empty(),
+            "ServeDir must emit Last-Modified"
+        );
+
+        let resp = send(
+            &router,
+            Request::builder()
+                .uri("/assets/data.png")
+                .header(header::IF_MODIFIED_SINCE, &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+
+        let resp = send(
+            &router,
+            Request::builder()
+                .uri("/assets/data.png")
+                .header(header::IF_UNMODIFIED_SINCE, "Fri, 09 Aug 1996 14:21:40 GMT")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+
+        let resp = send(
+            &router,
+            Request::builder()
+                .uri("/assets/data.png")
+                .header(header::IF_NONE_MATCH, "\"anything\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_string(resp).await, "0123456789");
+    }
+
+    #[tokio::test]
+    async fn dev_public_assets_served_under_base_prefix() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("x.png", b"based");
+        let mut state = tree.state(false);
+        state.base_prefix = Some("/foo".to_string());
+        let router = build_router(state);
+        assert_eq!(
+            get(&router, "/foo/assets/x.png").await,
+            (StatusCode::OK, "based".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_assets_shadow_same_named_public_file() {
+        let tree = PublicAssetsTree::new();
+        tree.write_dev("logo.png", b"dev");
+        tree.write_public("logo.png", b"public");
+        assert_eq!(
+            get(&tree.router(true), "/assets/logo.png").await,
+            (StatusCode::OK, "dev".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_live_public_asset_wins_over_stale_dist_copy() {
+        let tree = PublicAssetsTree::new();
+        tree.write_dist("x.png", b"stale-build-copy");
+        tree.write_public("x.png", b"live");
+        assert_eq!(
+            get(&tree.router(true), "/assets/x.png").await,
+            (StatusCode::OK, "live".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_public_asset_added_after_boot_is_served() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("first.png", b"first");
+        let router = tree.router(false);
+        assert_eq!(
+            get(&router, "/assets/late.png").await.0,
+            StatusCode::NOT_FOUND
+        );
+        tree.write_public("late.png", b"late");
+        assert_eq!(
+            get(&router, "/assets/late.png").await,
+            (StatusCode::OK, "late".to_string())
+        );
+    }
+
+    /// Deleting a public file 404s without a dist seed (and under a scratch
+    /// dir); with a seed that holds a copy, the seed's stale copy answers —
+    /// documented, not cleaned up.
+    #[tokio::test]
+    async fn dev_deleted_public_asset_404s_or_falls_back_to_seed_copy() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("gone.png", b"live");
+        for dev_dist_seed in [true, false] {
+            let router = tree.router(dev_dist_seed);
+            assert_eq!(
+                get(&router, "/assets/gone.png").await,
+                (StatusCode::OK, "live".to_string())
+            );
+        }
+        std::fs::remove_file(tree.public_assets().join("gone.png")).unwrap();
+        for dev_dist_seed in [true, false] {
+            assert_eq!(
+                get(&tree.router(dev_dist_seed), "/assets/gone.png").await.0,
+                StatusCode::NOT_FOUND,
+                "no seed copy, seed={dev_dist_seed}"
+            );
+        }
+
+        tree.write_public("seeded.png", b"live");
+        tree.write_dist("seeded.png", b"seed-copy");
+        let seeded = tree.router(true);
+        let scratch = tree.router(false);
+        std::fs::remove_file(tree.public_assets().join("seeded.png")).unwrap();
+        assert_eq!(
+            get(&seeded, "/assets/seeded.png").await,
+            (StatusCode::OK, "seed-copy".to_string())
+        );
+        assert_eq!(
+            get(&scratch, "/assets/seeded.png").await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_public_assets_dir_created_after_boot_is_served() {
+        let tree = PublicAssetsTree::new();
+        assert!(!tree.public_assets().exists());
+        let router = tree.router(false);
+        assert_eq!(get(&router, "/assets/x.png").await.0, StatusCode::NOT_FOUND);
+        tree.write_public("x.png", b"appeared");
+        assert_eq!(
+            get(&router, "/assets/x.png").await,
+            (StatusCode::OK, "appeared".to_string())
+        );
+    }
+
+    /// The public layer refuses framework-reserved names (plain and
+    /// percent-encoded); dev's own `styles.css` is still served.
+    #[tokio::test]
+    async fn dev_public_assets_refuse_reserved_names() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("styles.css", b"public-css");
+        tree.write_public("islands.js", b"public-islands");
+        tree.write_public("islands-abc12345.js", b"public-chunk");
+        tree.write_public("client/x.js", b"public-client");
+        tree.write_public("ok.png", b"ok");
+        let router = tree.router(false);
+        for uri in [
+            "/assets/styles.css",
+            "/assets/styles%2Ecss",
+            "/assets/islands.js",
+            "/assets/islands-abc12345.js",
+            "/assets/client/x.js",
+            "/assets/client%2Fx.js",
+        ] {
+            assert_eq!(
+                get(&router, uri).await.0,
+                StatusCode::NOT_FOUND,
+                "{uri} must not be served from public/assets"
+            );
+        }
+        assert_eq!(
+            get(&router, "/assets/ok.png").await,
+            (StatusCode::OK, "ok".to_string())
+        );
+
+        tree.write_dev("styles.css", b"dev-css");
+        assert_eq!(
+            get(&router, "/assets/styles.css").await,
+            (StatusCode::OK, "dev-css".to_string())
+        );
+        assert_eq!(
+            get(&router, "/assets/styles%2Ecss").await,
+            (StatusCode::OK, "dev-css".to_string())
+        );
+    }
+
+    /// The Preview arm is unchanged: it serves `dist/assets/` alone (a
+    /// `zfb build` already copied `public/assets/` there) and never reads
+    /// `public/assets/` directly.
+    #[tokio::test]
+    async fn preview_does_not_layer_public_assets() {
+        let tree = PublicAssetsTree::new();
+        tree.write_public("only-public.png", b"public");
+        tree.write_dist("built.png", b"built");
+        let mut state = dist_seed_state(
+            crate::ServerMode::Preview,
+            tree.dist.path(),
+            tree.dist.path(),
+            None,
+            true,
+        );
+        state.public_root = tree.public.path().to_path_buf();
+        let router = build_router(state);
+        assert_eq!(
+            get(&router, "/assets/only-public.png").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get(&router, "/assets/built.png").await,
+            (StatusCode::OK, "built".to_string())
         );
     }
 

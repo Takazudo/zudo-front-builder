@@ -38,13 +38,18 @@ The historical native acceptance receipt
 `evidence/acceptance-linux-2026-10-14.json` binds clean source
 `34ffcba76fa54e88745656c609b2e5a178ae4227`. Through prepared-input source
 `1170596fc09de6ad8e3f7a0f33349e310320f2a5`, the intervening changes are
-prototype documentation and evidence only. This continuation changes Wind
-preview generated assets and activation documentation, and reconciles the
-already integrated #4253 draft-preview guard and its tests, not native runtime,
-harness, corpus, Cargo inputs or producer implementation. That input equivalence
-permits reuse of the native replay; it does not relabel the replay as execution
-at this continuation's final head, or as Linux/Darwin island-size evidence.
-Final-head CI and generated-asset checks are reported separately in the PR.
+prototype documentation and evidence only. This continuation refreshes Wind
+preview generated assets and activation documentation and reconciles integrated
+main changes: #4253's draft-preview guard and #4256's dev-server asset-serving
+repair. The latter changes compiler source inputs, so Wind is rebuilt and
+regenerated from the refreshed workspace; compiler-input equality is not claimed.
+Independent review confirmed that the exercised standalone host, typed-config,
+build-generated producer, harness and corpus paths remain unchanged. That scoped
+input equivalence supports reuse of the native replay, not a claim that it
+executed this continuation's final head or verified the changed dev-server paths.
+It also does not constitute Linux/Darwin island-size evidence. Final-head CI,
+dev-server checks and genuine generated-asset freshness are reported separately
+in the PR.
 
 ## 2. Ordered activation procedure
 
