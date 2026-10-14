@@ -1848,21 +1848,21 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     repo = makeGraphCheckout(graphRoots, { pnpmLock: moved.lockText });
     darwinArtifact = darwinArtifactAt();
     linuxArtifact = tempDir("zfb-graph-linux-artifact-");
-    const live = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
-    writeRuns(linuxArtifact, Object.keys(live(LINUX).ceilings.workspace), (mode) => ({
+    const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+    writeRuns(linuxArtifact, Object.keys(liveOf(LINUX).ceilings.workspace), (mode) => ({
       sourceSha: LINUX_SOURCE,
       mode,
       platform: { os: "linux", arch: "x64" },
-      fixtureVersion: live(LINUX).fixtureVersion,
+      fixtureVersion: liveOf(LINUX).fixtureVersion,
       fixtureSha256: repo.fixtureSha256,
       runnerSha256: repo.runnerSha256,
       packageVersion: repo.version,
       runtimePackageVersion: repo.version,
-      honoPackageVersion: live(LINUX).toolchain.honoVersion,
-      esbuildVersion: live(LINUX).toolchain.esbuildVersion,
-      nodeVersion: live(LINUX).toolchain.nodeVersion,
-      zlibVersion: live(LINUX).toolchain.zlibVersion,
-      compression: live(LINUX).compression,
+      honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
+      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
+      zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
+      compression: liveOf(LINUX).compression,
       repeats: 2,
       pnpmLockSha256: repo.pnpmLockSha256,
       dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
@@ -1878,14 +1878,14 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       contract.dependencyFingerprint = { ...repo.priorFingerprint };
       return contract;
     };
-    darwinPinned = pin(live(DARWIN), darwinArtifact);
+    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
     darwinPinned.normalizerSha256 = normalizerSha256();
     for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
       darwinPinned.toolchain[key] = legacy.toolchain[key];
     }
-    linuxPinned = pin(live(LINUX), linuxArtifact);
+    linuxPinned = pin(liveOf(LINUX), linuxArtifact);
     writeFileSync(at(DARWIN), contractText(darwinPinned));
     writeFileSync(at(LINUX), contractText(linuxPinned));
     saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));

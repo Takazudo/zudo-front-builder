@@ -2266,6 +2266,9 @@ export function openOutputSession(root, stageDir) {
   };
 }
 
+// The platform names a stage run records; a paired reason needs both.
+export const STAGE_PLATFORMS = Object.freeze(["linux-x64", "darwin-arm64"]);
+
 // `--apply <dir>`: re-validates that every live destination still hashes to
 // its manifest "live" value and every staged file to its "staged" value, and
 // that a paired reason was staged for both platforms; then writes every
@@ -2317,8 +2320,6 @@ export function applyStage(stageDir, root = ".", log = console.log) {
       ")",
   );
 }
-
-export const STAGE_PLATFORMS = Object.freeze(["linux-x64", "darwin-arm64"]);
 
 // `--apply <dir>` takes no other argument; returns whether it was given.
 export function checkApplyArgs(values) {
