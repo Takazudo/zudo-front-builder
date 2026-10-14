@@ -56,11 +56,12 @@ export function write(root, relative, bytes) {
 }
 
 // Returns the checkout root and the identity a native run of it would record.
-// `cargoLock` replaces the copied Cargo.lock with the given text.
-export function makeCheckout(roots, { cargoLock } = {}) {
+// `cargoLock` replaces the copied Cargo.lock and `pnpmLock` the copied
+// pnpm-lock.yaml with the given text.
+export function makeCheckout(roots, { cargoLock, pnpmLock } = {}) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-checkout-"));
   roots.push(root);
-  const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
+  const lockText = pnpmLock ?? readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
   const version = JSON.parse(readFileSync(join(repoRoot, "packages/zfb/package.json"))).version;
   const { inventory } = computeLockFingerprint({ lockText, currentVersion: version });
   for (const relative of [
@@ -79,6 +80,7 @@ export function makeCheckout(roots, { cargoLock } = {}) {
   }
   copy(root, "packages/zfb/package.json");
   if (cargoLock !== undefined) write(root, "Cargo.lock", cargoLock);
+  if (pnpmLock !== undefined) write(root, "pnpm-lock.yaml", pnpmLock);
   const fixtureSha256 = {};
   for (const name of [
     "event-only",
@@ -198,11 +200,7 @@ export function ceilingsOf(root) {
 export function makeHelperCheckout(roots) {
   const checkout = makeCheckout(roots);
   const { root } = checkout;
-  const helper = SIZE_DIR + "/lock-fingerprint.mjs";
-  copy(root, helper);
-  const yamlDir = dirname(createRequire(import.meta.url).resolve("yaml/package.json"));
-  mkdirSync(join(root, "node_modules"), { recursive: true });
-  symlinkSync(yamlDir, join(root, "node_modules", "yaml"), "dir");
+  const helper = addHelper(root);
   const contracts = {};
   for (const [name, file] of [
     ["linux", "decision-linux-x64.json"],
@@ -220,6 +218,43 @@ export function makeHelperCheckout(roots) {
   git("add", helper);
   git("commit", "-qm", "pinned helper");
   return { ...checkout, contracts, helperPath: join(root, helper), git };
+}
+
+// Copies the real lock-fingerprint.mjs into the checkout with `yaml`
+// resolvable from its directory, so its `--explain` runs against the checkout.
+function addHelper(root) {
+  const helper = SIZE_DIR + "/lock-fingerprint.mjs";
+  copy(root, helper);
+  const yamlDir = dirname(createRequire(import.meta.url).resolve("yaml/package.json"));
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+  symlinkSync(yamlDir, join(root, "node_modules", "yaml"), "dir");
+  return helper;
+}
+
+// Test fixture — synthetic prior graph, not native evidence: a checkout whose
+// pnpm-lock.yaml is `pnpmLock` (the new graph), with the helper and the live
+// inventory file copied in. `priorFingerprint` is the contract-shape
+// fingerprint the real lock has at this checkout, standing for the graph a
+// contract pinned before the reviewed dependency change.
+export function makeGraphCheckout(roots, { pnpmLock } = {}) {
+  const checkout = makeCheckout(roots, { pnpmLock });
+  addHelper(checkout.root);
+  copy(checkout.root, SIZE_DIR + "/lock-fingerprint-inventory.json");
+  const prior = computeLockFingerprint({
+    lockText: readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8"),
+    currentVersion: checkout.version,
+    repoRoot: checkout.root,
+  });
+  return {
+    ...checkout,
+    priorFingerprint: {
+      policyVersion: prior.policyVersion,
+      parser: prior.parser,
+      helperSha256: prior.helperSha256,
+      sha256: prior.sha256,
+    },
+    priorPnpmLockSha256: sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
+  };
 }
 
 // Test fixture: a git runner pinned to `root` with a fixed identity, no
