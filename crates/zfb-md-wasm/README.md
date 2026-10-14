@@ -33,10 +33,10 @@ is not syntect-free.
 
 | Entry | gzip-9 wasm (4.5.1) | Runtime values | Type surface |
 | ------------- | -------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.` | 1,522,071 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
-| `./highlight` | 817,815 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
-| `./render` | 1,095,081 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `HighlightRole` |
-| `./parse` | 285,917 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
+| `.` | 1,522,818 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
+| `./highlight` | 821,001 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
+| `./render` | 1,097,797 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `HighlightRole` |
+| `./parse` | 285,765 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
 
 The focused entries have private, non-interchangeable resource pairs:
 
@@ -280,17 +280,17 @@ bytes/gzip:
 
 | Entry/graph |  final wasm |      gzip-9 |     glue | glue gzip-9 |
 | ----------- | ----------: | ----------: | -------: | ----------: |
-| root (full) | 3,394,423 B | 1,522,071 B | 14,998 B | 4,199 B |
-| highlight | 1,537,593 B | 817,815 B | 8,758 B | 2,637 B |
-| render | 2,201,648 B | 1,095,081 B | 8,772 B | 2,661 B |
-| parse | 703,433 B | 285,917 B | 11,159 B | 3,797 B |
+| root (full) | 3,389,152 B | 1,522,818 B | 14,998 B | 4,199 B |
+| highlight | 1,540,963 B | 821,001 B | 8,758 B | 2,637 B |
+| render | 2,204,415 B | 1,097,797 B | 8,772 B | 2,661 B |
+| parse | 703,502 B | 285,765 B | 11,159 B | 3,797 B |
 
 The #2447 decision snapshot measured the split package at 3,638,607 B versus
 the root-plus-highlight package at 2,314,818 B. Locked gzip-9 ceilings are
 root 1,600,000 B, highlight 880,000 B, render 1,100,000 B, and parse
 325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
-inside their ceilings, with 77,929 B (root), 62,185 B (highlight), 4,919 B
-(render), and 39,083 B (parse) of headroom. These are 4.5.1 measurements, not
+inside their ceilings, with 77,182 B (root), 58,999 B (highlight), 2,203 B
+(render), and 39,235 B (parse) of headroom. These are 4.5.1 measurements, not
 permanent promises — re-measure against the version you actually install. The
 four-step clean production reference ceiling is 210 seconds, with the #2447
 selected median at 155.015 s [153.496, 165.977].
@@ -318,7 +318,7 @@ raw and 8,765 B smaller gzip-9 (758,244 B) — wasm-opt was already
 dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
 no-`swc_core` assertions turned that emergent property into a guaranteed one.
 The delta that matters to a highlight-only consumer is root versus
-highlight: the highlight artifact is 1,856,830 B smaller raw and 704,256 B
+highlight: the highlight artifact is 1,848,189 B smaller raw and 701,817 B
 smaller gzip-9, landing at about 45% of root's raw bytes and 54% of its
 gzipped bytes.
 

@@ -181,8 +181,11 @@ function localizedNote(value, locale, field) {
 // The noyalib 0.0.53 and 0.0.55 pins (#4159, #4173) move only Cargo.toml/Cargo.lock.
 // The CSS addon (#4149) adds only disjoint Cargo.lock entries; reviewed Wind
 // sources, resolved dependency graph, support pin and utility catalog are unchanged.
+// #4120 post-sync: unchanged Wind sources/catalog; shared-lock dependency changes
+// verified by 117 library tests and 173 regenerated previews (no CSS byte changes).
+// Exact source/CI/artifact provenance: prototypes/rolldown/POST-SYNC.md.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "38ddeeefb6e867870d5714a49fa656909604951fc6125e5669882c475d2f8218";
+  "5a08ea9a15e45de6afd6d7adfc6887e217e04d8249290a5ce0a1974b39aaee4c";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

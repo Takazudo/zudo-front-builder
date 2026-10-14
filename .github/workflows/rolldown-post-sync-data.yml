@@ -1,6 +1,6 @@
-# One-shot verification/repair transport for #4120. No branch is changed by CI.
-# The object-export job creates only unreferenced blobs/tree; the manager owns refs.
-name: Rolldown reviewed data and plugin probe (#4120)
+# Temporary #4120 plugin feasibility evidence; no production caller migration.
+# Reviewed data export completed in run 38627387252; no write permission remains.
+name: Rolldown plugin feasibility (#4120)
 
 on:
   push:
@@ -12,50 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  reviewed-data:
-    if: github.repository == 'Takazudo/zudo-front-builder'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: "24.14.0"
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
-        with:
-          toolchain: "1.99.0"
-          components: rustfmt
-      - run: pnpm install --frozen-lockfile
-      - name: Format only the new verification files
-        run: |
-          pnpm exec vp fmt --write prototypes/rolldown/post-sync-data.mjs prototypes/rolldown/plugin-prebundle.mjs .github/workflows/rolldown-post-sync-data.yml
-          pnpm exec mdx-formatter --write prototypes/rolldown/POST-SYNC.md
-          rustfmt --edition 2021 crates/zfb-rolldown-prototype/examples/plugin_prebundle.rs
-      - name: Reproduce exact reviewed data and export an unreferenced tree
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node prototypes/rolldown/post-sync-data.mjs --prepare-tree
-      - name: Save proposed diff and formatted probe
-        if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/rolldown-reviewed-tree"
-          git diff --binary > "$RUNNER_TEMP/rolldown-reviewed-tree/candidate.patch"
-          cp crates/zfb-rolldown-prototype/examples/plugin_prebundle.rs "$RUNNER_TEMP/rolldown-reviewed-tree/"
-          cp prototypes/rolldown/{plugin-prebundle.mjs,POST-SYNC.md} "$RUNNER_TEMP/rolldown-reviewed-tree/"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
-        if: always()
-        with:
-          name: rolldown-reviewed-tree-${{ github.run_id }}
-          path: ${{ runner.temp }}/rolldown-reviewed-tree/
-          retention-days: 7
-          if-no-files-found: error
-
   plugin-probe:
     if: github.repository == 'Takazudo/zudo-front-builder'
     runs-on: ubuntu-latest
@@ -72,6 +28,8 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24.14.0"
+          # This standalone probe uses npm only. Auto-cache must not require pnpm.
+          package-manager-cache: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
         with:
           toolchain: "1.99.0"
@@ -94,5 +52,6 @@ jobs:
         with:
           name: rolldown-plugin-probe-${{ github.run_id }}
           path: target/rolldown-plugin-probe/
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
