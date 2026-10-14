@@ -194,6 +194,18 @@ fn dump_logs(stdout_path: &Path, stderr_path: &Path) -> String {
     )
 }
 
+/// Extract the early binding signal for startup-window regressions.
+fn parse_binding_port(log: &str) -> Option<u16> {
+    log.lines().find_map(|line| {
+        let address = line
+            .split_once("listening on ")?
+            .1
+            .split_whitespace()
+            .next()?;
+        address.rsplit_once(':')?.1.parse().ok()
+    })
+}
+
 /// Extract the port from the dev ready banner, e.g.
 /// `→ ready on http://localhost:34567/`. Tolerates ANSI styling around
 /// the URL (digits stop at the first non-digit byte either way) and
@@ -564,7 +576,7 @@ async fn dev_e2e_eager_escape_hatch() {
 //
 // Before the watch-first fix, the notify watcher was registered only AFTER
 // the deferred eager boot render finished. A source edit saved in the
-// post-ready / pre-watcher window was observed by NOBODY, so the dev server
+// post-bind / pre-watcher window was observed by NOBODY, so the dev server
 // kept serving the pre-edit output until the next FS event.
 //
 // This test injects a deterministic boot-render window via
@@ -584,7 +596,7 @@ async fn dev_e2e_eager_escape_hatch() {
 // ---------------------------------------------------------------------------
 
 /// The injected boot-render window. Long enough to comfortably edit a file
-/// inside it after the ready banner, short enough to keep the test brisk.
+/// inside it after the listening banner, short enough to keep the test brisk.
 const BOOT_RENDER_WINDOW_MS: u64 = 5_000;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -619,7 +631,7 @@ async fn dev_e2e_edit_during_boot_render_window_is_observed() {
     let pgid = session.guard.pgid;
 
     let body = async {
-        // Phase A/B: discover the port from the ready banner (printed right
+        // Phase A/B: discover the port from the listening banner (printed right
         // after a successful bind, BEFORE the deferred boot hook's sleep)
         // and confirm the server is actually serving.
         let boot_start = Instant::now();
@@ -639,17 +651,17 @@ async fn dev_e2e_edit_during_boot_render_window_is_observed() {
                     return ScenarioOutcome::Skipped;
                 }
                 panic!(
-                    "`zfb dev` exited prematurely (status {status:?}) before the ready \
+                    "`zfb dev` exited prematurely (status {status:?}) before the listening \
                      banner.\n{}",
                     session.logs(),
                 );
             }
-            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+            if let Some(port) = parse_binding_port(&read_log(&session.stdout_path)) {
                 break port;
             }
             assert!(
                 boot_start.elapsed() < BOOT_DEADLINE,
-                "`zfb dev` did not print a parseable ready banner within {}s.\n{}",
+                "`zfb dev` did not print a parseable listening banner within {}s.\n{}",
                 BOOT_DEADLINE.as_secs(),
                 session.logs(),
             );

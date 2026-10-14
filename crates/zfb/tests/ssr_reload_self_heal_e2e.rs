@@ -59,7 +59,7 @@
 //! ## Falsifiability
 //!
 //! - **Healthy path**: `ZFB_DEV_TEST_SLOW_BUNDLE_MS` opens an observable
-//!   window between the ready banner (bind) and the deferred bundle's
+//!   window between the listening banner (bind) and the deferred bundle's
 //!   publish. The SSE stream is subscribed inside that window (simulating
 //!   an already-open tab watching the dev 404 body), and the boot log's
 //!   "no prebuilt dist/ seed required" line (unconditionally printed by
@@ -175,24 +175,16 @@ impl DevSession {
     }
 }
 
-/// Extract the ephemeral port from the dev ready banner.
-fn parse_ready_port(log: &str) -> Option<u16> {
-    let mut rest = log;
-    while let Some(index) = rest.find("http://") {
-        let candidate = &rest[index + "http://".len()..];
-        let token = candidate.split_whitespace().next().unwrap_or_default();
-        if let Some(colon) = token.find(':') {
-            let digits: String = token[colon + 1..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(port) = digits.parse() {
-                return Some(port);
-            }
-        }
-        rest = &rest[index + "http://".len()..];
-    }
-    None
+/// Extract the ephemeral port from the dev listening banner.
+fn parse_binding_port(log: &str) -> Option<u16> {
+    log.lines().find_map(|line| {
+        let address = line
+            .split_once("listening on ")?
+            .1
+            .split_whitespace()
+            .next()?;
+        address.rsplit_once(':')?.1.parse().ok()
+    })
 }
 
 /// Minimal SSR-only fixture: one page, `prerender = false`, no collections
@@ -261,9 +253,9 @@ fn spawn_dev(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) -> DevSess
     }
 }
 
-/// Wait for the ready banner, returning the bound port. `None` on a
+/// Wait for the listening banner, returning the bound port. `None` on a
 /// recognised environmental skip indicator.
-async fn wait_for_ready(session: &mut DevSession) -> Option<u16> {
+async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
     let started = Instant::now();
     loop {
         if let Some(status) = session.guard.try_exit_status() {
@@ -277,22 +269,22 @@ async fn wait_for_ready(session: &mut DevSession) -> Option<u16> {
                 return None;
             }
             panic!(
-                "`zfb dev` exited prematurely (status {status:?}) before its ready banner.\n{}",
+                "`zfb dev` exited prematurely (status {status:?}) before its listening banner.\n{}",
                 session.logs(),
             );
         }
-        if let Some(port) = parse_ready_port(&session.stdout()) {
+        if let Some(port) = parse_binding_port(&session.stdout()) {
             assert_ne!(
                 port,
                 0,
-                "ready banner printed literal port 0 instead of the bound ephemeral port.\n{}",
+                "listening banner printed literal port 0 instead of the bound ephemeral port.\n{}",
                 session.logs(),
             );
             return Some(port);
         }
         assert!(
             started.elapsed() < BOOT_DEADLINE,
-            "`zfb dev` did not print a parseable ready banner within {}s.\n{}",
+            "`zfb dev` did not print a parseable listening banner within {}s.\n{}",
             BOOT_DEADLINE.as_secs(),
             session.logs(),
         );
@@ -438,7 +430,7 @@ async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
             ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", "4000"),
         ],
     );
-    let Some(port) = wait_for_ready(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // environmental skip
     };
     let base = format!("http://localhost:{port}");
@@ -565,7 +557,7 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     fs::write(&trigger_path, "export const trigger = ;\n").expect("write recovery trigger module");
 
     let mut session = spawn_dev(&root, &esbuild, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
-    let Some(port) = wait_for_ready(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return; // environmental skip
     };
     let base = format!("http://localhost:{port}");
