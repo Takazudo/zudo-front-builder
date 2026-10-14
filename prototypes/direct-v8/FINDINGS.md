@@ -58,7 +58,7 @@ values, error categories and message fragments, rather than accepting mere
 agreement between engines.
 
 `python3 prototypes/direct-v8/check-config.py --baseline target/debug/examples/direct_v8_baseline --output /tmp/direct-v8-config-baseline.json`
-passed **55/55**: 25 success values and 30 errors. Candidate results are pending.
+passed **55/55**: 25 success values and 30 errors. Candidate results were pending at this initial characterization; later gates below supersede that status.
 Every line creates and drops a fresh isolate; the runner exits normally.
 
 Baseline module characterization observed:
@@ -238,3 +238,78 @@ Playwright's pinned browser download returned `403 Domain forbidden`, including
 the scoped escalated retry. The preinstalled local Chromium is
 `154.0.8037.57` (Debian 13); the bounded hydration run will record this actual
 browser rather than claim the unavailable downloaded revision.
+
+## Outer typed-config characterization
+
+The unchanged normal CLI's real TS-config loader was executed through
+`crates/zfb/examples/direct_v8_outer_config.rs` (default Deno backend), including
+real pinned esbuild preparation. `check-outer-config.py` passes **7/7** and
+`evidence/outer-config-gate.json` retains requests and receipts. This resolves
+CFG-08/A-01 without tightening raw candidate semantics: `{}` and `[]` both
+produce defaults, `['array-output']` sets `outDir`, `[42]` fails at `[0]` expecting
+a path string, a top-level Date's serialized string fails typed Config parsing,
+and an invalid `port` names that field. User config overrides its preset.
+Only the temporary fixture directory is replaced with `<fixture>` in errors.
+This is baseline outer-validation evidence, not candidate CLI integration.
+The example build was fresh, manager guarded, PASS in 43 seconds. A brief
+execution-server disconnect during harmless reads recovered in the same session;
+the already completed async checkpoint `6706ab18` remained pushed.
+
+## Module baseline characterization in progress
+
+`check-modules.py` prepares one fixed filesystem/JSON corpus before invoking any
+runtime. Baseline now passes **37/37** Worker/module policy cases, including
+canonical alias namespace identity and evaluation-once, symlink authority,
+percent-encoded sibling names, missing and TypeScript aliases, virtual modules,
+strict invalid shapes, actual binary headers/body dispatch, and compiled but
+uninstantiated copied Wasm consumed as answer 42. Native execution is pending.
+
+Initial authored expectations produced 33/36 then 35/36 passes: bare unresolved
+imports fail at resolution (not the later unknown-load message), and the Node
+stub sentinel is a module export rather than a global. Inspecting canonical
+source corrected those fixture mistakes. A new baseline probe additionally
+established that authored `file:` modules cannot import the internal `ext:`
+helper directly; node/ext internal imports may use it. This is now a separate
+negative case, not normalized away. Original failure receipts remain at
+`/tmp/direct-v8-module-baseline-{1,2}.json`; no product assertion was weakened.
+
+## Native module and Worker gate (#4239)
+
+Final frozen source passes **40 native tests** (0.25 seconds; guarded test plus
+runner link PASS in 3 seconds) and **47/47 paired module/Worker/utility cases**.
+The config **63/63**, services **27/27**, and loopback HTTP **8/8** gates were
+rerun with the actual module-backed candidate script runner. Final receipts
+live in `evidence/{modules,config,services,http}-gate.json`; the final native
+log is `/tmp/direct-v8-module-tests-final.log`.
+
+Canonical shared resolution/source authorization is reused by a native V8
+cache with canonical found URLs. Tests execute static/dynamic/cyclic ESM,
+namespace identity, top-level await, import.meta, virtual/alias sources,
+strict inner validation and wrapper reuse, copied Wasm compilation and real
+instantiation, binary requests and ordered duplicate headers. Utility modules
+remain tolerant; narrow get-export and sync/async default-call probes cover
+JSON values, boxed strings and string-key Maps. Non-string Map keys fail.
+This is not a general replacement for all serde_v8 conversions.
+
+Independent native review found a caught dynamic ext-import Error/TypeError
+difference, boxed String and Map conversion differences, and missing syntax
+error coordinates. Literal probes reproduced each applicable difference before
+correction. The first coordinate fix exposed a real V8 unknown-column sentinel
+overflow in broad corpora (module runner stopped after 21 receipts; config after
+28), despite 39 focused tests passing. Checked column conversion and a no-source
+error regression corrected it; both message paths omit unavailable coordinates
+rather than invent them. The fixed syntax dependency retains exactly
+`file:///zfb/syntax-dependency.mjs:3:14`. Original failure receipts are preserved
+under `/tmp/direct-v8-{modules,config}-diagnostic-overflow.json`.
+
+A standalone unresolved-top-level-await probe returned explicit errors from
+both engines and exited normally, without its eight-second watchdog firing.
+The candidate reports no pending native work; the baseline reports unresolved
+TLA with a module location. This does not prove CPU-loop interruption, hard
+heap limits, catastrophic recovery or shutdown of indefinitely active work.
+Finite host cycles, pending Wasm disposal, failed boot/dispatch recovery and
+live-host idle transport cancellation have separate successful evidence.
+
+The generated-input producer and its single Chromium checker passed independent
+source review. They are authored and compiled prerequisites only at this gate;
+real generated-bundle execution and hydration remain the next gate.

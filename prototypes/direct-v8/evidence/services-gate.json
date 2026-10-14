@@ -4,7 +4,7 @@
     {
       "engine": "deno_core 0.399.0 / v8 147.4.0",
       "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
-      "executable_sha256": "a039580ec5010f98fe68af0263c0edd520e8b7c0bdd800e925b21ce435e320c3",
+      "executable_sha256": "ce5d736d4c7ae0057d4cb9b706f6f2df1900be1f6fa8cf79b62f1d3ded41bd22",
       "exit_code": 0,
       "receipt_count": 27,
       "expected_count": 27,
@@ -609,7 +609,7 @@
     {
       "engine": "direct v8 147.4.0",
       "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
-      "executable_sha256": "6aefd5f3a8bf22c4b8f1e33579de339a61aee311ff587d50678403dfa918564c",
+      "executable_sha256": "8d6975c6daacc3a32d54007853c263c14eb37dc4fc03246683d0fabf1e702fe2",
       "exit_code": 0,
       "receipt_count": 27,
       "expected_count": 27,
@@ -622,6 +622,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -638,6 +639,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": [
@@ -686,6 +688,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -703,6 +706,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": [
@@ -747,6 +751,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -761,6 +766,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -785,6 +791,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -800,6 +807,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -815,6 +823,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -830,6 +839,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -845,6 +855,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -856,6 +867,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -870,6 +882,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -884,6 +897,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -899,6 +913,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -918,6 +933,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": [
@@ -1007,6 +1023,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1031,6 +1048,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": ["sync", "after-schedule", "microtask", "promise"]
@@ -1042,6 +1060,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1057,6 +1076,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1078,6 +1098,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1104,6 +1125,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": [
@@ -1121,6 +1143,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1135,6 +1158,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1149,6 +1173,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {
@@ -1163,9 +1188,9 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
+            "console": "",
             "engine": "direct v8 147.4.0",
-            "error": "config evaluation error: Error: service receipt sentinel\n    at file:///zfb/service-probe.mjs:1:81\n    at Object.fetch (file:///zfb/service-probe.mjs:1:122)\n    at Object.dispatch (zfb:host_globals:310:47)\n    at zfb:service_dispatch:1:7",
+            "error": "config evaluation error: Error: service receipt sentinel\n    at file:///zfb/service-probe.mjs:1:80\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\n    at Object.dispatch (zfb:host_globals:310:47)",
             "ok": false
           }
         },
@@ -1175,6 +1200,7 @@
           "passed": true,
           "failures": [],
           "receipt": {
+            "console": "",
             "engine": "direct v8 147.4.0",
             "ok": true,
             "value": {

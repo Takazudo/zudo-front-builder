@@ -21156,6 +21156,48 @@ mod tests {
         assert_ne!(k1, k2, "changed bundle bytes must change the skip key");
     }
 
+    /// Temporary #4240 producer: export the canonical wrapper around an
+    /// already-generated fixture. Never runs a second bundle or a JS engine.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    #[ignore = "verification: #4240 canonical wrapper fixture export; set ZFB_DIRECT_V8_SITE and ZFB_DIRECT_V8_WRAPPER_OUT"]
+    fn direct_v8_export_canonical_wrapper() {
+        use sha2::Digest as _;
+
+        let site = PathBuf::from(
+            std::env::var_os("ZFB_DIRECT_V8_SITE").expect("ZFB_DIRECT_V8_SITE is required"),
+        )
+        .canonicalize()
+        .expect("fixture site exists");
+        let destination = PathBuf::from(
+            std::env::var_os("ZFB_DIRECT_V8_WRAPPER_OUT")
+                .expect("ZFB_DIRECT_V8_WRAPPER_OUT is required"),
+        );
+        let bundle_path = site.join(".zfb-build/bundle.mjs");
+        let before = std::fs::read(&bundle_path).expect("real generated bundle exists");
+        let router = zfb_router::Router::scan(&site.join("pages")).expect("real route scan");
+        assert!(!router.routes().is_empty(), "fixture must have real routes");
+        let output = make_bundler_out(bundle_path.clone());
+        let (_, wrapper) = wrap_dev_bundle_with_content_trace(&output, router.routes())
+            .expect("canonical wrapper generation");
+        let inner_name = crate::v8_host_adapter::inner_bundle_specifier(&bundle_path);
+        assert_eq!(std::fs::read(&bundle_path).unwrap(), before);
+        std::fs::create_dir(&destination).expect("wrapper output must be a new directory");
+        std::fs::write(destination.join("wrapper.mjs"), wrapper).expect("write wrapper");
+        let receipt = serde_json::json!({
+            "producer": "commands::dev::wrap_dev_bundle_with_content_trace",
+            "inner_name": inner_name,
+            "wrapper_name": "file:///zfb/__zfb_dev_content_trace_wrapper.mjs",
+            "bundle_sha256": format!("{:x}", sha2::Sha256::digest(&before)),
+            "route_count": router.routes().len(),
+        });
+        std::fs::write(
+            destination.join("receipt.json"),
+            serde_json::to_vec_pretty(&receipt).unwrap(),
+        )
+        .expect("write canonical producer receipt");
+    }
+
     /// Two successive wraps of the SAME bundle mint different trace tokens
     /// and different wrapper sources (a fresh nonce each call), yet the
     /// bundle file on disk is never touched and `compute_bundle_skip_key`

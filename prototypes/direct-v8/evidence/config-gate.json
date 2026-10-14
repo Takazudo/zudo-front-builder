@@ -4,7 +4,7 @@
     {
       "engine": "deno_core 0.399.0 / v8 147.4.0",
       "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
-      "executable_sha256": "a039580ec5010f98fe68af0263c0edd520e8b7c0bdd800e925b21ce435e320c3",
+      "executable_sha256": "ce5d736d4c7ae0057d4cb9b706f6f2df1900be1f6fa8cf79b62f1d3ded41bd22",
       "exit_code": 0,
       "receipt_count": 63,
       "expected_count": 63,
@@ -767,7 +767,7 @@
     {
       "engine": "direct v8 147.4.0",
       "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
-      "executable_sha256": "6aefd5f3a8bf22c4b8f1e33579de339a61aee311ff587d50678403dfa918564c",
+      "executable_sha256": "8d6975c6daacc3a32d54007853c263c14eb37dc4fc03246683d0fabf1e702fe2",
       "exit_code": 0,
       "receipt_count": 63,
       "expected_count": 63,
@@ -808,7 +808,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -820,7 +819,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -832,7 +830,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -844,7 +841,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -856,7 +852,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -868,7 +863,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -880,7 +874,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -892,7 +885,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -904,7 +896,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "not_object",
             "engine": "direct v8 147.4.0",
             "error": "default export must be a plain object",
             "ok": false
@@ -1127,7 +1118,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify threw: TypeError: Do not know how to serialize a BigInt\n    at JSON.stringify (<anonymous>)",
             "ok": false
@@ -1139,7 +1129,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify threw: TypeError: Do not know how to serialize a BigInt\n    at JSON.stringify (<anonymous>)",
             "ok": false
@@ -1151,7 +1140,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify threw: TypeError: Converting circular structure to JSON\n    --> starting at object with constructor 'Object'\n    --- property 'self' closes the circle\n    at JSON.stringify (<anonymous>)",
             "ok": false
@@ -1163,7 +1151,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify threw: Error: getter-marker\n    at get answer (file:///zfb-config-eval/main.mjs:1:39)\n    at JSON.stringify (<anonymous>)",
             "ok": false
@@ -1175,7 +1162,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify threw: Error: tojson-marker\n    at Object.toJSON (file:///zfb-config-eval/main.mjs:1:35)\n    at JSON.stringify (<anonymous>)",
             "ok": false
@@ -1187,7 +1173,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)",
             "ok": false
@@ -1199,7 +1184,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)",
             "ok": false
@@ -1235,7 +1219,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify is not a function",
             "ok": false
@@ -1247,7 +1230,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON is not an object",
             "ok": false
@@ -1259,7 +1241,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify threw: Error: stringify-marker\n    at JSON.stringify (file:///zfb-config-eval/main.mjs:1:32)",
             "ok": false
@@ -1271,7 +1252,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)",
             "ok": false
@@ -1283,7 +1263,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: serde_json parsing of stringify result failed: expected ident at line 1 column 2",
             "ok": false
@@ -1313,7 +1292,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "bare_import",
             "engine": "direct v8 147.4.0",
             "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
             "ok": false
@@ -1325,7 +1303,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "bare_import",
             "engine": "direct v8 147.4.0",
             "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
             "ok": false
@@ -1337,7 +1314,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "bare_import",
             "engine": "direct v8 147.4.0",
             "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
             "ok": false
@@ -1349,7 +1325,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "bare_import",
             "engine": "direct v8 147.4.0",
             "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
             "ok": false
@@ -1361,7 +1336,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "bare_import",
             "engine": "direct v8 147.4.0",
             "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
             "ok": false
@@ -1373,7 +1347,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: TypeError: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.\n    at file:///zfb-config-eval/main.mjs:1:1",
             "ok": false
@@ -1398,7 +1371,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: Error: top-level-marker\n    at file:///zfb-config-eval/main.mjs:1:7",
             "ok": false
@@ -1410,7 +1382,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: Error: await-marker\n    at file:///zfb-config-eval/main.mjs:1:22",
             "ok": false
@@ -1422,9 +1393,8 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "module_load",
             "engine": "direct v8 147.4.0",
-            "error": "config module load error: SyntaxError: Unexpected token ';'",
+            "error": "config module load error: SyntaxError: Unexpected token ';'\n    at file:///zfb-config-eval/main.mjs:1:18",
             "ok": false
           }
         },
@@ -1489,7 +1459,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: Uncaught Error: microtask-boom\n    at file:///zfb-config-eval/main.mjs:1:27",
             "ok": false
@@ -1501,7 +1470,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: Error: unhandled-boom\n    at file:///zfb-config-eval/main.mjs:1:16",
             "ok": false
@@ -1526,7 +1494,6 @@
           "passed": true,
           "failures": [],
           "receipt": {
-            "category": "evaluation",
             "engine": "direct v8 147.4.0",
             "error": "config evaluation error: TypeError: Invalid arguments\n    at file:///zfb-config-eval/main.mjs:1:33",
             "ok": false

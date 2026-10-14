@@ -65,3 +65,119 @@ pub(super) fn outcome<'s>(
     object.create_data_property(scope, key.into(), body.into())?;
     Some(object.into())
 }
+
+/// Only the JSON-valued utility export contract, not a general serialization
+/// engine. Match enumerable properties without invoking JSON.stringify/toJSON.
+pub(super) fn json_value<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+) -> Result<serde_json::Value, super::NativeError> {
+    fn convert<'s>(
+        scope: &mut v8::PinScope<'s, '_>,
+        value: v8::Local<'s, v8::Value>,
+        ancestors: &mut Vec<v8::Local<'s, v8::Object>>,
+    ) -> Result<serde_json::Value, super::NativeError> {
+        use serde_json::Value;
+        let error = |detail: &str| {
+            super::NativeError::Evaluation(format!("export is not JSON-serialisable: {detail}"))
+        };
+        if value.is_null_or_undefined() {
+            return Ok(Value::Null);
+        }
+        if value.is_boolean() {
+            return Ok(Value::Bool(value.is_true()));
+        }
+        if value.is_uint32() {
+            return Ok(Value::from(value.uint32_value(scope).unwrap()));
+        }
+        if value.is_int32() {
+            return Ok(Value::from(value.int32_value(scope).unwrap()));
+        }
+        if value.is_number() {
+            return Ok(value
+                .number_value(scope)
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .unwrap_or(Value::Null));
+        }
+        if value.is_string() {
+            return value
+                .to_string(scope)
+                .map(|v| Value::String(v.to_rust_string_lossy(scope)))
+                .ok_or_else(|| error("string conversion threw"));
+        }
+        if value.is_big_int() {
+            return Err(error("BigInt is unsupported"));
+        }
+        // serde_json::Value's byte-buffer visitor rejects native buffer values.
+        if value.is_array_buffer() || value.is_array_buffer_view() {
+            return Err(error("buffer is not a JSON value"));
+        }
+        let object =
+            v8::Local::<v8::Object>::try_from(value).map_err(|_| error("unsupported value"))?;
+        if ancestors.contains(&object) {
+            return Err(error("circular object"));
+        }
+        ancestors.push(object);
+        let result = if let Ok(map) = v8::Local::<v8::Map>::try_from(value) {
+            let pairs = map.as_array(scope);
+            let mut out = serde_json::Map::new();
+            for index in (0..pairs.length()).step_by(2) {
+                let key = pairs
+                    .get_index(scope, index)
+                    .ok_or_else(|| error("Map key missing"))?;
+                if !key.is_string() && !key.is_string_object() {
+                    return Err(error("Map key must be a string"));
+                }
+                let key = key
+                    .to_string(scope)
+                    .ok_or_else(|| error("Map key conversion threw"))?
+                    .to_rust_string_lossy(scope);
+                let value = pairs
+                    .get_index(scope, index + 1)
+                    .ok_or_else(|| error("Map value missing"))?;
+                out.insert(key, convert(scope, value, ancestors)?);
+            }
+            Value::Object(out)
+        } else if let Ok(array) = v8::Local::<v8::Array>::try_from(value) {
+            let mut out = Vec::with_capacity(array.length() as usize);
+            for index in 0..array.length() {
+                let value = array
+                    .get_index(scope, index)
+                    .ok_or_else(|| error("array getter threw"))?;
+                out.push(convert(scope, value, ancestors)?);
+            }
+            Value::Array(out)
+        } else {
+            let keys = object
+                .get_own_property_names(
+                    scope,
+                    v8::GetPropertyNamesArgsBuilder::new()
+                        .key_conversion(v8::KeyConversionMode::ConvertToString)
+                        .build(),
+                )
+                .ok_or_else(|| error("property enumeration threw"))?;
+            let mut out = serde_json::Map::new();
+            for index in 0..keys.length() {
+                let key = keys
+                    .get_index(scope, index)
+                    .ok_or_else(|| error("property key missing"))?;
+                let value = object
+                    .get(scope, key)
+                    .ok_or_else(|| error("property getter threw"))?;
+                if value.is_undefined() {
+                    continue;
+                }
+                let key = key
+                    .to_string(scope)
+                    .ok_or_else(|| error("property key conversion threw"))?
+                    .to_rust_string_lossy(scope);
+                out.insert(key, convert(scope, value, ancestors)?);
+            }
+            Value::Object(out)
+        };
+        ancestors.pop();
+        Ok(result)
+    }
+    convert(scope, value, &mut Vec::new())
+}

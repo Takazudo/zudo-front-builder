@@ -12,6 +12,9 @@ mod modules;
 mod platform;
 mod services;
 mod values;
+mod worker;
+mod worker_modules;
+pub use worker::ModuleHandle;
 
 pub use config::evaluate_config_bundle;
 pub use core::NativeHost;
@@ -24,3 +27,6 @@ mod tests;
 
 #[cfg(test)]
 mod services_tests;
+
+#[cfg(test)]
+mod worker_tests;

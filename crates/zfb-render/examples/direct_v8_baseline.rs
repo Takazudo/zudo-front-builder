@@ -58,9 +58,26 @@ mod baseline {
     #[derive(Deserialize)]
     #[serde(tag = "kind", rename_all = "kebab-case")]
     enum Request {
-        Config { source: String },
-        ModuleProbe { source: Option<String> },
-        Script { source: String, mode: Mode },
+        Config {
+            source: String,
+        },
+        ModuleProbe {
+            source: Option<String>,
+        },
+        Script {
+            source: String,
+            mode: Mode,
+        },
+        Utility {
+            name: String,
+            source: String,
+            #[serde(default)]
+            modules: Vec<ModuleInput>,
+            #[serde(default)]
+            exports: Vec<String>,
+            #[serde(default)]
+            calls: Vec<Value>,
+        },
         Worker(Box<WorkerInput>),
     }
 
@@ -177,8 +194,57 @@ mod baseline {
             }
             Request::ModuleProbe { source } => module_probe(source.as_deref()).await,
             Request::Script { source, mode } => script(&source, mode).await,
+            Request::Utility {
+                name,
+                source,
+                modules,
+                exports,
+                calls,
+            } => utility(&name, &source, modules, exports, calls).await,
             Request::Worker(input) => worker(*input).await,
         }
+    }
+
+    async fn utility(
+        name: &str,
+        source: &str,
+        modules: Vec<ModuleInput>,
+        exports: Vec<String>,
+        calls: Vec<Value>,
+    ) -> Value {
+        let loader = BundleModuleLoader::new();
+        for module in modules {
+            loader.register_module(&module.specifier, &module.source);
+        }
+        let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
+            Ok(host) => host,
+            Err(error) => return failure(error),
+        };
+        let handle = match host.execute_module(name, source).await {
+            Ok(handle) => handle,
+            Err(error) => return host_failure(&mut host, error),
+        };
+        let mut values = serde_json::Map::new();
+        for export in exports {
+            match host.get_export(&handle, &export).await {
+                Ok(value) => {
+                    values.insert(export, value);
+                }
+                Err(error) => return host_failure(&mut host, error),
+            }
+        }
+        let mut results = Vec::new();
+        for props in calls {
+            match host.call_default(&handle, props).await {
+                Ok(value) => results.push(value),
+                Err(error) => return host_failure(&mut host, error),
+            }
+        }
+        success(json!({
+            "exports": values,
+            "calls": results,
+            "console": host.drain_console_logs(),
+        }))
     }
 
     async fn script(source: &str, mode: Mode) -> Value {

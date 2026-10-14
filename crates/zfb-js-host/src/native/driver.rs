@@ -24,7 +24,7 @@ impl NativeHost {
         Self::with_services(services::Services::new(config, entropy))
     }
 
-    fn with_services(services: services::Services) -> Result<Self, NativeError> {
+    pub(super) fn with_services(services: services::Services) -> Result<Self, NativeError> {
         let config = services.config;
         let mut host = Self::new_inner(crate::shims::WEB_POLYFILLS_SRC, Some(services))?;
         let mut random = [0u8; 32];
@@ -157,7 +157,7 @@ impl NativeHost {
                     }
                 }
             }
-            let made_progress = !ready.is_empty();
+            let mut made_progress = !ready.is_empty();
             // No state borrow survives a V8 settlement: promise hooks and getters
             // are permitted to call the fixed native bridge recursively.
             {
@@ -184,6 +184,7 @@ impl NativeHost {
                         }
                     }
                 }
+                made_progress |= super::worker_modules::poll_imports(scope);
                 scope.perform_microtask_checkpoint();
             }
             let (pending, new_operations) = state
@@ -193,7 +194,7 @@ impl NativeHost {
                     (state.pending.len(), state.next_id != polled_through)
                 })
                 .unwrap_or_default();
-            if made_progress || new_operations {
+            if made_progress || new_operations || self.ready_module_imports() {
                 continue;
             }
             let (failure, rejection) = {

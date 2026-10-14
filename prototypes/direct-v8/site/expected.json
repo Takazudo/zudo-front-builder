@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "note": "Authored independent expectations. No generated output or host result has populated these values.",
+  "routes": [
+    {
+      "request": {
+        "url": "http://zfb.local/"
+      },
+      "expected": {
+        "status": 200,
+        "html": {
+          "contains": [
+            "data-v8-fixture=\"home\"",
+            "data-zfb-island=\"Counter\"",
+            "CSS module marker"
+          ],
+          "text": [
+            {
+              "selector": "h1",
+              "equals": "Direct V8 fixture"
+            },
+            {
+              "selector": "[data-zfb-island=\"Counter\"] button",
+              "equals": "Count: 0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "url": "http://zfb.local/posts/hello"
+      },
+      "expected": {
+        "status": 200,
+        "html": {
+          "contains": [
+            "data-v8-fixture=\"post\"",
+            "Frozen MDX post",
+            "MDX content marker",
+            "owned MDX pipeline"
+          ],
+          "excludes": ["data-zfb-content-fallback"],
+          "text": [
+            {
+              "selector": "[data-v8-fixture=\"mdx-expression\"]",
+              "equals": "42"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "url": "http://zfb.local/posts/missing"
+      },
+      "expected": {
+        "status": 404
+      }
+    },
+    {
+      "request": {
+        "url": "http://zfb.local/__paths__/%2Fposts%2F%3Aslug"
+      },
+      "expected": {
+        "status": 200,
+        "json_length": 1,
+        "json_assertions": [
+          {
+            "pointer": "/0/params/slug",
+            "equals": "hello"
+          },
+          {
+            "pointer": "/0/props/post/data/title",
+            "equals": "Frozen MDX post"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "url": "http://zfb.local/wasm"
+      },
+      "expected": {
+        "status": 200,
+        "html": {
+          "contains": ["data-v8-fixture=\"wasm-answer\""],
+          "text": [
+            {
+              "selector": "[data-v8-fixture=\"wasm-answer\"]",
+              "equals": "Wasm answer: 42"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "url": "http://zfb.local/bytes.bin"
+      },
+      "expected": {
+        "status": 200,
+        "headers": [
+          ["content-type", "application/octet-stream"],
+          ["set-cookie", "first=1; Path=/"],
+          ["set-cookie", "second=2; Path=/"],
+          ["x-fixture", "left, right"]
+        ],
+        "body": [0, 1, 127, 128, 255]
+      }
+    }
+  ],
+  "chromium": {
+    "url": "/",
+    "initial": {
+      "selector": "[data-zfb-island=\"Counter\"] button",
+      "text": "Count: 0"
+    },
+    "interaction": {
+      "action": "click",
+      "selector": "[data-zfb-island=\"Counter\"] button",
+      "expected_text": "Count: 1"
+    },
+    "css": {
+      "selector": "[data-v8-fixture=\"css-module\"]",
+      "property": "color",
+      "equals": "rgb(12, 34, 56)"
+    },
+    "page_errors": [],
+    "console_errors": []
+  }
+}

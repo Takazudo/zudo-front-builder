@@ -33,18 +33,36 @@ pub(super) fn exception_text(
     let Some(exception) = exception else {
         return "V8 returned no value or exception".into();
     };
-    // V8's Error.stack includes authored source URLs/line/column. Capture it
-    // before crossing into Rust rather than retaining exception handles.
+    // Syntax/instantiation errors may have an Error.stack without any frame.
+    // V8's Message retains their original resource, line and column even then.
+    let message = v8::Exception::create_message(scope, exception);
+    let resource = message
+        .get_script_resource_name(scope)
+        .map(|name| name.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    let line = message.get_line_number(scope);
+    // V8 encodes its -1 no-source sentinel as usize::MAX in this API.
+    let column = message.get_start_column().checked_add(1);
+    let mut text = None;
     if let Ok(object) = v8::Local::<v8::Object>::try_from(exception) {
         if let Some(key) = v8::String::new(scope, "stack") {
             if let Some(stack) = object.get(scope, key.into()) {
                 if stack.is_string() {
-                    return stack.to_rust_string_lossy(scope);
+                    text = Some(stack.to_rust_string_lossy(scope));
                 }
             }
         }
     }
-    exception.to_rust_string_lossy(scope)
+    let mut text = text.unwrap_or_else(|| exception.to_rust_string_lossy(scope));
+    if let (Some(line), Some(column)) = (line.filter(|line| *line > 0), column) {
+        if !resource.is_empty()
+            && resource != "undefined"
+            && !text.contains(&format!("{resource}:{line}:"))
+        {
+            text.push_str(&format!("\n    at {resource}:{line}:{column}"));
+        }
+    }
+    text
 }
 
 pub(super) fn throw_error(scope: &mut v8::PinScope, message: &str) {
@@ -73,11 +91,17 @@ pub(super) extern "C" fn uncaught_message(
             .get_script_resource_name(scope)
             .map(|name| name.to_rust_string_lossy(scope))
             .unwrap_or_default();
-        format!(
-            "{text}\n    at {resource}:{}:{}",
-            message.get_line_number(scope).unwrap_or(0),
-            message.get_start_column() + 1
-        )
+        match (
+            message.get_line_number(scope),
+            message.get_start_column().checked_add(1),
+        ) {
+            (Some(line), Some(column))
+                if line > 0 && !resource.is_empty() && resource != "undefined" =>
+            {
+                format!("{text}\n    at {resource}:{line}:{column}")
+            }
+            _ => text,
+        }
     }));
     if let Some(state) = state {
         if let Ok(mut state) = state.try_borrow_mut() {

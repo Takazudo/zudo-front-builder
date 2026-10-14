@@ -39,6 +39,8 @@ pub struct NativeHost {
     pub(super) foreground: std::sync::Arc<platform::ForegroundQueue>,
     foreground_key: usize,
     pub(super) mode_nonce: String,
+    pub(super) bundle_installed: bool,
+    pub(super) last_install_error: Option<String>,
     pub(super) isolate: v8::OwnedIsolate,
     _thread_guard: HostThreadGuard,
 }
@@ -89,6 +91,8 @@ impl NativeHost {
             foreground,
             foreground_key,
             mode_nonce: String::new(),
+            bundle_installed: false,
+            last_install_error: None,
             isolate,
             _thread_guard: thread_guard,
         };
@@ -143,6 +147,7 @@ impl Drop for NativeHost {
             .remove_slot::<Rc<RefCell<modules::ModuleState>>>();
         let mut modules = self.modules.borrow_mut();
         modules.main = None;
+        modules.worker = None;
         modules.dynamic_self_imports.clear();
         modules.unhandled_rejections.clear();
     }

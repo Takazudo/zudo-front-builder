@@ -1,0 +1,121 @@
+{
+  "observer": "normal CLI outer loader (Deno default)",
+  "runner_sha256": "88d35df8bfeea4f48ef38058668fa6c19aefdb05c916054fe6eb0c70617704f7",
+  "requests": [
+    {
+      "name": "object",
+      "source": "export default {};"
+    },
+    {
+      "name": "empty-array",
+      "source": "export default [];"
+    },
+    {
+      "name": "outdir-array",
+      "source": "export default ['array-output'];"
+    },
+    {
+      "name": "wrong-array",
+      "source": "export default [42];"
+    },
+    {
+      "name": "date",
+      "source": "export default new Date('2020-01-02T03:04:05Z');"
+    },
+    {
+      "name": "typed-field",
+      "source": "export default {port:'not-a-port'};"
+    },
+    {
+      "name": "presets",
+      "source": "export default {presets:[{outDir:'preset-output'}],outDir:'user-output'};"
+    }
+  ],
+  "exit_code": 0,
+  "stderr": "",
+  "passed": true,
+  "rows": [
+    {
+      "name": "object",
+      "expected": "dist",
+      "passed": true,
+      "receipt": {
+        "case": "object",
+        "ok": true,
+        "outDir": "dist",
+        "publicDir": "public",
+        "host": null,
+        "port": null
+      }
+    },
+    {
+      "name": "empty-array",
+      "expected": "dist",
+      "passed": true,
+      "receipt": {
+        "case": "empty-array",
+        "ok": true,
+        "outDir": "dist",
+        "publicDir": "public",
+        "host": null,
+        "port": null
+      }
+    },
+    {
+      "name": "outdir-array",
+      "expected": "array-output",
+      "passed": true,
+      "receipt": {
+        "case": "outdir-array",
+        "ok": true,
+        "outDir": "array-output",
+        "publicDir": "public",
+        "host": null,
+        "port": null
+      }
+    },
+    {
+      "name": "wrong-array",
+      "expected": ["[0]", "expected path string"],
+      "passed": true,
+      "receipt": {
+        "case": "wrong-array",
+        "ok": false,
+        "error": "loading <fixture>/zfb.config.ts: <fixture>/zfb.config.ts: failed to parse the default export as zfb config JSON: [0]: invalid type: integer `42`, expected path string\n--- received at [0] ---\n42\n(set ZFB_DEBUG_CONFIG=1 to print the full evaluated config)"
+      }
+    },
+    {
+      "name": "date",
+      "expected": ["expected struct Config"],
+      "passed": true,
+      "receipt": {
+        "case": "date",
+        "ok": false,
+        "error": "loading <fixture>/zfb.config.ts: <fixture>/zfb.config.ts: failed to parse the default export as zfb config JSON: invalid type: string \"2020-01-02T03:04:05.000Z\", expected struct Config\n--- received at . ---\n\"2020-01-02T03:04:05.000Z\"\n(set ZFB_DEBUG_CONFIG=1 to print the full evaluated config)"
+      }
+    },
+    {
+      "name": "typed-field",
+      "expected": ["port:", "expected u16"],
+      "passed": true,
+      "receipt": {
+        "case": "typed-field",
+        "ok": false,
+        "error": "loading <fixture>/zfb.config.ts: <fixture>/zfb.config.ts: failed to parse the default export as zfb config JSON: port: invalid type: string \"not-a-port\", expected u16\n--- received at port ---\n\"not-a-port\"\n(set ZFB_DEBUG_CONFIG=1 to print the full evaluated config)"
+      }
+    },
+    {
+      "name": "presets",
+      "expected": "user-output",
+      "passed": true,
+      "receipt": {
+        "case": "presets",
+        "ok": true,
+        "outDir": "user-output",
+        "publicDir": "public",
+        "host": null,
+        "port": null
+      }
+    }
+  ]
+}

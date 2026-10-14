@@ -16,6 +16,7 @@ pub(super) const NO_BARE_IMPORTS_ERROR: &str =
 #[derive(Default)]
 pub(super) struct ModuleState {
     pub main: Option<v8::Global<v8::Module>>,
+    pub worker: Option<super::worker_modules::WorkerModules>,
     pub main_evaluation_complete: bool,
     pub callback_failures: Vec<String>,
     pub unhandled_rejections: Vec<(v8::Global<v8::Promise>, v8::Global<v8::Value>)>,
@@ -128,11 +129,14 @@ fn resolve_config_import<'s>(
 pub(super) fn dynamic_import<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     _options: v8::Local<'s, v8::Data>,
-    _resource: v8::Local<'s, v8::Value>,
+    resource: v8::Local<'s, v8::Value>,
     specifier: v8::Local<'s, v8::String>,
     _attributes: v8::Local<'s, v8::FixedArray>,
 ) -> Option<v8::Local<'s, v8::Promise>> {
     match catch_unwind(AssertUnwindSafe(|| {
+        if super::worker_modules::enabled(scope) {
+            return super::worker_modules::dynamic(scope, resource, specifier);
+        }
         let resolver = v8::PromiseResolver::new(scope)?;
         let promise = resolver.get_promise(scope);
         if specifier.to_rust_string_lossy(scope) == MAIN_SPECIFIER {
@@ -171,12 +175,16 @@ pub(super) fn dynamic_import<'s>(
 
 pub(super) extern "C" fn initialize_import_meta(
     context: v8::Local<v8::Context>,
-    _module: v8::Local<v8::Module>,
+    module: v8::Local<v8::Module>,
     meta: v8::Local<v8::Object>,
 ) {
     // SAFETY: V8 supplies the currently entered context and module metadata.
     v8::callback_scope!(unsafe scope, context);
     if catch_unwind(AssertUnwindSafe(|| {
+        if super::worker_modules::enabled(scope) {
+            super::worker_modules::meta(scope, module, meta);
+            return;
+        }
         for (key, value) in [
             ("url", MAIN_SPECIFIER),
             ("filename", "/zfb-config-eval/main.mjs"),
