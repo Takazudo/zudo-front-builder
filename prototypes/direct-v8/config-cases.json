@@ -1,0 +1,649 @@
+[
+  {
+    "name": "plain-object",
+    "contracts": ["CFG-01"],
+    "source": "export default { answer: 42, nested: { enabled: true }, title: 'zfb' };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42,
+        "nested": {
+          "enabled": true
+        },
+        "title": "zfb"
+      }
+    }
+  },
+  {
+    "name": "empty-object",
+    "contracts": ["CFG-01"],
+    "source": "export default {};",
+    "expected": {
+      "ok": true,
+      "value": {}
+    }
+  },
+  {
+    "name": "top-level-null",
+    "contracts": ["CFG-01"],
+    "source": "export default null;",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-undefined",
+    "contracts": ["CFG-01"],
+    "source": "export default undefined;",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-number",
+    "contracts": ["CFG-01"],
+    "source": "export default 42;",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-string",
+    "contracts": ["CFG-01"],
+    "source": "export default 'zfb';",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-boolean",
+    "contracts": ["CFG-01"],
+    "source": "export default true;",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-function",
+    "contracts": ["CFG-01"],
+    "source": "export default function () {};",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-async-function",
+    "contracts": ["CFG-01"],
+    "source": "export default async function () {};",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-symbol",
+    "contracts": ["CFG-01"],
+    "source": "export default Symbol('zfb');",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "missing-default",
+    "contracts": ["CFG-01"],
+    "source": "export const answer = 42;",
+    "expected": {
+      "ok": false,
+      "category": "not_a_plain_object",
+      "contains": ["default export must be a plain object"]
+    }
+  },
+  {
+    "name": "top-level-array",
+    "contracts": ["CFG-02"],
+    "source": "export default [1, 'two', { three: true }];",
+    "expected": {
+      "ok": true,
+      "value": [
+        1,
+        "two",
+        {
+          "three": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "array-omission-slots",
+    "contracts": ["CFG-02", "CFG-03"],
+    "source": "export default [undefined, () => {}, Symbol('s'), NaN, Infinity, -Infinity, , -0];",
+    "expected": {
+      "ok": true,
+      "value": [null, null, null, null, null, null, null, 0]
+    }
+  },
+  {
+    "name": "top-level-date",
+    "contracts": ["CFG-02"],
+    "source": "export default new Date('2020-01-02T03:04:05Z');",
+    "expected": {
+      "ok": true,
+      "value": "2020-01-02T03:04:05.000Z"
+    }
+  },
+  {
+    "name": "invalid-date",
+    "contracts": ["CFG-02", "CFG-03"],
+    "source": "export default new Date('invalid');",
+    "expected": {
+      "ok": true,
+      "value": null
+    }
+  },
+  {
+    "name": "nested-date",
+    "contracts": ["CFG-03"],
+    "source": "export default { date: new Date('2020-01-02T03:04:05Z') };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "date": "2020-01-02T03:04:05.000Z"
+      }
+    }
+  },
+  {
+    "name": "omitted-object-fields",
+    "contracts": ["CFG-03"],
+    "source": "export default { keep: 7, fn() {}, undef: undefined, sym: Symbol('s'), [Symbol('key')]: 'hidden', nan: NaN, pos: Infinity, neg: -Infinity };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "keep": 7,
+        "nan": null,
+        "pos": null,
+        "neg": null
+      }
+    }
+  },
+  {
+    "name": "class-instance",
+    "contracts": ["CFG-01", "CFG-03"],
+    "source": "class Config { constructor() { this.answer = 42; } method() {} } export default new Config();",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42
+      }
+    }
+  },
+  {
+    "name": "boxed-number",
+    "contracts": ["CFG-02", "CFG-03"],
+    "source": "export default new Number(7);",
+    "expected": {
+      "ok": true,
+      "value": 7
+    }
+  },
+  {
+    "name": "boxed-string",
+    "contracts": ["CFG-02", "CFG-03"],
+    "source": "export default new String('zfb');",
+    "expected": {
+      "ok": true,
+      "value": "zfb"
+    }
+  },
+  {
+    "name": "boxed-symbol",
+    "contracts": ["CFG-02", "CFG-03"],
+    "source": "export default Object(Symbol('s'));",
+    "expected": {
+      "ok": true,
+      "value": {}
+    }
+  },
+  {
+    "name": "map-and-set",
+    "contracts": ["CFG-03"],
+    "source": "export default { map: new Map([['a', 1]]), set: new Set([1]) };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "map": {},
+        "set": {}
+      }
+    }
+  },
+  {
+    "name": "null-prototype-object",
+    "contracts": ["CFG-01", "CFG-03"],
+    "source": "export default Object.assign(Object.create(null), { answer: 42 });",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42
+      }
+    }
+  },
+  {
+    "name": "promise-default-is-not-awaited",
+    "contracts": ["CFG-01", "CFG-03"],
+    "source": "export default Promise.resolve({ answer: 42 });",
+    "expected": {
+      "ok": true,
+      "value": {}
+    }
+  },
+  {
+    "name": "getter-value",
+    "contracts": ["CFG-03"],
+    "source": "export default { get answer() { return 42; } };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42
+      }
+    }
+  },
+  {
+    "name": "tojson-object",
+    "contracts": ["CFG-03"],
+    "source": "export default { ignored: true, toJSON() { return { answer: 42 }; } };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42
+      }
+    }
+  },
+  {
+    "name": "tojson-scalar",
+    "contracts": ["CFG-03"],
+    "source": "export default { toJSON() { return 'serialized'; } };",
+    "expected": {
+      "ok": true,
+      "value": "serialized"
+    }
+  },
+  {
+    "name": "tojson-null",
+    "contracts": ["CFG-03"],
+    "source": "export default { toJSON() { return null; } };",
+    "expected": {
+      "ok": true,
+      "value": null
+    }
+  },
+  {
+    "name": "nested-bigint",
+    "contracts": ["CFG-03"],
+    "source": "export default { big: 1n };",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify threw", "BigInt"]
+    }
+  },
+  {
+    "name": "boxed-bigint",
+    "contracts": ["CFG-03"],
+    "source": "export default Object(1n);",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify threw", "BigInt"]
+    }
+  },
+  {
+    "name": "circular-object",
+    "contracts": ["CFG-03"],
+    "source": "const cfg = {}; cfg.self = cfg; export default cfg;",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify threw", "circular"]
+    }
+  },
+  {
+    "name": "throwing-getter",
+    "contracts": ["CFG-03"],
+    "source": "export default { get answer() { throw new Error('getter-marker'); } };",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify threw", "getter-marker"]
+    }
+  },
+  {
+    "name": "throwing-tojson",
+    "contracts": ["CFG-03"],
+    "source": "export default { toJSON() { throw new Error('tojson-marker'); } };",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify threw", "tojson-marker"]
+    }
+  },
+  {
+    "name": "tojson-undefined",
+    "contracts": ["CFG-03"],
+    "source": "export default { toJSON() { return undefined; } };",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify returned a non-string value"]
+    }
+  },
+  {
+    "name": "tojson-symbol",
+    "contracts": ["CFG-03"],
+    "source": "export default { toJSON() { return Symbol('s'); } };",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify returned a non-string value"]
+    }
+  },
+  {
+    "name": "mutable-stringify-replacement",
+    "contracts": ["CFG-04"],
+    "source": "JSON.stringify = function(value) { return '{\"replacement\":42}'; }; export default { original: true };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "replacement": 42
+      }
+    }
+  },
+  {
+    "name": "stringify-json-receiver",
+    "contracts": ["CFG-04"],
+    "source": "JSON.stringify = function(value) { return this === JSON ? '42' : '0'; }; export default {};",
+    "expected": {
+      "ok": true,
+      "value": 42
+    }
+  },
+  {
+    "name": "stringify-not-callable",
+    "contracts": ["CFG-04"],
+    "source": "JSON.stringify = 42; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify is not a function"]
+    }
+  },
+  {
+    "name": "json-not-object",
+    "contracts": ["CFG-04"],
+    "source": "globalThis.JSON = null; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON is not an object"]
+    }
+  },
+  {
+    "name": "stringify-throw",
+    "contracts": ["CFG-04"],
+    "source": "JSON.stringify = () => { throw new Error('stringify-marker'); }; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify threw", "stringify-marker"]
+    }
+  },
+  {
+    "name": "stringify-non-string",
+    "contracts": ["CFG-04"],
+    "source": "JSON.stringify = () => ({ answer: 42 }); export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["JSON.stringify returned a non-string value"]
+    }
+  },
+  {
+    "name": "stringify-invalid-json",
+    "contracts": ["CFG-04"],
+    "source": "JSON.stringify = () => 'not-json'; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["serde_json parsing of stringify result failed"]
+    }
+  },
+  {
+    "name": "web-bootstrap-and-no-node-globals",
+    "contracts": ["CFG-05"],
+    "source": "export default { pathname: new URL('https://example.test/a?x=1').pathname, textEncoder: typeof TextEncoder, textDecoder: typeof TextDecoder, process: typeof process, Buffer: typeof Buffer, bytes: Array.from(new TextEncoder().encode('zfb')) };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "pathname": "/a",
+        "textEncoder": "function",
+        "textDecoder": "function",
+        "process": "undefined",
+        "Buffer": "undefined",
+        "bytes": [122, 102, 98]
+      }
+    }
+  },
+  {
+    "name": "remaining-static-import-relative",
+    "contracts": ["CFG-06"],
+    "source": "import \"./other.mjs\"; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "bare_import_rejected",
+      "contains": ["bare imports and node:* specifiers are not available"]
+    }
+  },
+  {
+    "name": "remaining-static-import-bare",
+    "contracts": ["CFG-06"],
+    "source": "import \"not-a-real-package\"; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "bare_import_rejected",
+      "contains": ["bare imports and node:* specifiers are not available"]
+    }
+  },
+  {
+    "name": "remaining-static-import-node",
+    "contracts": ["CFG-06"],
+    "source": "import \"node:fs\"; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "bare_import_rejected",
+      "contains": ["bare imports and node:* specifiers are not available"]
+    }
+  },
+  {
+    "name": "remaining-static-import-absolute-file",
+    "contracts": ["CFG-06"],
+    "source": "import \"file:///tmp/config-secret.mjs\"; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "bare_import_rejected",
+      "contains": ["bare imports and node:* specifiers are not available"]
+    }
+  },
+  {
+    "name": "remaining-static-import-remote",
+    "contracts": ["CFG-06"],
+    "source": "import \"https://example.test/module.mjs\"; export default {};",
+    "expected": {
+      "ok": false,
+      "category": "bare_import_rejected",
+      "contains": ["bare imports and node:* specifiers are not available"]
+    }
+  },
+  {
+    "name": "remaining-dynamic-import",
+    "contracts": ["CFG-06", "CFG-07"],
+    "source": "await import('./other.mjs'); export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["bare imports and node:* specifiers are not available"]
+    }
+  },
+  {
+    "name": "caught-dynamic-import-error",
+    "contracts": ["CFG-06"],
+    "source": "let denied = false; try { await import('./other.mjs'); } catch (error) { denied = error.message.includes('bare imports and node:* specifiers are not available'); } export default { denied };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "denied": true
+      }
+    }
+  },
+  {
+    "name": "top-level-throw",
+    "contracts": ["CFG-07"],
+    "source": "throw new Error('top-level-marker'); export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["top-level-marker"]
+    }
+  },
+  {
+    "name": "top-level-await-rejection",
+    "contracts": ["CFG-07"],
+    "source": "await Promise.reject(new Error('await-marker')); export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["await-marker"]
+    }
+  },
+  {
+    "name": "syntax-error",
+    "contracts": ["CFG-07"],
+    "source": "export default { ;",
+    "expected": {
+      "ok": false,
+      "category": "module_load",
+      "contains": ["SyntaxError"]
+    }
+  },
+  {
+    "name": "top-level-await-resolved",
+    "contracts": ["CFG-07"],
+    "source": "const answer = await Promise.resolve(42); export default { answer };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42
+      }
+    }
+  },
+  {
+    "name": "top-level-await-microtasks",
+    "contracts": ["CFG-07"],
+    "source": "let answer = 0; await Promise.resolve().then(() => { answer = 42; }); export default { answer };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "answer": 42
+      }
+    }
+  },
+  {
+    "name": "intl-bootstrap",
+    "contracts": ["NATIVE-01", "CFG-07"],
+    "source": "export default { intl: new Intl.DateTimeFormat('en-US',{timeZone:'UTC'}).format(new Date('2020-01-02T03:04:05Z')), number: new Intl.NumberFormat('ja-JP').format(1234567), date: new Date('2020-01-02T03:04:05Z').toISOString(), locale: 'ä'.localeCompare('z','de') };",
+    "expected": {
+      "ok": true,
+      "value": {
+        "intl": "1/2/2020",
+        "number": "1,234,567",
+        "date": "2020-01-02T03:04:05.000Z",
+        "locale": -1
+      }
+    }
+  },
+  {
+    "name": "dynamic-self-chain",
+    "contracts": ["CFG-06", "CFG-07"],
+    "source": "const value={done:false}; import('file:///zfb-config-eval/main.mjs').then(()=>import('file:///zfb-config-eval/main.mjs')).then(()=>value.done=true); export default value;",
+    "expected": {
+      "ok": true,
+      "value": {
+        "done": true
+      }
+    }
+  },
+  {
+    "name": "microtask-throw",
+    "contracts": ["BOOT-02", "CFG-07"],
+    "source": "queueMicrotask(()=>{throw new Error('microtask-boom')}); export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["microtask-boom", "file:///zfb-config-eval/main.mjs:1:27"]
+    }
+  },
+  {
+    "name": "unhandled-rejection",
+    "contracts": ["CFG-07"],
+    "source": "Promise.reject(new Error('unhandled-boom')); export default {};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["unhandled-boom", "file:///zfb-config-eval/main.mjs:1:16"]
+    }
+  },
+  {
+    "name": "import-meta-resolve-coercion",
+    "contracts": ["CFG-06"],
+    "source": "export default {boxed:import.meta.resolve(new String('file:///zfb-config-eval/main.mjs'))};",
+    "expected": {
+      "ok": true,
+      "value": {
+        "boxed": "file:///zfb-config-eval/main.mjs"
+      }
+    }
+  },
+  {
+    "name": "import-meta-resolve-arity",
+    "contracts": ["CFG-06"],
+    "source": "export default {url:import.meta.resolve('file:///zfb-config-eval/main.mjs','ignored')};",
+    "expected": {
+      "ok": false,
+      "category": "evaluation",
+      "contains": ["TypeError: Invalid arguments"]
+    }
+  },
+  {
+    "name": "file-url-shim-normalization",
+    "contracts": ["BOOT-03", "CFG-06"],
+    "source": "export default {url:String(new URL('file:///zfb-config-eval/main.mjs'))};",
+    "expected": {
+      "ok": true,
+      "value": {
+        "url": "file:/zfb-config-eval/main.mjs"
+      }
+    }
+  }
+]

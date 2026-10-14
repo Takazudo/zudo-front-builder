@@ -1,0 +1,122 @@
+//! Native process tests. Baseline comparison runs in a separate executable.
+use super::{bootstrap, evaluate_config_bundle, NativeError, NativeHost};
+
+#[test]
+fn bootstrap_installation_failure_is_distinct_from_polyfill_evaluation() {
+    let mut host = NativeHost::new_config().expect("native host starts");
+    host.execute_script(
+        "zfb:bootstrap_failure_fixture",
+        "Object.defineProperty(globalThis, 'queueMicrotask', {value: 1, writable: false, configurable: false});",
+    ).expect("freeze bootstrap property");
+    v8::scope!(let scope, &mut host.isolate);
+    let context = v8::Local::new(scope, &host.context);
+    let scope = &mut v8::ContextScope::new(scope, context);
+    assert_eq!(
+        bootstrap::install(scope).unwrap_err(),
+        "installing queueMicrotask failed"
+    );
+}
+
+#[test]
+fn polyfill_compilation_and_execution_failures_name_the_bootstrap_stage() {
+    for (source, expected) in [
+        ("function {", "SyntaxError"),
+        ("throw new Error('polyfill-marker')", "polyfill-marker"),
+    ] {
+        let error = NativeHost::new_config_with_polyfills(source)
+            .err()
+            .expect("polyfill fixture must fail");
+        assert!(matches!(error, NativeError::Evaluation(_)));
+        assert!(error
+            .to_string()
+            .contains("config-eval polyfill init failed"));
+        assert!(error.to_string().contains(expected));
+    }
+}
+
+#[test]
+fn module_compilation_and_stringification_failures_keep_distinct_categories() {
+    let syntax = evaluate_config_bundle("export default {;").unwrap_err();
+    assert!(matches!(syntax, NativeError::ModuleLoad(_)));
+    let stringify = evaluate_config_bundle(
+        "export default {toJSON() { throw new Error('stringify-marker'); }};",
+    )
+    .unwrap_err();
+    assert!(matches!(stringify, NativeError::Evaluation(_)));
+    assert!(stringify.to_string().contains("JSON.stringify threw"));
+    assert!(stringify.to_string().contains("stringify-marker"));
+}
+
+#[test]
+fn microtask_failures_are_reported_and_handled_rejections_are_allowed() {
+    let microtask = evaluate_config_bundle(
+        "queueMicrotask(() => {throw new Error('microtask-marker')}); export default {};",
+    )
+    .unwrap_err();
+    assert!(microtask.to_string().contains("microtask-marker"));
+    let unhandled =
+        evaluate_config_bundle("Promise.reject(new Error('rejection-marker')); export default {};")
+            .unwrap_err();
+    assert!(unhandled.to_string().contains("rejection-marker"));
+    assert_eq!(
+        evaluate_config_bundle(
+            "Promise.reject(new Error('handled')).catch(() => {}); export default {ok:true};"
+        )
+        .unwrap(),
+        serde_json::json!({"ok": true})
+    );
+}
+
+#[test]
+fn successive_dynamic_self_imports_finish_before_config_serialization() {
+    let source = "const value={done:false}; import('file:///zfb-config-eval/main.mjs').then(()=>import('file:///zfb-config-eval/main.mjs')).then(()=>value.done=true); export default value;";
+    assert_eq!(
+        evaluate_config_bundle(source).unwrap(),
+        serde_json::json!({"done":true})
+    );
+}
+
+#[test]
+fn unresolved_work_is_explicit_and_a_fresh_isolate_recovers() {
+    let error =
+        evaluate_config_bundle("await new Promise(() => {}); export default {};").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("unresolved with no pending native work"));
+    assert_eq!(
+        evaluate_config_bundle("export default {answer:42};").unwrap(),
+        serde_json::json!({"answer":42})
+    );
+}
+
+#[test]
+fn import_meta_resolve_coerces_to_a_string_and_rejects_extra_arguments() {
+    assert_eq!(evaluate_config_bundle("const result=import.meta.resolve(new String(import.meta.url)); export default {type:typeof result, value:result};").unwrap(), serde_json::json!({"type":"string","value":"file:///zfb-config-eval/main.mjs"}));
+    assert_eq!(evaluate_config_bundle("let error; try { import.meta.resolve(import.meta.url, 'extra'); } catch (e) {error=e.name+'|'+e.message;} export default {error};").unwrap(), serde_json::json!({"error":"TypeError|Invalid arguments"}));
+}
+
+#[test]
+fn overlapping_hosts_are_rejected_without_corrupting_the_live_isolate() {
+    let mut first = NativeHost::new_config().expect("first host");
+    let error = NativeHost::new_config()
+        .err()
+        .expect("second live host denied");
+    assert!(error.to_string().contains("already alive on this thread"));
+    assert_eq!(
+        first
+            .evaluate_config("export default {alive:true};")
+            .unwrap(),
+        serde_json::json!({"alive":true})
+    );
+    drop(first);
+    assert_eq!(
+        evaluate_config_bundle("export default {fresh:true};").unwrap(),
+        serde_json::json!({"fresh":true})
+    );
+}
+
+#[test]
+fn baseline_icu_data_supports_intl_date_formatting() {
+    let value = evaluate_config_bundle("export default {date: new Intl.DateTimeFormat('en-US', {timeZone:'UTC'}).format(new Date('2020-01-02T03:04:05Z'))};").unwrap();
+    assert_eq!(value, serde_json::json!({"date":"1/2/2020"}));
+}
