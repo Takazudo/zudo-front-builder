@@ -101,13 +101,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          unset ZFB_ESBUILD_BIN
           cargo build --locked -p zfb --no-default-features 2>&1 | tee target/plugin-alias-evidence/no-v8-build.log
           cargo tree --locked -p zfb --no-default-features > target/plugin-alias-evidence/default-dependencies.txt
           if grep -q rolldown target/plugin-alias-evidence/default-dependencies.txt; then exit 1; fi
           node --test docs/scripts/__tests__/wind-preview-assets.test.mjs 2>&1 | tee target/plugin-alias-evidence/wind-tests.log
           node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" 2>&1 | tee target/plugin-alias-evidence/wind-generation.log
           node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" --check
-          node docs/scripts/generate-wind-reference.mjs --check
+          node docs/scripts/generate-wind-reference.mjs --locale en --check
           node docs/scripts/generate-wind-reference.mjs --locale ja --check
           python3 - <<'PY'
           import json, subprocess
