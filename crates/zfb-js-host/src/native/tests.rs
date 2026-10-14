@@ -1,5 +1,13 @@
 //! Native process tests. Baseline comparison runs in a separate executable.
-use super::{bootstrap, evaluate_config_bundle, NativeError, NativeHost};
+use super::{bootstrap, NativeError, NativeHost};
+
+fn evaluate_config_bundle(source: &str) -> Result<serde_json::Value, NativeError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(super::evaluate_config_bundle(source))
+}
 
 #[test]
 fn bootstrap_installation_failure_is_distinct_from_polyfill_evaluation() {
@@ -103,8 +111,11 @@ fn overlapping_hosts_are_rejected_without_corrupting_the_live_isolate() {
         .expect("second live host denied");
     assert!(error.to_string().contains("already alive on this thread"));
     assert_eq!(
-        first
-            .evaluate_config("export default {alive:true};")
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(first.evaluate_config("export default {alive:true};"))
             .unwrap(),
         serde_json::json!({"alive":true})
     );
@@ -119,4 +130,13 @@ fn overlapping_hosts_are_rejected_without_corrupting_the_live_isolate() {
 fn baseline_icu_data_supports_intl_date_formatting() {
     let value = evaluate_config_bundle("export default {date: new Intl.DateTimeFormat('en-US', {timeZone:'UTC'}).format(new Date('2020-01-02T03:04:05Z'))};").unwrap();
     assert_eq!(value, serde_json::json!({"date":"1/2/2020"}));
+}
+
+#[test]
+fn configuration_top_level_await_drives_native_wasm_tasks() {
+    let source = "const bytes=new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,10,1,6,97,110,115,119,101,114,0,0,10,6,1,4,0,65,42,11]);const m=await WebAssembly.compile(bytes);export default {answer:new WebAssembly.Instance(m).exports.answer()};";
+    assert_eq!(
+        evaluate_config_bundle(source).unwrap(),
+        serde_json::json!({"answer":42})
+    );
 }

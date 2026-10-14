@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::diagnostics::{exception_text, NativeError};
-use super::{bootstrap, diagnostics, modules};
+use super::{bootstrap, bridge, diagnostics, modules, platform, services};
 
 thread_local! {
     static HOST_ACTIVE: Cell<bool> = const { Cell::new(false) };
@@ -35,6 +35,10 @@ pub struct NativeHost {
     // before OwnedIsolate, including on every early-return/error path.
     pub(super) context: v8::Global<v8::Context>,
     pub(super) modules: Rc<RefCell<modules::ModuleState>>,
+    pub(super) services: Option<Rc<RefCell<services::Services>>>,
+    pub(super) foreground: std::sync::Arc<platform::ForegroundQueue>,
+    foreground_key: usize,
+    pub(super) mode_nonce: String,
     pub(super) isolate: v8::OwnedIsolate,
     _thread_guard: HostThreadGuard,
 }
@@ -45,9 +49,21 @@ impl NativeHost {
     }
 
     pub(super) fn new_config_with_polyfills(polyfills: &str) -> Result<Self, NativeError> {
+        Self::new_inner(polyfills, None)
+    }
+
+    pub(super) fn new_inner(
+        polyfills: &str,
+        services: Option<services::Services>,
+    ) -> Result<Self, NativeError> {
         let thread_guard = HostThreadGuard::acquire()?;
         bootstrap::initialize().map_err(NativeError::Bootstrap)?;
         let mut isolate = v8::Isolate::new(Default::default());
+        let (foreground_key, foreground) = platform::ForegroundQueue::register(&isolate);
+        let services = services.map(|state| Rc::new(RefCell::new(state)));
+        if let Some(state) = &services {
+            isolate.set_slot(state.clone());
+        }
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
         isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 10);
         isolate.add_message_listener(diagnostics::uncaught_message);
@@ -61,11 +77,18 @@ impl NativeHost {
             let context = v8::Context::new(scope, Default::default());
             let scope = &mut v8::ContextScope::new(scope, context);
             bootstrap::install(scope).map_err(NativeError::Bootstrap)?;
+            if services.is_some() {
+                bridge::install(scope).map_err(NativeError::Bootstrap)?;
+            }
             v8::Global::new(scope, context)
         };
         let mut host = Self {
             context,
             modules,
+            services,
+            foreground,
+            foreground_key,
+            mode_nonce: String::new(),
             isolate,
             _thread_guard: thread_guard,
         };
@@ -104,6 +127,18 @@ impl Drop for NativeHost {
     fn drop(&mut self) {
         // Callbacks cannot outlive a synchronous V8 entry. Clear module roots
         // and remove the callback state's duplicate Rc while the isolate lives.
+        self.foreground.close(self.foreground_key);
+        self.isolate
+            .remove_slot::<Rc<RefCell<services::Services>>>();
+        if let Some(services) = &self.services {
+            let mut state = services.borrow_mut();
+            // Transports drop before persistent resolvers and before the isolate.
+            for operation in state.pending.drain(..) {
+                drop(operation.transport);
+                drop(operation.resolver);
+            }
+            state.cancellations.clear();
+        }
         self.isolate
             .remove_slot::<Rc<RefCell<modules::ModuleState>>>();
         let mut modules = self.modules.borrow_mut();

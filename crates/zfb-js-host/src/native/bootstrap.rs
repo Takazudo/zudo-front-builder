@@ -25,7 +25,9 @@ pub(super) fn initialize() -> Result<(), String> {
                 "--harmony-temporal --js-float16array --js-explicit-resource-management ",
                 "--js-source-phase-imports"
             ));
-            let platform = v8::new_default_platform(0, false).make_shared();
+            let platform =
+                v8::new_custom_platform(0, false, cfg!(test), super::platform::NativePlatform)
+                    .make_shared();
             v8::V8::initialize_platform(platform);
             v8::V8::initialize();
             Ok(())

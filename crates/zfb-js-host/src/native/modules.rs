@@ -23,10 +23,23 @@ pub(super) struct ModuleState {
 }
 
 impl NativeHost {
-    pub(super) fn evaluate_module(
+    pub(super) async fn evaluate_module(
         &mut self,
         source: &str,
     ) -> Result<v8::Global<v8::Module>, NativeError> {
+        let (module, promise) = self.start_module(source)?;
+        self.drive(promise.clone()).await?;
+        self.complete_main_evaluation(&module)?;
+        // Resolve deferred exact-main imports, then drain their finite continuations
+        // through the same driver used by native HTTP and V8 foreground work.
+        self.drive(promise).await?;
+        Ok(module)
+    }
+
+    fn start_module(
+        &mut self,
+        source: &str,
+    ) -> Result<(v8::Global<v8::Module>, v8::Global<v8::Promise>), NativeError> {
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, &self.context);
         let scope = &mut v8::ContextScope::new(scope, context);
@@ -55,21 +68,18 @@ impl NativeHost {
         };
         let promise = v8::Local::<v8::Promise>::try_from(value)
             .map_err(|_| NativeError::Evaluation("module evaluation returned no promise".into()))?;
-        // Explicit checkpoints drain finite chains completely; no socket work
-        // exists in this config core. Never busy-poll an unresolved promise.
-        tc.perform_microtask_checkpoint();
-        match promise.state() {
-            v8::PromiseState::Rejected => {
-                let exception = promise.result(tc);
-                return Err(NativeError::Evaluation(exception_text(tc, Some(exception))));
-            }
-            v8::PromiseState::Pending => {
-                return Err(NativeError::Evaluation(
-                    "module evaluation promise is unresolved with no pending native work (direct-V8 prototype limitation)".into(),
-                ));
-            }
-            v8::PromiseState::Fulfilled => {}
-        }
+        promise.mark_as_handled();
+        Ok((v8::Global::new(tc, module), v8::Global::new(tc, promise)))
+    }
+
+    fn complete_main_evaluation(
+        &mut self,
+        module: &v8::Global<v8::Module>,
+    ) -> Result<(), NativeError> {
+        v8::scope!(let scope, &mut self.isolate);
+        let context = v8::Local::new(scope, &self.context);
+        let tc = &mut v8::ContextScope::new(scope, context);
+        let module = v8::Local::new(tc, module);
         // A dynamic import of the exact main URL completes only once that
         // module's evaluation has fulfilled. An awaited cyclic self-import
         // stays unresolved and takes the explicit limitation above.
@@ -83,22 +93,7 @@ impl NativeHost {
             let namespace = module.get_module_namespace();
             resolver.resolve(tc, namespace);
         }
-        tc.perform_microtask_checkpoint();
-        let (failure, rejection) = {
-            let mut state = self.modules.borrow_mut();
-            (
-                state.callback_failures.pop(),
-                state.unhandled_rejections.pop(),
-            )
-        };
-        if let Some(failure) = failure {
-            return Err(NativeError::Evaluation(failure));
-        }
-        if let Some((_promise, reason)) = rejection {
-            let reason = v8::Local::new(tc, reason);
-            return Err(NativeError::Evaluation(exception_text(tc, Some(reason))));
-        }
-        Ok(v8::Global::new(tc, module))
+        Ok(())
     }
 }
 

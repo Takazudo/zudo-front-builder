@@ -91,13 +91,15 @@ Baseline module characterization observed:
 - GitHub CLI API reads returned Forbidden, including the scoped escalated
   retry. Authorized connector reads/writes and git transport work; no denied API
   operation was bypassed or repeatedly retried.
-- Native config (#4237), async/cancellation (#4238), module/Worker (#4239),
+- At the extraction checkpoint, native config (#4237), async/cancellation (#4238), module/Worker (#4239),
   generated bundles, source maps, graph isolation and bounded hydration (#4240)
-  are **pending**, not passed by the extraction tests or baseline CI.
+  were **pending**, not passed by the extraction tests or baseline CI. Later
+  sections record the subsequent gates; module/Worker and generated evidence
+  remain pending at the async checkpoint.
 - Darwin arm64/x64, Linux arm64 and Windows x64 candidate execution are not run.
   Existing repository CI platforms do not imply candidate platform evidence.
 
-## Native config gate work in progress (#4237)
+## Native config gate (#4237)
 
 **Corrected gate passed:** the 18 shared/native unit tests pass, and both
 independent runners pass **62/62** literal config cases. The guarded corrected
@@ -152,3 +154,87 @@ Additional probes found real failures outside that initial corpus:
   promise rejection, preserving authored message/location. Both rejected an
   unresolved top-level await promptly; no watchdog kill was necessary. Candidate
   currently states the unsupported no-pending-work condition explicitly.
+
+## Async native gate (#4238)
+
+The final reviewed native suite passes **29 tests** (9 shared plus 20 native),
+including the async config extension. Guard PASS: 3 seconds for tests and the
+example relink. The same driver handles V8 foreground tasks, module promises,
+dispatch promises and owned Rust transport futures. No additional Cargo package
+was added. Config now also awaits real `WebAssembly.compile` platform work;
+the expanded fixed config corpus passes **63/63 in each runner**.
+
+`service-cases.json` passes **27/27 in each runner**. The deterministic
+`check-http.py` differential harness passes **8/8 paired cases**: parallel
+request handshake plus sibling microtask progress, binary/duplicate headers,
+303 and 307 method/body behavior, preabort, build denial, raw-callback denial
+and forged-mode denial. It records identical source bytes, bound endpoint and
+server request observations for each pair; request counters do not masquerade
+as socket-closure evidence. See `evidence/services-gate.json` and
+`evidence/http-gate.json` for actual receipts/hashes.
+
+The native temporal tests separately prove:
+
+- An abort followed immediately by a completed dispatch closes the partially
+  read loopback socket while the same host remains alive and idle. The server's
+  closure semaphore completes before any subsequent host operation or drop.
+- Orphan A retains its captured two-request redirect budget while B receives
+  a fresh budget and completes two requests. The third A hop never opens.
+- Caller abort reason, host deadline versus a later caller deadline, narrower
+  caller timeout, late abort, settled/unknown cancel and cancellation before
+  first native poll preserve first completion and leave no pending entry.
+- Typed request bytes are copied before authored mutation; response bytes and
+  duplicate headers are copied out. Small configured request/response caps and
+  timeout fail with real errors. OS entropy invocation is instrumented; injected
+  entropy failure leaves the original view untouched, with no weak fallback.
+- Async Wasm foreground wakeups complete. Thirty-two unfinished-Wasm
+  create/drop cycles followed by a fresh awaited compile succeed.
+
+Independent lifetime/authority review found and corrected a stale foreground
+queue snapshot before liveness checks; the final order snapshots background
+work before rechecking the queued work. Platform callback boundaries contain
+Rust panics, including a custom executor Waker panic. Review found no remaining
+concrete blocker. The exact pinned V8 API routes platform callbacks by raw
+isolate address, as does the current Deno baseline. Pinned Wasm teardown
+cancels foreground tasks and waits for background work; the finite tests prove
+that reachable path, not a generic generation-isolation or catastrophic
+recovery guarantee. CPU-bound interruption and hard heap isolation remain
+outside the existing contract.
+
+An additional raw throwing-getter diagnostic is retained in
+`raw-getter-negative.json`. The baseline aborted with a non-unwinding
+`serde_v8` panic; the candidate returned a transport-specification error and
+continued to return 42. This is not in the passing differential corpus and does
+not redefine incidental raw-op inputs as a supported application API.
+
+## Normal graph integration checks so far
+
+- Normal `cargo build --locked --workspace --all-targets`: PASS, 103 seconds.
+  Initial attempt failed downloading pinned esbuild after five retries. The
+  documented override was supplied with npm's exact 0.25.12 Linux binary,
+  independently checked against the repository's SHA-256
+  `bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014`.
+- `cargo check --locked --no-default-features -p zfb --tests`: PASS, 74 seconds.
+- Existing `scripts/assert-zfb-md-wasm-graph.sh`: all seven surfaces and both
+  compiler boundaries passed. Real default md-Wasm `cargo rustc --locked -p
+  zfb-md-wasm --target wasm32-unknown-unknown --lib --crate-type cdylib` linked
+  successfully in 23 seconds.
+- Isolated `cargo rustc --locked -p zfb-css-node --lib --no-default-features
+  --crate-type cdylib`: PASS, 75 seconds. Its resulting library was copied to an
+  ignored `.node` path and `node scripts/smoke-css-node.mjs` passed a real
+  Linux x64 load and CSS compilation.
+- At pushed checkpoint `4c6e619df3f185c377ca5edc19afc0f5ab7fdaff`, existing CI
+  binary/scaffold/built-site verification passed; showcase preview and
+  production deploy jobs explicitly skipped in run `38536741157`. No candidate
+  platform fleet was activated. CI no-V8 and seven md-Wasm rows passed.
+- That checkpoint's health/docs jobs failed stale generated fingerprints and
+  Cargo-lock provenance assertions. A reviewed Wind-only closure-preserving
+  refresh and genuine preview manifest regeneration are being reconciled.
+  Existing island-size policy permits only additive lock records, while this
+  extraction changes the existing render record. No size ceiling, historical
+  provenance or unrelated #4234 policy was changed to silence those failures.
+
+Playwright's pinned browser download returned `403 Domain forbidden`, including
+the scoped escalated retry. The preinstalled local Chromium is
+`154.0.8037.57` (Debian 13); the bounded hydration run will record this actual
+browser rather than claim the unavailable downloaded revision.

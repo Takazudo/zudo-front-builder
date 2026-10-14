@@ -24,8 +24,9 @@ def category(message):
     return "unknown"
 
 
-def run(binary, engine, cases):
-    wire = "".join(json.dumps({"kind": "config", "source": c["source"]}) + "\n" for c in cases)
+def run(binary, engine, cases, kind="config"):
+    wire = "".join(json.dumps({"kind": kind, "source": c["source"],
+                              **({"mode": c["mode"]} if "mode" in c else {})}) + "\n" for c in cases)
     try:
         proc = subprocess.run([str(binary.resolve())], input=wire, text=True,
                               capture_output=True, timeout=60, check=False)
@@ -47,9 +48,9 @@ def run(binary, engine, cases):
                 failures.append("literal value differs")
         else:
             error = receipt.get("error", "")
-            if category(error) != expected["category"]:
+            if "category" in expected and category(error) != expected["category"]:
                 failures.append("error category differs")
-            for fragment in expected["contains"]:
+            for fragment in expected.get("contains", expected.get("errorContains", [])):
                 if fragment not in error:
                     failures.append("missing error fragment: " + fragment)
         rows.append({"name": case["name"], "contracts": case["contracts"],
@@ -66,13 +67,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path)
+    parser.add_argument("--kind", choices=["config", "script"], default="config")
+    parser.add_argument("--cases", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    corpus = Path(__file__).with_name("config-cases.json")
+    corpus = args.cases or Path(__file__).with_name("config-cases.json")
     cases = json.loads(corpus.read_text())
-    results = [run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases)]
+    results = [run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind)]
     if args.candidate:
-        results.append(run(args.candidate, "direct v8 147.4.0", cases))
+        results.append(run(args.candidate, "direct v8 147.4.0", cases, args.kind))
     report = {"corpus_sha256": hashlib.sha256(corpus.read_bytes()).hexdigest(), "results": results}
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     for result in results:

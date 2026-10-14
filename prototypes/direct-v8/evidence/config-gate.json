@@ -1,13 +1,13 @@
 {
-  "corpus_sha256": "1bef47de70b9c5c6cc4bbc2dfa5399f507252da879ff4472f0eb1474cfa30cb5",
+  "corpus_sha256": "e52f9362ef1741ef25eb85718da5bedffeb33410db528c5380e7cc1d3c2d144c",
   "results": [
     {
       "engine": "deno_core 0.399.0 / v8 147.4.0",
       "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
-      "executable_sha256": "8bedcd375c375283fc51fae94cd3e30feecc416f50c0f7023cc966bd34f59317",
+      "executable_sha256": "a039580ec5010f98fe68af0263c0edd520e8b7c0bdd800e925b21ce435e320c3",
       "exit_code": 0,
-      "receipt_count": 62,
-      "expected_count": 62,
+      "receipt_count": 63,
+      "expected_count": 63,
       "stderr": "",
       "passed": true,
       "rows": [
@@ -748,16 +748,29 @@
               "url": "file:/zfb-config-eval/main.mjs"
             }
           }
+        },
+        {
+          "name": "async-wasm-config-platform-tasks",
+          "contracts": ["CFG-07", "NATIVE-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
         }
       ]
     },
     {
       "engine": "direct v8 147.4.0",
       "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
-      "executable_sha256": "718d3ebd8c61796e184b585af9930cb473ce55046c4b21efb197c39feac42421",
+      "executable_sha256": "6aefd5f3a8bf22c4b8f1e33579de339a61aee311ff587d50678403dfa918564c",
       "exit_code": 0,
-      "receipt_count": 62,
-      "expected_count": 62,
+      "receipt_count": 63,
+      "expected_count": 63,
       "stderr": "",
       "passed": true,
       "rows": [
@@ -1529,6 +1542,19 @@
             "ok": true,
             "value": {
               "url": "file:/zfb-config-eval/main.mjs"
+            }
+          }
+        },
+        {
+          "name": "async-wasm-config-platform-tasks",
+          "contracts": ["CFG-07", "NATIVE-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
             }
           }
         }

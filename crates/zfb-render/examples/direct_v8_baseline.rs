@@ -60,6 +60,7 @@ mod baseline {
     enum Request {
         Config { source: String },
         ModuleProbe { source: Option<String> },
+        Script { source: String, mode: Mode },
         Worker(Box<WorkerInput>),
     }
 
@@ -175,7 +176,45 @@ mod baseline {
                 }
             }
             Request::ModuleProbe { source } => module_probe(source.as_deref()).await,
+            Request::Script { source, mode } => script(&source, mode).await,
             Request::Worker(input) => worker(*input).await,
+        }
+    }
+
+    async fn script(source: &str, mode: Mode) -> Value {
+        let mut host = match EmbeddedV8RenderHost::new() {
+            Ok(host) => host,
+            Err(error) => return failure(error),
+        };
+        // Keep this wrapper byte-identical to the direct-V8 evidence runner.
+        let worker =
+            format!("export default {{async fetch(){{return Response.json(await ({source}));}}}}");
+        if let Err(error) = host
+            .execute_worker_module("file:///zfb/service-probe.mjs", &worker)
+            .await
+        {
+            return host_failure(&mut host, error);
+        }
+        let request = HttpRequestLike {
+            url: "http://zfb.local/service-probe".to_owned(),
+            method: "GET".to_owned(),
+            headers: BTreeMap::new(),
+            body: None,
+            mode: match mode {
+                Mode::BuildTime => DispatchMode::BuildTime,
+                Mode::RequestTime => DispatchMode::RequestTime,
+            },
+        };
+        match host.dispatch_fetch(request).await {
+            Ok(response) => match serde_json::from_slice::<Value>(&response.body) {
+                Ok(value) => {
+                    let mut receipt = success(value);
+                    receipt["console"] = json!(host.drain_console_logs());
+                    receipt
+                }
+                Err(error) => host_failure(&mut host, error),
+            },
+            Err(error) => host_failure(&mut host, error),
         }
     }
 

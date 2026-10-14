@@ -4,21 +4,21 @@ use serde_json::Value;
 use super::diagnostics::{exception_text, NativeError};
 use super::NativeHost;
 
-pub fn evaluate_config_bundle(source: &str) -> Result<Value, NativeError> {
+pub async fn evaluate_config_bundle(source: &str) -> Result<Value, NativeError> {
     let mut host = NativeHost::new_config()?;
-    host.evaluate_config(source)
+    host.evaluate_config(source).await
 }
 
 impl NativeHost {
     /// A config host evaluates one main module. Create a new host for the next
     /// independent config so globals and module identity cannot leak between inputs.
-    pub fn evaluate_config(&mut self, source: &str) -> Result<Value, NativeError> {
+    pub async fn evaluate_config(&mut self, source: &str) -> Result<Value, NativeError> {
         if self.modules.borrow().main.is_some() {
             return Err(NativeError::Evaluation(
                 "config host already evaluated its main module; create a fresh host".into(),
             ));
         }
-        let module = self.evaluate_module(source)?;
+        let module = self.evaluate_module(source).await?;
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, &self.context);
         let scope = &mut v8::ContextScope::new(scope, context);

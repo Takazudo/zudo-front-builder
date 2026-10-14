@@ -1,0 +1,541 @@
+[
+  {
+    "name": "entropy-offset-identity-build",
+    "contracts": ["CRYPTO-01", "CRYPTO-02"],
+    "mode": "build-time",
+    "source": "(async () => { Math.random = () => { throw new Error(\"weak entropy forbidden\"); }; const bytes = new Uint8Array(24).fill(173); const view = new Uint32Array(bytes.buffer, 8, 2); const result = crypto.getRandomValues(view); return { same: result === view, prefix: Array.from(bytes.slice(0,8)), suffix: Array.from(bytes.slice(16)), byteLength: result.byteLength }; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "same": true,
+        "prefix": [173, 173, 173, 173, 173, 173, 173, 173],
+        "suffix": [173, 173, 173, 173, 173, 173, 173, 173],
+        "byteLength": 8
+      }
+    }
+  },
+  {
+    "name": "entropy-integer-views-request",
+    "contracts": ["CRYPTO-01"],
+    "mode": "request-time",
+    "source": "(async () => { const names = [\"Int8Array\",\"Uint8Array\",\"Uint8ClampedArray\",\"Int16Array\",\"Uint16Array\",\"Int32Array\",\"Uint32Array\",\"BigInt64Array\",\"BigUint64Array\"]; return names.map(name => { const view = new globalThis[name](4); return { name, same: crypto.getRandomValues(view) === view }; }); })()",
+    "expected": {
+      "ok": true,
+      "value": [
+        {
+          "name": "Int8Array",
+          "same": true
+        },
+        {
+          "name": "Uint8Array",
+          "same": true
+        },
+        {
+          "name": "Uint8ClampedArray",
+          "same": true
+        },
+        {
+          "name": "Int16Array",
+          "same": true
+        },
+        {
+          "name": "Uint16Array",
+          "same": true
+        },
+        {
+          "name": "Int32Array",
+          "same": true
+        },
+        {
+          "name": "Uint32Array",
+          "same": true
+        },
+        {
+          "name": "BigInt64Array",
+          "same": true
+        },
+        {
+          "name": "BigUint64Array",
+          "same": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "entropy-quota-byte-boundary",
+    "contracts": ["CRYPTO-01", "HTTP-08"],
+    "mode": "build-time",
+    "source": "(async () => { const at = new Uint8Array(65536); let error; try { crypto.getRandomValues(new Uint32Array(16385)); } catch (e) { error = {name:e.name,message:e.message}; } return {accepted:crypto.getRandomValues(at) === at,error}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "accepted": true,
+        "error": {
+          "name": "QuotaExceededError",
+          "message": "crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes"
+        }
+      }
+    }
+  },
+  {
+    "name": "entropy-invalid-views",
+    "contracts": ["CRYPTO-01"],
+    "mode": "build-time",
+    "source": "(async () => { return [new Float32Array(1),new Float64Array(1),new DataView(new ArrayBuffer(8)),new ArrayBuffer(8),[],{},null,undefined].map(view => { try { crypto.getRandomValues(view); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } }); })()",
+    "expected": {
+      "ok": true,
+      "value": [
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: Array is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: Object is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: null is not an integer-typed ArrayBufferView"
+        },
+        {
+          "name": "TypeMismatchError",
+          "message": "crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView"
+        }
+      ]
+    }
+  },
+  {
+    "name": "uuid-v4-no-weak-fallback",
+    "contracts": ["CRYPTO-02"],
+    "mode": "request-time",
+    "source": "(async () => { Math.random = () => { throw new Error(\"weak entropy forbidden\"); }; const id = crypto.randomUUID(); return {shape:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),length:id.length}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "shape": true,
+        "length": 36
+      }
+    }
+  },
+  {
+    "name": "entropy-unavailable-fails-closed",
+    "contracts": ["CRYPTO-02"],
+    "mode": "build-time",
+    "source": "(async () => { Object.defineProperty(globalThis.__zfbHost,\"randomBytes\",{value:undefined}); Math.random = () => { throw new Error(\"weak entropy forbidden\"); }; const bytes = new Uint8Array([17,18]); const errors = []; for (const call of [() => crypto.getRandomValues(bytes),() => crypto.randomUUID()]) { try { call(); errors.push(\"unexpected success\"); } catch(e) { errors.push({name:e.name,message:e.message}); } } const empty = new Uint8Array(0); return {errors,bytes:Array.from(bytes),emptySame:crypto.getRandomValues(empty) === empty}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "errors": [
+          {
+            "name": "Error",
+            "message": "crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime"
+          },
+          {
+            "name": "Error",
+            "message": "crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime"
+          }
+        ],
+        "bytes": [17, 18],
+        "emptySame": true
+      }
+    }
+  },
+  {
+    "name": "digest-sha-1-abc-offset",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { const bytes = new Uint8Array([0,97,98,99,255]); const promise = crypto.subtle.digest(\"SHA-1\",new DataView(bytes.buffer,1,3)); const isPromise = promise instanceof Promise; const result = await promise; return {isPromise,isArrayBuffer:result instanceof ArrayBuffer,hex:Array.from(new Uint8Array(result),b => b.toString(16).padStart(2,\"0\")).join(\"\")}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "isPromise": true,
+        "isArrayBuffer": true,
+        "hex": "a9993e364706816aba3e25717850c26c9cd0d89d"
+      }
+    }
+  },
+  {
+    "name": "digest-sha-256-abc-offset",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { const bytes = new Uint8Array([0,97,98,99,255]); const promise = crypto.subtle.digest(\"SHA-256\",new DataView(bytes.buffer,1,3)); const isPromise = promise instanceof Promise; const result = await promise; return {isPromise,isArrayBuffer:result instanceof ArrayBuffer,hex:Array.from(new Uint8Array(result),b => b.toString(16).padStart(2,\"0\")).join(\"\")}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "isPromise": true,
+        "isArrayBuffer": true,
+        "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      }
+    }
+  },
+  {
+    "name": "digest-sha-384-abc-offset",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { const bytes = new Uint8Array([0,97,98,99,255]); const promise = crypto.subtle.digest(\"SHA-384\",new DataView(bytes.buffer,1,3)); const isPromise = promise instanceof Promise; const result = await promise; return {isPromise,isArrayBuffer:result instanceof ArrayBuffer,hex:Array.from(new Uint8Array(result),b => b.toString(16).padStart(2,\"0\")).join(\"\")}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "isPromise": true,
+        "isArrayBuffer": true,
+        "hex": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+      }
+    }
+  },
+  {
+    "name": "digest-sha-512-abc-offset",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { const bytes = new Uint8Array([0,97,98,99,255]); const promise = crypto.subtle.digest(\"SHA-512\",new DataView(bytes.buffer,1,3)); const isPromise = promise instanceof Promise; const result = await promise; return {isPromise,isArrayBuffer:result instanceof ArrayBuffer,hex:Array.from(new Uint8Array(result),b => b.toString(16).padStart(2,\"0\")).join(\"\")}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "isPromise": true,
+        "isArrayBuffer": true,
+        "hex": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+      }
+    }
+  },
+  {
+    "name": "digest-object-case-insensitive",
+    "contracts": ["CRYPTO-03"],
+    "mode": "request-time",
+    "source": "(async () => { const result = await crypto.subtle.digest({name:\"sHa-256\"},new TextEncoder().encode(\"abc\").buffer); return Array.from(new Uint8Array(result),b => b.toString(16).padStart(2,\"0\")).join(\"\"); })()",
+    "expected": {
+      "ok": true,
+      "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    }
+  },
+  {
+    "name": "digest-unsupported-md5",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { try { await crypto.subtle.digest(\"MD5\",new Uint8Array(0)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "name": "NotSupportedError",
+        "message": "crypto.subtle.digest: unsupported algorithm \"MD5\". This host implements SHA-1, SHA-256, SHA-384, SHA-512."
+      }
+    }
+  },
+  {
+    "name": "digest-not-trimmed",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { try { await crypto.subtle.digest(\" SHA-256 \",new Uint8Array(0)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "name": "NotSupportedError",
+        "message": "crypto.subtle.digest: unsupported algorithm \" SHA-256 \". This host implements SHA-1, SHA-256, SHA-384, SHA-512."
+      }
+    }
+  },
+  {
+    "name": "digest-invalid-buffer-rejects-promise",
+    "contracts": ["CRYPTO-03"],
+    "mode": "build-time",
+    "source": "(async () => { const promise = crypto.subtle.digest(\"SHA-256\",[]); const isPromise = promise instanceof Promise; try { await promise; return \"unexpected success\"; } catch(e) { return {isPromise,name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "isPromise": true,
+        "name": "TypeError",
+        "message": "crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array"
+      }
+    }
+  },
+  {
+    "name": "timing-safe-equal-offset-and-length",
+    "contracts": ["CRYPTO-04"],
+    "mode": "build-time",
+    "source": "(async () => { const bytes = new Uint8Array([0,1,2,255]); let error; try { crypto.subtle.timingSafeEqual(new Uint8Array(1),new Uint8Array(2)); } catch(e) { error = {name:e.name,message:e.message}; } return {equal:crypto.subtle.timingSafeEqual(new DataView(bytes.buffer,1,2),new Uint8Array([1,2])),different:crypto.subtle.timingSafeEqual(new Uint8Array([1,2]),new Uint8Array([1,3])),empty:crypto.subtle.timingSafeEqual(new ArrayBuffer(0),new Uint8Array(0)),error}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "equal": true,
+        "different": false,
+        "empty": true,
+        "error": {
+          "name": "TypeError",
+          "message": "crypto.subtle.timingSafeEqual: buffers must be the same byteLength"
+        }
+      }
+    }
+  },
+  {
+    "name": "unsupported-subtle-methods",
+    "contracts": ["CRYPTO-04"],
+    "mode": "build-time",
+    "source": "(async () => { const results = []; for (const method of [\"encrypt\", \"decrypt\", \"sign\", \"verify\", \"generateKey\", \"deriveKey\", \"deriveBits\", \"importKey\", \"exportKey\", \"wrapKey\", \"unwrapKey\"]) { const result = crypto.subtle[method](); try { await result; results.push(\"unexpected success\"); } catch(e) { results.push({method,callable:typeof crypto.subtle[method] === \"function\",promise:result instanceof Promise,name:e.name,message:e.message}); } } return results; })()",
+    "expected": {
+      "ok": true,
+      "value": [
+        {
+          "method": "encrypt",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "decrypt",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "sign",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "verify",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "generateKey",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "deriveKey",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "deriveBits",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "importKey",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "exportKey",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "wrapKey",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        },
+        {
+          "method": "unwrapKey",
+          "callable": true,
+          "promise": true,
+          "name": "NotSupportedError",
+          "message": "crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+        }
+      ]
+    }
+  },
+  {
+    "name": "unsupported-digest-stream-and-crypto-key",
+    "contracts": ["CRYPTO-04"],
+    "mode": "build-time",
+    "source": "(async () => { const errors = []; for (const ctor of [crypto.DigestStream,crypto.subtle.DigestStream]) { try { new ctor(\"SHA-256\"); errors.push(\"unexpected success\"); } catch(e) { errors.push({name:e.name,message:e.message}); } } return {cryptoKey:typeof CryptoKey,sameConstructor:crypto.DigestStream === crypto.subtle.DigestStream,errors}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "cryptoKey": "undefined",
+        "sameConstructor": true,
+        "errors": [
+          {
+            "name": "NotSupportedError",
+            "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+          },
+          {
+            "name": "NotSupportedError",
+            "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call — see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "queue-microtask-order",
+    "contracts": ["BOOT-02"],
+    "mode": "build-time",
+    "source": "(async () => { const order = [\"sync\"]; queueMicrotask(() => order.push(\"microtask\")); const promise = Promise.resolve().then(() => order.push(\"promise\")); order.push(\"after-schedule\"); await promise; return order; })()",
+    "expected": {
+      "ok": true,
+      "value": ["sync", "after-schedule", "microtask", "promise"]
+    }
+  },
+  {
+    "name": "microtask-timer-delay-and-clear-noop",
+    "contracts": ["BOOT-04"],
+    "mode": "build-time",
+    "source": "(async () => { const order = []; const first = setTimeout((value) => order.push(value),2147483647,\"timer\"); clearTimeout(first); const second = setTimeout(\"not a function\",0); order.push(\"sync\"); await Promise.resolve(); return {order,numericIds:typeof first === \"number\" && typeof second === \"number\",increasing:second === first + 1}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "order": ["sync", "timer"],
+        "numericIds": true,
+        "increasing": true
+      }
+    }
+  },
+  {
+    "name": "message-channel-reference-and-listeners",
+    "contracts": ["BOOT-02", "BOOT-04"],
+    "mode": "build-time",
+    "source": "(async () => { const channel = new MessageChannel(); const value = {count:1}; const results = []; const removed = () => results.push(\"removed\"); channel.port2.addEventListener(\"message\",removed); channel.port2.removeEventListener(\"message\",removed); channel.port2.onmessage = e => results.push({same:e.data === value,target:e.target === channel.port2,count:e.data.count}); channel.port2.addEventListener(\"message\",{handleEvent(e){results.push(e.data.count);}}); channel.port2.start(); channel.port2.close(); channel.port1.postMessage(value); value.count = 2; const before = results.length; await Promise.resolve(); return {before,results}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "before": 0,
+        "results": [
+          {
+            "same": true,
+            "target": true,
+            "count": 2
+          },
+          2
+        ]
+      }
+    }
+  },
+  {
+    "name": "binary-response-offset-headers-clone",
+    "contracts": ["WORK-03", "WORK-04"],
+    "mode": "build-time",
+    "source": "(async () => { const bytes = new Uint8Array([99,0,1,127,128,255,88]); const headers = new Headers([[\"X-Test\",\"left\"],[\"Set-Cookie\",\"a=1\"],[\"x-test\",\"right\"],[\"set-cookie\",\"b=2\"]]); const response = new Response(new Uint8Array(bytes.buffer,1,5),{status:201,headers}); const clone = response.clone(); return {status:response.status,statusText:response.statusText,ok:response.ok,bodyNull:response.body === null,headers:Array.from(response.headers),cookies:response.headers.getSetCookie(),contentType:response.headers.get(\"content-type\"),bytes:Array.from(new Uint8Array(await response.arrayBuffer())),cloneBytes:Array.from(new Uint8Array(await clone.arrayBuffer())),used:response.bodyUsed}; })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "status": 201,
+        "statusText": "Created",
+        "ok": true,
+        "bodyNull": true,
+        "headers": [
+          ["set-cookie", "a=1"],
+          ["set-cookie", "b=2"],
+          ["x-test", "left, right"]
+        ],
+        "cookies": ["a=1", "b=2"],
+        "contentType": null,
+        "bytes": [0, 1, 127, 128, 255],
+        "cloneBytes": [0, 1, 127, 128, 255],
+        "used": true
+      }
+    }
+  },
+  {
+    "name": "response-body-content-types",
+    "contracts": ["WORK-04"],
+    "mode": "build-time",
+    "source": "(async () => { return [new Response(\"text\"),new Response(new URLSearchParams([[\"a\",\"b c\"]])),new Response(new ArrayBuffer(0)),new Response(\"text\",{headers:{\"content-type\":\"custom/type\"}}),Response.json({answer:42})].map(r => r.headers.get(\"content-type\")); })()",
+    "expected": {
+      "ok": true,
+      "value": [
+        "text/plain;charset=UTF-8",
+        "application/x-www-form-urlencoded;charset=UTF-8",
+        null,
+        "custom/type",
+        "application/json"
+      ]
+    }
+  },
+  {
+    "name": "fetch-build-denial",
+    "contracts": ["HTTP-01", "HTTP-03"],
+    "mode": "build-time",
+    "source": "(async () => { try { await fetch(\"http://127.0.0.1:1/direct-v8-policy\"); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "name": "Error",
+        "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+      }
+    }
+  },
+  {
+    "name": "raw-bridge-build-denial",
+    "contracts": ["HTTP-01", "HTTP-03"],
+    "mode": "build-time",
+    "source": "(async () => { try { await globalThis.__zfbHost.fetch({url:\"http://127.0.0.1:1/direct-v8-policy\",method:\"GET\",headers:[],redirect:\"follow\",hasBody:false,timeoutMs:null,cancelId:null},new Uint8Array(0)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "name": "TypeError",
+        "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+      }
+    }
+  },
+  {
+    "name": "forged-mode-raw-bridge-build-denial",
+    "contracts": ["HTTP-01", "HTTP-03"],
+    "mode": "build-time",
+    "source": "(async () => { globalThis.__zfb = {mode:\"request-time\",limits:{maxSubrequests:999999}}; try { await globalThis.__zfbHost.fetch({url:\"http://127.0.0.1:1/direct-v8-policy\",method:\"GET\",headers:[],redirect:\"follow\",hasBody:false,timeoutMs:null,cancelId:null},new Uint8Array(0)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "name": "TypeError",
+        "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+      }
+    }
+  },
+  {
+    "name": "uncaught-service-error-receipt",
+    "contracts": ["DIAG-02"],
+    "mode": "build-time",
+    "source": "(async () => { throw new Error(\"service receipt sentinel\"); })()",
+    "expected": {
+      "ok": false,
+      "errorContains": ["service receipt sentinel"]
+    }
+  },
+  {
+    "name": "raw-entropy-quota-independent-of-js-limits",
+    "contracts": ["CRYPTO-01", "HTTP-08"],
+    "mode": "build-time",
+    "source": "(async () => { globalThis.__zfb = {mode:\"request-time\",limits:{maxRandomBytesPerCall:999999}}; try { globalThis.__zfbHost.randomBytes(new Uint8Array(65537)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+    "expected": {
+      "ok": true,
+      "value": {
+        "name": "QuotaExceededError",
+        "message": "crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes"
+      }
+    }
+  }
+]
