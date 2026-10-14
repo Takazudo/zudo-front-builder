@@ -122,6 +122,18 @@
     "runId": 38473455816,
     "jobId": 115558149355,
     "sourceSha": "fafd4a2fbf1dca98ec346794fee3563bdbc18317",
+    "repinnedFrom": {
+      "schemaVersion": 3,
+      "outcome": "cargo-producer-lock-transition",
+      "packageVersion": "4.4.0",
+      "baselineSourceSha": "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
+      "baselineRunId": 38451538696,
+      "contract": {
+        "sha256": "a49081369b11369ac3b79ca2a86974b4ea15c73240b75cb619ae057fe79b4d6e",
+        "commit": "5ea14d57ddda6536a3e661ff07e6547146d7836a",
+        "path": "research/v3-island-size/decision-linux-x64.json"
+      }
+    },
     "actualGzip": {
       "workspace": {
         "blog-theme": 22351,

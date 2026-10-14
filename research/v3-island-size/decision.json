@@ -148,7 +148,12 @@
       "outcome": "cargo-producer-lock-transition",
       "packageVersion": "4.4.0",
       "baselineSourceSha": "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
-      "baselineRunId": 38451538696
+      "baselineRunId": 38451538696,
+      "contract": {
+        "sha256": "02f2a5dcd40aad62879f8f4dcddd95c24fcedf342599bdb05255cacde4ab4f12",
+        "commit": "5ea14d57ddda6536a3e661ff07e6547146d7836a",
+        "path": "research/v3-island-size/decision.json"
+      }
     },
     "originalCheckerResult": {
       "exitCode": 0,
