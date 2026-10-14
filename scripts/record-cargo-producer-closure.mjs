@@ -5,8 +5,10 @@
 //
 // The closure is what `cargo metadata --locked --filter-platform <target>`
 // resolves for the producer: every package reachable over normal and build
-// edges (never dev-only edges), with the exact feature set Cargo enabled for
-// it. Lock equality alone does not prove equal feature selection, so a rewire
+// edges (never dev-only edges), with the feature set the workspace-wide
+// resolution enables for it (resolver 2 unifies features across all members,
+// so this can differ from a `cargo build -p zfb` alone). Lock equality alone
+// does not prove equal feature selection, so a rewire
 // re-pin requires one receipt at the old lock and one at the new lock, for the
 // platform's own target, and refuses any external package, version, source or
 // feature movement between them. The receipt binds the Cargo.lock SHA-256 it
@@ -18,9 +20,9 @@
 //
 // `--target` may name a target the host cannot compile for (`cargo metadata`
 // resolves without a toolchain for it), so the Darwin arm64 receipt can be
-// recorded on Linux from the same checkout. Rows are sorted and path sources
-// are recorded relative to the checkout root, so two checkouts of the same
-// tree produce byte-identical receipts.
+// recorded on Linux from the same checkout. Rows are sorted by bytes and path
+// sources are recorded relative to the checkout root, so two checkouts of the
+// same tree produce identical `rows`; `cargo` and `command` record the machine.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -91,11 +93,10 @@ export function closureFromMetadata(metadata, { producer, root }) {
       features: [...new Set(node.features)].sort(),
     };
   });
+  const byBytes = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   rows.sort(
     (a, b) =>
-      a.name.localeCompare(b.name) ||
-      a.version.localeCompare(b.version) ||
-      a.source.localeCompare(b.source),
+      byBytes(a.name, b.name) || byBytes(a.version, b.version) || byBytes(a.source, b.source),
   );
   return rows;
 }

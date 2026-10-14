@@ -57,6 +57,7 @@ import {
   repinFingerprintHelper,
   resolveDependencyEntry,
   rewritePolicyIdentity,
+  lockSourceValue,
   rewriteTestPins,
   workspaceMemberProblem,
 } from "../rebaseline-island-size-linux.mjs";
@@ -3538,9 +3539,32 @@ describe("cargo-internal-rewire (#4258)", () => {
       /not a workspace member path/,
     );
     expect(workspaceMemberProblem("[workspace]\n", "crates/x/Cargo.toml")).toMatch(/lists no/);
+    expect(workspaceMemberProblem('members = ["crates/*"]\n', "crates/x/Cargo.toml")).toMatch(
+      /has no \[workspace\] table/,
+    );
     expect(
       workspaceMemberProblem('[workspace]\nmembers = ["crates/zfb"]\n', "crates/zfb/Cargo.toml"),
     ).toBeNull();
+    // A `members` key in another table never counts; only the [workspace] table does.
+    expect(
+      workspaceMemberProblem(
+        '[package.metadata.x]\nmembers = ["evil/*"]\n\n[workspace]\nmembers = ["crates/*"]\n',
+        "evil/x/Cargo.toml",
+      ),
+    ).toMatch(/not a workspace member path/);
+    expect(
+      workspaceMemberProblem(
+        '[workspace]\nmembers = [\n  "crates/*",\n]\nexclude = ["crates/old"]\n',
+        "crates/old/Cargo.toml",
+      ),
+    ).toBe("crates/old/Cargo.toml is a workspace-excluded path");
+    expect(lockSourceValue(undefined)).toBeNull();
+    expect(
+      lockSourceValue('source = "registry+https://github.com/rust-lang/crates.io-index"'),
+    ).toBe("registry+https://github.com/rust-lang/crates.io-index");
+    expect(
+      lockSourceValue('source = "git+https://example.invalid/x?rev=abc#' + "0".repeat(40) + '"'),
+    ).toBe("git+https://example.invalid/x?rev=abc");
   });
 
   it("normalizes a declaration and refuses a malformed one", () => {
@@ -3552,7 +3576,16 @@ describe("cargo-internal-rewire (#4258)", () => {
     });
     for (const [name, edit, message] of [
       ["a wrong schema", (d) => (d.schemaVersion = 2), /schemaVersion must be 1/],
-      ["no producer", (d) => delete d.producer, /producer must name/],
+      [
+        "no producer",
+        (d) => delete d.producer,
+        /producer must be zfb, the measured CLI package, not undefined/,
+      ],
+      [
+        "another producer",
+        (d) => (d.producer = "zudo-wind"),
+        /producer must be zfb, the measured CLI package, not "zudo-wind"/,
+      ],
       ["a short hash", (d) => (d.oldCargoLockSha256 = "abc"), /oldCargoLockSha256 must be/],
       ["equal hashes", (d) => (d.newCargoLockSha256 = d.oldCargoLockSha256), /no Cargo\.lock move/],
       [
@@ -3605,10 +3638,12 @@ describe("cargo-internal-rewire (#4258)", () => {
       newLockSource: NEW_SOURCE,
       declaration: DECLARATION_SOURCE,
       producer: "zfb",
+      manifestsAtCommit: null,
       added: [
         {
           id: "zfb-js-host@0.0.0",
           manifest: "crates/zfb-js-host/Cargo.toml",
+          manifestSha256: rewireSha(REWIRE_MANIFESTS["crates/zfb-js-host/Cargo.toml"]),
           sha256: rewireSha(added.body),
           dependencies: ["anyhow", "sha2"],
         },
@@ -3617,6 +3652,7 @@ describe("cargo-internal-rewire (#4258)", () => {
         {
           id: "zfb-render@0.0.0",
           manifest: "crates/zfb-render/Cargo.toml",
+          manifestSha256: rewireSha(REWIRE_MANIFESTS["crates/zfb-render/Cargo.toml"]),
           oldSha256: rewireSha(recordOf(oldText, "zfb-render@0.0.0").body),
           newSha256: rewireSha(recordOf(newText, "zfb-render@0.0.0").body),
           removedDependencies: ["sha2"],
@@ -3640,6 +3676,12 @@ describe("cargo-internal-rewire (#4258)", () => {
     // A cited new-lock commit is carried through verbatim.
     const cited = { sha256: NEW, commit: "b".repeat(40), path: "Cargo.lock" };
     expect(prove((i) => ({ ...i, newLockSource: cited })).newLockSource).toEqual(cited);
+    expect(prove((i) => ({ ...i, manifestCommit: "b".repeat(40) })).manifestsAtCommit).toBe(
+      "b".repeat(40),
+    );
+    expect(() => prove((i) => ({ ...i, manifestCommit: "abc" }))).toThrow(
+      /manifestCommit must be a full commit SHA or null/,
+    );
   });
 
   const external = (text) =>
@@ -3991,6 +4033,29 @@ describe("cargo-internal-rewire (#4258)", () => {
       /new closure receipt does not contain the producer zfb/,
     ],
     [
+      "an external closure row with another source",
+      (i) => ({
+        ...i,
+        closures: closures(LINUX_TARGET, {
+          new: (r) =>
+            (r.rows.find((row) => row.name === "sha2").source = "git+https://example.invalid/sha2"),
+        }),
+      }),
+      /new closure receipt row sha2@0\.10\.9 \(git\+[^)]+\) source differs from its Cargo\.lock record's registry\+/,
+    ],
+    [
+      "an internal closure row claiming a registry source",
+      (i) => ({
+        ...i,
+        closures: closures(LINUX_TARGET, {
+          old: (r) =>
+            (r.rows.find((row) => row.name === "zudo-wind").source =
+              "registry+https://github.com/rust-lang/crates.io-index"),
+        }),
+      }),
+      /old closure receipt row zudo-wind@0\.0\.0 \(registry\+[^)]+\) claims a source, but its Cargo\.lock record is a path record/,
+    ],
+    [
       "a closure row that is not in its lock",
       (i) => ({
         ...i,
@@ -4029,16 +4094,10 @@ describe("cargo-internal-rewire (#4258)", () => {
       (i) => ({
         ...i,
         closures: closures(LINUX_TARGET, {
-          new: (r) =>
-            r.rows.push({
-              name: "anyhow",
-              version: "1.0.100",
-              source: "git+https://example.invalid/anyhow",
-              features: [],
-            }),
+          old: (r) => (r.rows = r.rows.filter((row) => row.name !== "anyhow")),
         }),
       }),
-      /external rows joined the producer closure: anyhow@1\.0\.100 \(git\+/,
+      /external rows joined the producer closure: anyhow@1\.0\.100 \(registry\+/,
     ],
     [
       "a row leaving the closure",
@@ -4266,6 +4325,10 @@ describe("cargo-internal-rewire (#4258)", () => {
         rows: { old: 5, new: 6, unchanged: 5 },
       });
       expect(rewire.added.map((r) => r.id)).toEqual(["zfb-js-host@0.0.0"]);
+      expect(rewire.manifestsAtCommit).toBe(newLockCommit);
+      expect(rewire.changed[0].manifestSha256).toBe(
+        rewireSha(REWIRE_MANIFESTS["crates/zfb-render/Cargo.toml"]),
+      );
       expect(rewire.changed[0]).toMatchObject({
         id: "zfb-render@0.0.0",
         removedDependencies: ["sha2"],
@@ -4337,11 +4400,26 @@ describe("cargo-internal-rewire (#4258)", () => {
       quiet();
       const stage = join(tempDir("zfb-rewire-stage-"), "stage");
       await main(argv({ stage, "new-cargo-ref": "HEAD" }), repo.root);
-      expect(
-        JSON.parse(readFileSync(join(stage, CONTRACT), "utf8")).baselineEvidence.cargoRewire
-          .newLockSource,
-      ).toEqual({ sha256: NEW, commit: newLockCommit, path: "Cargo.lock" });
+      const cited = JSON.parse(readFileSync(join(stage, CONTRACT), "utf8")).baselineEvidence
+        .cargoRewire;
+      expect(cited.newLockSource).toEqual({
+        sha256: NEW,
+        commit: newLockCommit,
+        path: "Cargo.lock",
+      });
+      expect(cited.manifestsAtCommit).toBe(newLockCommit);
+      expect(cited.added[0].manifestSha256).toBe(
+        rewireSha(REWIRE_MANIFESTS["crates/zfb-js-host/Cargo.toml"]),
+      );
       const before = OUTPUTS.map(read);
+      // An uncommitted manifest edit is refused once the manifests are bound to the cited commit.
+      writeRewireManifests(repo.root, (path, text) =>
+        path.endsWith("zfb-render/Cargo.toml") ? text + "# edited after the commit\n" : text,
+      );
+      await expect(main(argv({ "new-cargo-ref": "HEAD" }), repo.root)).rejects.toThrow(
+        /crates\/zfb-render\/Cargo\.toml in the working tree differs from [0-9a-f]{40}:crates\/zfb-render\/Cargo\.toml; refusing/,
+      );
+      writeRewireManifests(repo.root);
       await expect(main(argv({ "new-cargo-ref": "old-lock" }), repo.root)).rejects.toThrow(
         /--new-cargo-ref old-lock: [0-9a-f]{40}:Cargo\.lock is not byte-identical to the checkout's Cargo\.lock; refusing/,
       );
@@ -4404,6 +4482,20 @@ describe("cargo-internal-rewire (#4258)", () => {
         name: "a declaration with a wrong added-record hash",
         inputs: { declaration: (d) => (d.added[0].sha256 = "6".repeat(64)) },
         message: /declared added zfb-js-host@0\.0\.0 bytes hash to/,
+      },
+      {
+        name: "a declaration for another producer",
+        inputs: { declaration: (d) => (d.producer = "zudo-wind") },
+        message: /producer must be zfb, the measured CLI package, not "zudo-wind"/,
+      },
+      {
+        name: "a closure row whose source is not the lock's",
+        inputs: {
+          newClosure: (r) =>
+            (r.rows.find((row) => row.name === "anyhow").source =
+              "git+https://example.invalid/anyhow"),
+        },
+        message: /source differs from its Cargo\.lock record's/,
       },
       {
         name: "a declaration with an undeclared edge",

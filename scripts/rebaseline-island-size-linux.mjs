@@ -1288,6 +1288,9 @@ function rewireError(message) {
 // `added`/`changed` ids are `name@version`; a dependency entry is written as
 // Cargo.lock writes it (`name`, `name version` or `name version (source)`).
 export const REWIRE_DECLARATION_SCHEMA = 1;
+// The measured CLI package: island sizes are produced by the `zfb` crate's
+// binary, so a declaration and its closure receipts may name no other producer.
+export const PRODUCER_PACKAGE = "zfb";
 
 const LOCK_ID = /^[^@\s]+@[^@\s]+$/;
 const DEPENDENCY_ENTRY = /^(\S+)(?: (\S+))?(?: \((.+)\))?$/;
@@ -1307,8 +1310,13 @@ export function checkRewireDeclaration(declaration) {
   if (declaration.schemaVersion !== REWIRE_DECLARATION_SCHEMA) {
     throw fail("schemaVersion must be " + REWIRE_DECLARATION_SCHEMA);
   }
-  if (typeof declaration.producer !== "string" || declaration.producer === "") {
-    throw fail("producer must name the measured package");
+  if (declaration.producer !== PRODUCER_PACKAGE) {
+    throw fail(
+      "producer must be " +
+        PRODUCER_PACKAGE +
+        ", the measured CLI package, not " +
+        JSON.stringify(declaration.producer),
+    );
   }
   for (const key of ["oldCargoLockSha256", "newCargoLockSha256"]) {
     if (!isSha(declaration[key])) throw fail(key + " must be a 64-character SHA-256");
@@ -1473,15 +1481,26 @@ export function readManifestPackage(text) {
 // root manifest's `[workspace] members` globs (literal paths and a trailing
 // `*` segment, which is how this workspace lists its crates).
 export function workspaceMemberProblem(rootManifest, manifestPath) {
-  const members = /^members\s*=\s*\[([^\]]*)\]/m.exec(rootManifest);
+  const lines = rootManifest.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "[workspace]");
+  if (start < 0) return "the root Cargo.toml has no [workspace] table";
+  let end = lines.findIndex((line, i) => i > start && /^\s*\[/.test(line));
+  if (end < 0) end = lines.length;
+  const table = lines.slice(start + 1, end).join("\n");
+  const list = (key) => {
+    const match = new RegExp("^" + key + "\\s*=\\s*\\[([^\\]]*)\\]", "m").exec(table);
+    return match ? [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : null;
+  };
+  const members = list("members");
   if (!members) return "the root Cargo.toml lists no [workspace] members";
-  const globs = [...members[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   const dir = dirname(manifestPath).split("/");
-  const matches = globs.some((glob) => {
+  const matches = (glob) => {
     const parts = glob.split("/");
     return parts.length === dir.length && parts.every((part, i) => part === "*" || part === dir[i]);
-  });
-  return matches ? null : manifestPath + " is not a workspace member path";
+  };
+  if (!members.some(matches)) return manifestPath + " is not a workspace member path";
+  if ((list("exclude") ?? []).some(matches)) return manifestPath + " is a workspace-excluded path";
+  return null;
 }
 
 // Why `manifestPath` does not prove `id` an unpublished workspace crate, or null.
@@ -1521,8 +1540,27 @@ function internalManifestProblem(id, manifestPath, readManifest) {
   return member ? id + ": " + member : null;
 }
 
+// Like internalManifestProblem, but returns {problem} or {sha256} of the exact
+// manifest bytes the proof read, so the evidence binds them.
+function internalManifest(id, manifestPath, readManifest) {
+  const problem = internalManifestProblem(id, manifestPath, readManifest);
+  if (problem) return { problem };
+  return { sha256: sha256(readManifest(manifestPath)) };
+}
+
+// The source a `cargo metadata` receipt row must carry for a lock record: the
+// record's `source = "..."` value, or null for a path (workspace) record. A git
+// lock source ends in `#<commit>`, which the package id's source part omits.
+export function lockSourceValue(sourceLine) {
+  if (sourceLine === undefined) return null;
+  const value = /^source = "(.*)"$/.exec(sourceLine)?.[1] ?? sourceLine;
+  return value.startsWith("git+") ? value.replace(/#[0-9a-f]{40}$/, "") : value;
+}
+
 // A parsed closure receipt (scripts/record-cargo-producer-closure.mjs) checked
 // against the lock it claims; returns its rows keyed by `name@version (source)`.
+// Membership and sources are checked against the lock; the enabled features
+// are operator-attested by the receipt and cannot be reproduced here.
 function readClosureReceipt(receipt, { label, producer, target, lockSha, lockRecords }) {
   const fail = (message) => label + " closure receipt " + message;
   const problems = [];
@@ -1548,7 +1586,9 @@ function readClosureReceipt(receipt, { label, producer, target, lockSha, lockRec
     problems.push(fail("has no rows"));
     return { problems, rows };
   }
-  const ids = new Set(lockRecords.map((record) => record.id));
+  const lockSources = new Map(
+    lockRecords.map((record) => [record.id, lockSourceValue(record.fields.source)]),
+  );
   for (const row of receipt.rows) {
     if (
       !isRecord(row) ||
@@ -1562,8 +1602,22 @@ function readClosureReceipt(receipt, { label, producer, target, lockSha, lockRec
     }
     const key = row.name + "@" + row.version + (row.source === null ? "" : " (" + row.source + ")");
     if (rows.has(key)) problems.push(fail("repeats row " + key));
-    if (!ids.has(row.name + "@" + row.version)) {
+    const id = row.name + "@" + row.version;
+    if (!lockSources.has(id)) {
       problems.push(fail("row " + key + " is not a record of its Cargo.lock"));
+    } else {
+      const expected = lockSources.get(id);
+      if (expected === null) {
+        if (typeof row.source !== "string" || !row.source.startsWith("path+")) {
+          problems.push(
+            fail("row " + key + " claims a source, but its Cargo.lock record is a path record"),
+          );
+        }
+      } else if (row.source !== expected) {
+        problems.push(
+          fail("row " + key + " source differs from its Cargo.lock record's " + expected),
+        );
+      }
     }
     rows.set(key, { ...row, features: sortedUnique(row.features) });
   }
@@ -1594,8 +1648,12 @@ export function proveCargoInternalRewire({
   closures,
   target,
   readManifest,
+  manifestCommit = null,
 }) {
   const problems = [];
+  if (manifestCommit !== null && !/^[0-9a-f]{40}$/.test(manifestCommit)) {
+    problems.push("manifestCommit must be a full commit SHA or null");
+  }
   if (expectedOldSha === expectedNewSha) {
     problems.push("--expected-old-cargo-sha equals --expected-new-cargo-sha; no Cargo.lock move");
   }
@@ -1743,11 +1801,12 @@ export function proveCargoInternalRewire({
       const { problem } = resolveDependencyEntry(dependency, newRecords);
       if (problem) problems.push("added " + entry.id + ": " + problem);
     }
-    const manifest = internalManifestProblem(entry.id, entry.manifest, readManifest);
-    if (manifest) problems.push(manifest);
+    const manifest = internalManifest(entry.id, entry.manifest, readManifest);
+    if (manifest.problem) problems.push(manifest.problem);
     added.push({
       id: entry.id,
       manifest: entry.manifest,
+      manifestSha256: manifest.sha256 ?? null,
       sha256: entry.sha256,
       dependencies: [...dependencies],
     });
@@ -1829,11 +1888,12 @@ export function proveCargoInternalRewire({
         );
       }
     }
-    const manifest = internalManifestProblem(entry.id, entry.manifest, readManifest);
-    if (manifest) problems.push(manifest);
+    const manifest = internalManifest(entry.id, entry.manifest, readManifest);
+    if (manifest.problem) problems.push(manifest.problem);
     changed.push({
       id: entry.id,
       manifest: entry.manifest,
+      manifestSha256: manifest.sha256 ?? null,
       oldSha256: entry.oldSha256,
       newSha256: entry.newSha256,
       removedDependencies: removedEdges,
@@ -1931,6 +1991,10 @@ export function proveCargoInternalRewire({
     newLockSource: newSource,
     declaration: { path: declarationSource.path, sha256: declarationSource.sha256 },
     producer: declared.producer,
+    // Manifests are read from the checkout; `manifestsAtCommit` names the
+    // --new-cargo-ref commit whose blobs they were proven byte-identical to,
+    // or null when only the working tree was read.
+    manifestsAtCommit: manifestCommit,
     added,
     changed,
     removed: [],
@@ -4152,13 +4216,14 @@ export function readCargoRewireEvidence(args, root, target = LINUX_PRODUCER_TARG
     old: readJsonFile(args["old-closure"], "--old-closure"),
     new: readJsonFile(args["new-closure"], "--new-closure"),
   };
+  const newLockSource = newLockReference(root, newText, args["new-cargo-ref"]);
   return {
     expectedOldSha: args["expected-old-cargo-sha"],
     expectedNewSha: args["expected-new-cargo-sha"],
     oldText: blob.bytes,
     newText,
     oldLockSource: { commit: blob.commit, path: blob.path, sha256: sha256(blob.bytes) },
-    newLockSource: newLockReference(root, newText, args["new-cargo-ref"]),
+    newLockSource,
     declaration: declaration.value,
     // The declaration is cited by its repository path when it lives in the
     // checkout, otherwise by the path given; its digest is always recorded.
@@ -4171,9 +4236,31 @@ export function readCargoRewireEvidence(args, root, target = LINUX_PRODUCER_TARG
       new: { receipt: closures.new.value, sha256: closures.new.sha256 },
     },
     target,
+    manifestCommit: newLockSource.commit ?? null,
+    // With --new-cargo-ref, every manifest the proof reads must be byte-identical
+    // to that commit's blob, so an uncommitted manifest edit cannot admit a record.
     readManifest: (manifest) => {
       checkGitPath(manifest, "manifest");
-      return readFileSync(join(root, manifest));
+      const bytes = readFileSync(join(root, manifest));
+      if (Object.hasOwn(args, "new-cargo-ref")) {
+        let blob;
+        try {
+          blob = readGitBlob(root, newLockSource.commit, manifest, "--new-cargo-ref manifest");
+        } catch (error) {
+          throw rewireError(error.message);
+        }
+        if (!blob.bytes.equals(bytes)) {
+          throw rewireError(
+            manifest +
+              " in the working tree differs from " +
+              blob.commit +
+              ":" +
+              manifest +
+              "; refusing",
+          );
+        }
+      }
+      return bytes;
     },
   };
 }
