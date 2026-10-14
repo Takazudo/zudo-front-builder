@@ -85,8 +85,13 @@ request whose receipt must name the right engine and return the right value,
 then runs the config, services, HTTP, modules and outer-config gates and, with
 `--generated`, builds the postprocessor, the normal CLI and the wrapper test
 binary, prepares a fresh frozen snapshot and runs the generated-input gate
-with the explicit browser. After every gate both runner digests are re-read;
-a changed executable fails the run. The target directory comes from
+with the explicit browser. All recorded executables are checked after every
+gate and before final acceptance: baseline, candidate and outer-config, plus
+the postprocessor, normal CLI and wrapper test binary in generated mode.
+Each generated prerequisite is pinned immediately after its build, then checked
+against that same digest after later builds and fixture preparation. A changed,
+missing or no-longer-executable file fails the run; final hashes are enforced,
+not merely recorded. The target directory comes from
 `cargo metadata`, so a machine-wide `target-dir` is honored. Every step,
 command, exit code, duration, executable digest and gate count is written to
 `<output>/acceptance.json`; the gates' own JSON lands beside it. A missing
@@ -94,7 +99,15 @@ executable, a runner that exits 2 because its feature is off (the all-targets
 trap above), a wrong engine identity or a failed probe is refused, and there is
 never a baseline/Node/Deno fallback. `python3 -I -B prototypes/direct-v8/test_accept.py`
 covers those refusals with shell-script stand-ins and no second target
-directory.
+directory. Its full-entry-point regression cases use mocked builds and gates:
+they test harness orchestration and rejection, not native V8 or browser behavior.
+
+`acceptance.json` retains completed gate summaries even when a later integrity
+check refuses the run. The additive `executable_checks` ledger names each
+checkpoint, its pass/fail result and checked digests or refusal diagnostic.
+A gate's local success never overrides an overall integrity failure. Historical
+native receipts remain unchanged; this harness change is not itself a fresh
+native replay or evidence of exact-head phase-1 integration acceptance.
 
 ## Recorded phase-1 gates
 

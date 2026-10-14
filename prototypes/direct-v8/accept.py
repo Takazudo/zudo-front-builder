@@ -13,7 +13,8 @@ Refusals (the run fails, nothing is reported as passed):
     (the `cargo build --workspace --all-targets` trap overwrites the candidate
     example with its feature-disabled form), a runner whose receipt names the
     wrong engine, or a runner whose probe value is wrong;
-  - an executable whose bytes change while the gates run;
+  - any recorded executable whose bytes change or which disappears/loses
+    execute permission during subsequent builds, fixture preparation or gates;
   - any gate that fails; there is no baseline/Node/Deno fallback executor.
 
 The Rust commands and gates run through the heavy guard when --guard names one.
@@ -80,6 +81,31 @@ class Refusal(Exception):
     """An acceptance precondition failed; nothing after it is evidence."""
 
 
+def record_executable(path, label):
+    """Pin a runnable file, converting filesystem failures into refusals."""
+    path = Path(path)
+    try:
+        if not path.is_file():
+            raise Refusal(f"{label}: missing executable {path}")
+        if not os.access(path, os.X_OK):
+            raise Refusal(f"{label}: {path} is not executable")
+        return {"path": str(path), "sha256": sha(path)}
+    except OSError as error:
+        raise Refusal(f"{label}: cannot read executable {path}: {error}") from error
+
+
+def verify_executables_unchanged(runners, after):
+    """Enforce every recorded digest, including producer/helper executables."""
+    digests = {}
+    for name, info in runners.items():
+        now = record_executable(info["path"], f"{name} after {after}")["sha256"]
+        digests[name] = now
+        if now != info["sha256"]:
+            raise Refusal(f"{name} executable bytes changed during {after} "
+                          f"({info['sha256']} -> {now}); rebuild and rerun")
+    return digests
+
+
 def parse_receipts(stdout):
     return [json.loads(line[len(RECEIPT_PREFIX):]) for line in stdout.splitlines()
             if line.startswith(RECEIPT_PREFIX)]
@@ -92,12 +118,9 @@ def verify_runner(path, expected_engine, label, timeout=60):
     2 naming its feature), a wrong engine identity, a failed probe or a wrong
     probe value. The digest is taken before the probe runs.
     """
-    path = Path(path)
-    if not path.is_file():
-        raise Refusal(f"{label}: missing executable {path}")
-    if not os.access(path, os.X_OK):
-        raise Refusal(f"{label}: {path} is not executable")
-    digest = sha(path)
+    recorded = record_executable(path, label)
+    path = Path(recorded["path"])
+    digest = recorded["sha256"]
     request = json.dumps({"kind": "config", "source": PROBE_SOURCE}) + "\n"
     try:
         proc = subprocess.run([str(path)], input=request, text=True, capture_output=True,
@@ -118,7 +141,7 @@ def verify_runner(path, expected_engine, label, timeout=60):
     if receipt.get("ok") is not True or json.dumps(receipt.get("value"), sort_keys=True) != \
             json.dumps(PROBE_VALUE, sort_keys=True):
         raise Refusal(f"{label}: engine probe returned {receipt!r}, not the expected value")
-    if sha(path) != digest:
+    if record_executable(path, label)["sha256"] != digest:
         raise Refusal(f"{label}: {path} changed while it was being probed")
     return {"path": str(path), "sha256": digest, "engine": receipt["engine"], "receipt": receipt}
 
@@ -308,6 +331,23 @@ def main():
         "Standalone runners prove host behavior, not candidate CLI/factory/dev-reload integration.",
         "A watchdog expiry is a failed observation, never clean shutdown evidence.",
         "No baseline, Node or Deno fallback executor is selected when the candidate is missing."]}
+    runners = {}
+    gates = {}
+    report["executables"] = runners
+    report["gates"] = gates
+    report["executable_checks"] = []
+
+    def unchanged(after):
+        check = {"after": after, "passed": False}
+        report["executable_checks"].append(check)
+        try:
+            check["sha256"] = verify_executables_unchanged(runners, after)
+        except Refusal as error:
+            check["error"] = str(error)
+            raise
+        check["passed"] = True
+        return check["sha256"]
+
     try:
         report["environment"] = acceptance.environment()
         report["icu"] = acceptance.prepare_icu()
@@ -333,25 +373,13 @@ def main():
             raise Refusal(f"candidate library tests did not pass with a nonzero count: {summary}")
         report["candidate_lib_tests"] = summary
         examples = target / "debug" / "examples"
-        runners = {
-            "baseline": verify_runner(examples / "direct_v8_baseline", BASELINE_ENGINE, "baseline"),
-            "candidate": verify_runner(examples / "direct_v8", CANDIDATE_ENGINE, "candidate"),
-        }
+        runners["baseline"] = verify_runner(examples / "direct_v8_baseline", BASELINE_ENGINE, "baseline")
+        runners["candidate"] = verify_runner(examples / "direct_v8", CANDIDATE_ENGINE, "candidate")
         outer = examples / "direct_v8_outer_config"
-        if not outer.is_file():
-            raise Refusal(f"missing outer-config runner {outer}")
-        runners["outer_config"] = {"path": str(outer), "sha256": sha(outer)}
-        report["executables"] = runners
+        runners["outer_config"] = record_executable(outer, "outer_config")
         baseline, candidate = runners["baseline"]["path"], runners["candidate"]["path"]
+        unchanged("runner probes")
 
-        def unchanged(after):
-            for name in ("baseline", "candidate"):
-                now = sha(runners[name]["path"])
-                if now != runners[name]["sha256"]:
-                    raise Refusal(f"{name} executable bytes changed during the {after} gate "
-                                  f"({runners[name]['sha256']} -> {now}); rebuild and rerun")
-
-        gates = {}
         gates["config"] = acceptance.gate("gate-config", ["check-config.py", "--baseline", baseline,
                                           "--candidate", candidate], out / "config-gate.json", engine_counts)
         unchanged("config")
@@ -368,14 +396,23 @@ def main():
         unchanged("modules")
         gates["outer_config"] = acceptance.gate("gate-outer-config", ["check-outer-config.py", "--runner", outer],
                                                 out / "outer-config-gate.json", rows_counts)
+        unchanged("outer-config")
         if args.generated:
+            # Pin each build output immediately: a later Cargo command must not
+            # silently replace an earlier helper before its first digest is read.
             acceptance.run("build-postprocessor", POSTPROCESSOR_BUILD, guarded=True)
+            postprocessor = examples / "direct_v8_postprocess"
+            runners["postprocessor"] = record_executable(postprocessor, "postprocessor")
+            unchanged("postprocessor build")
             zfb_build = acceptance.run("build-zfb", ZFB_BUILD, guarded=True,
                                        env={"ZFB_ESBUILD_BIN": str(args.esbuild.resolve())})
+            runners["zfb"] = record_executable(target / "debug" / "zfb", "zfb")
+            unchanged("zfb build")
             wrapper_json = acceptance.run("build-wrapper-test", WRAPPER_TEST_BUILD, guarded=True,
                                           env={"ZFB_ESBUILD_BIN": str(args.esbuild.resolve())})
             wrapper = discover_wrapper_test_binary(wrapper_json.stdout)
-            # The all-targets trap: re-verify the candidate after further cargo builds.
+            runners["wrapper_test_binary"] = record_executable(wrapper, "wrapper_test_binary")
+            # The all-targets trap also applies to the already pinned helpers.
             unchanged("generated-prerequisite builds")
             node = args.node or shutil.which("node")
             rustc = args.rustc or subprocess.run(["rustup", "which", "rustc"], capture_output=True,
@@ -383,15 +420,12 @@ def main():
             build_record = json.dumps({"argv": zfb_build.args if hasattr(zfb_build, "args") else ZFB_BUILD,
                                        "env": {k: acceptance.env[k] for k in RECORDED_ENV if k in acceptance.env},
                                        "ZFB_ESBUILD_BIN": str(args.esbuild.resolve())}, sort_keys=True)
-            postprocessor = examples / "direct_v8_postprocess"
-            runners["postprocessor"] = {"path": str(postprocessor), "sha256": sha(postprocessor)}
-            runners["zfb"] = {"path": str(target / "debug" / "zfb"), "sha256": sha(target / "debug" / "zfb")}
-            runners["wrapper_test_binary"] = {"path": wrapper, "sha256": sha(wrapper)}
             generated = out / "generated"
             acceptance.run("prepare-fixtures", [sys.executable, "-I", "-B", HERE / "prepare-fixtures.py",
                            "--zfb", target / "debug" / "zfb", "--esbuild", args.esbuild.resolve(),
                            "--wrapper-test-binary", wrapper, "--rustc", rustc, "--node", node,
                            "--producer-build-command", build_record, "--output", generated], guarded=True)
+            unchanged("fixture preparation")
             gates["generated"] = acceptance.gate("gate-generated", ["check-generated.py", "--snapshot",
                                                  generated / "frozen", "--baseline", baseline, "--candidate",
                                                  candidate, "--postprocessor", postprocessor, "--node", node,
@@ -399,8 +433,7 @@ def main():
                                                  out / "generated-results", generated_counts,
                                                  report_path=out / "generated-results" / "results.json")
             unchanged("generated")
-        report["gates"] = gates
-        report["executables_after"] = {name: sha(info["path"]) for name, info in runners.items()}
+        report["executables_after"] = unchanged("final verification")
         report["passed"] = all(g["passed"] for g in gates.values())
         if not report["passed"]:
             failed = [name for name, g in gates.items() if not g["passed"]]
