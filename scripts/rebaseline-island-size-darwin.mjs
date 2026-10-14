@@ -54,6 +54,18 @@
 // old `[[package]]` record must survive byte-identical, and the additions must
 // equal the `--added-packages` allowlist. Only the Cargo hash and its evidence
 // move. `release-bump` and `runtime-identity` refuse any Cargo.lock movement.
+// The old lock comes only from git: `--old-cargo-ref <ref>[:<path>]` is resolved
+// once in the supplied checkout and recorded as `oldLockSource: {commit, path,
+// sha256}`; `--old-cargo-lock <file>` is optional corroboration (#4219).
+//
+// `release-bump`, `runtime-identity` and `cargo-producer-lock` record the flat
+// immediate predecessor `baselineEvidence.repinnedFrom` through the Linux
+// script's predecessorRecord, with a `contract` reference to the previous
+// contract bytes (SHA-256, plus commit and path when HEAD or an explicit
+// `--previous-contract-ref` stores exactly those bytes). `baselineSourceSha` is
+// the measured source; `contract.commit` is where the previous contract is
+// stored. No file is written before every validation and every rendered output
+// succeeds.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
@@ -79,14 +91,17 @@ import {
   cargoTransitionText,
   checkCargoProducerLockArgs,
   checkFingerprintHelperArgs,
+  checkPreviousContractRefArgs,
   artifactFingerprintProblem,
   contractFingerprint,
   describeDeltas,
   diffCeilings,
   measuredTotals,
+  previousContractReference,
   proveCargoProducerLock,
   readCargoLockEvidence,
   readCheckoutIdentity,
+  repinnedFromRecord,
   rewriteTestBlock,
   runFingerprintHelperRepin,
 } from "./rebaseline-island-size-linux.mjs";
@@ -107,6 +122,8 @@ const DARWIN_REASONS = [
   FINGERPRINT_HELPER_REASON,
   CARGO_PRODUCER_LOCK_REASON,
 ];
+// The Darwin reasons that record `repinnedFrom` and accept --previous-contract-ref.
+const DARWIN_REPINNED_FROM_REASONS = [...REPIN_REASONS, CARGO_PRODUCER_LOCK_REASON];
 const shaPattern = /^[0-9a-f]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-next\.\d+)?$/;
 
@@ -563,6 +580,7 @@ function fingerprintMoves(contract, checkout) {
 // carried over untouched; a v3 fingerprint movement is refused.
 export function repinDarwinContract(contract, totals, evidence, reason, checkout) {
   if (!REPIN_REASONS.includes(reason)) throw new Error("unknown re-pin --reason " + reason);
+  const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
   const cargo = cargoMoveRefusal(reason, evidence.cargoLockSha256, contract);
   if (cargo) errors.push(cargo);
@@ -619,13 +637,7 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
       expiresAt: evidence.artifactExpiresAt,
     },
     nativeRunner: evidence.nativeRunner,
-    repinnedFrom: {
-      schemaVersion: contract.schemaVersion,
-      outcome: contract.outcome,
-      packageVersion: previousVersion,
-      baselineSourceSha: contract.baselineSourceSha,
-      baselineRunId: contract.baselineEvidence?.runId,
-    },
+    repinnedFrom,
     originalCheckerResult: evidence.originalCheckerResult,
     actualGzip: actualGzipRows(totals),
     note:
@@ -766,6 +778,7 @@ export function migrateDarwinFingerprint(contract, totals, evidence, checkout) {
 // contract (fixtures, runners and toolchain are checked by
 // validateDarwinEvidence); `cargoLock` is readCargoLockEvidence's result.
 export function transitionDarwinCargoLock(contract, totals, evidence, checkout, cargoLock) {
+  const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
   if (contract.schemaVersion !== 3) {
     errors.push(
@@ -830,13 +843,7 @@ export function transitionDarwinCargoLock(contract, totals, evidence, checkout, 
       expiresAt: evidence.artifactExpiresAt,
     },
     nativeRunner: evidence.nativeRunner,
-    repinnedFrom: {
-      schemaVersion: contract.schemaVersion,
-      outcome: contract.outcome,
-      packageVersion: contract.toolchain.packageVersion,
-      baselineSourceSha: contract.baselineSourceSha,
-      baselineRunId: contract.baselineEvidence?.runId,
-    },
+    repinnedFrom,
     cargoTransition: transition,
     originalCheckerResult: evidence.originalCheckerResult,
     actualGzip: actualGzipRows(totals),
@@ -1122,6 +1129,7 @@ export function parseArgs(argv) {
     throw new Error("--reason must be one of " + DARWIN_REASONS.join(", "));
   }
   checkCargoProducerLockArgs(values);
+  checkPreviousContractRefArgs(values, DARWIN_REPINNED_FROM_REASONS);
   return values;
 }
 
@@ -1218,7 +1226,8 @@ export function main(argv = process.argv.slice(2), root = ".") {
   }
   const at = (path) => join(root, path);
   const contractPath = args.contract ?? at(CONTRACT);
-  const contract = JSON.parse(readFileSync(contractPath, "utf8"));
+  const contractBytes = readFileSync(contractPath);
+  const contract = JSON.parse(contractBytes.toString("utf8"));
   const artifact = loadDarwinArtifact(args.artifact);
   const problems = validateDarwinEvidence(contract, artifact, args["source-sha"], args.reason);
   if (problems.length > 0) throw new Error("artifact rejected: " + problems.join("; "));
@@ -1234,6 +1243,14 @@ export function main(argv = process.argv.slice(2), root = ".") {
     if (mismatches.length > 0) throw new Error("re-pin rejected: " + mismatches.join("; "));
     const migration = args.reason === FINGERPRINT_MIGRATION;
     const cargo = args.reason === CARGO_PRODUCER_LOCK_REASON;
+    if (!migration) {
+      evidence.previousContract = previousContractReference(
+        root,
+        contractPath,
+        contractBytes,
+        args["previous-contract-ref"],
+      );
+    }
     const result = migration
       ? migrateDarwinFingerprint(contract, totals, evidence, checkout)
       : cargo
@@ -1245,24 +1262,22 @@ export function main(argv = process.argv.slice(2), root = ".") {
             readCargoLockEvidence(args, root),
           )
         : repinDarwinContract(contract, totals, evidence, args.reason, checkout);
-    writeFileSync(contractPath, JSON.stringify(result.contract, null, 2) + "\n");
-    writeFileSync(
-      at(TEST_FILE),
-      rewriteDarwinTestPins(readFileSync(at(TEST_FILE), "utf8"), result.contract),
-    );
-    appendFileSync(
-      args.readme ?? at(README),
-      migration
-        ? darwinFingerprintReadmeSection(result.contract, result.gzipMoves)
-        : cargo
-          ? darwinCargoProducerLockReadmeSection(result.contract, result.gzipMoves)
-          : darwinRepinReadmeSection(
-              result.contract,
-              result.gzipMoves,
-              result.previousVersion,
-              args.reason,
-            ),
-    );
+    // Every output is rendered before the first write.
+    const contractText = JSON.stringify(result.contract, null, 2) + "\n";
+    const testText = rewriteDarwinTestPins(readFileSync(at(TEST_FILE), "utf8"), result.contract);
+    const readmeText = migration
+      ? darwinFingerprintReadmeSection(result.contract, result.gzipMoves)
+      : cargo
+        ? darwinCargoProducerLockReadmeSection(result.contract, result.gzipMoves)
+        : darwinRepinReadmeSection(
+            result.contract,
+            result.gzipMoves,
+            result.previousVersion,
+            args.reason,
+          );
+    writeFileSync(contractPath, contractText);
+    writeFileSync(at(TEST_FILE), testText);
+    appendFileSync(args.readme ?? at(README), readmeText);
     console.log(
       (migration ? "migrated" : "re-pinned") +
         " Darwin island-size contract to v" +
@@ -1276,8 +1291,10 @@ export function main(argv = process.argv.slice(2), root = ".") {
     return;
   }
   const next = migrateDarwinContract(contract, totals, evidence);
-  writeFileSync(contractPath, JSON.stringify(next, null, 2) + "\n");
-  appendFileSync(args.readme ?? at(README), darwinReadmeSection(next, contract));
+  const contractText = JSON.stringify(next, null, 2) + "\n";
+  const readmeText = darwinReadmeSection(next, contract);
+  writeFileSync(contractPath, contractText);
+  appendFileSync(args.readme ?? at(README), readmeText);
   console.log(
     "migrated Darwin island-size contract to v" +
       next.toolchain.packageVersion +

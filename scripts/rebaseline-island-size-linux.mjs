@@ -34,11 +34,31 @@
 // exactly the allowlist (proveCargoProducerLock below; the Darwin script reuses
 // it), and moves only the Cargo hash and its evidence. `release-bump` and
 // `runtime-identity` refuse any Cargo.lock movement and name this reason.
+// The old lock is read from git, never from a filesystem path (#4219):
+// `--old-cargo-ref <ref>[:<path>]` (path defaults to Cargo.lock) is resolved
+// once to a full commit in the supplied checkout root, the blob is read with
+// `git show <commit>:<path>`, its raw bytes must hash to
+// `--expected-old-cargo-sha`, and the transition records
+// `oldLockSource: {commit, path, sha256}` (readGitBlob below). An optional
+// `--old-cargo-lock <file>` only corroborates: its bytes must equal the blob.
+//
+// Every artifact reason except `metric-migration` and `fingerprint-migration`
+// (the latter keeps `migratedFrom`) records the immediate predecessor as a flat
+// `baselineEvidence.repinnedFrom` (predecessorRecord below, shared with the
+// Darwin script), never nesting the previous evidence. Its `contract` member
+// cites the previous contract bytes: always their SHA-256, plus `commit` and
+// `path` when `git show HEAD:<path>` (or an explicit `--previous-contract-ref`,
+// which must match and never falls back to HEAD) is byte-identical to them.
+// `baselineSourceSha` names the measured source; `contract.commit` names the
+// commit that stores the previous contract file. They are different commits.
+//
+// No file is written before every validation and every rendered output
+// succeeds; there is no force or ignore-provenance option of any kind.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -364,9 +384,13 @@ function assertCargoUnchanged(contract, evidence, reason) {
 export const CARGO_ARGS = Object.freeze([
   "expected-old-cargo-sha",
   "expected-new-cargo-sha",
+  "old-cargo-ref",
   "old-cargo-lock",
   "added-packages",
 ]);
+// Corroboration only: the old lock's source of truth is `--old-cargo-ref`.
+export const OPTIONAL_CARGO_ARGS = Object.freeze(["old-cargo-lock"]);
+export const OLD_CARGO_LOCK_PATH = "Cargo.lock";
 // The only keys a cargo-producer-lock transition may write; baselineEvidence is
 // replaced as a whole.
 export const CARGO_PRODUCER_LOCK_MOVEMENT = Object.freeze([
@@ -398,7 +422,7 @@ export function parseAddedPackages(text) {
 }
 
 // `values` are the parsed `--key value` pairs; the Cargo arguments belong to
-// cargo-producer-lock alone, which requires all four.
+// cargo-producer-lock alone, which requires all but OPTIONAL_CARGO_ARGS.
 export function checkCargoProducerLockArgs(values) {
   if (values.reason !== CARGO_PRODUCER_LOCK_REASON) {
     const stray = CARGO_ARGS.filter((key) => Object.hasOwn(values, key));
@@ -408,14 +432,44 @@ export function checkCargoProducerLockArgs(values) {
     return;
   }
   for (const key of CARGO_ARGS) {
-    if (!values[key]) throw new Error("required --" + key);
+    if (!OPTIONAL_CARGO_ARGS.includes(key) && !values[key]) {
+      throw new Error("required --" + key);
+    }
   }
   for (const key of ["expected-old-cargo-sha", "expected-new-cargo-sha"]) {
     if (!/^[0-9a-f]{64}$/.test(values[key])) {
       throw new Error("--" + key + " must be a 64-character SHA-256");
     }
   }
+  parseOldCargoRef(values["old-cargo-ref"]);
   parseAddedPackages(values["added-packages"]);
+}
+
+// `<ref>[:<path>]` -> {ref, path}, the path defaulting to Cargo.lock.
+export function parseOldCargoRef(text) {
+  try {
+    return parseRefSpec(text, OLD_CARGO_LOCK_PATH, "--old-cargo-ref");
+  } catch (error) {
+    throw cargoError(error.message);
+  }
+}
+
+// The artifact reasons that record a flat `repinnedFrom` predecessor; the two
+// migrations do not (fingerprint-migration keeps `migratedFrom`). Only these
+// accept --previous-contract-ref.
+export const REPINNED_FROM_REASONS = Object.freeze([
+  "release-bump",
+  "runtime-identity",
+  "lockfile-provenance",
+  CARGO_PRODUCER_LOCK_REASON,
+]);
+
+export function checkPreviousContractRefArgs(values, reasons = REPINNED_FROM_REASONS) {
+  if (!Object.hasOwn(values, "previous-contract-ref")) return;
+  if (!reasons.includes(values.reason)) {
+    throw new Error("--previous-contract-ref is only for --reason " + reasons.join(", "));
+  }
+  checkGitRef(values["previous-contract-ref"], "--previous-contract-ref");
 }
 
 // Splits a Cargo.lock into its header, its `[[package]]` records and any other
@@ -492,10 +546,16 @@ export function diffCargoLocks(oldText, newText) {
   return { problems, added, changed, removed, duplicates: [...new Set(duplicates)] };
 }
 
+function decodeLock(bytes) {
+  return typeof bytes === "string" ? bytes : Buffer.from(bytes ?? "").toString("utf8");
+}
+
 // Proves one reviewed additive Cargo.lock transition and returns the
 // `cargoTransition` evidence, or throws naming every failed check. `contractSha`
 // is the pinned hash, `artifactSha` the measured run's, `newText` the checkout's
-// Cargo.lock and `oldText` the operator-supplied old lock.
+// Cargo.lock and `oldText` the old lock's git blob; both are hashed as raw
+// bytes before decoding. `oldLockSource` is the blob's verified
+// {commit, path, sha256} (readCargoLockEvidence); a filesystem path is refused.
 export function proveCargoProducerLock({
   contractSha,
   artifactSha,
@@ -514,8 +574,32 @@ export function proveCargoProducerLock({
     problems.push("the contract pins Cargo.lock " + contractSha + ", not --expected-old-cargo-sha");
   }
   const oldSha = sha256(oldText ?? "");
+  const source = isRecord(oldLockSource)
+    ? {
+        commit: oldLockSource.commit,
+        path: oldLockSource.path,
+        sha256: oldLockSource.sha256,
+      }
+    : null;
+  if (
+    !source ||
+    !/^[0-9a-f]{40}$/.test(source.commit ?? "") ||
+    typeof source.path !== "string" ||
+    source.path === "" ||
+    source.sha256 !== oldSha
+  ) {
+    problems.push(
+      "the old Cargo.lock source must be its verified git blob {commit, path, sha256}, not " +
+        JSON.stringify(oldLockSource),
+    );
+  }
   if (oldSha !== expectedOldSha) {
-    problems.push(oldLockSource + " hashes to " + oldSha + ", not --expected-old-cargo-sha");
+    problems.push(
+      (source ? source.commit + ":" + source.path : String(oldLockSource)) +
+        " hashes to " +
+        oldSha +
+        ", not --expected-old-cargo-sha",
+    );
   }
   const newSha = sha256(newText ?? "");
   if (newSha !== expectedNewSha) {
@@ -529,7 +613,7 @@ export function proveCargoProducerLock({
     );
   }
   if (problems.length > 0) throw cargoError(problems.join("; "));
-  const diff = diffCargoLocks(oldText, newText);
+  const diff = diffCargoLocks(decodeLock(oldText), decodeLock(newText));
   const allowlist = [...added].sort();
   const found = [...diff.added].sort();
   if (diff.changed.length > 0) problems.push("changed records " + diff.changed.join(", "));
@@ -553,7 +637,7 @@ export function proveCargoProducerLock({
     added: found,
     changed: [],
     removed: [],
-    oldLockSource,
+    oldLockSource: source,
   };
 }
 
@@ -701,8 +785,12 @@ export function cargoTransitionMarkdown(transition) {
     transition.added.map((id) => "`" + id + "`").join(", ") +
     "); every previous `[[package]]` record is byte-identical, the header is unchanged, and no " +
     "record changed or was removed, proved against `" +
-    transition.oldLockSource +
-    "`."
+    transition.oldLockSource.path +
+    "` at commit `" +
+    transition.oldLockSource.commit +
+    "` (SHA-256 `" +
+    transition.oldLockSource.sha256 +
+    "`)."
   );
 }
 
@@ -717,8 +805,55 @@ export function cargoTransitionText(transition) {
     " records (" +
     transition.added.join(", ") +
     ") with every previous [[package]] record byte-identical and none changed or removed, proved against " +
-    transition.oldLockSource
+    transition.oldLockSource.path +
+    " at commit " +
+    transition.oldLockSource.commit +
+    " (SHA-256 " +
+    transition.oldLockSource.sha256 +
+    ")"
   );
+}
+
+// The immediate predecessor a re-pin records as `baselineEvidence.repinnedFrom`
+// (both platforms, same shape and key order): read from the input contract's
+// top-level fields only, so earlier evidence is never nested.
+export function predecessorRecord(contract) {
+  return {
+    schemaVersion: contract.schemaVersion,
+    outcome: contract.outcome,
+    packageVersion: contract.toolchain.packageVersion,
+    baselineSourceSha: contract.baselineSourceSha,
+    baselineRunId: contract.baselineEvidence?.runId,
+  };
+}
+
+// `repinnedFrom.contract`: the previous contract's byte digest, plus the commit
+// and repository path that store those exact bytes when one was verified
+// (previousContractReference). Refuses anything else, so no re-pin is written
+// without a reference.
+export function contractReferenceRecord(reference) {
+  const valid =
+    isRecord(reference) &&
+    /^[0-9a-f]{64}$/.test(reference.sha256 ?? "") &&
+    Object.keys(reference).every((key) => ["sha256", "commit", "path"].includes(key)) &&
+    (Object.hasOwn(reference, "commit")
+      ? /^[0-9a-f]{40}$/.test(reference.commit ?? "") &&
+        typeof reference.path === "string" &&
+        reference.path !== ""
+      : !Object.hasOwn(reference, "path"));
+  if (!valid) {
+    throw new Error(
+      "a re-pin needs the previous contract reference {sha256[, commit, path]}, found " +
+        JSON.stringify(reference),
+    );
+  }
+  return Object.hasOwn(reference, "commit")
+    ? { sha256: reference.sha256, commit: reference.commit, path: reference.path }
+    : { sha256: reference.sha256 };
+}
+
+export function repinnedFromRecord(contract, reference) {
+  return { ...predecessorRecord(contract), contract: contractReferenceRecord(reference) };
 }
 
 // Actual gzip movement between the previous contract and the new measurement,
@@ -766,6 +901,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
         String(contract.schemaVersion),
     );
   }
+  const repinnedFrom = REPINNED_FROM_REASONS.includes(reason)
+    ? repinnedFromRecord(contract, evidence.previousContract)
+    : null;
   const { missingFixtures, rawChanges, normalizedChanges } = diffCeilings(contract, totals);
   if (missingFixtures.length > 0) {
     throw new Error(
@@ -969,6 +1107,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
           },
         }
       : {}),
+    ...(repinnedFrom ? { repinnedFrom } : {}),
     ...(cargoTransition ? { cargoTransition } : {}),
     actualGzip: actualGzipRows(totals),
     note:
@@ -1262,12 +1401,181 @@ export async function computeWithHelperSource(source, root, lockText, currentVer
   }
 }
 
+// Repository discovery starts at the supplied root: these variables would make
+// git read another repository or worktree instead.
+const GIT_REDIRECT_ENV = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+];
+
+function gitOptions(root) {
+  const env = { ...process.env };
+  for (const key of GIT_REDIRECT_ENV) delete env[key];
+  return { cwd: root, env, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] };
+}
+
 function git(root, args) {
-  return execFileSync("git", args, {
-    cwd: root,
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  return execFileSync("git", args, gitOptions(root));
+}
+
+// Like git() but returns {status, stdout, stderr} so a warning on success is visible.
+function runGit(root, args) {
+  const result = spawnSync("git", args, gitOptions(root));
+  if (result.error) throw result.error;
+  return result;
+}
+
+// A ref operand: non-empty, not option-like, and not a `<ref>:<path>` object name.
+export function checkGitRef(ref, label) {
+  if (typeof ref !== "string" || ref === "" || ref.startsWith("-") || ref.includes(":")) {
+    throw new Error(label + " must name a git ref, not " + JSON.stringify(ref));
+  }
+}
+
+// A canonical repository-relative path: no empty, `.` or `..` segment.
+export function checkGitPath(path, label) {
+  if (typeof path !== "string" || path === "") throw new Error(label + " has an empty path");
+  if (isAbsolute(path) || path.startsWith("/")) {
+    throw new Error(label + " path must be relative to the repository root, not " + path);
+  }
+  const segments = path.split(/[\\/]/);
+  if (segments.includes("..")) {
+    throw new Error(label + " path must not contain a .. segment: " + path);
+  }
+  if (segments.some((segment) => segment === "" || segment === ".")) {
+    throw new Error(label + " path must be a normalized repository path: " + path);
+  }
+}
+
+// `<ref>[:<path>]` -> {ref, path}; refnames cannot contain `:`, so the first
+// one separates the path, which defaults to `defaultPath`.
+export function parseRefSpec(text, defaultPath, label) {
+  const spec = String(text ?? "");
+  const colon = spec.indexOf(":");
+  const ref = colon < 0 ? spec : spec.slice(0, colon);
+  const path = colon < 0 ? defaultPath : spec.slice(colon + 1);
+  checkGitRef(ref, label);
+  checkGitPath(path, label);
+  return { ref, path };
+}
+
+// Resolves `ref` exactly once, in `root`, to one full commit SHA. `--quiet`
+// would silence git's "refname is ambiguous" warning, so it is not passed:
+// any stderr output (an ambiguous name or short SHA) refuses, as does a
+// non-commit object. There is no fallback ref.
+export function resolveCommit(root, ref, label) {
+  checkGitRef(ref, label);
+  const { status, stdout, stderr } = runGit(root, [
+    "-c",
+    "core.warnAmbiguousRefs=true",
+    "rev-parse",
+    "--verify",
+    ref + "^{commit}",
+  ]);
+  const message = stderr.toString().trim();
+  const commit = stdout.toString().trim();
+  if (status !== 0 || message !== "" || !/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error(
+      label +
+        " " +
+        ref +
+        " does not resolve to exactly one commit in " +
+        root +
+        (message ? ": " + message.split("\n").join("; ") : ""),
+    );
+  }
+  return commit;
+}
+
+// The raw bytes of `<ref>:<path>` from the checkout at `root`: `ref` resolves
+// once to a full commit (resolveCommit), the object must be a blob, and it is
+// read only through `git show`. Returns {commit, path, bytes}.
+export function readGitBlob(root, ref, path, label = "git blob") {
+  checkGitPath(path, label);
+  const commit = resolveCommit(root, ref, label);
+  const object = commit + ":" + path;
+  const type = runGit(root, ["cat-file", "-t", object]);
+  if (type.status !== 0) throw new Error(label + " " + object + " does not exist");
+  const kind = type.stdout.toString().trim();
+  if (kind !== "blob") throw new Error(label + " " + object + " is a " + kind + ", not a blob");
+  const shown = runGit(root, ["show", "--no-textconv", object]);
+  if (shown.status !== 0) {
+    throw new Error(label + " cannot read " + object + ": " + shown.stderr.toString().trim());
+  }
+  return { commit, path, bytes: shown.stdout };
+}
+
+// `file`'s path inside the git checkout at `root`, `/`-separated from its
+// top level, or null when `root` is not a checkout or `file` lies outside it.
+export function repositoryPath(root, file) {
+  const top = runGit(root, ["rev-parse", "--show-toplevel"]);
+  if (top.status !== 0) return null;
+  let path;
+  try {
+    path = relative(realpathSync(top.stdout.toString().trim()), realpathSync(file));
+  } catch {
+    return null;
+  }
+  if (path === "" || isAbsolute(path) || path.split(sep).includes("..")) return null;
+  return path.split(sep).join("/");
+}
+
+export const PREVIOUS_CONTRACT_NOTICE =
+  "previous contract bytes are not at HEAD; recorded digest only — no retrievable citation";
+
+// The `repinnedFrom.contract` reference for the input contract `bytes` read
+// from `file`: always their SHA-256; `commit` and `path` only when the blob at
+// that commit is byte-identical. Without `ref`, HEAD is resolved once and a
+// mismatch (an edited, uncommitted or reformatted contract, or no checkout)
+// records the digest alone with a stderr notice. An explicit `ref` must match
+// or the re-pin is refused; it never falls back to HEAD.
+export function previousContractReference(
+  root,
+  file,
+  bytes,
+  ref,
+  notify = (message) => console.error(message),
+) {
+  const reference = { sha256: sha256(bytes) };
+  const label = "--previous-contract-ref";
+  const path = repositoryPath(root, file);
+  if (ref !== undefined) {
+    checkGitRef(ref, label);
+    if (!path) {
+      throw new Error(label + " " + ref + ": " + file + " is not inside a git checkout at " + root);
+    }
+    const blob = readGitBlob(root, ref, path, label);
+    if (!blob.bytes.equals(Buffer.from(bytes))) {
+      throw new Error(
+        label +
+          " " +
+          ref +
+          ": " +
+          blob.commit +
+          ":" +
+          path +
+          " is not byte-identical to the input contract; refusing",
+      );
+    }
+    return { ...reference, commit: blob.commit, path };
+  }
+  if (path) {
+    try {
+      const blob = readGitBlob(root, "HEAD", path, "HEAD");
+      if (blob.bytes.equals(Buffer.from(bytes))) {
+        return { ...reference, commit: blob.commit, path };
+      }
+    } catch {
+      // No HEAD, or no contract blob at HEAD: digest only, reported below.
+    }
+  }
+  notify("notice: " + PREVIOUS_CONTRACT_NOTICE + " (" + file + ")");
+  return reference;
 }
 
 // Gathers the evidence for a fingerprint-helper re-pin: both helpers run on the
@@ -1505,14 +1813,16 @@ export async function runFingerprintHelperRepin(baseRef, root = ".", log = conso
   if (!isDeepStrictEqual(JSON.parse(explain.toString()), expected)) {
     throw helperRepinError("the new helper's --explain output disagrees with the proof");
   }
+  const readme = fingerprintHelperReadmeSection(
+    result.contracts.linux,
+    proof,
+    result.previousHelperSha256,
+  );
   for (const [name, file] of Object.entries(HELPER_CONTRACTS)) {
     writeFileSync(at(file), JSON.stringify(result.contracts[name], null, 2) + "\n");
   }
   writeFileSync(at(INVENTORY_FILE), explain);
-  appendFileSync(
-    at(README),
-    fingerprintHelperReadmeSection(result.contracts.linux, proof, result.previousHelperSha256),
-  );
+  appendFileSync(at(README), readme);
   log(
     [
       "fingerprint-helper re-pin of both island-size contracts (#4198):",
@@ -1577,20 +1887,34 @@ export function parseArgs(argv) {
     throw new Error("--reason must be one of " + Object.keys(REASONS).join(", "));
   }
   checkCargoProducerLockArgs(values);
+  checkPreviousContractRefArgs(values);
   return values;
 }
 
 // The cargo-producer-lock evidence a CLI run passes to the pure proof: the
-// operator's expected hashes and allowlist, the old lock they supplied and the
-// checkout's own Cargo.lock.
+// operator's expected hashes and allowlist, the old lock's git blob at
+// `--old-cargo-ref` in `root` and the checkout's own Cargo.lock, both as raw
+// bytes. `--old-cargo-lock`, when given, must be byte-identical to the blob.
 export function readCargoLockEvidence(args, root) {
+  const { ref, path } = parseOldCargoRef(args["old-cargo-ref"]);
+  let blob;
+  try {
+    blob = readGitBlob(root, ref, path, "--old-cargo-ref");
+  } catch (error) {
+    throw cargoError(error.message);
+  }
+  if (Object.hasOwn(args, "old-cargo-lock")) {
+    if (!readFileSync(args["old-cargo-lock"]).equals(blob.bytes)) {
+      throw cargoError("--old-cargo-lock differs from " + blob.commit + ":" + blob.path);
+    }
+  }
   return {
     expectedOldSha: args["expected-old-cargo-sha"],
     expectedNewSha: args["expected-new-cargo-sha"],
     added: parseAddedPackages(args["added-packages"]),
-    oldText: readFileSync(args["old-cargo-lock"], "utf8"),
-    newText: readFileSync(join(root, "Cargo.lock"), "utf8"),
-    oldLockSource: args["old-cargo-lock"],
+    oldText: blob.bytes,
+    newText: readFileSync(join(root, "Cargo.lock")),
+    oldLockSource: { commit: blob.commit, path: blob.path, sha256: sha256(blob.bytes) },
   };
 }
 
@@ -1613,7 +1937,8 @@ export function main(argv = process.argv.slice(2), root = ".") {
   }
   const provenance = measurements.workspace.provenance;
   for (const mode of MODES) assertLinuxX64Provenance(measurements[mode].provenance);
-  const contract = JSON.parse(readFileSync(at(CONTRACT), "utf8"));
+  const contractBytes = readFileSync(at(CONTRACT));
+  const contract = JSON.parse(contractBytes.toString("utf8"));
   const checkout = readCheckoutIdentity(contract, root);
   const { packageVersion: version, pnpmLockSha256 } = checkout;
   for (const mode of MODES) {
@@ -1654,18 +1979,31 @@ export function main(argv = process.argv.slice(2), root = ".") {
       ...(args.reason === CARGO_PRODUCER_LOCK_REASON
         ? { cargoLock: readCargoLockEvidence(args, root) }
         : {}),
+      ...(REPINNED_FROM_REASONS.includes(args.reason)
+        ? {
+            previousContract: previousContractReference(
+              root,
+              at(CONTRACT),
+              contractBytes,
+              args["previous-contract-ref"],
+            ),
+          }
+        : {}),
     },
     args.reason,
   );
-  writeFileSync(at(CONTRACT), JSON.stringify(result.contract, null, 2) + "\n");
-  writeFileSync(
-    at(TEST_FILE),
-    rewriteTestPins(readFileSync(at(TEST_FILE), "utf8"), result.contract),
+  // Every output is rendered before the first write.
+  const contractText = JSON.stringify(result.contract, null, 2) + "\n";
+  const testText = rewriteTestPins(readFileSync(at(TEST_FILE), "utf8"), result.contract);
+  const readmeText = readmeSection(
+    result.contract,
+    result.gzipEvidence,
+    result.previousVersion,
+    args.reason,
   );
-  appendFileSync(
-    at(README),
-    readmeSection(result.contract, result.gzipEvidence, result.previousVersion, args.reason),
-  );
+  writeFileSync(at(CONTRACT), contractText);
+  writeFileSync(at(TEST_FILE), testText);
+  appendFileSync(at(README), readmeText);
   console.log(
     "re-pinned Linux island-size contract to v" +
       version +
