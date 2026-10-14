@@ -52,7 +52,7 @@ surface and the only entry that exports `compile`. Existing root imports and
 `swc_core` and `zfb-render` while intentionally retaining `zfb-content` and
 `syntect-fancy`; parse is not syntect-free.
 
-| Import | gzip-9 wasm (4.5.0) | Runtime values | Type surface | Choose it for |
+| Import | gzip-9 wasm (4.5.1) | Runtime values | Type surface | Choose it for |
 | --- | ---: | --- | --- | --- |
 | `@takazudo/zfb-md-wasm` | 1,522,071 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, `MdastAdapterError`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | Full current compile/render/parse/raw-mdast/highlight types | Compile MDX or use several current APIs |
 | `@takazudo/zfb-md-wasm/highlight` | 817,815 B | `init`, `highlightCode`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` | Highlight code only; existing API/resources stay compatible |
@@ -487,7 +487,7 @@ graph.
 
 ### Shipped artifact sizes and locked ceilings
 
-These are the shipped **4.5.0** artifact rows — optimized final wasm after
+These are the shipped **4.5.1** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
@@ -505,7 +505,7 @@ reference ceiling, and a selected-snapshot median of 155.015 s
 880,000 B, render 1,100,000 B, and parse 325,000 B; the complete packed
 tarball ceiling is 3,900,000 B. All four ship inside their ceilings, with
 77,929 B (root), 62,185 B (highlight), 4,919 B (render), and 39,083 B
-(parse) of headroom. These are 4.5.0 measurements, not permanent promises —
+(parse) of headroom. These are 4.5.1 measurements, not permanent promises —
 re-measure against the version you actually install.
 
 **Sizes are guarded; content digests are not.** The byte sizes above are held by
@@ -586,7 +586,7 @@ limitations for the browser build:
 
 ## Bundle size
 
-These are the shipped **4.5.0** artifact rows — optimized final wasm after
+These are the shipped **4.5.1** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
@@ -603,7 +603,7 @@ decision median of 155.015 s [153.496, 165.977]. Locked gzip-9 ceilings are
 root 1,600,000 B, highlight 880,000 B, render 1,100,000 B, and parse
 325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
 inside their ceilings, with 77,929 B (root), 62,185 B (highlight), 4,919 B
-(render), and 39,083 B (parse) of headroom. These are 4.5.0 measurements,
+(render), and 39,083 B (parse) of headroom. These are 4.5.1 measurements,
 not permanent promises — re-measure against the version you actually
 install.
 
