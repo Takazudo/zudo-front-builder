@@ -66,7 +66,9 @@ def main():
     out = args.output.resolve()
     if not out.is_relative_to(ROOT / "target") or out == ROOT / "target" or out.exists():
         parser.error("--output must be a new directory below this repository's ignored target/")
-    tools = {name: getattr(args, name).resolve() for name in ("zfb", "esbuild", "wrapper_test_binary", "rustc", "node")}
+    # Preserve executable spelling: resolving a rustc symlink to rustup changes
+    # argv[0] and reports the wrong tool. File hashing still follows the link.
+    tools = {name: getattr(args, name).absolute() for name in ("zfb", "esbuild", "wrapper_test_binary", "rustc", "node")}
     for name, path in tools.items():
         if not path.is_file():
             parser.error(f"missing explicit {name} executable: {path}")
@@ -164,6 +166,9 @@ def main():
 import { message } from "virtual:message";
 export default { async fetch(request: Request) {
   console.log("prepared plugin request");
+  if (new URL(request.url).pathname === "/binary") {
+    return new Response(new Uint8Array([0,255,128,65]), {status:201,headers:[["content-type","application/octet-stream"],["set-cookie","binary=one"],["set-cookie","binary=two"],["x-prepared","left"],["x-prepared","right"]]});
+  }
   return Response.json({answer,message,method:request.method,marker:request.headers.get("x-input"),body:Array.from(new Uint8Array(await request.arrayBuffer()))}, {headers:[["set-cookie","plugin=one"],["set-cookie","plugin=two"],["x-prepared","42"]]});
 }};
 ''')

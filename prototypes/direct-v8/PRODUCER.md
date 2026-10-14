@@ -48,12 +48,20 @@ After all producer processes exit successfully, freeze the following together:
   not a persistent output to guess at after the build.
 
 The `worker` runner protocol consumes `source`, `name`, `asset_root` and the
-literal request URLs from `site/expected.json`. Decode its binary response
-array only where the expected response is HTML; retain exact bytes for
-`/bytes.bin`. Assert the full ordered header pairs on that route. The current
-page router passes props to page components, not the incoming Request, so this
-fixture intentionally covers a binary response; request-body echo remains a
-separate host-bridge probe.
+five literal request URLs from `site/expected.json`: JSX, MDX/content, missing
+dynamic route, exported paths and consumed Wasm. Decode response bytes only
+where the expected response is HTML or JSON.
+
+The first real baseline CLI producer failed on the original `/bytes.bin` page:
+the production asset pipeline reads rendered pages as UTF-8 before URL rewriting.
+Its non-UTF-8 response therefore failed after rendering. Preserve that original
+run under `target/direct-v8-generated-1/`; the unchanged page and an isolated
+reproduction input live in `negative/producer-binary/`. This is an observed
+baseline production-pipeline limitation, not a candidate normalization or a
+pipeline fix. The positive site omits only that unsupported production page.
+The separate esbuild-prepared plugin Worker still tests binary POST bytes and
+now returns exact `[0, 255, 128, 65]` bytes, status 201 and ordered duplicate
+headers from `/binary`, below the production asset-rewrite boundary.
 
 For the single Chromium representative, write **candidate-rendered** `/` HTML
 into a copy of the frozen dist tree and keep the original emitted client/CSS
@@ -127,8 +135,9 @@ HTML whitespace; response bytes and parity comparisons remain exact. The
 negative's generated stack is mapped by the existing Rust decoder to authored
 `throw.ts:6:9`, with exact `sourcesContent` and the console marker. Fresh-host
 cycles follow that handler failure. The plugin probe is a separate esbuild
-module using prepared virtual/alias hooks and a binary request; it does not
-substitute for the real CLI-generated main/inner Worker.
+module using prepared virtual/alias hooks, a binary POST and a second binary
+response request; it does not substitute for the real CLI-generated main/inner
+Worker or claim binary-page production-pipeline support.
 
 Only after both runtime results pass does the checker use the existing Rust
 head/doctype helpers to postprocess candidate HTML, copy the frozen dist assets,

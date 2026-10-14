@@ -1,0 +1,57 @@
+{
+  "error": "real-zfb-build failed (1); see /workspace/zudo-front-builder/target/direct-v8-generated-1/frozen/producer-logs",
+  "commands": [
+    {
+      "label": "zfb-version",
+      "argv": ["/workspace/zudo-front-builder/target/debug/zfb", "-V"],
+      "cwd": "/workspace/zudo-front-builder",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "esbuild-version",
+      "argv": ["/workspace/zfb-tools/esbuild-0.25.12", "--version"],
+      "cwd": "/workspace/zudo-front-builder",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "rustc-version",
+      "argv": ["/workspace/zfb-cargo/bin/rustup", "-vV"],
+      "cwd": "/workspace/zudo-front-builder",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "node-version",
+      "argv": ["/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node", "--version"],
+      "cwd": "/workspace/zudo-front-builder",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "real-zfb-build",
+      "argv": ["/workspace/zudo-front-builder/target/debug/zfb", "build"],
+      "cwd": "/workspace/zudo-front-builder/target/direct-v8-generated-1/site",
+      "exit_code": 1,
+      "extra_env": {}
+    }
+  ],
+  "producer": {
+    "commit": "8dcdfb35b5f97c32eac5684d1535e82fbf6e024c",
+    "status": "",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "changed_files": {},
+    "policy_inputs": {
+      "Cargo.toml": "30cd2d6138555778cdc357f8d783951e1ae7382c4adf4f7dc5e8130ce8c164d5",
+      "Cargo.lock": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+      "rust-toolchain.toml": "3e18e70208ee460635e239a91c142cf67371feafb718b05617ff06f388bf96df",
+      "pnpm-lock.yaml": "56e687fe05e0b84949881583381551b060cd357f43b0bf6b6bf0b27c2cc95b9a",
+      "package.json": "0a98b6b3615789982e0f74c7f2690555ec678cd7a31bb1fc69d0773de62198ce",
+      "packages/zfb/package.json": "1adad4c087947275605d4febd142503e2a3e9b394694ba68005b78e6040fc0bd",
+      "crates/zfb-toolchain-pins/src/lib.rs": "1b6f9886a64c718d74ad41184d1051800e57cb90ab2b7ccf57da02cd72fffc53"
+    }
+  },
+  "actual_stderr": "\u2717 error: production asset pipeline (hash + URL rewrite) failed\n  caused by: prod orchestrator: failed to read rendered page from disk at /workspace/zudo-front-builder/target/direct-v8-generated-1/site/dist/bytes.bin\n  caused by: stream did not contain valid UTF-8\n",
+  "limitation": "Baseline production asset postprocessor reads rendered route as UTF-8. Positive real site removes this unsupported output; separate emitted Worker and paired native tests retain exact non-UTF-8 bytes."
+}

@@ -173,13 +173,14 @@ def requests_for(snapshot, manifest, expected):
     wrapper = manifest["policy"]["wrapper"]
     plugin_request = {"url": "http://zfb.local/plugin", "method": "POST", "mode": "request-time",
                       "headers": {"x-input": "request-marker"}, "body": [0, 128, 255]}
+    binary_request = {"url": "http://zfb.local/binary", "mode": "request-time"}
     return [
         ("emitted-config", {"kind": "config", "source": (snapshot / "config/config.mjs").read_text()}),
         ("generated-main", main),
         ("generated-wrapper-inner", packet(snapshot, (snapshot / "wrapper/wrapper.mjs").read_text(), requests,
             name=wrapper["wrapper_name"], inner={"name": wrapper["inner_name"], "source": source})),
         ("prepared-plugin-and-binary-request", packet(snapshot, (snapshot / "plugin/worker.mjs").read_text(),
-            [plugin_request], name="file:///zfb/plugin.mjs", aliases=[{
+            [plugin_request, binary_request], name="file:///zfb/plugin.mjs", aliases=[{
                 "specifier": "plugin:answer", "target": str(snapshot / "plugin/alias.mjs"), "plugin": "direct-v8-fixture"}],
             virtual_modules=[{"specifier": "virtual:message", "source": (snapshot / "plugin/virtual.mjs").read_text(),
                               "plugin": "direct-v8-fixture"}])),
@@ -229,7 +230,11 @@ def inspect_receipts(engine, named, receipts, expected, manifest, snapshot, post
                     "json_assertions": [{"pointer": "/" + key, "equals": value} for key, value in {
                         "answer": 42, "message": "virtual-ok", "method": "POST", "marker": "request-marker",
                         "body": [0, 128, 255]}.items()]}
-                wanted_routes = [plugin_expected]
+                binary_expected = {"status": 201, "body": [0, 255, 128, 65],
+                    "headers": [["content-type", "application/octet-stream"],
+                    ["set-cookie", "binary=one"], ["set-cookie", "binary=two"],
+                    ["x-prepared", "left, right"]]}
+                wanted_routes = [plugin_expected, binary_expected]
                 if "prepared plugin request" not in receipt["value"].get("console", ""):
                     failures.append("missing plugin console marker")
             else:
