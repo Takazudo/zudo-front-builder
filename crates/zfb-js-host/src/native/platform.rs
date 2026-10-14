@@ -120,6 +120,41 @@ impl ForegroundQueue {
     }
 }
 
+pub(super) struct NativePlatform;
+impl NativePlatform {
+    fn post(isolate: *mut c_void, task: v8::Task, delay: Option<Duration>) {
+        // PlatformImpl is entered through upstream's C ABI trampoline. A custom
+        // executor waker may panic; never unwind it through native V8 frames.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let queue = QUEUES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&(isolate as usize))
+                .and_then(Weak::upgrade);
+            if let Some(queue) = queue {
+                queue.post(task, delay);
+            }
+        }));
+    }
+}
+impl v8::PlatformImpl for NativePlatform {
+    fn post_task(&self, isolate: *mut c_void, task: v8::Task) {
+        Self::post(isolate, task, None);
+    }
+    fn post_non_nestable_task(&self, isolate: *mut c_void, task: v8::Task) {
+        Self::post(isolate, task, None);
+    }
+    fn post_delayed_task(&self, isolate: *mut c_void, task: v8::Task, seconds: f64) {
+        Self::post(isolate, task, Duration::try_from_secs_f64(seconds).ok());
+    }
+    fn post_non_nestable_delayed_task(&self, isolate: *mut c_void, task: v8::Task, seconds: f64) {
+        self.post_delayed_task(isolate, task, seconds);
+    }
+    fn post_idle_task(&self, _isolate: *mut c_void, _task: v8::IdleTask) {
+        // Idle support is disabled when constructing this platform.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,40 +312,5 @@ mod tests {
             drop(host);
             assert!(weak.upgrade().is_none());
         }
-    }
-}
-
-pub(super) struct NativePlatform;
-impl NativePlatform {
-    fn post(isolate: *mut c_void, task: v8::Task, delay: Option<Duration>) {
-        // PlatformImpl is entered through upstream's C ABI trampoline. A custom
-        // executor waker may panic; never unwind it through native V8 frames.
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            let queue = QUEUES
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&(isolate as usize))
-                .and_then(Weak::upgrade);
-            if let Some(queue) = queue {
-                queue.post(task, delay);
-            }
-        }));
-    }
-}
-impl v8::PlatformImpl for NativePlatform {
-    fn post_task(&self, isolate: *mut c_void, task: v8::Task) {
-        Self::post(isolate, task, None);
-    }
-    fn post_non_nestable_task(&self, isolate: *mut c_void, task: v8::Task) {
-        Self::post(isolate, task, None);
-    }
-    fn post_delayed_task(&self, isolate: *mut c_void, task: v8::Task, seconds: f64) {
-        Self::post(isolate, task, Duration::try_from_secs_f64(seconds).ok());
-    }
-    fn post_non_nestable_delayed_task(&self, isolate: *mut c_void, task: v8::Task, seconds: f64) {
-        self.post_delayed_task(isolate, task, seconds);
-    }
-    fn post_idle_task(&self, _isolate: *mut c_void, _task: v8::IdleTask) {
-        // Idle support is disabled when constructing this platform.
     }
 }
