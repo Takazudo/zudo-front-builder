@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1312,5 +1313,79 @@ describe("island shipped-size budget", () => {
     expect(result.passed).toBe(false);
     expect(result.errors.join("\n")).toContain("workspace event-only");
     expect(result.errors.join("\n")).toContain("delta +");
+  });
+});
+
+// The 5ea14d57 (S7a) contracts are the exact inputs of the v4.5.0 re-pins; the
+// constants keep the assertion alive in a shallow checkout where git cannot
+// resolve that commit.
+const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
+const repinnedFromContracts = [
+  {
+    file: "decision-linux-x64.json",
+    sha256: "a49081369b11369ac3b79ca2a86974b4ea15c73240b75cb619ae057fe79b4d6e",
+  },
+  {
+    file: "decision.json",
+    sha256: "02f2a5dcd40aad62879f8f4dcddd95c24fcedf342599bdb05255cacde4ab4f12",
+  },
+];
+
+describe("live contracts record their authentic predecessor", () => {
+  for (const { file, sha256 } of repinnedFromContracts) {
+    it(file + " carries a flat repinnedFrom with a verified contract reference", () => {
+      const contract = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
+      const repinnedFrom = contract.baselineEvidence.repinnedFrom;
+      expect(Object.keys(repinnedFrom)).toEqual([
+        "schemaVersion",
+        "outcome",
+        "packageVersion",
+        "baselineSourceSha",
+        "baselineRunId",
+        "contract",
+      ]);
+      expect(repinnedFrom).toMatchObject({
+        schemaVersion: 3,
+        outcome: "cargo-producer-lock-transition",
+        packageVersion: "4.4.0",
+        baselineSourceSha: "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
+        baselineRunId: 38451538696,
+      });
+      expect(repinnedFrom).not.toHaveProperty("baselineEvidence");
+      expect(repinnedFrom).not.toHaveProperty("repinnedFrom");
+      expect(repinnedFrom.contract).toEqual({
+        sha256,
+        commit: cargoTransitionCommit,
+        path: "research/v3-island-size/" + file,
+      });
+      let blob = null;
+      try {
+        execFileSync("git", ["cat-file", "-e", repinnedFrom.contract.commit + "^{commit}"], {
+          cwd: repoRoot,
+          stdio: "ignore",
+        });
+        blob = execFileSync(
+          "git",
+          ["show", repinnedFrom.contract.commit + ":" + repinnedFrom.contract.path],
+          { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
+        );
+      } catch {
+        // shallow checkout: the pinned constant above is the assertion
+      }
+      if (blob) expect(createHash("sha256").update(blob).digest("hex")).toBe(sha256);
+    });
+  }
+
+  it("keeps the dated README corrections", () => {
+    const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
+    const notes = [
+      "**Correction (2026-10-14).** `./ce865ca3-Cargo.lock` was the operator's local copy of `Cargo.lock` at commit `ce865ca3b3c339bb397b12ad3c8f68593ce3d85a`",
+      "was in the Linux contract from `" + cargoTransitionCommit + "`",
+      "was in the Darwin contract from `" + cargoTransitionCommit + "`",
+      "compares with the final state of the v4.4.0 contract at source `05ab82100e8f15fa714db9fd1fb5b8e51b41abaf`",
+      "`dcf1e923` release bump; Linux evidence is health run 38473455816 at PR-merge source `fafd4a2fbf1dca98ec346794fee3563bdbc18317`, which is intentionally distinct from probe head `dee7d83b0ea45bd32dbe0c6a7f91846ffb3335f3`",
+      "at `42cb1bf9` `normalizerSha256` did not change",
+    ];
+    for (const note of notes) expect(readme).toContain(note);
   });
 });

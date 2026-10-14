@@ -967,7 +967,7 @@ export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, r
     e.sourceSha +
     "`. Every raw and `gzipNormalized` total is unchanged from the v" +
     previousVersion +
-    " contract, so only the package version, `pnpm-lock.yaml` hash and normalizer digest moved (`Cargo.lock` is unchanged); these totals alone do not prove byte-identical product code. " +
+    " contract, so the package version, `pnpm-lock.yaml` hash and normalizer digest were re-pinned (the normalizer digest changes only when the normalizer itself changed; `Cargo.lock` is unchanged); these totals alone do not prove byte-identical product code. " +
     (gzipMoves.length === 0
       ? "No actual gzip total moved."
       : "Actual gzip moved on " +
