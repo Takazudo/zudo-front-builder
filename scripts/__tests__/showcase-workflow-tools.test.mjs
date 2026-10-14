@@ -28,6 +28,44 @@ function step(jobText, name) {
 }
 
 describe("showcase workflow tool provenance", () => {
+  it("evaluates the preview guard for draft, fork, bot and trusted ready events", () => {
+    const preview = job("showcase-preview");
+    const expression = preview.match(/^    if: >-\n((?:      .+\n)+)/m)[1];
+    const allowed = Function("github", "return (" + expression + ")");
+    const github = {
+      event_name: "pull_request",
+      repository: "owner/repo",
+      actor: "owner",
+      event: { pull_request: { draft: true, head: { repo: { full_name: "owner/repo" } } } },
+    };
+    expect(allowed(github)).toBe(false);
+    github.event.pull_request.draft = false;
+    expect(allowed(github)).toBe(true);
+    github.event.pull_request.head.repo.full_name = "fork/repo";
+    expect(allowed(github)).toBe(false);
+    github.event.pull_request.head.repo.full_name = "owner/repo";
+    github.actor = "dependabot[bot]";
+    expect(allowed(github)).toBe(false);
+    github.event_name = "push";
+    expect(allowed(github)).toBe(false);
+  });
+
+  it("keeps draft filtering out of triggers and verification jobs", () => {
+    expect(workflow.slice(0, workflow.indexOf("\njobs:\n"))).not.toContain("pull_request.draft");
+    for (const name of [
+      "build-binary",
+      "scaffold-e2e",
+      "built-site-browser-smoke",
+      "smoke-amd64",
+      "smoke-amd64-al2023",
+      "smoke-arm64",
+      "smoke-amd64-ts",
+      "smoke-arm64-ts",
+    ]) {
+      expect(job(name)).not.toContain("pull_request.draft");
+    }
+  });
+
   for (const jobName of ["showcase-deploy", "showcase-preview"]) {
     it(`${jobName} installs and executes only root lockfile tools`, () => {
       const jobText = job(jobName);

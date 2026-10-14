@@ -25,6 +25,7 @@ import {
   measuredTotals,
   rebaselineContract,
 } from "../rebaseline-island-size-linux.mjs";
+import { budgetAllowsRetention } from "../island-size-evidence.mjs";
 import { asSchemaV2 } from "./fixtures/island-size-checkout.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -594,6 +595,23 @@ afterEach(() => {
 });
 
 describe("island shipped-size budget", () => {
+  it("retains the real validator's old-Cargo-only rejection, refusing extra failures", () => {
+    // Synthetic saved-byte pair, never a native Linux/Darwin receipt.
+    const state = v3State();
+    state.contract.toolchain.cargoLockSha256 = "f".repeat(64);
+    const result = validate(state);
+    expect(result.passed).toBe(false);
+    const checkerResult = (result) => ({
+      status: 1,
+      stderr:
+        "Island size budget rejected:\n" +
+        result.errors.map((error) => "- " + error + "\n").join(""),
+    });
+    expect(budgetAllowsRetention(checkerResult(result))).toBe(true);
+    state.contract.ceilings.workspace["event-only"].raw = 0;
+    expect(budgetAllowsRetention(checkerResult(validate(state)))).toBe(false);
+  });
+
   it("allows lockstep release specifiers but still detects other lockfile drift", () => {
     const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
     const currentVersion = JSON.parse(
