@@ -18,10 +18,9 @@ default = ["embed_v8", "syntect-onig"]
 embed_v8 = [
     "dep:deno_core",
     "dep:deno_error",
+    "zfb-js-host/services",
     "dep:getrandom",
     "dep:reqwest",
-    "dep:sha1",
-    "dep:sha2",
     "dep:tokio",
 ]
 # Syntect regex-backend forwarding (zfb#1576, epic zfb#1572). The
@@ -42,6 +41,7 @@ ignored = ["zfb-content"]
 [dependencies]
 # Canonical shared types (Segment, etc.).
 zfb-types = { path = "../zfb-types" }
+zfb-js-host = { path = "../zfb-js-host", default-features = false }
 
 # === In-process V8 host (feature `embed_v8`) ===
 #
@@ -83,24 +83,8 @@ deno_core = { version = "=0.399.0", optional = true }
 # re-export it, so it must be a direct edge. Already in `Cargo.lock` at
 # this line as a transitive dep of `deno_core`; no new fetch.
 deno_error = { version = "0.7", optional = true }
-# OS CSPRNG for the request-time Web Crypto entropy op (issue #2017).
-# `getrandom` reads the kernel generator (`getrandom(2)` / `getentropy`
-# / `BCryptGenRandom`) — deliberately NOT `rand`, whose thread-local
-# userspace PRNG is seeded and reproducible, which is the property
-# #1751 exists to eliminate. Already in `Cargo.lock` at this line as a
-# transitive dep (via `deno_core`'s graph among others); this only adds
-# a direct edge, no new fetch.
+# Host-mode nonce; crypto service implementation lives in zfb-js-host.
 getrandom = { version = "0.3", optional = true }
-# SHA implementations behind `crypto.subtle.digest` (issue #2018).
-# Hashing is computed by a Rust host op rather than hand-rolled JS: the
-# JS host is a code path a developer's ETag / content-hash / request-id
-# depends on, and a subtly wrong hand-written SHA-256 would produce
-# plausible-looking digests that disagree with production Workers.
-# Both crates are already in `Cargo.lock` at these lines (sha2 is a
-# direct dep of eight sibling crates, sha1 arrives transitively), so
-# this only adds a direct edge — no new fetch.
-sha1 = { version = "0.10", optional = true }
-sha2 = { version = "0.10", optional = true }
 # Outbound HTTP for the request-time `fetch` transport (issue #2015).
 # The workspace already builds `reqwest 0.12` with `rustls-tls`
 # (zfb-build, zfb-binfetch, zfb, zfb-server, zfb-test-utils), so this

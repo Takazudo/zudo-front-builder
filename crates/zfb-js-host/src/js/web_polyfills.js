@@ -966,7 +966,7 @@
   // duplicate class, and a host that predates the API simply keeps the
   // lossy behaviour rather than failing to boot.
   function registerHostErrorClasses() {
-    const core = globalThis.Deno && globalThis.Deno.core;
+    const core = globalThis.__zfbHost;
     if (!core || typeof core.registerErrorClass !== "function") return;
     // Every non-builtin error class a Rust op can raise MUST be listed
     // here. deno_core rebuilds an op's error through its own
@@ -1053,8 +1053,8 @@
   // has always described.
   function cancelTransport(cancelId) {
     if (cancelId == null) return;
-    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
-    const cancel = ops ? ops.op_zfb_fetch_cancel : undefined;
+    const ops = globalThis.__zfbHost;
+    const cancel = ops ? ops.cancelFetch : undefined;
     if (typeof cancel !== "function") return;
     try {
       cancel(cancelId);
@@ -1175,8 +1175,8 @@
       }
     }
 
-    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
-    const op = ops ? ops.op_zfb_fetch : undefined;
+    const ops = globalThis.__zfbHost;
+    const op = ops ? ops.fetch : undefined;
     if (typeof op !== "function") {
       // Never a synthetic empty `Response`: a silent empty body is
       // indistinguishable from a real 200 with no content.
@@ -1425,7 +1425,7 @@
   }
 
   function hostOp(name) {
-    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const ops = globalThis.__zfbHost;
     const op = ops ? ops[name] : undefined;
     return typeof op === "function" ? op : null;
   }
@@ -1438,7 +1438,7 @@
   // op backs both `getRandomValues` and `randomUUID` and the contract
   // gives each its own message prefix.
   function fillFromHostEntropy(apiName, u8) {
-    const op = hostOp("op_zfb_random_bytes");
+    const op = hostOp("randomBytes");
     if (!op) {
       throw new Error(
         apiName + ": OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
@@ -1502,7 +1502,7 @@
         const name =
           typeof algorithm === "string" ? algorithm : String(algorithm && algorithm.name);
         const bytes = bufferSourceBytes("crypto.subtle.digest", data);
-        const op = hostOp("op_zfb_digest");
+        const op = hostOp("digest");
         if (!op) {
           throw new Error(
             "crypto.subtle.digest: embedded host transport unavailable: op_zfb_digest is not " +

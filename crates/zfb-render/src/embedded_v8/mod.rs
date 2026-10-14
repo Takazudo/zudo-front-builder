@@ -107,6 +107,7 @@ use serde_json::Value as JsonValue;
 use crate::error::{RenderError, Result};
 use crate::render_host::{ModuleHandle, RenderHost};
 
+mod bridge;
 pub mod crypto;
 mod dispatch;
 pub mod extensions;
@@ -352,6 +353,9 @@ impl EmbeddedV8RenderHost {
     /// `dispatch(...)` helper can use Request / Response when it
     /// constructs them from `dispatch_fetch`'s arguments.
     fn bootstrap_host_shim(&mut self) -> Result<()> {
+        self.runtime
+            .execute_script("zfb:native_bridge", bridge::DENO_BRIDGE_SRC)
+            .map_err(|e| RenderError::Runtime(format!("native bridge init failed: {e}")))?;
         self.runtime
             .execute_script("zfb:web_polyfills", extensions::WEB_POLYFILLS_SRC)
             .map_err(|e| RenderError::Runtime(format!("web polyfills init failed: {e}")))?;

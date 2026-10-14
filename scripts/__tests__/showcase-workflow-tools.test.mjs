@@ -28,6 +28,35 @@ function step(jobText, name) {
 }
 
 describe("showcase workflow tool provenance", () => {
+  it("gates the preview job on a non-draft, same-repository PR outside Dependabot", () => {
+    const preview = job("showcase-preview");
+    const beforeSteps = preview.slice(0, preview.indexOf("    steps:\n"));
+    const condition = beforeSteps.match(/^    if: >-\n((?:      .+\n)+)/m)?.[1];
+
+    expect(condition?.trim().split(/\s+&&\s+/)).toEqual([
+      "github.event_name == 'pull_request'",
+      "!github.event.pull_request.draft",
+      "github.event.pull_request.head.repo.full_name == github.repository",
+      "github.actor != 'dependabot[bot]'",
+    ]);
+  });
+
+  it("keeps draft filtering out of workflow triggers and verification jobs", () => {
+    expect(workflow.slice(0, workflow.indexOf("\njobs:\n"))).not.toContain("pull_request.draft");
+    for (const name of [
+      "build-binary",
+      "scaffold-e2e",
+      "built-site-browser-smoke",
+      "smoke-amd64",
+      "smoke-amd64-al2023",
+      "smoke-arm64",
+      "smoke-amd64-ts",
+      "smoke-arm64-ts",
+    ]) {
+      expect(job(name)).not.toContain("pull_request.draft");
+    }
+  });
+
   for (const jobName of ["showcase-deploy", "showcase-preview"]) {
     it(`${jobName} installs and executes only root lockfile tools`, () => {
       const jobText = job(jobName);

@@ -1,122 +1,15 @@
-//! SHA digest host primitive behind `crypto.subtle.digest` (issue
-//! #2018, epic #2012 — #1751 part 2 of 2).
-//!
-//! ## Why this is a Rust op and not hand-rolled JS
-//!
-//! The pre-#2018 polyfill's own comment proposed "a pure-JS sha256
-//! implementation (~80 lines)" as the fix. That is the wrong trade:
-//! `digest` is what an application's ETag, content hash, cache key and
-//! request signature are built from, and a subtly wrong hand-written
-//! SHA would emit *plausible-looking* digests that silently disagree
-//! with production Workers — the same shape of local/production
-//! divergence #1751 exists to remove. `sha1` / `sha2` are the
-//! implementations eight sibling crates in this workspace already use.
-//!
-//! ## Why the op is SYNCHRONOUS
-//!
-//! Same reasoning as [`super::op_zfb_random_bytes`]: guardrail 1 of the
-//! epic targets **network** I/O. Hashing is CPU-bound over a buffer the
-//! caller already holds in memory — there is no socket to park on. The
-//! JS side wraps the synchronous result in an already-resolved promise
-//! so `crypto.subtle.digest` still returns the `Promise<ArrayBuffer>`
-//! the WebCrypto spec requires. [`digest_op_is_sync`] pins the property
-//! mechanically off deno_core's own `OpDecl`.
-//!
-//! ## What is deliberately NOT here
-//!
-//! `MD5` — production workerd supports it as a documented legacy
-//! extension, this host fails it closed through the unsupported-
-//! algorithm path. That is contract divergence **D7**
-//! (`research/2013-request-time-capability-contract.md`), not an
-//! oversight, and the rejection message names the supported set so the
-//! divergence is visible at the call site rather than in a doc.
-//!
-//! Every key-bearing SubtleCrypto operation (`sign`, `encrypt`,
-//! `importKey`, …) is divergence **D8** and has no Rust surface at all
-//! — those fail closed in `js/web_polyfills.js` with a message that
-//! states production DOES implement them.
-
+//! Deno-specific digest registration and existing known-answer/boundary tests.
 use deno_core::op2;
 use deno_error::JsErrorBox;
-use sha1::Sha1;
-use sha2::{Digest, Sha256, Sha384, Sha512};
-
-/// The digest algorithms this host implements, in the spelling
-/// WebCrypto uses. **The single source of truth**: the rejection
-/// message below is rendered from this slice rather than repeating the
-/// names, so adding an algorithm cannot leave the diagnostic claiming
-/// otherwise.
-pub const SUPPORTED_DIGEST_ALGORITHMS: &[&str] = &["SHA-1", "SHA-256", "SHA-384", "SHA-512"];
-
-/// Render [`SUPPORTED_DIGEST_ALGORITHMS`] for the rejection message.
-fn supported_algorithms_list() -> String {
-    SUPPORTED_DIGEST_ALGORITHMS.join(", ")
+pub use zfb_js_host::crypto::digest::*;
+trait IntoJsError {
+    fn into_js_error_box(self) -> JsErrorBox;
 }
-
-/// The one way [`digest_bytes`] can fail.
-///
-/// A hash over an in-memory buffer has no I/O, no allocation ceiling
-/// worth policing and no cancellation surface, so "I do not implement
-/// that algorithm" is the whole failure space.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum DigestError {
-    /// The contract's (#2013) `crypto.subtle.digest` wording verbatim.
-    /// It is produced HERE rather than in JS so the algorithm list and
-    /// the message that advertises it cannot drift apart.
-    #[error(
-        "crypto.subtle.digest: unsupported algorithm \"{requested}\". \
-         This host implements {}.",
-        supported_algorithms_list()
-    )]
-    UnsupportedAlgorithm { requested: String },
-}
-
-impl DigestError {
-    /// The JS error class this maps to.
-    ///
-    /// **`js/web_polyfills.js` must register `NotSupportedError`** with
-    /// `Deno.core.registerErrorClass`. deno_core rebuilds an op's error
-    /// through its own `buildCustomError`, which can only construct
-    /// classes in its `errorMap`; an unregistered class arrives in JS as
-    /// a thrown **`undefined`** — no name, no message, no diagnostic at
-    /// all. Wave 5 measured exactly that for `QuotaExceededError`.
-    pub fn js_error_class(&self) -> &'static str {
-        match self {
-            DigestError::UnsupportedAlgorithm { .. } => "NotSupportedError",
-        }
-    }
-
+impl IntoJsError for DigestError {
     fn into_js_error_box(self) -> JsErrorBox {
         JsErrorBox::new(self.js_error_class(), self.to_string())
     }
 }
-
-/// Hash `data` with `algorithm`, or fail closed.
-///
-/// `algorithm` is matched **ASCII-case-insensitively and nothing
-/// more** — that is exactly WebCrypto's "normalize an algorithm" step,
-/// and callers write `"sha-256"` as often as `"SHA-256"`. Surrounding
-/// whitespace is deliberately NOT trimmed: `" SHA-256 "` is not a
-/// registered algorithm name, production Workers rejects it, and
-/// accepting it here would manufacture the precise local/production
-/// divergence this sub-issue exists to remove. The **original**
-/// spelling is what the rejection quotes back, so a typo is
-/// recognisable in the message rather than being echoed uppercased.
-///
-/// There is no default algorithm and no "closest match" fallback: an
-/// unrecognised name is an error, never a silent substitution.
-pub fn digest_bytes(algorithm: &str, data: &[u8]) -> std::result::Result<Vec<u8>, DigestError> {
-    match algorithm.to_ascii_uppercase().as_str() {
-        "SHA-1" => Ok(Sha1::digest(data).to_vec()),
-        "SHA-256" => Ok(Sha256::digest(data).to_vec()),
-        "SHA-384" => Ok(Sha384::digest(data).to_vec()),
-        "SHA-512" => Ok(Sha512::digest(data).to_vec()),
-        _ => Err(DigestError::UnsupportedAlgorithm {
-            requested: algorithm.to_string(),
-        }),
-    }
-}
-
 /// Hash a caller-provided buffer.
 ///
 /// **Synchronous on purpose** — see this module's header.

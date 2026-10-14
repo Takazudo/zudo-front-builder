@@ -738,8 +738,10 @@ jobs:
     #
     # Deliberately NOT pull_request_target: under it, PR-authored code would
     # run installed tools and a node script with repository secrets in scope.
+    # Draft implementation review must not upload a preview; verification stays active.
     if: >-
       github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
