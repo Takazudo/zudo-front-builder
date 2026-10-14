@@ -45,18 +45,33 @@ jobs:
           shared-key: rolldown-4120-debug-no-debuginfo
           cache-on-failure: true
 
-      - name: Prepare exact lock edge and tools
+      - name: Audit the exact lock edge and unchanged Wind source closure
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p target/plugin-alias-evidence
+          node --input-type=module <<'JS'
+          import { assertCurrentWindSource } from './docs/scripts/wind-compatibility-pages.mjs';
+          import { WIND_SOURCE_SHA } from './scripts/wind-compatibility/inventory.mjs';
+          assertCurrentWindSource(process.cwd(), WIND_SOURCE_SHA);
+          JS
           python3 - <<'PY'
           from pathlib import Path
           from hashlib import sha256
-          import tomllib
+          import json, tomllib
           path = Path('Cargo.lock')
           old = path.read_bytes()
           assert sha256(old).hexdigest() == '63aa8f330710941b8dfc4e5ccad81b0f42e2baf7c6e740ad42802223bc574c43'
+          paths = sorted([str(p) for p in Path('crates/zudo-wind').rglob('*') if p.is_file()] + ['Cargo.toml', 'Cargo.lock'])
+          assert len(paths) == 100
+          original = {p: Path(p).read_bytes() for p in paths}
+          def digest(files):
+              h = sha256()
+              for p in paths:
+                  h.update(p.encode() + b'\0' + files[p] + b'\0')
+              return h.hexdigest()
+          old_wind = digest(original)
+          assert old_wind == '5a08ea9a15e45de6afd6d7adfc6887e217e04d8249290a5ce0a1974b39aaee4c'
           before = 'name = "zfb-rolldown-prototype"\nversion = "0.0.0"\ndependencies = [\n "anyhow",\n "rolldown",\n "rolldown_common",\n "serde_json",\n "tokio",\n]'
           after = before.replace(' "rolldown_common",', ' "rolldown_common",\n "rolldown_resolver",')
           assert old.decode().count(before) == 1
@@ -65,14 +80,26 @@ jobs:
           a, b = tomllib.loads(old.decode()), tomllib.loads(new.decode())
           changed = [(x, y) for x, y in zip(a['package'], b['package'], strict=True) if x != y]
           assert len(changed) == 1 and changed[0][0]['name'] == 'zfb-rolldown-prototype'
+          assert all(p['name'] != 'zfb-rolldown-prototype' for p in b['package'] if p['name'] == 'zudo-wind')
           path.write_bytes(new)
+          current = {p: Path(p).read_bytes() for p in paths}
+          assert [p for p in paths if original[p] != current[p]] == ['Cargo.lock']
+          new_wind = digest(current)
+          script = Path('docs/scripts/wind-compatibility-pages.mjs')
+          text = script.read_text()
+          marker = f'export const REVIEWED_WIND_SOURCE_DIGEST =\n  "{old_wind}";'
+          assert text.count(marker) == 1
+          replacement = '// #4120 plugin probe: only the prototype root lock edge to the existing pinned\n// resolver changes this closure. Wind sources/catalog and locked subgraph stay\n// unchanged; replay evidence: prototypes/rolldown/PLUGIN-ALIAS-VERIFICATION.md.\n' + f'export const REVIEWED_WIND_SOURCE_DIGEST =\n  "{new_wind}";'
+          script.write_text(text.replace(marker, replacement))
+          audit = {'source': 'd0492c1edbb4e1c3415d5c2b7df3bcd417d5d080', 'closurePaths': len(paths), 'changedClosurePaths': ['Cargo.lock'], 'changedLockPackages': ['zfb-rolldown-prototype'], 'oldWindDigest': old_wind, 'newWindDigest': new_wind, 'files': [{'path': p, 'before': sha256(original[p]).hexdigest(), 'after': sha256(current[p]).hexdigest()} for p in paths]}
+          Path('target/plugin-alias-evidence/wind-source-audit.json').write_text(json.dumps(audit, indent=2) + '\n')
           PY
           pnpm install --frozen-lockfile
           npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
           echo "ZFB_ESBUILD_BIN=$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild" >> "$GITHUB_ENV"
           cargo fmt --all
           cargo fmt --all --check
-          pnpm exec vp fmt --write prototypes/rolldown/plugin-prebundle.mjs
+          pnpm exec vp fmt --write prototypes/rolldown/plugin-prebundle.mjs docs/scripts/wind-compatibility-pages.mjs
           node --check prototypes/rolldown/plugin-prebundle.mjs
           { git rev-parse HEAD; rustc -vV; node -v; pnpm -v; uname -a; sha256sum Cargo.lock pnpm-lock.yaml; } > target/plugin-alias-evidence/identity.txt
 
@@ -95,21 +122,39 @@ jobs:
           set -euo pipefail
           node prototypes/rolldown/plugin-prebundle.mjs 2>&1 | tee target/plugin-alias-evidence/probe.log
 
-      - name: Regenerate genuine Wind previews after source changes
+      - name: Verify genuine Wind previews and reviewed source provenance
         id: wind
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
           unset ZFB_ESBUILD_BIN
+          cargo test --locked -p zudo-wind --lib 2>&1 | tee target/plugin-alias-evidence/wind-library-tests.log
           cargo build --locked -p zfb --no-default-features 2>&1 | tee target/plugin-alias-evidence/no-v8-build.log
           cargo tree --locked -p zfb --no-default-features > target/plugin-alias-evidence/default-dependencies.txt
           if grep -q rolldown target/plugin-alias-evidence/default-dependencies.txt; then exit 1; fi
+          cargo tree --locked -p zudo-wind > target/plugin-alias-evidence/wind-dependencies.txt
+          if grep -q rolldown target/plugin-alias-evidence/wind-dependencies.txt; then exit 1; fi
           node --test docs/scripts/__tests__/wind-preview-assets.test.mjs 2>&1 | tee target/plugin-alias-evidence/wind-tests.log
           node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" 2>&1 | tee target/plugin-alias-evidence/wind-generation.log
           node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" --check
           node docs/scripts/generate-wind-reference.mjs --locale en --check
           node docs/scripts/generate-wind-reference.mjs --locale ja --check
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { assertCurrentWindSource } from './docs/scripts/wind-compatibility-pages.mjs';
+          import { WIND_SOURCE_SHA } from './scripts/wind-compatibility/inventory.mjs';
+          assertCurrentWindSource(process.cwd(), WIND_SOURCE_SHA);
+          assert.throws(() => assertCurrentWindSource(process.cwd(), 'unreviewed'), /Unreviewed Wind support pin/);
+          const original = readFileSync('Cargo.lock');
+          try {
+            writeFileSync('Cargo.lock', Buffer.concat([original, Buffer.from('\n# deliberate verification tamper\n')]));
+            assert.throws(() => assertCurrentWindSource(process.cwd(), WIND_SOURCE_SHA), /Wind source differs/);
+          } finally { writeFileSync('Cargo.lock', original); }
+          assertCurrentWindSource(process.cwd(), WIND_SOURCE_SHA);
+          console.log('Wind provenance tamper and unreviewed-pin rejection passed');
+          JS
           python3 - <<'PY'
           import json, subprocess
           from pathlib import Path
@@ -123,7 +168,7 @@ jobs:
           PY
 
       - name: Export exact candidate objects without updating any ref
-        if: ${{ !cancelled() && steps.wind.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.wind.outcome == 'success' && steps.probe.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PROBE_OUTCOME: ${{ steps.probe.outcome }}
@@ -133,10 +178,10 @@ jobs:
           python3 - <<'PY'
           import base64, hashlib, json, os, subprocess, urllib.request
           from pathlib import Path
-          allowed = {'Cargo.lock', 'crates/zfb-rolldown-prototype/examples/plugin_prebundle.rs', 'crates/zfb-rolldown-prototype/examples/plugin_prebundle/packages.rs', 'prototypes/rolldown/plugin-prebundle.mjs', 'docs/public/wind-examples/manifest.json'}
+          allowed = {'Cargo.lock', 'crates/zfb-rolldown-prototype/examples/plugin_prebundle.rs', 'crates/zfb-rolldown-prototype/examples/plugin_prebundle/packages.rs', 'prototypes/rolldown/plugin-prebundle.mjs', 'docs/public/wind-examples/manifest.json', 'docs/scripts/wind-compatibility-pages.mjs'}
           paths = subprocess.check_output(['git', 'diff', '--name-only']).decode().splitlines()
           assert set(paths) <= allowed, paths
-          assert {'Cargo.lock', 'docs/public/wind-examples/manifest.json'} <= set(paths)
+          assert {'Cargo.lock', 'docs/public/wind-examples/manifest.json', 'docs/scripts/wind-compatibility-pages.mjs'} <= set(paths)
           def post(endpoint, data):
               req = urllib.request.Request('https://api.github.com/repos/Takazudo/zudo-front-builder/git/' + endpoint, data=json.dumps(data).encode(), headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'}, method='POST')
               with urllib.request.urlopen(req, timeout=30) as response:
@@ -167,6 +212,7 @@ jobs:
           cp crates/zfb-rolldown-prototype/examples/plugin_prebundle/packages.rs target/plugin-alias-evidence/
           cp prototypes/rolldown/plugin-prebundle.mjs target/plugin-alias-evidence/
           cp docs/public/wind-examples/manifest.json target/plugin-alias-evidence/wind-manifest.json
+          cp docs/scripts/wind-compatibility-pages.mjs target/plugin-alias-evidence/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
         if: always()
         with:
