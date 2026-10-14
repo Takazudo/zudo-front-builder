@@ -25,11 +25,11 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-      ZFB_PROBE_SOURCE: b89654cd27ddfe6827611afd484140032a3a30d6
+      ZFB_PROBE_SOURCE: d0492c1edbb4e1c3415d5c2b7df3bcd417d5d080
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
-          ref: b89654cd27ddfe6827611afd484140032a3a30d6
+          ref: d0492c1edbb4e1c3415d5c2b7df3bcd417d5d080
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
