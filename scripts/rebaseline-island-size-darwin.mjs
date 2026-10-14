@@ -74,7 +74,7 @@
 // saved sidecars must agree with the saved bytes (loadDarwinArtifact's
 // verifySidecar). `--stage <dir>` and `--apply <dir>` use the Linux script's
 // shared staging, so both platforms stage into one directory and are applied
-// together.
+// together; without `--stage` the reason is refused (checkPairedReasonStage).
 //
 // `--reason fingerprint-policy` (#4218, schemaVersion 3) moves the four
 // `dependencyFingerprint` keys only together with an exact one-step
@@ -124,6 +124,7 @@ import {
   checkApplyArgs,
   checkCargoProducerLockArgs,
   checkFingerprintHelperArgs,
+  checkPairedReasonStage,
   checkPreviousContractRefArgs,
   artifactFingerprintProblem,
   contractFingerprint,
@@ -1485,6 +1486,7 @@ export function parseArgs(argv) {
       }
     }
   }
+  checkPairedReasonStage(values);
   checkCargoProducerLockArgs(values);
   checkPreviousContractRefArgs(values, DARWIN_REPINNED_FROM_REASONS);
   return values;

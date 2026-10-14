@@ -305,6 +305,16 @@ export function makePolicyCheckout(roots, { editHelper } = {}) {
   };
 }
 
+// Test fixture: copies a single-platform stage directory's outputs onto the
+// live checkout so one platform's paired re-pin can be asserted in place. It is
+// not `--apply`, which also requires both platforms in the stage.
+export function landStaged(stage, root) {
+  const manifest = JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+  for (const path of Object.keys(manifest.destinations)) {
+    writeFileSync(join(root, path), readFileSync(join(stage, path)));
+  }
+}
+
 // Test fixture — synthetic prior policy, not native evidence. These helper
 // edits apply only to the COPY of lock-fingerprint.mjs inside a disposable
 // checkout; the live helper stays at FINGERPRINT_POLICY_VERSION = 1, and no
@@ -327,6 +337,18 @@ export const policyHelper = {
       ),
       "    buildInputs,\n  });",
       "    buildInputs,\n    fixtureCanonicalForm: 2,\n  });",
+    ),
+  // Policy 2 with a parser identity that needs JSON escapes (quotes, a
+  // backslash) and carries a `$&` replacement pattern.
+  v2Escaped: (source) =>
+    replaceOnce(
+      replaceOnce(
+        policyHelper.v2(source),
+        'export const FINGERPRINT_PARSER = "yaml@2.9.0";',
+        'export const FINGERPRINT_PARSER = "yaml@2.9.0+\\"q\\"\\\\$&";',
+      ),
+      "if (`yaml@${version}` !== FINGERPRINT_PARSER) {",
+      'if (`yaml@${version}` !== "yaml@2.9.0") {',
     ),
   // Computes policy 2 but exports FINGERPRINT_POLICY_VERSION = 3.
   exports3: (source) =>
