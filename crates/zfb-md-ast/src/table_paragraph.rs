@@ -1,4 +1,4 @@
-//! Paragraph normalisation inside explicit MDX tables (zfb#4232).
+//! Paragraph normalisation around and inside explicit MDX tables (zfb#4232, #4254).
 //!
 //! markdown-rs accepts a flow-JSX line only when it holds nothing but tags,
 //! whitespace, and `{…}` expressions (`construct/mdx_jsx_flow.rs`). A line
@@ -9,6 +9,11 @@
 //! both copy it through, and the zudo-react renderer rightly throws
 //! `ZR_PARSER_CONTEXT: table > p`. Wrapping the whole table in `{ … }`
 //! sidesteps the flow construct, which is why that spelling works.
+//!
+//! A whole compact `<table>…</table>` on one line also falls back to inline
+//! JSX, producing `p > table` (zfb#4254). Lift intrinsic tables out of their
+//! paragraph, splitting any adjacent prose into paragraphs on either side.
+//! Other inline JSX remains in its paragraph.
 //!
 //! A paragraph is never valid content of a table-structure element, so the
 //! normalisation splices it away: its children take its place, in order,
@@ -39,7 +44,8 @@ use markdown::mdast::Node as MdastNode;
 const TABLE_STRUCTURE: &[&str] = &["table", "thead", "tbody", "tfoot", "tr", "colgroup"];
 
 /// Splice every `Paragraph` child of a table-structure MDX JSX element into
-/// its parent, recursively over the whole tree.
+/// its parent, and lift intrinsic tables out of paragraphs, recursively over
+/// the whole tree.
 pub fn unwrap_table_paragraphs(node: &mut MdastNode) {
     let splice = is_table_structure(node);
     if let Some(children) = node.children_mut() {
@@ -49,6 +55,13 @@ pub fn unwrap_table_paragraphs(node: &mut MdastNode) {
                 .any(|c| matches!(c, MdastNode::Paragraph(_)))
         {
             *children = splice_paragraphs(std::mem::take(children));
+        }
+        if !splice
+            && children.iter().any(|child| {
+                matches!(child, MdastNode::Paragraph(p) if p.children.iter().any(is_intrinsic_table))
+            })
+        {
+            *children = lift_tables(std::mem::take(children));
         }
         for child in children.iter_mut() {
             unwrap_table_paragraphs(child);
@@ -63,6 +76,58 @@ fn is_table_structure(node: &MdastNode) -> bool {
         _ => None,
     };
     name.is_some_and(|n| TABLE_STRUCTURE.contains(&n))
+}
+
+fn is_intrinsic_table(node: &MdastNode) -> bool {
+    match node {
+        MdastNode::MdxJsxFlowElement(e) => e.name.as_deref() == Some("table"),
+        MdastNode::MdxJsxTextElement(e) => e.name.as_deref() == Some("table"),
+        _ => false,
+    }
+}
+
+fn lift_tables(children: Vec<MdastNode>) -> Vec<MdastNode> {
+    let mut out = Vec::with_capacity(children.len());
+    for child in children {
+        match child {
+            MdastNode::Paragraph(mut p) if p.children.iter().any(is_intrinsic_table) => {
+                let mut prose = Vec::new();
+                for child in std::mem::take(&mut p.children) {
+                    if is_intrinsic_table(&child) {
+                        push_prose(&mut out, &mut prose, &p);
+                        out.push(child);
+                    } else {
+                        prose.push(child);
+                    }
+                }
+                push_prose(&mut out, &mut prose, &p);
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn push_prose(
+    out: &mut Vec<MdastNode>,
+    prose: &mut Vec<MdastNode>,
+    original: &markdown::mdast::Paragraph,
+) {
+    let children = std::mem::take(prose);
+    if children
+        .iter()
+        .all(|child| matches!(child, MdastNode::Text(t) if t.value.trim().is_empty()))
+    {
+        return;
+    }
+    let mut paragraph = original.clone();
+    paragraph.position = children.first().and_then(|first| {
+        let start = first.position()?.start.clone();
+        let end = children.last()?.position()?.end.clone();
+        Some(markdown::unist::Position { start, end })
+    });
+    paragraph.children = children;
+    out.push(MdastNode::Paragraph(paragraph));
 }
 
 fn splice_paragraphs(children: Vec<MdastNode>) -> Vec<MdastNode> {
@@ -183,6 +248,66 @@ mod tests {
         assert!(find_named(&tree, "th").is_some() && find_named(&tree, "td").is_some());
     }
 
+    #[test]
+    fn lifts_the_compact_table_and_keeps_its_position() {
+        let mut tree = parse(
+            "<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>B</td></tr></tbody></table>",
+        );
+        assert!(
+            matches!(
+                tree.children().unwrap().as_slice(),
+                [MdastNode::Paragraph(_)]
+            ),
+            "precondition: compact table parses as a paragraph: {tree:#?}"
+        );
+        let expected = find_named(&tree, "table").unwrap().clone();
+
+        unwrap_table_paragraphs(&mut tree);
+
+        assert_eq!(tree.children().unwrap().as_slice(), &[expected]);
+        let once = tree.clone();
+        unwrap_table_paragraphs(&mut tree);
+        assert_eq!(tree, once, "normalisation is idempotent");
+    }
+
+    #[test]
+    fn splits_prose_around_compact_tables_without_unwrapping_inline_jsx() {
+        let table = inline("table", vec![inline("tbody", vec![])]);
+        let before = vec![text("Before "), inline("span", vec![text("inline")])];
+        let after = vec![inline("Badge", vec![]), text(" after.")];
+        let mut contents = before.clone();
+        contents.extend([table.clone(), text("\n"), table.clone()]);
+        contents.extend(after.clone());
+        let mut tree = root(vec![para(contents)]);
+
+        unwrap_table_paragraphs(&mut tree);
+
+        assert_eq!(
+            tree,
+            root(vec![para(before), table.clone(), table, para(after)])
+        );
+    }
+
+    #[test]
+    fn leaves_inline_jsx_and_capitalised_tables_in_paragraphs() {
+        let mut tree = parse("Before <span>inline</span> <Table>component</Table> after.");
+        let expected = tree.clone();
+
+        unwrap_table_paragraphs(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    #[test]
+    fn keeps_invalid_children_inside_a_lifted_table() {
+        let table = inline("table", vec![inline("div", vec![text("invalid")])]);
+        let mut tree = root(vec![para(vec![table.clone()])]);
+
+        unwrap_table_paragraphs(&mut tree);
+
+        assert_eq!(tree, root(vec![table]));
+    }
+
     /// Two row lines in one section become ONE paragraph holding both `tr`
     /// with a newline `Text` between them; the newline is dropped.
     #[test]
@@ -218,10 +343,11 @@ mod tests {
     #[test]
     fn keeps_paragraphs_inside_cells() {
         let cell = flow("td", vec![para(vec![text("cell prose")])]);
+        let header = flow("th", vec![para(vec![text("header prose")])]);
         let caption = flow("caption", vec![para(vec![text("cap")])]);
         let mut tree = root(vec![flow(
             "table",
-            vec![caption, flow("tbody", vec![flow("tr", vec![cell])])],
+            vec![caption, flow("tbody", vec![flow("tr", vec![header, cell])])],
         )]);
         let expected = tree.clone();
 
