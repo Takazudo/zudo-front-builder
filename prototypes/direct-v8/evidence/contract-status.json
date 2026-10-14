@@ -302,7 +302,7 @@
   {
     "id": "EVID-04",
     "status": "fail",
-    "evidence": "Local selected checks pass; current-head CI must reconcile existing island-size Cargo-lock provenance policy. No ceiling/policy/provenance bypass."
+    "evidence": "Local selected checks pass (replayed 2026-10-14); current-head CI must reconcile the island-size Cargo-lock provenance policy through the paired cargo-internal-rewire activation in ACTIVATION.md once #4259 integrates. No ceiling/policy/provenance bypass."
   },
   {
     "id": "EVID-05",

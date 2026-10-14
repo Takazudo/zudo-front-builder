@@ -24,7 +24,7 @@ the declaration and all four receipts must be regenerated and re-reviewed.
 
 ## 2. Order of operations
 
-1. **Land the tooling.** Draft PR `policy/cargo-internal-rewire` is stacked on
+1. **Land the tooling.** Draft PR [#4259](https://github.com/Takazudo/zudo-front-builder/pull/4259) (`policy/cargo-internal-rewire`) is stacked on
    `base/post-4-5-0-island-maintenance` (#4234, held). It reaches `main` only
    through #4234's own authorized integration, then its own. Until then the
    reason does not exist in the checkout that the CI measurement runs from.
@@ -110,6 +110,14 @@ After phase one is accepted and the producer transition is admitted:
    shutdown through the existing dev supervision tests, plus reload under the
    direct host. Standalone-host evidence from this branch does not prove any
    of this.
+
+Entry conditions recorded by the 2026-10-14 native re-review (FINDINGS.md),
+which the phase-2 design must satisfy before any combined binary exists: one
+shared V8 process initializer and one thread guard covering both the deno_core
+and direct hosts (a second initializer panics), V8 initialized from the main
+thread before any host thread is spawned or the unprotected platform mode
+chosen deliberately, and a decision on registered error classes
+(`instanceof` parity) and on same-specifier module reload semantics.
 
 Five-target packaging/native adoption, Rolldown interoperability (#4120 stays
 independent), default switching and final Deno deletion remain later,

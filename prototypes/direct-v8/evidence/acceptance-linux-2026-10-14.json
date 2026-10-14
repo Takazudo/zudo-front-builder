@@ -1,0 +1,672 @@
+{
+  "schema": 1,
+  "kind": "fresh Linux x86_64 acceptance replay through prototypes/direct-v8/accept.py",
+  "passed": true,
+  "error": null,
+  "environment": {
+    "commit": "34ffcba76fa54e88745656c609b2e5a178ae4227",
+    "status_porcelain": "",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "env": {
+      "RUSTUP_TOOLCHAIN": "1.99.0",
+      "CARGO_BUILD_JOBS": "6",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "ZFB_V8_ICU_DATA": "/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/icu77/icudtl.dat"
+    }
+  },
+  "icu": {
+    "path": "/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/icu77/icudtl.dat",
+    "sha256": "1cf67874b5a87a8363a86fb3f81e3cbbed54d389062dab8fb52308d5cf8c8612",
+    "archive_sha256_pin": "a9efff8990a82c1ae664292507e1a5c6749ddd2312898cdf9cd7cb1fd4bc64c6"
+  },
+  "target_directory": "/home/takazudo/.cargo-target",
+  "candidate_lib_tests": {
+    "status": "ok",
+    "passed": 40,
+    "failed": 0
+  },
+  "executables": {
+    "baseline": {
+      "path": "/home/takazudo/.cargo-target/debug/examples/direct_v8_baseline",
+      "sha256": "c7405139c32d2df43f4d9026efe5e29f0e075a8b9eccc5b6b509742b1bfae557",
+      "engine": "deno_core 0.399.0 / v8 147.4.0"
+    },
+    "candidate": {
+      "path": "/home/takazudo/.cargo-target/debug/examples/direct_v8",
+      "sha256": "a6711fd73033d11be4294b90d5811a90881661912c7ba244d6cf3553de63ed30",
+      "engine": "direct v8 147.4.0"
+    },
+    "outer_config": {
+      "path": "/home/takazudo/.cargo-target/debug/examples/direct_v8_outer_config",
+      "sha256": "779eda2fd7a9b3555a4fd8173b2ec3ddaed908e7b852ca8d79e7c40548f96a13"
+    },
+    "postprocessor": {
+      "path": "/home/takazudo/.cargo-target/debug/examples/direct_v8_postprocess",
+      "sha256": "5e19aff9a9c3486ecd7b4a6d2b003a4facd1540004d9df7e406a6e67ee483751"
+    },
+    "zfb": {
+      "path": "/home/takazudo/.cargo-target/debug/zfb",
+      "sha256": "cc59719929bc8ea04ed442880cc231843db474d8ee587de782d16fc88a96e91a"
+    },
+    "wrapper_test_binary": {
+      "path": "/home/takazudo/.cargo-target/debug/deps/zfb-4e375712b1045073",
+      "sha256": "ef75601187fcb24fa053c2dfd9e42f174bec7f375b6208c7c1e8e476c098d57c"
+    }
+  },
+  "executables_after": {
+    "baseline": "c7405139c32d2df43f4d9026efe5e29f0e075a8b9eccc5b6b509742b1bfae557",
+    "candidate": "a6711fd73033d11be4294b90d5811a90881661912c7ba244d6cf3553de63ed30",
+    "outer_config": "779eda2fd7a9b3555a4fd8173b2ec3ddaed908e7b852ca8d79e7c40548f96a13",
+    "postprocessor": "5e19aff9a9c3486ecd7b4a6d2b003a4facd1540004d9df7e406a6e67ee483751",
+    "zfb": "cc59719929bc8ea04ed442880cc231843db474d8ee587de782d16fc88a96e91a",
+    "wrapper_test_binary": "ef75601187fcb24fa053c2dfd9e42f174bec7f375b6208c7c1e8e476c098d57c"
+  },
+  "steps": [
+    {
+      "label": "prepare-icu",
+      "guarded": false,
+      "exit_code": 0,
+      "seconds": 0.1
+    },
+    {
+      "label": "cargo-metadata-target",
+      "guarded": false,
+      "exit_code": 0,
+      "seconds": 0.0
+    },
+    {
+      "label": "services-tests",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 1.4
+    },
+    {
+      "label": "build-baseline",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.4
+    },
+    {
+      "label": "build-outer-config",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.5
+    },
+    {
+      "label": "build-candidate",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 1.6
+    },
+    {
+      "label": "candidate-lib-tests",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 1.4
+    },
+    {
+      "label": "gate-config",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 1.3
+    },
+    {
+      "label": "gate-services",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.7
+    },
+    {
+      "label": "gate-http",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.5
+    },
+    {
+      "label": "gate-modules",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.7
+    },
+    {
+      "label": "gate-outer-config",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.4
+    },
+    {
+      "label": "build-postprocessor",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 0.6
+    },
+    {
+      "label": "build-zfb",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 37.2
+    },
+    {
+      "label": "build-wrapper-test",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 121.7
+    },
+    {
+      "label": "prepare-fixtures",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 2.0
+    },
+    {
+      "label": "gate-generated",
+      "guarded": true,
+      "exit_code": 0,
+      "seconds": 12.4
+    }
+  ],
+  "commands": [
+    {
+      "label": "prepare-icu",
+      "argv": [
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/prepare-icu.py",
+        "--archive",
+        "/home/takazudo/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/deno_core_icudata-0.77.0.crate"
+      ]
+    },
+    {
+      "label": "cargo-metadata-target",
+      "argv": ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"]
+    },
+    {
+      "label": "services-tests",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--features",
+        "services"
+      ]
+    },
+    {
+      "label": "build-baseline",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-render",
+        "--example",
+        "direct_v8_baseline"
+      ]
+    },
+    {
+      "label": "build-outer-config",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb",
+        "--example",
+        "direct_v8_outer_config"
+      ]
+    },
+    {
+      "label": "build-candidate",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--example",
+        "direct_v8"
+      ]
+    },
+    {
+      "label": "candidate-lib-tests",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--lib"
+      ]
+    },
+    {
+      "label": "gate-config",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/check-config.py",
+        "--baseline",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/config-gate.json"
+      ]
+    },
+    {
+      "label": "gate-services",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/check-config.py",
+        "--kind",
+        "script",
+        "--cases",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/service-cases.json",
+        "--baseline",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/services-gate.json"
+      ]
+    },
+    {
+      "label": "gate-http",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/check-http.py",
+        "--baseline",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/http-gate.json"
+      ]
+    },
+    {
+      "label": "gate-modules",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/check-modules.py",
+        "--baseline",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8",
+        "--fixture-dir",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/modules-fixtures",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/modules-gate.json"
+      ]
+    },
+    {
+      "label": "gate-outer-config",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/check-outer-config.py",
+        "--runner",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_outer_config",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/outer-config-gate.json"
+      ]
+    },
+    {
+      "label": "build-postprocessor",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-build",
+        "--no-default-features",
+        "--example",
+        "direct_v8_postprocess"
+      ]
+    },
+    {
+      "label": "build-zfb",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb",
+        "--bin",
+        "zfb"
+      ]
+    },
+    {
+      "label": "build-wrapper-test",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ]
+    },
+    {
+      "label": "prepare-fixtures",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/prepare-fixtures.py",
+        "--zfb",
+        "/home/takazudo/.cargo-target/debug/zfb",
+        "--esbuild",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/esbuild-0.25.12",
+        "--wrapper-test-binary",
+        "/home/takazudo/.cargo-target/debug/deps/zfb-4e375712b1045073",
+        "--rustc",
+        "/home/takazudo/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+        "--node",
+        "/home/takazudo/.anyenv/envs/nodenv/shims/node",
+        "--producer-build-command",
+        "{\"ZFB_ESBUILD_BIN\": \"/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/esbuild-0.25.12\", \"argv\": [\"bash\", \"/home/takazudo/.claude/scripts/heavy-guard.sh\", \"--\", \"cargo\", \"build\", \"--locked\", \"-p\", \"zfb\", \"--bin\", \"zfb\"], \"env\": {\"CARGO_BUILD_JOBS\": \"6\", \"CARGO_PROFILE_DEV_DEBUG\": \"0\", \"CARGO_PROFILE_TEST_DEBUG\": \"0\", \"RUSTUP_TOOLCHAIN\": \"1.99.0\", \"ZFB_V8_ICU_DATA\": \"/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/icu77/icudtl.dat\"}}",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/generated"
+      ]
+    },
+    {
+      "label": "gate-generated",
+      "argv": [
+        "bash",
+        "/home/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/home/takazudo/repos/myoss/zfb/prototypes/direct-v8/check-generated.py",
+        "--snapshot",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/generated/frozen",
+        "--baseline",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8",
+        "--postprocessor",
+        "/home/takazudo/.cargo-target/debug/examples/direct_v8_postprocess",
+        "--node",
+        "/home/takazudo/.anyenv/envs/nodenv/shims/node",
+        "--chromium",
+        "/opt/google/chrome/google-chrome",
+        "--output",
+        "/home/takazudo/repos/myoss/zfb/target/direct-v8-accept-5/generated-results"
+      ]
+    }
+  ],
+  "gates": {
+    "config": {
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "c7405139c32d2df43f4d9026efe5e29f0e075a8b9eccc5b6b509742b1bfae557",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "a6711fd73033d11be4294b90d5811a90881661912c7ba244d6cf3553de63ed30",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        }
+      ],
+      "report_sha256": "564514bc076ea3a767d0eef04a52a683d2a884ccd4717e63b1b63515b8e8d2bd"
+    },
+    "services": {
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "c7405139c32d2df43f4d9026efe5e29f0e075a8b9eccc5b6b509742b1bfae557",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "a6711fd73033d11be4294b90d5811a90881661912c7ba244d6cf3553de63ed30",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        }
+      ],
+      "report_sha256": "e9822caf7f67d5b28c5b46f7a3891b4f254a7faab93d6d3d98c2c4f0ccd1dd5d"
+    },
+    "http": {
+      "passed": true,
+      "counts": {
+        "rows": 8,
+        "rows_passed": 8,
+        "passed": true
+      },
+      "report_sha256": "d57ee14dc627a5ecee64a57ddff675038bb773d67091b76a2b68e8f7f3e4673e"
+    },
+    "modules": {
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "c7405139c32d2df43f4d9026efe5e29f0e075a8b9eccc5b6b509742b1bfae557",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "a6711fd73033d11be4294b90d5811a90881661912c7ba244d6cf3553de63ed30",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        }
+      ],
+      "report_sha256": "60a8998c0bf74c5f7a04c712b22246296eca2abdfc52f6531252c31a9cf41184"
+    },
+    "outer_config": {
+      "passed": true,
+      "counts": {
+        "rows": 7,
+        "rows_passed": 7,
+        "passed": true
+      },
+      "report_sha256": "c58ec1927b301a3993c59f471609cc14fdbefb95574a1994442f82e3628a116b"
+    },
+    "generated": {
+      "passed": true,
+      "counts": {
+        "passed": true,
+        "snapshot_manifest_sha256": "5bd9bab409ecb344238a515e3bf080396555f8e6326cc6e1dc91c9fb3b2b2a32",
+        "baseline": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "candidate": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "parity_rows": 7,
+        "parity_passed": 7,
+        "browser": true
+      },
+      "report_sha256": "0af1361052a5298b3fa3f89aa61b8ad6e3925ad07b7fcc7503ac67124d605d66"
+    }
+  },
+  "limitations": [
+    "Linux x86_64 native evidence only; other platforms untested.",
+    "Standalone runners prove host behavior, not candidate CLI/factory/dev-reload integration.",
+    "A watchdog expiry is a failed observation, never clean shutdown evidence.",
+    "No baseline, Node or Deno fallback executor is selected when the candidate is missing."
+  ],
+  "generated_snapshot": {
+    "manifest_sha256": "5bd9bab409ecb344238a515e3bf080396555f8e6326cc6e1dc91c9fb3b2b2a32",
+    "files": 54,
+    "producer": {
+      "commit": "34ffcba76fa54e88745656c609b2e5a178ae4227",
+      "status": ""
+    },
+    "producer_policy_inputs": {
+      "Cargo.toml": "30cd2d6138555778cdc357f8d783951e1ae7382c4adf4f7dc5e8130ce8c164d5",
+      "Cargo.lock": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+      "rust-toolchain.toml": "3e18e70208ee460635e239a91c142cf67371feafb718b05617ff06f388bf96df",
+      "pnpm-lock.yaml": "56e687fe05e0b84949881583381551b060cd357f43b0bf6b6bf0b27c2cc95b9a",
+      "package.json": "0a98b6b3615789982e0f74c7f2690555ec678cd7a31bb1fc69d0773de62198ce",
+      "packages/zfb/package.json": "1adad4c087947275605d4febd142503e2a3e9b394694ba68005b78e6040fc0bd",
+      "crates/zfb-toolchain-pins/src/lib.rs": "1b6f9886a64c718d74ad41184d1051800e57cb90ab2b7ccf57da02cd72fffc53"
+    },
+    "tools": {
+      "zfb": {
+        "path": "/home/takazudo/.cargo-target/debug/zfb",
+        "sha256": "cc59719929bc8ea04ed442880cc231843db474d8ee587de782d16fc88a96e91a"
+      },
+      "esbuild": {
+        "path": "/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/esbuild-0.25.12",
+        "sha256": "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
+      },
+      "wrapper_test_binary": {
+        "path": "/home/takazudo/.cargo-target/debug/deps/zfb-4e375712b1045073",
+        "sha256": "ef75601187fcb24fa053c2dfd9e42f174bec7f375b6208c7c1e8e476c098d57c"
+      },
+      "rustc": {
+        "path": "/home/takazudo/.rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+        "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+      },
+      "node": {
+        "path": "/home/takazudo/.anyenv/envs/nodenv/shims/node",
+        "sha256": "f84ff8a6b840026b43b0552fe4ad9432f2f110cd24e84da1cb21debfba58b0d9"
+      }
+    },
+    "versions": {
+      "zfb": "zfb 0.0.0",
+      "esbuild": "0.25.12",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+      "node": "v24.13.1"
+    },
+    "producer_build_command_supplied": "{\"ZFB_ESBUILD_BIN\": \"/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/esbuild-0.25.12\", \"argv\": [\"bash\", \"/home/takazudo/.claude/scripts/heavy-guard.sh\", \"--\", \"cargo\", \"build\", \"--locked\", \"-p\", \"zfb\", \"--bin\", \"zfb\"], \"env\": {\"CARGO_BUILD_JOBS\": \"6\", \"CARGO_PROFILE_DEV_DEBUG\": \"0\", \"CARGO_PROFILE_TEST_DEBUG\": \"0\", \"RUSTUP_TOOLCHAIN\": \"1.99.0\", \"ZFB_V8_ICU_DATA\": \"/home/takazudo/repos/myoss/zfb/target/direct-v8-inputs/icu77/icudtl.dat\"}}"
+  },
+  "browser": {
+    "executablePath": "/opt/google/chrome/google-chrome",
+    "version": "146.0.7680.153",
+    "initialText": "Count: 0",
+    "css": "rgb(12, 34, 56)",
+    "afterClickText": "Count: 1",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "passed": true
+  },
+  "earlier_runs_this_session": {
+    "note": "Refused or misreported runs preserved for provenance; none is a pass. Their gate JSON stays under the ignored target/ directory.",
+    "run1": "target/direct-v8-accept-1: every gate passed; the entry point passed a file path where check-generated.py takes a directory and reported the generated gate as failed (harness bug, fixed in ec7e40ba).",
+    "run2": "target/direct-v8-accept-2: every gate passed; the entry point demanded a top-level `passed` key that check-config.py/check-modules.py never write (harness bug, fixed in d550c3dc).",
+    "run3": "target/direct-v8-accept-3 at d550c3dc: PASS (candidate 666def06..., before the registry-guard change).",
+    "run4": "target/direct-v8-accept-4 at d2b57fdb: refused by the verifier because the new services-test step rebuilt examples/direct_v8 without direct-v8 (feature-disabled form) right before verification; step reordered in 34ffcba7."
+  },
+  "all_targets_trap_demonstration": {
+    "lane": "target/direct-v8-b-checks (after acceptance run 3, same source d550c3dc)",
+    "after_workspace_all_targets_build": "a3bae3c6b265e216811bc16e866a66b49bf317e998df210ac16aa8aeb4cdd8df",
+    "verifier": "REFUSED: feature-disabled form of the runner (direct_v8 requires the direct-v8 feature)",
+    "after_explicit_candidate_build": "666def061ed838a537a80955e108d6fc2e622a7ab20db2e71bd5e06f162bef45",
+    "reverified": true
+  },
+  "batched_checks": {
+    "source": "d550c3dc2b1aa46bde0e555499b32888321e0c48 (baseline/all-targets/no-V8/fmt/graph) and d2b57fdb09e2f74bba71da12312d3e15bb839fe6 (workspace clippy) and 34ffcba76fa54e88745656c609b2e5a178ae4227 (native clippy)",
+    "baseline_tests": {
+      "zfb-render lib": 210,
+      "config_eval": 14,
+      "embedded_v8_browser_event": 4,
+      "embedded_v8_console_logs": 3,
+      "embedded_v8_dispatch_mode": 9,
+      "embedded_v8_node_stubs": 6,
+      "embedded_v8_plugin_resolver": 18,
+      "embedded_v8_smoke": 32,
+      "total": 296,
+      "passed": true
+    },
+    "zfb_js_host_services_tests": 9,
+    "workspace_all_targets_build": "pass (1512 s)",
+    "no_v8_check": "pass (cargo check --locked --no-default-features -p zfb --tests)",
+    "clippy_workspace": "pass (-D warnings)",
+    "clippy_native": "pass (-p zfb-js-host --no-default-features --features direct-v8 --all-targets -D warnings)",
+    "fmt_check": "pass",
+    "md_wasm_graph_surfaces": "pass (scripts/assert-zfb-md-wasm-graph.sh)",
+    "not_run": [
+      "isolated wasm32 md-Wasm link",
+      "CSS addon native load",
+      "pnpm b4push",
+      "any non-Linux platform"
+    ]
+  }
+}

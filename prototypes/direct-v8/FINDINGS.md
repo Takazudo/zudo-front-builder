@@ -1,8 +1,14 @@
 # Phase 1 execution findings
 
-The standalone Linux runtime feasibility gate passes. Delivery remains blocked
-by the existing island-size Cargo-lock provenance check; this is not a claim
-that all required CI passes or that candidate CLI integration is complete.
+The standalone Linux runtime feasibility gate passes, and was replayed from one
+documented command on a second machine on 2026-10-14 (see "Fresh Linux replay"
+below). Delivery remains blocked by the existing island-size Cargo-lock
+provenance check: the bounded `cargo-internal-rewire` re-pin capability that
+can admit this branch's lock move exists as draft PR
+[#4259](https://github.com/Takazudo/zudo-front-builder/pull/4259) (stacked on
+held #4234) and its activation inputs and checklist live in
+[ACTIVATION.md](ACTIVATION.md); no contract has been re-pinned. This is not a
+claim that all required CI passes or that candidate CLI integration is complete.
 The sole delivery PR is [draft #4242](https://github.com/Takazudo/zudo-front-builder/pull/4242).
 All six delivery issues remain open. No default/runtime selector, release,
 package version, deployment or preview upload is part of this experiment.
@@ -468,7 +474,7 @@ explicit. Machine-readable equivalent: `evidence/contract-status.json`.
 | EVID-01 | pass | Frozen 54-file manifest, separate native receipts, independent literals and exact response parity. |
 | EVID-02 | pass | Frozen 54-file manifest, separate native receipts, independent literals and exact response parity. |
 | EVID-03 | pass | One Chromium154 session: candidate HTML, emitted CSS, SSR Count0 and hydrated click Count1; no page/console errors. |
-| EVID-04 | fail | Local selected checks pass; current-head CI must reconcile existing island-size Cargo-lock provenance policy. No ceiling/policy/provenance bypass. |
+| EVID-04 | fail | Local selected checks pass (replayed 2026-10-14); current-head CI must reconcile the island-size Cargo-lock provenance policy through the paired `cargo-internal-rewire` activation in ACTIVATION.md once #4259 integrates. No ceiling/policy/provenance bypass. |
 | EVID-05 | pass | Linux x86_64 native execution passed. Darwin arm64/x64, Linux arm64 and Windows x64 not run; no platform fleet. |
 
 ## Recommendation and next authorization boundary
@@ -534,3 +540,152 @@ and conclusions are recorded in the draft PR description after the final push;
 previous-checkpoint green jobs are not substituted for current-head status.
 The unresolved provenance test remains an integration blocker, not a passed or
 deferred native capability. All six issues stay open for review/integration.
+
+## Fresh Linux replay through the acceptance entry point (2026-10-14, #4258)
+
+A second session replayed the whole selected Linux acceptance from one
+documented command, `prototypes/direct-v8/accept.py` (see README), on a
+different machine from the original run. This is **fresh evidence** that
+supersedes nothing above: the original receipts in `evidence/` are preserved,
+and the fresh receipt is `evidence/acceptance-linux-2026-10-14.json`
+(condensed from `target/direct-v8-accept-5/acceptance.json`; the full gate
+JSON stays ignored under `target/`). A fresh session is not a cold-build
+benchmark; the recorded step durations reuse compiled dependencies.
+
+- Source: ``34ffcba76fa54e88745656c609b2e5a178ae4227`` (clean tree; the producer recorded `status` empty).
+  Linux x86_64 (WSL2), rustc `1.99.0 (b940084d7 2026-09-28)` selected with
+  `RUSTUP_TOOLCHAIN=1.99.0` to match the shared target, Node `v24.13.1`,
+  Python 3.12.3, machine-wide Cargo `target-dir` honored via `cargo metadata`.
+  Heavy commands ran through this host's published `heavy-guard.sh`.
+- ICU: the pinned `deno_core_icudata-0.77.0` archive from the local Cargo
+  cache (`--icu-archive`); data SHA-256 `1cf67874…8612`, equal to the pin.
+- Executables (digests bound before the gates and re-read after each one,
+  unchanged throughout): baseline `direct_v8_baseline` `c7405139…`, candidate
+  `direct_v8` `a6711fd7…` (`666def06…` before the registry-guard fix in
+  `d2b57fdb`, see the re-review below), outer-config `779eda2f…`, postprocessor
+  `5e19aff9…`, normal CLI `zfb` `cc597199…`, wrapper test binary `ef756011…`.
+  Both engine probes answered with their exact engine identity
+  (`deno_core 0.399.0 / v8 147.4.0`, `direct v8 147.4.0`) and the probe value.
+- Native library tests: **40 passed, 0 failed**; shared-services tests
+  (`--features services`): **9 passed** (fresh).
+- Paired gates, each engine: config **63/63**, services **27/27**, modules
+  **47/47**; loopback HTTP **8/8** paired rows; outer typed config **7/7**.
+- Generated inputs: the normal CLI (built here, esbuild 0.25.12 verified
+  against the repository pin `bab29b2c…`) produced a new frozen **54-file**
+  snapshot (manifest ``5bd9bab4…2a32``), consumed by both engines: **8/8**
+  packets each, **7/7** exact parity rows, authored throw mapped to
+  `throw.ts:6:9`, and one Google Chrome ``146.0.7680.153`` session on the
+  candidate-rendered HTML with the frozen client/CSS bytes: `Count: 0`,
+  computed `rgb(12, 34, 56)`, `Count: 1` after a real click, no page or
+  console errors. The snapshot's nondeterministic bytes differ from the
+  original run's, as expected; both engines consumed the same bytes.
+- Original failures in this replay: two harness mistakes in the new entry
+  point, not engine failures. Run 1 reported the generated gate failed because
+  the entry point passed a file path where `check-generated.py` takes a
+  directory (the gate itself had passed 8/8 + browser); run 2 reported the
+  config/services/modules gates failed because the entry point demanded a
+  top-level `passed` key that those checkers never write (each engine had
+  passed 63/63, 27/27, 47/47). Run 4 was refused by the verifier itself:
+  the newly added services-test step rebuilt `examples/direct_v8` without
+  `direct-v8` right before verification, which is the all-targets trap in
+  miniature; the step was reordered. All three fixes are unit-tested
+  (`test_accept.py`, 10 cases) and the gates were rerun from scratch (run 5).
+  No oracle, corpus or assertion changed.
+- The all-targets trap was demonstrated on the real target after the replay:
+  `cargo build --locked --workspace --all-targets` left
+  `examples/direct_v8` as the feature-disabled form, `accept.py`'s verifier
+  refused it (``a3bae3c6…` refused as the feature-disabled form`), the explicit feature build restored it, and the
+  verifier accepted it again (``666def06…``).
+
+Batched affected checks after the replay (one guard lane, same source):
+
+| Check | Result |
+| --- | --- |
+| `cargo test --locked -p zfb-render --lib --test config_eval --test embedded_v8_smoke --test embedded_v8_plugin_resolver --test embedded_v8_browser_event --test embedded_v8_console_logs --test embedded_v8_dispatch_mode --test embedded_v8_node_stubs` | **296 passed** (210 + 14 + 32 + 18 + 4 + 3 + 9 + 6) |
+| `cargo test --locked -p zfb-js-host --features services` | 9 passed |
+| `cargo build --locked --workspace --all-targets` | pass, 1512 s (then the trap above) |
+| `cargo check --locked --no-default-features -p zfb --tests` | pass |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | pass |
+| `cargo clippy --locked -p zfb-js-host --no-default-features --features direct-v8 --all-targets -- -D warnings` | pass (a first attempt ran without `ZFB_V8_ICU_DATA` in its shell and failed to compile; that was the lane script, not the crate) |
+| `cargo fmt --all -- --check` | pass |
+| `scripts/assert-zfb-md-wasm-graph.sh` | pass (seven surfaces, both compiler boundaries) |
+
+Not run here: Darwin arm64/x64, Linux arm64, Windows x64; the normal CLI on
+the candidate host (phase 2); `pnpm b4push`; the isolated wasm32 md-Wasm link
+and CSS addon native load (reused from the original run, whose feature
+boundaries and shared-default edges this session did not change).
+
+## Independent native-lifetime re-review (2026-10-14, #4258)
+
+A fresh-context reviewer (strongest available model, read-only, nothing
+executed) re-examined isolate/root drop ordering, callback panic boundaries,
+foreground-task lifetime, pending transport cancellation, the shared-extraction
+effects on the original host, the unsafe inventory and feature isolation. No
+blocker was found. Every item below is a source concern unless a named test
+covers it; none is a reproduced bug.
+
+Fixed on this branch:
+
+- `NativeHost::new_inner` registered the isolate's foreground queue before
+  the bootstrap/bridge installs, whose early returns left the registry entry
+  behind (harmless, since the `Weak` was dead and a later isolate at the same
+  address overwrote the key). A guard now closes the entry on every early
+  return and is disarmed once `NativeHost` owns the queue.
+- The native loopback tests relied on reqwest enabling tokio `net`/`io-util`
+  transitively; they are declared as dev-dependency features (lock unchanged).
+- `accept.py` runs `cargo test -p zfb-js-host --features services` explicitly:
+  the limits/dispatch-mode/shim pins moved out of zfb-render compile only with
+  `services`, so a bare `cargo test -p zfb-js-host` runs none of them.
+
+Recorded as phase-2 entry conditions (not triggerable by the phase-1 runners,
+which are separate binaries):
+
+- **One process initializer.** `bootstrap::initialize` owns V8 platform
+  initialization behind its own `OnceLock`; rusty_v8 panics ("Invalid global
+  state") if deno_core's `JsRuntime` initialized the platform first, or vice
+  versa, and the per-thread host guard counts only `NativeHost`s, so a
+  deno_core `OwnedIsolate` on the same thread is invisible to the LIFO rule.
+  A combined CLI binary must route both hosts through one shared initializer
+  and one thread guard before any host thread exists.
+- **Platform protection mode follows the first host's thread.** Non-test
+  builds initialize V8 with pkey-protected allocations from whichever thread
+  first constructs a host; upstream requires every later V8 thread to descend
+  from it. zfb's `ThreadedV8Host` spawns one thread per host, so the CLI must
+  initialize V8 from the main thread before spawning, or select the
+  unprotected mode deliberately and record why.
+
+Known limits and parity notes retained without change:
+
+- `registerErrorClass` is a no-op: host `TimeoutError`/`QuotaExceededError`/
+  `NotSupportedError` are plain `Error`/`TypeError` instances with an own
+  `name`, where the deno baseline makes them real registered classes. The
+  polyfills and the paired corpora compare `.name` only, so `instanceof`,
+  `.constructor` and the first `.stack` line differ unobserved. A contract
+  divergence to settle in phase 2, not normalized away here.
+- Re-executing the same module specifier with different source returns the
+  cached module; the prototype runner never does this, and the baseline was
+  not compared for it.
+- JS cancel ids wrap at 2^30 and an older pending op's mapping is overwritten,
+  exactly as the baseline registry comments; `forget` stays id-guarded.
+- `poll_drive` parks on pending background work with no deadline and relies on
+  V8's completion post (every exercised path posts); an unbounded wait would
+  be a hang, not a wrong result. The Tokio time driver is a precondition that
+  only `evaluate_script` checks.
+- Unproven by any test: a panicking custom `Waker` (containment exists in the
+  platform adapter) and `post_delayed_task`; cross-thread isolate address
+  reuse is argued from V8's dispose semantics and the same-thread
+  `repeated_pending_wasm_disposal_allows_fresh_foreground_work` test only.
+- Six `unsafe` sites: five `callback_scope!` entries and one
+  `repr(transparent)` pointer-to-`usize` transmute used only as a registry
+  key; no `unsafe impl Send/Sync`; coordinates use checked arithmetic.
+
+Properties the reviewer confirmed from source: drop ordering (`context`,
+`modules`, `services`, `foreground` before `isolate`, thread guard last;
+transports before resolvers; module `Global`s cleared with the isolate
+alive), every V8-invoked Rust function wrapped in `catch_unwind`, no `RefCell`
+borrow spanning a V8 call that can run JS, the stale-snapshot ordering in
+`poll_drive`, exactly-once cancellation removal with the reqwest future dropped
+before returning to JS, per-dispatch budget capture, byte-identical
+`BuildTimeDenied` and transport/limits/digest/alias/Wasm-path code against
+`main`, `DispatchMode` default unchanged, public re-exports intact, `services`
+free of any V8 dependency and `direct-v8` enabled by no other manifest.

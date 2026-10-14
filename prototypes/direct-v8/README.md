@@ -98,6 +98,11 @@ directory.
 
 ## Recorded phase-1 gates
 
+A fresh 2026-10-14 Linux replay through `accept.py` is condensed in
+[evidence/acceptance-linux-2026-10-14.json](evidence/acceptance-linux-2026-10-14.json)
+and described in FINDINGS.md ("Fresh Linux replay"); the original receipts
+below are preserved unchanged.
+
 Async native services/cancellation and module/Worker parity are implemented and
 verified in dependency order before generated-input acceptance. The saved
 receipts record 63 config cases per engine, 27 service cases per engine,
