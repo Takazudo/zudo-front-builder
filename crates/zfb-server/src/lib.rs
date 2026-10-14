@@ -794,16 +794,20 @@ pub struct ServeOpts {
     /// Optional isolated dev-assets root (issue #1189). `zfb dev` passes
     /// `Some(<project_root>/.zfb-build/dev-assets)` and writes its STABLE
     /// assets there instead of into `dist/assets/`; the router then serves
-    /// `/assets/*` from `<dev_assets_root>/assets/` first, falling back to
-    /// `<dist_root>/assets/`. This keeps a one-off `zfb build` against the
-    /// shared `dist/` from clobbering the dev-served stylesheet. `None`
-    /// (preview / embed) keeps the single-root `dist_root` mount.
+    /// `/assets/*` from `<dev_assets_root>/assets/` first, then the live
+    /// `<public_root>/assets/` (issue #4233, framework-reserved names
+    /// refused), falling back to `<dist_root>/assets/` when
+    /// [`Self::dev_dist_seed`] allows it. This keeps a one-off `zfb build`
+    /// against the shared `dist/` from clobbering the dev-served stylesheet.
+    /// `None` (preview / embed) keeps the single-root `dist_root` mount —
+    /// `zfb build` already copied `public/assets/` into it.
     pub dev_assets_root: Option<PathBuf>,
 
     /// Whether `zfb dev` may read the prebuilt `dist_root` as a seed
     /// (issue #3344): the Dev-gated `read_from_dist(dist_root, …)` HTML leg
     /// of `serve_page` (also the stale-document fallback) and the
-    /// `<dist_root>/assets/` layer behind `dev_assets_root`. `zfb dev` sets
+    /// `<dist_root>/assets/` layer behind `dev_assets_root` and
+    /// `<public_root>/assets/`. `zfb dev` sets
     /// `false` under a scratch dir, because `dist/` carries whatever define
     /// the last `zfb build` used. No effect outside [`ServerMode::Dev`];
     /// every other caller passes `true`.
@@ -824,7 +828,10 @@ pub struct ServeOpts {
     /// site root via a per-request on-disk fallback inside the page
     /// handler — `public/logo.svg` → `GET /logo.svg`. The same shape
     /// `zfb build` produces (it copies `public/*` straight into
-    /// `dist/`), so dev and prod URLs match.
+    /// `dist/`), so dev and prod URLs match. `public/assets/` is the
+    /// exception: the reserved `/assets` mount claims those URLs, so when
+    /// [`Self::dev_assets_root`] is set it is layered into that mount
+    /// instead (issue #4233) — read per request, no livereload.
     pub public_root: PathBuf,
 
     /// Address to bind. Defaults to `127.0.0.1:3000`.
