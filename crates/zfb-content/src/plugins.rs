@@ -45,3 +45,4 @@ pub use zfb_md_ast::cjk_autolink::{self, CjkAutolinkBoundaryPlugin};
 pub use zfb_md_ast::cjk_friendly::{self, CjkFriendlyPlugin};
 pub use zfb_md_ast::hard_breaks::{self, HardBreaksPlugin};
 pub use zfb_md_ast::nested_link::{self, unwrap_nested_links};
+pub use zfb_md_ast::table_paragraph::{self, unwrap_table_paragraphs};
