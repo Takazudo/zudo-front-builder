@@ -313,20 +313,25 @@ def main():
         report["icu"] = acceptance.prepare_icu()
         target = acceptance.cargo_target_dir()
         report["target_directory"] = str(target)
-        acceptance.run("build-baseline", BASELINE_BUILD, guarded=True)
-        acceptance.run("build-candidate", CANDIDATE_BUILD, guarded=True)
-        tests = acceptance.run("candidate-lib-tests", CANDIDATE_TESTS, guarded=True)
-        summary = parse_test_result(tests.stdout)
-        if not summary or summary["status"] != "ok" or summary["passed"] == 0 or summary["failed"]:
-            raise Refusal(f"candidate library tests did not pass with a nonzero count: {summary}")
-        report["candidate_lib_tests"] = summary
+        # The services tests build the crate's examples without `direct-v8`,
+        # which overwrites examples/direct_v8 with its feature-disabled form
+        # (the same trap as an all-targets build), so they run BEFORE the
+        # explicit candidate build; run 4 of this entry point was refused by its
+        # own verifier for exactly that reason.
         services = acceptance.run("services-tests", SERVICES_TESTS, guarded=True)
         services_summary = parse_test_result(services.stdout)
         if not services_summary or services_summary["status"] != "ok" or services_summary["passed"] == 0 \
                 or services_summary["failed"]:
             raise Refusal(f"shared-services tests did not pass with a nonzero count: {services_summary}")
         report["services_tests"] = services_summary
+        acceptance.run("build-baseline", BASELINE_BUILD, guarded=True)
         acceptance.run("build-outer-config", OUTER_BUILD, guarded=True)
+        acceptance.run("build-candidate", CANDIDATE_BUILD, guarded=True)
+        tests = acceptance.run("candidate-lib-tests", CANDIDATE_TESTS, guarded=True)
+        summary = parse_test_result(tests.stdout)
+        if not summary or summary["status"] != "ok" or summary["passed"] == 0 or summary["failed"]:
+            raise Refusal(f"candidate library tests did not pass with a nonzero count: {summary}")
+        report["candidate_lib_tests"] = summary
         examples = target / "debug" / "examples"
         runners = {
             "baseline": verify_runner(examples / "direct_v8_baseline", BASELINE_ENGINE, "baseline"),
