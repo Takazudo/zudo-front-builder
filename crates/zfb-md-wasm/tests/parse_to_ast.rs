@@ -1627,65 +1627,37 @@ fn mdx_custom_component_survives_as_typed_node_with_attributes() {
     );
 }
 
-// zfb#4232: `parseToAst` must agree with `compile` on explicit multiline
-// tables — markdown-rs wraps the text-bearing lines in a paragraph, which
-// the compile path splices away.
-const TABLE_4232_SOURCE: &str =
-    "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>";
+#[test]
+fn mdx_explicit_table_keeps_raw_paragraph_wrapper_for_valid_mdast() {
+    // zfb#4232: `compile` splices these paragraphs out before rendering, but
+    // parseToAst stays raw. mdast forbids phrasing JSX directly under a flow
+    // element, so the wrapper is what keeps `toMdastRoot` able to adapt it.
+    let source = "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>";
+    let options = serde_json::json!({ "filename": "post.mdx", "dialect": "mdx" }).to_string();
+    let out = parse(zfb_md_wasm::parse_to_ast(source, &options));
+    assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
+    let table = &out["ast"]["children"][0];
+    assert_eq!(table["type"], "mdxJsxFlowElement");
+    assert_eq!(table["name"], "table");
+    let mut wrapped = 0;
+    assert_no_phrasing_jsx_under_flow_jsx(table, &mut wrapped);
+    assert_eq!(
+        wrapped, 2,
+        "thead row and tbody row each keep their paragraph"
+    );
+}
 
-fn assert_no_paragraph_under_table_structure(value: &Value, parent: Option<&str>) {
-    const STRUCTURE: &[&str] = &["table", "thead", "tbody", "tfoot", "tr", "colgroup"];
-    if value["type"] == "paragraph" {
-        assert!(
-            !parent.is_some_and(|p| STRUCTURE.contains(&p)),
-            "paragraph under table-structure parent {parent:?}"
-        );
-    }
-    let name = value["name"].as_str().filter(|_| {
-        matches!(
-            value["type"].as_str(),
-            Some("mdxJsxFlowElement" | "mdxJsxTextElement")
-        )
-    });
-    if let Some(children) = value["children"].as_array() {
-        for child in children {
-            assert_no_paragraph_under_table_structure(child, name);
+fn assert_no_phrasing_jsx_under_flow_jsx(node: &Value, wrapped: &mut usize) {
+    for child in node["children"].as_array().into_iter().flatten() {
+        if node["type"] == "mdxJsxFlowElement" {
+            assert_ne!(
+                child["type"], "mdxJsxTextElement",
+                "phrasing JSX under flow JSX: {child}"
+            );
+            if child["type"] == "paragraph" {
+                *wrapped += 1;
+            }
         }
+        assert_no_phrasing_jsx_under_flow_jsx(child, wrapped);
     }
-}
-
-#[test]
-fn mdx_explicit_table_has_no_paragraph_under_table_structure() {
-    let out = parse(zfb_md_wasm::parse_to_ast(
-        TABLE_4232_SOURCE,
-        r#"{"dialect":"mdx"}"#,
-    ));
-    assert_eq!(out["diagnostics"], serde_json::json!([]));
-    assert_eq!(count_nodes_of_type(&out["ast"], "paragraph"), 0);
-    assert_no_paragraph_under_table_structure(&out["ast"], None);
-}
-
-#[test]
-fn markdown_dialect_output_is_unchanged_by_table_paragraph_pass() {
-    let source = "<table>\n<tr><td>B</td></tr>\n</table>\n";
-    let out = parse(zfb_md_wasm::parse_to_ast(
-        source,
-        r#"{"dialect":"markdown"}"#,
-    ));
-    assert_eq!(out["diagnostics"], serde_json::json!([]));
-    assert_eq!(count_nodes_of_type(&out["ast"], "mdxJsxFlowElement"), 0);
-    assert_eq!(count_nodes_of_type(&out["ast"], "mdxJsxTextElement"), 0);
-    assert_eq!(count_nodes_of_type(&out["ast"], "html"), 1);
-}
-
-#[test]
-fn mdx_directive_body_table_has_no_paragraph_under_table_structure() {
-    let source = format!(":::note\n{TABLE_4232_SOURCE}\n:::\n");
-    let out = parse(zfb_md_wasm::parse_to_ast(
-        &source,
-        r#"{"dialect":"mdx","directives":true}"#,
-    ));
-    assert_eq!(out["diagnostics"], serde_json::json!([]));
-    assert_eq!(count_nodes_of_type(&out["ast"], "containerDirective"), 1);
-    assert_no_paragraph_under_table_structure(&out["ast"], None);
 }

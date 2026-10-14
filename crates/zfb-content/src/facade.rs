@@ -583,9 +583,7 @@ pub type InteropMdastNode = crate::directive_parser::DirectiveMdastNode;
 /// The nested-link normalisation the rendering paths apply
 /// ([`crate::plugins::nested_link`], zfb#2388) is deliberately NOT applied
 /// here: RAW means raw, and `zfb-md-wasm`'s `parseToAst` tests assert this
-/// function's output byte-for-byte. The one exception is the MDX-dialect
-/// table-paragraph splice ([`crate::plugins::table_paragraph`], zfb#4232),
-/// which keeps `parseToAst` consistent with `compile`. A caller that wants the spec-shaped
+/// function's output byte-for-byte. A caller that wants the spec-shaped
 /// tree — no autolink literal inside a link label — wants `renderHtml`,
 /// which is the surface the invalid nested `<a>` actually reaches.
 ///
@@ -609,15 +607,7 @@ pub fn parse_mdast(
     parse_options.constructs.gfm_footnote_definition = resolved_gfm.footnote_definition;
     parse_options.constructs.gfm_label_start_footnote = resolved_gfm.footnote_definition;
     parse_options.constructs.frontmatter = options.frontmatter;
-    let mut root = markdown::to_mdast(input, &parse_options)
-        .map_err(|m| PipelineError::Parse(m.to_string()))?;
-    // Same normalisation `compile` applies (zfb#4232) so `parseToAst` and
-    // `compile` agree on explicit multiline tables. Only the MDX dialect can
-    // produce the JSX shape the pass matches; Markdown output stays untouched.
-    if options.dialect == ParseDialect::Mdx {
-        crate::plugins::unwrap_table_paragraphs(&mut root);
-    }
-    Ok(root)
+    markdown::to_mdast(input, &parse_options).map_err(|m| PipelineError::Parse(m.to_string()))
 }
 
 /// Parse into the open recursive interoperability carrier.
