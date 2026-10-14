@@ -17,6 +17,7 @@ describe("md-wasm compiler output rendered by zudo-react", () => {
   it("loads every checked-in roundtrip case", () => {
     expect(cases.map(({ name }) => name)).toEqual([
       "aligned-table",
+      "explicit-table-sections",
       "footnote",
       "link-image-heading",
       "ordered-resumed",
@@ -64,6 +65,39 @@ describe("md-wasm compiler output rendered by zudo-react", () => {
       ]);
       expect(cells[3]?.hasAttribute("style")).toBe(false);
       expect(cells[7]?.hasAttribute("style")).toBe(false);
+    }
+
+    if (name === "explicit-table-sections") {
+      // The renderer throws ZR_PARSER_CONTEXT on `table > p`, and the DOM
+      // parser would foster-parent a stray `p` out of the table, so count
+      // every paragraph: two of prose plus the one cell paragraph.
+      const paragraphs = Array.from(container.querySelectorAll("p"));
+      expect(paragraphs.map((p) => p.textContent?.trim())).toEqual([
+        "Before the table.",
+        "Cell paragraph.",
+        "After the table.",
+      ]);
+      expect(paragraphs[1]?.parentElement?.tagName).toBe("TD");
+      expect(
+        container.querySelectorAll(
+          "table > p, thead > p, tbody > p, tfoot > p, tr > p, colgroup > p",
+        ),
+      ).toHaveLength(0);
+      expect(container.querySelector("table > caption")?.textContent).toBe("Scores");
+      expect(container.querySelectorAll("table > colgroup > col")).toHaveLength(2);
+      const texts = (selector: string) =>
+        Array.from(container.querySelectorAll(selector)).map((cell) => cell.textContent?.trim());
+      expect(texts("table > thead > tr > th")).toEqual(["Name", "Score"]);
+      expect(texts("table > tbody > tr > td")).toEqual([
+        "Ann",
+        "10",
+        "Bob",
+        "9",
+        "Cy",
+        "Cell paragraph.",
+      ]);
+      expect(texts("table > tfoot > tr > td")).toEqual(["Total", "19"]);
+      expect(container.querySelector("tbody td > strong")?.textContent).toBe("10");
     }
 
     if (name === "footnote") {
