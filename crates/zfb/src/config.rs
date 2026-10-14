@@ -3473,39 +3473,10 @@ pub(crate) fn is_wind_owner_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'))
 }
 
-fn validate(cfg: &Config, dir: &Path) -> Result<()> {
+/// Validate only CSS fields, without logging or inspecting unrelated site settings.
+fn validate_css_config(cfg: &Config, dir: &Path) -> Result<Vec<String>> {
     if let Some(WindSetting::Enabled(wind)) = &cfg.wind {
         validate_wind_config(wind)?;
-    }
-
-    let mut seen: HashSet<&str> = HashSet::new();
-    for c in &cfg.collections {
-        if !seen.insert(c.name.as_str()) {
-            bail!("duplicate collection name {:?}", c.name);
-        }
-        if c.allow_outside_root {
-            // allowOutsideRoot relaxes only the `..`-escape check. Absolute
-            // paths stay rejected, and `Path::is_absolute()` alone is
-            // weaker than `ensure_path_in_root`'s guard: on Windows a
-            // drive-relative path like `C:temp` (Prefix, no RootDir) is
-            // NOT "absolute" per Rust's definition, so check explicitly
-            // for a Prefix/RootDir component too.
-            if c.path.is_absolute()
-                || c.path
-                    .components()
-                    .any(|comp| matches!(comp, Component::Prefix(_) | Component::RootDir))
-            {
-                bail!(
-                    "collection {:?}: path {:?} must be relative even with allowOutsideRoot ({})",
-                    c.name,
-                    c.path,
-                    dir.display()
-                );
-            }
-        } else {
-            ensure_path_in_root(&c.path, dir)
-                .with_context(|| format!("collection {:?}", c.name))?;
-        }
     }
     if let Some(ch) = &cfg.code_highlight {
         if let Some(td) = &ch.themes_dir {
@@ -3560,14 +3531,113 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             role_classes,
         )
         .map_err(|error| anyhow::anyhow!("codeHighlight.{error}"))?;
-        if let Some(role_classes) = &ch.role_classes {
-            // Authored-only path: mapped classes must exist in user CSS.
-            if !role_classes.is_empty() && matches!(cfg.wind, Some(WindSetting::Disabled)) {
-                tracing::warn!(
-                    "codeHighlight.roleClasses is set with wind=false: ensure the mapped classes exist in your authored CSS"
+    }
+    let mut warnings = Vec::new();
+    if matches!(cfg.wind, Some(WindSetting::Disabled))
+        && cfg
+            .code_highlight
+            .as_ref()
+            .and_then(|ch| ch.role_classes.as_ref())
+            .is_some_and(|roles| !roles.is_empty())
+    {
+        warnings.push("codeHighlight.roleClasses is set with wind=false: ensure the mapped classes exist in your authored CSS".to_owned());
+    }
+    Ok(warnings)
+}
+
+/// Prepare already-evaluated CSS configuration without discovery, evaluation or plugins.
+pub fn prepare_css_config(
+    mut value: serde_json::Value,
+    config_dir: &Path,
+) -> Result<(Config, Vec<String>)> {
+    fn project(value: &mut serde_json::Value) -> Result<()> {
+        let map = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("config must be an object"))?;
+        map.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "wind" | "codeHighlight" | "outDir" | "presets"
+            )
+        });
+        Ok(())
+    }
+    project(&mut value)?;
+    let mut presets = take_presets(&mut value)
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_default();
+    annotate_wind_manifest_sources(&mut value, true).map_err(anyhow::Error::msg)?;
+    let user_sources = take_wind_sources(&mut value, true).map_err(anyhow::Error::msg)?;
+    let mut declarations = Vec::new();
+    for (index, preset) in presets.iter_mut().enumerate() {
+        project(preset).with_context(|| format!("presets[{index}]"))?;
+        annotate_wind_manifest_sources(preset, true)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("presets[{index}]"))?;
+        declarations.extend(
+            take_wind_sources(preset, true)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("presets[{index}]"))?,
+        );
+        let mut fragment = preset.clone();
+        take_wind_manifest_sources(&mut fragment).map_err(anyhow::Error::msg)?;
+        serde_path_to_error::deserialize::<_, Config>(fragment)
+            .with_context(|| format!("presets[{index}]"))?;
+    }
+    let origins = preset_token_origins(&presets);
+    let defaults = build_preset_defaults(presets);
+    let overrides = collect_token_overrides(&defaults, &value, &origins);
+    let mut merged = merge_user_over_presets(defaults, value);
+    let manifests = take_wind_manifest_sources(&mut merged).map_err(anyhow::Error::msg)?;
+    let mut config: Config =
+        serde_path_to_error::deserialize(merged).context("invalid CSS configuration")?;
+    declarations.extend(user_sources);
+    apply_wind_manifest_sources(&mut config, manifests);
+    apply_wind_sources(&mut config, declarations);
+    apply_token_overrides(&mut config, overrides);
+    if let Some(WindSetting::Enabled(wind)) = config.wind.as_mut() {
+        wind.config_dir = Some(config_dir.to_path_buf());
+    }
+    let warnings = validate_css_config(&config, config_dir)?;
+    Ok((config, warnings))
+}
+
+fn validate(cfg: &Config, dir: &Path) -> Result<()> {
+    if let Some(WindSetting::Enabled(wind)) = &cfg.wind {
+        validate_wind_config(wind)?;
+    }
+
+    let mut seen: HashSet<&str> = HashSet::new();
+    for c in &cfg.collections {
+        if !seen.insert(c.name.as_str()) {
+            bail!("duplicate collection name {:?}", c.name);
+        }
+        if c.allow_outside_root {
+            // allowOutsideRoot relaxes only the `..`-escape check. Absolute
+            // paths stay rejected, and `Path::is_absolute()` alone is
+            // weaker than `ensure_path_in_root`'s guard: on Windows a
+            // drive-relative path like `C:temp` (Prefix, no RootDir) is
+            // NOT "absolute" per Rust's definition, so check explicitly
+            // for a Prefix/RootDir component too.
+            if c.path.is_absolute()
+                || c.path
+                    .components()
+                    .any(|comp| matches!(comp, Component::Prefix(_) | Component::RootDir))
+            {
+                bail!(
+                    "collection {:?}: path {:?} must be relative even with allowOutsideRoot ({})",
+                    c.name,
+                    c.path,
+                    dir.display()
                 );
             }
+        } else {
+            ensure_path_in_root(&c.path, dir)
+                .with_context(|| format!("collection {:?}", c.name))?;
         }
+    }
+    for warning in validate_css_config(cfg, dir)? {
+        tracing::warn!("{warning}");
     }
     if let Some(rml) = &cfg.resolve_markdown_links {
         if !rml.docs_dir.as_os_str().is_empty() {

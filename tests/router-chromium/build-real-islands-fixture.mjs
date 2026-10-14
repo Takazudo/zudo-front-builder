@@ -118,3 +118,6 @@ for (const [layout, labels] of Object.entries({
     );
   }
 }
+
+const { buildNativeRegions } = await import("./build-native-regions-fixture.mjs");
+buildNativeRegions({ Island, react, renderToString, fixture });

@@ -19,6 +19,11 @@
 //!    recompile, 404s the prebuilt hashed asset that still sits in `dist/`,
 //!    and its SSR/islands `zudoReactBuild` tokens agree with each other and
 //!    differ from the build's (#3345).
+//! 6. Issue #4233: dev serves the LIVE `public/assets/` file (not the stale
+//!    copy step 1 put in `dist/assets/`), keeps its own `styles.css` (from
+//!    the temp copy's `styles/global.css`) across the concurrent build, and a
+//!    deleted `public/assets/` file 404s even though `dist/assets/` still
+//!    holds a copy — a scratch session has no dist-seed fallback.
 //!
 //! The other tests cover the placement rule (R2) at process level and a
 //! Cloudflare-adapter build whose scratch dir lies outside the project.
@@ -49,6 +54,14 @@ const SESSION_C: &str = ".zfb-build/session-c";
 const LOCK_FILE: &str = ".zfb-scratch.lock";
 const DEFINE_A: &str = "__ORIGIN__=\"A\"";
 const DEFINE_B: &str = "__ORIGIN__=\"B\"";
+/// Issue #4233: a `public/assets/` file whose live bytes differ from the
+/// copy step 1's `zfb build` leaves in `dist/assets/`.
+const PUBLIC_PROBE: &str = "scratch-probe.png";
+const PUBLIC_PROBE_BUILT: &str = "zfb-4233-public-v1-built-copy";
+const PUBLIC_PROBE_LIVE: &str = "zfb-4233-public-v2-live";
+/// Custom property in the temp copy's `styles/global.css`; it must reach
+/// dev's own `/assets/styles.css`.
+const DEV_CSS_MARKER: &str = "--zfb-4233-dev-css";
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
@@ -438,9 +451,26 @@ async fn concurrent_scenario() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonicalize root");
     copy_dir(&fixture_dir("scratch-dir-concurrent"), &root).expect("copy fixture");
+    // Issue #4233 probes, staged in the temp copy only.
+    fs::create_dir_all(root.join("styles")).unwrap();
+    fs::write(
+        root.join("styles/global.css"),
+        format!(":root {{ {DEV_CSS_MARKER}: 1; }}\n"),
+    )
+    .unwrap();
+    let public_probe = root.join("public/assets").join(PUBLIC_PROBE);
+    fs::create_dir_all(public_probe.parent().unwrap()).unwrap();
+    fs::write(&public_probe, PUBLIC_PROBE_BUILT).unwrap();
 
     // Step 1: a prebuilt dist/ that carries the WRONG define.
     run_zfb_ok(&root, &esbuild, &["build", "--define", DEFINE_B]);
+    let built_probe = root.join("dist/assets").join(PUBLIC_PROBE);
+    assert_eq!(
+        read_text(&built_probe),
+        PUBLIC_PROBE_BUILT,
+        "step 1 must copy public/assets/{PUBLIC_PROBE} into dist/assets/"
+    );
+    fs::write(&public_probe, PUBLIC_PROBE_LIVE).unwrap();
     let prebuilt_html = read_text(&root.join("dist/index.html"));
     let prebuilt_asset = island_asset_name(&prebuilt_html);
     let build_token = html_build_token(&prebuilt_html);
@@ -499,6 +529,16 @@ async fn concurrent_scenario() {
 
     let before = dev_view(&client, &base, &session).await;
     assert_dev_view(&before, &build_token, "before build/check");
+    assert_eq!(
+        get(&client, &format!("{base}/assets/{PUBLIC_PROBE}")).await,
+        (200, PUBLIC_PROBE_LIVE.to_owned()),
+        "dev must serve the live public/assets/ file, not dist/'s copy (#4233)\n{}",
+        session.logs()
+    );
+    let styles_url = format!("{base}/assets/styles.css");
+    poll_until_contains(&client, &styles_url, DEV_CSS_MARKER, &session).await;
+    let dev_styles = session_a.join("dev-assets/assets/styles.css");
+    let dev_styles_before = read_bytes(&dev_styles);
     let (status, _) = get(&client, &format!("{base}/assets/{prebuilt_asset}")).await;
     assert_eq!(
         status, 404,
@@ -536,6 +576,16 @@ async fn concurrent_scenario() {
         read_bytes(&session_a.join("bundle.mjs")),
         session_a_bundle,
         "a concurrent build/check must not rewrite dev's session bundle"
+    );
+    assert_eq!(
+        read_bytes(&dev_styles),
+        dev_styles_before,
+        "a concurrent build must not remove or rewrite dev's own styles.css (#4233)"
+    );
+    let (status, css) = get(&client, &styles_url).await;
+    assert!(
+        status == 200 && css.contains(DEV_CSS_MARKER),
+        "dev must keep serving its styles.css after a concurrent build: status {status}\n{css}"
     );
     assert_eq!(
         read_bytes(&root.join(".zfb-build/bundle.mjs")),
@@ -623,6 +673,19 @@ async fn concurrent_scenario() {
     assert_eq!(
         status, 404,
         "dev must 404 the prebuilt asset after recompile"
+    );
+
+    // Step 6 (#4233): deleting the public file 404s although dist/assets/
+    // still holds a copy — no dist-seed fallback under a scratch dir.
+    assert!(
+        built_probe.is_file(),
+        "dist/assets/{PUBLIC_PROBE} must still exist so the 404 below proves dev never reads it"
+    );
+    fs::remove_file(&public_probe).unwrap();
+    let (status, _) = get(&client, &format!("{base}/assets/{PUBLIC_PROBE}")).await;
+    assert_eq!(
+        status, 404,
+        "a deleted public/assets/ file must 404 under a scratch dir (#4233)"
     );
 
     // Graceful stop persists the graph inside the session, not in `.zfb/`.

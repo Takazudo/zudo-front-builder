@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>List page {{PAGE}}</title>
+    <link rel="icon" href="data:," />
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        background: #fff;
+        border-bottom: 1px solid #ccc;
+        z-index: 10;
+      }
+      main {
+        padding: 6rem 1rem 1rem;
+      }
+      .spacer {
+        height: 2000px;
+      }
+      .tail {
+        height: 4000px;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-stubs.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <!--
+      Served by serve-fixture.mjs with {{PAGE}} taken from ?page= (#4179), so
+      each query is its own document. Every control sits in the fixed nav so a
+      click never auto-scrolls the page.
+    -->
+    <nav>
+      <a href="/list.html?page=1" id="to-page-1">Page 1</a>
+      <a href="/list.html?page=2" id="to-page-2">Page 2</a>
+      <a href="/list.html?page=3" id="to-page-3">Page 3</a>
+      <!-- The browser performs this fragment navigation: a null-state entry. -->
+      <a href="#item" id="native-item-link" data-zfb-reload>Item (browser)</a>
+      <!-- An app-owned filter writing its query through raw History. -->
+      <button id="filter-a">Filter a</button>
+      <button id="filter-b">Filter b</button>
+      <button id="bump">Bump</button>
+    </nav>
+    <main>
+      <h1>List page {{PAGE}}</h1>
+      <p id="page">{{PAGE}}</p>
+      <!-- Live state a body swap would reset to 0. -->
+      <p id="counter">0</p>
+      <div class="spacer"></div>
+      <h2 id="item">Item</h2>
+      <div class="tail"></div>
+    </main>
+    <script type="module">
+      import { init } from "/dist/client-router/router.js";
+      init();
+
+      // Delegated once per JS context, so the controls keep working after a swap.
+      if (!window.__listControls) {
+        window.__listControls = true;
+        document.addEventListener("click", (ev) => {
+          const target = ev.target instanceof Element ? ev.target : null;
+          if (target?.id === "bump") {
+            const counter = document.getElementById("counter");
+            counter.textContent = String(Number(counter.textContent) + 1);
+          }
+          if (target?.id === "filter-a" || target?.id === "filter-b") {
+            const url = new URL(location.href);
+            url.hash = "";
+            url.searchParams.set("q", target.id.slice("filter-".length));
+            history.pushState(null, "", url.href);
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

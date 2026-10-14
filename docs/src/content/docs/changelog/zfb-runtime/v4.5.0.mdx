@@ -1,0 +1,12 @@
+---
+title: v4.5.0
+sidebar_position: 37
+---
+
+# v4.5.0
+
+Released: 2026-10-14
+
+## Bug Fixes
+
+- Client router: Back/Forward to a browser-created (null-state) history entry now restores the page when the entry names a query the router rendered and then left on the same pathname (for example `/list?page=1#item` after a soft navigation to `?page=2`). Back over a `syncHistoryEntry()` pathname alias no longer refetches the page that is still on screen. App-owned raw `?q=` entries on the current pathname stay with the app, and raw null-state entries on another pathname remain router-owned document navigation. A raw push of exactly a query the router rendered and left is still refetched; use `syncHistoryEntry()` for app-owned entries. No public API changes; the ownership rules are documented under "Raw History entries and ownership" (46c057f2).

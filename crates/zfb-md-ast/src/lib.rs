@@ -32,6 +32,7 @@ pub mod mdx_jsx;
 pub mod nested_link;
 pub mod read_recorder;
 pub mod secondary_parse;
+pub mod table_paragraph;
 
 pub use cjk_autolink::CjkAutolinkBoundaryPlugin;
 pub use cjk_friendly::CjkFriendlyPlugin;
@@ -41,6 +42,7 @@ pub use gfm_constructs::{
 pub use hard_breaks::HardBreaksPlugin;
 pub use nested_link::unwrap_nested_links;
 pub use secondary_parse::{SecondaryParseNormalization, SecondaryParsePlacement};
+pub use table_paragraph::unwrap_table_paragraphs;
 
 pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,

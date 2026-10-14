@@ -6,20 +6,28 @@ import type { RuntimeScope } from "./scope.js";
 import { diagnostic, report, rootPath, type RootOptions } from "./root.js";
 
 const compositionKey = Symbol.for("@takazudo/zfb/zudo-react/composition-v1");
-const radioOwners = new WeakMap<
-  Document,
-  Set<{ root: Element; name: string; form: HTMLFormElement | null }>
->();
+// Capture every live model before a first boundary can appear in a later render.
+const controlOwners = new WeakMap<Document, Set<ControlOwner>>();
+export interface ControlOwner {
+  root: Element;
+  name: string;
+  form: HTMLFormElement | null;
+  binding: Binding;
+  scope: RuntimeScope;
+}
 type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-type Model = Signal<string | boolean | null>;
+export type Model = Signal<string | boolean | null>;
 export interface FormPlan {
   element: Element;
   props: Readonly<Record<string, unknown>>;
   path: string;
 }
-interface Binding {
+export interface Binding {
   node: Control;
   model: Model;
+  group?: Binding[];
+  fresh: boolean;
+  live: boolean;
   kind: "text" | "textarea" | "checkbox" | "select" | "radio";
   read(): string | boolean | null;
   write(value: string | boolean | null): void;
@@ -27,39 +35,37 @@ interface Binding {
   path: string;
 }
 export class FormError extends TypeError {
-  constructor(
-    readonly code: string,
-    readonly path: string,
-    readonly detail: string,
-  ) {
+  declare readonly code: string;
+  declare readonly path: string;
+  declare readonly detail: string;
+  constructor(code: string, path: string, detail: string) {
     super(`${code}: ${detail} at ${path}`);
+    Object.assign(this, { code, path, detail });
   }
 }
+
 function error(code: string, path: string, detail: string): never {
   throw new FormError(code, path, detail);
 }
 function writable(value: unknown, path: string): Model {
   if (
-    !value ||
-    typeof value !== "object" ||
-    !("$$zudoReactive" in value) ||
-    value.$$zudoReactive !== "zudo-react.reactive.v1" ||
-    !("$$zudoWritable" in value) ||
-    value.$$zudoWritable !== "zudo-react.writable.v1"
-  )
-    error("ZR_MODEL_READONLY", path, "model requires a writable signal");
-  let proto = value;
-  while (proto) {
-    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
-    if (descriptor) {
-      if (typeof descriptor.set !== "function")
-        error("ZR_MODEL_READONLY", path, "model requires a writable signal");
-      return value as Model;
+    isReactive(value) &&
+    "$$zudoWritable" in value &&
+    value.$$zudoWritable === "zudo-react.writable.v1"
+  ) {
+    let proto: object | null = value;
+    while (proto) {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+      if (descriptor) {
+        if (typeof descriptor.set === "function") return value as Model;
+        break;
+      }
+      proto = Object.getPrototypeOf(proto);
     }
-    proto = Object.getPrototypeOf(proto);
   }
   return error("ZR_MODEL_READONLY", path, "model requires a writable signal");
 }
+
 function kind(node: Element, props: Readonly<Record<string, unknown>>): Binding["kind"] | null {
   if (node.localName === "textarea") return "textarea";
   if (node.localName === "select") return "select";
@@ -69,92 +75,34 @@ function kind(node: Element, props: Readonly<Record<string, unknown>>): Binding[
   if (type === "radio") return "radio";
   return ["text", "search", "email", "url", "tel", "password"].includes(type) ? "text" : null;
 }
-// Text input: read/write string .value; listen to input.
-function textAdapter(
-  node: HTMLInputElement,
-  path: string,
-): Pick<Binding, "read" | "write" | "event"> {
-  return {
-    event: "input",
-    read: () => node.value,
-    write: (value) => {
-      if (typeof value !== "string") error("ZR_MODEL_VALUE", path, "text requires string");
-      if (node.value !== value) node.value = value;
-    },
-  };
-}
-// Textarea: read/write string .value; listen to input.
-function textareaAdapter(
-  node: HTMLTextAreaElement,
-  path: string,
-): Pick<Binding, "read" | "write" | "event"> {
-  return {
-    event: "input",
-    read: () => node.value,
-    write: (value) => {
-      if (typeof value !== "string") error("ZR_MODEL_VALUE", path, "textarea requires string");
-      if (node.value !== value) node.value = value;
-    },
-  };
-}
-// Checkbox: read/write boolean .checked; listen to change.
-function checkboxAdapter(
-  node: HTMLInputElement,
-  path: string,
-): Pick<Binding, "read" | "write" | "event"> {
-  return {
-    event: "change",
-    read: () => node.checked,
-    write: (value) => {
-      if (typeof value !== "boolean") error("ZR_MODEL_VALUE", path, "checkbox requires boolean");
-      if (node.checked !== value) node.checked = value;
-    },
-  };
-}
-// Single select: read/write string .value after options exist; listen to change.
-function selectAdapter(
-  node: HTMLSelectElement,
-  path: string,
-): Pick<Binding, "read" | "write" | "event"> {
-  return {
-    event: "change",
-    read: () => node.value,
-    write: (value) => {
-      if (typeof value !== "string") error("ZR_MODEL_VALUE", path, "select requires string");
-      if (!values(node).includes(value) && !(value === "" && node.selectedIndex === -1))
-        error("ZR_MODEL_VALUE", path, `select has no option ${value}`);
-      if (node.value !== value) node.value = value;
-    },
-  };
-}
-// Radio group: read selected option or null; write checked; listen to change.
-function radioAdapter(node: HTMLInputElement): Pick<Binding, "read" | "write" | "event"> {
-  return {
-    event: "change",
-    read: () => (node.checked ? node.value : null),
-    write: (value) => {
-      const checked = value === node.value;
-      if (node.checked !== checked) node.checked = checked;
-    },
-  };
-}
+// All adapters preserve native input/change events and avoid redundant writes.
 function adapterFor(
   kind: Binding["kind"],
-  node: Control,
+  control: Control,
   path: string,
 ): Pick<Binding, "read" | "write" | "event"> {
-  switch (kind) {
-    case "text":
-      return textAdapter(node as HTMLInputElement, path);
-    case "textarea":
-      return textareaAdapter(node as HTMLTextAreaElement, path);
-    case "checkbox":
-      return checkboxAdapter(node as HTMLInputElement, path);
-    case "select":
-      return selectAdapter(node as HTMLSelectElement, path);
-    case "radio":
-      return radioAdapter(node as HTMLInputElement);
-  }
+  const node = control as HTMLInputElement;
+  const radio = kind === "radio";
+  const checkbox = kind === "checkbox";
+  const property = checkbox || radio ? "checked" : "value";
+  return {
+    event: kind === "text" || kind === "textarea" ? "input" : "change",
+    read: () => (radio ? (node.checked ? node.value : null) : node[property]),
+    write: (value) => {
+      if (!radio) {
+        if (typeof value !== (checkbox ? "boolean" : "string"))
+          error("ZR_MODEL_VALUE", path, `${kind} requires ${checkbox ? "boolean" : "string"}`);
+        if (
+          kind === "select" &&
+          !values(control as HTMLSelectElement).includes(value as string) &&
+          !(value === "" && (control as HTMLSelectElement).selectedIndex === -1)
+        )
+          error("ZR_MODEL_VALUE", path, `select has no option ${value}`);
+      }
+      const next = radio ? value === node.value : value;
+      if (node[property] !== next) (node as unknown as Record<string, unknown>)[property] = next;
+    },
+  };
 }
 function values(node: HTMLSelectElement): string[] {
   return [...node.options].map((option) => option.value);
@@ -162,14 +110,27 @@ function values(node: HTMLSelectElement): string[] {
 function optionValuesFor(group: Binding[]): string[] {
   return group.map((binding) => (binding.node as HTMLInputElement).value);
 }
+function groupBindings(bindings: Binding[]): Map<Model, Binding[]> {
+  const groups = new Map<Model, Binding[]>();
+  for (const binding of bindings) {
+    const group = groups.get(binding.model) ?? [];
+    group.push(binding);
+    groups.set(binding.model, group);
+  }
+  return groups;
+}
 export function prepareForms(
   plans: FormPlan[],
   map: Map<Node, Node>,
   mode: "hydrate" | "mount",
   container: Element,
+  replacing: readonly RuntimeScope[] = [],
+  parent?: Node | null,
 ): Binding[] {
+  const recovery = formRecoveries.get(container);
+  const state = recovery?.prepare(plans, map, mode, replacing, parent);
+  const form = state?.form ?? ((node: HTMLInputElement) => node.form);
   const bindings: Binding[] = [];
-  const groupByModel = new Map<Model, Binding[]>();
   const namedRadios = new Map<string, Model>();
   for (const plan of plans) {
     const { props, path } = plan;
@@ -230,11 +191,14 @@ export function prepareForms(
         const radio = node as HTMLInputElement;
         if (!radio.name || typeof props.value !== "string")
           error("ZR_MODEL_UNSUPPORTED", path, "radio requires static name and value");
-        const owners = radioOwners.get(node.ownerDocument);
+        const owners = controlOwners.get(node.ownerDocument);
         if (
           [...(owners ?? [])].some(
             (entry) =>
-              entry.root !== container && entry.name === radio.name && entry.form === radio.form,
+              entry.root !== container &&
+              entry.binding.kind === "radio" &&
+              entry.name === radio.name &&
+              entry.form === form(radio),
           )
         )
           error("ZR_MODEL_CONFLICT", path, "same-name radio owned by another root");
@@ -247,46 +211,60 @@ export function prepareForms(
       const binding: Binding = {
         node: node as Control,
         model,
+        fresh: mode === "hydrate" && node === plan.element,
+        live: false,
         kind: controlKind!,
         path,
         ...adapterFor(controlKind!, node as Control, path),
       };
       bindings.push(binding);
-      const group = groupByModel.get(model) ?? [];
-      group.push(binding);
-      groupByModel.set(model, group);
     }
   }
-  for (const [model, group] of groupByModel) {
-    const radios = group.every((binding) => binding.kind === "radio");
-    if (group.some((binding) => binding.kind === "radio") && !radios)
-      error("ZR_MODEL_CONFLICT", group[0]!.path, "radio and non-radio share model");
-    if (radios) {
-      const nodes = group.map((binding) => binding.node as HTMLInputElement);
-      const names = new Set(
-        nodes.map((node) => `${node.name}\u0000${node.getAttribute("form") ?? ""}`),
-      );
-      const optionValues = nodes.map((node) => node.value);
-      if (
-        names.size !== 1 ||
-        new Set(nodes.map((node) => node.form)).size !== 1 ||
-        new Set(optionValues).size !== optionValues.length
+  const groupByModel = groupBindings(bindings);
+  if (recovery) recovery.validate(groupByModel, mode, state!);
+  else {
+    for (const [model, group] of groupByModel) {
+      const radios = group.every((binding) => binding.kind === "radio");
+      if (group.some((binding) => binding.kind === "radio") && !radios)
+        error("ZR_MODEL_CONFLICT", group[0]!.path, "radio and non-radio share model");
+      if (radios) {
+        const nodes = group.map((binding) => binding.node as HTMLInputElement);
+        const names = new Set(
+          nodes.map((node) => `${node.name}\u0000${node.getAttribute("form") ?? ""}`),
+        );
+        const optionValues = nodes.map((node) => node.value);
+        if (
+          names.size !== 1 ||
+          new Set(nodes.map((node) => node.form)).size !== 1 ||
+          new Set(optionValues).size !== optionValues.length
+        )
+          error("ZR_MODEL_CONFLICT", group[0]!.path, "radio group membership or duplicate value");
+        if (
+          mode === "mount" &&
+          model.value !== null &&
+          !optionValues.includes(model.value as string)
+        )
+          error("ZR_MODEL_VALUE", group[0]!.path, "radio model has no option");
+        if (mode === "hydrate" && nodes.filter((node) => node.checked).length > 1)
+          error("ZR_MODEL_CONFLICT", group[0]!.path, "multiple checked radios");
+      } else if (
+        mode === "hydrate" &&
+        group.some((binding) => !Object.is(binding.read(), group[0]!.read()))
       )
-        error("ZR_MODEL_CONFLICT", group[0]!.path, "radio group membership or duplicate value");
-      if (mode === "mount" && model.value !== null && !optionValues.includes(model.value as string))
-        error("ZR_MODEL_VALUE", group[0]!.path, "radio model has no option");
-      if (mode === "hydrate" && nodes.filter((node) => node.checked).length > 1)
-        error("ZR_MODEL_CONFLICT", group[0]!.path, "multiple checked radios");
-    } else if (
-      mode === "hydrate" &&
-      group.some((binding) => !Object.is(binding.read(), group[0]!.read()))
-    )
-      error("ZR_MODEL_CONFLICT", group[0]!.path, "shared model controls disagree");
-    if (radios) {
+        error("ZR_MODEL_CONFLICT", group[0]!.path, "shared model controls disagree");
+    }
+  }
+  for (const group of groupByModel.values()) {
+    if (group[0]!.kind === "radio") {
       for (const binding of group) {
         const originalWrite = binding.write;
         binding.write = (value) => {
-          if (value !== null && !optionValuesFor(group).includes(value as string))
+          if (
+            value !== null &&
+            !optionValuesFor(formRecoveries.get(container)?.members(binding) ?? group).includes(
+              value as string,
+            )
+          )
             error("ZR_MODEL_VALUE", binding.path, "radio model has no option");
           originalWrite(value);
         };
@@ -295,21 +273,27 @@ export function prepareForms(
   }
   return bindings;
 }
-export function reconcileForms(bindings: Binding[], mode: "hydrate" | "mount"): void {
-  const groups = new Map<Model, Binding[]>();
-  for (const binding of bindings)
-    groups.set(binding.model, [...(groups.get(binding.model) ?? []), binding]);
-  if (mode === "hydrate")
-    batch(() => {
-      for (const [model, group] of groups) {
-        model.value =
-          group[0]!.kind === "radio"
-            ? (group.find((binding) => binding.read() !== null)?.read() ?? null)
-            : group[0]!.read();
-      }
-    });
+export function reconcileForms(
+  bindings: Binding[],
+  mode: "hydrate" | "mount",
+  container: Element,
+): void {
+  const groups = groupBindings(bindings);
+  const recovery = formRecoveries.get(container);
+  if (recovery) return recovery.reconcile(groups, mode);
+  if (mode === "hydrate") readModels(groups);
   else for (const [model, group] of groups) for (const binding of group) binding.write(model.value);
 }
+function readModels(groups: Map<Model, Binding[]>): void {
+  batch(() => {
+    for (const [model, group] of groups)
+      model.value =
+        group[0]!.kind === "radio"
+          ? (group.find((binding) => binding.read() !== null)?.read() ?? null)
+          : group[0]!.read();
+  });
+}
+
 export function activateForms(
   bindings: Binding[],
   scope: RuntimeScope,
@@ -318,20 +302,28 @@ export function activateForms(
   container: Element,
 ): void {
   const byForm = new Map<HTMLFormElement, Binding[]>();
-  const owned =
-    radioOwners.get(container.ownerDocument) ??
-    new Set<{ root: Element; name: string; form: HTMLFormElement | null }>();
-  radioOwners.set(container.ownerDocument, owned);
-  const registrations: Array<{ root: Element; name: string; form: HTMLFormElement | null }> = [];
-  for (const binding of bindings)
-    if (binding.kind === "radio") {
-      const node = binding.node as HTMLInputElement;
-      const registration = { root: container, name: node.name, form: node.form };
-      registrations.push(registration);
-      owned.add(registration);
-    }
+  const owned = controlOwners.get(container.ownerDocument) ?? new Set<ControlOwner>();
+  controlOwners.set(container.ownerDocument, owned);
+  const registrations: ControlOwner[] = [];
+  for (const binding of bindings) {
+    const node = binding.node as HTMLInputElement;
+    const registration = {
+      root: container,
+      name: node.name,
+      form: (node.hasAttribute("form")
+        ? node.ownerDocument.getElementById(node.getAttribute("form")!)
+        : node.closest("form")) as HTMLFormElement | null,
+      binding,
+      scope,
+    };
+    registrations.push(registration);
+    owned.add(registration);
+  }
   cleanups.push(() => {
-    for (const registration of registrations) owned.delete(registration);
+    for (const registration of registrations) {
+      registration.binding.live = false;
+      owned.delete(registration);
+    }
   });
   for (const binding of bindings) {
     const { node, model } = binding;
@@ -359,20 +351,29 @@ export function activateForms(
       unknown = false;
       update();
     };
-    node.addEventListener(binding.event, onInput);
-    if (textual) {
-      node.addEventListener("compositionstart", onStart);
-      node.addEventListener("compositionend", onFinish);
-      node.addEventListener("blur", onFinish);
-    }
+    const listeners: Array<[string, (event: Event) => void]> = [[binding.event, onInput]];
+    if (textual)
+      listeners.push(
+        ["compositionstart", onStart],
+        ["compositionend", onFinish],
+        ["blur", onFinish],
+      );
+    for (const [name, handler] of listeners) node.addEventListener(name, handler);
     cleanups.push(() => {
-      node.removeEventListener(binding.event, onInput);
-      if (textual) {
-        node.removeEventListener("compositionstart", onStart);
-        node.removeEventListener("compositionend", onFinish);
-        node.removeEventListener("blur", onFinish);
-      }
+      for (const [name, handler] of listeners) node.removeEventListener(name, handler);
     });
+    const reportUpdate = (code: string, actual: string): void =>
+      report(
+        options,
+        diagnostic(
+          options,
+          code,
+          "update",
+          `${rootPath(container)}${binding.path}`,
+          "valid model update",
+          actual,
+        ),
+      );
     const subscription = subscribe(
       () => {
         const value = model.value;
@@ -381,37 +382,17 @@ export function activateForms(
             binding.write(value);
           } catch (failure) {
             if (!(failure instanceof FormError)) throw failure;
-            report(
-              options,
-              diagnostic(
-                options,
-                failure.code,
-                "update",
-                `${rootPath(container)}${binding.path}`,
-                "valid model update",
-                failure.detail,
-              ),
-            );
+            reportUpdate(failure.code, failure.detail);
           }
         }
       },
       {
         active: () => scope.active,
-        report: (code, actual) =>
-          report(
-            options,
-            diagnostic(
-              options,
-              code,
-              "update",
-              `${rootPath(container)}${binding.path}`,
-              "valid model update",
-              actual,
-            ),
-          ),
+        report: reportUpdate,
       },
     );
     subscription.run();
+    binding.live = true;
     cleanups.push(() => subscription.dispose());
     const form = node.form;
     if (form) byForm.set(form, [...(byForm.get(form) ?? []), binding]);
@@ -421,16 +402,17 @@ export function activateForms(
     const onReset = (event: Event) =>
       queueMicrotask(() => {
         if (!active || event.defaultPrevented) return;
-        batch(() => {
-          const groups = new Map<Model, Binding[]>();
-          for (const binding of members)
-            groups.set(binding.model, [...(groups.get(binding.model) ?? []), binding]);
-          for (const [model, group] of groups)
-            model.value =
-              group[0]!.kind === "radio"
-                ? (group.find((binding) => binding.read() !== null)?.read() ?? null)
-                : group[0]!.read();
-        });
+        // A boundary owns only part of a native radio group. Read all current
+        // members after the browser reset, not just this scope's unchecked part.
+        // Keep ownership-local listeners so disposing a replaced attempt still
+        // cancels its queued reset work.
+        const recovery = formRecoveries.get(container);
+        const current = recovery
+          ? [
+              ...new Set(members.flatMap((binding) => recovery.members(binding) ?? [binding])),
+            ].filter((binding) => binding.node.form === form)
+          : members;
+        readModels(groupBindings(current));
       });
     form.addEventListener("reset", onReset);
     cleanups.push(() => {
@@ -439,3 +421,27 @@ export function activateForms(
     });
   }
 }
+
+const formRecoveries = new WeakMap<Element, FormRecovery>();
+export interface FormState {
+  form(node: HTMLInputElement): Node | null;
+  installed: ControlOwner[];
+}
+export interface FormRecovery {
+  prepare(
+    plans: FormPlan[],
+    map: Map<Node, Node>,
+    mode: "hydrate" | "mount",
+    replacing: readonly RuntimeScope[],
+    parent?: Node | null,
+  ): FormState;
+  validate(groups: Map<Model, Binding[]>, mode: "hydrate" | "mount", state: FormState): void;
+  members(binding: Binding): Binding[] | undefined;
+  reconcile(groups: Map<Model, Binding[]>, mode: "hydrate" | "mount"): void;
+}
+export interface FormHost {
+  controlOwners: typeof controlOwners;
+  error: typeof error;
+  batch: typeof batch;
+}
+export const formHost = { controlOwners, error, batch, recoveries: formRecoveries };

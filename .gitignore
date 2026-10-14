@@ -107,3 +107,7 @@ doc-history-out/
 # scripts/supervisor-watch.mjs default output tree (harvested CI job logs)
 supervisor-watch-out/
 .vitest/
+
+# Native CSS addon artifacts staged for npm carriers
+/packages/zfb-*/zfb-css.node
+/tests/smoke/node-free/zfb-css.node

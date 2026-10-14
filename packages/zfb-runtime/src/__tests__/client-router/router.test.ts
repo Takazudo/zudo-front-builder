@@ -1025,7 +1025,8 @@ describe("same-page traverse fast-path (#1374 / #1376)", () => {
   // Fire the popstate a browser would fire for a history entry. happy-dom's
   // history.replaceState(state, "", path) updates BOTH history.state and
   // location.href (same-origin path) — exactly what onPopState reads. The state
-  // MUST be non-null: onPopState ignores `ev.state === null` (:814-816).
+  // MUST be non-null: a null-state entry takes onPopState's separate
+  // browser-created-entry branch (#4165).
   function dispatchPopstate(path: string, state: Record<string, unknown>) {
     history.replaceState(state, "", path);
     window.dispatchEvent(new PopStateEvent("popstate", { state }));
@@ -1181,6 +1182,443 @@ describe("same-page traverse fast-path (#1374 / #1376)", () => {
     expect(scrollSpy).not.toHaveBeenCalled();
 
     scrollSpy.mockRestore();
+  });
+});
+
+// A browser-created history entry — a same-document hash link or a
+// `location.hash` write that the router did not intercept — carries a null
+// `history.state`. Back/Forward among such entries of the rendered document is
+// the browser's job (fragment scroll, no fetch, no swap). But once the router
+// soft-navigates away, the same null entry names a page the live DOM no longer
+// shows: before #4165, onPopState ignored every null-state popstate, so Back
+// from B to A#frag restored A's URL while B stayed rendered.
+//
+// happy-dom never creates a fragment entry by itself (`location.hash` only
+// rewrites the URL), so these tests reproduce what the browser does:
+// `history.pushState(null, …)` is the null-state entry a fragment navigation
+// appends for the rendered document, and the traversal is the URL/state move
+// plus the null-state popstate the browser fires for it.
+//
+// BLIND SPOT (documented): this proves the branch decision and the router
+// bookkeeping, not real popstate, anchor scrolling or View Transitions. The
+// real-browser proof is tests/router-chromium/traverse.chromium.spec.mjs.
+describe("browser-created (null-state) fragment entries (#4165)", () => {
+  function fetchFragmentPages() {
+    const fetchMock = vi.fn(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes("/frag-a")) {
+        return htmlResponse(
+          pageHtml("Frag A", `<p id="a-only">page a</p><h2 id="section">Section</h2>`),
+        );
+      }
+      if (u.includes("/frag-b"))
+        return htmlResponse(pageHtml("Frag B", `<p id="b-only">page b</p>`));
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  // happy-dom aliases PopStateEvent to a plain Event, so `ev.state` would be
+  // undefined; a browser always sets it (null for a browser-created entry).
+  function popstate(state: Record<string, unknown> | null): Event {
+    const ev = new PopStateEvent("popstate");
+    Object.defineProperty(ev, "state", { value: state });
+    return ev;
+  }
+
+  // The fragment entry a browser appends for the rendered document, plus the
+  // null-state popstate it fires for a fragment navigation.
+  function browserFragmentNavigation(href: string) {
+    history.pushState(null, "", href);
+    window.dispatchEvent(popstate(null));
+  }
+
+  // The browser has moved to an entry: the URL and history.state now name it,
+  // and the popstate carries that entry's state.
+  function traverseTo(path: string, state: Record<string, unknown> | null) {
+    history.replaceState(state, "", path);
+    window.dispatchEvent(popstate(state));
+  }
+
+  function nextPageLoad(): Promise<void> {
+    return new Promise((resolve) =>
+      document.addEventListener("zfb:page-load", () => resolve(), { once: true }),
+    );
+  }
+
+  function recordLifecycle() {
+    const seen: string[] = [];
+    const prep = (e: Event) => {
+      const ev = e as Event & { navigationType: string; direction: string };
+      seen.push(`before-preparation:${ev.navigationType}:${ev.direction}`);
+    };
+    const swap = () => seen.push("after-swap");
+    const load = () => seen.push("page-load");
+    document.addEventListener("zfb:before-preparation", prep);
+    document.addEventListener("zfb:after-swap", swap);
+    document.addEventListener("zfb:page-load", load);
+    return {
+      seen,
+      stop: () => {
+        document.removeEventListener("zfb:before-preparation", prep);
+        document.removeEventListener("zfb:after-swap", swap);
+        document.removeEventListener("zfb:page-load", load);
+      },
+    };
+  }
+
+  // A rendered, then the browser-created A#section entry, then a router
+  // soft navigation to B. Returns B's router state for a later Forward.
+  async function seedFragmentThenB(fetchMock: ReturnType<typeof fetchFragmentPages>) {
+    await navigate("/frag-a");
+    expect(document.title).toBe("Frag A");
+
+    fetchMock.mockClear();
+    browserFragmentNavigation("/frag-a#section");
+    // The rendered document's own fragment entry stays the browser's job.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(history.state).toBeNull();
+
+    await navigate("/frag-b");
+    expect(document.title).toBe("Frag B");
+    return { ...(history.state as { index: number; scrollX: number; scrollY: number }) };
+  }
+
+  it("Back from a soft-navigated page to a browser-created A#fragment entry restores A", async () => {
+    const fetchMock = fetchFragmentPages();
+    await seedFragmentThenB(fetchMock);
+
+    fetchMock.mockClear();
+    const lifecycle = recordLifecycle();
+    const loaded = nextPageLoad();
+    traverseTo("/frag-a#section", null);
+    await loaded;
+    lifecycle.stop();
+
+    expect(location.pathname).toBe("/frag-a");
+    expect(location.hash).toBe("#section");
+    expect(document.title).toBe("Frag A");
+    expect(document.querySelector("#a-only")).not.toBeNull();
+    expect(document.querySelector("#b-only")).toBeNull();
+    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringContaining("/frag-a"),
+    ]);
+    // A traverse with no recorded index: "back" is the safe default direction.
+    expect(lifecycle.seen).toEqual(["before-preparation:traverse:back", "after-swap", "page-load"]);
+  });
+
+  it("Forward to B and Back again re-swaps each time without adding history entries", async () => {
+    const fetchMock = fetchFragmentPages();
+    const bState = await seedFragmentThenB(fetchMock);
+
+    let loaded = nextPageLoad();
+    traverseTo("/frag-a#section", null);
+    await loaded;
+    expect(document.title).toBe("Frag A");
+    const lengthAfterFirstBack = history.length;
+
+    loaded = nextPageLoad();
+    const lifecycle = recordLifecycle();
+    traverseTo("/frag-b", bState);
+    await loaded;
+    lifecycle.stop();
+    expect(document.title).toBe("Frag B");
+    expect(document.querySelector("#a-only")).toBeNull();
+    // B's index equals the tracked one (the null entry adopted none): still Forward.
+    expect(lifecycle.seen[0]).toBe("before-preparation:traverse:forward");
+
+    loaded = nextPageLoad();
+    traverseTo("/frag-a#section", null);
+    await loaded;
+    expect(location.href).toMatch(/\/frag-a#section$/);
+    expect(document.querySelector("#a-only")).not.toBeNull();
+    expect(document.querySelector("#b-only")).toBeNull();
+
+    // A traversal never writes an entry: no phantom Back/Forward stop.
+    expect(history.length).toBe(lengthAfterFirstBack);
+    // The stateless entry stays stateless; the router did not stamp it.
+    expect(history.state).toBeNull();
+  });
+
+  it("the tracked index stays finite and monotonic: the next push after the restore never reuses an index", async () => {
+    const fetchMock = fetchFragmentPages();
+    const bState = await seedFragmentThenB(fetchMock);
+
+    const loaded = nextPageLoad();
+    traverseTo("/frag-a#section", null);
+    await loaded;
+
+    await navigate("/frag-b");
+    const pushed = history.state as { index: number };
+    // The null entry carries no index to adopt, so the tracked index is still
+    // B's; the new entry takes the next one and cannot collide with B's.
+    expect(Number.isFinite(pushed.index)).toBe(true);
+    expect(pushed.index).toBe(bState.index + 1);
+  });
+
+  it("Back/Forward among null-state entries of the rendered document stays no-fetch / no-swap", async () => {
+    const fetchMock = fetchFragmentPages();
+    await navigate("/frag-a");
+    const aState = { ...(history.state as Record<string, unknown>) };
+    browserFragmentNavigation("/frag-a#section");
+
+    // Live state that a swap would destroy.
+    const liveNode = document.querySelector("#a-only") as HTMLElement;
+    (liveNode as HTMLElement & { liveMarker?: string }).liveMarker = "kept";
+    const scrollSpy = vi.spyOn(window, "scrollTo");
+    fetchMock.mockClear();
+    const lifecycle = recordLifecycle();
+    const drain = () => new Promise((r) => setTimeout(r, 0));
+
+    // Back to A's router entry: the existing same-page traverse fast path.
+    traverseTo("/frag-a", aState);
+    await drain();
+    // Forward to the browser-created A#section entry of the same document.
+    traverseTo("/frag-a#section", null);
+    await drain();
+    lifecycle.stop();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lifecycle.seen).toEqual([]);
+    expect(document.querySelector("#a-only")).toBe(liveNode);
+    expect((liveNode as HTMLElement & { liveMarker?: string }).liveMarker).toBe("kept");
+    // Only the router entry's saved-scroll restore scrolls; the null-state
+    // entry is left to the browser.
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(location.hash).toBe("#section");
+    scrollSpy.mockRestore();
+  });
+
+  it("a null-state entry of the rendered pathname with a different search stays no-fetch / no-swap", async () => {
+    const fetchMock = fetchFragmentPages();
+    await navigate("/frag-a");
+    const aState = { ...(history.state as Record<string, unknown>) };
+    // An app-owned filter UI writing its query through raw History.
+    history.pushState(null, "", "/frag-a?q=foo");
+
+    const liveNode = document.querySelector("#a-only") as HTMLElement;
+    fetchMock.mockClear();
+    const lifecycle = recordLifecycle();
+    const drain = () => new Promise((r) => setTimeout(r, 0));
+
+    traverseTo("/frag-a", aState);
+    await drain();
+    traverseTo("/frag-a?q=foo", null);
+    await drain();
+    lifecycle.stop();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lifecycle.seen).toEqual([]);
+    expect(document.querySelector("#a-only")).toBe(liveNode);
+    expect(location.search).toBe("?q=foo");
+  });
+
+  it("a foreign or index-less state on another page still swaps, and a repeated init() adds no second handler", async () => {
+    const fetchMock = fetchFragmentPages();
+    init();
+    init();
+
+    await navigate("/frag-a");
+    await navigate("/frag-b");
+
+    for (const state of [{}, { modal: true }, { index: Number.NaN }]) {
+      fetchMock.mockClear();
+      const lifecycle = recordLifecycle();
+      let loaded = nextPageLoad();
+      traverseTo("/frag-a", state);
+      await loaded;
+      lifecycle.stop();
+      expect(document.title).toBe("Frag A");
+      // One handler: exactly one fetch and one swap per traversal.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(lifecycle.seen).toEqual([
+        "before-preparation:traverse:back",
+        "after-swap",
+        "page-load",
+      ]);
+
+      loaded = nextPageLoad();
+      await navigate("/frag-b");
+      await loaded;
+    }
+
+    // A null-state entry of another page gets the same single handling.
+    fetchMock.mockClear();
+    const loaded = nextPageLoad();
+    traverseTo("/frag-a#section", null);
+    await loaded;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(document.title).toBe("Frag A");
+  });
+
+  // #4179 items 1–2: the null-state guard compares against the document the
+  // DOM actually shows, and a different search on that pathname is restored
+  // only when the router itself rendered and left it. Each test uses its own
+  // pathname: the router's departed-document memory is module state.
+  describe("query-bearing documents and syncHistoryEntry aliases (#4179)", () => {
+    function fetchListPages() {
+      const fetchMock = vi.fn(async (url: RequestInfo) => {
+        const u = new URL(String(url), location.href);
+        return htmlResponse(
+          pageHtml(`List ${u.pathname}${u.search}`, `<p id="page">${u.search || "none"}</p>`),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    const drain = () => new Promise((r) => setTimeout(r, 0));
+    const routerState = () => ({ ...(history.state as Record<string, unknown>) });
+    const fetchedUrls = (fetchMock: ReturnType<typeof fetchListPages>) =>
+      fetchMock.mock.calls.map((c) => {
+        const u = new URL(String(c[0]), location.href);
+        return u.pathname + u.search;
+      });
+
+    // Restores the page through one fetch + full lifecycle; returns the seen events.
+    async function traverseExpectingSwap(path: string, state: Record<string, unknown> | null) {
+      const lifecycle = recordLifecycle();
+      const loaded = nextPageLoad();
+      traverseTo(path, state);
+      await loaded;
+      lifecycle.stop();
+      return lifecycle.seen;
+    }
+
+    // Leaves the live DOM alone: no fetch, no lifecycle event, same node.
+    async function traverseExpectingNoSwap(
+      fetchMock: ReturnType<typeof fetchListPages>,
+      path: string,
+      state: Record<string, unknown> | null,
+    ) {
+      const liveNode = document.querySelector("#page");
+      fetchMock.mockClear();
+      const lifecycle = recordLifecycle();
+      traverseTo(path, state);
+      await drain();
+      lifecycle.stop();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(lifecycle.seen).toEqual([]);
+      expect(document.querySelector("#page")).toBe(liveNode);
+    }
+
+    it("(a)(b) Back to a null ?page=1#item entry after a router query nav restores page 1, Forward swaps page 2 back", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qa-list?page=1");
+      browserFragmentNavigation("/qa-list?page=1#item");
+      await navigate("/qa-list?page=2");
+      const page2 = routerState();
+      expect(document.querySelector("#page")?.textContent).toBe("?page=2");
+
+      fetchMock.mockClear();
+      let seen = await traverseExpectingSwap("/qa-list?page=1#item", null);
+      expect(fetchedUrls(fetchMock)).toEqual(["/qa-list?page=1"]);
+      expect(seen).toEqual(["before-preparation:traverse:back", "after-swap", "page-load"]);
+      expect(document.querySelector("#page")?.textContent).toBe("?page=1");
+      expect(location.search).toBe("?page=1");
+      expect(location.hash).toBe("#item");
+
+      fetchMock.mockClear();
+      seen = await traverseExpectingSwap("/qa-list?page=2", page2);
+      expect(fetchedUrls(fetchMock)).toEqual(["/qa-list?page=2"]);
+      expect(seen).toEqual(["before-preparation:traverse:forward", "after-swap", "page-load"]);
+      expect(document.querySelector("#page")?.textContent).toBe("?page=2");
+    });
+
+    it("(c) a raw ?q= entry after a router query nav on the same pathname stays app-owned", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qc-list?page=1");
+      await navigate("/qc-list?page=2");
+      const page2 = routerState();
+      // An app-owned filter UI writing its query through raw History.
+      history.pushState(null, "", "/qc-list?q=foo");
+
+      await traverseExpectingNoSwap(fetchMock, "/qc-list?page=2", page2);
+      await traverseExpectingNoSwap(fetchMock, "/qc-list?q=foo", null);
+      expect(location.search).toBe("?q=foo");
+      expect(document.querySelector("#page")?.textContent).toBe("?page=2");
+    });
+
+    it("(d) a raw ?q= entry after a soft nav from another pathname stays app-owned", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qd-other");
+      await navigate("/qd-list");
+      const listState = routerState();
+      history.pushState(null, "", "/qd-list?q=foo");
+
+      await traverseExpectingNoSwap(fetchMock, "/qd-list", listState);
+      await traverseExpectingNoSwap(fetchMock, "/qd-list?q=foo", null);
+      expect(document.querySelector("#page")?.textContent).toBe("none");
+    });
+
+    it("(e) Back over a syncHistoryEntry() pathname alias to a null fragment entry keeps the live page", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qe-gallery");
+      const galleryState = routerState();
+      browserFragmentNavigation("/qe-gallery#a");
+      syncHistoryEntry("/qe-photos/x/");
+
+      // Back from the alias to the fragment entry, then to the gallery's own
+      // entry: both name the rendered document, so neither refetches it.
+      await traverseExpectingNoSwap(fetchMock, "/qe-gallery#a", null);
+      await traverseExpectingNoSwap(fetchMock, "/qe-gallery", galleryState);
+      expect(document.title).toBe("List /qe-gallery");
+    });
+
+    it("(e) a persisted pageshow on a syncHistoryEntry() alias does not relabel the rendered document", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qe-bf-gallery");
+      browserFragmentNavigation("/qe-bf-gallery#a");
+      syncHistoryEntry("/qe-bf-photos/x/");
+      const pageshow = new Event("pageshow");
+      Object.defineProperty(pageshow, "persisted", { value: true });
+      window.dispatchEvent(pageshow);
+
+      await traverseExpectingNoSwap(fetchMock, "/qe-bf-gallery#a", null);
+      // The alias pathname itself is still another document to the router.
+      fetchMock.mockClear();
+      await traverseExpectingSwap("/qe-bf-other#z", null);
+      expect(fetchedUrls(fetchMock)).toEqual(["/qe-bf-other"]);
+    });
+
+    it("(f) ?page=1#item → ?page=2#item → ?page=3: every router-rendered page is restored across repeated Back/Forward", async () => {
+      const fetchMock = fetchListPages();
+      await navigate("/qf-list?page=1");
+      const page1 = routerState();
+      browserFragmentNavigation("/qf-list?page=1#item");
+      await navigate("/qf-list?page=2");
+      const page2 = routerState();
+      browserFragmentNavigation("/qf-list?page=2#item");
+      await navigate("/qf-list?page=3");
+      const page3 = routerState();
+      const shown = () => document.querySelector("#page")?.textContent;
+
+      for (let round = 0; round < 2; round++) {
+        fetchMock.mockClear();
+        await traverseExpectingSwap("/qf-list?page=2#item", null);
+        expect(shown()).toBe("?page=2");
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=2", page2);
+        fetchMock.mockClear();
+        // A single "last departed query" would remember only ?page=3 here.
+        await traverseExpectingSwap("/qf-list?page=1#item", null);
+        expect(fetchedUrls(fetchMock)).toEqual(["/qf-list?page=1"]);
+        expect(shown()).toBe("?page=1");
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=1", page1);
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=1#item", null);
+
+        fetchMock.mockClear();
+        let seen = await traverseExpectingSwap("/qf-list?page=2", page2);
+        expect(seen[0]).toBe("before-preparation:traverse:forward");
+        expect(shown()).toBe("?page=2");
+        await traverseExpectingNoSwap(fetchMock, "/qf-list?page=2#item", null);
+        fetchMock.mockClear();
+        seen = await traverseExpectingSwap("/qf-list?page=3", page3);
+        expect(seen[0]).toBe("before-preparation:traverse:forward");
+        expect(fetchedUrls(fetchMock)).toEqual(["/qf-list?page=3"]);
+        expect(shown()).toBe("?page=3");
+      }
+    });
   });
 });
 

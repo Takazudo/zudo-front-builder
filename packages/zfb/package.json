@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb",
-  "version": "4.3.1",
+  "version": "4.5.1",
   "private": false,
   "type": "module",
   "description": "Content-site engine on the web's Request/Response model — prerender to static HTML, serve on Cloudflare Workers, or run as a local content server inside your app. One Rust binary. SDK with islands, content collections, pagination, and config helpers.",
@@ -83,6 +83,10 @@
     "./zudo-react/testing": {
       "types": "./src/zudo-react/testing.ts",
       "default": "./src/zudo-react/testing.ts"
+    },
+    "./css": {
+      "types": "./src/css.ts",
+      "default": "./src/css.ts"
     }
   },
   "bin": {
@@ -96,14 +100,14 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@takazudo/zfb-slugify": "workspace:4.3.1"
+    "@takazudo/zfb-slugify": "workspace:4.5.1"
   },
   "optionalDependencies": {
-    "@takazudo/zfb-darwin-arm64": "workspace:4.3.1",
-    "@takazudo/zfb-darwin-x64": "workspace:4.3.1",
-    "@takazudo/zfb-linux-arm64-gnu": "workspace:4.3.1",
-    "@takazudo/zfb-linux-x64-gnu": "workspace:4.3.1",
-    "@takazudo/zfb-win32-x64-msvc": "workspace:4.3.1"
+    "@takazudo/zfb-darwin-arm64": "workspace:4.5.1",
+    "@takazudo/zfb-darwin-x64": "workspace:4.5.1",
+    "@takazudo/zfb-linux-arm64-gnu": "workspace:4.5.1",
+    "@takazudo/zfb-linux-x64-gnu": "workspace:4.5.1",
+    "@takazudo/zfb-win32-x64-msvc": "workspace:4.5.1"
   },
   "publishConfig": {
     "access": "public",
@@ -166,6 +170,10 @@
       "./zudo-react/testing": {
         "types": "./dist/zudo-react/testing.d.ts",
         "default": "./dist/zudo-react/testing.js"
+      },
+      "./css": {
+        "types": "./dist/css.d.ts",
+        "default": "./dist/css.js"
       }
     }
   },

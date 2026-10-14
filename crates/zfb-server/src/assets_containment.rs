@@ -11,11 +11,33 @@
 //! tries them in priority order: the first root whose containment check
 //! passes AND that holds the requested file serves it; a miss falls through
 //! to the next. Single-root callers (preview / embed) behave exactly as a
-//! lone `ServeDir`; `zfb dev` (issue #1189) layers the isolated
-//! `.zfb-build/dev-assets/assets/` ahead of the build `dist/assets/` so a
-//! concurrent `zfb build` can't 404 dev's stable stylesheet. Each root is
-//! canonicalized and containment-checked **independently** — the guarantee
-//! below holds per-root.
+//! lone `ServeDir`; `zfb dev` layers up to three roots, highest first:
+//!
+//! 1. the isolated `.zfb-build/dev-assets/assets/` (issue #1189), so a
+//!    concurrent `zfb build` can't 404 dev's stable stylesheet;
+//! 2. the project's live `public/assets/` (issue #4233), so a user file at
+//!    `public/assets/example.png` answers `/assets/example.png` before any
+//!    build has run, read per request (no restart, no livereload);
+//! 3. the build `dist/assets/` boot-lazy seed — only when the session may
+//!    read the prebuilt seed (`dev_dist_seed`, dropped under a scratch dir by
+//!    issue #3344).
+//!
+//! Each root is canonicalized and containment-checked **independently** —
+//! the guarantee below holds per-root.
+//!
+//! ## Reserved names on the public root
+//!
+//! A root carries a [`RootPolicy`]. Generated roots (dev-assets, dist) serve
+//! every contained file. The public root refuses the framework-owned stable
+//! names — `styles.css`, `islands.js`, `islands-*.js`, and anything under
+//! `client/` (see [`is_reserved_public_asset`]) — matched ASCII
+//! case-insensitively on the normalized, percent-decoded request path AND on
+//! the canonical path it resolves to. A refused name is a miss for the public
+//! root only: the request falls through to the next root, so dev's own
+//! `styles.css` keeps serving while a same-named `public/assets/styles.css`
+//! can never stand in for it (for example before dev has published, or in a
+//! project with no CSS). [`reserved_public_asset_files`] lists offending
+//! files for the one-per-file boot warning.
 //!
 //! ## How it works (per root)
 //!
@@ -57,7 +79,13 @@
 //! Residual race: a *directory* component swapped for a symlink after
 //! the check can still redirect the open — the same posture as the
 //! other readers.  Full elimination needs openat-style component-wise
-//! opening (`O_NOFOLLOW` walk), tracked separately.
+//! opening (`O_NOFOLLOW` walk), tracked separately.  This race is NOT
+//! closed for the public root either: `public/` is user-writable project
+//! source, so a directory under `public/assets/` swapped for an escaping
+//! symlink between the check and ServeDir's open can still redirect that
+//! one open, exactly as for the generated roots and for
+//! `read_from_public`.  The per-request canonical check still refuses
+//! every symlink that is already in place when the request arrives.
 
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
@@ -78,6 +106,84 @@ type ReqBody = Body;
 /// The concrete inner Service type (ServeDir with default fallback, Body request).
 type InnerService = ServeDir;
 
+/// Which names an asset root may serve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RootPolicy {
+    /// Framework-written roots (`dev-assets/assets/`, `dist/assets/`): every
+    /// contained file is served.
+    Generated,
+    /// The user's `public/assets/`: the framework-owned stable names are
+    /// refused (see [`is_reserved_public_asset`]) so the request falls through
+    /// to the next root.
+    Public,
+}
+
+impl RootPolicy {
+    fn refuses(self, relative: &Path) -> bool {
+        match self {
+            RootPolicy::Generated => false,
+            RootPolicy::Public => is_reserved_public_asset(relative),
+        }
+    }
+}
+
+/// Whether `relative` (a path under an assets root, without the `assets/`
+/// segment) names a framework-owned stable asset that a `public/assets/`
+/// file must never shadow: `styles.css`, `islands.js`, `islands-*.js`, or
+/// anything under `client/` (names from [`zfb_types::asset_urls`]).
+///
+/// Compared ASCII case-insensitively so a case-insensitive filesystem
+/// (macOS APFS) cannot serve `public/assets/Styles.css` for
+/// `/assets/styles.css`. The `{stem}-{hash8}.{ext}` companion pattern is
+/// deliberately NOT reserved.
+pub(crate) fn is_reserved_public_asset(relative: &Path) -> bool {
+    let mut names = relative.components().filter_map(|c| match c {
+        Component::Normal(name) => Some(name),
+        _ => None,
+    });
+    let Some(first) = names.next().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let first = first.to_ascii_lowercase();
+    if first == zfb_types::asset_urls::DIST_CLIENT_SCRIPTS_DIR {
+        return true;
+    }
+    if names.next().is_some() {
+        return false;
+    }
+    first == zfb_types::asset_urls::STABLE_CSS_FILENAME
+        || first == zfb_types::asset_urls::STABLE_ISLANDS_FILENAME
+        || (first.starts_with("islands-") && first.ends_with(".js"))
+}
+
+/// Files under `public_assets_dir` whose names the public root refuses
+/// ([`is_reserved_public_asset`]), as paths relative to that dir, sorted.
+/// Empty when the dir is missing. Symlinks are listed by their own name and
+/// never followed, so a symlinked `client/` cannot walk outside the tree.
+pub(crate) fn reserved_public_asset_files(public_assets_dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, relative: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let rel = relative.join(entry.file_name());
+            let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_real_dir {
+                // Only `client/` can hold reserved descendants.
+                if is_reserved_public_asset(&rel) {
+                    walk(&entry.path(), &rel, out);
+                }
+            } else if is_reserved_public_asset(&rel) {
+                out.push(rel);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(public_assets_dir, Path::new(""), &mut out);
+    out.sort();
+    out
+}
+
 /// One asset root: its raw dir, the pre-canonicalized form, and the inner
 /// [`ServeDir`] that serves files from it.
 #[derive(Clone)]
@@ -94,18 +200,21 @@ struct AssetRoot {
     canonical_root: Arc<Option<PathBuf>>,
     /// The raw (non-canonical) assets directory.
     assets_dir: PathBuf,
+    /// Names this root refuses to serve.
+    policy: RootPolicy,
     /// Inner service that does the actual file serving for this root.
     inner: InnerService,
 }
 
 impl AssetRoot {
-    fn new(assets_dir: PathBuf) -> Self {
+    fn new(assets_dir: PathBuf, policy: RootPolicy) -> Self {
         // Best-effort pre-canonicalize at boot (sync, outside the hot loop).
         let canonical_root = std::fs::canonicalize(&assets_dir).ok();
         Self {
             canonical_root: Arc::new(canonical_root),
             inner: ServeDir::new(&assets_dir),
             assets_dir,
+            policy,
         }
     }
 }
@@ -121,15 +230,18 @@ pub(crate) struct ContainedAssetsService {
     /// containment check passes AND that actually holds the file serves it;
     /// a miss falls through to the next root.
     ///
-    /// `zfb dev` (issue #1189) passes two roots — the isolated
-    /// `.zfb-build/dev-assets/assets/` first, then the build `dist/assets/`
-    /// as a boot-lazy-seed fallback — so a concurrent `zfb build` that wipes
-    /// `dist/` can never 404 dev's stable `/assets/styles.css`. The
-    /// namespaces don't collide: dev's isolated dir only holds STABLE names
-    /// (`styles.css`, `islands.js`, chunks, `client/*.js`) while a prebuilt
-    /// seed only serves HASHED names, so isolated-first never shadows a
-    /// legitimately newer hashed seed asset. Single-root callers (preview /
-    /// embed / tests) get exactly the historical behavior.
+    /// `zfb dev` passes the isolated `.zfb-build/dev-assets/assets/` first
+    /// (issue #1189), so a concurrent `zfb build` that wipes `dist/` can
+    /// never 404 dev's stable `/assets/styles.css`; then the live
+    /// `public/assets/` ([`RootPolicy::Public`], issue #4233); then — only
+    /// with a dist seed — the build `dist/assets/` as a boot-lazy-seed
+    /// fallback. Dev's isolated dir only holds STABLE names (`styles.css`,
+    /// `islands.js`, chunks, `client/*.js`) while a prebuilt seed only serves
+    /// HASHED names, so isolated-first never shadows a legitimately newer
+    /// hashed seed asset. The public root sits ahead of the seed because the
+    /// seed's copy of a `public/assets/` file is a stale `zfb build`
+    /// snapshot. Single-root callers (preview / embed / tests) get exactly
+    /// the historical behavior.
     roots: Vec<AssetRoot>,
 }
 
@@ -144,19 +256,24 @@ impl ContainedAssetsService {
     /// empty directory from the client's perspective).
     pub(crate) fn new(assets_dir: PathBuf) -> Self {
         Self {
-            roots: vec![AssetRoot::new(assets_dir)],
+            roots: vec![AssetRoot::new(assets_dir, RootPolicy::Generated)],
         }
     }
 
     /// Build a layered [`ContainedAssetsService`]: the roots are tried in
     /// priority order, and the first one that contains the requested file
-    /// serves it. Each root is canonicalized and containment-checked
-    /// INDEPENDENTLY, so the symlink-containment guarantee holds for every
-    /// root (never canonicalize a merged root). Used by `zfb dev` to put the
-    /// isolated dev-assets dir ahead of the build `dist/assets/` (#1189).
-    pub(crate) fn layered(assets_dirs: Vec<PathBuf>) -> Self {
+    /// (and whose [`RootPolicy`] does not refuse its name) serves it. Each
+    /// root is canonicalized and containment-checked INDEPENDENTLY, so the
+    /// symlink-containment guarantee holds for every root (never
+    /// canonicalize a merged root). Used by `zfb dev` to layer the isolated
+    /// dev-assets dir (#1189), the live `public/assets/` (#4233), and the
+    /// build `dist/assets/` seed.
+    pub(crate) fn layered(assets_dirs: Vec<(PathBuf, RootPolicy)>) -> Self {
         Self {
-            roots: assets_dirs.into_iter().map(AssetRoot::new).collect(),
+            roots: assets_dirs
+                .into_iter()
+                .map(|(dir, policy)| AssetRoot::new(dir, policy))
+                .collect(),
         }
     }
 
@@ -243,6 +360,15 @@ impl Service<Request<ReqBody>> for ContainedAssetsService {
                     continue;
                 };
 
+                // Reserved-name policy on the normalized, decoded request
+                // path. `candidate_path` builds `candidate` by pushing onto
+                // `assets_dir`, so the prefix always strips.
+                if let Ok(requested) = candidate.strip_prefix(&root.assets_dir) {
+                    if root.policy.refuses(requested) {
+                        continue;
+                    }
+                }
+
                 // Canonicalize resolves symlinks; if it fails the file/target
                 // doesn't exist in this root — try the next root.
                 let canonical_candidate = match tokio::fs::canonicalize(&candidate).await {
@@ -268,6 +394,15 @@ impl Service<Request<ReqBody>> for ContainedAssetsService {
                 // through; the loop ends in a 404.
                 if !canonical_candidate.starts_with(&canon_root) {
                     continue;
+                }
+
+                // Reserved-name policy again on the resolved name, so an
+                // in-root symlink (`public/assets/alias.css → styles.css`)
+                // cannot reach a refused file under a permitted name.
+                if let Ok(resolved) = canonical_candidate.strip_prefix(&canon_root) {
+                    if root.policy.refuses(resolved) {
+                        continue;
+                    }
                 }
 
                 hit = Some((canonical_candidate, canon_root, root.inner.clone()));
@@ -604,8 +739,8 @@ mod tests {
         primary_setup(primary.path());
         secondary_setup(secondary.path());
         let svc = ContainedAssetsService::layered(vec![
-            primary.path().to_path_buf(),
-            secondary.path().to_path_buf(),
+            (primary.path().to_path_buf(), RootPolicy::Generated),
+            (secondary.path().to_path_buf(), RootPolicy::Generated),
         ]);
         (svc, primary, secondary)
     }
@@ -707,6 +842,261 @@ mod tests {
         );
         let (status, _body) = body_for(svc, "/../../etc/passwd").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "traversal must 404");
+    }
+
+    // -----------------------------------------------------------------------
+    // Three-root dev layering with the public root (issue #4233):
+    // dev-assets → public/assets (RootPolicy::Public) → dist/assets seed.
+    // -----------------------------------------------------------------------
+
+    /// `(service, dev_assets, public_assets, dist_assets)` over three
+    /// tempdirs in the `zfb dev` order.
+    fn make_dev_three(
+        dev_setup: impl FnOnce(&Path),
+        public_setup: impl FnOnce(&Path),
+        dist_setup: impl FnOnce(&Path),
+    ) -> (
+        ContainedAssetsService,
+        tempfile::TempDir,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let dev = tempfile::tempdir().expect("dev tempdir");
+        let public = tempfile::tempdir().expect("public tempdir");
+        let dist = tempfile::tempdir().expect("dist tempdir");
+        dev_setup(dev.path());
+        public_setup(public.path());
+        dist_setup(dist.path());
+        let svc = ContainedAssetsService::layered(vec![
+            (dev.path().to_path_buf(), RootPolicy::Generated),
+            (public.path().to_path_buf(), RootPolicy::Public),
+            (dist.path().to_path_buf(), RootPolicy::Generated),
+        ]);
+        (svc, dev, public, dist)
+    }
+
+    #[tokio::test]
+    async fn three_roots_are_tried_in_dev_public_dist_order() {
+        let (svc, _dev, _public, _dist) = make_dev_three(
+            |d| std::fs::write(d.join("a.txt"), b"dev").unwrap(),
+            |p| {
+                std::fs::write(p.join("a.txt"), b"public").unwrap();
+                std::fs::write(p.join("b.txt"), b"public").unwrap();
+            },
+            |s| {
+                std::fs::write(s.join("a.txt"), b"dist").unwrap();
+                std::fs::write(s.join("b.txt"), b"dist").unwrap();
+                std::fs::write(s.join("c.txt"), b"dist").unwrap();
+            },
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/a.txt").await,
+            (StatusCode::OK, b"dev".to_vec()),
+            "dev-assets must win over public and dist"
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/b.txt").await,
+            (StatusCode::OK, b"public".to_vec()),
+            "live public must win over the stale dist seed"
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/c.txt").await,
+            (StatusCode::OK, b"dist".to_vec()),
+            "a name only the seed holds still falls through to dist"
+        );
+        assert_eq!(body_for(svc, "/d.txt").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn public_root_reserved_names_fall_through_to_generated_roots() {
+        let (svc, _dev, _public, _dist) = make_dev_three(
+            |d| std::fs::write(d.join("styles.css"), b"dev-css").unwrap(),
+            |p| {
+                std::fs::write(p.join("styles.css"), b"public-css").unwrap();
+                std::fs::write(p.join("islands.js"), b"public-islands").unwrap();
+                std::fs::create_dir_all(p.join("client")).unwrap();
+                std::fs::write(p.join("client/x.js"), b"public-client").unwrap();
+            },
+            |_s| {},
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/styles.css").await,
+            (StatusCode::OK, b"dev-css".to_vec())
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/islands.js").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/client/x.js").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            body_for(svc, "/client%2Fx.js").await.0,
+            StatusCode::NOT_FOUND,
+            "an encoded separator must not dodge the client/ reservation"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_only_reserved_name_is_404_without_a_dev_copy() {
+        let (svc, _dev, _public, _dist) = make_dev_three(
+            |_d| {},
+            |p| std::fs::write(p.join("styles.css"), b"public-css").unwrap(),
+            |_s| {},
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/styles.css").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            body_for(svc, "/styles%2Ecss").await.0,
+            StatusCode::NOT_FOUND,
+            "a percent-encoded reserved name must still be refused"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_root_in_root_alias_to_reserved_name_is_refused() {
+        use std::os::unix::fs::symlink;
+        let (svc, _dev, _public, _dist) = make_dev_three(
+            |_d| {},
+            |p| {
+                std::fs::write(p.join("styles.css"), b"public-css").unwrap();
+                symlink(p.join("styles.css"), p.join("alias.css")).unwrap();
+            },
+            |_s| {},
+        );
+        assert_eq!(body_for(svc, "/alias.css").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_root_escaping_symlink_is_404() {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().expect("outside dir");
+        std::fs::write(outside.path().join("secret.png"), b"secret").unwrap();
+        std::fs::create_dir_all(outside.path().join("dir")).unwrap();
+        std::fs::write(outside.path().join("dir/inner.png"), b"secret").unwrap();
+        let (svc, _dev, _public, _dist) = make_dev_three(
+            |_d| {},
+            |p| {
+                symlink(outside.path().join("secret.png"), p.join("evil.png")).unwrap();
+                symlink(outside.path().join("dir"), p.join("evildir")).unwrap();
+            },
+            |_s| {},
+        );
+        assert_eq!(
+            body_for(svc.clone(), "/evil.png").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            body_for(svc, "/evildir/inner.png").await.0,
+            StatusCode::NOT_FOUND,
+            "a symlinked directory escaping public/assets must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_root_encoded_traversal_is_404() {
+        let parent = tempfile::tempdir().expect("parent dir");
+        std::fs::write(parent.path().join("secret.txt"), b"secret").unwrap();
+        let public_assets = parent.path().join("assets");
+        std::fs::create_dir_all(&public_assets).unwrap();
+        std::fs::write(public_assets.join("ok.txt"), b"ok").unwrap();
+        let svc = ContainedAssetsService::layered(vec![(public_assets, RootPolicy::Public)]);
+        assert_eq!(
+            body_for(svc.clone(), "/ok.txt").await,
+            (StatusCode::OK, b"ok".to_vec())
+        );
+        for uri in [
+            "/%2e%2e/secret.txt",
+            "/%2E%2E/secret.txt",
+            "/..%2fsecret.txt",
+        ] {
+            assert_eq!(
+                body_for(svc.clone(), uri).await.0,
+                StatusCode::NOT_FOUND,
+                "encoded traversal {uri} must 404"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Reserved-name predicate + boot scan
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reserved_public_asset_predicate() {
+        for reserved in [
+            "styles.css",
+            "Styles.CSS",
+            "islands.js",
+            "islands-abc12345.js",
+            "client",
+            "client/x.js",
+            "Client/nested/y.js",
+            "./styles.css",
+        ] {
+            assert!(
+                is_reserved_public_asset(Path::new(reserved)),
+                "{reserved} must be reserved"
+            );
+        }
+        for allowed in [
+            "",
+            "example.png",
+            "styles.css.map",
+            "styles-abc12345.css",
+            "islands.json",
+            "islands-chunk.mjs",
+            "img/styles.css",
+            "img/islands.js",
+            "clients/x.js",
+            "my-client/x.js",
+        ] {
+            assert!(
+                !is_reserved_public_asset(Path::new(allowed)),
+                "{allowed} must not be reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_policy_refuses_nothing() {
+        assert!(!RootPolicy::Generated.refuses(Path::new("styles.css")));
+        assert!(!RootPolicy::Generated.refuses(Path::new("client/x.js")));
+        assert!(RootPolicy::Public.refuses(Path::new("styles.css")));
+    }
+
+    #[test]
+    fn reserved_public_asset_files_lists_each_offender() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::write(p.join("styles.css"), b"x").unwrap();
+        std::fs::write(p.join("islands-abc12345.js"), b"x").unwrap();
+        std::fs::write(p.join("example.png"), b"x").unwrap();
+        std::fs::create_dir_all(p.join("client/nested")).unwrap();
+        std::fs::write(p.join("client/a.js"), b"x").unwrap();
+        std::fs::write(p.join("client/nested/b.js"), b"x").unwrap();
+        std::fs::create_dir_all(p.join("img")).unwrap();
+        std::fs::write(p.join("img/styles.css"), b"x").unwrap();
+        assert_eq!(
+            reserved_public_asset_files(p),
+            vec![
+                PathBuf::from("client/a.js"),
+                PathBuf::from("client/nested/b.js"),
+                PathBuf::from("islands-abc12345.js"),
+                PathBuf::from("styles.css"),
+            ]
+        );
+    }
+
+    #[test]
+    fn reserved_public_asset_files_is_empty_for_a_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(reserved_public_asset_files(&dir.path().join("assets")).is_empty());
     }
 
     // -----------------------------------------------------------------------

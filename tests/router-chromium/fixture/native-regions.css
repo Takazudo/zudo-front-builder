@@ -1,0 +1,52 @@
+/* The hand-generated workspace fixture supplies the offscreen announcer style normally emitted by ClientRouter. */
+.zfb-route-announcer { position: absolute; left: 0; top: 0; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; width: 1px; height: 1px; }
+/* Example-owned motion and layout; none of this is a framework default. */
+body { margin: 0; background: white; font: 20px monospace; }
+nav { height: 40px; }
+#global-region, #ancestor-region, #sdk-region, #context-region, #optional-region, #content-region {
+  position: absolute; left: 40px; width: 400px; height: 60px; box-sizing: border-box;
+  background: #aaddff; padding: 10px;
+}
+#global-region { top: 60px; view-transition-name: global-region; background: #ff8866; }
+body[data-page="b"] #global-region { background: #66dd88; }
+#ancestor-region { top: 140px; view-transition-name: ancestor-region; }
+#sdk-region { top: 220px; view-transition-name: sdk-region; }
+#context-region { top: 300px; }
+#optional-region { top: 380px; view-transition-name: optional-region; }
+#content-region { top: 460px; view-transition-name: content-region; background: #9966dd; }
+::view-transition-group(*) { animation-duration: 1200ms; }
+::view-transition-old(content-region) { animation: region-out 1200ms linear both; }
+::view-transition-new(content-region) { animation: region-in 1200ms linear both; }
+@keyframes region-out { to { transform: translateX(120px); opacity: 0; } }
+@keyframes region-in { from { transform: translateX(-120px); opacity: 0; } }
+
+/* Keep the group geometry and both image snapshots stationary, including one-sided images. */
+::view-transition-group(global-region),
+::view-transition-old(global-region),
+::view-transition-new(global-region),
+::view-transition-group(ancestor-region),
+::view-transition-old(ancestor-region),
+::view-transition-new(ancestor-region),
+::view-transition-group(sdk-region),
+::view-transition-old(sdk-region),
+::view-transition-new(sdk-region),
+::view-transition-group(optional-region),
+::view-transition-old(optional-region),
+::view-transition-new(optional-region) { animation: none; mix-blend-mode: normal; }
+
+/* Matching context: paired images are stationary. A different key enters/exits with the UA fade. */
+::view-transition-group(context-alpha),
+::view-transition-group(context-beta),
+::view-transition-old(context-alpha),
+::view-transition-new(context-alpha),
+::view-transition-old(context-beta),
+::view-transition-new(context-beta) { animation: none; mix-blend-mode: normal; }
+
+::view-transition-old(context-alpha):only-child,
+::view-transition-old(context-beta):only-child { animation: region-out 1200ms linear both; }
+::view-transition-new(context-alpha):only-child,
+::view-transition-new(context-beta):only-child { animation: region-in 1200ms linear both; }
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+}

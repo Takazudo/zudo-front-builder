@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-win32-x64-msvc",
-  "version": "4.3.1",
+  "version": "4.5.1",
   "description": "Platform-specific zfb binary (win32-x64-msvc)",
   "license": "MIT",
   "os": [
@@ -13,7 +13,8 @@
   "files": [
     "zfb.exe",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "zfb-css.node"
   ],
   "repository": {
     "type": "git",

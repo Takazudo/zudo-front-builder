@@ -1,0 +1,2587 @@
+{
+  "issue": "https://github.com/Takazudo/zudo-front-builder/issues/4166",
+  "generatedAt": "2026-10-12T18:42:05.522Z",
+  "source": {
+    "sha": "bf036811bf75f28c11cdca92156fbba6d1aad809",
+    "branch": "base/sweep-261012-reliability-navigation",
+    "dirty": false
+  },
+  "packages": {
+    "@takazudo/zfb": "4.3.3",
+    "@takazudo/zfb-runtime": "4.3.3",
+    "@takazudo/zudo-doc": "6.1.1",
+    "@takazudo/zfb-adapter-cloudflare": "4.3.3",
+    "wrangler": "4.85.0"
+  },
+  "zfbBinary": "zfb 4.3.3\nembedded esbuild: 0.25.12",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "osRelease": "25.6.0",
+    "cpu": "Apple A18 Pro",
+    "cpuCount": 6,
+    "memoryGb": 8,
+    "node": "v24.14.0"
+  },
+  "settings": {
+    "hosts": [
+      {
+        "label": "static",
+        "origin": "http://127.0.0.1:4334"
+      },
+      {
+        "label": "wrangler",
+        "origin": "http://127.0.0.1:4333"
+      }
+    ],
+    "cases": {
+      "en-desktop-compat": {
+        "role": "target",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "neighbour": "/docs/zudo-wind/coming-from-tailwind/",
+        "target": "/docs/zudo-wind/compatibility/"
+      },
+      "ja-desktop-compat": {
+        "role": "control",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "neighbour": "/ja/docs/zudo-wind/coming-from-tailwind/",
+        "target": "/ja/docs/zudo-wind/compatibility/"
+      },
+      "en-mobile-compat": {
+        "role": "control",
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "neighbour": "/docs/zudo-wind/coming-from-tailwind/",
+        "target": "/docs/zudo-wind/compatibility/"
+      },
+      "en-desktop-ordinary": {
+        "role": "control",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "neighbour": "/docs/zudo-wind/overview/",
+        "target": "/docs/zudo-wind/configuration/"
+      }
+    },
+    "rounds": 4,
+    "warmup": 1,
+    "order": "each round runs every host x case once; the order rotates by round",
+    "headless": true,
+    "deviceScaleFactor": 1,
+    "reducedMotion": "reduce",
+    "viewTransitions": "native",
+    "extraCss": null,
+    "trace": {
+      "categories": [
+        "devtools.timeline",
+        "disabled-by-default-devtools.timeline",
+        "disabled-by-default-devtools.timeline.frame",
+        "toplevel",
+        "blink.user_timing",
+        "loading",
+        "v8.execute"
+      ],
+      "dir": "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/92de6600-6582-4923-a221-fd6fa8d33557/scratchpad/fix-evd/perf/traces"
+    },
+    "quietMs": 1000,
+    "settleBudgetMs": 30000,
+    "swapBudgetMs": 30000,
+    "freezeThresholdMs": 4000
+  },
+  "preflight": [
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "c121ff3b70afc94a6d6e2e772532f53d7629142dfbfb0e77e6f44ef4c6f70ca1",
+      "distSha256": "4dd47c9a6e7c90c8200b9d2ea2144fcefdc2bacf2332dc188455bc3a94356635",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "fbb1506b2e2e0eba2d08abdf07def43a3993352ae9160835db36902bbf9e5bcc",
+      "distSha256": "9066b14707a6c95e48e1887af0d6bb4875bab8a1902c51c631e7da32b0731726",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/ja/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "16d9325edd655ccccd2afe30b777774cbdd6fb2990995b90978c1f71b8876976",
+      "distSha256": "6c89598a1cd0b7b0ffa101e738ddc3e843ec29dd6be35c6d2479cdbdaa9aea56",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/ja/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "082fbd10f285cccfff3e77383c6d4bb746e3c0034067effc8522510cf60eade9",
+      "distSha256": "fd973f1337b183682dc5d4e55e0050c21d2c13f31603f8a465365c48a45c16db",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "c121ff3b70afc94a6d6e2e772532f53d7629142dfbfb0e77e6f44ef4c6f70ca1",
+      "distSha256": "4dd47c9a6e7c90c8200b9d2ea2144fcefdc2bacf2332dc188455bc3a94356635",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "fbb1506b2e2e0eba2d08abdf07def43a3993352ae9160835db36902bbf9e5bcc",
+      "distSha256": "9066b14707a6c95e48e1887af0d6bb4875bab8a1902c51c631e7da32b0731726",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/overview/",
+      "server": null,
+      "htmlSha256": "88c358140e2ef66a34ae23d43279822f58bf4ff6c9689cbc57cbc332df951c1e",
+      "distSha256": "400c5b7fe3d1db6f5a126a10378674268eb8486afd2abcdd04d0b2a48d99d734",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/configuration/",
+      "server": null,
+      "htmlSha256": "dac8c9bc2bd514c5512cbe4c6e29a7492b80e8d9d1211a3eb5c90d1ee3bce349",
+      "distSha256": "d708350cc1d2a564b87bb6e4a0128fddc61191bd96bd1df90f32147d66cc94ed",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "c121ff3b70afc94a6d6e2e772532f53d7629142dfbfb0e77e6f44ef4c6f70ca1",
+      "distSha256": "4dd47c9a6e7c90c8200b9d2ea2144fcefdc2bacf2332dc188455bc3a94356635",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "fbb1506b2e2e0eba2d08abdf07def43a3993352ae9160835db36902bbf9e5bcc",
+      "distSha256": "9066b14707a6c95e48e1887af0d6bb4875bab8a1902c51c631e7da32b0731726",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/ja/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "16d9325edd655ccccd2afe30b777774cbdd6fb2990995b90978c1f71b8876976",
+      "distSha256": "6c89598a1cd0b7b0ffa101e738ddc3e843ec29dd6be35c6d2479cdbdaa9aea56",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/ja/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "082fbd10f285cccfff3e77383c6d4bb746e3c0034067effc8522510cf60eade9",
+      "distSha256": "fd973f1337b183682dc5d4e55e0050c21d2c13f31603f8a465365c48a45c16db",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "c121ff3b70afc94a6d6e2e772532f53d7629142dfbfb0e77e6f44ef4c6f70ca1",
+      "distSha256": "4dd47c9a6e7c90c8200b9d2ea2144fcefdc2bacf2332dc188455bc3a94356635",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "fbb1506b2e2e0eba2d08abdf07def43a3993352ae9160835db36902bbf9e5bcc",
+      "distSha256": "9066b14707a6c95e48e1887af0d6bb4875bab8a1902c51c631e7da32b0731726",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/docs/zudo-wind/overview/",
+      "server": null,
+      "htmlSha256": "88c358140e2ef66a34ae23d43279822f58bf4ff6c9689cbc57cbc332df951c1e",
+      "distSha256": "400c5b7fe3d1db6f5a126a10378674268eb8486afd2abcdd04d0b2a48d99d734",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "wrangler",
+      "path": "/docs/zudo-wind/configuration/",
+      "server": null,
+      "htmlSha256": "dac8c9bc2bd514c5512cbe4c6e29a7492b80e8d9d1211a3eb5c90d1ee3bce349",
+      "distSha256": "d708350cc1d2a564b87bb6e4a0128fddc61191bd96bd1df90f32147d66cc94ed",
+      "servedMatchesDist": false
+    }
+  ],
+  "transitions": {
+    "static/en-desktop-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "static/ja-desktop-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "static/en-mobile-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "static/en-desktop-ordinary": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "wrangler/en-desktop-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "wrangler/ja-desktop-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "wrangler/en-mobile-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "wrangler/en-desktop-ordinary": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    }
+  },
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55"
+  },
+  "stats": {
+    "static/ja-desktop-compat/enter": {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 298,
+        "max": 301,
+        "min": 214,
+        "values": [214, 297, 299, 301]
+      },
+      "layerizeTotalMs": {
+        "median": 5.9,
+        "max": 6.9,
+        "min": 4.3,
+        "values": [4.3, 5, 6.9, 6.8]
+      },
+      "layerizeMaxMs": {
+        "median": 3.8,
+        "max": 5.1,
+        "min": 2.8,
+        "values": [2.8, 2.8, 5.1, 4.7]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 17.6,
+        "max": 23.8,
+        "min": 13.6,
+        "values": [14.8, 20.4, 13.6, 23.8]
+      },
+      "clickToPageLoadMs": {
+        "median": 341.9,
+        "max": 354.6,
+        "min": 253.3,
+        "values": [253.3, 345.3, 338.5, 354.6]
+      },
+      "clickToSettledMs": {
+        "median": 535.2,
+        "max": 591.9,
+        "min": 429,
+        "values": [429, 591.9, 493.9, 576.5]
+      },
+      "maxFrameGapMs": {
+        "median": 292.6,
+        "max": 300.2,
+        "min": 200.2,
+        "values": [200.2, 300.2, 285.1, 300]
+      }
+    },
+    "static/ja-desktop-compat/leave": {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 214.5,
+        "max": 280,
+        "min": 148,
+        "values": [148, 218, 211, 280]
+      },
+      "layerizeTotalMs": {
+        "median": 7.5,
+        "max": 8.7,
+        "min": 6.4,
+        "values": [8, 6.4, 6.9, 8.7]
+      },
+      "layerizeMaxMs": {
+        "median": 4,
+        "max": 4.6,
+        "min": 3,
+        "values": [4, 3, 3.9, 4.6]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 140.4,
+        "max": 235.5,
+        "min": 130.2,
+        "values": [130.2, 143.4, 137.4, 235.5]
+      },
+      "clickToPageLoadMs": {
+        "median": 384,
+        "max": 580.2,
+        "min": 300.9,
+        "values": [300.9, 385.8, 382.2, 580.2]
+      },
+      "clickToSettledMs": {
+        "median": 384,
+        "max": 580.2,
+        "min": 300.9,
+        "values": [300.9, 385.8, 382.2, 580.2]
+      },
+      "maxFrameGapMs": {
+        "median": 350.8,
+        "max": 518.4,
+        "min": 266.8,
+        "values": [266.8, 350.1, 351.4, 518.4]
+      }
+    },
+    "static/en-mobile-compat/enter": {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 217.5,
+        "max": 284,
+        "min": 179,
+        "values": [179, 242, 193, 284]
+      },
+      "layerizeTotalMs": {
+        "median": 6.2,
+        "max": 8.5,
+        "min": 5.4,
+        "values": [5.9, 6.5, 5.4, 8.5]
+      },
+      "layerizeMaxMs": {
+        "median": 4.2,
+        "max": 5.2,
+        "min": 2.8,
+        "values": [4, 4.3, 2.8, 5.2]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 22.7,
+        "max": 39,
+        "min": 20.6,
+        "values": [21.4, 20.6, 24, 39]
+      },
+      "clickToPageLoadMs": {
+        "median": 264.2,
+        "max": 362.3,
+        "min": 227.3,
+        "values": [227.3, 289, 239.4, 362.3]
+      },
+      "clickToSettledMs": {
+        "median": 428,
+        "max": 668.4,
+        "min": 329.7,
+        "values": [329.7, 495.5, 360.4, 668.4]
+      },
+      "maxFrameGapMs": {
+        "median": 218,
+        "max": 298.4,
+        "min": 183.7,
+        "values": [183.7, 235.3, 200.6, 298.4]
+      }
+    },
+    "static/en-mobile-compat/leave": {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 223,
+        "max": 305,
+        "min": 154,
+        "values": [154, 305, 155, 291]
+      },
+      "layerizeTotalMs": {
+        "median": 8.2,
+        "max": 9.5,
+        "min": 5.2,
+        "values": [7.4, 8.9, 5.2, 9.5]
+      },
+      "layerizeMaxMs": {
+        "median": 3.4,
+        "max": 5.3,
+        "min": 2,
+        "values": [2.6, 4.1, 2, 5.3]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 140.4,
+        "max": 219.4,
+        "min": 105.9,
+        "values": [105.9, 168.6, 112.2, 219.4]
+      },
+      "clickToPageLoadMs": {
+        "median": 424.3,
+        "max": 575.5,
+        "min": 279.4,
+        "values": [279.4, 561.1, 287.4, 575.5]
+      },
+      "clickToSettledMs": {
+        "median": 424.3,
+        "max": 575.5,
+        "min": 281.3,
+        "values": [281.3, 561.1, 287.4, 575.5]
+      },
+      "maxFrameGapMs": {
+        "median": 358.5,
+        "max": 501.9,
+        "min": 250,
+        "values": [250, 466.8, 250.1, 501.9]
+      }
+    },
+    "static/en-desktop-ordinary/enter": {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 55.5,
+        "max": 61,
+        "min": 0,
+        "values": [0, 57, 61, 54]
+      },
+      "layerizeTotalMs": {
+        "median": 2.1,
+        "max": 2.6,
+        "min": 1.9,
+        "values": [1.9, 1.9, 2.6, 2.2]
+      },
+      "layerizeMaxMs": {
+        "median": 0.5,
+        "max": 0.6,
+        "min": 0.4,
+        "values": [0.4, 0.4, 0.6, 0.5]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 23.6,
+        "max": 28.1,
+        "min": 19.6,
+        "values": [19.6, 28.1, 21.2, 26]
+      },
+      "clickToPageLoadMs": {
+        "median": 100.4,
+        "max": 104.2,
+        "min": 80.6,
+        "values": [80.6, 104.2, 104.2, 96.5]
+      },
+      "clickToSettledMs": {
+        "median": 100.4,
+        "max": 162.9,
+        "min": 80.6,
+        "values": [80.6, 162.9, 104.2, 96.5]
+      },
+      "maxFrameGapMs": {
+        "median": 66.5,
+        "max": 83.4,
+        "min": 50.1,
+        "values": [50.1, 67.3, 83.4, 65.7]
+      }
+    },
+    "static/en-desktop-ordinary/leave": {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 0,
+        "max": 0,
+        "min": 0,
+        "values": [0, 0, 0, 0]
+      },
+      "layerizeTotalMs": {
+        "median": 1.8,
+        "max": 2,
+        "min": 1.5,
+        "values": [1.5, 1.9, 2, 1.6]
+      },
+      "layerizeMaxMs": {
+        "median": 0.5,
+        "max": 0.5,
+        "min": 0.4,
+        "values": [0.4, 0.5, 0.5, 0.4]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 19.6,
+        "max": 21.4,
+        "min": 18.8,
+        "values": [19.4, 21.4, 18.8, 19.8]
+      },
+      "clickToPageLoadMs": {
+        "median": 74.8,
+        "max": 83.9,
+        "min": 62.5,
+        "values": [62.5, 83.9, 76.9, 72.7]
+      },
+      "clickToSettledMs": {
+        "median": 74.8,
+        "max": 83.9,
+        "min": 62.5,
+        "values": [62.5, 83.9, 76.9, 72.7]
+      },
+      "maxFrameGapMs": {
+        "median": 33.8,
+        "max": 34.3,
+        "min": 33.3,
+        "values": [33.3, 34.3, 34.1, 33.5]
+      }
+    },
+    "wrangler/en-desktop-compat/enter": {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "role": "target",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 201.5,
+        "max": 261,
+        "min": 172,
+        "values": [172, 197, 261, 206]
+      },
+      "layerizeTotalMs": {
+        "median": 5.4,
+        "max": 11.9,
+        "min": 3.8,
+        "values": [3.8, 11.9, 6.2, 4.6]
+      },
+      "layerizeMaxMs": {
+        "median": 2.9,
+        "max": 9.5,
+        "min": 2.2,
+        "values": [2.2, 9.5, 3.6, 2.2]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 17.2,
+        "max": 19.2,
+        "min": 11.2,
+        "values": [11.2, 18, 19.2, 16.4]
+      },
+      "clickToPageLoadMs": {
+        "median": 263.1,
+        "max": 318.9,
+        "min": 214.6,
+        "values": [214.6, 269.6, 318.9, 256.5]
+      },
+      "clickToSettledMs": {
+        "median": 427.3,
+        "max": 543.6,
+        "min": 309.9,
+        "values": [309.9, 475, 543.6, 379.5]
+      },
+      "maxFrameGapMs": {
+        "median": 209.2,
+        "max": 268.2,
+        "min": 166.7,
+        "values": [166.7, 200.2, 268.2, 218.1]
+      }
+    },
+    "wrangler/en-desktop-compat/leave": {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "role": "target",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 238,
+        "max": 261,
+        "min": 175,
+        "values": [261, 224, 252, 175]
+      },
+      "layerizeTotalMs": {
+        "median": 7.6,
+        "max": 8.9,
+        "min": 6.8,
+        "values": [8.9, 7.5, 7.7, 6.8]
+      },
+      "layerizeMaxMs": {
+        "median": 3.5,
+        "max": 4.9,
+        "min": 3.2,
+        "values": [4.9, 3.8, 3.2, 3.2]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 157.4,
+        "max": 169.5,
+        "min": 133.7,
+        "values": [156.8, 157.9, 169.5, 133.7]
+      },
+      "clickToPageLoadMs": {
+        "median": 467.1,
+        "max": 497,
+        "min": 342,
+        "values": [497, 445.2, 489, 342]
+      },
+      "clickToSettledMs": {
+        "median": 467.1,
+        "max": 497,
+        "min": 342,
+        "values": [497, 445.2, 489, 342]
+      },
+      "maxFrameGapMs": {
+        "median": 392.7,
+        "max": 418.5,
+        "min": 283.9,
+        "values": [418.5, 383.7, 401.7, 283.9]
+      }
+    },
+    "wrangler/ja-desktop-compat/enter": {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 281,
+        "max": 308,
+        "min": 254,
+        "values": [266, 296, 308, 254]
+      },
+      "layerizeTotalMs": {
+        "median": 5.5,
+        "max": 6.8,
+        "min": 4.7,
+        "values": [5.4, 6.8, 5.5, 4.7]
+      },
+      "layerizeMaxMs": {
+        "median": 3.3,
+        "max": 4.1,
+        "min": 2.7,
+        "values": [3.4, 4.1, 3.2, 2.7]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 19.9,
+        "max": 23.5,
+        "min": 16.7,
+        "values": [18.6, 23.5, 16.7, 21.2]
+      },
+      "clickToPageLoadMs": {
+        "median": 344.9,
+        "max": 372.7,
+        "min": 313.7,
+        "values": [329.1, 372.7, 360.7, 313.7]
+      },
+      "clickToSettledMs": {
+        "median": 581.3,
+        "max": 589.8,
+        "min": 500.9,
+        "values": [589.8, 584.1, 578.4, 500.9]
+      },
+      "maxFrameGapMs": {
+        "median": 283.4,
+        "max": 300.2,
+        "min": 266.7,
+        "values": [266.7, 300, 300.2, 266.7]
+      }
+    },
+    "wrangler/ja-desktop-compat/leave": {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 204.5,
+        "max": 240,
+        "min": 183,
+        "values": [183, 240, 195, 214]
+      },
+      "layerizeTotalMs": {
+        "median": 8,
+        "max": 9.3,
+        "min": 6.6,
+        "values": [6.6, 9.3, 8.5, 7.4]
+      },
+      "layerizeMaxMs": {
+        "median": 4,
+        "max": 5.2,
+        "min": 3.3,
+        "values": [3.3, 5.2, 4.6, 3.3]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 169.6,
+        "max": 173.5,
+        "min": 130.8,
+        "values": [130.8, 172.1, 173.5, 167.1]
+      },
+      "clickToPageLoadMs": {
+        "median": 428.2,
+        "max": 477.2,
+        "min": 393.1,
+        "values": [411.6, 477.2, 393.1, 444.8]
+      },
+      "clickToSettledMs": {
+        "median": 428.8,
+        "max": 477.2,
+        "min": 393.1,
+        "values": [411.6, 477.2, 393.1, 445.9]
+      },
+      "maxFrameGapMs": {
+        "median": 367.7,
+        "max": 415.8,
+        "min": 316.7,
+        "values": [316.7, 415.8, 350, 385.4]
+      }
+    },
+    "wrangler/en-mobile-compat/enter": {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 223.5,
+        "max": 248,
+        "min": 206,
+        "values": [238, 209, 248, 206]
+      },
+      "layerizeTotalMs": {
+        "median": 4.5,
+        "max": 5.5,
+        "min": 4.1,
+        "values": [4.2, 4.1, 5.5, 4.7]
+      },
+      "layerizeMaxMs": {
+        "median": 2.3,
+        "max": 3.3,
+        "min": 2,
+        "values": [2.4, 2, 3.3, 2.2]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 20.6,
+        "max": 32.4,
+        "min": 16.5,
+        "values": [19.1, 22, 32.4, 16.5]
+      },
+      "clickToPageLoadMs": {
+        "median": 276.6,
+        "max": 319.3,
+        "min": 256.8,
+        "values": [288.3, 264.8, 319.3, 256.8]
+      },
+      "clickToSettledMs": {
+        "median": 469.6,
+        "max": 555.5,
+        "min": 458.6,
+        "values": [479, 458.6, 555.5, 460.1]
+      },
+      "maxFrameGapMs": {
+        "median": 225.7,
+        "max": 251.9,
+        "min": 216.5,
+        "values": [233.4, 217.9, 251.9, 216.5]
+      }
+    },
+    "wrangler/en-mobile-compat/leave": {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 186.5,
+        "max": 298,
+        "min": 159,
+        "values": [298, 197, 176, 159]
+      },
+      "layerizeTotalMs": {
+        "median": 7.3,
+        "max": 7.6,
+        "min": 6,
+        "values": [7.6, 7.3, 6, 7.2]
+      },
+      "layerizeMaxMs": {
+        "median": 2.9,
+        "max": 3.3,
+        "min": 2.5,
+        "values": [3.1, 2.5, 2.6, 3.3]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 144.1,
+        "max": 198.8,
+        "min": 127.7,
+        "values": [198.8, 136.7, 151.4, 127.7]
+      },
+      "clickToPageLoadMs": {
+        "median": 354.3,
+        "max": 712.4,
+        "min": 308.9,
+        "values": [712.4, 356.1, 352.5, 308.9]
+      },
+      "clickToSettledMs": {
+        "median": 354.3,
+        "max": 712.4,
+        "min": 308.9,
+        "values": [712.4, 356.1, 352.5, 308.9]
+      },
+      "maxFrameGapMs": {
+        "median": 316.3,
+        "max": 501.3,
+        "min": 266.7,
+        "values": [501.3, 316.8, 315.8, 266.7]
+      }
+    },
+    "wrangler/en-desktop-ordinary/enter": {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 52,
+        "max": 60,
+        "min": 0,
+        "values": [60, 0, 53, 51]
+      },
+      "layerizeTotalMs": {
+        "median": 2.1,
+        "max": 2.5,
+        "min": 2,
+        "values": [2, 2.2, 2.5, 2]
+      },
+      "layerizeMaxMs": {
+        "median": 0.5,
+        "max": 0.6,
+        "min": 0.4,
+        "values": [0.4, 0.5, 0.6, 0.5]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 12.3,
+        "max": 17.8,
+        "min": 9.4,
+        "values": [13.6, 9.4, 17.8, 10.9]
+      },
+      "clickToPageLoadMs": {
+        "median": 92.8,
+        "max": 110.8,
+        "min": 75.6,
+        "values": [110.8, 75.6, 96, 89.5]
+      },
+      "clickToSettledMs": {
+        "median": 102.7,
+        "max": 138.8,
+        "min": 76.1,
+        "values": [110.8, 76.1, 138.8, 94.6]
+      },
+      "maxFrameGapMs": {
+        "median": 67,
+        "max": 67.6,
+        "min": 51.4,
+        "values": [66.7, 51.4, 67.6, 67.2]
+      }
+    },
+    "wrangler/en-desktop-ordinary/leave": {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 0,
+        "max": 0,
+        "min": 0,
+        "values": [0, 0, 0, 0]
+      },
+      "layerizeTotalMs": {
+        "median": 1.9,
+        "max": 2.1,
+        "min": 1.4,
+        "values": [1.7, 1.4, 2.1, 2]
+      },
+      "layerizeMaxMs": {
+        "median": 0.4,
+        "max": 0.5,
+        "min": 0.4,
+        "values": [0.4, 0.4, 0.4, 0.5]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 19.7,
+        "max": 20.1,
+        "min": 18.9,
+        "values": [20.1, 19.8, 19.6, 18.9]
+      },
+      "clickToPageLoadMs": {
+        "median": 75.6,
+        "max": 80.1,
+        "min": 70.8,
+        "values": [77.3, 70.8, 80.1, 73.8]
+      },
+      "clickToSettledMs": {
+        "median": 75.6,
+        "max": 80.1,
+        "min": 70.8,
+        "values": [77.3, 70.8, 80.1, 73.8]
+      },
+      "maxFrameGapMs": {
+        "median": 32.2,
+        "max": 51.9,
+        "min": 18.6,
+        "values": [32.6, 18.6, 51.9, 31.8]
+      }
+    },
+    "static/en-desktop-compat/enter": {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "role": "target",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 216,
+        "max": 247,
+        "min": 197,
+        "values": [222, 210, 247, 197]
+      },
+      "layerizeTotalMs": {
+        "median": 5.3,
+        "max": 6.3,
+        "min": 4.9,
+        "values": [6.3, 5.4, 4.9, 5.1]
+      },
+      "layerizeMaxMs": {
+        "median": 3.4,
+        "max": 4.2,
+        "min": 2.3,
+        "values": [4.2, 3.3, 2.3, 3.5]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 17.2,
+        "max": 18.4,
+        "min": 16,
+        "values": [17, 16, 18.4, 17.4]
+      },
+      "clickToPageLoadMs": {
+        "median": 259.1,
+        "max": 293.5,
+        "min": 238.1,
+        "values": [264.6, 253.5, 293.5, 238.1]
+      },
+      "clickToSettledMs": {
+        "median": 461.2,
+        "max": 493.8,
+        "min": 362,
+        "values": [493.8, 479.4, 442.9, 362]
+      },
+      "maxFrameGapMs": {
+        "median": 217.6,
+        "max": 250,
+        "min": 183.3,
+        "values": [218.4, 216.8, 250, 183.3]
+      }
+    },
+    "static/en-desktop-compat/leave": {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "role": "target",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 178,
+        "max": 202,
+        "min": 166,
+        "values": [174, 202, 182, 166]
+      },
+      "layerizeTotalMs": {
+        "median": 8,
+        "max": 9.6,
+        "min": 5.5,
+        "values": [8.7, 9.6, 7.3, 5.5]
+      },
+      "layerizeMaxMs": {
+        "median": 3.7,
+        "max": 6.1,
+        "min": 2.4,
+        "values": [4.7, 6.1, 2.6, 2.4]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 136.4,
+        "max": 193.5,
+        "min": 119,
+        "values": [139.9, 193.5, 132.8, 119]
+      },
+      "clickToPageLoadMs": {
+        "median": 344.7,
+        "max": 416.4,
+        "min": 307,
+        "values": [343.6, 416.4, 345.8, 307]
+      },
+      "clickToSettledMs": {
+        "median": 345.6,
+        "max": 416.4,
+        "min": 307,
+        "values": [345.4, 416.4, 345.8, 307]
+      },
+      "maxFrameGapMs": {
+        "median": 308.7,
+        "max": 382.3,
+        "min": 266.8,
+        "values": [317.8, 382.3, 299.6, 266.8]
+      }
+    }
+  },
+  "comparison": {
+    "baseline": "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/92de6600-6582-4923-a221-fd6fa8d33557/scratchpad/perf-baseline/baseline.json",
+    "rows": {
+      "static/ja-desktop-compat/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 244,
+        "currentMedianLongestTaskMs": 298,
+        "medianLongestTaskRatio": 1.2,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 16.9,
+        "currentMedianPushStateToBeforeSwapMs": 17.6
+      },
+      "static/ja-desktop-compat/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 197,
+        "currentMedianLongestTaskMs": 214.5,
+        "medianLongestTaskRatio": 1.1,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 157.3,
+        "currentMedianPushStateToBeforeSwapMs": 140.4
+      },
+      "static/en-mobile-compat/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 828,
+        "currentMedianLongestTaskMs": 217.5,
+        "medianLongestTaskRatio": 0.3,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 25,
+        "currentMedianPushStateToBeforeSwapMs": 22.7
+      },
+      "static/en-mobile-compat/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 882.5,
+        "currentMedianLongestTaskMs": 223,
+        "medianLongestTaskRatio": 0.3,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 890.9,
+        "currentMedianPushStateToBeforeSwapMs": 140.4
+      },
+      "static/en-desktop-ordinary/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 0,
+        "currentMedianLongestTaskMs": 55.5,
+        "medianLongestTaskRatio": null,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 18.8,
+        "currentMedianPushStateToBeforeSwapMs": 23.6
+      },
+      "static/en-desktop-ordinary/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 0,
+        "currentMedianLongestTaskMs": 0,
+        "medianLongestTaskRatio": null,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 19,
+        "currentMedianPushStateToBeforeSwapMs": 19.6
+      },
+      "wrangler/en-desktop-compat/enter": {
+        "role": "target",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 4951,
+        "currentMedianLongestTaskMs": 201.5,
+        "medianLongestTaskRatio": 0,
+        "baselineRoundsWithFreeze": 4,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 17.8,
+        "currentMedianPushStateToBeforeSwapMs": 17.2,
+        "baselineRepeatedFreeze": true,
+        "freezeEliminated": true,
+        "medianLongestTaskHalved": true
+      },
+      "wrangler/en-desktop-compat/leave": {
+        "role": "target",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 5336.5,
+        "currentMedianLongestTaskMs": 238,
+        "medianLongestTaskRatio": 0,
+        "baselineRoundsWithFreeze": 4,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 5431.6,
+        "currentMedianPushStateToBeforeSwapMs": 157.4,
+        "baselineRepeatedFreeze": true,
+        "freezeEliminated": true,
+        "medianLongestTaskHalved": true
+      },
+      "wrangler/ja-desktop-compat/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 264.5,
+        "currentMedianLongestTaskMs": 281,
+        "medianLongestTaskRatio": 1.1,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 23.4,
+        "currentMedianPushStateToBeforeSwapMs": 19.9
+      },
+      "wrangler/ja-desktop-compat/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 236.5,
+        "currentMedianLongestTaskMs": 204.5,
+        "medianLongestTaskRatio": 0.9,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 174.4,
+        "currentMedianPushStateToBeforeSwapMs": 169.6
+      },
+      "wrangler/en-mobile-compat/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 925.5,
+        "currentMedianLongestTaskMs": 223.5,
+        "medianLongestTaskRatio": 0.2,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 19.6,
+        "currentMedianPushStateToBeforeSwapMs": 20.6
+      },
+      "wrangler/en-mobile-compat/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 884.5,
+        "currentMedianLongestTaskMs": 186.5,
+        "medianLongestTaskRatio": 0.2,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 890.5,
+        "currentMedianPushStateToBeforeSwapMs": 144.1
+      },
+      "wrangler/en-desktop-ordinary/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 0,
+        "currentMedianLongestTaskMs": 52,
+        "medianLongestTaskRatio": null,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 15.7,
+        "currentMedianPushStateToBeforeSwapMs": 12.3
+      },
+      "wrangler/en-desktop-ordinary/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 0,
+        "currentMedianLongestTaskMs": 0,
+        "medianLongestTaskRatio": null,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 18,
+        "currentMedianPushStateToBeforeSwapMs": 19.7
+      },
+      "static/en-desktop-compat/enter": {
+        "role": "target",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 4799,
+        "currentMedianLongestTaskMs": 216,
+        "medianLongestTaskRatio": 0,
+        "baselineRoundsWithFreeze": 4,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 17,
+        "currentMedianPushStateToBeforeSwapMs": 17.2,
+        "baselineRepeatedFreeze": true,
+        "freezeEliminated": true,
+        "medianLongestTaskHalved": true
+      },
+      "static/en-desktop-compat/leave": {
+        "role": "target",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 4808.5,
+        "currentMedianLongestTaskMs": 178,
+        "medianLongestTaskRatio": 0,
+        "baselineRoundsWithFreeze": 4,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 4830.3,
+        "currentMedianPushStateToBeforeSwapMs": 136.4,
+        "baselineRepeatedFreeze": true,
+        "freezeEliminated": true,
+        "medianLongestTaskHalved": true
+      }
+    }
+  },
+  "errors": [],
+  "roundsCompact": [
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 279,
+          "freezes": 0,
+          "maxFrameGapMs": 300.1,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 193,
+          "freezes": 0,
+          "maxFrameGapMs": 316.8,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 261,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 185,
+          "freezes": 0,
+          "maxFrameGapMs": 300.1,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 198,
+          "freezes": 0,
+          "maxFrameGapMs": 199.6,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 140,
+          "freezes": 0,
+          "maxFrameGapMs": 233.3,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 50,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 33.3,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 3
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 172,
+          "freezes": 0,
+          "maxFrameGapMs": 200.1,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 157,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 306,
+          "freezes": 0,
+          "maxFrameGapMs": 333.4,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 169,
+          "freezes": 0,
+          "maxFrameGapMs": 283.5,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 227,
+          "freezes": 0,
+          "maxFrameGapMs": 234.3,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 238,
+          "freezes": 0,
+          "maxFrameGapMs": 400.2,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 57,
+          "freezes": 0,
+          "maxFrameGapMs": 82.8,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 17.2,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 214,
+          "freezes": 0,
+          "maxFrameGapMs": 200.2,
+          "layerizeMs": {
+            "totalMs": 4.3,
+            "maxMs": 2.8,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 148,
+          "freezes": 0,
+          "maxFrameGapMs": 266.8,
+          "layerizeMs": {
+            "totalMs": 8,
+            "maxMs": 4,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 179,
+          "freezes": 0,
+          "maxFrameGapMs": 183.7,
+          "layerizeMs": {
+            "totalMs": 5.9,
+            "maxMs": 4,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 154,
+          "freezes": 0,
+          "maxFrameGapMs": 250,
+          "layerizeMs": {
+            "totalMs": 7.4,
+            "maxMs": 2.6,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 50.1,
+          "layerizeMs": {
+            "totalMs": 1.9,
+            "maxMs": 0.4,
+            "count": 65
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 33.3,
+          "layerizeMs": {
+            "totalMs": 1.5,
+            "maxMs": 0.4,
+            "count": 5
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 3
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 172,
+          "freezes": 0,
+          "maxFrameGapMs": 166.7,
+          "layerizeMs": {
+            "totalMs": 3.8,
+            "maxMs": 2.2,
+            "count": 55
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 261,
+          "freezes": 0,
+          "maxFrameGapMs": 418.5,
+          "layerizeMs": {
+            "totalMs": 8.9,
+            "maxMs": 4.9,
+            "count": 64
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 266,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": {
+            "totalMs": 5.4,
+            "maxMs": 3.4,
+            "count": 64
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 183,
+          "freezes": 0,
+          "maxFrameGapMs": 316.7,
+          "layerizeMs": {
+            "totalMs": 6.6,
+            "maxMs": 3.3,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 238,
+          "freezes": 0,
+          "maxFrameGapMs": 233.4,
+          "layerizeMs": {
+            "totalMs": 4.2,
+            "maxMs": 2.4,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 298,
+          "freezes": 0,
+          "maxFrameGapMs": 501.3,
+          "layerizeMs": {
+            "totalMs": 7.6,
+            "maxMs": 3.1,
+            "count": 72
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 60,
+          "freezes": 0,
+          "maxFrameGapMs": 66.7,
+          "layerizeMs": {
+            "totalMs": 2,
+            "maxMs": 0.4,
+            "count": 65
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 32.6,
+          "layerizeMs": {
+            "totalMs": 1.7,
+            "maxMs": 0.4,
+            "count": 5
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 222,
+          "freezes": 0,
+          "maxFrameGapMs": 218.4,
+          "layerizeMs": {
+            "totalMs": 6.3,
+            "maxMs": 4.2,
+            "count": 61
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 174,
+          "freezes": 0,
+          "maxFrameGapMs": 317.8,
+          "layerizeMs": {
+            "totalMs": 8.7,
+            "maxMs": 4.7,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 242,
+          "freezes": 0,
+          "maxFrameGapMs": 235.3,
+          "layerizeMs": {
+            "totalMs": 6.5,
+            "maxMs": 4.3,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 305,
+          "freezes": 0,
+          "maxFrameGapMs": 466.8,
+          "layerizeMs": {
+            "totalMs": 8.9,
+            "maxMs": 4.1,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 57,
+          "freezes": 0,
+          "maxFrameGapMs": 67.3,
+          "layerizeMs": {
+            "totalMs": 1.9,
+            "maxMs": 0.4,
+            "count": 54
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 34.3,
+          "layerizeMs": {
+            "totalMs": 1.9,
+            "maxMs": 0.5,
+            "count": 6
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 197,
+          "freezes": 0,
+          "maxFrameGapMs": 200.2,
+          "layerizeMs": {
+            "totalMs": 11.9,
+            "maxMs": 9.5,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 224,
+          "freezes": 0,
+          "maxFrameGapMs": 383.7,
+          "layerizeMs": {
+            "totalMs": 7.5,
+            "maxMs": 3.8,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 296,
+          "freezes": 0,
+          "maxFrameGapMs": 300,
+          "layerizeMs": {
+            "totalMs": 6.8,
+            "maxMs": 4.1,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 240,
+          "freezes": 0,
+          "maxFrameGapMs": 415.8,
+          "layerizeMs": {
+            "totalMs": 9.3,
+            "maxMs": 5.2,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 209,
+          "freezes": 0,
+          "maxFrameGapMs": 217.9,
+          "layerizeMs": {
+            "totalMs": 4.1,
+            "maxMs": 2,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 197,
+          "freezes": 0,
+          "maxFrameGapMs": 316.8,
+          "layerizeMs": {
+            "totalMs": 7.3,
+            "maxMs": 2.5,
+            "count": 56
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 51.4,
+          "layerizeMs": {
+            "totalMs": 2.2,
+            "maxMs": 0.5,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 18.6,
+          "layerizeMs": {
+            "totalMs": 1.4,
+            "maxMs": 0.4,
+            "count": 6
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 3
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 210,
+          "freezes": 0,
+          "maxFrameGapMs": 216.8,
+          "layerizeMs": {
+            "totalMs": 5.4,
+            "maxMs": 3.3,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 202,
+          "freezes": 0,
+          "maxFrameGapMs": 382.3,
+          "layerizeMs": {
+            "totalMs": 9.6,
+            "maxMs": 6.1,
+            "count": 58
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 297,
+          "freezes": 0,
+          "maxFrameGapMs": 300.2,
+          "layerizeMs": {
+            "totalMs": 5,
+            "maxMs": 2.8,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 218,
+          "freezes": 0,
+          "maxFrameGapMs": 350.1,
+          "layerizeMs": {
+            "totalMs": 6.4,
+            "maxMs": 3,
+            "count": 58
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 61,
+          "freezes": 0,
+          "maxFrameGapMs": 83.4,
+          "layerizeMs": {
+            "totalMs": 2.6,
+            "maxMs": 0.6,
+            "count": 56
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 34.1,
+          "layerizeMs": {
+            "totalMs": 2,
+            "maxMs": 0.5,
+            "count": 6
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 261,
+          "freezes": 0,
+          "maxFrameGapMs": 268.2,
+          "layerizeMs": {
+            "totalMs": 6.2,
+            "maxMs": 3.6,
+            "count": 58
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 252,
+          "freezes": 0,
+          "maxFrameGapMs": 401.7,
+          "layerizeMs": {
+            "totalMs": 7.7,
+            "maxMs": 3.2,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 308,
+          "freezes": 0,
+          "maxFrameGapMs": 300.2,
+          "layerizeMs": {
+            "totalMs": 5.5,
+            "maxMs": 3.2,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 195,
+          "freezes": 0,
+          "maxFrameGapMs": 350,
+          "layerizeMs": {
+            "totalMs": 8.5,
+            "maxMs": 4.6,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 248,
+          "freezes": 0,
+          "maxFrameGapMs": 251.9,
+          "layerizeMs": {
+            "totalMs": 5.5,
+            "maxMs": 3.3,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 176,
+          "freezes": 0,
+          "maxFrameGapMs": 315.8,
+          "layerizeMs": {
+            "totalMs": 6,
+            "maxMs": 2.6,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 53,
+          "freezes": 0,
+          "maxFrameGapMs": 67.6,
+          "layerizeMs": {
+            "totalMs": 2.5,
+            "maxMs": 0.6,
+            "count": 53
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 51.9,
+          "layerizeMs": {
+            "totalMs": 2.1,
+            "maxMs": 0.4,
+            "count": 61
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 247,
+          "freezes": 0,
+          "maxFrameGapMs": 250,
+          "layerizeMs": {
+            "totalMs": 4.9,
+            "maxMs": 2.3,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 182,
+          "freezes": 0,
+          "maxFrameGapMs": 299.6,
+          "layerizeMs": {
+            "totalMs": 7.3,
+            "maxMs": 2.6,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 299,
+          "freezes": 0,
+          "maxFrameGapMs": 285.1,
+          "layerizeMs": {
+            "totalMs": 6.9,
+            "maxMs": 5.1,
+            "count": 55
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 211,
+          "freezes": 0,
+          "maxFrameGapMs": 351.4,
+          "layerizeMs": {
+            "totalMs": 6.9,
+            "maxMs": 3.9,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 193,
+          "freezes": 0,
+          "maxFrameGapMs": 200.6,
+          "layerizeMs": {
+            "totalMs": 5.4,
+            "maxMs": 2.8,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 155,
+          "freezes": 0,
+          "maxFrameGapMs": 250.1,
+          "layerizeMs": {
+            "totalMs": 5.2,
+            "maxMs": 2,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 206,
+          "freezes": 0,
+          "maxFrameGapMs": 218.1,
+          "layerizeMs": {
+            "totalMs": 4.6,
+            "maxMs": 2.2,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 175,
+          "freezes": 0,
+          "maxFrameGapMs": 283.9,
+          "layerizeMs": {
+            "totalMs": 6.8,
+            "maxMs": 3.2,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "ja-desktop-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 254,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": {
+            "totalMs": 4.7,
+            "maxMs": 2.7,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 214,
+          "freezes": 0,
+          "maxFrameGapMs": 385.4,
+          "layerizeMs": {
+            "totalMs": 7.4,
+            "maxMs": 3.3,
+            "count": 61
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-mobile-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 206,
+          "freezes": 0,
+          "maxFrameGapMs": 216.5,
+          "layerizeMs": {
+            "totalMs": 4.7,
+            "maxMs": 2.2,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 159,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": {
+            "totalMs": 7.2,
+            "maxMs": 3.3,
+            "count": 64
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "wrangler",
+      "case": "en-desktop-ordinary",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 51,
+          "freezes": 0,
+          "maxFrameGapMs": 67.2,
+          "layerizeMs": {
+            "totalMs": 2,
+            "maxMs": 0.5,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 31.8,
+          "layerizeMs": {
+            "totalMs": 2,
+            "maxMs": 0.5,
+            "count": 6
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 197,
+          "freezes": 0,
+          "maxFrameGapMs": 183.3,
+          "layerizeMs": {
+            "totalMs": 5.1,
+            "maxMs": 3.5,
+            "count": 58
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 166,
+          "freezes": 0,
+          "maxFrameGapMs": 266.8,
+          "layerizeMs": {
+            "totalMs": 5.5,
+            "maxMs": 2.4,
+            "count": 58
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 301,
+          "freezes": 0,
+          "maxFrameGapMs": 300,
+          "layerizeMs": {
+            "totalMs": 6.8,
+            "maxMs": 4.7,
+            "count": 65
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 280,
+          "freezes": 0,
+          "maxFrameGapMs": 518.4,
+          "layerizeMs": {
+            "totalMs": 8.7,
+            "maxMs": 4.6,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 284,
+          "freezes": 0,
+          "maxFrameGapMs": 298.4,
+          "layerizeMs": {
+            "totalMs": 8.5,
+            "maxMs": 5.2,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 291,
+          "freezes": 0,
+          "maxFrameGapMs": 501.9,
+          "layerizeMs": {
+            "totalMs": 9.5,
+            "maxMs": 5.3,
+            "count": 65
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-ordinary",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 54,
+          "freezes": 0,
+          "maxFrameGapMs": 65.7,
+          "layerizeMs": {
+            "totalMs": 2.2,
+            "maxMs": 0.5,
+            "count": 55
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 0,
+          "freezes": 0,
+          "maxFrameGapMs": 33.5,
+          "layerizeMs": {
+            "totalMs": 1.6,
+            "maxMs": 0.4,
+            "count": 5
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    }
+  ],
+  "note": "Compact retained summary; full JSON and gzipped CDP traces stayed local (see README.md)."
+}

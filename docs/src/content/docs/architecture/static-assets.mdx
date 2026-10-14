@@ -122,7 +122,7 @@ If you genuinely need to inline an SVG as JSX (so CSS can style strokes, fills, 
 
 The dev server and the production build agree on URL shape. This is a guarantee, not a coincidence:
 
-- **`zfb dev`** — files in `public/` are served **live from disk on each request**. The page handler falls back to reading from `<public_root>/<path>` after a page-cache miss and a `<project>/.zfb-build/dev-pages/` miss. The `public/` directory has no URL prefix and no top-level `nest_service` mount; files appear at the site root directly. (Note: compiled CSS and the islands bundle are served from `dist/assets/`, but per-route HTML is written to `.zfb-build/dev-pages/`, not `dist/`.)
+- **`zfb dev`** — files in `public/` are served **live from disk on each request**. The page handler falls back to reading from `<public_root>/<path>` after a page-cache miss and a `<project>/.zfb-build/dev-pages/` miss. The `public/` directory has no URL prefix and no top-level `nest_service` mount; files appear at the site root directly. The reserved `/assets/` URL space is the one exception — it has its own mount, described in "`public/assets/` in dev" below. Per-route HTML is written to `.zfb-build/dev-pages/`, not `dist/`.
 - **`zfb build`** — `copy_public_dir` (in `crates/zfb/src/commands/build.rs`) copies every file under `public/` into `dist/<rel>`, recursively. The static `dist/` tree your edge CDN serves is the same shape your browser saw in dev.
 
 That means `<img src="/logo.svg">` written once in your page works in both modes without conditional logic, environment checks, or a `withBase`-style helper.
@@ -139,6 +139,25 @@ same serve-direct model zfb has always used in dev; it is spelled out here
 because it is easy to assume otherwise.
 
 </Info>
+
+### `public/assets/` in dev
+
+`/assets/` is reserved for zfb's generated assets — the stylesheet, the islands bundle, and client scripts — so in `zfb dev` every `/assets/*` request is answered by a dedicated mount instead of the page fallback above. That mount tries three locations in order and serves the first file it finds:
+
+1. **Dev's own generated assets** in `.zfb-build/dev-assets/assets/` (under your `--scratch-dir` when you pass one).
+2. **Your live `public/assets/`**, read from disk on each request.
+3. **The prebuilt `dist/assets/`** left by an earlier `zfb build`, only when dev may use that build as a seed. Under `--scratch-dir` this location is skipped.
+
+So `public/assets/example.png` answers `/assets/example.png` as soon as `zfb dev` is up, with no `zfb build` first, and with a `base` prefix it answers `/pj/site/assets/example.png`. A file you add, edit, or delete is picked up by the next request, with no restart and no livereload (the same as the rest of `public/`). A live `public/assets/` file always wins over a stale copy of it in `dist/assets/`.
+
+A few rules follow from sharing the URL space with zfb:
+
+- **Reserved names are never served from `public/assets/`.** `styles.css`, `islands.js`, `islands-*.js`, and anything under `client/` belong to zfb (the names are matched case-insensitively). A request for one of them skips `public/assets/`, so zfb's own file still serves and yours never stands in for it. `zfb dev` prints one warning per such file at startup; rename the file to use it.
+- **Deleting a file falls back to an old build copy when one exists.** With no prebuilt `dist/`, or under `--scratch-dir`, a deleted `public/assets/` file returns 404. If `dist/assets/` still holds a copy from an earlier `zfb build`, that stale copy is served until you rebuild — `zfb dev` never cleans `dist/`.
+- **The `dist/assets/` fallback ignores `base`.** It always reads `dist/assets/`, even though a `base`-prefixed build copies `public/` to `dist/<base>/assets/`. Your live `public/assets/` files are served under the prefix either way.
+- **Symlinks cannot leave the directory.** A symlink inside `public/assets/` that resolves outside it returns 404, as do encoded traversals like `%2e%2e`.
+
+`zfb build` needs none of this: it copies `public/assets/` into `dist/assets/` (or `dist/<base>/assets/`) with the rest of `public/`, and `zfb preview` serves that copy.
 
 ## Dev startup and live reload
 
@@ -167,8 +186,9 @@ It is possible — though usually unintentional — to have a `pages/foo.tsx` ro
 1. **Plugin dev-middleware** that claims `/foo` runs first.
 2. **Page cache** — the rendered output of `pages/foo.tsx` wins next.
 3. **`.zfb-build/dev-pages/` directory** — the dev HTML root (per-route files written
-   by the dev pipeline) is checked next; `/assets/*` (CSS, islands bundle) is served
-   from `dist/assets/`.
+   by the dev pipeline) is checked next. `/assets/*` never reaches this list: the
+   reserved assets mount answers it (dev's generated assets, then `public/assets/`,
+   then the `dist/assets/` seed).
 4. **`public/` directory** — only consulted if all of the above miss.
 5. **404** otherwise.
 
@@ -182,6 +202,7 @@ When `zfb.config.ts` sets a `base` prefix (e.g. `base: "/pj/site/"` for a deploy
 config: base: "/pj/site/"
 
 public/logo.svg  →  /pj/site/logo.svg   (dev and prod)
+public/assets/x.png  →  /pj/site/assets/x.png   (dev and prod)
 ```
 
 Both the dev server's `serve_page` fallback and the build-time `copy_public_dir` honour the prefix. As long as you write asset URLs in HTML the same way the rest of your project does — typically by going through the link rewriter that the markdown / TSX pipeline already runs — the prefix is applied for free.

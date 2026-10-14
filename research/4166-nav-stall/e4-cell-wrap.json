@@ -1,0 +1,1033 @@
+{
+  "issue": "https://github.com/Takazudo/zudo-front-builder/issues/4166",
+  "generatedAt": "2026-10-12T18:25:03.606Z",
+  "source": {
+    "sha": "0d50b1498bdc965130ebbeb1c4786ec6b2a3c894",
+    "branch": "base/sweep-261012-reliability-navigation",
+    "dirty": true
+  },
+  "packages": {
+    "@takazudo/zfb": "4.3.3",
+    "@takazudo/zfb-runtime": "4.3.3",
+    "@takazudo/zudo-doc": "6.1.1",
+    "@takazudo/zfb-adapter-cloudflare": "4.3.3",
+    "wrangler": "4.85.0"
+  },
+  "zfbBinary": "zfb 4.3.3\nembedded esbuild: 0.25.12",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "osRelease": "25.6.0",
+    "cpu": "Apple A18 Pro",
+    "cpuCount": 6,
+    "memoryGb": 8,
+    "node": "v24.14.0"
+  },
+  "settings": {
+    "hosts": [
+      {
+        "label": "static",
+        "origin": "http://127.0.0.1:4334"
+      }
+    ],
+    "cases": {
+      "en-desktop-compat": {
+        "role": "target",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "neighbour": "/docs/zudo-wind/coming-from-tailwind/",
+        "target": "/docs/zudo-wind/compatibility/"
+      },
+      "ja-desktop-compat": {
+        "role": "control",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "neighbour": "/ja/docs/zudo-wind/coming-from-tailwind/",
+        "target": "/ja/docs/zudo-wind/compatibility/"
+      },
+      "en-mobile-compat": {
+        "role": "control",
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "neighbour": "/docs/zudo-wind/coming-from-tailwind/",
+        "target": "/docs/zudo-wind/compatibility/"
+      }
+    },
+    "rounds": 4,
+    "warmup": 1,
+    "order": "each round runs every host x case once; the order rotates by round",
+    "headless": true,
+    "deviceScaleFactor": 1,
+    "reducedMotion": "reduce",
+    "viewTransitions": "native",
+    "extraCss": ".overflow-x-auto td,.overflow-x-auto th{overflow-wrap:anywhere}",
+    "trace": {
+      "categories": [
+        "devtools.timeline",
+        "disabled-by-default-devtools.timeline",
+        "disabled-by-default-devtools.timeline.frame",
+        "toplevel",
+        "blink.user_timing",
+        "loading",
+        "v8.execute"
+      ],
+      "dir": "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/92de6600-6582-4923-a221-fd6fa8d33557/scratchpad/perf-e4-cell-wrap/traces"
+    },
+    "quietMs": 1000,
+    "settleBudgetMs": 30000,
+    "swapBudgetMs": 30000,
+    "freezeThresholdMs": 4000
+  },
+  "preflight": [
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "e3420c5d58b37690bdbb39b7833accd942c5fd332e219e2dfe15194f59b26216",
+      "distSha256": "4dd47c9a6e7c90c8200b9d2ea2144fcefdc2bacf2332dc188455bc3a94356635",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "ff6f049ec74269d595944ec837d852754ce55aaeea6bd8b1b62bab862d5729c8",
+      "distSha256": "9066b14707a6c95e48e1887af0d6bb4875bab8a1902c51c631e7da32b0731726",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/ja/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "fceb7b679e04f56e59b1a9b46f0a09d4a9ef87b048a27858e0be1c667e405877",
+      "distSha256": "6c89598a1cd0b7b0ffa101e738ddc3e843ec29dd6be35c6d2479cdbdaa9aea56",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/ja/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "01bb61e19cc3539c6c45d174fe6bdec8dcc2163f54d9ec1df25bfd54df07870d",
+      "distSha256": "fd973f1337b183682dc5d4e55e0050c21d2c13f31603f8a465365c48a45c16db",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/coming-from-tailwind/",
+      "server": null,
+      "htmlSha256": "e3420c5d58b37690bdbb39b7833accd942c5fd332e219e2dfe15194f59b26216",
+      "distSha256": "4dd47c9a6e7c90c8200b9d2ea2144fcefdc2bacf2332dc188455bc3a94356635",
+      "servedMatchesDist": false
+    },
+    {
+      "host": "static",
+      "path": "/docs/zudo-wind/compatibility/",
+      "server": null,
+      "htmlSha256": "ff6f049ec74269d595944ec837d852754ce55aaeea6bd8b1b62bab862d5729c8",
+      "distSha256": "9066b14707a6c95e48e1887af0d6bb4875bab8a1902c51c631e7da32b0731726",
+      "servedMatchesDist": false
+    }
+  ],
+  "transitions": {
+    "static/en-desktop-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "static/ja-desktop-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    },
+    "static/en-mobile-compat": {
+      "enabled": true,
+      "fallback": "animate",
+      "nativeAvailable": true,
+      "prefersReducedMotion": true
+    }
+  },
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55"
+  },
+  "stats": {
+    "static/ja-desktop-compat/enter": {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 268,
+        "max": 361,
+        "min": 250,
+        "values": [257, 361, 250, 279]
+      },
+      "layerizeTotalMs": {
+        "median": 6.3,
+        "max": 9.9,
+        "min": 5.3,
+        "values": [5.3, 9.9, 5.8, 6.8]
+      },
+      "layerizeMaxMs": {
+        "median": 4,
+        "max": 7.2,
+        "min": 3.3,
+        "values": [3.3, 7.2, 4, 4]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 14.7,
+        "max": 27.4,
+        "min": 14,
+        "values": [14.9, 27.4, 14, 14.4]
+      },
+      "clickToPageLoadMs": {
+        "median": 309.6,
+        "max": 422.6,
+        "min": 289.5,
+        "values": [296.9, 422.6, 289.5, 322.3]
+      },
+      "clickToSettledMs": {
+        "median": 528.6,
+        "max": 727.2,
+        "min": 411.8,
+        "values": [411.8, 727.2, 511.8, 545.4]
+      },
+      "maxFrameGapMs": {
+        "median": 259.4,
+        "max": 364.7,
+        "min": 250,
+        "values": [252, 364.7, 250, 266.7]
+      }
+    },
+    "static/ja-desktop-compat/leave": {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 209.5,
+        "max": 242,
+        "min": 170,
+        "values": [170, 194, 242, 225]
+      },
+      "layerizeTotalMs": {
+        "median": 7.8,
+        "max": 7.9,
+        "min": 7.6,
+        "values": [7.9, 7.7, 7.9, 7.6]
+      },
+      "layerizeMaxMs": {
+        "median": 4.4,
+        "max": 4.5,
+        "min": 4,
+        "values": [4.5, 4, 4.3, 4.4]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 178.6,
+        "max": 184.4,
+        "min": 156.1,
+        "values": [156.1, 179.2, 184.4, 178.1]
+      },
+      "clickToPageLoadMs": {
+        "median": 423.4,
+        "max": 470,
+        "min": 346.1,
+        "values": [346.1, 395.2, 470, 451.6]
+      },
+      "clickToSettledMs": {
+        "median": 424,
+        "max": 647.3,
+        "min": 348,
+        "values": [348, 396.3, 647.3, 451.6]
+      },
+      "maxFrameGapMs": {
+        "median": 383.3,
+        "max": 416.3,
+        "min": 316.7,
+        "values": [316.7, 367.6, 416.3, 398.9]
+      }
+    },
+    "static/en-mobile-compat/enter": {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "role": "control",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 433.5,
+        "max": 450,
+        "min": 409,
+        "values": [437, 409, 450, 430]
+      },
+      "layerizeTotalMs": {
+        "median": 20.5,
+        "max": 25,
+        "min": 18.4,
+        "values": [20.3, 20.6, 18.4, 25]
+      },
+      "layerizeMaxMs": {
+        "median": 17.9,
+        "max": 22.8,
+        "min": 16.3,
+        "values": [17, 18.7, 16.3, 22.8]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 25.3,
+        "max": 36.5,
+        "min": 20.8,
+        "values": [36.5, 25.1, 20.8, 25.4]
+      },
+      "clickToPageLoadMs": {
+        "median": 487.2,
+        "max": 503.4,
+        "min": 455.5,
+        "values": [503.4, 455.5, 493.2, 481.1]
+      },
+      "clickToSettledMs": {
+        "median": 892.3,
+        "max": 935.3,
+        "min": 843.6,
+        "values": [909.1, 843.6, 875.5, 935.3]
+      },
+      "maxFrameGapMs": {
+        "median": 424.3,
+        "max": 449,
+        "min": 383.5,
+        "values": [449, 383.5, 431.8, 416.8]
+      }
+    },
+    "static/en-mobile-compat/leave": {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "role": "control",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 328.5,
+        "max": 404,
+        "min": 317,
+        "values": [335, 322, 317, 404]
+      },
+      "layerizeTotalMs": {
+        "median": 22.8,
+        "max": 24.9,
+        "min": 20.9,
+        "values": [24.1, 20.9, 21.4, 24.9]
+      },
+      "layerizeMaxMs": {
+        "median": 19.3,
+        "max": 20.9,
+        "min": 17.4,
+        "values": [20.6, 17.4, 18, 20.9]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 338.8,
+        "max": 407.1,
+        "min": 319.3,
+        "values": [345.8, 331.8, 319.3, 407.1]
+      },
+      "clickToPageLoadMs": {
+        "median": 532.4,
+        "max": 630.2,
+        "min": 523.9,
+        "values": [540.7, 523.9, 524.1, 630.2]
+      },
+      "clickToSettledMs": {
+        "median": 560,
+        "max": 630.2,
+        "min": 523.9,
+        "values": [595.8, 523.9, 524.1, 630.2]
+      },
+      "maxFrameGapMs": {
+        "median": 501.6,
+        "max": 581.6,
+        "min": 483.5,
+        "values": [501.5, 483.5, 501.7, 581.6]
+      }
+    },
+    "static/en-desktop-compat/enter": {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "role": "target",
+      "direction": "enter",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 251.5,
+        "max": 293,
+        "min": 209,
+        "values": [226, 277, 209, 293]
+      },
+      "layerizeTotalMs": {
+        "median": 5.9,
+        "max": 12.8,
+        "min": 5.8,
+        "values": [5.9, 5.8, 5.8, 12.8]
+      },
+      "layerizeMaxMs": {
+        "median": 3.7,
+        "max": 10.3,
+        "min": 3.2,
+        "values": [3.2, 3.3, 4, 10.3]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 19.6,
+        "max": 30.4,
+        "min": 13.2,
+        "values": [15, 24.2, 13.2, 30.4]
+      },
+      "clickToPageLoadMs": {
+        "median": 298.9,
+        "max": 366.2,
+        "min": 245.6,
+        "values": [267.5, 330.3, 245.6, 366.2]
+      },
+      "clickToSettledMs": {
+        "median": 519.7,
+        "max": 716.6,
+        "min": 493.4,
+        "values": [493.7, 545.6, 493.4, 716.6]
+      },
+      "maxFrameGapMs": {
+        "median": 250,
+        "max": 300.1,
+        "min": 202,
+        "values": [216.6, 283.3, 202, 300.1]
+      }
+    },
+    "static/en-desktop-compat/leave": {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "role": "target",
+      "direction": "leave",
+      "rounds": 4,
+      "roundsWithFreeze": 0,
+      "swapErrors": 0,
+      "urlMismatches": 0,
+      "unsettled": 0,
+      "longestTaskMs": {
+        "median": 191.5,
+        "max": 278,
+        "min": 144,
+        "values": [192, 144, 191, 278]
+      },
+      "layerizeTotalMs": {
+        "median": 8.1,
+        "max": 10.2,
+        "min": 6.4,
+        "values": [7.9, 6.4, 8.2, 10.2]
+      },
+      "layerizeMaxMs": {
+        "median": 4.7,
+        "max": 5.5,
+        "min": 3.7,
+        "values": [4.8, 3.7, 4.6, 5.5]
+      },
+      "pushStateToBeforeSwapMs": {
+        "median": 160,
+        "max": 219.2,
+        "min": 137.7,
+        "values": [151.9, 137.7, 168, 219.2]
+      },
+      "clickToPageLoadMs": {
+        "median": 372.5,
+        "max": 526.3,
+        "min": 301.9,
+        "values": [365.9, 301.9, 379.2, 526.3]
+      },
+      "clickToSettledMs": {
+        "median": 374.3,
+        "max": 644.6,
+        "min": 301.9,
+        "values": [365.9, 301.9, 382.6, 644.6]
+      },
+      "maxFrameGapMs": {
+        "median": 341.9,
+        "max": 485.2,
+        "min": 266.7,
+        "values": [333.5, 266.7, 350.2, 485.2]
+      }
+    }
+  },
+  "comparison": {
+    "baseline": "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/92de6600-6582-4923-a221-fd6fa8d33557/scratchpad/perf-baseline/baseline.json",
+    "rows": {
+      "static/ja-desktop-compat/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 244,
+        "currentMedianLongestTaskMs": 268,
+        "medianLongestTaskRatio": 1.1,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 16.9,
+        "currentMedianPushStateToBeforeSwapMs": 14.7
+      },
+      "static/ja-desktop-compat/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 197,
+        "currentMedianLongestTaskMs": 209.5,
+        "medianLongestTaskRatio": 1.1,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 157.3,
+        "currentMedianPushStateToBeforeSwapMs": 178.6
+      },
+      "static/en-mobile-compat/enter": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 828,
+        "currentMedianLongestTaskMs": 433.5,
+        "medianLongestTaskRatio": 0.5,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 25,
+        "currentMedianPushStateToBeforeSwapMs": 25.3
+      },
+      "static/en-mobile-compat/leave": {
+        "role": "control",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 882.5,
+        "currentMedianLongestTaskMs": 328.5,
+        "medianLongestTaskRatio": 0.4,
+        "baselineRoundsWithFreeze": 0,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 890.9,
+        "currentMedianPushStateToBeforeSwapMs": 338.8
+      },
+      "static/en-desktop-compat/enter": {
+        "role": "target",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 4799,
+        "currentMedianLongestTaskMs": 251.5,
+        "medianLongestTaskRatio": 0.1,
+        "baselineRoundsWithFreeze": 4,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 17,
+        "currentMedianPushStateToBeforeSwapMs": 19.6,
+        "baselineRepeatedFreeze": true,
+        "freezeEliminated": true,
+        "medianLongestTaskHalved": true
+      },
+      "static/en-desktop-compat/leave": {
+        "role": "target",
+        "baselineSha": "252ae14aec7735d12502cbb0dd48757db4048dd3",
+        "baselineMedianLongestTaskMs": 4808.5,
+        "currentMedianLongestTaskMs": 191.5,
+        "medianLongestTaskRatio": 0,
+        "baselineRoundsWithFreeze": 4,
+        "currentRoundsWithFreeze": 0,
+        "baselineMedianPushStateToBeforeSwapMs": 4830.3,
+        "currentMedianPushStateToBeforeSwapMs": 160,
+        "baselineRepeatedFreeze": true,
+        "freezeEliminated": true,
+        "medianLongestTaskHalved": true
+      }
+    }
+  },
+  "errors": [],
+  "roundsCompact": [
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 212,
+          "freezes": 0,
+          "maxFrameGapMs": 233.4,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 238,
+          "freezes": 0,
+          "maxFrameGapMs": 401.9,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 237,
+          "freezes": 0,
+          "maxFrameGapMs": 250.5,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 165,
+          "freezes": 0,
+          "maxFrameGapMs": 285.1,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "w1",
+      "measured": false,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 369,
+          "freezes": 0,
+          "maxFrameGapMs": 350.1,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 386,
+          "freezes": 0,
+          "maxFrameGapMs": 564.9,
+          "layerizeMs": null,
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 257,
+          "freezes": 0,
+          "maxFrameGapMs": 252,
+          "layerizeMs": {
+            "totalMs": 5.3,
+            "maxMs": 3.3,
+            "count": 53
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 170,
+          "freezes": 0,
+          "maxFrameGapMs": 316.7,
+          "layerizeMs": {
+            "totalMs": 7.9,
+            "maxMs": 4.5,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 437,
+          "freezes": 0,
+          "maxFrameGapMs": 449,
+          "layerizeMs": {
+            "totalMs": 20.3,
+            "maxMs": 17,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 335,
+          "freezes": 0,
+          "maxFrameGapMs": 501.5,
+          "layerizeMs": {
+            "totalMs": 24.1,
+            "maxMs": 20.6,
+            "count": 66
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r1",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 226,
+          "freezes": 0,
+          "maxFrameGapMs": 216.6,
+          "layerizeMs": {
+            "totalMs": 5.9,
+            "maxMs": 3.2,
+            "count": 58
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 192,
+          "freezes": 0,
+          "maxFrameGapMs": 333.5,
+          "layerizeMs": {
+            "totalMs": 7.9,
+            "maxMs": 4.8,
+            "count": 56
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 409,
+          "freezes": 0,
+          "maxFrameGapMs": 383.5,
+          "layerizeMs": {
+            "totalMs": 20.6,
+            "maxMs": 18.7,
+            "count": 51
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 322,
+          "freezes": 0,
+          "maxFrameGapMs": 483.5,
+          "layerizeMs": {
+            "totalMs": 20.9,
+            "maxMs": 17.4,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 277,
+          "freezes": 0,
+          "maxFrameGapMs": 283.3,
+          "layerizeMs": {
+            "totalMs": 5.8,
+            "maxMs": 3.3,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 144,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": {
+            "totalMs": 6.4,
+            "maxMs": 3.7,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r2",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 361,
+          "freezes": 0,
+          "maxFrameGapMs": 364.7,
+          "layerizeMs": {
+            "totalMs": 9.9,
+            "maxMs": 7.2,
+            "count": 65
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 194,
+          "freezes": 0,
+          "maxFrameGapMs": 367.6,
+          "layerizeMs": {
+            "totalMs": 7.7,
+            "maxMs": 4,
+            "count": 55
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 209,
+          "freezes": 0,
+          "maxFrameGapMs": 202,
+          "layerizeMs": {
+            "totalMs": 5.8,
+            "maxMs": 4,
+            "count": 59
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 191,
+          "freezes": 0,
+          "maxFrameGapMs": 350.2,
+          "layerizeMs": {
+            "totalMs": 8.2,
+            "maxMs": 4.6,
+            "count": 60
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 250,
+          "freezes": 0,
+          "maxFrameGapMs": 250,
+          "layerizeMs": {
+            "totalMs": 5.8,
+            "maxMs": 4,
+            "count": 64
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 242,
+          "freezes": 0,
+          "maxFrameGapMs": 416.3,
+          "layerizeMs": {
+            "totalMs": 7.9,
+            "maxMs": 4.3,
+            "count": 56
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 5
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r3",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 450,
+          "freezes": 0,
+          "maxFrameGapMs": 431.8,
+          "layerizeMs": {
+            "totalMs": 18.4,
+            "maxMs": 16.3,
+            "count": 55
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 317,
+          "freezes": 0,
+          "maxFrameGapMs": 501.7,
+          "layerizeMs": {
+            "totalMs": 21.4,
+            "maxMs": 18,
+            "count": 55
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "ja-desktop-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 279,
+          "freezes": 0,
+          "maxFrameGapMs": 266.7,
+          "layerizeMs": {
+            "totalMs": 6.8,
+            "maxMs": 4,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 225,
+          "freezes": 0,
+          "maxFrameGapMs": 398.9,
+          "layerizeMs": {
+            "totalMs": 7.6,
+            "maxMs": 4.4,
+            "count": 53
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-mobile-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 430,
+          "freezes": 0,
+          "maxFrameGapMs": 416.8,
+          "layerizeMs": {
+            "totalMs": 25,
+            "maxMs": 22.8,
+            "count": 57
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 404,
+          "freezes": 0,
+          "maxFrameGapMs": 581.6,
+          "layerizeMs": {
+            "totalMs": 24.9,
+            "maxMs": 20.9,
+            "count": 53
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    },
+    {
+      "host": "static",
+      "case": "en-desktop-compat",
+      "round": "r4",
+      "measured": true,
+      "navigations": {
+        "enter": {
+          "longestTaskMs": 293,
+          "freezes": 0,
+          "maxFrameGapMs": 300.1,
+          "layerizeMs": {
+            "totalMs": 12.8,
+            "maxMs": 10.3,
+            "count": 62
+          },
+          "urlMatches": true,
+          "swapError": null
+        },
+        "leave": {
+          "longestTaskMs": 278,
+          "freezes": 0,
+          "maxFrameGapMs": 485.2,
+          "layerizeMs": {
+            "totalMs": 10.2,
+            "maxMs": 5.5,
+            "count": 63
+          },
+          "urlMatches": true,
+          "swapError": null
+        }
+      },
+      "errorCount": 4
+    }
+  ],
+  "note": "Compact retained summary; full JSON and gzipped CDP traces stayed local (see README.md)."
+}

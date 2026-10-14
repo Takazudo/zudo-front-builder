@@ -2200,6 +2200,16 @@ impl Pipeline {
         }
     }
 
+    /// Remove the paragraphs markdown-rs wraps around text-bearing lines
+    /// inside an explicit MDX `<table>` (zfb#4232). Twin of the call in
+    /// `mdx_jsx_emit::mdx_to_jsx_module_inner`; see
+    /// [`plugins::table_paragraph`] for the rationale.
+    ///
+    /// [`plugins::table_paragraph`]: crate::plugins::table_paragraph
+    fn normalize_table_paragraphs(mdast: &mut MdastNode) {
+        crate::plugins::unwrap_table_paragraphs(mdast);
+    }
+
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
     /// hast visitors. Returns the resulting hast root.
     ///
@@ -2218,6 +2228,7 @@ impl Pipeline {
         let mut mdast = markdown::to_mdast(input, &self.parse_options)
             .map_err(|m| PipelineError::Parse(m.to_string()))?;
         self.normalize_nested_links(&mut mdast);
+        Self::normalize_table_paragraphs(&mut mdast);
 
         for v in &mut self.mdast_visitors {
             v.set_secondary_parse_target(SecondaryParseTarget::Html);
@@ -2261,6 +2272,7 @@ impl Pipeline {
         let mut mdast = markdown::to_mdast(input, &self.parse_options)
             .map_err(|m| PipelineError::Parse(m.to_string()))?;
         self.normalize_nested_links(&mut mdast);
+        Self::normalize_table_paragraphs(&mut mdast);
 
         for v in &mut self.mdast_visitors {
             v.set_secondary_parse_target(SecondaryParseTarget::Html);

@@ -24,7 +24,7 @@ SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
-SCRIPT="scripts/publish-npm-packages.sh"
+SCRIPT="$REPO_ROOT/scripts/publish-npm-packages.sh"
 NODE_EXE=$(node -p 'process.execPath')
 
 PASS=0
@@ -48,7 +48,7 @@ assert_exit() {
   AE_SNIPPET="$3"
   # `if` so a non-zero exit (an expected outcome under test) does not trip the
   # harness's own `set -e`.
-  if bash -c ". ./$SCRIPT; set +e; ${AE_SNIPPET}" >/dev/null 2>&1; then
+  if bash -c ". \"$SCRIPT\"; set +e; ${AE_SNIPPET}" >/dev/null 2>&1; then
     AE_GOT=0
   else
     AE_GOT=$?
@@ -103,11 +103,12 @@ assert_exit 'classify: real error AND version NOT on registry → fail (1)' 1 \
 
 # Build a throwaway PATH dir holding mock `npm` and `pnpm` executables.
 MOCK_BIN=$(mktemp -d)
-trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}" "${LEGACY_TARGET:-}" "${LEGACY_OUTPUT:-}" "${LEGACY_PUB_LOG:-}"' EXIT HUP INT TERM
+trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}" "${DIGEST_FIXTURE:-}" "${DC_GH_LOG:-}" "${DC_PUB_LOG:-}" "${DC_OUTPUT:-}" "${DC_MARKER:-}" "${LEGACY_TARGET:-}" "${LEGACY_OUTPUT:-}" "${LEGACY_PUB_LOG:-}" "${PUBLISH_TARGET:-}"' EXIT HUP INT TERM
 
 cat >"$MOCK_BIN/npm" <<'MOCK_NPM'
 #!/bin/sh
 # Mock npm: `view <name@version> version`, `publish` (cwd package), `dist-tag add`.
+printf 'npm %s\n' "$*" >>"${MOCK_CALLS_LOG:-/dev/null}"
 case "$1" in
   view)
     spec="$2"
@@ -155,6 +156,7 @@ MOCK_NPM
 cat >"$MOCK_BIN/pnpm" <<'MOCK_PNPM'
 #!/bin/sh
 # Mock pnpm: record the --filter target of a `publish` invocation.
+printf 'pnpm %s\n' "$*" >>"${MOCK_CALLS_LOG:-/dev/null}"
 original_args="$*"
 filter=""
 is_publish=0
@@ -196,6 +198,27 @@ chmod +x "$MOCK_BIN/verify-noop"
 ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop"
 export ZFB_MD_WASM_VERIFY_NODE
 
+# Whole-script cases use an isolated target tree. The real control script and
+# companion verifiers remain under REPO_ROOT, just as recovery separates them
+# from the target package tree. Native placeholder bytes only test file presence;
+# they never enter real carrier slots or establish native build/load evidence.
+PUBLISH_TARGET=$(mktemp -d)
+PLATFORM_PACKAGE_DIRS='
+packages/zfb-darwin-arm64
+packages/zfb-darwin-x64
+packages/zfb-linux-arm64-gnu
+packages/zfb-linux-x64-gnu
+packages/zfb-win32-x64-msvc
+'
+for dir in $PLATFORM_PACKAGE_DIRS packages/zfb-slugify packages/zfb packages/zfb-runtime packages/zfb-adapter-cloudflare packages/create-zfb crates/zfb-md-wasm/npm; do
+  mkdir -p "$PUBLISH_TARGET/$dir"
+  cp "$REPO_ROOT/$dir/package.json" "$PUBLISH_TARGET/$dir/package.json"
+done
+for dir in $PLATFORM_PACKAGE_DIRS; do
+  printf 'offline presence fixture; not a native addon\n' >"$PUBLISH_TARGET/$dir/zfb-css.node"
+done
+cd "$PUBLISH_TARGET"
+
 V=$(node -p "require('./packages/zfb/package.json').version")
 ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb-slugify@$V @takazudo/zfb@$V @takazudo/zfb-runtime@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V @takazudo/zfb-md-wasm@$V"
 
@@ -205,6 +228,32 @@ ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/z
 log_has() {
   grep -Eq "^$1(@|$)" "$PUB_LOG"
 }
+
+# CSS preflight must examine every carrier before any npm/pnpm call, even when
+# the missing addon belongs to the last carrier or all versions already exist.
+# Keep provenance authorization enabled here so that only the CSS gate can win.
+for CSS_MODE in all-provenance mac-local recovery-no-provenance; do
+  for CSS_DIR in $PLATFORM_PACKAGE_DIRS; do
+    CSS_OUTPUT="$PUBLISH_TARGET/css-preflight-output"
+    CSS_CALLS="$PUBLISH_TARGET/css-preflight-calls"
+    CSS_PUBLISHES="$PUBLISH_TARGET/css-preflight-publishes"
+    : >"$CSS_CALLS"
+    : >"$CSS_PUBLISHES"
+    mv "$CSS_DIR/zfb-css.node" "$CSS_DIR/zfb-css.node.fixture"
+    CSS_RC=0
+    PATH="$MOCK_BIN:$PATH" DIST_TAG=latest ALSO_LATEST=1 \
+      MOCK_EXISTING="$ALL_SPECS" MOCK_CALLS_LOG="$CSS_CALLS" \
+      MOCK_PUBLISH_LOG="$CSS_PUBLISHES" ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
+      bash "$SCRIPT" "$CSS_MODE" >"$CSS_OUTPUT" 2>&1 || CSS_RC=$?
+    mv "$CSS_DIR/zfb-css.node.fixture" "$CSS_DIR/zfb-css.node"
+    if [ "$CSS_RC" -ne 0 ] && [ ! -s "$CSS_CALLS" ] && [ ! -s "$CSS_PUBLISHES" ] \
+       && grep -Fq "Missing native CSS artifact: $CSS_DIR/zfb-css.node" "$CSS_OUTPUT"; then
+      pass "CSS preflight: $CSS_MODE refuses missing $CSS_DIR addon before npm/pnpm"
+    else
+      fail "CSS preflight: $CSS_MODE missing $CSS_DIR exit=$CSS_RC, calls=$(cat "$CSS_CALLS"), output=$(tail -4 "$CSS_OUTPUT" | tr '\n' ' ')"
+    fi
+  done
+done
 
 # Case 1 — idempotent re-run: 9 packages already published (incl.
 # @takazudo/zfb-slugify and @takazudo/zfb-md-wasm), only @takazudo/zfb-runtime
@@ -334,6 +383,16 @@ for dir in $LEGACY_PACKAGE_DIRS; do
   mkdir -p "$LEGACY_TARGET/$dir"
   cp "$dir/package.json" "$LEGACY_TARGET/$dir/package.json"
 done
+# A genuine pre-CSS recovery target has neither public CSS export nor native
+# addons. Removing both export maps keeps the historical package contract honest.
+LEGACY_TARGET="$LEGACY_TARGET" "$NODE_EXE" --input-type=module <<'LEGACY_MANIFEST'
+import { readFileSync, writeFileSync } from 'node:fs';
+const path = `${process.env.LEGACY_TARGET}/packages/zfb/package.json`;
+const manifest = JSON.parse(readFileSync(path, 'utf8'));
+delete manifest.exports?.['./css'];
+delete manifest.publishConfig?.exports?.['./css'];
+writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
+LEGACY_MANIFEST
 if (
   cd "$LEGACY_TARGET"
   PATH="$MOCK_BIN:$PATH" \
@@ -342,7 +401,7 @@ if (
     MOCK_EXISTING="" \
     ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
     ZFB_MD_WASM_VERIFY_NODE="$MOCK_BIN/verify-noop" \
-    bash "$REPO_ROOT/$SCRIPT" recovery-no-provenance
+    bash "$SCRIPT" recovery-no-provenance
 ) >"$LEGACY_OUTPUT" 2>&1; then
   COUNT=$(grep -c . "$LEGACY_PUB_LOG" || true)
   if [ "$COUNT" -eq 10 ] && ! grep -Eq '^@takazudo/zfb-slugify(@|$)' "$LEGACY_PUB_LOG" \
@@ -369,7 +428,7 @@ assert_missing_slugify_refused() {
       MOCK_PUBLISH_LOG="$LEGACY_PUB_LOG" \
       MOCK_EXISTING="" \
       ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 \
-      bash "$REPO_ROOT/$SCRIPT" "$LEGACY_MODE"
+      bash "$SCRIPT" "$LEGACY_MODE"
   ) >"$LEGACY_OUTPUT" 2>&1 || LEGACY_RC=$?
 
   if [ "$LEGACY_RC" -ne 0 ] && [ ! -s "$LEGACY_PUB_LOG" ] \
@@ -530,20 +589,23 @@ assert_digest_case() {
   DC_RC=0
   DC_MODE=all-provenance
   if [ "$DC_WANT" = older ]; then DC_MODE=recovery-no-provenance; fi
-  PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_EXISTING="$DC_EXISTING" \
+  (
+    if [ "$DC_WANT" = older ]; then cd "$LEGACY_TARGET"; fi
+    PATH="$MOCK_BIN:$PATH" DIST_TAG=latest MOCK_EXISTING="$DC_EXISTING" \
     MOCK_MD_RESULT="$DC_RESULT" MOCK_PACK_TARBALL="$DC_TARBALL" \
     MOCK_PUBLISH_LOG="$DC_PUB_LOG" MOCK_GH_LOG="$DC_GH_LOG" \
     MOCK_PUBLISHED_MARKER="$DC_MARKER" ZFB_MD_WASM_MANIFEST="$DC_MANIFEST" \
     ZFB_MD_WASM_VERIFY_NODE="$NODE_EXE" \
     ZFB_ALLOW_PROVENANCE_DOWNGRADE=1 PUBLISH_RECHECK_DELAY=0 \
-    bash "$SCRIPT" "$DC_MODE" >"$DC_OUTPUT" 2>&1 || DC_RC=$?
+    bash "$SCRIPT" "$DC_MODE"
+  ) >"$DC_OUTPUT" 2>&1 || DC_RC=$?
   DC_PUBLISH_RC=$DC_RC
   DC_UPLOAD_RC=0
   if [ "$DC_PUBLISH_RC" -eq 0 ] || [ "$DC_WANT" = mismatch ]; then
     DC_EXTRA_ARGS=
     if [ "$DC_WANT" = older ]; then DC_EXTRA_ARGS=--allow-missing-manifest; fi
     PATH="$MOCK_BIN:$PATH" MOCK_PACK_TARBALL="$DC_TARBALL" MOCK_GH_LOG="$DC_GH_LOG" \
-      "$NODE_EXE" scripts/verify-zfb-md-wasm-published-digests.mjs --version "$V" \
+      "$NODE_EXE" "$REPO_ROOT/scripts/verify-zfb-md-wasm-published-digests.mjs" --version "$V" \
       --manifest "$DC_MANIFEST" --tag "v$V" --upload $DC_EXTRA_ARGS >>"$DC_OUTPUT" 2>&1 || DC_UPLOAD_RC=$?
     if [ "$DC_RC" -eq 0 ]; then DC_RC=$DC_UPLOAD_RC; fi
   fi
@@ -588,7 +650,7 @@ assert_visibility_case() {
   PATH="$MOCK_BIN:$PATH" MOCK_PACK_TARBALL="$DIGEST_FIXTURE/good.tgz" \
     MOCK_PACK_MISSES_FILE="$VC_MISSES_FILE" \
     ZFB_MD_WASM_VISIBILITY_ATTEMPTS="$VC_ATTEMPTS" ZFB_MD_WASM_VISIBILITY_DELAY_MS=0 \
-    "$NODE_EXE" scripts/verify-zfb-md-wasm-published-digests.mjs --version "$V" \
+    "$NODE_EXE" "$REPO_ROOT/scripts/verify-zfb-md-wasm-published-digests.mjs" --version "$V" \
     --manifest "$DIGEST_FIXTURE/manifest.json" >"$VC_OUTPUT" 2>&1 || VC_RC=$?
   case "$VC_WANT" in
     verified)

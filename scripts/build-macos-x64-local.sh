@@ -20,7 +20,8 @@
 #                 flag the files are only written locally and the upload command
 #                 is printed for you to run manually.
 #
-# --out-dir DIR   Where to write the archive + .sha256. Default: repo root.
+# --out-dir DIR   Where to write the archive, separate addon, and checksums. Default: repo root.
+# ZFB_X64_NODE    Path to x64 Node >=22 for addon verification (required on ARM-only Node hosts).
 #
 # Prerequisites (matches release.yml's build job):
 #   - Rust toolchain (rustup); the script runs `rustup target add
@@ -184,6 +185,12 @@ trap _slot_restore_on_exit EXIT
 
 echo "==> cargo build -p zfb --release --target ${target}"
 ZFB_RELEASE_VERSION="$semver" cargo build -p zfb --release --target "$target"
+bash scripts/build-css-node.sh "$target"
+# Fast-Mac bypasses the CI x64 build leg, so verify the actual addon here.
+# Apple Silicon hosts must supply an x64 Node binary (run through Rosetta).
+x64_node="${ZFB_X64_NODE:-node}"
+"$x64_node" -e 'if (process.arch !== "x64" || Number(process.versions.node.split(".")[0]) < 22) { console.error("CSS addon verification requires x64 Node >=22; set ZFB_X64_NODE to its executable path"); process.exit(1) }'
+"$x64_node" scripts/smoke-css-node.mjs packages/zfb-darwin-x64/zfb-css.node
 
 _slot_restore_status=0
 restore_binary_slots || _slot_restore_status=$?
@@ -283,6 +290,10 @@ fi
 echo "--- checksum file contents ---"
 cat "${archive_path}.sha256"
 
+addon="zfb-css-${semver}-${target}.node"
+cp "${platform_pkg}/zfb-css.node" "${out_dir}/${addon}"
+( cd "$out_dir" && shasum -a 256 "$addon" > "${addon}.sha256" )
+
 echo "==> Built:"
 echo "    ${archive_path}"
 echo "    ${archive_path}.sha256"
@@ -315,6 +326,7 @@ if [[ -n "$upload_tag" ]]; then
   gh release upload "$upload_tag" \
     "$archive_path" \
     "${archive_path}.sha256" \
+    "${out_dir}/${addon}" "${out_dir}/${addon}.sha256" \
     --clobber
   echo "==> Uploaded. Now publish the draft GH Release (gh release edit ${upload_tag} --draft=false or web UI) to trigger release.yml."
   echo "    The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-15-intel build leg."
@@ -323,7 +335,7 @@ else
   echo "Not uploaded. To attach these to the draft GH Release for <tag>, run:"
   echo "  gh release upload <tag> \\"
   echo "    \"${archive_path}\" \\"
-  echo "    \"${archive_path}.sha256\" --clobber"
+  echo "    \"${archive_path}.sha256\" \"${out_dir}/${addon}\" \"${out_dir}/${addon}.sha256\" --clobber"
   echo "Then publish the draft Release (gh release edit <tag> --draft=false or web UI) to trigger release.yml."
   echo "The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-15-intel build leg."
 fi

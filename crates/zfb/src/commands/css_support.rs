@@ -140,7 +140,23 @@ pub(crate) fn build_standalone_wind_source_plan(
     include_default_roots: bool,
     explicit_sources: &[(String, PathBuf)],
 ) -> Result<(SourcePlan, Vec<String>)> {
-    let gathered = crate::commands::css_source_plan::gather_css_source_plan_inputs(
+    build_standalone_wind_source_plan_optional(
+        project_root,
+        Some(output_path),
+        config,
+        include_default_roots,
+        explicit_sources,
+    )
+}
+
+pub(crate) fn build_standalone_wind_source_plan_optional(
+    project_root: &Path,
+    output_path: Option<&Path>,
+    config: &Config,
+    include_default_roots: bool,
+    explicit_sources: &[(String, PathBuf)],
+) -> Result<(SourcePlan, Vec<String>)> {
+    let gathered = crate::commands::css_source_plan::gather_css_source_plan_inputs_optional(
         project_root,
         output_path,
         config,
@@ -226,13 +242,15 @@ fn explicit_source_exclusion_reasons(
             project_relative_display(&inputs.project_root, &inputs.configured_output_dir)
         ),
     );
-    push_reason(
-        &inputs.pass_output_dir,
-        format!(
-            "at the --output path `{}`",
-            project_relative_display(&inputs.project_root, &inputs.pass_output_dir)
-        ),
-    );
+    if let Some(output) = &inputs.pass_output_dir {
+        push_reason(
+            output,
+            format!(
+                "at the --output path `{}`",
+                project_relative_display(&inputs.project_root, output)
+            ),
+        );
+    }
     let mut scratch_roots = inputs.zfb_written_roots.clone();
     scratch_roots.sort();
     for path in scratch_roots {
@@ -294,6 +312,22 @@ fn render_exclusion_counts(
         .join("; ")
 }
 
+fn explicit_source_error(path: &Path, message: String) -> anyhow::Error {
+    zfb_css::WindDiagnosticsError {
+        diagnostics: vec![CssDiagnostic {
+            code: "ZW010".into(),
+            severity: CssDiagnosticSeverity::Error,
+            message,
+            candidate: None,
+            origin: CssDiagnosticOrigin {
+                path: Some(path.to_path_buf()),
+                ..Default::default()
+            },
+        }],
+    }
+    .into()
+}
+
 fn explicit_source_roots(
     project_root: &Path,
     authored: &str,
@@ -309,10 +343,13 @@ fn explicit_source_roots(
         // Directory declarations are classified by their root only. Descendant
         // files filtered by exclusions during the walk are out of scope here.
         if let Some((_, reason)) = matching_exclusion(pattern, exclusion_reasons) {
-            bail!(
-                "ZW010: --source {authored:?} matched 1 directory root, all excluded: 1 {}",
-                reason.description
-            );
+            return Err(explicit_source_error(
+                pattern,
+                format!(
+                    "--source {authored:?} matched 1 directory root, all excluded: 1 {}",
+                    reason.description
+                ),
+            ));
         }
         return Ok((
             vec![PositiveRoot {
@@ -339,10 +376,13 @@ fn explicit_source_roots(
     for path in &matches {
         let extension = path.extension().and_then(|part| part.to_str());
         if !extension.is_some_and(|extension| supported.contains(&extension)) {
-            bail!(
-                "ZW010: explicit --source file has an unsupported extension: {}",
-                path.display()
-            );
+            return Err(explicit_source_error(
+                path,
+                format!(
+                    "explicit --source file has an unsupported extension: {}",
+                    path.display()
+                ),
+            ));
         }
     }
 
@@ -363,11 +403,14 @@ fn explicit_source_roots(
         }
     }
     if accepted.is_empty() {
-        bail!(
-            "ZW010: --source {authored:?} matched {} files, all excluded: {}",
-            matches.len(),
-            render_exclusion_counts(&excluded_counts, exclusion_reasons)
-        );
+        return Err(explicit_source_error(
+            pattern,
+            format!(
+                "--source {authored:?} matched {} files, all excluded: {}",
+                matches.len(),
+                render_exclusion_counts(&excluded_counts, exclusion_reasons)
+            ),
+        ));
     }
 
     let excluded_count: usize = excluded_counts.values().sum();

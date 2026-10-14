@@ -10,6 +10,10 @@
  * correctly (e.g. dist/client-router/router.js imports ./events.js →
  * /dist/client-router/events.js).
  *
+ * /list.html is the one templated page: its `{{PAGE}}` placeholders take the
+ * `?page=` query, so every query is a distinct document (#4179). Other queries
+ * are ignored, as for every other fixture page.
+ *
  * This is a sibling of tests/webkit-back-history/serve-fixture.mjs — kept as a
  * separate file so the WebKit T4 harness stays byte-for-byte unchanged. The only
  * difference is FIXTURE_DIR points at this suite's fixture pages.
@@ -22,16 +26,18 @@
  */
 
 import { createServer } from "node:http";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { join, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 
-const FIXTURE_DIR = join(__dirname, "fixture");
-const DIST_DIR = join(REPO_ROOT, "packages", "zfb-runtime", "dist");
-const ZFB_DIST_DIR = join(REPO_ROOT, "packages", "zfb", "dist");
+// Isolated packed-consumer runs serve installed artifacts through the same harness.
+const FIXTURE_DIR = process.env.ZFB_REGION_FIXTURE_DIR ?? join(__dirname, "fixture");
+const DIST_DIR =
+  process.env.ZFB_REGION_RUNTIME_DIST ?? join(REPO_ROOT, "packages", "zfb-runtime", "dist");
+const ZFB_DIST_DIR = process.env.ZFB_REGION_SDK_DIST ?? join(REPO_ROOT, "packages", "zfb", "dist");
 
 const PORT = parseInt(process.argv[2] ?? "4322", 10);
 
@@ -81,6 +87,21 @@ const server = createServer((req, res) => {
   if (pathname.startsWith("/zfb-dist/")) {
     const target = safeJoin(ZFB_DIST_DIR, pathname.slice("/zfb-dist/".length));
     if (target && tryServe(res, target)) return;
+  }
+
+  if (pathname === "/list.html") {
+    const page = url.searchParams.get("page") ?? "1";
+    try {
+      const html = readFileSync(join(FIXTURE_DIR, "list.html"), "utf8").replaceAll(
+        "{{PAGE}}",
+        /^\d+$/.test(page) ? page : "1",
+      );
+      res.writeHead(200, { "Content-Type": MIME[".html"] });
+      res.end(html);
+      return;
+    } catch {
+      // No list.html in this fixture root: fall through to the 404 below.
+    }
   }
 
   // / or /foo.html -> fixture/*  (normalise bare / to /index.html)
