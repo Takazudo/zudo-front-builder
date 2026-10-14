@@ -1,0 +1,51 @@
+{
+  "observedAt": "2026-10-14",
+  "probeHead": "572b174f70664e2fe4d91c552439eb3d137f848a",
+  "measuredSource": "9ffc1ebcdcb4e6159e9c4c49d755bc3b1f9fa8f8",
+  "baseSource": "ce3c762bc2bf95616d840a6912111f482911bf8e",
+  "run": 38597281454,
+  "job": 115967685832,
+  "artifact": {
+    "id": 11913810224,
+    "node_id": "MDg6QXJ0aWZhY3QxMTkxMzgxMDIyNA==",
+    "name": "island-size-linux-x64",
+    "size_in_bytes": 666733,
+    "url": "https://api.github.com/repos/Takazudo/zudo-front-builder/actions/artifacts/11913810224",
+    "archive_download_url": "https://api.github.com/repos/Takazudo/zudo-front-builder/actions/artifacts/11913810224/zip",
+    "expired": false,
+    "digest": "sha256:6b766e7ad01fbfe05322e9fde20cbed5516402c15d18c1d2e865551eebc0987d",
+    "created_at": "2026-10-14T16:43:25Z",
+    "updated_at": "2026-10-14T16:43:25Z",
+    "expires_at": "2026-10-21T16:43:23Z",
+    "workflow_run": {
+      "id": 38597281454,
+      "repository_id": 1221099197,
+      "head_repository_id": 1221099197,
+      "head_branch": "ci/island-size-evidence-reachability",
+      "head_sha": "572b174f70664e2fe4d91c552439eb3d137f848a"
+    }
+  },
+  "downloadedZipSha256": "6b766e7ad01fbfe05322e9fde20cbed5516402c15d18c1d2e865551eebc0987d",
+  "files": 98,
+  "contentReplay": {
+    "passed": true,
+    "node": "v24.14.0",
+    "zlib": "1.3.1-e00f703"
+  },
+  "replayFunction": "assertCompletePair(directory, contract, measuredSource) from measured-source scripts/island-size-evidence.mjs",
+  "initialReplay": {
+    "node": "24.19.0",
+    "zlib": "1.3.2.1-motley-3246f1b",
+    "outcome": "refused: workspace: stale or altered normalized sidecar",
+    "difference": "normalizer nodeVersion and zlibVersion; retried with original public Node24.14.0"
+  },
+  "originalJobLog": {
+    "localPath": "/tmp/v8-infra-job-115967685832.log",
+    "sha256": "92942fb5db53e6b5f9d4449b56079309b2656cd14bce4108973d585b5ce856a8",
+    "connectorDownloaded": true,
+    "initialBomRemoved": true,
+    "budgetVerdict": 0,
+    "message": "Island size budget passed for all eight fixtures in workspace and packed modes (metric gzip-identity-normalized v1)."
+  },
+  "scope": "Infrastructure/default producer4.5.0 only, not runtime4242 or Darwin evidence. Local replay checks saved bytes, matrix, normalized sidecars and unchanged totals; full checker success is original CI, omitted producer archives/binaries are not reconstructed."
+}

@@ -755,3 +755,113 @@ production-build/private-wrapper generated gate; those paths, Cargo inputs and
 harness/corpora remain unchanged. Linked CLI bytes and whole-workspace compiler
 inputs are **not** claimed unchanged. Final ordinary CI covers the integrated
 upstream dev-server change; no new candidate native replay is claimed.
+
+## Lifecycle ownership continuation — 2026-10-14
+
+The new replay in [lifecycle-linux-2026-10-14/acceptance.json](evidence/lifecycle-linux-2026-10-14/acceptance.json)
+executed clean source `14e021f19d09287dbc3fb8a0ac86254379113092` after
+refreshing integrated main `fbb7921d8fb3f28d859bbd4cf5737759f547866a`.
+Subsequent receipt/documentation/generated-provenance commits did not run that replay. Older receipts
+remain historical and were not overwritten. Actual session date is October 14;
+the previous continuation's October 15 filename is retained unchanged.
+
+The suspected ownership bug was reproduced: the success/drop and post-transfer
+polyfill failure regressions both failed against `mem::forget(self)`. That call
+forgot the registration's owned `Arc<ForegroundQueue>`, even though cleanup had
+been correctly transferred to the host. An armed flag now disables registration
+cleanup while allowing its fields to drop normally. Per-queue retained `Weak`
+references prove eventual queue destruction after success, pre-transfer bootstrap
+failure and post-transfer polyfill parse/runtime failure, across repeated good/bad
+cycles and a fresh evaluation after each failure. These are queue-ownership
+observations, not proof of an isolate, socket or process-memory leak.
+
+Native coverage is now 45/45. Real V8 foreground tasks exercise delayed eligibility,
+eventual host driving, queue closure and task disposal while the originating
+isolate is alive. A retained synchronous Wasm module makes the subsequent async
+compile take V8's native cache-hit foreground callback path. A panicking executor
+Waker is observed and contained at that actual native callback boundary; the
+promise subsequently completes. Registry-miss late posting is separately tested
+through the Rust platform helper, not claimed as a second ABI test. Closed queues
+retain neither late tasks nor a new driver Waker. Delayed eligibility uses a private
+injected time; eventual completion does not claim that every run sleeps through
+the driver's Pending/timer branch. Independent review found no remaining issues
+in early returns, drop ordering, reference release, late posts or panic containment.
+
+Original fixture attempts are preserved in
+[original-observations.json](evidence/lifecycle-linux-2026-10-14/original-observations.json):
+three 44-pass/1-fail native runs and a focused failure timed out waiting for a tiny
+Wasm compile that the pinned streaming mode may finish inline. The final retained
+module fixture follows the reviewed V8 cache path; the full suite then passed,
+and the fresh acceptance independently passed it again. No watchdog became a
+success and no failing case was removed. The initial Wind compiler build also
+failed fetching pinned esbuild; retry used the independently obtained exact
+0.25.12 executable. Genuine combined-source Wind regeneration/check covered all
+173 samples, with 19 generator tests passing.
+
+Fresh acceptance passed 9 shared-service and 45 native tests, 63 config and 27
+service cases per engine, 47 module/worker cases per engine, 8 loopback HTTP rows,
+7 outer-config rows, 8 generated packets per engine and 7 exact parity rows.
+Separate explicitly built baseline/direct executables reported their expected
+engine identities; before/after hashes matched. Both consumed the same frozen
+snapshot `3486f80cd9c4ae216c7718cabea8f65637502e59f23d58a1d628e03a23451336`.
+Chromium 151.0.7922.173 at `/usr/bin/chromium` observed `Count: 0` → `Count: 1`
+and `rgb(12, 34, 56)` without page/console errors. Ten harness-refusal tests passed.
+The 296 affected baseline Rust regressions also passed. Full commands, tool versions,
+feature selections, runner hashes and browser observations are in the new receipts.
+
+The standalone selected host graph has 152 package/feature rows, pinned V8
+147.4.0 and no Deno/render/build dependencies. Separately, held #4259 tooling at
+`714e65cd01ab674d668aac7db1a3a5a31c03e9e7` revalidated the immutable old source
+`6fb3fbe0103c5c90799c3262ca5c1ab9ade0f27e` against this source: Linux 496→497
+and Darwin 480→481 semantic rows, real lock bytes, declaration and manifests.
+That metadata-only proof neither stages nor validates a native candidate artifact.
+Its workspace-wide/default-producer closure cannot prove a future feature-exact
+candidate CLI graph; [ACTIVATION.md](ACTIVATION.md) now distinguishes all three.
+
+Infrastructure [#4260](https://github.com/Takazudo/zudo-front-builder/pull/4260)
+artifact 11913810224 was downloaded and verified, with all 98 extracted files.
+The measured checkout is `9ffc1ebcdcb4e6159e9c4c49d755bc3b1f9fa8f8`, distinct
+from probe head `572b174f70664e2fe4d91c552439eb3d137f848a`. Exact-source
+`assertCompletePair` recomputed saved bytes, complete workspace/packed matrices,
+normalized sidecars and unchanged totals successfully with original Node 24.14.0
+and zlib 1.3.1-e00f703. The initial Node 24.19 replay correctly refused its different
+normalizer identity. The original successful job log independently records full
+budget enforcement and artifact upload. Local content replay does not reconstruct
+omitted producer tarballs/binaries. This is infrastructure/default-producer 4.5.0
+evidence only, not #4242 adoption or Linux/Darwin candidate size evidence.
+
+The scoped root tests retain two real failures (62 passed/2 failed): Linux and
+Darwin reviewed-contract assertions reject local/workspace/packed Cargo lock
+provenance. They are not waived. Main's legitimate 4.5.1 package/pnpm changes and
+Linux predecessor contract were retained; this task adds no lock, package-version,
+contract, ceiling, allowance, runtime-selection or dependency-family change. The
+merge hook unexpectedly formatted an excluded raw Markdown fixture; the follow-up
+restores exact upstream bytes using only the existing formatter exclusion. No hook
+configuration changed. Startup/access and retry details are in
+[session.json](evidence/lifecycle-linux-2026-10-14/session.json).
+
+The implementation batch does not establish phase-one integration acceptance or
+actual CLI adoption. Remaining ordering is #4234 → #4259, plus #4260 integration,
+then refreshed #4242 and compatible Linux/Darwin native size evidence, paired
+stage/review, separately authorized apply, and final enforced verification. Future
+shared V8 process/thread ownership, a nondefault typed-config CLI path, render
+factory/thread adapter and dev start-before-swap rollback/bounded shutdown remain
+handoff work. No held-stack or PR merge, native dispatch, activation, preview or deployment occurred.
+
+Broad verification passed default workspace/all-target build, no-V8 check, workspace
+Clippy, formatting, all seven md-Wasm graph selections, actual wasm32 cdylib link,
+and CSS addon build/load. Initial native Clippy failed `items_after_test_module`;
+the unchanged test module moved after production items in `14e021f1`. Independent
+byte comparison confirmed ordering only. Native Clippy then passed and the complete
+acceptance replay passed again at that clean corrected checkpoint. The initial
+`a15e9a26` replay and failed lint remain in the receipt. Final Wind freshness
+correctly rejected the changed broad source digest; genuine regeneration using
+the final acceptance-built compiler and a new check passed all 173 samples.
+Only manifest provenance changed. Broader results remain attributed to their
+recorded source rather than being relabeled as reruns.
+
+The final Wind manifest delta is exactly `compiler.sourceSha256`
+`84c52815…` → `a621c16c…`; all generated rows and asset bytes are unchanged.
+That provenance-only refresh does not alter the tested host, corpora, build
+producer, harness or frozen acceptance snapshot. The final commit records tested
+predecessor `14e021f1`; it does not claim a replay of its own hash.

@@ -1,0 +1,148 @@
+{
+  "kind": "metadata-only-prepared-rewire-validation",
+  "toolingSha": "714e65cd01ab674d668aac7db1a3a5a31c03e9e7",
+  "sourceSha": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+  "nativeArtifactValidated": false,
+  "staged": false,
+  "applied": false,
+  "targets": {
+    "x86_64-unknown-linux-gnu": {
+      "oldSha": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+      "newSha": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+      "oldLockSource": {
+        "commit": "6fb3fbe0103c5c90799c3262ca5c1ab9ade0f27e",
+        "path": "Cargo.lock",
+        "sha256": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e"
+      },
+      "newLockSource": {
+        "sha256": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+        "commit": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+        "path": "Cargo.lock"
+      },
+      "declaration": {
+        "sha256": "5ea09a4dbcb01a74d1c62aad10485e3ce363e0b463b6fe38e396fe7b0ba3043e"
+      },
+      "producer": "zfb",
+      "manifestsAtCommit": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+      "added": [
+        {
+          "id": "zfb-js-host@0.0.0",
+          "manifest": "crates/zfb-js-host/Cargo.toml",
+          "manifestSha256": "c0ddb808a53113215a6e4bd11891c6a75404ab944676d23805e82dfac8dd8480",
+          "sha256": "db19fe3fbf64e46f40ffecb7cd5abe2ec0c05bef0f446d78fa5bdae7d8bc92bc",
+          "dependencies": [
+            "base64",
+            "getrandom 0.3.4",
+            "reqwest",
+            "serde",
+            "serde_json",
+            "sha1",
+            "sha2",
+            "thiserror",
+            "tokio",
+            "url",
+            "v8"
+          ]
+        }
+      ],
+      "changed": [
+        {
+          "id": "zfb-render@0.0.0",
+          "manifest": "crates/zfb-render/Cargo.toml",
+          "manifestSha256": "b4a6e02611270daf9e5e64e480630255b9f8ddc1a560fbe801a5da7981aadc92",
+          "oldSha256": "fe8968d7ef6e23a8ba5ef4feeca4a2e207406015c1a7110b9cb8e5a45a67fe8e",
+          "newSha256": "ac163abe391c942887f03553960d104837c874d5d3ca33cbe26b71829d92ed67",
+          "removedDependencies": ["sha1", "sha2"],
+          "addedDependencies": ["zfb-js-host"]
+        }
+      ],
+      "removed": [],
+      "closure": {
+        "target": "x86_64-unknown-linux-gnu",
+        "oldSha256": "3378bbbaba00b72946fcb65961332cdd7efc2ca9944dc0d2d63ac884c9953eb0",
+        "newSha256": "691116feda8c5b3b2a750be09cc37ecbf9b1cd9392e3a8a7b25c47245461899f",
+        "rows": {
+          "old": 496,
+          "new": 497,
+          "unchanged": 496
+        },
+        "added": [
+          {
+            "id": "zfb-js-host@0.0.0",
+            "features": ["default", "services"]
+          }
+        ],
+        "changed": []
+      }
+    },
+    "aarch64-apple-darwin": {
+      "oldSha": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+      "newSha": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+      "oldLockSource": {
+        "commit": "6fb3fbe0103c5c90799c3262ca5c1ab9ade0f27e",
+        "path": "Cargo.lock",
+        "sha256": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e"
+      },
+      "newLockSource": {
+        "sha256": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+        "commit": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+        "path": "Cargo.lock"
+      },
+      "declaration": {
+        "sha256": "5ea09a4dbcb01a74d1c62aad10485e3ce363e0b463b6fe38e396fe7b0ba3043e"
+      },
+      "producer": "zfb",
+      "manifestsAtCommit": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+      "added": [
+        {
+          "id": "zfb-js-host@0.0.0",
+          "manifest": "crates/zfb-js-host/Cargo.toml",
+          "manifestSha256": "c0ddb808a53113215a6e4bd11891c6a75404ab944676d23805e82dfac8dd8480",
+          "sha256": "db19fe3fbf64e46f40ffecb7cd5abe2ec0c05bef0f446d78fa5bdae7d8bc92bc",
+          "dependencies": [
+            "base64",
+            "getrandom 0.3.4",
+            "reqwest",
+            "serde",
+            "serde_json",
+            "sha1",
+            "sha2",
+            "thiserror",
+            "tokio",
+            "url",
+            "v8"
+          ]
+        }
+      ],
+      "changed": [
+        {
+          "id": "zfb-render@0.0.0",
+          "manifest": "crates/zfb-render/Cargo.toml",
+          "manifestSha256": "b4a6e02611270daf9e5e64e480630255b9f8ddc1a560fbe801a5da7981aadc92",
+          "oldSha256": "fe8968d7ef6e23a8ba5ef4feeca4a2e207406015c1a7110b9cb8e5a45a67fe8e",
+          "newSha256": "ac163abe391c942887f03553960d104837c874d5d3ca33cbe26b71829d92ed67",
+          "removedDependencies": ["sha1", "sha2"],
+          "addedDependencies": ["zfb-js-host"]
+        }
+      ],
+      "removed": [],
+      "closure": {
+        "target": "aarch64-apple-darwin",
+        "oldSha256": "24b0d9526f216add9a9d56da5891ce8fd0b972aae9c3a28b73dadd9c9a258974",
+        "newSha256": "c1594d1aecbf38a856c213875ef249b93ca40d22858d4678178fff71361fbbcd",
+        "rows": {
+          "old": 480,
+          "new": 481,
+          "unchanged": 480
+        },
+        "added": [
+          {
+            "id": "zfb-js-host@0.0.0",
+            "features": ["default", "services"]
+          }
+        ],
+        "changed": []
+      }
+    }
+  }
+}

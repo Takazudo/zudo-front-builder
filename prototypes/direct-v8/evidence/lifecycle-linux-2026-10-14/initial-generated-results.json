@@ -1,0 +1,254 @@
+{
+  "passed": true,
+  "limitations": [
+    "No candidate CLI/dev reload integration or live-idle cancellation claim.",
+    "Watchdogs are failures; installed Chromium is explicit and no browser download is attempted."
+  ],
+  "snapshot_manifest_sha256": "3301f83a52c8ab76eea889af71a8dfd01e9b6410b9db8a62f3ecbcf03f2c2cbe",
+  "harness_sha256": {
+    "prepare-fixtures.py": "7ca7dcb4d6e3c1a8cd7e73aa7cb75634c495422ed2c890d0e4e63c265548e03b",
+    "check-generated.py": "677ee7c9ad90f355f75c94ea7444b16251f153fc603274e68b83b158ef45de58",
+    "browser-check.mjs": "1e4837f40913fc8ad6ee6d8054489919f3e54d25e3c862fbb5fbf226a1d53e62"
+  },
+  "executables": {
+    "baseline": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+      "sha256": "5b5a0e22cf933999b32e582db863b97530f828e4be66908dacd8c6ff7739e752"
+    },
+    "candidate": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+      "sha256": "05358049b59157bc9d71138a6f185e40764698266705d5afb31cc8b0660e9c2b"
+    },
+    "postprocessor": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_postprocess",
+      "sha256": "a4b77752ffdbdc56f1dfaff6d29112a3bc238a33bc8815c82feb375f7dee10dc"
+    },
+    "node": {
+      "path": "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+      "sha256": "bc17c508ffeed0ec622934f9b7fa72f8e78da65350e63c3eceb56fa688aa5e12"
+    },
+    "chromium": {
+      "path": "/usr/bin/chromium",
+      "sha256": "2c8d32d29dc6781c35ae196ea83299d507ac88fc339301abe74672feda299779"
+    }
+  },
+  "input_sha256": "256f7786e6cdaa3422f7c452a999db50c172cb5c23efb521d4dcd98bcb34160d",
+  "baseline": {
+    "engine": "deno_core 0.399.0 / v8 147.4.0",
+    "passed": true,
+    "rows": [
+      {
+        "name": "emitted-config",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "d99429ae4b1dfdfec3cc7a29f6def04abf66c50c43e7d3f2c9b70cc95493aa63",
+        "error": null
+      },
+      {
+        "name": "generated-main",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "generated-wrapper-inner",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "prepared-plugin-and-binary-request",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "39e7cd63e69ecbedbe885197ba5e6f71ece2e6e0cbb6ac3da405f17e198f58b5",
+        "error": null
+      },
+      {
+        "name": "authored-mapped-throw",
+        "passed": true,
+        "failures": [],
+        "error": "runtime error: Error: direct-v8-authored-map-sentinel\n    at fail (file:///zfb/throw.mjs:5:9)\n    at Object.fetch (file:///zfb/throw.mjs:9:12)\n    at Object.dispatch (zfb:host_shim:310:47)\n    at zfb:dispatch:1:18",
+        "console": "[error] direct-v8-negative-before-throw",
+        "mapped_frames": [
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 6,
+              "column": 9,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          },
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 11,
+              "column": 12,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fresh-after-handler-failure",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-2",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-3",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      }
+    ]
+  },
+  "candidate": {
+    "engine": "direct v8 147.4.0",
+    "passed": true,
+    "rows": [
+      {
+        "name": "emitted-config",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "630418b855851a7a50fa42744364003e48f408db98c6d4422e95c6009b9bba91",
+        "error": null
+      },
+      {
+        "name": "generated-main",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "generated-wrapper-inner",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "prepared-plugin-and-binary-request",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "0878c63990c80890e561ada665d7bdbbb8892b7a40d26d776ffe6bf162e0760e",
+        "error": null
+      },
+      {
+        "name": "authored-mapped-throw",
+        "passed": true,
+        "failures": [],
+        "error": "config evaluation error: Error: direct-v8-authored-map-sentinel\n    at fail (file:///zfb/throw.mjs:5:9)\n    at Object.fetch (file:///zfb/throw.mjs:9:12)\n    at Object.dispatch (zfb:host_globals:310:47)",
+        "console": "[error] direct-v8-negative-before-throw",
+        "mapped_frames": [
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 6,
+              "column": 9,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          },
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 11,
+              "column": 12,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fresh-after-handler-failure",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-2",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-3",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      }
+    ]
+  },
+  "byte_and_value_parity": [
+    {
+      "name": "emitted-config",
+      "passed": true
+    },
+    {
+      "name": "generated-main",
+      "passed": true
+    },
+    {
+      "name": "generated-wrapper-inner",
+      "passed": true
+    },
+    {
+      "name": "prepared-plugin-and-binary-request",
+      "passed": true
+    },
+    {
+      "name": "fresh-after-handler-failure",
+      "passed": true
+    },
+    {
+      "name": "finite-create-load-dispatch-drop-2",
+      "passed": true
+    },
+    {
+      "name": "finite-create-load-dispatch-drop-3",
+      "passed": true
+    }
+  ],
+  "browser": {
+    "executablePath": "/usr/bin/chromium",
+    "origin": "http://127.0.0.1:44425",
+    "passed": true,
+    "version": "151.0.7922.173",
+    "initialText": "Count: 0",
+    "css": "rgb(12, 34, 56)",
+    "afterClickText": "Count: 1",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "exit_code": 0,
+    "command": [
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+      "/workspace/zudo-front-builder/prototypes/direct-v8/browser-check.mjs",
+      "http://127.0.0.1:44425",
+      "/workspace/zudo-front-builder/target/direct-v8-accept-lifecycle-2026-10-14-1/generated/frozen/expected.json",
+      "/usr/bin/chromium",
+      "/workspace/zudo-front-builder/target/direct-v8-accept-lifecycle-2026-10-14-1/generated-results/browser.json"
+    ],
+    "executable_sha256": "2c8d32d29dc6781c35ae196ea83299d507ac88fc339301abe74672feda299779",
+    "candidate_html_sha256": "c1943cff6c862313dd7187897ecd67138650216656175463448fcbad50d231b6",
+    "stylesheet": ["/assets/styles-1f03d86f.css"],
+    "island_modules": ["/assets/islands-46342adf.js"]
+  }
+}

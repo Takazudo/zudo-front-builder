@@ -14,7 +14,7 @@ The standalone direct-V8 implementation and its original receipts remain in
 | Immutable old lock source | `6fb3fbe0103c5c90799c3262ca5c1ab9ade0f27e:Cargo.lock` |
 | Old lock SHA-256 | `2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e` |
 | Prepared new lock SHA-256 | `d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb` |
-| Current prepared-input source | `1170596fc09de6ad8e3f7a0f33349e310320f2a5`; future collection must record its own actual source and revalidate these inputs |
+| Revalidated prepared-input source | `14e021f19d09287dbc3fb8a0ac86254379113092`; metadata-only proof in `evidence/lifecycle-linux-2026-10-14/prepared-default-producer-proof.json`; future collection must bind and revalidate its own actual source |
 | Declaration | `prototypes/direct-v8/evidence/cargo-rewire/declaration.json`: add unpublished `zfb-js-host@0.0.0`, rewire unpublished `zfb-render@0.0.0` by removing direct `sha1`/`sha2` and adding `zfb-js-host` |
 | Closure receipts | `evidence/cargo-rewire/closure-{old,new}-{x86_64-unknown-linux-gnu,aarch64-apple-darwin}.json`: Linux 496→497 rows, Darwin 480→481; one declared internal row joins, no external drift |
 | Live contracts | `research/v3-island-size/decision-linux-x64.json` and `decision.json`; unchanged by this continuation |
