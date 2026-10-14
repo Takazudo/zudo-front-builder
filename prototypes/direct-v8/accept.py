@@ -39,6 +39,10 @@ import subprocess
 import sys
 import time
 
+# Never leave __pycache__ behind in the checkout: the producer records the
+# working tree's status, and a stray cache directory would read as dirty.
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 RECEIPT_PREFIX = "ZFB_HOST_RECEIPT "
@@ -188,7 +192,7 @@ class Acceptance:
 
     def prepare_icu(self):
         icu = load_icu_module()
-        argv = [sys.executable, "-I", HERE / "prepare-icu.py"]
+        argv = [sys.executable, "-I", "-B", HERE / "prepare-icu.py"]
         if self.args.icu_archive:
             argv += ["--archive", self.args.icu_archive]
         proc = self.run("prepare-icu", argv)
@@ -217,16 +221,23 @@ class Acceptance:
             "env": {name: self.env[name] for name in RECORDED_ENV if name in self.env},
         }
 
-    def gate(self, label, argv, output, counts):
-        """Run one existing checker; `counts(report)` summarizes its JSON."""
-        argv = [sys.executable, "-I", HERE / argv[0], *argv[1:], "--output", output]
+    def gate(self, label, argv, output, counts, report_path=None):
+        """Run one existing checker; `counts(report)` summarizes its JSON.
+
+        `output` is the checker's `--output` argument (a file, or for
+        check-generated.py a new directory); `report_path` names the JSON it
+        writes when that differs from `output`.
+        """
+        argv = [sys.executable, "-I", "-B", HERE / argv[0], *argv[1:], "--output", output]
         passed = True
         try:
             self.run(label, argv, guarded=True)
         except Refusal:
             passed = False
-        report = json.loads(output.read_text()) if output.is_file() else None
-        summary = {"output": str(output), "passed": passed and report is not None,
+        report_path = Path(report_path or output)
+        report = json.loads(report_path.read_text()) if report_path.is_file() else None
+        summary = {"output": str(report_path), "passed": passed and report is not None
+                   and report.get("passed") is True,
                    "counts": counts(report) if report is not None else None}
         return summary
 
@@ -349,7 +360,7 @@ def main():
             runners["zfb"] = {"path": str(target / "debug" / "zfb"), "sha256": sha(target / "debug" / "zfb")}
             runners["wrapper_test_binary"] = {"path": wrapper, "sha256": sha(wrapper)}
             generated = out / "generated"
-            acceptance.run("prepare-fixtures", [sys.executable, "-I", HERE / "prepare-fixtures.py",
+            acceptance.run("prepare-fixtures", [sys.executable, "-I", "-B", HERE / "prepare-fixtures.py",
                            "--zfb", target / "debug" / "zfb", "--esbuild", args.esbuild.resolve(),
                            "--wrapper-test-binary", wrapper, "--rustc", rustc, "--node", node,
                            "--producer-build-command", build_record, "--output", generated], guarded=True)
@@ -357,7 +368,8 @@ def main():
                                                  generated / "frozen", "--baseline", baseline, "--candidate",
                                                  candidate, "--postprocessor", postprocessor, "--node", node,
                                                  "--chromium", args.chromium.resolve()],
-                                                 out / "generated-results" / "results.json", generated_counts)
+                                                 out / "generated-results", generated_counts,
+                                                 report_path=out / "generated-results" / "results.json")
             unchanged("generated")
         report["gates"] = gates
         report["executables_after"] = {name: sha(info["path"]) for name, info in runners.items()}
