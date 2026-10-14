@@ -1,0 +1,12 @@
+---
+title: v4.3.2
+sidebar_position: 34
+---
+
+# v4.3.2
+
+Released: 2026-10-12
+
+## Other Changes
+
+- No code changes to the package. All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so their SHA-256 digests change for v4.3.2 even though the compiled code is unchanged. The `finalWasm` and glue byte sizes match v4.3.1. The only gzip-9 change is render-only, which is 2 bytes smaller; default, highlight-only, and parse-only are unchanged. Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.3.2-shipped-artifacts.json` Release asset.

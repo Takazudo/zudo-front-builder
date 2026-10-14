@@ -39,9 +39,11 @@
 # deliberate trade for noticing an accidental change.
 #
 # NO-DATA IS NEUTRAL, VANISHED TELEMETRY IS RED. A week in which nothing was
-# harvestable (no `health` runs, or only runs that were still in progress /
-# went red before the test step) is quiet (verdict `no-data`) and files
-# nothing. A green `health` job whose log carries zero records is red — that
+# harvestable (no `health` runs, or only runs that went red before the test
+# step) is quiet (verdict `no-data`) and files nothing. A run still in
+# progress is not quiet: the window ends two hours before the harvest so
+# ordinary runs have finished, and one that has not is missing evidence
+# (`incomplete`, #3230). A green `health` job whose log carries zero records is red — that
 # is the emitter or the harvester breaking, i.e. exactly the silent no-op
 # #2902 exists to prevent. The harvester keeps the two apart by exit code.
 #
@@ -50,14 +52,27 @@
 # the step summary, never a partial harvest. A window in which every log has
 # expired is still `no-data`, not red.
 #
+# AN INCOMPLETE WINDOW IS NEVER GREEN (#3230). The harvester pages the REST
+# run list over a fixed [since, until] window, partitioning past GitHub's
+# 1,000-results-per-search ceiling, and reports `incomplete` when it cannot
+# prove it saw every run: a run cap, a failed/malformed/non-progressing page,
+# a rate limit, its finite request budget, or a started-then-cancelled
+# `health` job whose log answers 404. Verdict `incomplete` (script exit 3)
+# files/comments on the tracking issue and alerts like `red` below — the two
+# conditions only exempt `green` and `no-data` — and never closes it; any red
+# finding in the evidence that was collected still wins as `red`. Window
+# bounds, page counts, and unavailable runs are in the step summary and the
+# artifact's enumeration.txt / unavailable-runs.txt.
+#
 # ALLOWED-TO-FAIL WITHOUT SWALLOWING THE SIGNAL: no `continue-on-error: true`
 # anywhere. That flag has a sharp edge — a continue-on-error step never marks
 # its job "failed", so a downstream `if: failure()` never fires and the
 # failure this workflow exists to surface is silently dropped. Instead the
 # script step wraps the run in `set +e; ...; rc=$?; set -e` and `exit 0`s
 # unconditionally; later steps branch on the `verdict` output the script
-# writes to `$GITHUB_OUTPUT` itself (green / no-data / red). Same shape as
-# exam.yml, but keyed on the verdict token rather than the raw exit code:
+# writes to `$GITHUB_OUTPUT` itself (green / no-data / red / incomplete).
+# Same shape as exam.yml, but keyed on the verdict token rather than the raw
+# exit code:
 # the script's no-data code is 1, and 1 is also what a `set -e` death inside
 # it exits with, so an rc-keyed condition would read a crashed watch as a
 # quiet week. A verdict that was never written (the script died, or a step
@@ -99,7 +114,11 @@ jobs:
   watch:
     name: Supervisor timeline watch (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # #3230: the full-window harvest of 2026-10-04..12 took 7m26s locally for
+    # 452 runs at 890 metered requests. The 950-request budget bounds the
+    # runtime, so 30 minutes contains it with retries and the one
+    # secondary-rate-limit pause (<= 2 min), where 15 left too little margin.
+    timeout-minutes: 30
     # A job-level `permissions:` block REPLACES the workflow default, so
     # contents: read must be restated. `actions: read` is what lets this job's
     # GITHUB_TOKEN drive `gh run list` and the harvester's two REST calls
@@ -175,6 +194,8 @@ jobs:
       # `null != 'green'` is true. If checkout itself failed this step cannot
       # run the script and fails too; the notify job below still alerts.
       # `no-data` is deliberately excluded: a quiet week is not a finding.
+      # `incomplete` is deliberately included (#3230): missing evidence is a
+      # finding, so it files like red and the close step below cannot run.
       - name: File or comment on tracking issue
         if: >-
           !cancelled()
@@ -210,11 +231,12 @@ jobs:
       IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
     steps:
       # Quiet only when the job succeeded AND the verdict is green or
-      # no-data. Everything else alerts: a red verdict, a verdict that was
-      # never written (infra failure before or inside the script), a job that
-      # went red after a green watch (artifact upload), and a cancelled job.
+      # no-data. Everything else alerts: a red or incomplete verdict, a
+      # verdict that was never written (infra failure before or inside the
+      # script), a job that went red after a green watch (artifact upload),
+      # and a cancelled job.
       # Cancelled is included on purpose: a `timeout-minutes` expiry is
-      # reported as `cancelled` too, and a harvester hung on the API past 15
+      # reported as `cancelled` too, and a harvester hung on the API past 30
       # minutes is the one failure this lane must never swallow — the cost is
       # a ping when someone cancels a manual dispatch by hand. A skipped job
       # (nothing ran at all) stays silent.
@@ -226,11 +248,14 @@ jobs:
                && (needs.watch.outputs.verdict == 'green' || needs.watch.outputs.verdict == 'no-data'))
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # The actual verdict (red / incomplete), or the job result when the
+          # script never wrote one -- not a hard-coded "red" (#3230).
+          VERDICT: ${{ needs.watch.outputs.verdict || format('no verdict, job {0}', needs.watch.result) }}
         run: |
           curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
             -H 'Content-Type: application/json' \
             -d "{
-              \"value1\": \"Supervisor watch red\",
+              \"value1\": \"Supervisor watch ${VERDICT}\",
               \"value2\": \"weekly supervisor-timeline harvest (R-A/R-B/identity drift)\",
               \"value3\": \"${RUN_URL}\"
             }" || echo "::warning::IFTTT notification failed"

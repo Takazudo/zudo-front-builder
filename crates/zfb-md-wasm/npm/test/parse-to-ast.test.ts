@@ -301,6 +301,21 @@ describe("toMdastRoot (validated ecosystem adapter)", () => {
     expect(JSON.stringify(root)).not.toContain("_markdownRsStops");
   });
 
+  it("adapts an explicit multiline MDX table (zfb#4232) as valid flow content", async () => {
+    const source =
+      "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>";
+    const out = await parseToAst(source, { filename: "post.mdx", dialect: "mdx" });
+    expect(out.diagnostics).toEqual([]);
+    const root = toMdastRoot(out.ast);
+    const table = root.children[0];
+    expect(table).toMatchObject({ type: "mdxJsxFlowElement", name: "table" });
+    const names: unknown[] = [];
+    visit(root, "mdxJsxTextElement", (node) => {
+      names.push(node.name);
+    });
+    expect(names).toEqual(["thead", "tr", "th", "tr", "td"]);
+  });
+
   it("preserves and clones data on MDX attribute records", async () => {
     const out = await parseToAst("<Badge count={40 + 2} />\n", { filename: "post.mdx" });
     if (!out.ast) throw new Error("fixture must parse");

@@ -1626,3 +1626,38 @@ fn mdx_custom_component_survives_as_typed_node_with_attributes() {
         "nested emphasis survives: {inline:?}"
     );
 }
+
+#[test]
+fn mdx_explicit_table_keeps_raw_paragraph_wrapper_for_valid_mdast() {
+    // zfb#4232: `compile` splices these paragraphs out before rendering, but
+    // parseToAst stays raw. mdast forbids phrasing JSX directly under a flow
+    // element, so the wrapper is what keeps `toMdastRoot` able to adapt it.
+    let source = "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>";
+    let options = serde_json::json!({ "filename": "post.mdx", "dialect": "mdx" }).to_string();
+    let out = parse(zfb_md_wasm::parse_to_ast(source, &options));
+    assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
+    let table = &out["ast"]["children"][0];
+    assert_eq!(table["type"], "mdxJsxFlowElement");
+    assert_eq!(table["name"], "table");
+    let mut wrapped = 0;
+    assert_no_phrasing_jsx_under_flow_jsx(table, &mut wrapped);
+    assert_eq!(
+        wrapped, 2,
+        "thead row and tbody row each keep their paragraph"
+    );
+}
+
+fn assert_no_phrasing_jsx_under_flow_jsx(node: &Value, wrapped: &mut usize) {
+    for child in node["children"].as_array().into_iter().flatten() {
+        if node["type"] == "mdxJsxFlowElement" {
+            assert_ne!(
+                child["type"], "mdxJsxTextElement",
+                "phrasing JSX under flow JSX: {child}"
+            );
+            if child["type"] == "paragraph" {
+                *wrapped += 1;
+            }
+        }
+        assert_no_phrasing_jsx_under_flow_jsx(child, wrapped);
+    }
+}

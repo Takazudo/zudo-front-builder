@@ -1,0 +1,119 @@
+---
+title: compileCss
+description: Node.js の同一プロセス内で、メモリ上の設定と明示的なソースを使って CSS ファイルをコンパイルします。
+sidebar_position: 10
+---
+
+`compileCss` は Node.js 専用の非同期 ESM API です。[`zfb css`](cli.mdx) と同じ Rust コンパイラーを使い、CLI の起動や設定ファイルの評価を行わずに CSS を直接返します。
+
+```ts
+import { compileCss } from "@takazudo/zfb/css";
+
+const { css, diagnostics, warnings } = await compileCss({
+  input: "styles/preview.css",
+  projectRoot: "./preview",
+  config: { wind: { reset: "none" } },
+  sources: ["components/**/*.tsx"],
+  noAutoSource: true,
+});
+```
+
+この例では `input` は呼び出し時のディレクトリ、`sources` は `preview` を基準に解決されます。CSS エントリーには通常の CSS とインポートを書けます。パッケージの CSS exports も利用できます。ユーティリティーの配置、トークン、リセット、ダークモード、ブレークポイント、ソース抽出、マニフェスト、フレームワークのハイライト CSS は既存のコンパイル処理を共有します。対象はグローバル CSS であり、CSS Modules は有効になりません。
+
+## 実行環境とインストール
+
+**Node.js 22.0.0 以降**を使い、optional dependencies を有効にして `@takazudo/zfb` をインストールしてください。同じバージョンのプラットフォームパッケージにネイティブアドオンが含まれます。
+
+| プラットフォーム | パッケージ |
+|---|---|
+| macOS arm64 | `@takazudo/zfb-darwin-arm64` |
+| macOS x64 | `@takazudo/zfb-darwin-x64` |
+| Linux GNU arm64 | `@takazudo/zfb-linux-arm64-gnu` |
+| Linux GNU x64 | `@takazudo/zfb-linux-x64-gnu` |
+| Windows x64 MSVC | `@takazudo/zfb-win32-x64-msvc` |
+
+Linux は glibc が必要です。musl はサポートしません。アドオンはインストール済みパッケージから遅延ロードされます。アドオンの欠落やバージョン不一致はエラーとなり、グローバル CLI、別途ダウンロードするパッケージ、ソースツリーにはフォールバックしません。SDK のルートや runtime のインポートではアドオンをロードしません。ブラウザー、エッジ環境、組み込み SDK のコードからこのエントリーをインポートしないでください。
+
+## オプションとパスの基準
+
+```ts
+import { compileCss, type CompileCssOptions, type CompileCssResult } from "@takazudo/zfb/css";
+
+const options: CompileCssOptions = {
+  input: "styles/main.css",
+  cwd: "/work/site",
+  projectRoot: ".",
+  configDir: "./config",
+  config: { wind: { reset: "none" }, outDir: "dist" },
+  sources: [],
+  noAutoSource: false,
+  output: "dist/main.css",
+};
+const result: CompileCssResult = await compileCss(options);
+```
+
+| オプション | デフォルト | 内容 |
+|---|---|---|
+| `input` | 必須 | `cwd` 基準の CSS ファイルパス。CSS 文字列や仮想ファイルは受け付けません。 |
+| `cwd` | 呼び出し時の `process.cwd()` | 呼び出しの基準ディレクトリ。相対値は取得した作業ディレクトリ基準です。 |
+| `projectRoot` | `cwd` | プロジェクトとソースの基準。相対値は `cwd` 基準です。 |
+| `configDir` | `projectRoot` | 設定内パスの基準。相対値は `cwd` 基準です。 |
+| `config` | CSS のデフォルト設定 | 評価済みの CSS 関連設定。 |
+| `sources` | `[]` | `projectRoot` 基準の明示的なソースルートまたは glob。空配列も有効です。 |
+| `noAutoSource` | `false` | 通常の 5 ルート `pages`、`components`、`layouts`、`content`、`src` を除外します。 |
+| `codeHighlightMode` | 設定値 | `"class"` または `"inline"`。CLI と同様にフレームワークのハイライトモードを上書きします。 |
+| `noDefaultHighlightStyles` | `false` | デフォルトのフレームワークハイライト CSS を抑制します。 |
+| `output` | 省略 | `cwd` 基準の出力先ファイル。指定時も CSS を返します。 |
+
+各呼び出しは独自の作業ディレクトリを取得し、プロセス全体の cwd や環境変数を変更しません。シンボリックリンクと親ディレクトリの意味を保ち、`link/..` を JavaScript の `path.resolve` のように字句的に短縮しません。
+
+設定された `outDir` の除外と明示的なソースは `projectRoot` 基準です。設定内のパスは `configDir` 基準で、プリセットのソースやマニフェストは宣言元パッケージの基準を保ちます。`noAutoSource` を指定しても、設定済みルートと package roots、ソース除外、マニフェスト、safelist、明示的なソース、ハイライトの role classes は残ります。設定済み出力ディレクトリと scratch ディレクトリは引き続き除外します。`output` を指定した場合はそのファイルだけを追加で除外し、親ディレクトリや同じ場所のソースファイルは除外しません。
+
+## 設定とプリセット
+
+`CssCompileConfig` は公開済みの `wind`、`codeHighlight`、`outDir`、`presets` の型を再利用します。設定は `config` にまとめて渡します。トップレベルの `wind` オプションはありません。`config` を省略すると、近くに `zfb.config.ts` などがあっても CSS のデフォルト設定を使います。設定ファイルの探索、評価、一時作成は行いません。
+
+評価済みのサイト設定も渡せます。ネイティブ変換前に CSS 関連フィールドだけを取り出すため、無関係なプラグインやサイト設定の関数はコンパイルを妨げません。CSS 関連フィールドの値にはシリアライズ可能な設定データを使ってください。
+
+```ts
+import { definePreset } from "@takazudo/zfb/config";
+import { compileCss } from "@takazudo/zfb/css";
+
+// 通常は、ソースを所有するインストール済みパッケージがエクスポートします。
+const designPreset = definePreset("@example/design-system", {
+  wind: { sources: { roots: ["./components"] } },
+});
+
+const result = await compileCss({
+  input: "styles/main.css",
+  config: { presets: [designPreset], wind: { reset: "none" } },
+});
+```
+
+合成は入力を変更せず、既存の優先順位に従います。先に指定したプリセットがデフォルトを提供し、メイン設定が上書きします。ソース宣言はそれぞれの所有元を保ちます。`definePreset` の出自情報は合成後も保持されます。内部マーカーを自分で記述しないでください。既存の設定契約と同様、入れ子の presets は再帰展開しません。
+
+`config: { wind: false }` でも、通常の CSS、インポート、フレームワークのハイライト CSS は処理します。ユーティリティー生成と、使われない明示的なソースの検証はスキップします。
+
+## 戻り値とエラー
+
+成功時は必ず `{ css, diagnostics, warnings }` を返します。`output` 指定時も同じです。`warnings` はソース計画や設定の警告文字列を保持し、`diagnostics` は構造化されたコンパイラー診断を保持します。API 自体は警告を出力しません。
+
+公開型は `CssCompileConfig`、`CompileCssOptions`、`CompileCssResult`、`CssDiagnostic`、`CssDiagnosticOrigin` です。診断には code、severity、message、candidate、origin があり、candidate の欠落は `null` で表します。origin は source ID、path、line、column、byte offset、label を持ち、取得できない値は `null` です。column は 1 始まりのバイト単位です。
+
+```ts
+import { compileCss, CssCompileError } from "@takazudo/zfb/css";
+
+try {
+  const result = await compileCss({ input: "styles/main.css" });
+  consumeCss(result.css); // CSS や警告の渡し先は呼び出し側で決めます。
+} catch (error) {
+  if (error instanceof CssCompileError) {
+    console.error(error.message, error.code, error.diagnostics);
+  }
+  throw error;
+}
+```
+
+`CssCompileError` は `diagnostics` と、取得可能な主要診断の `code`、`severity`、`origin` を公開します。失敗時は reject し、部分的な成功 CSS や古い出力を返しません。未解決のディレクティブや、単一 CSS として出力できない付随アセットもエラーです。入力を修正すれば次の呼び出しで成功できます。同時呼び出しのルート、設定、出力先は互いに独立します。
+
+戻り値だけを使う呼び出しでは、設定、出力、キャッシュ、中間ファイルを書き込まず、サブプロセスや watcher を起動しません。`output` 指定時はアトミックに置換し、入力と出力が同じファイルに解決される場合は拒否します。コンパイル失敗時は既存出力を保持します。アトミック書き込み用の一時ファイルは、出力を明示的に指定した場合だけ使用します。

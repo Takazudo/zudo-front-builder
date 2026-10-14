@@ -1,58 +1,36 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
 "use client";
 
-import { useMemo, useState } from "preact/hooks";
+import {
+  computed,
+  getScope,
+  Show,
+  signal,
+  type ReadonlySignal,
+  type Signal,
+} from "@takazudo/zfb/zudo-react";
 
 import {
   isNoteDirectiveSample,
   NOTE_DIRECTIVE_SAMPLE,
   noteDirectiveFeatures,
-  type NoteDirectiveFeatures,
 } from "./admonition-sample";
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
 import SamplePicker, { type PlaygroundSample } from "./sample-picker";
+import type { ZfbMdWasmOptions } from "@takazudo/zfb-md-wasm";
+
 import type { PlaygroundDiagnostic } from "./result-types";
-import { createModuleLoader, useWasmModule } from "./use-wasm-module";
+import { createGfmSignals, snapshotGfm, type GfmKey, type GfmSignals } from "./gfm-signals";
+import { createModuleLoader, wasmModule } from "./use-wasm-module";
 
-type JsxRuntime = "preact" | "react";
-type GfmKey = "strikethrough" | "table" | "autolinkLiteral" | "taskListItem" | "footnoteDefinition";
-
-interface GfmOptions {
-  strikethrough: boolean;
-  table: boolean;
-  autolinkLiteral: boolean;
-  taskListItem: boolean;
-  footnoteDefinition: boolean;
-}
-
-interface CompileOptions {
-  filename: string;
-  jsxRuntime: JsxRuntime;
-  development: boolean;
-  pipeline: {
-    gfm: GfmOptions;
-    cjkFriendly: boolean;
-    hardBreaks: boolean;
-    features?: NoteDirectiveFeatures;
-  };
-}
+type CompileOptions = ZfbMdWasmOptions;
 
 interface CompileResult {
   code: string | null;
   frontmatter: unknown;
   diagnostics: readonly PlaygroundDiagnostic[];
 }
-
-const DEFAULT_GFM: GfmOptions = {
-  strikethrough: true,
-  table: true,
-  autolinkLiteral: true,
-  taskListItem: true,
-  footnoteDefinition: true,
-};
 
 const GFM_OPTIONS: readonly { key: GfmKey; label: string }[] = [
   { key: "strikethrough", label: "gfm.strikethrough" },
@@ -103,180 +81,147 @@ function formatRejectedError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const loadCompileModule = createModuleLoader(() => import("@takazudo/zfb-md-wasm"));
+
 function CompileOptionsPanel({
   development,
   gfm,
-  jsxRuntime,
   filename,
   cjkFriendly,
   hardBreaks,
   noteDirectiveEnabled,
   activeSampleId,
-  onDevelopmentChange,
-  onGfmChange,
-  onJsxRuntimeChange,
-  onFilenameChange,
-  onCjkFriendlyChange,
-  onHardBreaksChange,
-  onNoteDirectiveChange,
   onPickSample,
 }: {
-  development: boolean;
-  gfm: GfmOptions;
-  jsxRuntime: JsxRuntime;
-  filename: string;
-  cjkFriendly: boolean;
-  hardBreaks: boolean;
-  noteDirectiveEnabled: boolean;
-  activeSampleId?: string;
-  onDevelopmentChange: (checked: boolean) => void;
-  onGfmChange: (key: GfmKey, checked: boolean) => void;
-  onJsxRuntimeChange: (runtime: JsxRuntime) => void;
-  onFilenameChange: (value: string) => void;
-  onCjkFriendlyChange: (checked: boolean) => void;
-  onHardBreaksChange: (checked: boolean) => void;
-  onNoteDirectiveChange: (checked: boolean) => void;
+  development: Signal<boolean>;
+  gfm: GfmSignals;
+  filename: Signal<string>;
+  cjkFriendly: Signal<boolean>;
+  hardBreaks: Signal<boolean>;
+  noteDirectiveEnabled: Signal<boolean>;
+  activeSampleId: ReadonlySignal<string | undefined>;
   onPickSample: (sample: PlaygroundSample) => void;
 }) {
-  const filenameIsValid = isValidFilename(filename);
+  const filenameIsInvalid = computed(() => !isValidFilename(filename.value));
 
   return (
-    <div className="flex flex-col gap-vsp-sm">
+    <div class="flex flex-col gap-vsp-sm">
       <SamplePicker
         samples={COMPILE_SAMPLES}
         activeSampleId={activeSampleId}
         onPick={onPickSample}
       />
 
-      <div className="grid grid-cols-1 gap-hsp-lg md:grid-cols-2">
-        <label className="flex flex-col gap-vsp-2xs text-small font-semibold text-fg">
-          jsxRuntime
-          <select
-            className="rounded border border-muted bg-surface px-hsp-md py-vsp-2xs font-normal text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            value={jsxRuntime}
-            onChange={(event) => onJsxRuntimeChange(event.currentTarget.value as JsxRuntime)}
-          >
-            <option value="preact">preact</option>
-            <option value="react">react</option>
-          </select>
-        </label>
-
-        <label className="flex flex-col gap-vsp-2xs text-small font-semibold text-fg">
+      <div class="grid grid-cols-1 gap-hsp-lg md:grid-cols-2">
+        <label class="flex flex-col gap-vsp-2xs text-small font-semibold text-fg">
           filename
           <input
             type="text"
-            className="rounded border border-muted bg-surface px-hsp-md py-vsp-2xs font-mono text-small font-normal text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            value={filename}
-            aria-invalid={!filenameIsValid}
-            onInput={(event) => onFilenameChange(event.currentTarget.value)}
+            class="rounded border border-muted bg-surface px-hsp-md py-vsp-2xs font-mono text-small font-normal text-fg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+            modelValue={filename}
+            aria-invalid={filenameIsInvalid}
           />
-          {!filenameIsValid ? (
-            <span className="text-caption font-normal text-danger">
-              Use a .md or .mdx filename.
-            </span>
-          ) : null}
+          <Show when={filenameIsInvalid}>
+            {() => (
+              <span class="text-caption font-normal text-danger">Use a .md or .mdx filename.</span>
+            )}
+          </Show>
         </label>
       </div>
 
-      <OptionRow label="development" checked={development} onChange={onDevelopmentChange} />
+      <OptionRow label="development" checked={development} />
 
-      <div className="grid grid-cols-1 gap-x-hsp-lg md:grid-cols-2">
+      <div class="grid grid-cols-1 gap-x-hsp-lg md:grid-cols-2">
         {GFM_OPTIONS.map(({ key, label }) => (
-          <OptionRow
-            key={key}
-            label={label}
-            checked={gfm[key]}
-            onChange={(checked) => onGfmChange(key, checked)}
-          />
+          <OptionRow label={label} checked={gfm[key]} />
         ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-x-hsp-lg md:grid-cols-2">
-        <OptionRow
-          label="pipeline.cjkFriendly"
-          checked={cjkFriendly}
-          onChange={onCjkFriendlyChange}
-        />
-        <OptionRow label="pipeline.hardBreaks" checked={hardBreaks} onChange={onHardBreaksChange} />
+      <div class="grid grid-cols-1 gap-x-hsp-lg md:grid-cols-2">
+        <OptionRow label="pipeline.cjkFriendly" checked={cjkFriendly} />
+        <OptionRow label="pipeline.hardBreaks" checked={hardBreaks} />
       </div>
 
       <OptionRow
         label={'pipeline.features.directives.note = "Note"'}
         checked={noteDirectiveEnabled}
-        onChange={onNoteDirectiveChange}
       />
     </div>
   );
 }
 
-function CompileOutput({ result }: { result: CompileResult | null }) {
-  if (result === null) {
-    return <p className="m-0 text-small text-muted">Press Run to emit an ES module.</p>;
-  }
+function CompileOutput({ result }: { result: ReadonlySignal<CompileResult | null> }) {
+  const hasResult = computed(() => result.value !== null);
+  const hasCode = computed(() => result.value?.code != null);
 
   return (
-    <div className="flex min-w-0 flex-col gap-vsp-md">
-      <section className="flex min-w-0 flex-col gap-vsp-2xs" aria-label="code">
-        <h3 className="m-0 text-small font-semibold text-fg">code</h3>
-        {result.code === null ? (
-          <p className="m-0 text-small text-muted">No module source was emitted.</p>
-        ) : (
-          <pre className="m-0 max-w-full overflow-auto whitespace-pre font-mono text-caption text-code-fg">
-            {result.code}
-          </pre>
-        )}
-      </section>
+    <Show
+      when={hasResult}
+      fallback={() => <p class="m-0 text-small text-muted">Press Run to emit an ES module.</p>}
+    >
+      {() => (
+        <div class="flex min-w-0 flex-col gap-vsp-md">
+          <section class="flex min-w-0 flex-col gap-vsp-2xs" aria-label="code">
+            <h3 class="m-0 text-small font-semibold text-fg">code</h3>
+            <Show
+              when={hasCode}
+              fallback={() => (
+                <p class="m-0 text-small text-muted">No module source was emitted.</p>
+              )}
+            >
+              {() => (
+                <pre class="m-0 max-w-full overflow-auto whitespace-pre font-mono text-caption text-code-fg">
+                  {computed(() => result.value?.code ?? "")}
+                </pre>
+              )}
+            </Show>
+          </section>
 
-      <section className="flex min-w-0 flex-col gap-vsp-2xs" aria-label="frontmatter">
-        <h3 className="m-0 text-small font-semibold text-fg">frontmatter</h3>
-        <pre className="m-0 max-w-full overflow-auto whitespace-pre-wrap font-mono text-caption text-code-fg">
-          {formatFrontmatter(result.frontmatter)}
-        </pre>
-      </section>
-    </div>
+          <section class="flex min-w-0 flex-col gap-vsp-2xs" aria-label="frontmatter">
+            <h3 class="m-0 text-small font-semibold text-fg">frontmatter</h3>
+            <pre class="m-0 max-w-full overflow-auto whitespace-pre-wrap font-mono text-caption text-code-fg">
+              {computed(() => formatFrontmatter(result.value?.frontmatter ?? null))}
+            </pre>
+          </section>
+        </div>
+      )}
+    </Show>
   );
 }
 
-function CompilePlayground() {
-  const [source, setSource] = useState(COMPILE_SAMPLE.value);
-  const [activeSampleId, setActiveSampleId] = useState<string | undefined>(COMPILE_SAMPLE.id);
-  const [jsxRuntime, setJsxRuntime] = useState<JsxRuntime>("preact");
-  const [development, setDevelopment] = useState(false);
-  const [filename, setFilename] = useState("preview.mdx");
-  const [gfm, setGfm] = useState<GfmOptions>({ ...DEFAULT_GFM });
-  const [cjkFriendly, setCjkFriendly] = useState(false);
-  const [hardBreaks, setHardBreaks] = useState(false);
-  const [noteDirectiveEnabled, setNoteDirectiveEnabled] = useState(false);
-  const [validationDiagnostics, setValidationDiagnostics] = useState<
-    readonly PlaygroundDiagnostic[]
-  >([]);
+export default function CompilePlayground() {
+  const scope = getScope();
+  const source = signal(COMPILE_SAMPLE.value);
+  const activeSampleId = signal<string | undefined>(COMPILE_SAMPLE.id);
+  const development = signal(false);
+  const filename = signal("preview.mdx");
+  const gfm = createGfmSignals();
+  const cjkFriendly = signal(false);
+  const hardBreaks = signal(false);
+  const noteDirectiveEnabled = signal(false);
+  const validationDiagnostics = signal<readonly PlaygroundDiagnostic[]>([]);
 
-  const loadCompileModule = useMemo(
-    () => createModuleLoader(() => import("@takazudo/zfb-md-wasm")),
-    [],
-  );
-  const { state, run } = useWasmModule({
+  const { state, run } = wasmModule(scope, {
     loadModule: loadCompileModule,
     execute: async (module, input: string, options: CompileOptions): Promise<CompileResult> =>
       module.compile(input, options),
   });
 
   function handleRun(): void {
-    if (!isValidFilename(filename)) {
-      setValidationDiagnostics([filenameDiagnostic()]);
+    if (!isValidFilename(filename.value)) {
+      validationDiagnostics.value = [filenameDiagnostic()];
       return;
     }
 
-    setValidationDiagnostics([]);
-    void run(source, {
-      filename,
-      jsxRuntime,
-      development,
+    validationDiagnostics.value = [];
+    void run(source.value, {
+      filename: filename.value,
+      development: development.value,
       pipeline: {
-        gfm: { ...gfm },
-        cjkFriendly,
-        hardBreaks,
-        ...(noteDirectiveEnabled ? { features: noteDirectiveFeatures(true) } : {}),
+        gfm: snapshotGfm(gfm),
+        cjkFriendly: cjkFriendly.value,
+        hardBreaks: hardBreaks.value,
+        ...(noteDirectiveEnabled.value ? { features: noteDirectiveFeatures(true) } : {}),
       },
     }).catch(() => {
       // The runner publishes rejected calls in its error state. Keeping the
@@ -285,47 +230,49 @@ function CompilePlayground() {
     });
   }
 
-  const result =
-    state.status === "ready" && validationDiagnostics.length === 0 ? state.result : null;
-  const diagnostics =
-    validationDiagnostics.length > 0
-      ? validationDiagnostics
-      : state.status === "ready"
-        ? state.result.diagnostics
-        : [];
-  const rejectedError = state.status === "error" ? formatRejectedError(state.error) : null;
+  const result = computed(() => {
+    const current = state.value;
+    return current.status === "ready" && validationDiagnostics.value.length === 0
+      ? current.result
+      : null;
+  });
+  const diagnostics = computed(() => {
+    const current = state.value;
+    if (validationDiagnostics.value.length > 0) return validationDiagnostics.value;
+    return current.status === "ready" ? current.result.diagnostics : [];
+  });
+  const emptyMessage = computed(() =>
+    state.value.status === "ready" ? "No diagnostics." : undefined,
+  );
+  const rejectedError = computed(() => {
+    const current = state.value;
+    return current.status === "error" ? formatRejectedError(current.error) : "";
+  });
 
   return (
     <PlaygroundShell
       value={source}
-      onInput={(value) => {
-        setSource(value);
-        setActiveSampleId(undefined);
+      onInput={() => {
+        activeSampleId.value = undefined;
       }}
       onRun={handleRun}
-      pending={state.status === "loading"}
-      hasRun={state.status !== "idle" || validationDiagnostics.length > 0}
+      pending={computed(() => state.value.status === "loading")}
+      hasRun={computed(
+        () => state.value.status !== "idle" || validationDiagnostics.value.length > 0,
+      )}
       options={
         <CompileOptionsPanel
           development={development}
           gfm={gfm}
-          jsxRuntime={jsxRuntime}
           filename={filename}
           cjkFriendly={cjkFriendly}
           hardBreaks={hardBreaks}
           noteDirectiveEnabled={noteDirectiveEnabled}
           activeSampleId={activeSampleId}
-          onDevelopmentChange={setDevelopment}
-          onGfmChange={(key, checked) => setGfm((value) => ({ ...value, [key]: checked }))}
-          onJsxRuntimeChange={setJsxRuntime}
-          onFilenameChange={setFilename}
-          onCjkFriendlyChange={setCjkFriendly}
-          onHardBreaksChange={setHardBreaks}
-          onNoteDirectiveChange={setNoteDirectiveEnabled}
           onPickSample={(sample) => {
-            setSource(sample.value);
-            setActiveSampleId(sample.id);
-            setNoteDirectiveEnabled(isNoteDirectiveSample(sample));
+            source.value = sample.value;
+            activeSampleId.value = sample.id;
+            noteDirectiveEnabled.value = isNoteDirectiveSample(sample);
           }}
         />
       }
@@ -334,15 +281,11 @@ function CompilePlayground() {
         <DiagnosticsList
           diagnostics={diagnostics}
           label="Diagnostics"
-          emptyMessage={state.status === "ready" ? "No diagnostics." : undefined}
+          emptyMessage={emptyMessage}
         />
       }
       trapError={rejectedError}
-      textareaProps={{ "aria-label": "MDX source" }}
+      textareaLabel="MDX source"
     />
   );
 }
-
-(CompilePlayground as { displayName?: string }).displayName = "CompilePlayground";
-
-export default CompilePlayground;

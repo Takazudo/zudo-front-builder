@@ -1,5 +1,5 @@
-import { h } from "preact";
-import { render } from "preact-render-to-string";
+import { h } from "@takazudo/zfb/zudo-react";
+import { renderToString as render } from "@takazudo/zfb/zudo-react/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -29,7 +29,8 @@ describe("playground admonition samples", () => {
     const html = render(h(Component, {}));
 
     expect(html).toContain("Admonition directive");
-    expect(html).toContain("pipeline.features.directives.note = &quot;Note&quot;");
+    // zudo-react serializes text-node quotes literally (valid HTML text).
+    expect(html).toContain('pipeline.features.directives.note = "Note"');
   });
 
   it("offers the sample beside parseToAst's generic directives option", () => {

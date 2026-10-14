@@ -1,0 +1,11 @@
+---
+title: v4.5.0
+sidebar_position: 37
+---
+
+# v4.5.0
+
+Released: 2026-10-14
+
+- No package-specific changes.
+- All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so all four SHA-256 digests change for v4.5.0 even though the compiled code is unchanged and the byte sizes are essentially identical (highlight-only gzip-9 moves by 1 byte). Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.5.0-shipped-artifacts.json` Release asset.

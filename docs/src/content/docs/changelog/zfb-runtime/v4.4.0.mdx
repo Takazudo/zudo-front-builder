@@ -1,0 +1,13 @@
+---
+title: v4.4.0
+sidebar_position: 36
+---
+
+# v4.4.0
+
+Released: 2026-10-13
+
+## Bug Fixes
+
+- The client router now restores page A when Back reaches a fragment entry the browser created (A → A#fragment → soft navigation to B → Back). Before, the URL changed to A#fragment while B stayed rendered. The router fetches and swaps A in and scrolls to the fragment. A history entry with no router state whose pathname matches the rendered page is still left to the browser, so same-page fragment and raw `history.pushState(null, …)` query entries keep their no-fetch behavior (#4157, #4165; b620e652, c7564cc2).
+- A Forward out of such a restored entry is now reported as `forward`, not `back`, so direction-aware transitions animate the right way (78e61ad4).

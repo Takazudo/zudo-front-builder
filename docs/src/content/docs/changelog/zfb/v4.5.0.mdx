@@ -1,0 +1,21 @@
+---
+title: v4.5.0
+sidebar_position: 151
+---
+
+# v4.5.0
+
+Released: 2026-10-14
+
+## Features
+
+- `@takazudo/zfb/css` is a new Node API that compiles zudo-wind CSS in-process through a native addon, with per-platform carrier packaging for the five native packages. It is documented in the new `compile-css` API reference and linked from the CLI reference (c4c9c4d5).
+- `ErrorBoundary` is a public, opt-in export for zudo-react. A failing subtree renders its fallback and recovers without losing the rest of the page; the boundary payload and lifecycle services are isolated so pages that do not use it keep the same shipped size (a4c31ff0, e9c37abe, 44b20949).
+
+## Bug Fixes
+
+- zudo-react: resetting a native form no longer clears the state of sibling radio groups (2746ab39).
+
+## Other Changes
+
+- The `basic-blog` scaffold's `zfb-shim.d.ts` declares the `zfb/css` module so the new CSS API type-checks in generated projects (9eab80a7).

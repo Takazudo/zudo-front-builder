@@ -1,12 +1,18 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "metric": "gzip-identity-normalized",
   "normalizationVersion": 1,
   "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
+  "dependencyFingerprint": {
+    "policyVersion": 1,
+    "parser": "yaml@2.9.0",
+    "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
+    "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
+  },
   "decisionIssue": 3469,
-  "outcome": "metric-migration",
+  "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "d3d78455daa4f632a0e9d3d76ed51ad9be45875b",
+  "baselineSourceSha": "c2676bb0fedad1072e80885a0381bb09c0c22df6",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -22,17 +28,17 @@
     "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
   },
   "runnerSha256": {
-    "measure-real.mjs": "bae79601c376fce269526bccb1433e05ca187a04d3279594fdef8e1dca171686",
-    "measure.mjs": "a437799c27e11cb7353d48556d7c15b44ea8b12163664157a6168c7e8aa53e15"
+    "measure-real.mjs": "c8be17ee9ffd25738247f9ed6ad650f1969b088c12b2f1bcd52fdc2d25770dca",
+    "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "4.3.1",
+    "packageVersion": "4.5.1",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "5b0564ee306a23eb2c864f04070b5271fff932d4b44c6b2695e3310ae632af7c",
-    "cargoLockSha256": "8c2862b6e27faedcbe37b4f71bd05d83c845acd65cae7ba286a396438eb264d6"
+    "pnpmLockSha256": "ee4accdbbbe22851c41ac529d492fbb6c03b007061ed0042068b2551731b5817",
+    "cargoLockSha256": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -46,32 +52,32 @@
         "gzipNormalized": 0
       },
       "event-only": {
-        "raw": 66792,
-        "gzipNormalized": 22235
+        "raw": 64535,
+        "gzipNormalized": 22195
       },
       "scalar-signal": {
-        "raw": 66800,
-        "gzipNormalized": 22240
+        "raw": 64543,
+        "gzipNormalized": 22213
       },
       "show-for": {
-        "raw": 66949,
-        "gzipNormalized": 22310
+        "raw": 64695,
+        "gzipNormalized": 22272
       },
       "model": {
-        "raw": 66791,
-        "gzipNormalized": 22235
+        "raw": 64534,
+        "gzipNormalized": 22200
       },
       "blog-theme": {
-        "raw": 67144,
-        "gzipNormalized": 22359
+        "raw": 64890,
+        "gzipNormalized": 22334
       },
       "json-api": {
-        "raw": 66950,
-        "gzipNormalized": 22319
+        "raw": 64692,
+        "gzipNormalized": 22284
       },
       "multi-island": {
-        "raw": 67072,
-        "gzipNormalized": 22324
+        "raw": 64814,
+        "gzipNormalized": 22286
       }
     },
     "packed": {
@@ -80,42 +86,64 @@
         "gzipNormalized": 0
       },
       "event-only": {
-        "raw": 66854,
-        "gzipNormalized": 22254
+        "raw": 64548,
+        "gzipNormalized": 22199
       },
       "scalar-signal": {
-        "raw": 66862,
-        "gzipNormalized": 22269
+        "raw": 64556,
+        "gzipNormalized": 22203
       },
       "show-for": {
-        "raw": 67011,
-        "gzipNormalized": 22329
+        "raw": 64708,
+        "gzipNormalized": 22286
       },
       "model": {
-        "raw": 66853,
-        "gzipNormalized": 22259
+        "raw": 64547,
+        "gzipNormalized": 22209
       },
       "blog-theme": {
-        "raw": 67206,
-        "gzipNormalized": 22390
+        "raw": 64903,
+        "gzipNormalized": 22347
       },
       "json-api": {
-        "raw": 67012,
-        "gzipNormalized": 22343
+        "raw": 64705,
+        "gzipNormalized": 22296
       },
       "multi-island": {
-        "raw": 67134,
-        "gzipNormalized": 22349
+        "raw": 64827,
+        "gzipNormalized": 22294
       }
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.3.1 ceilings on metric gzip-identity-normalized v1, replayed by normalize-identity.mjs over the retained artifact of health run 38075998971 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). All 16 raw totals are unchanged from the v4.3.1 actual-gzip contract; the gzipNormalized ceilings are new values computed from the saved bytes and are not comparable with any earlier gzip ceiling. Integrated-tree CI re-verification by the manager is pending. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.5.1 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 38601924429 at PR merge source cc253d01a644dc2537bfa5bd747150a6d83e8448 (probe head c2676bb0fedad1072e80885a0381bb09c0c22df6). Every raw and gzipNormalized total is unchanged from the v4.5.0 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 13 actual gzip totals moved by -2 to +5 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
-    "event": "ci-artifact-replay",
-    "runId": 38075998971,
-    "jobId": 114282961692,
-    "sourceSha": "3aaad9b4c403a3c8e920384885c541d5864d9c00",
-    "note": "Metric migration (#4131) replayed from the retained island-size-linux-x64 artifact of health run 38075998971, the v4.3.1 release probe PR #4132 at PR merge source 3aaad9b4c403a3c8e920384885c541d5864d9c00 (probe head d3d78455daa4f632a0e9d3d76ed51ad9be45875b). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Metric migration: the gzipNormalized ceilings were computed by normalize-identity.mjs v1 over the saved artifact bytes, not converted arithmetically from the v4.3.1 actual-gzip ceilings. Raw totals did not change. Actual gzip stays in the sidecar as transfer-size evidence. The manager re-verifies these values on the integrated tree in CI. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "event": "ci",
+    "runId": 38601924429,
+    "jobId": 115983043361,
+    "sourceSha": "cc253d01a644dc2537bfa5bd747150a6d83e8448",
+    "actualGzip": {
+      "workspace": {
+        "blog-theme": 22356,
+        "event-only": 22208,
+        "json-api": 22297,
+        "model": 22216,
+        "multi-island": 22300,
+        "no-island": 0,
+        "scalar-signal": 22228,
+        "show-for": 22288
+      },
+      "packed": {
+        "blog-theme": 22366,
+        "event-only": 22215,
+        "json-api": 22313,
+        "model": 22225,
+        "multi-island": 22310,
+        "no-island": 0,
+        "scalar-signal": 22220,
+        "show-for": 22301
+      }
+    },
+    "note": "Release probe PR #4262 run for v4.5.1 at PR merge source cc253d01a644dc2537bfa5bd747150a6d83e8448 (probe head c2676bb0fedad1072e80885a0381bb09c0c22df6). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.0 contract; 13 actual gzip totals moved by -2 to +5 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

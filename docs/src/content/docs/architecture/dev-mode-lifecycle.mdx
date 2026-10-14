@@ -120,7 +120,7 @@ are also documented in `zfb dev --help`.
    CSS output is byte-identical to the previous tick, no `Css` event is emitted.
 3. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
    subprocess is invoked. It bundles every `"use client"` component and writes a
-   single combined module to a **stable filename** — `dist/assets/islands.js` (the
+   single combined module to a **stable filename** — `.zfb-build/dev-assets/assets/islands.js`, served at `/assets/islands.js` (the
    `STABLE_ISLANDS_FILENAME` constant in `crates/zfb-types/src/asset_urls.rs`,
    re-exported and consumed by the islands bundler). No content hash in the
    filename; see [Why filenames stay stable in dev](#why-filenames-stay-stable-in-dev).
@@ -172,7 +172,8 @@ assets get fresh URLs. The hash is determined by file content; it changes every 
 the bundle changes.
 
 Dev mode deliberately skips the content hash. The output lands at
-`dist/assets/islands.js` — the same URL every tick. This is the URL-contract
+`.zfb-build/dev-assets/assets/islands.js`, served at `/assets/islands.js` — the same
+URL every tick. This is the URL-contract
 guarantee that makes SSE-driven hot-swap work: when the browser receives an
 `Islands` event, it knows the new bundle is always reachable at the same base URL.
 Changing the URL on every rebuild would force a full page reload because the browser

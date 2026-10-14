@@ -105,6 +105,18 @@ jobs:
       - name: Run router-chromium suite
         run: pnpm test:router-chromium
 
+      - name: Verify isolated packed native regions
+        run: pnpm exec node tests/router-chromium/check-native-regions-packed.mjs
+
+      - name: Upload native region evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: router-native-region-evidence
+          path: test-results/native-regions*/
+          retention-days: 7
+          if-no-files-found: ignore
+
       # Traces live in test-results/ (NOT playwright-report/). Uploaded only on
       # failure so a red run always ships the trace for the first retry.
       - name: Upload Playwright traces

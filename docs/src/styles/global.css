@@ -1,17 +1,11 @@
-/* Cascade layers: preflight → flow → (unlayered utilities). Tokens/base rules
-   ship from @takazudo/zudo-doc/theme.css.
-   NOTE: the `@takazudo/zdtp/styles.css` import is intentionally NOT here —
-   it is inserted right after the @layer line above, ONLY when
-   designTokenPanel is selected (see features/design-token-panel.ts). It
-   can't ship unconditionally because it pulls in zdtp's own bytes. */
-@layer zd-preflight, zd-flow;
-@import "tailwindcss/preflight" layer(zd-preflight);
-@import "tailwindcss/utilities";
+/* zfb's zudo-wind preset owns the reset and generated utility layer. Declare
+   the package layers first so authored flow styles keep their cascade order.
+   Generated utilities are unlayered and follow the authored CSS below. */
+@layer zw-reset, zd-flow;
 
-/* Package-shipped tokens, safelist, content typography, and feature CSS.
+/* Package-shipped tokens, content typography, and feature CSS.
    Order is load-bearing — theme.css MUST precede features.css. Do not reorder. */
 @import "@takazudo/zudo-doc/theme.css";
-@import "@takazudo/zudo-doc/safelist.css";
 @import "@takazudo/zudo-doc/content.css";
 @import "@takazudo/zudo-doc/page-loading.css";
 @import "@takazudo/zudo-doc/features.css";
@@ -26,12 +20,17 @@
   overflow-wrap: anywhere;
 }
 
-/* Scan this project's own source for Tailwind utility classes. */
-@source "src/content/**/*.{mdx,md}";
-@source "pages/**/*.{tsx,ts,jsx,js}";
+/* Content-table scrollers: during a view-transition soft navigation, Chromium
+   re-layerizes every overflowing scroll container; on the EN compatibility page
+   (23 very tall tables) that was a 4–6 s Layerize freeze. Paint containment keeps
+   each table's layers inside its wrapper, which already clips via overflow-x:auto,
+   so rendering and horizontal scrolling are unchanged. Measured in #4166. */
+.zd-content .overflow-x-auto:has(> table.border-collapse) {
+  contain: paint;
+}
 
 /* ── Your token overrides ──────────────────────────────────────────────
-   Override any default @theme token from @takazudo/zudo-doc/theme.css here. */
-@theme {
+   Override design-token custom properties from the package theme here. */
+:root {
   /* e.g. --color-accent: oklch(0.6 0.2 250); */
 }
