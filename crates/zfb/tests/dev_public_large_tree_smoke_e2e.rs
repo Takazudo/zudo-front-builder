@@ -26,6 +26,16 @@
 //! real public-tree scan path (not an injected slow step), covering any
 //! interaction between file-count and the renamed watch roots from fix A.
 //!
+//! ## `public/assets/` through the `/assets` mount (issue #4233)
+//!
+//! The same no-`dist/` boot also probes the reserved `/assets` mount: a
+//! `public/assets/example.png` staged before boot must answer GET + HEAD
+//! with its bytes and MIME, a file added after boot must serve without a
+//! restart, and a `public/assets/styles.css` (a framework-reserved name)
+//! must draw a boot warning and never be served. Before #4233 every
+//! `/assets/*` URL in dev 404'd until a `zfb build` copied `public/` into
+//! `dist/assets/`.
+//!
 //! ## Spawn / teardown discipline
 //!
 //! Identical to `dev_serve_e2e.rs`: real process group, stdout/stderr
@@ -134,11 +144,10 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 /// one-line SVG fragment named `asset-N.svg`. The files are created at test
 /// runtime so they are never committed.
 ///
-/// Note: files must NOT be staged under `public/assets/` — the dev server
-/// mounts `<dist_root>/assets/` at `/assets/` via ServeDir, which takes
-/// precedence over the public_root waterfall. Files must use a different
-/// sub-path (e.g. `public/static/`) that does not collide with the built
-/// assets mount.
+/// The large tree lives under `public/static/` so it exercises the page
+/// waterfall's `public/` leg; `public/assets/` is served by the reserved
+/// `/assets` mount instead (issue #4233) and is probed separately by
+/// [`stage_public_assets`].
 fn stage_large_public_tree(root: &Path, count: usize) {
     let public_static = root.join("public").join("static");
     fs::create_dir_all(&public_static).expect("create public/static dir");
@@ -146,6 +155,26 @@ fn stage_large_public_tree(root: &Path, count: usize) {
         let path = public_static.join(format!("asset-{i}.svg"));
         fs::write(&path, format!("<svg id=\"{i}\"/>")).expect("write public static file");
     }
+}
+
+/// Bytes of the `public/assets/example.png` staged before boot.
+const PUBLIC_ASSET_PNG: &[u8] = b"\x89PNG\r\n\x1a\nzfb-4233-public-asset";
+
+/// Marker inside the framework-reserved `public/assets/styles.css`, which
+/// must never be served.
+const RESERVED_PUBLIC_CSS_MARKER: &str = "zfb-4233-reserved-public-css";
+
+/// Stage the issue #4233 probes under `public/assets/` before boot.
+fn stage_public_assets(root: &Path) {
+    let public_assets = root.join("public").join("assets");
+    fs::create_dir_all(&public_assets).expect("create public/assets dir");
+    fs::write(public_assets.join("example.png"), PUBLIC_ASSET_PNG)
+        .expect("write public/assets/example.png");
+    fs::write(
+        public_assets.join("styles.css"),
+        format!("/* {RESERVED_PUBLIC_CSS_MARKER} */"),
+    )
+    .expect("write public/assets/styles.css");
 }
 
 struct DevSession {
@@ -160,17 +189,25 @@ impl DevSession {
     }
 }
 
+fn fixture_root(tmp: &tempfile::TempDir) -> PathBuf {
+    tmp.path()
+        .canonicalize()
+        .expect("canonicalize fixture root")
+}
+
 /// Spawn `zfb dev --port 0` over a copy of the fixture that already has
 /// the large public tree staged, in its own process group.
 fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
-    let root = tmp
-        .path()
-        .canonicalize()
-        .expect("canonicalize fixture root");
+    let root = fixture_root(tmp);
     copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
     // Stage the large public tree AFTER copying the fixture so we don't
     // pollute the source fixture directory.
     stage_large_public_tree(&root, LARGE_PUBLIC_FILE_COUNT);
+    stage_public_assets(&root);
+    assert!(
+        !root.join("dist").exists(),
+        "the fixture must boot with no prebuilt dist/ (issue #4233 repro)"
+    );
 
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
@@ -318,10 +355,9 @@ async fn dev_boots_and_serves_under_large_public_tree() {
     );
 
     // Phase C: confirm that a public/ file is actually reachable — the
-    // large tree is not just staged for noise, it is served.
-    // Note: files are staged under public/static/ (not public/assets/) because
-    // the dev server mounts <dist_root>/assets/ at /assets/ via ServeDir, which
-    // would intercept requests before the public_root waterfall.
+    // large tree is not just staged for noise, it is served. It lives under
+    // public/static/ so this probes the page waterfall's public/ leg; the
+    // public/assets/ probes in Phase D go through the /assets mount.
     let asset_url = format!("{base}/static/asset-0.svg");
     let resp = client
         .get(&asset_url)
@@ -337,6 +373,104 @@ async fn dev_boots_and_serves_under_large_public_tree() {
         session.logs(),
     );
 
+    // Phase D (issue #4233): public/assets/ is served through the
+    // contained /assets mount with no dist/ and no build.
+    let png_url = format!("{base}/assets/example.png");
+    let resp = client
+        .get(&png_url)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("GET {png_url} failed: {e}\n{}", session.logs()));
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "[#4233] public/assets/example.png must answer /assets/example.png before any \
+         build.\n{}",
+        session.logs(),
+    );
+    assert_eq!(
+        content_type(&resp),
+        "image/png",
+        "[#4233] GET content-type\n{}",
+        session.logs()
+    );
+    let body = resp.bytes().await.expect("read /assets/example.png body");
+    assert_eq!(
+        &body[..],
+        PUBLIC_ASSET_PNG,
+        "[#4233] GET must serve the file's bytes"
+    );
+
+    let resp = client
+        .head(&png_url)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("HEAD {png_url} failed: {e}\n{}", session.logs()));
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "[#4233] HEAD /assets/example.png\n{}",
+        session.logs()
+    );
+    assert_eq!(
+        content_type(&resp),
+        "image/png",
+        "[#4233] HEAD content-type"
+    );
+    let body = resp.bytes().await.expect("read HEAD body");
+    assert!(body.is_empty(), "[#4233] HEAD must carry no body");
+
+    // A file added after boot serves without a restart (read per request).
+    let late = b"zfb-4233-added-after-boot";
+    fs::write(fixture_root(&tmp).join("public/assets/late.svg"), late)
+        .expect("write public/assets/late.svg after boot");
+    let late_url = format!("{base}/assets/late.svg");
+    let resp = client
+        .get(&late_url)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("GET {late_url} failed: {e}\n{}", session.logs()));
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "[#4233] a public/assets/ file added after boot must serve immediately.\n{}",
+        session.logs(),
+    );
+    assert_eq!(content_type(&resp), "image/svg+xml");
+    assert_eq!(&resp.bytes().await.expect("read late body")[..], late);
+
+    // The reserved name is never served from public/assets/, and boot
+    // warned about it exactly once.
+    let css_url = format!("{base}/assets/styles.css");
+    let resp = client
+        .get(&css_url)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("GET {css_url} failed: {e}\n{}", session.logs()));
+    let css = resp.text().await.unwrap_or_default();
+    assert!(
+        !css.contains(RESERVED_PUBLIC_CSS_MARKER),
+        "[#4233] public/assets/styles.css must not stand in for zfb's stylesheet.\n{}",
+        session.logs(),
+    );
+    let stderr = read_log(&session.stderr_path);
+    assert_eq!(
+        stderr
+            .matches("warning: public/assets/styles.css is not served at /assets/styles.css")
+            .count(),
+        1,
+        "[#4233] expected exactly one reserved-name boot warning.\n{}",
+        session.logs(),
+    );
+
     // The DevServerGuard Drop SIGKILL's the process group here.
     drop(session);
+}
+
+fn content_type(resp: &reqwest::Response) -> String {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
 }
