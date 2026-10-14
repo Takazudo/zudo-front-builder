@@ -1,0 +1,312 @@
+[
+  {
+    "id": "GRAPH-01",
+    "status": "pass",
+    "evidence": "Exact final Linux normal/build dependency graph; baseline workspace/no-V8 and isolated md-Wasm/CSS checks."
+  },
+  {
+    "id": "GRAPH-02",
+    "status": "pass",
+    "evidence": "Exact final Linux normal/build dependency graph; baseline workspace/no-V8 and isolated md-Wasm/CSS checks."
+  },
+  {
+    "id": "NATIVE-01",
+    "status": "pass",
+    "evidence": "40 native tests; independent ownership/callback review; finite Wasm disposal and fresh-host recovery."
+  },
+  {
+    "id": "CALL-01",
+    "status": "pass",
+    "evidence": "Existing production callers preserved; baseline controls plus standalone native DTO/utility probes. Candidate CLI integration remains phase 2."
+  },
+  {
+    "id": "CALL-02",
+    "status": "pass",
+    "evidence": "Existing production callers preserved; baseline controls plus standalone native DTO/utility probes. Candidate CLI integration remains phase 2."
+  },
+  {
+    "id": "CALL-03",
+    "status": "pass",
+    "evidence": "Existing production callers preserved; baseline controls plus standalone native DTO/utility probes. Candidate CLI integration remains phase 2."
+  },
+  {
+    "id": "CALL-04",
+    "status": "pass",
+    "evidence": "Existing production callers preserved; baseline controls plus standalone native DTO/utility probes. Candidate CLI integration remains phase 2."
+  },
+  {
+    "id": "CALL-05",
+    "status": "pass",
+    "evidence": "Existing production callers preserved; baseline controls plus standalone native DTO/utility probes. Candidate CLI integration remains phase 2."
+  },
+  {
+    "id": "BOOT-01",
+    "status": "pass",
+    "evidence": "63 config and 27 service cases; native bootstrap tests; canonical shim order retained."
+  },
+  {
+    "id": "BOOT-02",
+    "status": "pass",
+    "evidence": "63 config and 27 service cases; native bootstrap tests; canonical shim order retained."
+  },
+  {
+    "id": "BOOT-03",
+    "status": "pass",
+    "evidence": "63 config and 27 service cases; native bootstrap tests; canonical shim order retained."
+  },
+  {
+    "id": "BOOT-04",
+    "status": "unsupported-by-existing-contract",
+    "evidence": "Real delays/clearTimeout/cloned MessagePort delivery remain unsupported; paired cases prove existing no-op/reference semantics."
+  },
+  {
+    "id": "CFG-01",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-02",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-03",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-04",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-05",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-06",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-07",
+    "status": "pass",
+    "evidence": "63 literal paired config cases, including async Wasm and stringify tampering."
+  },
+  {
+    "id": "CFG-08",
+    "status": "pass",
+    "evidence": "Seven real normal-CLI outer-loader probes; raw arrays preserved and typed sequence behavior explicitly observed."
+  },
+  {
+    "id": "CFG-09",
+    "status": "unsupported-by-existing-contract",
+    "evidence": "Node fallback array rejection is an existing path difference; no slim-path parity claim or behavior change."
+  },
+  {
+    "id": "MOD-01",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-02",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-03",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-04",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-05",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-06",
+    "status": "unsupported-by-existing-contract",
+    "evidence": "Runtime TS/TSX transpilation remains rejected; canonicalize/read TOCTOU remains an inherited limitation."
+  },
+  {
+    "id": "MOD-07",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-08",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-09",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "MOD-10",
+    "status": "pass",
+    "evidence": "47 paired module/Worker/utility cases; canonical policy controls and generated copied-Wasm consumption."
+  },
+  {
+    "id": "WORK-01",
+    "status": "pass",
+    "evidence": "47 paired cases and eight generated packets per engine; unmodified canonical wrapper/inner and five real routes."
+  },
+  {
+    "id": "WORK-02",
+    "status": "pass",
+    "evidence": "47 paired cases and eight generated packets per engine; unmodified canonical wrapper/inner and five real routes."
+  },
+  {
+    "id": "WORK-03",
+    "status": "pass",
+    "evidence": "47 paired cases and eight generated packets per engine; unmodified canonical wrapper/inner and five real routes."
+  },
+  {
+    "id": "WORK-04",
+    "status": "pass",
+    "evidence": "47 paired cases and eight generated packets per engine; unmodified canonical wrapper/inner and five real routes."
+  },
+  {
+    "id": "WORK-05",
+    "status": "pass",
+    "evidence": "47 paired cases and eight generated packets per engine; unmodified canonical wrapper/inner and five real routes."
+  },
+  {
+    "id": "HTTP-01",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-02",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-03",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-04",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-05",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-06",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-07",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-08",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "HTTP-09",
+    "status": "pass",
+    "evidence": "Canonical transport tests, 27 service cases, eight paired loopback probes and native limits/budget tests."
+  },
+  {
+    "id": "CANCEL-01",
+    "status": "pass",
+    "evidence": "Native live-host idle socket closure, preabort/settled/race tests and paired loopback probes."
+  },
+  {
+    "id": "CANCEL-02",
+    "status": "pass",
+    "evidence": "Native live-host idle socket closure, preabort/settled/race tests and paired loopback probes."
+  },
+  {
+    "id": "CANCEL-03",
+    "status": "pass",
+    "evidence": "Native live-host idle socket closure, preabort/settled/race tests and paired loopback probes."
+  },
+  {
+    "id": "CRYPTO-01",
+    "status": "pass",
+    "evidence": "27 literal service cases; native OS-entropy instrumentation, offsets/failure tests; canonical digest tests."
+  },
+  {
+    "id": "CRYPTO-02",
+    "status": "pass",
+    "evidence": "27 literal service cases; native OS-entropy instrumentation, offsets/failure tests; canonical digest tests."
+  },
+  {
+    "id": "CRYPTO-03",
+    "status": "pass",
+    "evidence": "27 literal service cases; native OS-entropy instrumentation, offsets/failure tests; canonical digest tests."
+  },
+  {
+    "id": "CRYPTO-04",
+    "status": "pass",
+    "evidence": "27 literal service cases; native OS-entropy instrumentation, offsets/failure tests; canonical digest tests."
+  },
+  {
+    "id": "DIAG-01",
+    "status": "pass",
+    "evidence": "Boot/dispatch console evidence, retained canonical console-limit tests; syntax origin and exact mapped authored throw."
+  },
+  {
+    "id": "DIAG-02",
+    "status": "pass",
+    "evidence": "Boot/dispatch console evidence, retained canonical console-limit tests; syntax origin and exact mapped authored throw."
+  },
+  {
+    "id": "LIFE-01",
+    "status": "pass",
+    "evidence": "Fresh hosts for corpora, 32 pending-Wasm disposal cycles, repeated generated boot/dispatch/drop and recovery."
+  },
+  {
+    "id": "LIFE-02",
+    "status": "unsupported-by-existing-contract",
+    "evidence": "Unresolved TLA fails explicitly without watchdog; CPU interruption/hard heap limits/catastrophic recovery are not provided."
+  },
+  {
+    "id": "LIMIT-01",
+    "status": "unsupported-by-existing-contract",
+    "evidence": "Existing absent/limited platform APIs retained; no new runtime platform promised."
+  },
+  {
+    "id": "EVID-01",
+    "status": "pass",
+    "evidence": "Frozen 54-file manifest, separate native receipts, independent literals and exact response parity."
+  },
+  {
+    "id": "EVID-02",
+    "status": "pass",
+    "evidence": "Frozen 54-file manifest, separate native receipts, independent literals and exact response parity."
+  },
+  {
+    "id": "EVID-03",
+    "status": "pass",
+    "evidence": "One Chromium154 session: candidate HTML, emitted CSS, SSR Count0 and hydrated click Count1; no page/console errors."
+  },
+  {
+    "id": "EVID-04",
+    "status": "fail",
+    "evidence": "Local selected checks pass; current-head CI must reconcile existing island-size Cargo-lock provenance policy. No ceiling/policy/provenance bypass."
+  },
+  {
+    "id": "EVID-05",
+    "status": "pass",
+    "evidence": "Linux x86_64 native execution passed. Darwin arm64/x64, Linux arm64 and Windows x64 not run; no platform fleet."
+  }
+]

@@ -7,7 +7,7 @@ for frozen semantics and [FINDINGS.md](FINDINGS.md) for actual results, failures
 and remaining gates. The comparison harness is temporary feasibility evidence;
 the shared service regression tests continue to protect the normal host.
 
-## Config capability gate
+## Build and config capability gate
 
 Requirements: repository-pinned pnpm, installed Rust toolchain, Python 3, and
 the normal native V8 build prerequisites. Use the repository heavy guard for
@@ -35,8 +35,16 @@ cargo test --locked -p zfb-js-host --no-default-features --features direct-v8 --
 
 The feature is non-default. Its required ICU path is a compile-time input; a
 missing path fails compilation. Both runners report their engine identity.
-Neither runner silently falls back to another JavaScript executor. Run the
-same frozen corpus through the independent processes:
+Neither runner silently falls back to another JavaScript executor.
+
+A later `cargo build --workspace --all-targets` can overwrite
+`target/debug/examples/direct_v8` with the feature-disabled example. After any
+such build, rebuild the candidate with the exact
+`--no-default-features --features direct-v8 --example direct_v8` command above
+before candidate checks. The recorded executable hash and engine receipt must
+belong to that rebuilt binary.
+
+Run the same frozen corpus through the independent processes:
 
 ```sh
 python3 prototypes/direct-v8/check-config.py \
@@ -58,14 +66,34 @@ It deliberately has no unsafe Send/Sync implementation and no general op or
 serialization framework. Do not load both independent V8 initializers in one
 process; use the separate runners.
 
-## Later phase-1 gates
+## Recorded phase-1 gates
 
 Async native services/cancellation and module/Worker parity are implemented and
-verified in dependency order before generated-input acceptance. Authored
-`site/` inputs and [PRODUCER.md](PRODUCER.md) describe the real existing
-ZFB/esbuild/MDX/CSS/SDK producer. They are not generated-runtime evidence until
-the findings record the finished producer, frozen byte hashes, native results
-and bounded Chromium hydration observation.
+verified in dependency order before generated-input acceptance. The saved
+receipts record 63 config cases per engine, 27 service cases per engine,
+8 paired loopback HTTP cases, and 47 module/Worker cases per engine:
+[config](evidence/config-gate.json), [services](evidence/services-gate.json),
+[HTTP](evidence/http-gate.json), and [modules](evidence/modules-gate.json).
+
+The real existing ZFB/esbuild/MDX/CSS/SDK producer completed at clean commit
+`f2ffe216997601f5e0aa68b5625553e6700cb206`, freezing 54 files. Both independent
+hosts passed all eight generated cases and all seven exact response/value
+parity rows. Both hosts' negative stacks mapped to the authored `throw.ts:6:9`.
+One installed Chromium 154 session rendered candidate HTML with the frozen
+client assets, observed `Count: 0` → `Count: 1` and CSS `rgb(12, 34, 56)`, and
+reported no page or console errors. See the
+[generated receipt](evidence/generated-gate.json),
+[frozen manifest](evidence/generated-manifest.json), and
+[producer commands and limitations](PRODUCER.md). This bounded browser
+observation does not establish a platform fleet or candidate CLI adoption.
+
+The first producer's non-UTF-8 page failure is preserved in
+[its receipt](evidence/producer-first-failure.json). The positive generated
+site covers five routes; a separate prepared Worker verifies opaque binary
+responses and ordered duplicate headers. The normal production asset pipeline
+was not changed. [FINDINGS.md](FINDINGS.md) owns the overall acceptance ledger,
+including unresolved integration checks; these passing subsets alone do not
+declare the entire task complete.
 
 No platform fleet, CLI adoption, bundler switch, release, deployment, default
 switch or Deno deletion is authorized by this experiment. Keep delivery issues
