@@ -786,6 +786,8 @@ describe("island shipped-size budget", () => {
         jobId: 2,
         runLabel: "Synthetic re-pin",
         identity: measuredIdentity(state.packed.measurement.provenance),
+        // Test fixture: a digest-only previous-contract reference (#4219).
+        previousContract: { sha256: "d".repeat(64) },
       },
       "release-bump",
     );

@@ -215,7 +215,26 @@ export function makeHelperCheckout(roots) {
     write(root, SIZE_DIR + "/" + file, JSON.stringify(contract, null, 2) + "\n");
     contracts[name] = contract;
   }
-  const git = (...args) =>
+  const git = gitIn(root);
+  git("init", "-q");
+  git("add", helper);
+  git("commit", "-qm", "pinned helper");
+  return { ...checkout, contracts, helperPath: join(root, helper), git };
+}
+
+// Test fixture: a git runner pinned to `root` with a fixed identity, no
+// signing or hooks, and no inherited GIT_DIR-style redirection. Returns stdout.
+function gitEnv() {
+  const env = { ...process.env };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) {
+    delete env[key];
+  }
+  return env;
+}
+
+export function gitIn(root) {
+  const env = gitEnv();
+  return (...args) =>
     execFileSync(
       "git",
       [
@@ -226,13 +245,69 @@ export function makeHelperCheckout(roots) {
         "-c",
         "commit.gpgsign=false",
         "-c",
+        "tag.gpgsign=false",
+        "-c",
         "core.hooksPath=/dev/null",
+        "-c",
+        "init.defaultBranch=main",
         ...args,
       ],
-      { cwd: root, stdio: "pipe" },
-    );
+      { cwd: root, stdio: "pipe", env },
+    )
+      .toString()
+      .trim();
+}
+
+// Test fixture: a disposable git checkout whose single commit holds the OLD
+// Cargo.lock and whatever `prepare` writes (a contract, an artifact); the NEW
+// Cargo.lock is then written to the working tree only, as a fresh producer-lock
+// move leaves it. `prepare` sees the identity a run at the new lock records.
+export function makeGitCheckout(roots, { oldCargoLock, newCargoLock, prepare } = {}) {
+  const checkout = makeCheckout(roots, { cargoLock: oldCargoLock });
+  const atNew = {
+    ...checkout,
+    cargoLockSha256: newCargoLock === undefined ? checkout.cargoLockSha256 : sha(newCargoLock),
+  };
+  prepare?.(atNew);
+  const git = gitIn(checkout.root);
   git("init", "-q");
-  git("add", helper);
-  git("commit", "-qm", "pinned helper");
-  return { ...checkout, contracts, helperPath: join(root, helper), git };
+  git("add", "-A");
+  git("commit", "-qm", "test fixture: old Cargo.lock");
+  const commit = git("rev-parse", "HEAD");
+  if (newCargoLock !== undefined) write(checkout.root, "Cargo.lock", newCargoLock);
+  return { ...atNew, git, commit };
+}
+
+// Test fixture: writes two dangling commit objects into the checkout whose
+// SHAs share their first four hex digits, so that prefix is an ambiguous short
+// commit name. Returns the shared prefix.
+export function addAmbiguousCommitPrefix(root) {
+  const git = gitIn(root);
+  const tree = git("rev-parse", "HEAD^{tree}");
+  const seen = new Map();
+  for (let i = 0; ; i += 1) {
+    const body =
+      "tree " +
+      tree +
+      "\nauthor t <t@example.invalid> 0 +0000\ncommitter t <t@example.invalid> 0 +0000\n\ntest fixture " +
+      i +
+      "\n";
+    const id = createHash("sha1")
+      .update("commit " + Buffer.byteLength(body) + "\0" + body)
+      .digest("hex");
+    const prefix = id.slice(0, 4);
+    const other = seen.get(prefix);
+    if (other !== undefined) {
+      for (const text of [other, body]) {
+        execFileSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], {
+          cwd: root,
+          env: gitEnv(),
+          input: text,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      }
+      return prefix;
+    }
+    seen.set(prefix, body);
+  }
 }

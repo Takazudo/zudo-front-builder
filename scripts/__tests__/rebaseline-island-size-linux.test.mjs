@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   ARTIFACT_ARGS,
@@ -22,6 +23,8 @@ import {
   parseAddedPackages,
   parseArgs,
   parseCargoLock,
+  parseOldCargoRef,
+  predecessorRecord,
   proveFingerprintHelper,
   readmeSection,
   rebaselineContract,
@@ -29,9 +32,12 @@ import {
   rewriteTestPins,
 } from "../rebaseline-island-size-linux.mjs";
 import {
+  addAmbiguousCommitPrefix,
   asSchemaV2,
   ceilingsOf,
+  gitIn,
   makeCheckout,
+  makeGitCheckout,
   makeHelperCheckout,
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
@@ -103,7 +109,18 @@ const evidence = {
   runLabel: "Release probe run for v9.9.9",
   // release-bump / runtime-identity compare the measured Cargo.lock with the contract.
   identity: { cargoLockSha256: contract.toolchain.cargoLockSha256 },
+  // Test fixture: a digest-only previous-contract reference (no git checkout).
+  previousContract: { sha256: "d".repeat(64) },
 };
+// The flat immediate-predecessor shape both platforms record.
+const REPINNED_FROM_KEYS = [
+  "schemaVersion",
+  "outcome",
+  "packageVersion",
+  "baselineSourceSha",
+  "baselineRunId",
+  "contract",
+];
 
 describe("rebaseline-island-size-linux", () => {
   it("re-pins a release bump whose raw and gzipNormalized totals did not move", () => {
@@ -136,6 +153,15 @@ describe("rebaseline-island-size-linux", () => {
     expect(next.baselineEvidence.note).toContain(
       "PR merge source " + evidence.sourceSha + " (probe head " + evidence.headSha + ")",
     );
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 2,
+      outcome: contract.outcome,
+      packageVersion: contract.toolchain.packageVersion,
+      baselineSourceSha: contract.baselineSourceSha,
+      baselineRunId: contract.baselineEvidence.runId,
+      contract: { sha256: "d".repeat(64) },
+    });
     expect(next.baselineEvidence.note).toContain(
       `Raw and gzipNormalized totals did not change from the v${contract.toolchain.packageVersion} contract`,
     );
@@ -207,6 +233,7 @@ describe("rebaseline-island-size-linux", () => {
     expect(next.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
     expect(next.ceilings).toEqual(contract.ceilings);
     expect(next.baselineEvidence.event).toBe("ci-artifact-replay");
+    expect(next.baselineEvidence).not.toHaveProperty("repinnedFrom");
     expect(next.baselineEvidence.note).toContain("not converted arithmetically");
     expect(next.baselineEvidence.note).toContain(
       "re-verifies these values on the integrated tree in CI",
@@ -229,6 +256,8 @@ describe("rebaseline-island-size-linux", () => {
       "runtime-identity",
     );
     expect(next.outcome).toBe("runtime-identity-repin");
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(Object.keys(next.baselineEvidence.repinnedFrom.contract)).toEqual(["sha256"]);
     expect(next.platformStatus).toContain("at source " + evidence.headSha + ".");
     expect(next.platformStatus).toContain(
       "equal totals alone do not prove byte-identical product code",
@@ -414,6 +443,8 @@ describe("rebaseline-island-size-linux", () => {
         "lockfile-provenance",
       );
       expect(next.outcome).toBe("lockfile-provenance-repin");
+      expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+      expect(next.baselineEvidence.repinnedFrom.outcome).toBe(contract.outcome);
       expect(next.toolchain).toEqual({ ...contract.toolchain, pnpmLockSha256: "f".repeat(64) });
       expect(next.fixtureSha256).toEqual(contract.fixtureSha256);
       expect(next.runnerSha256).toEqual(contract.runnerSha256);
@@ -598,6 +629,7 @@ describe("fingerprint-migration (#4187)", () => {
       },
     });
     expect(next.baselineEvidence.note).toContain("schemaVersion 2 to 3");
+    expect(next.baselineEvidence).not.toHaveProperty("repinnedFrom");
     expect(next.platformStatus).toContain("migrated to schemaVersion 3");
     expect(next.platformStatus).toContain("recorded as baseline provenance only");
     expect(next.platformStatus).not.toMatch(/release-bump|release baseline/);
@@ -1267,6 +1299,8 @@ describe("cargo-producer-lock (#4214)", () => {
   const OLD = sha(oldText);
   const NEW = sha(newText);
   const ADDED = ["ctor@0.2.9", "zfb-css-node@0.0.0"];
+  // Test fixture: the verified git source of the old lock (readCargoLockEvidence).
+  const SOURCE = { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD };
   const v3 = structuredClone(liveContract);
   v3.toolchain.cargoLockSha256 = OLD;
   const fingerprint = v3.dependencyFingerprint;
@@ -1294,7 +1328,7 @@ describe("cargo-producer-lock (#4214)", () => {
       oldText,
       newText,
       added: ADDED,
-      oldLockSource: "old.lock",
+      oldLockSource: SOURCE,
     },
   };
   const transition = (edit = (e) => e, base = v3, totals = totalsFrom(base)) =>
@@ -1320,8 +1354,22 @@ describe("cargo-producer-lock (#4214)", () => {
       added: ADDED,
       changed: [],
       removed: [],
-      oldLockSource: "old.lock",
+      oldLockSource: SOURCE,
     });
+    expect(Object.keys(next.baselineEvidence)).toEqual([
+      "event",
+      "runId",
+      "jobId",
+      "sourceSha",
+      "repinnedFrom",
+      "cargoTransition",
+      "actualGzip",
+      "note",
+    ]);
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.platformStatus).toContain(
+      "proved against Cargo.lock at commit " + SOURCE.commit + " (SHA-256 " + OLD + ")",
+    );
     for (const key of contractDiffKeys(v3, next)) {
       expect(
         CARGO_PRODUCER_LOCK_MOVEMENT.some(
@@ -1342,6 +1390,9 @@ describe("cargo-producer-lock (#4214)", () => {
     expect(section).toContain("`" + OLD + "` to `" + NEW + "`");
     expect(section).toContain("`ctor@0.2.9`, `zfb-css-node@0.0.0`");
     expect(section).toContain("only `toolchain.cargoLockSha256` moved");
+    expect(section).toContain(
+      "proved against `Cargo.lock` at commit `" + SOURCE.commit + "` (SHA-256 `" + OLD + "`).",
+    );
     expect(rewriteTestPins(testSource, next)).toBe(rewriteTestPins(testSource, v3));
   });
 
@@ -1440,8 +1491,21 @@ describe("cargo-producer-lock (#4214)", () => {
       /the contract pins Cargo.lock [0-9a-f]{64}, not --expected-old-cargo-sha/,
     );
     expect(() => transition(cargo({ oldText: oldText + "\n" }))).toThrow(
-      /old.lock hashes to [0-9a-f]{64}, not --expected-old-cargo-sha/,
+      /a{40}:Cargo\.lock hashes to [0-9a-f]{64}, not --expected-old-cargo-sha/,
     );
+    // The raw bytes are hashed before decoding: a Buffer proves like its text.
+    expect(transition(cargo({ oldText: Buffer.from(oldText) })).contract.toolchain).toEqual({
+      ...v3.toolchain,
+      cargoLockSha256: NEW,
+    });
+    for (const source of ["old.lock", { ...SOURCE, commit: "abc" }, { ...SOURCE, path: "" }]) {
+      expect(() => transition(cargo({ oldLockSource: source }))).toThrow(
+        /the old Cargo\.lock source must be its verified git blob \{commit, path, sha256\}/,
+      );
+    }
+    expect(() =>
+      transition(cargo({ oldLockSource: { ...SOURCE, sha256: "1".repeat(64) } })),
+    ).toThrow(/must be its verified git blob/);
     expect(() => transition(cargo({ expectedNewSha: "2".repeat(64) }))).toThrow(
       /the checkout's Cargo.lock hashes to [0-9a-f]{64}, not --expected-new-cargo-sha/,
     );
@@ -1515,7 +1579,7 @@ describe("cargo-producer-lock (#4214)", () => {
     });
   }
 
-  it("requires exactly the four Cargo arguments for cargo-producer-lock alone", () => {
+  it("requires the four Cargo arguments, takes --old-cargo-lock optionally, for cargo-producer-lock alone", () => {
     const base = [
       "--artifact",
       "dir",
@@ -1529,7 +1593,7 @@ describe("cargo-producer-lock (#4214)", () => {
     const cargoArgs = {
       "expected-old-cargo-sha": OLD,
       "expected-new-cargo-sha": NEW,
-      "old-cargo-lock": "old.lock",
+      "old-cargo-ref": "main",
       "added-packages": ADDED.join(","),
     };
     const argv = (reason, extra) => [
@@ -1539,6 +1603,31 @@ describe("cargo-producer-lock (#4214)", () => {
       ...Object.entries(extra).flatMap(([k, v]) => ["--" + k, v]),
     ];
     expect(parseArgs(argv("cargo-producer-lock", cargoArgs))).toMatchObject(cargoArgs);
+    const corroborated = { ...cargoArgs, "old-cargo-lock": "old.lock" };
+    expect(parseArgs(argv("cargo-producer-lock", corroborated))).toMatchObject(corroborated);
+    expect(() => parseArgs(argv("release-bump", { "old-cargo-lock": "old.lock" }))).toThrow(
+      "--old-cargo-lock is only for --reason cargo-producer-lock",
+    );
+    expect(() =>
+      parseArgs(argv("cargo-producer-lock", { ...cargoArgs, "old-cargo-ref": "" })),
+    ).toThrow("required --old-cargo-ref");
+    for (const [ref, message] of [
+      ["-x", /--old-cargo-ref must name a git ref, not "-x"/],
+      ["main:", /--old-cargo-ref has an empty path/],
+      ["main:/etc/Cargo.lock", /--old-cargo-ref path must be relative to the repository root/],
+      ["main:../Cargo.lock", /--old-cargo-ref path must not contain a \.\. segment/],
+      ["main:a/../Cargo.lock", /must not contain a \.\. segment/],
+      ["main:./Cargo.lock", /must be a normalized repository path/],
+    ]) {
+      expect(() =>
+        parseArgs(argv("cargo-producer-lock", { ...cargoArgs, "old-cargo-ref": ref })),
+      ).toThrow(message);
+    }
+    expect(parseOldCargoRef("v1.2.3")).toEqual({ ref: "v1.2.3", path: "Cargo.lock" });
+    expect(parseOldCargoRef("abc:crates/x/Cargo.lock")).toEqual({
+      ref: "abc",
+      path: "crates/x/Cargo.lock",
+    });
     for (const key of Object.keys(cargoArgs)) {
       const { [key]: _drop, ...rest } = cargoArgs;
       expect(() => parseArgs(argv("cargo-producer-lock", rest))).toThrow("required --" + key);
@@ -1560,83 +1649,464 @@ describe("cargo-producer-lock (#4214)", () => {
         "fingerprint-helper",
         "--base-ref",
         "HEAD",
-        "--old-cargo-lock",
-        "old.lock",
+        "--old-cargo-ref",
+        "main",
       ]),
-    ).toThrow(/takes only --base-ref; remove --old-cargo-lock/);
+    ).toThrow(/takes only --base-ref; remove --old-cargo-ref/);
   });
 
-  it("runs end to end on a checkout and artifact at the new lock", () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
-    const checkout = makeCheckout(roots, { cargoLock: newText });
-    expect(checkout.cargoLockSha256).toBe(NEW);
-    const artifact = join(checkout.root, "artifact");
-    writeRuns(artifact, Object.keys(v3.ceilings.workspace), (mode) => ({
-      sourceSha: "b".repeat(40),
-      mode,
-      platform: { os: "linux", arch: "x64" },
-      fixtureVersion: v3.fixtureVersion,
-      fixtureSha256: checkout.fixtureSha256,
-      runnerSha256: checkout.runnerSha256,
-      packageVersion: checkout.version,
-      runtimePackageVersion: checkout.version,
-      honoPackageVersion: v3.toolchain.honoVersion,
-      esbuildVersion: v3.toolchain.esbuildVersion,
-      nodeVersion: v3.toolchain.nodeVersion,
-      zlibVersion: v3.toolchain.zlibVersion,
-      compression: v3.compression,
-      repeats: 2,
-      pnpmLockSha256: checkout.pnpmLockSha256,
-      dependencyFingerprint: {
-        policyVersion: checkout.dependencyFingerprint.policyVersion,
-        sha256: checkout.dependencyFingerprint.sha256,
-      },
-      cargoLockSha256: checkout.cargoLockSha256,
-    }));
-    const pinned = structuredClone(v3);
-    pinned.ceilings = ceilingsOf(artifact);
-    pinned.fixtureSha256 = { ...checkout.fixtureSha256 };
-    pinned.runnerSha256 = { ...checkout.runnerSha256 };
-    pinned.toolchain.packageVersion = checkout.version;
-    pinned.toolchain.pnpmLockSha256 = checkout.pnpmLockSha256;
-    pinned.dependencyFingerprint = { ...checkout.dependencyFingerprint };
-    const contractPath = join(checkout.root, "research/v3-island-size/decision-linux-x64.json");
-    writeFileSync(contractPath, JSON.stringify(pinned, null, 2) + "\n");
-    const oldPath = join(checkout.root, "old.lock");
-    writeFileSync(oldPath, oldText);
-    const argv = (added = ADDED.join(",")) => [
+  it("takes --previous-contract-ref only for the reasons that record repinnedFrom", () => {
+    const base = [
       "--artifact",
-      artifact,
+      "dir",
       "--run-id",
-      "51",
+      "1",
       "--job-id",
-      "52",
+      "2",
       "--head-sha",
       "c".repeat(40),
-      "--reason",
-      "cargo-producer-lock",
-      "--expected-old-cargo-sha",
-      OLD,
-      "--expected-new-cargo-sha",
-      NEW,
-      "--old-cargo-lock",
-      oldPath,
-      "--added-packages",
-      added,
     ];
-    expect(() => main(argv("ctor@0.2.9"), checkout.root)).toThrow(/unexpected additions/);
-    expect(readFileSync(contractPath, "utf8")).toBe(JSON.stringify(pinned, null, 2) + "\n");
-    main(argv(), checkout.root);
-    const written = JSON.parse(readFileSync(contractPath, "utf8"));
-    expect(written.toolchain).toEqual({ ...pinned.toolchain, cargoLockSha256: NEW });
-    expect(written.ceilings).toEqual(pinned.ceilings);
-    expect(written.baselineEvidence).toMatchObject({
-      runId: 51,
-      jobId: 52,
-      cargoTransition: { oldSha: OLD, newSha: NEW, added: ADDED, oldLockSource: oldPath },
+    for (const reason of ["release-bump", "runtime-identity", "lockfile-provenance"]) {
+      expect(
+        parseArgs([...base, "--reason", reason, "--previous-contract-ref", "main"]),
+      ).toMatchObject({ "previous-contract-ref": "main" });
+    }
+    for (const reason of ["metric-migration", "fingerprint-migration"]) {
+      expect(() =>
+        parseArgs([...base, "--reason", reason, "--previous-contract-ref", "main"]),
+      ).toThrow(
+        "--previous-contract-ref is only for --reason release-bump, runtime-identity, lockfile-provenance, cargo-producer-lock",
+      );
+    }
+    expect(() =>
+      parseArgs([...base, "--reason", "release-bump", "--previous-contract-ref", "-q"]),
+    ).toThrow(/--previous-contract-ref must name a git ref/);
+    expect(() =>
+      parseArgs([
+        "--reason",
+        "fingerprint-helper",
+        "--base-ref",
+        "HEAD",
+        "--previous-contract-ref",
+        "main",
+      ]),
+    ).toThrow(/takes only --base-ref; remove --previous-contract-ref/);
+  });
+
+  it("records a flat predecessor and refuses a re-pin without a contract reference", () => {
+    const repinned = structuredClone(v3);
+    repinned.baselineEvidence.repinnedFrom = { outcome: "nested", contract: { sha256: "0" } };
+    expect(predecessorRecord(repinned)).toEqual({
+      schemaVersion: 3,
+      outcome: v3.outcome,
+      packageVersion: v3.toolchain.packageVersion,
+      baselineSourceSha: v3.baselineSourceSha,
+      baselineRunId: v3.baselineEvidence.runId,
     });
-    const readme = readFileSync(join(checkout.root, "research/v3-island-size/README.md"), "utf8");
-    expect(readme).toContain("cargo-producer-lock transition");
-    expect(readme).toContain("[workflow run 51]");
+    const { previousContract: _p, ...withoutReference } = cargoEvidence;
+    for (const reference of [
+      undefined,
+      { sha256: "abc" },
+      { sha256: "d".repeat(64), commit: "a".repeat(40) },
+      { sha256: "d".repeat(64), path: "x.json" },
+      { sha256: "d".repeat(64), commit: "a".repeat(40), path: "x.json", extra: 1 },
+    ]) {
+      expect(() =>
+        rebaselineContract(
+          v3,
+          totalsFrom(v3),
+          { ...withoutReference, previousContract: reference },
+          "cargo-producer-lock",
+        ),
+      ).toThrow(/a re-pin needs the previous contract reference \{sha256\[, commit, path\]\}/);
+    }
+    const cited = { path: "p.json", commit: "a".repeat(40), sha256: "d".repeat(64) };
+    expect(
+      Object.keys(
+        transition((e) => ({ ...e, previousContract: cited })).contract.baselineEvidence
+          .repinnedFrom.contract,
+      ),
+    ).toEqual(["sha256", "commit", "path"]);
+  });
+});
+
+// End-to-end CLI runs against one git-backed test-fixture checkout, built once
+// and restored after every case: its only commit holds the OLD Cargo.lock, the
+// artifact and the contract pinning the old lock; the working tree carries the
+// NEW lock, as a fresh producer-lock move leaves it.
+describe("git-backed provenance (#4219)", () => {
+  const roots = [];
+  const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const lockDir = join(root, "scripts/__tests__/fixtures/cargo-producer-lock");
+  const oldText = readFileSync(join(lockDir, "old.lock"), "utf8");
+  const newText = readFileSync(join(lockDir, "new.lock"), "utf8");
+  const OLD = sha(oldText);
+  const NEW = sha(newText);
+  const ADDED = ["ctor@0.2.9", "zfb-css-node@0.0.0"];
+  const CONTRACT = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const OUTPUTS = [CONTRACT, TEST, README];
+  let repo;
+  let artifact;
+  let pinned;
+  let ambiguous;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const written = () => JSON.parse(read(CONTRACT).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+
+  beforeAll(() => {
+    repo = makeGitCheckout(roots, {
+      oldCargoLock: oldText,
+      newCargoLock: newText,
+      prepare: (checkout) => {
+        artifact = join(checkout.root, "artifact");
+        writeRuns(artifact, Object.keys(liveContract.ceilings.workspace), (mode) => ({
+          sourceSha: "b".repeat(40),
+          mode,
+          platform: { os: "linux", arch: "x64" },
+          fixtureVersion: liveContract.fixtureVersion,
+          fixtureSha256: checkout.fixtureSha256,
+          runnerSha256: checkout.runnerSha256,
+          packageVersion: checkout.version,
+          runtimePackageVersion: checkout.version,
+          honoPackageVersion: liveContract.toolchain.honoVersion,
+          esbuildVersion: liveContract.toolchain.esbuildVersion,
+          nodeVersion: liveContract.toolchain.nodeVersion,
+          zlibVersion: liveContract.toolchain.zlibVersion,
+          compression: liveContract.compression,
+          repeats: 2,
+          pnpmLockSha256: checkout.pnpmLockSha256,
+          dependencyFingerprint: {
+            policyVersion: checkout.dependencyFingerprint.policyVersion,
+            sha256: checkout.dependencyFingerprint.sha256,
+          },
+          cargoLockSha256: checkout.cargoLockSha256,
+        }));
+        pinned = structuredClone(liveContract);
+        pinned.ceilings = ceilingsOf(artifact);
+        pinned.fixtureSha256 = { ...checkout.fixtureSha256 };
+        pinned.runnerSha256 = { ...checkout.runnerSha256 };
+        pinned.toolchain.packageVersion = checkout.version;
+        pinned.toolchain.pnpmLockSha256 = checkout.pnpmLockSha256;
+        pinned.toolchain.cargoLockSha256 = OLD;
+        pinned.dependencyFingerprint = { ...checkout.dependencyFingerprint };
+        writeFileSync(join(checkout.root, CONTRACT), contractText(pinned));
+      },
+    });
+    repo.git("tag", "old-lock");
+    repo.git("branch", "dup");
+    repo.git("tag", "dup");
+    ambiguous = addAmbiguousCommitPrefix(repo.root);
+    saved = Object.fromEntries([...OUTPUTS, "Cargo.lock"].map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    rmSync(at("old.lock"), { force: true });
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const argv = (values) =>
+    Object.entries(values)
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const cargoArgv = (extra = {}) =>
+    argv({
+      artifact,
+      "run-id": "51",
+      "job-id": "52",
+      "head-sha": "c".repeat(40),
+      reason: "cargo-producer-lock",
+      "expected-old-cargo-sha": OLD,
+      "expected-new-cargo-sha": NEW,
+      "old-cargo-ref": "HEAD",
+      "added-packages": ADDED.join(","),
+      ...extra,
+    });
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    return vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+
+  it("records the old lock's git blob and the HEAD citation of the previous contract", () => {
+    const notices = quiet();
+    // Unrelated dirty files (the moved Cargo.lock, an untracked note) do not matter.
+    writeFileSync(at("notes.txt"), "test fixture: unrelated untracked file\n");
+    try {
+      main(cargoArgv(), repo.root);
+    } finally {
+      rmSync(at("notes.txt"), { force: true });
+    }
+    const next = written();
+    expect(next.toolchain).toEqual({ ...pinned.toolchain, cargoLockSha256: NEW });
+    expect(next.baselineEvidence.cargoTransition).toEqual({
+      oldSha: OLD,
+      newSha: NEW,
+      added: ADDED,
+      changed: [],
+      removed: [],
+      oldLockSource: { commit: repo.commit, path: "Cargo.lock", sha256: OLD },
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 3,
+      outcome: pinned.outcome,
+      packageVersion: pinned.toolchain.packageVersion,
+      baselineSourceSha: pinned.baselineSourceSha,
+      baselineRunId: pinned.baselineEvidence.runId,
+      contract: { sha256: sha(saved[CONTRACT]), commit: repo.commit, path: CONTRACT },
+    });
+    expect(notices).not.toHaveBeenCalled();
+    const readme = read(README).toString("utf8");
+    expect(readme).toContain("`" + OLD + "` to `" + NEW + "`");
+    expect(readme).toContain(
+      "proved against `Cargo.lock` at commit `" + repo.commit + "` (SHA-256 `" + OLD + "`).",
+    );
+    expect(JSON.stringify(next)).not.toContain("old.lock");
+    expect(contractDiffKeys(pinned, next).every((key) => !key.startsWith("toolchain.pnpm"))).toBe(
+      true,
+    );
+  });
+
+  it("accepts an unambiguous tag or branch, an explicit path and a matching corroboration file", () => {
+    quiet();
+    writeFileSync(at("old.lock"), oldText);
+    for (const ref of ["old-lock", "main:Cargo.lock", repo.commit.slice(0, 12)]) {
+      for (const file of OUTPUTS) writeFileSync(at(file), saved[file]);
+      main(cargoArgv({ "old-cargo-ref": ref, "old-cargo-lock": at("old.lock") }), repo.root);
+      expect(written().baselineEvidence.cargoTransition.oldLockSource).toEqual({
+        commit: repo.commit,
+        path: "Cargo.lock",
+        sha256: OLD,
+      });
+    }
+  });
+
+  // Each refusal leaves the contract, the budget test and the README byte-identical.
+  it.each([
+    ["an option-like ref", { "old-cargo-ref": "-x" }, null, /--old-cargo-ref must name a git ref/],
+    [
+      "an unresolvable ref",
+      { "old-cargo-ref": "no-such-ref" },
+      null,
+      /--old-cargo-ref no-such-ref does not resolve to exactly one commit in /,
+    ],
+    [
+      "an ambiguous short SHA",
+      () => ({ "old-cargo-ref": ambiguous }),
+      null,
+      /does not resolve to exactly one commit .*short object ID [0-9a-f]{4} is ambiguous/,
+    ],
+    [
+      "an ambiguous branch and tag name",
+      { "old-cargo-ref": "dup" },
+      null,
+      /refname 'dup' is ambiguous/,
+    ],
+    [
+      "a tree ref",
+      { "old-cargo-ref": "HEAD^{tree}" },
+      null,
+      /expected commit type, but the object dereferences to tree type/,
+    ],
+    [
+      "a blob ref",
+      () => ({ "old-cargo-ref": repo.git("rev-parse", "HEAD:Cargo.lock") }),
+      null,
+      /expected commit type, but the object dereferences to blob type/,
+    ],
+    ["an empty path", { "old-cargo-ref": "HEAD:" }, null, /--old-cargo-ref has an empty path/],
+    [
+      "an absolute path",
+      { "old-cargo-ref": "HEAD:/Cargo.lock" },
+      null,
+      /path must be relative to the repository root/,
+    ],
+    [
+      "a .. path",
+      { "old-cargo-ref": "HEAD:../Cargo.lock" },
+      null,
+      /path must not contain a \.\. segment/,
+    ],
+    [
+      "a missing blob",
+      { "old-cargo-ref": "HEAD:no-such.lock" },
+      null,
+      /--old-cargo-ref [0-9a-f]{40}:no-such\.lock does not exist/,
+    ],
+    [
+      "a path that is a tree",
+      { "old-cargo-ref": "HEAD:research" },
+      null,
+      /[0-9a-f]{40}:research is a tree, not a blob/,
+    ],
+    [
+      "a blob whose hash is not --expected-old-cargo-sha",
+      { "old-cargo-ref": "HEAD:pnpm-lock.yaml" },
+      null,
+      /[0-9a-f]{40}:pnpm-lock\.yaml hashes to [0-9a-f]{64}, not --expected-old-cargo-sha/,
+    ],
+    [
+      "a corroboration file that differs from the blob",
+      () => ({ "old-cargo-lock": at("old.lock") }),
+      () => writeFileSync(at("old.lock"), newText),
+      /--old-cargo-lock differs from [0-9a-f]{40}:Cargo\.lock/,
+    ],
+    [
+      "an explicit --previous-contract-ref that is not the input bytes",
+      { "previous-contract-ref": "HEAD" },
+      () => writeFileSync(at(CONTRACT), JSON.stringify(pinned, null, 4) + "\n"),
+      /--previous-contract-ref HEAD: [0-9a-f]{40}:research\/v3-island-size\/decision-linux-x64\.json is not byte-identical to the input contract; refusing/,
+    ],
+    [
+      "an unresolvable --previous-contract-ref (no HEAD fallback)",
+      { "previous-contract-ref": "no-such-ref" },
+      null,
+      /--previous-contract-ref no-such-ref does not resolve to exactly one commit/,
+    ],
+    [
+      "a missing test-pin anchor",
+      {},
+      () =>
+        writeFileSync(
+          at(TEST),
+          saved[TEST].toString("utf8").replace("records the reviewed Linux x64 ceilings", "x"),
+        ),
+      /Linux ceiling test not found/,
+    ],
+    [
+      "missing ceiling pins inside the anchored test",
+      {},
+      () =>
+        writeFileSync(
+          at(TEST),
+          saved[TEST]
+            .toString("utf8")
+            .replace("linuxContract.ceilings.packed).toEqual({", "linuxContract.x).toEqual({"),
+        ),
+      /missing packed pins in /,
+    ],
+  ])("refuses %s and writes nothing", (_name, extra, setup, message) => {
+    quiet();
+    setup?.();
+    const before = OUTPUTS.map(read);
+    expect(() => main(cargoArgv(typeof extra === "function" ? extra() : extra), repo.root)).toThrow(
+      message,
+    );
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+  });
+
+  it("resolves refs in the supplied linked worktree, at its detached HEAD", () => {
+    quiet();
+    const dir = mkdtempSync(join(tmpdir(), "zfb-island-linked-"));
+    roots.push(dir);
+    const tree = join(dir, "wt");
+    repo.git("worktree", "add", "-q", "--detach", tree, "HEAD");
+    try {
+      const linked = gitIn(tree);
+      writeFileSync(join(tree, "notes.txt"), "test fixture: linked-worktree commit\n");
+      linked("add", "notes.txt");
+      linked("commit", "-qm", "test fixture: linked worktree");
+      const head = linked("rev-parse", "HEAD");
+      expect(head).not.toBe(repo.commit);
+      expect(head).not.toBe(gitIn(root)("rev-parse", "HEAD"));
+      writeFileSync(join(tree, "Cargo.lock"), newText);
+      main(cargoArgv(), tree);
+      const next = JSON.parse(readFileSync(join(tree, CONTRACT), "utf8"));
+      expect(next.baselineEvidence.cargoTransition.oldLockSource.commit).toBe(head);
+      expect(next.baselineEvidence.repinnedFrom.contract).toEqual({
+        sha256: sha(saved[CONTRACT]),
+        commit: head,
+        path: CONTRACT,
+      });
+      expect(written()).toEqual(pinned);
+    } finally {
+      repo.git("worktree", "remove", "--force", tree);
+    }
+  });
+
+  it("records only the digest, with a notice, for a reformatted contract", () => {
+    const notices = quiet();
+    const reformatted = JSON.stringify(pinned, null, 4) + "\n";
+    writeFileSync(at(CONTRACT), reformatted);
+    main(cargoArgv(), repo.root);
+    const reference = written().baselineEvidence.repinnedFrom.contract;
+    expect(reference).toEqual({ sha256: sha(reformatted) });
+    expect(Object.keys(reference)).toEqual(["sha256"]);
+    expect(notices.mock.calls.flat().join("\n")).toContain(
+      "previous contract bytes are not at HEAD; recorded digest only — no retrievable citation",
+    );
+  });
+
+  it("re-pins twice: each repinnedFrom names only its immediate predecessor", () => {
+    const notices = quiet();
+    // The previous release's contract: the checkout's Cargo.lock, an older version.
+    const previous = structuredClone(pinned);
+    previous.toolchain.cargoLockSha256 = NEW;
+    previous.toolchain.packageVersion = "0.0.1";
+    writeFileSync(at(CONTRACT), contractText(previous));
+    const run = (reason, runId, headSha) =>
+      main(
+        argv({ artifact, "run-id": runId, "job-id": "9", "head-sha": headSha, reason }),
+        repo.root,
+      );
+    run("release-bump", "61", "e".repeat(40));
+    const first = written();
+    const firstBytes = read(CONTRACT);
+    const version = repo.version;
+    expect(first.outcome).toBe("release-version-stamp");
+    expect(first.toolchain.packageVersion).toBe(version);
+    expect(first.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 3,
+      outcome: pinned.outcome,
+      packageVersion: "0.0.1",
+      baselineSourceSha: pinned.baselineSourceSha,
+      baselineRunId: pinned.baselineEvidence.runId,
+      contract: { sha256: sha(contractText(previous)) },
+    });
+    // Release-version wording for a changed package version.
+    expect(first.platformStatus).toContain("This records a release-bump re-pin");
+    expect(first.platformStatus).toContain("unchanged from the v0.0.1 contract");
+    expect(
+      first.baselineEvidence.note.startsWith("Release probe run for v" + version + " at "),
+    ).toBe(true);
+
+    run("runtime-identity", "62", "f".repeat(40));
+    const second = written();
+    expect(Object.keys(second.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(second.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 3,
+      outcome: "release-version-stamp",
+      packageVersion: version,
+      baselineSourceSha: "e".repeat(40),
+      baselineRunId: 61,
+      contract: { sha256: sha(firstBytes) },
+    });
+    expect(JSON.stringify(second.baselineEvidence.repinnedFrom)).not.toContain("repinnedFrom");
+    // Same-version wording that never claims a release.
+    expect(second.outcome).toBe("runtime-identity-repin");
+    expect(second.platformStatus).toContain("This records a runtime-identity re-pin");
+    expect(second.platformStatus).not.toMatch(/release/i);
+    expect(
+      second.baselineEvidence.note.startsWith(
+        "Runtime-identity re-pin run at v" + version + " at ",
+      ),
+    ).toBe(true);
+    expect(second.baselineEvidence.note).not.toMatch(/release/i);
+
+    const sections = read(README).toString("utf8").split("\n## ").slice(1);
+    expect(sections).toHaveLength(2);
+    expect(sections[0]).toContain("v" + version + " release baseline");
+    expect(sections[0]).toContain("re-pinned for the v" + version + " release");
+    expect(sections[0]).toContain("unchanged from the v0.0.1 contract");
+    expect(sections[1]).toContain("v" + version + " runtime-identity re-pin");
+    expect(sections[1]).not.toMatch(/release/i);
+    // Neither contract was at HEAD: digest only, each time with a notice.
+    expect(notices).toHaveBeenCalledTimes(2);
   });
 });
