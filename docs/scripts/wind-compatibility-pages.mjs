@@ -181,8 +181,11 @@ function localizedNote(value, locale, field) {
 // The noyalib 0.0.53 and 0.0.55 pins (#4159, #4173) move only Cargo.toml/Cargo.lock.
 // The CSS addon (#4149) adds only disjoint Cargo.lock entries; reviewed Wind
 // sources, resolved dependency graph, support pin and utility catalog are unchanged.
+// The shared host extraction (#4238) changes zfb-render and adds zfb-js-host in
+// Cargo.lock. All 155 lock records reachable from zudo-wind and the other 99
+// fingerprint files are unchanged; support pin and compatibility claims remain.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "38ddeeefb6e867870d5714a49fa656909604951fc6125e5669882c475d2f8218";
+  "5b41b6e0d0b6dbb43f75599705df5cd8d05fec950b9520ebe4fb032b29b55001";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
