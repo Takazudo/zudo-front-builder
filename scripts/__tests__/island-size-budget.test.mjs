@@ -720,12 +720,12 @@ describe("island shipped-size budget", () => {
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6");
+    expect(darwinContract.baselineSourceSha).toBe("42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "ci-artifact",
-      runId: 38729255517,
-      jobId: 116402683813,
-      artifact: { id: 11968814824 },
+      runId: 38730893656,
+      jobId: 116408109872,
+      artifact: { id: 11970467336 },
     });
     // pnpmLockSha256 comes from the native v4.4.0 fingerprint migration (#4194);
     // cargoLockSha256 and the ceilings below follow run 38451538696 (#4203, #4150).
@@ -733,7 +733,7 @@ describe("island shipped-size budget", () => {
       "01972f66763ceaf7c0d526c43c0c0084de64f7cb5cea99b71ef9f79bf2789e0b",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+      "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
     // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.

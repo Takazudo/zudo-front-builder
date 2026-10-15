@@ -41,8 +41,10 @@ is 4.5.2. Its handoff first measures incorporated main `57f625a2` natively and
 uses the existing release-identity transition in an isolated old-lock checkout,
 then measures the final candidate and applies the reviewed Cargo transition.
 Both stages retain unchanged-total/source/platform gates; no composed policy is
-needed. No native Mac task has been started. This Cloud session remains the
-verification/CI-triage owner.
+needed. A follow-up Mac session executed both stages and the Linux re-pin from
+native artifacts; identities are in the
+[transition evidence table](../../research/v3-island-size/cargo-transitions/README.md#native-measurement-gate-and-handoff).
+That session owns the follow-up verification and CI triage.
 
 ### Repair candidate evidence
 
