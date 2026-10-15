@@ -1240,6 +1240,7 @@ pub struct SsrRequestParamFinding {
 /// Heuristic-tier findings are worded as "likely incorrect" (a props
 /// object can legitimately be named `request`/`req`); strong-tier
 /// findings state the problem directly.
+/// File locations use portable separators; the finding retains its native path.
 pub fn render_ssr_request_param_finding(finding: &SsrRequestParamFinding) -> String {
     let verdict = match finding.tier {
         // Strong via the annotation. Wording is asserted verbatim by
@@ -1271,7 +1272,7 @@ pub fn render_ssr_request_param_finding(finding: &SsrRequestParamFinding) -> Str
         "route {route}: {file}:{line}:{col}: {verdict}. Fix: drop the parameter and read the \
          request via `getCloudflareContext()` under an adapter (unavailable under `zfb dev`).",
         route = finding.route,
-        file = finding.file.display(),
+        file = zfb_types::path_to_posix_string(&finding.file),
         line = finding.line,
         col = finding.col,
     )
@@ -1989,7 +1990,10 @@ mod tests {
     fn render_ssr_request_param_finding_strong_states_directly() {
         let finding = SsrRequestParamFinding {
             route: "/api/submit".to_string(),
-            file: PathBuf::from("/proj/pages/api/submit.tsx"),
+            file: PathBuf::from("/proj")
+                .join("pages")
+                .join("api")
+                .join("submit.tsx"),
             line: 5,
             col: 24,
             tier: RequestParamTier::Strong,
