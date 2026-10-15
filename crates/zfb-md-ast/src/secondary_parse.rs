@@ -19,8 +19,8 @@
 use markdown::mdast::Node as MdastNode;
 
 use crate::{
-    unwrap_nested_links, CjkAutolinkBoundaryPlugin, CjkFriendlyPlugin, HardBreaksPlugin,
-    MdastVisitor, ResolvedGfmConstructs, SecondaryParseTarget,
+    unwrap_nested_links, unwrap_table_paragraphs, CjkAutolinkBoundaryPlugin, CjkFriendlyPlugin,
+    HardBreaksPlugin, MdastVisitor, ResolvedGfmConstructs, SecondaryParseTarget,
 };
 
 /// Where a secondary parse site's freshly parsed nodes land in the host
@@ -133,7 +133,11 @@ impl SecondaryParseNormalization {
     ///   NOT part of that gate — they are independent normalisations,
     ///   gated only on their own project settings, and additionally (for
     ///   hard breaks) on placement.
+    /// - [`unwrap_table_paragraphs`] (zfb#4232) is ungated: it removes the
+    ///   paragraphs markdown-rs wraps around text-bearing lines inside an
+    ///   explicit MDX `<table>`, which the renderer rejects.
     pub fn apply(&self, node: &mut MdastNode) {
+        unwrap_table_paragraphs(node);
         if self.autolink_literal {
             unwrap_nested_links(node);
             if self.cjk_friendly {

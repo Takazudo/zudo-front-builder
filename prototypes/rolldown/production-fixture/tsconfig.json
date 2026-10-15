@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "@takazudo/zfb/zudo-react",
+    "baseUrl": ".",
+    "paths": { "@fixture/data": ["components/runtime-data.ts"] }
+  }
+}

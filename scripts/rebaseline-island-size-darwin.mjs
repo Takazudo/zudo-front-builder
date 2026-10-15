@@ -49,7 +49,7 @@
 // proving the pinned and new lock-fingerprint.mjs agree on the real lock.
 //
 // `--reason cargo-producer-lock` (#4214, schemaVersion 3) records one reviewed
-// additive Cargo.lock move from a fresh native artifact, through the Linux
+// Cargo.lock move from a fresh native artifact, additive by default, through the Linux
 // script's shared proveCargoProducerLock: old and new hashes are bound, every
 // old `[[package]]` record must survive byte-identical, and the additions must
 // equal the `--added-packages` allowlist. Only the Cargo hash and its evidence
@@ -103,6 +103,8 @@
 //
 // No file is written before every validation and every rendered output
 // succeeds; there is no force or ignore-provenance option.
+// Optional --reviewed-cargo-transition uses the same exact non-additive #318
+// proof as Linux. Native Darwin artifact checks and equal-total gates remain.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -867,7 +869,7 @@ export function migrateDarwinFingerprint(contract, totals, evidence, checkout) {
   };
 }
 
-// One reviewed additive Cargo.lock move on a schemaVersion-3 contract. The
+// One additive or approved exact non-additive Cargo.lock move on a schemaVersion-3 contract. The
 // package version, pnpm lock, normalizer and fingerprint must equal the
 // contract (fixtures, runners and toolchain are checked by
 // validateDarwinEvidence); `cargoLock` is readCargoLockEvidence's result.
@@ -918,7 +920,9 @@ export function transitionDarwinCargoLock(contract, totals, evidence, checkout, 
     evidence.runId +
     " at source " +
     evidence.sourceSha +
-    " after a reviewed additive Cargo.lock transition (" +
+    " after a reviewed " +
+    (transition.review ? "non-additive" : "additive") +
+    " Cargo.lock transition (" +
     cargoTransitionText(transition) +
     "). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, " +
     "toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; " +
@@ -969,7 +973,9 @@ export function darwinCargoProducerLockReadmeSection(contract, gzipMoves) {
     " " +
     REASONS[CARGO_PRODUCER_LOCK_REASON].heading +
     "\n\n" +
-    "The Darwin arm64 contract recorded a reviewed additive `Cargo.lock` transition at v" +
+    "The Darwin arm64 contract recorded a reviewed " +
+    (e.cargoTransition.review ? "non-additive" : "additive") +
+    " `Cargo.lock` transition at v" +
     contract.toolchain.packageVersion +
     " from the native artifact " +
     e.artifact.id +

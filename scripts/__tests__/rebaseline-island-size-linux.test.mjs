@@ -89,6 +89,7 @@ import {
 } from "./fixtures/island-size-checkout.mjs";
 import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
 import { FINGERPRINT_POLICY_VERSION as LIVE_POLICY_VERSION } from "../../research/v3-island-size/lock-fingerprint.mjs";
+import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const liveContract = JSON.parse(
@@ -1510,6 +1511,48 @@ describe("cargo-producer-lock (#4214)", () => {
       "proved against `Cargo.lock` at commit `" + SOURCE.commit + "` (SHA-256 `" + OLD + "`).",
     );
     expect(rewriteTestPins(testSource, next)).toBe(rewriteTestPins(testSource, v3));
+  });
+
+  it("accepts only the reviewed non-additive lock with unchanged artifact identity and totals", () => {
+    const lock = reviewedCargoLock();
+    const base = structuredClone(v3);
+    base.toolchain.cargoLockSha256 = lock.expectedOldSha;
+    const measured = {
+      ...cargoEvidence,
+      cargoLock: lock,
+      identity: { ...cargoEvidence.identity, cargoLockSha256: lock.expectedNewSha },
+    };
+    const next = rebaselineContract(
+      base,
+      totalsFrom(base),
+      measured,
+      "cargo-producer-lock",
+    ).contract;
+    expect(next.toolchain.cargoLockSha256).toBe(lock.expectedNewSha);
+    expect(next.ceilings).toEqual(base.ceilings);
+    expect(next.allowance).toEqual(base.allowance);
+    expect(next.platformStatus).toContain("reviewed non-additive");
+    expect(next.baselineEvidence.cargoTransition.changed).toHaveLength(46);
+    const raw = totalsFrom(base, { "packed/model": { raw: base.ceilings.packed.model.raw + 1 } });
+    expect(() => rebaselineContract(base, raw, measured, "cargo-producer-lock")).toThrow(
+      /raw totals changed/,
+    );
+    expect(() =>
+      rebaselineContract(
+        base,
+        totalsFrom(base),
+        { ...measured, identity: { ...measured.identity, cargoLockSha256: OLD } },
+        "cargo-producer-lock",
+      ),
+    ).toThrow(/artifact measured/);
+    expect(() =>
+      rebaselineContract(
+        base,
+        totalsFrom(base),
+        { ...measured, version: "unreviewed" },
+        "cargo-producer-lock",
+      ),
+    ).toThrow(/packageVersion/);
   });
 
   it("parses Cargo.lock losslessly and diffs it record by record", () => {
@@ -4221,6 +4264,9 @@ describe("cargo-internal-rewire (#4258)", () => {
       saved = Object.fromEntries([...OUTPUTS, "Cargo.lock"].map((file) => [file, read(file)]));
     });
     afterEach(() => {
+      // A refusal fixture may commit invalid manifests; restore the temporary
+      // repository's cited HEAD as well as its working bytes for the next test.
+      repo.git("reset", "--mixed", newLockCommit);
       for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
       writeRewireManifests(repo.root);
       vi.restoreAllMocks();
@@ -4396,6 +4442,20 @@ describe("cargo-internal-rewire (#4258)", () => {
       unchanged(live());
     });
 
+    it("refuses dirty manifests when the new lock automatically cites HEAD", async () => {
+      quiet();
+      const before = OUTPUTS.map(read);
+      const stage = join(tempDir("zfb-rewire-stage-"), "stage");
+      writeRewireManifests(repo.root, (path, text) =>
+        path.endsWith("zfb-render/Cargo.toml") ? text + "# uncommitted manifest edit\n" : text,
+      );
+      await expect(main(argv({ stage }), repo.root)).rejects.toThrow(
+        /crates\/zfb-render\/Cargo\.toml in the working tree differs from [0-9a-f]{40}:crates\/zfb-render\/Cargo\.toml; refusing/,
+      );
+      expect(existsSync(stage)).toBe(false);
+      unchanged(before);
+    });
+
     it("cites --new-cargo-ref only when byte-identical and corroborates --old-cargo-lock", async () => {
       quiet();
       const stage = join(tempDir("zfb-rewire-stage-"), "stage");
@@ -4527,12 +4587,14 @@ describe("cargo-internal-rewire (#4258)", () => {
       },
       {
         name: "a manifest without publish = false",
-        setup: () =>
+        setup: () => {
           writeRewireManifests(repo.root, (path, text) =>
             path.endsWith("zfb-js-host/Cargo.toml")
               ? text.replace("publish = false\n", "publish = true\n")
               : text,
-          ),
+          );
+          repo.git("commit", "-qam", "fixture: committed publishable internal crate");
+        },
         message: /crates\/zfb-js-host\/Cargo\.toml does not set publish = false/,
       },
       {
@@ -4629,6 +4691,11 @@ describe("cargo-internal-rewire (#4258)", () => {
         name: "a cargo-producer-lock-only flag",
         args: { "added-packages": "zfb-js-host@0.0.0" },
         message: "--added-packages is only for --reason cargo-producer-lock",
+      },
+      {
+        name: "a reviewed external transition flag",
+        args: { "reviewed-cargo-transition": "external-transition.json" },
+        message: "--reviewed-cargo-transition is only for --reason cargo-producer-lock",
       },
       {
         name: "a missing test-pin anchor",

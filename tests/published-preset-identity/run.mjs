@@ -484,7 +484,7 @@ async function browserOracle(installRoot, browser) {
     });
     await step("package signals drive the package component and reach the host", async () => {
       await toggle.click();
-      await page.locator('[role="menuitemradio"]', { hasText: "Light" }).click();
+      await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
       await page.waitForFunction(
         () =>
           document

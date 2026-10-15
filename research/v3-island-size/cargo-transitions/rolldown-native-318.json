@@ -1,0 +1,1063 @@
+{
+  "schemaVersion": 1,
+  "id": "rolldown-native-318",
+  "oldSha": "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+  "newSha": "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37",
+  "delta": {
+    "added": [
+      {
+        "id": "append-only-vec@0.1.8",
+        "beforeSha256": null,
+        "afterSha256": "56174f3688a96c7a95e8630a5d26a4fa71ae5568591ce26c824e95e3dbebe1d2"
+      },
+      {
+        "id": "arcstr@1.2.0",
+        "beforeSha256": null,
+        "afterSha256": "f98dea7022381a3a981bf866e5e0380d1feb11792df26f46f91c85a4fcd78038"
+      },
+      {
+        "id": "async-scoped@0.9.0",
+        "beforeSha256": null,
+        "afterSha256": "f3129e5b53961e3b149ba2bb4bdf87e92c6edd0aac8bce7c16637c7661ce9331"
+      },
+      {
+        "id": "base-encode@0.3.1",
+        "beforeSha256": null,
+        "afterSha256": "55514db3bc7ea072693a23d1aa32e9409dfee0732989312bb4e699cf54c67202"
+      },
+      {
+        "id": "base64@0.23.1",
+        "beforeSha256": null,
+        "afterSha256": "3362070415b3ef58b730f2a10359516cd123eadfd07ef2aa399be5d18d10b6de"
+      },
+      {
+        "id": "bitflags@2.13.2",
+        "beforeSha256": null,
+        "afterSha256": "98716029d222c764709c0ee067cb739ad0cb74c0ea5ddb3a5885f378b2c06caf"
+      },
+      {
+        "id": "blake3@1.8.7",
+        "beforeSha256": null,
+        "afterSha256": "8ad6afc248a80bbe49a018a0ac871b15888e4eaddc94911812b1cd6b8ac6ff1a"
+      },
+      {
+        "id": "bytecount@0.6.9",
+        "beforeSha256": null,
+        "afterSha256": "a97adeeeeb01da0cde8af5415069130ec06e7fec291d44f718e409d2a8d24594"
+      },
+      {
+        "id": "compact_str@0.10.0",
+        "beforeSha256": null,
+        "afterSha256": "cec4bdabb3bcd7db1abfd011304d03fc2d1cebefaf26b6cdfbc157cc0630091c"
+      },
+      {
+        "id": "concurrent_lru@0.2.0",
+        "beforeSha256": null,
+        "afterSha256": "a101855e19c3f313fb9386f8aad82627d421a06f1a5da50ccc8fca360f2505d8"
+      },
+      {
+        "id": "constant_time_eq@0.4.2",
+        "beforeSha256": null,
+        "afterSha256": "d4d96607523ae96beee3c88ef7ff90ea92b61f0449feaf26e332a07ce3e4ff92"
+      },
+      {
+        "id": "cpufeatures@0.3.1",
+        "beforeSha256": null,
+        "afterSha256": "475bceab2812a26d9f4e9ceaebcaf18fcb3f42c55e8191ae0feff283b787524b"
+      },
+      {
+        "id": "dashmap@6.2.1",
+        "beforeSha256": null,
+        "afterSha256": "061b8987b74a7aaf681bc5a62bccccf43e20995060d7db74435f934f4d39a131"
+      },
+      {
+        "id": "endian-type@0.2.0",
+        "beforeSha256": null,
+        "afterSha256": "3ec987d28ada1230e853b54c714eb23d4172b38864fa3ebb953df8ab5423a352"
+      },
+      {
+        "id": "escape-simd@0.1.0",
+        "beforeSha256": null,
+        "afterSha256": "96c24f287325c86ad55524e522885deacbc5117842860f94e82a9b5984a1637e"
+      },
+      {
+        "id": "fast-glob@1.1.2",
+        "beforeSha256": null,
+        "afterSha256": "644383c03ce7efbfa7e2a74c70b00d9b84679c5604cc03fc74cd8148ad872d48"
+      },
+      {
+        "id": "fixedbitset@0.5.7",
+        "beforeSha256": null,
+        "afterSha256": "00808a6712b6f5c3abb9edf72dc71d4a92433063fad64cfb5bb164355df2f833"
+      },
+      {
+        "id": "hmac-sha1-compact@1.1.8",
+        "beforeSha256": null,
+        "afterSha256": "ddc4a599b68d6a26733ff0d9f21d0a80fc37a8d3e1d07e952370773a0eba448b"
+      },
+      {
+        "id": "infer@0.22.0",
+        "beforeSha256": null,
+        "afterSha256": "580a30683e5d36d3df03d2513c678a06d03cbb32c8776fbcc467db7e36ecb3b4"
+      },
+      {
+        "id": "itertools@0.15.0",
+        "beforeSha256": null,
+        "afterSha256": "630f51c2b0b96e222415b4aad1adbd783f40788dd0bcb249b7c87ea0b2217f0a"
+      },
+      {
+        "id": "json-escape-simd@3.1.2",
+        "beforeSha256": null,
+        "afterSha256": "ff54b77f4665f532cd0eb273878562c676939f867efc01ee12d6003a866c7313"
+      },
+      {
+        "id": "lazy-regex-proc_macros@3.6.2",
+        "beforeSha256": null,
+        "afterSha256": "6c38840af36e034d84fb983ed60b5456b6b6baf6184a2856cd85d3e85761e34e"
+      },
+      {
+        "id": "lazy-regex@3.6.2",
+        "beforeSha256": null,
+        "afterSha256": "d62cb3922a70c396bef783719091488f8c9797a457d23c8f69cd4cf31fb04244"
+      },
+      {
+        "id": "memchr@2.8.3",
+        "beforeSha256": null,
+        "afterSha256": "37aa826125d4cccb8efa59e7e0677dc2b92d0fc3dbd617b3e17c92172fb646e9"
+      },
+      {
+        "id": "miniz_oxide@0.9.1",
+        "beforeSha256": null,
+        "afterSha256": "48d697249c0c5d5d039da72e0826d62e9e898ba8553e1f783e7b1b2295690d3d"
+      },
+      {
+        "id": "nibble_vec@0.1.0",
+        "beforeSha256": null,
+        "afterSha256": "fb558c7df9c8193e0440e605705df61117d00c9eb2015fdc3a469aaf1c4be493"
+      },
+      {
+        "id": "nom@8.0.0",
+        "beforeSha256": null,
+        "afterSha256": "270e801bcde2efd0e850a949a0ad9a518d2952115b7ca40a63d9e6799feafc6e"
+      },
+      {
+        "id": "num-bigint@0.5.1",
+        "beforeSha256": null,
+        "afterSha256": "4da69e4c9c81e7dc7ba44c3fbc216332ccdd9ce349435b8ecb09841ff78298f3"
+      },
+      {
+        "id": "oxc-browserslist@5.0.1",
+        "beforeSha256": null,
+        "afterSha256": "d2a452e578b49be85ca8d50c268530da56d23e160e504f575dbb69e8989c01e7"
+      },
+      {
+        "id": "oxc@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593"
+      },
+      {
+        "id": "oxc_allocator@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "dea406e65308b82d9502e41d89ea625b44cd9439f821dafed72496def63edd3c"
+      },
+      {
+        "id": "oxc_ast@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "a747e6939ecb7c0837228506fae5422ad125049e524602cc590f40a74b3283eb"
+      },
+      {
+        "id": "oxc_ast_macros@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "96e261c43d7edadb6c4a347bfb1b67a25e381b5a340eab3fbefb0aff069b4b3c"
+      },
+      {
+        "id": "oxc_ast_visit@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "413c56dbeb56b74948adec78f5981cf53d7ffc541ca6aec3dc39e90db027e138"
+      },
+      {
+        "id": "oxc_codegen@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "3f8c28265147cf9ae48664f4a5b2759a3c3afea899cb7dd73e08d714515b3ce5"
+      },
+      {
+        "id": "oxc_compat@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "b18968e39bb8aaecc7f54708fdf56d4fa16d10ac671b8d10de1b73377b072010"
+      },
+      {
+        "id": "oxc_data_structures@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "4f8a5f1780d1a6e9b7b2fa09102f6d5ed1d00b49156df2e734a3987059e0312f"
+      },
+      {
+        "id": "oxc_diagnostics@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "ccb997fc95e2161b65f657df9f1129e52b84531976a31d611a3db7e99817ec10"
+      },
+      {
+        "id": "oxc_ecmascript@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "0342c192c9400083892fc3125f6eefc612b02002a395a4e23d1808b231836ecb"
+      },
+      {
+        "id": "oxc_estree@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "e06a98d9afdee3e30869343a684c185768d4d782cda01efef54dcbd8c373b5cb"
+      },
+      {
+        "id": "oxc_index@5.0.0",
+        "beforeSha256": null,
+        "afterSha256": "0d0c9d573a0666ead43ea2b7d04085947de30c51175775bc4d5e8535daaedcb2"
+      },
+      {
+        "id": "oxc_isolated_declarations@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "9c0699b0f698b1a7b0dd1d8ef7c7ee6c33b0c12abc1da5656726a6aed77fc17a"
+      },
+      {
+        "id": "oxc_mangler@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "e34691513c4d7a8a4f15de021068aa6fe0187f56b2d4bcdd58b37d317c5f3f8f"
+      },
+      {
+        "id": "oxc_minifier@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "87c7bec18fbaf10c83df254146655efe6b4bb5d1be2fe2a85b59be070f00edc7"
+      },
+      {
+        "id": "oxc_parser@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "6e5df3097bc6b455e9df4e09c83d603150952a59e7d642820cd9e1f203530a12"
+      },
+      {
+        "id": "oxc_regular_expression@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "9ec226110202762c5d2e522d25b8ededd3a2522bc41c93fcc52d092235174d1d"
+      },
+      {
+        "id": "oxc_resolver@11.24.3",
+        "beforeSha256": null,
+        "afterSha256": "c78460be2ff14627b17e7435306158e5ef98aa57786ee34a017ffdb69a593a1c"
+      },
+      {
+        "id": "oxc_semantic@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "580648d4cb3d4d4fab2bba6ec108e40e6f4a37332fb4478eb14c4c0840c04f41"
+      },
+      {
+        "id": "oxc_sourcemap@9.0.0",
+        "beforeSha256": null,
+        "afterSha256": "451eab3b12d4e3a5c960768ed160bfe07a64fdb5661123df8b2f7fc7df5e5bbc"
+      },
+      {
+        "id": "oxc_span@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "c9baae2c26eb20777d9631e3af314aab5d24d44a2a69bd266d67175ec6396c1f"
+      },
+      {
+        "id": "oxc_str@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "8adcfcb3f56f2179c7c8f274a32b93ed691df8eb8677fccede5e6a36ed4cdbb9"
+      },
+      {
+        "id": "oxc_syntax@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "151d1939b082e4ed9b8af1bc287c999a89d83d6740d07a78dd2634b175667cad"
+      },
+      {
+        "id": "oxc_transformer@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "26e3b44e05209b6213990da68e6d539988c364d9d2f92ea51645904c97718e4a"
+      },
+      {
+        "id": "oxc_transformer_plugins@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "5bc2d0e27ec98ff4573c1fd285791d8666a119a15cdbd1277577bf3a8993e5d3"
+      },
+      {
+        "id": "oxc_traverse@0.153.0",
+        "beforeSha256": null,
+        "afterSha256": "81288fd3d6c54cf7ec486ff2e70626fa07fdd28640a020ed05bfecd3e473b84b"
+      },
+      {
+        "id": "petgraph@0.8.3",
+        "beforeSha256": null,
+        "afterSha256": "5035243fa1bb4a61a803d2f89fece308f5f17bc1050ed25017869c8d77178e98"
+      },
+      {
+        "id": "phf@0.14.0",
+        "beforeSha256": null,
+        "afterSha256": "ab30471a4028e8b266d8f6fc34019a58dc4e46ae029fc6f4473b8d414a348a1c"
+      },
+      {
+        "id": "phf_generator@0.14.0",
+        "beforeSha256": null,
+        "afterSha256": "b53c16454ffbeb6615d2d295d543dbfbd2555640eb58dad40f4a2f85c90131bd"
+      },
+      {
+        "id": "phf_macros@0.14.0",
+        "beforeSha256": null,
+        "afterSha256": "47594fed1982a41020ff54ca93582b5438f105ef0cf68bad66ffc73908b0eafa"
+      },
+      {
+        "id": "phf_shared@0.14.0",
+        "beforeSha256": null,
+        "afterSha256": "928b930ad0c8753efb78b56ad79355810569cba4ee671e68554c0c95a3240069"
+      },
+      {
+        "id": "pnp@0.12.12",
+        "beforeSha256": null,
+        "afterSha256": "ce830aa9e8bfefdcc4820fa945777c807a4294f2806be1211e22616253e8c793"
+      },
+      {
+        "id": "radix_trie@0.3.0",
+        "beforeSha256": null,
+        "afterSha256": "8b209958d3ec3dd818f621d4c3e0eb544cbc4f51acd57f129d64b0d45986ac75"
+      },
+      {
+        "id": "regex-automata@0.4.18",
+        "beforeSha256": null,
+        "afterSha256": "900462998ad2074bbda142f928d161a10952f5747dbd7f2d892f45ac81dd906f"
+      },
+      {
+        "id": "regex-syntax@0.8.11",
+        "beforeSha256": null,
+        "afterSha256": "82af3a57a34d6e412bc0747856b334d7f09c86a0750901d297fd0206c9cf722b"
+      },
+      {
+        "id": "regex@1.13.1",
+        "beforeSha256": null,
+        "afterSha256": "4d8549818a15485a55789d4b7dfe245b4175340b6616c958fa766217ca76e3e2"
+      },
+      {
+        "id": "regress@0.12.0",
+        "beforeSha256": null,
+        "afterSha256": "658810d4091a6183a379345f319e54a993bf9442b1946e08ae459072f9e2b93d"
+      },
+      {
+        "id": "rolldown-ariadne@0.6.0",
+        "beforeSha256": null,
+        "afterSha256": "0218f9b3472d2f84fbc603f4db59cbffa2ed39ee85c4f9a68735707a29615dc5"
+      },
+      {
+        "id": "rolldown@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "1262275892777cbb3d5fea9d5067ee2342d79ea8f87f511d29d489c851acf82a"
+      },
+      {
+        "id": "rolldown_common@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "f1f9965d141221850f77a11dd62ba167c4bb69324c98f09b03b83010149770a0"
+      },
+      {
+        "id": "rolldown_dev_common@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "2d0f9ae360227f793eaf126965939e26a074b16bc2db19e69dbf40cad3490867"
+      },
+      {
+        "id": "rolldown_devtools@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "a0ec5ab5179aa5fa13a15d471dc5d1fba9f93aaf28eafc524c3c6cf540d438ee"
+      },
+      {
+        "id": "rolldown_devtools_action@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "8cc27f0c4ca352728c276c905a00f9876e2b966f7de609c604d375ca2222c097"
+      },
+      {
+        "id": "rolldown_ecmascript@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "1284a6078395fd5acdd35463de21be9eff06b05043170306d01a870e62bf524e"
+      },
+      {
+        "id": "rolldown_ecmascript_utils@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "98d044267f6e3ae15a71f7192fb3f79b7477b12e76f051f834560221543450fa"
+      },
+      {
+        "id": "rolldown_error@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "9dd50c602e4f10d6e4a191c4fc18bfe94b13950f3d5f7de186db3616a938b160"
+      },
+      {
+        "id": "rolldown_fs@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "0a3d7517d1cd6496cc0135d8027fc5ae8beaaff1cf20f30ebc35ad3c04812178"
+      },
+      {
+        "id": "rolldown_plugin@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "9c891a55311ed93c04cf1a2aeb3cc1f2ce3fc1827da72a7e68165f0907ee1894"
+      },
+      {
+        "id": "rolldown_plugin_asset_module@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "870133a6cc58d1af123bfc297d667c146e4d6d71bfa3165d4bb44f557b9c1c55"
+      },
+      {
+        "id": "rolldown_plugin_chunk_import_map@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "3827020a8625829ac8eb7a5f3215e437c17835e073ef760321728c0f9a090583"
+      },
+      {
+        "id": "rolldown_plugin_copy_module@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "bacf8ea50465986967a64536d3cfd2c2f1b16d3b528f31500911c7a5eb9f074d"
+      },
+      {
+        "id": "rolldown_plugin_data_url@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "7d3d646570fc8a20b27c558a3bcc4d0cab3f5ad50c02f42de7057de7f41ea9a8"
+      },
+      {
+        "id": "rolldown_plugin_hmr@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "ef9a474e2f0d49c7de54b6df2cb1ec18110ae03503a071958813fb18edf850a3"
+      },
+      {
+        "id": "rolldown_plugin_lazy_compilation@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "bef2f31abd8b6ba30c8b18c29fe1bc1b4b79938c12805ff5fef054a660285436"
+      },
+      {
+        "id": "rolldown_plugin_oxc_runtime@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "e1d2f5375ec9c0fa56b12bc3572c08ee0d65fb860600cbfa8446f41f832adabf"
+      },
+      {
+        "id": "rolldown_plugin_utils@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "eaa8792617a7c1cabb684389630da00ea4470cd081d05e87b608b0d88fae447a"
+      },
+      {
+        "id": "rolldown_resolver@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "11bbdea22b969fa93dc0a94bab09b4017bcbbb1431b557e94f76e5e453d36a95"
+      },
+      {
+        "id": "rolldown_sourcemap@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "8002a5a64baee611ca523553d6127745a4ea5e178b1edd82f31d2432541b0e80"
+      },
+      {
+        "id": "rolldown_std_utils@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "52b709996a6f1a3b693cb60f6807458f74850168780c9547d410e191528d385d"
+      },
+      {
+        "id": "rolldown_tracing@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "7757d67cf8604abb45964ee9ee0024c6f1d88efc3865392a3d840a712a8af6c2"
+      },
+      {
+        "id": "rolldown_utils@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "8a6ed43ca4041ff53daa0e58364942f08a71d700b37df9fc0e18e0f195f2ed80"
+      },
+      {
+        "id": "ropey@1.6.1",
+        "beforeSha256": null,
+        "afterSha256": "ee76e1458a2a4325cfd487a015e2ceab0c0646b6322009fe4d2b6eadb7195c24"
+      },
+      {
+        "id": "rustc-hash@2.1.3",
+        "beforeSha256": null,
+        "afterSha256": "e6315c0fa419def47ea2f310c7cdd93c93661fba5c25758382859069ea8e22de"
+      },
+      {
+        "id": "serde_json@1.0.151",
+        "beforeSha256": null,
+        "afterSha256": "9979ee84a3991c9b83ac9bcf152471f4eb9ff9f8de5fccc6fd8281c82d6eaf81"
+      },
+      {
+        "id": "simd-json@0.18.1",
+        "beforeSha256": null,
+        "afterSha256": "c8b9c39962f944a2338dc990c2240b72c4ab387f16012fe98b6d72a0bf8c2713"
+      },
+      {
+        "id": "smallvec@1.16.3",
+        "beforeSha256": null,
+        "afterSha256": "f278ea642864212ee1041a27aa51ff97bb65f4937f0a8f34b1e0d9615f748bc0"
+      },
+      {
+        "id": "str_indices@0.4.4",
+        "beforeSha256": null,
+        "afterSha256": "dd2c303cdfe139dd5441de24c405e3855f7c38deead1910429cff38ba4c42174"
+      },
+      {
+        "id": "string_wizard@1.2.13",
+        "beforeSha256": null,
+        "afterSha256": "0fe7dbd5428483c19eb92190ae4daae2ac01c13c11be10c5dadb737b86ed2f15"
+      },
+      {
+        "id": "sugar_path@3.0.0",
+        "beforeSha256": null,
+        "afterSha256": "6f2bdf4b916ce08973dce58017d7351af7f55ec406ade03c82d5090faef438bd"
+      },
+      {
+        "id": "syn@3.0.7",
+        "beforeSha256": null,
+        "afterSha256": "4fc3ef9553abdb0bb0d5a95b5d95f229e574a8fb139c15cc18a6e3e28291359e"
+      },
+      {
+        "id": "termcolor@1.4.1",
+        "beforeSha256": null,
+        "afterSha256": "e7054f28afd0e517072d7a5eb59c10e99758e0445c9ef4124fc5c31c7efccad2"
+      },
+      {
+        "id": "tracing-serde@0.2.0",
+        "beforeSha256": null,
+        "afterSha256": "40456e4e496b7c18804c11946b46fb062194dae5e4ce8fa63ffd35de9372c64a"
+      },
+      {
+        "id": "ts-rs-macros@12.0.1",
+        "beforeSha256": null,
+        "afterSha256": "cee51576705e79154e30a28ed234a16ae70061c90949625c4837b264876d0595"
+      },
+      {
+        "id": "ts-rs@12.0.1",
+        "beforeSha256": null,
+        "afterSha256": "4fbef72b8a48c2a6d4bd11946acd5229f733105c0a9c53a748dfd5288e009b1e"
+      },
+      {
+        "id": "typedmap@0.6.0",
+        "beforeSha256": null,
+        "afterSha256": "11d98a414d05ed03ff5d648a8ec6aabc5804fdb4bdbaaa1399c5f87856ccac95"
+      },
+      {
+        "id": "unicode-segmentation@1.13.3",
+        "beforeSha256": null,
+        "afterSha256": "95598d68144702d3e814c4b88bc9718ad5d9a4d31d4d12a1ebad68165b7aa7e9"
+      },
+      {
+        "id": "uuid@1.28.0",
+        "beforeSha256": null,
+        "afterSha256": "0b146e5f03ead9c7705ba81fb2d126febef503f36e459bb417a65280931dae22"
+      },
+      {
+        "id": "vfs@0.13.0",
+        "beforeSha256": null,
+        "afterSha256": "c1f29df4a0142e8b9350d77815fcf5d7273da86df1183692f2c31720bd65327a"
+      },
+      {
+        "id": "xxhash-rust@0.8.19",
+        "beforeSha256": null,
+        "afterSha256": "9ecdf417473b41089070acbb904cc5f71a37c5e9ab2c529b2a055befa128d229"
+      },
+      {
+        "id": "yansi@1.0.1",
+        "beforeSha256": null,
+        "afterSha256": "b93d19d8f57d6a4af3594ecb63c54ce42a96c5123250c6f16cd72a037e035902"
+      },
+      {
+        "id": "zfb-rolldown-prototype@0.0.0",
+        "beforeSha256": null,
+        "afterSha256": "b3c82a767e7effa4dea951cbbb24610929da89c0078583ae6bd706a083d0e627"
+      },
+      {
+        "id": "zlib-rs@0.6.8",
+        "beforeSha256": null,
+        "afterSha256": "f4ffd36adf508ccfe15c30e42b8948597663b41b213a0a8fe8915c3ba770f38b"
+      }
+    ],
+    "changed": [
+      {
+        "id": "anstyle-query@1.1.5",
+        "beforeSha256": "4f0c2849572c7d291e16dbfbdd01941349e4b08dafd4a2ccfdbf36e75f517261",
+        "afterSha256": "aa05cce1d9ec331bd0dd7d83d94cb9f33129ef7e9f989c8f6ffdf2c9eb94a698"
+      },
+      {
+        "id": "anstyle-wincon@3.0.11",
+        "beforeSha256": "411d127d1e852c8f26ddcb9f5759986b46e271dcc943c7b958a57bbb3d45f919",
+        "afterSha256": "cd11de3f729c741239e9ac003109d12b5f72670a762f43243b80530726351454"
+      },
+      {
+        "id": "axum@0.8.9",
+        "beforeSha256": "7fd37ad67ab6b83ae3d32aa6b9a56fca41479152a9439488aa6e686c1ee354a9",
+        "afterSha256": "7e8bc1d81a87f81879b96d250329f5b36d84e62024342ce8a836f49e302b2b65"
+      },
+      {
+        "id": "cexpr@0.6.0",
+        "beforeSha256": "a103c37953519caeb4115365a047a1b3a112bb94c8acf932b86ae32a56c01c9f",
+        "afterSha256": "0c1c21b19b138c0044926148cd937d748ab3695c9675794b6797b0536013d9ef"
+      },
+      {
+        "id": "derive_more-impl@2.1.1",
+        "beforeSha256": "4fcdf29cecc53b5ae8ee3514020dda4ebb25e21af1b50dd83cffb6364c7f8c9e",
+        "afterSha256": "c951c2b5d5608ff5d8cb05242edbc2431a3f4609d17d8a12b6de23dedaeed34f"
+      },
+      {
+        "id": "errno@0.3.14",
+        "beforeSha256": "4123cdfaca51f3721ee1c44f020a3375442216f4c2042d32e0c1a79eee0eef0d",
+        "afterSha256": "d61b99173b495ccb9680f2dd99a29643809ce56424fcd6a8a31df3128aa3b2c9"
+      },
+      {
+        "id": "flate2@1.1.9",
+        "beforeSha256": "bf128fe2c2ccf54c273f378113a911dc7706421ad78209ae5133168f34bad968",
+        "afterSha256": "bc984b6e670ea4370fd6e839630b83f898a6f7734c11929a03f5140f08d70d89"
+      },
+      {
+        "id": "hyper-util@0.1.20",
+        "beforeSha256": "e5b114cb30a2b0a6c7813c093ca5b424892ae92d645529530182eb305f81af7c",
+        "afterSha256": "44029e484f000fae0215437ba34592cd547c8ce1354f3baa3ceaf4394ce3fdf8"
+      },
+      {
+        "id": "is-terminal@0.4.17",
+        "beforeSha256": "b39e696e7f8361caf2ec5bb838b3cc5348121a7eb96e792bd67c7f614fd2e2dc",
+        "afterSha256": "ced3cde5875359e95bc09ee19b4820ddf396b97b4c1c425e4c1404c1b71c9903"
+      },
+      {
+        "id": "lightningcss@1.0.0-alpha.71",
+        "beforeSha256": "90ee289fbcbe9359f64eb2d69cf91cb2f8e8c35c7134c83d3cf4398ca89e3edc",
+        "afterSha256": "96683200963ce8a384433cc2889bf0181d2697b253a7aaeae6e328e0446ace97"
+      },
+      {
+        "id": "minify-html@0.18.1",
+        "beforeSha256": "a2d6bf4e3453b97ab0ef05ec5383b73028f884e24f04d46927eac309756b234d",
+        "afterSha256": "cbf1a8bff0049fda7143894ac2c2915d537ee627670b91b740ad7d520357f471"
+      },
+      {
+        "id": "nu-ansi-term@0.50.3",
+        "beforeSha256": "d4c5b3080ea926fd9f084431900a9718134ddb59e43839e02da6563e970402b8",
+        "afterSha256": "2b70d543fdab131d897c531adfcf1e97e7d2a153a0c484b04b50bd598ad9cd93"
+      },
+      {
+        "id": "oxc_allocator@0.95.0",
+        "beforeSha256": "034be3dd293c9ec6322d5c08dd3ccf2511ee993df2dec03695edda2243cc90ba",
+        "afterSha256": "b5904e6fc89927776aabfb5e20ff9e93506ea12d4500b556851fc01fb0fb29d1"
+      },
+      {
+        "id": "oxc_ast@0.95.0",
+        "beforeSha256": "fe07caad3ad188397752760edec91acf8efe8abdc5d3a0e9fb9577b093e06abc",
+        "afterSha256": "ccb30d381af0e9e6d769035ad9d8511c4a892ab206c57f0d5d962619320b550d"
+      },
+      {
+        "id": "oxc_ast_visit@0.95.0",
+        "beforeSha256": "a30b27dd1ab27da6ebdc8b9bb7344aba57c9ed6335ed47e79906697ce7a50665",
+        "afterSha256": "f97d0c034d84abbc1e8b30ba0ed1cdd2863d1a508d8c0c431c08d38bda604b94"
+      },
+      {
+        "id": "oxc_codegen@0.95.0",
+        "beforeSha256": "03e092d4535bbc1dc8d52256f27ce0b9422fff9a878a098d5469594203f18cc4",
+        "afterSha256": "27970fb598f949af1fdbe8b7ef928735b76c679ffa44954617e69f0df9d38c1d"
+      },
+      {
+        "id": "oxc_compat@0.95.0",
+        "beforeSha256": "3ddaf31ad5ac43218c71f3db961dd61cd40726e284d9dde44a5d710fa0dd3cb1",
+        "afterSha256": "968f2c583e5aa2323d557e0642ba1ee42c876ba3021009b691c967d4e001d15f"
+      },
+      {
+        "id": "oxc_ecmascript@0.95.0",
+        "beforeSha256": "2e62134342ba348625ed2eb8c9a35a57f247bb41ee051182b7b4ce13cfdcee47",
+        "afterSha256": "212615f4e68881b664242f679ccf82bea8770ccd8c34d5067141a46f81b8f04d"
+      },
+      {
+        "id": "oxc_mangler@0.95.0",
+        "beforeSha256": "43c70e6960a43f5445feff9077c30f5e739a4b3b8db418da1a4a646159c48ba0",
+        "afterSha256": "a8d84b9812f1ea0e1e91237696a57af6956d393aadb43d0d65d1b8e1fa2e509a"
+      },
+      {
+        "id": "oxc_minifier@0.95.0",
+        "beforeSha256": "bc2394aa579439036347e163a47463ab4f08c3ba8ffbd7169f7cfa9c8bce24b3",
+        "afterSha256": "22a6752f1ebc882d1a02784120146ba816b8a1a02bc8477c62ad850d774a41c4"
+      },
+      {
+        "id": "oxc_parser@0.95.0",
+        "beforeSha256": "7f28c09adeebfdfcb69220b2d0b3ae322ac0dbd0f6046c430a9b87ad55da1d38",
+        "afterSha256": "f54963f549e8eef48c32a494fe588fc490c3cc7ac95cab904bdeea3031b12b62"
+      },
+      {
+        "id": "oxc_regular_expression@0.95.0",
+        "beforeSha256": "1474f8811a124c370bad2c1233bd80d4c6e5837945e028dbb9ee8910c6b4ce19",
+        "afterSha256": "602dd0b879f9aaafb55d2d8e0d731f0fa1e10b0ebdfa682e977793bcd9f0bfba"
+      },
+      {
+        "id": "oxc_semantic@0.95.0",
+        "beforeSha256": "ae64d39155e1410da6848a0f244ace839d62d47d9d16cfaee7dfebc7b7459107",
+        "afterSha256": "eef63222700d4e05dce65aca6d60ca9d21a3fe82ab07516ec410ef8194ab95f3"
+      },
+      {
+        "id": "oxc_span@0.95.0",
+        "beforeSha256": "93fb597916a0e2e4184de471c8c7cb7f189e18a8b7da80f943d498fdf8650f8c",
+        "afterSha256": "c7b3740c028d421c5f55c9255e77e7415781689fa9f7710341b86ffb12e9b93d"
+      },
+      {
+        "id": "oxc_syntax@0.95.0",
+        "beforeSha256": "bdefe5b63b46d94c294e4f4b6511245ce786f494981f6a650b24a21a73e100b9",
+        "afterSha256": "dfcbf8d549b0dc0e465b04ca7e733c84890a8fd300510db84ea182856c0f74f1"
+      },
+      {
+        "id": "oxc_traverse@0.95.0",
+        "beforeSha256": "e1962e623b82d5f71a36b24c717973c8ceb94caa5f919ef3b560f48a13e5eaa3",
+        "afterSha256": "dda2b263d7d61b9d445d4da5f77250de33e0535ce782fb4d5fcec58e606e889e"
+      },
+      {
+        "id": "plist@1.10.0",
+        "beforeSha256": "81ed067a76a052bec96e9e3ea39104747f1ce2912fc1ddf7ec378429c5996e77",
+        "afterSha256": "341d05c84e7d0f2198a9331ae8c8bf2cf4684cd9673d9259df09ce4f6147bb31"
+      },
+      {
+        "id": "reqwest@0.12.28",
+        "beforeSha256": "9930cdbac2c0100d133c279282bc76268686def99be45229bef6096bfe54eaa8",
+        "afterSha256": "e35a1c33c3c07cdb6a94e3c6decc58da4f436d9cc4fe38b75f5270dcb3aaf571"
+      },
+      {
+        "id": "rustix@1.1.4",
+        "beforeSha256": "2d781c1d5dad76c3fbce5e107915d3b9741ef77cf637dbccd3b0a60a1082259d",
+        "afterSha256": "94ef2ff645ed0ca1f43919e2d2523f8c8f7692d55ff6a7c0194b02552bd22515"
+      },
+      {
+        "id": "serde_v8@0.308.0",
+        "beforeSha256": "5acab54c8a7cb61967592725f20bcc16b54c88e53eb928e5151574c01acb25eb",
+        "afterSha256": "b93e384332e4080144db20c7b5d3944a02ac11143303c2e24dcf07f464400f24"
+      },
+      {
+        "id": "sha1@0.10.6",
+        "beforeSha256": "f696fad875005bf0826298b53b518aebc086b69e89fceb7f6700bd65c5de3b1c",
+        "afterSha256": "0ee0d565aaa8db3b13719394d21fcedf92230b397b0b049db23297b331eb6a79"
+      },
+      {
+        "id": "sha2@0.10.9",
+        "beforeSha256": "520d71f1255960c44eee859d2c6857f48c85c413f5c847817b736a864e530617",
+        "afterSha256": "679ff3b5f1eebf51ba2ec4fc87a7bb644d51ce45ff0de4eed0e3030492eac76d"
+      },
+      {
+        "id": "socket2@0.6.3",
+        "beforeSha256": "dcd7e550978284bfb1e3a4f3c6e1372010a85d23e94d535e002c3b7419e4c302",
+        "afterSha256": "d447eaaf4dd4e8f784d363e6747a396794ee1db609c84e2e22e09a60d53a890e"
+      },
+      {
+        "id": "swc_common@24.0.0",
+        "beforeSha256": "08d3dae7ef7b1fe22bccb3e4fa9e0c5f18ed4a7c8e08df1a6796e45d5eeb38a6",
+        "afterSha256": "818fd4986aa242ce977dfa93a45799b04ae0661a9fc50d3659939b68bff97280"
+      },
+      {
+        "id": "swc_ecma_ast@26.0.0",
+        "beforeSha256": "ae729ebdc32a7749134813bd90a460b22ac1e09cffdbbbc5d7c3e508ac9b047e",
+        "afterSha256": "519e74598d2da22be8706e8fc54997e2f4f3bb3a52da1b413e7d4abecf16d33c"
+      },
+      {
+        "id": "swc_ecma_codegen@29.0.0",
+        "beforeSha256": "970cf5ab612088067b16f55b6844364c8d6f3ba8185d281e27f435d50f0938d8",
+        "afterSha256": "6ea845a75b9ab37cd1fc37f34ec96549b5c3d2dfd604d1412e4ea7b11bc3e5e7"
+      },
+      {
+        "id": "swc_ecma_parser@42.0.0",
+        "beforeSha256": "7b8006ff6252d0db4caa9a5d1ff4c3708a959774e96210e37f8aec4e4319ca37",
+        "afterSha256": "2b39d3f9fd122f13476b17d9b262dee5f3c121aaebd5f75e1254b939fda13adf"
+      },
+      {
+        "id": "swc_ecma_transforms_react@52.0.0",
+        "beforeSha256": "0599bb7154e0625d41a5b98ccb654cdd7ca2792c2ea85ec907627957907ddbb1",
+        "afterSha256": "8a0a4d8b4da27e0e0d5e8a560b4f7695192485c61c7effb0ae4dca8c9a943299"
+      },
+      {
+        "id": "swc_ecma_visit@26.0.0",
+        "beforeSha256": "aa2bf82b2a00b0b31f61fe8203dbcd8cc9bee7ae3f31ce80b03de7ab0a686e99",
+        "afterSha256": "4f009dde795796dedafda92a9c1aeccc12751c85e5c8b0406e918d21670adf86"
+      },
+      {
+        "id": "tempfile@3.27.0",
+        "beforeSha256": "246eac8d9e9eee5de2eec1f919756584f0a3ca5b23baecb2d2b5c2a64e78683d",
+        "afterSha256": "15220c1cdebb4dce0749c0863543c4925a2b7ef68575d623b6ee93caeb48bc5a"
+      },
+      {
+        "id": "tracing-subscriber@0.3.23",
+        "beforeSha256": "291b6d1ff509c5a749e319dadf7e8a95182ae3cb29be037325db213d67a03f58",
+        "afterSha256": "202f90a34c01980e71c95d7625a354e7e48f2ec25327323bc95998d0bca55974"
+      },
+      {
+        "id": "v8@147.4.0",
+        "beforeSha256": "15b5345559d99de1dfceaa0a877cb5ed032bcdb787a6638d3f9ef18b18bed4c3",
+        "afterSha256": "e07a46f9ac93c9caa5b6b80ecaeb4d5a23da08a3da5e377c647fd5d7a086e196"
+      },
+      {
+        "id": "winapi-util@0.1.11",
+        "beforeSha256": "5b7ffc5dda4626712aacc0789f10ff1ea64ca9f787b19e3b2b9a0cc97746f376",
+        "afterSha256": "65d49557f38ca88984298729c12b415f13f670f016fc9a8868bb0e2c3c30587f"
+      },
+      {
+        "id": "zfb-build@0.0.0",
+        "beforeSha256": "a1a6e750e789ee30b4b3bc33502d09cb254e3740a7f8e7699dd9203ea2766396",
+        "afterSha256": "ccb7bae5f5d16b7423cea2e3067b9f675a4526a2f3a3bbece3fb75a17cdc2dea"
+      },
+      {
+        "id": "zfb-islands@0.0.0",
+        "beforeSha256": "e0753cdd141151c78254d989ae721374880f72bf900e48a42a9aaf2c9d4c0b7d",
+        "afterSha256": "78f6c9ffe35fa4050881aa8d79219f6e872a0c92733df5e937fc406b07dc0196"
+      },
+      {
+        "id": "zfb-server@0.0.0",
+        "beforeSha256": "c70bab3812d74bfa5dc0c7a5cf6beb1742701972bbe0a09383fed0ff82a58982",
+        "afterSha256": "1edc63072b5735bb6d89aa65514e57f249e4155163b229e7200c7d588dab5ea8"
+      }
+    ],
+    "removed": [
+      {
+        "id": "bitflags@2.11.1",
+        "beforeSha256": "85229bb8f0a6ef63803ef02a2908d37cd03474c58d3221ae131fa557e73abe98",
+        "afterSha256": null
+      },
+      {
+        "id": "fast-glob@1.0.1",
+        "beforeSha256": "dc0def9b5f41bfe77501f5fc8ab2edf1dcddb0ac1ac279adc5d6385862cda9d0",
+        "afterSha256": null
+      },
+      {
+        "id": "json-escape-simd@3.1.0",
+        "beforeSha256": "913d2b334030f27016e60066d0d97ca3f60cd8f9630ac07872331c25414479c1",
+        "afterSha256": null
+      },
+      {
+        "id": "memchr@2.8.0",
+        "beforeSha256": "2923c98ee6dbf584eb388b7e0060248c41d30ac0ed5165fbc99e2c39f2ed0dd3",
+        "afterSha256": null
+      },
+      {
+        "id": "oxc_resolver@11.19.1",
+        "beforeSha256": "bd67c50d4da1d75f014e4eef39f23c6ab030fcdb1b5021c3e723bc48c28af48a",
+        "afterSha256": null
+      },
+      {
+        "id": "papaya@0.2.4",
+        "beforeSha256": "5ff71449b0ce9831db3d1811835ff007e1f728ae927375d18f93101a23ce4994",
+        "afterSha256": null
+      },
+      {
+        "id": "regex-automata@0.4.14",
+        "beforeSha256": "e2e238d3124b4956b0664b7440e8dced32dc1d145f58010dcce9c20d5f632c55",
+        "afterSha256": null
+      },
+      {
+        "id": "regex-syntax@0.8.10",
+        "beforeSha256": "3a90b39af218aa893c006cfd04e8d6f721e6955362fcce14a329f46180d6f632",
+        "afterSha256": null
+      },
+      {
+        "id": "regex@1.12.3",
+        "beforeSha256": "9ffbe39e6837431a68d52667810821ad9d8403104334480068465ff44da28033",
+        "afterSha256": null
+      },
+      {
+        "id": "rustc-hash@2.1.2",
+        "beforeSha256": "4a7273d32011df5c8251d21fe90609d97a836c7f8609e5e511414a5765fe5dff",
+        "afterSha256": null
+      },
+      {
+        "id": "seize@0.5.1",
+        "beforeSha256": "56f87b7acf3e3f0cfa479d5a9dcbdbeb06cbb281dd9191bab1d07c25bbcb7175",
+        "afterSha256": null
+      },
+      {
+        "id": "serde_json@1.0.149",
+        "beforeSha256": "a79360461565a49d8476306d17fce7fb74c20c44cb7c507387bc12738a1cec30",
+        "afterSha256": null
+      },
+      {
+        "id": "simd-json@0.17.0",
+        "beforeSha256": "9fc1f066dc2042569632d1364573b6d84f4a2586da89a3b882298121d57125b8",
+        "afterSha256": null
+      },
+      {
+        "id": "smallvec@1.15.1",
+        "beforeSha256": "7c155450c96a46b94b5406ef6b766c87c4c2606c865cf36ca93f0c2e8be490bc",
+        "afterSha256": null
+      },
+      {
+        "id": "unicode-segmentation@1.13.2",
+        "beforeSha256": "3d72d6efbd41cc792a1203d1afd0b46f8d4d7d982cd6b57a1e73307fef3dccfb",
+        "afterSha256": null
+      },
+      {
+        "id": "uuid@1.23.1",
+        "beforeSha256": "43732ef829a2972e2dc7f2124af506dcaafdba634736ec2ae005ccd83200be28",
+        "afterSha256": null
+      }
+    ]
+  },
+  "review": {
+    "sourceSha": "adb507f7d3ed2de412c603f63cec6e38424dcadb",
+    "decision": "Owner-authorized narrow non-additive transition for PR #4120; numeric ceilings and native per-platform measurement gates unchanged; held #4234 is not activated.",
+    "sharedReplacements": [
+      {
+        "name": "bitflags",
+        "to": "2.13.2",
+        "minimum": "2.13.0",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "2.11.1"
+      },
+      {
+        "name": "fast-glob",
+        "to": "1.1.2",
+        "minimum": "1.1.0",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "1.0.1"
+      },
+      {
+        "name": "json-escape-simd",
+        "to": "3.1.2",
+        "minimum": "3.1.1",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "3.1.0"
+      },
+      {
+        "name": "memchr",
+        "to": "2.8.3",
+        "minimum": "2.8.2",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "2.8.0"
+      },
+      {
+        "name": "oxc_resolver",
+        "to": "11.24.3",
+        "minimum": "11.24.3",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "11.19.1"
+      },
+      {
+        "name": "regex",
+        "to": "1.13.1",
+        "minimum": "1.13.0",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "1.12.3"
+      },
+      {
+        "name": "regex-automata",
+        "to": "0.4.18",
+        "minimum": "0.4.16 via new regex",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "0.4.14"
+      },
+      {
+        "name": "regex-syntax",
+        "to": "0.8.11",
+        "minimum": "0.8.11 via new regex",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "0.8.10"
+      },
+      {
+        "name": "rustc-hash",
+        "to": "2.1.3",
+        "minimum": "2.1.3",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "2.1.2"
+      },
+      {
+        "name": "serde_json",
+        "to": "1.0.151",
+        "minimum": "1.0.150",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "1.0.149"
+      },
+      {
+        "name": "simd-json",
+        "to": "0.18.1",
+        "minimum": "0.18.0 via resolver",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "0.17.0"
+      },
+      {
+        "name": "smallvec",
+        "to": "1.16.3",
+        "minimum": "1.16.0",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "1.15.1"
+      },
+      {
+        "name": "unicode-segmentation",
+        "to": "1.13.3",
+        "minimum": "1.13.3 via OXC diagnostics",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "1.13.2"
+      },
+      {
+        "name": "uuid",
+        "to": "1.28.0",
+        "minimum": "1.27.0",
+        "reason": "Pinned Rolldown/OXC dependency lower bound requires a shared resolution change; see INTEGRATION-20261015.md Cargo resolution evidence.",
+        "from": "1.23.1"
+      }
+    ],
+    "windowsEdges": [
+      {
+        "id": "anstyle-query@1.1.5",
+        "to": "windows-sys 0.60.2",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "anstyle-wincon@3.0.11",
+        "to": "windows-sys 0.60.2",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "errno@0.3.14",
+        "to": "windows-sys 0.52.0",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "is-terminal@0.4.17",
+        "to": "windows-sys 0.52.0",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "nu-ansi-term@0.50.3",
+        "to": "windows-sys 0.59.0",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "rustix@1.1.4",
+        "to": "windows-sys 0.52.0",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "socket2@0.6.3",
+        "to": "windows-sys 0.60.2",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "tempfile@3.27.0",
+        "to": "windows-sys 0.52.0",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      },
+      {
+        "id": "winapi-util@0.1.11",
+        "to": "windows-sys 0.52.0",
+        "reason": "Compatible Cargo solver reselection reproduced from the main-seeded lock; not a native minimum. Cargo has no per-parent edge update. Windows verification remains separate.",
+        "from": "windows-sys 0.61.2"
+      }
+    ],
+    "featureGraphs": [
+      {
+        "mode": "default",
+        "command": "cargo tree --locked -p zfb -e normal,build,features",
+        "sourceSha": "adb507f7d3ed2de412c603f63cec6e38424dcadb",
+        "platform": "linux-x64",
+        "sha256": "406840480b6ebe9fc3bb07ffe5d09e5b69e00fe9f93a30b72f8c251c689e7fc2"
+      },
+      {
+        "mode": "no-v8",
+        "command": "cargo tree --locked -p zfb --no-default-features -e normal,build,features",
+        "sourceSha": "adb507f7d3ed2de412c603f63cec6e38424dcadb",
+        "platform": "linux-x64",
+        "sha256": "36064d665e23098d440a4e339d92cfe7744ea6115661bcdfd8a1aae9f5ceb2ac"
+      },
+      {
+        "mode": "native",
+        "command": "cargo tree --locked -p zfb --features rolldown-prototype -e normal,build,features",
+        "sourceSha": "adb507f7d3ed2de412c603f63cec6e38424dcadb",
+        "platform": "linux-x64",
+        "sha256": "6d7fdacc79519255b3449a5acbe1da8143dcca9ebe405ce963b9aac6ccca1428"
+      }
+    ],
+    "nativeMeasurement": "required-separately-for-each-platform"
+  }
+}

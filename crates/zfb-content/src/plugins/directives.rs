@@ -4410,6 +4410,43 @@ padded body
         );
     }
 
+    /// zfb#4232 at this parse site: an explicit MDX `<table>` re-parsed from
+    /// a collapsed body gets markdown-rs's paragraph wrappers around its
+    /// text-bearing lines, and the pipeline's own top-level pass never sees
+    /// this subtree. Ungated — the registry here keeps every GFM construct
+    /// off.
+    #[test]
+    fn collapsed_directive_body_unwraps_explicit_table_paragraphs() {
+        let mut r = registry_with_admonitions();
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\n<table>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>\n:::",
+            )],
+        );
+
+        let named = |n: &MdastNode, want: &str| match n {
+            MdastNode::MdxJsxFlowElement(e) => e.name.as_deref() == Some(want),
+            MdastNode::MdxJsxTextElement(e) => e.name.as_deref() == Some(want),
+            _ => false,
+        };
+        // Positive control: the re-parse produced the table and its cell.
+        assert!(
+            any_node(&out, &|n| named(n, "tbody")) && any_node(&out, &|n| named(n, "td")),
+            "the re-parsed table must exist: {out:#?}"
+        );
+        assert!(
+            !any_node(&out, &|n| {
+                ["table", "tbody", "tr"].iter().any(|&t| named(n, t))
+                    && n.children().is_some_and(|c| {
+                        c.iter()
+                            .any(|child| matches!(child, MdastNode::Paragraph(_)))
+                    })
+            }),
+            "a paragraph still wraps table structure: {out:#?}"
+        );
+    }
+
     /// zfb#1105 at this parse site, gated the same way the pipeline gates
     /// its own `CjkAutolinkBoundaryPlugin` wiring.
     #[test]

@@ -117,7 +117,7 @@ CSS がストロークや塗りなどをスタイルできるよう SVG を JSX 
 
 dev サーバーとプロダクションビルドは URL の形について一致します。これは偶然ではなく保証です。
 
-- **`zfb dev`** — `public/` 内のファイルは **リクエストごとにディスクからライブで** 配信されます。ページハンドラは、ページキャッシュのミスと `<project>/.zfb-build/dev-pages/` のミスのあと、`<public_root>/<path>` からの読み取りにフォールバックします。`public/` ディレクトリには URL プレフィックスもトップレベルの `nest_service` マウントもなく、ファイルはサイトルートに直接現れます。（注意: コンパイル済みの CSS と islands バンドルは `dist/assets/` から配信されますが、ルートごとの HTML は `dist/` ではなく `.zfb-build/dev-pages/` に書き出されます。）
+- **`zfb dev`** — `public/` 内のファイルは **リクエストごとにディスクからライブで** 配信されます。ページハンドラは、ページキャッシュのミスと `<project>/.zfb-build/dev-pages/` のミスのあと、`<public_root>/<path>` からの読み取りにフォールバックします。`public/` ディレクトリには URL プレフィックスもトップレベルの `nest_service` マウントもなく、ファイルはサイトルートに直接現れます。予約された `/assets/` の URL 空間だけは例外で、専用のマウントを持ちます（後述の「dev での `public/assets/`」を参照）。ルートごとの HTML は `dist/` ではなく `.zfb-build/dev-pages/` に書き出されます。
 - **`zfb build`** — `copy_public_dir`（`crates/zfb/src/commands/build.rs` 内）が `public/` 配下のすべてのファイルを `dist/<rel>` へ再帰的にコピーします。エッジ CDN が配信する静的な `dist/` ツリーは、dev でブラウザが見たものと同じ形です。
 
 つまり、ページに一度書いた `<img src="/logo.svg">` は、条件分岐・環境チェック・`withBase` 風のヘルパーなしで両モードで動作します。
@@ -133,6 +133,25 @@ dev サーバーとプロダクションビルドは URL の形について一�
 （serve-direct）モデルそのものです。逆だと思い込みやすいため、ここで明示しています。
 
 </Info>
+
+### dev での `public/assets/`
+
+`/assets/` は zfb が生成するアセット — スタイルシート、islands バンドル、クライアントスクリプト — のために予約されています。そのため `zfb dev` では、すべての `/assets/*` リクエストを上記のページフォールバックではなく専用のマウントが受け持ちます。このマウントは 3 つの場所を順に調べ、最初に見つかったファイルを配信します。
+
+1. `.zfb-build/dev-assets/assets/` にある **dev 自身が生成したアセット**（`--scratch-dir` を渡した場合はその配下）。
+2. リクエストごとにディスクから読み取る、**ライブの `public/assets/`**。
+3. 以前の `zfb build` が残した **ビルド済みの `dist/assets/`**。dev がそのビルドをシードとして使える場合だけです。`--scratch-dir` では、この場所は使われません。
+
+そのため `public/assets/example.png` は、`zfb build` を先に実行しなくても、`zfb dev` が起動した時点で `/assets/example.png` に応答します。`base` プレフィックスがあれば `/pj/site/assets/example.png` に応答します。ファイルの追加・編集・削除は、再起動もライブリロードもなしに次のリクエストへ反映されます（`public/` のほかの部分と同じです）。ライブの `public/assets/` のファイルは、`dist/assets/` にある古いコピーより常に優先されます。
+
+URL 空間を zfb と共有するため、次のルールがあります。
+
+- **予約名は `public/assets/` から配信されません。** `styles.css`、`islands.js`、`islands-*.js`、そして `client/` 配下のすべては zfb のものです（大文字・小文字を区別せずに照合します）。これらの名前へのリクエストは `public/assets/` を飛ばすので、zfb 自身のファイルは引き続き配信され、あなたのファイルが代わりに使われることはありません。`zfb dev` は起動時に、そうしたファイルごとに警告を 1 行出力します。使いたい場合はファイル名を変えてください。
+- **削除したファイルは、古いビルドのコピーがあればそれにフォールバックします。** ビルド済みの `dist/` がない場合や `--scratch-dir` の場合、削除した `public/assets/` のファイルは 404 を返します。`dist/assets/` に以前の `zfb build` のコピーが残っていれば、再ビルドするまでその古いコピーが配信されます — `zfb dev` が `dist/` を掃除することはありません。
+- **`dist/assets/` へのフォールバックは `base` を考慮しません。** `base` 付きのビルドは `public/` を `dist/<base>/assets/` にコピーしますが、このフォールバックは常に `dist/assets/` を読みます。ライブの `public/assets/` のファイルは、どちらの場合もプレフィックスの下で配信されます。
+- **シンボリックリンクはディレクトリの外に出られません。** `public/assets/` 内のシンボリックリンクが外側を指す場合は 404 を返します。`%2e%2e` のようなエンコード済みのトラバーサルも同様です。
+
+`zfb build` にはこの仕組みは不要です。`public/assets/` は `public/` のほかの部分と一緒に `dist/assets/`（または `dist/<base>/assets/`）へコピーされ、`zfb preview` はそのコピーを配信します。
 
 ## dev の起動とライブリロード
 
@@ -160,7 +179,7 @@ dev サーバーの実行中に `public/logo.svg` を変更しても、ブラウ
 
 1. **プラグインの dev ミドルウェア** で `/foo` を主張するものが最初に実行されます。
 2. **ページキャッシュ** — `pages/foo.tsx` のレンダリング出力が次に優先されます。
-3. **`.zfb-build/dev-pages/` ディレクトリ** — dev の HTML ルート（dev パイプラインが書き出したルートごとのファイル）が次にチェックされます。`/assets/*`（CSS、islands バンドル）は `dist/assets/` から配信されます。
+3. **`.zfb-build/dev-pages/` ディレクトリ** — dev の HTML ルート（dev パイプラインが書き出したルートごとのファイル）が次にチェックされます。`/assets/*` がこのリストに来ることはありません。予約されたアセットマウント（dev が生成したアセット、次に `public/assets/`、次に `dist/assets/` のシード）が応答します。
 4. **`public/` ディレクトリ** — 上記すべてがミスした場合にのみ参照されます。
 5. それ以外は **404**。
 
@@ -174,6 +193,7 @@ dev サーバーの実行中に `public/logo.svg` を変更しても、ブラウ
 config: base: "/pj/site/"
 
 public/logo.svg  →  /pj/site/logo.svg   （dev と prod）
+public/assets/x.png  →  /pj/site/assets/x.png   （dev と prod）
 ```
 
 dev サーバーの `serve_page` フォールバックも、ビルド時の `copy_public_dir` も、このプレフィックスを尊重します。プロジェクトの他の部分と同じやり方で HTML 内のアセット URL を書いている限り（通常は markdown / TSX パイプラインがすでに実行しているリンクリライターを経由して）、プレフィックスは自動的に適用されます。

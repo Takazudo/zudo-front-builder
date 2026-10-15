@@ -17,7 +17,8 @@
 //!    resulting JSON value against the per-collection JSON Schema
 //!    (`collections[].schema`) using [`zfb_content::schema::validate`].
 //! 3. **Invokes `tsc --noEmit`** as a subprocess. Resolution order:
-//!    `node_modules/.bin/tsc` first (including `tsc.cmd` on Windows),
+//!    `node_modules/.bin` first (native `.exe`/`.cmd`/`.bat` on Windows,
+//!    extensionless `tsc` on Unix),
 //!    falling back to a globally-installed `tsc` on `$PATH`. On Windows
 //!    the PATH fallback returns the resolved shim path (e.g.
 //!    `/usr/local/bin/tsc.cmd`) rather than a bare `"tsc"` name. The
@@ -408,17 +409,15 @@ fn run_tsc(project_root: &Path) -> Result<bool> {
 }
 
 fn locate_tsc(project_root: &Path) -> Result<PathBuf> {
-    let candidates = [
-        project_root.join("node_modules").join(".bin").join("tsc"),
-        project_root
-            .join("node_modules")
-            .join(".bin")
-            .join("tsc.cmd"), // Windows
-    ];
-    for c in &candidates {
-        if c.exists() {
-            return Ok(c.clone());
-        }
+    let bin_dir = project_root.join("node_modules").join(".bin");
+    // Preserve the existing Unix local-package fallback separately from PATH.
+    let local_extensions = if cfg!(windows) {
+        executable_extensions(true)
+    } else {
+        &["", ".cmd"]
+    };
+    if let Some(resolved) = find_executable_in_dir(&bin_dir, "tsc", local_extensions) {
+        return Ok(resolved);
     }
     // Fall back to PATH lookup. Return the resolved path so that spawning
     // the explicit path (e.g. tsc.cmd on Windows) works correctly.
@@ -430,46 +429,35 @@ fn locate_tsc(project_root: &Path) -> Result<PathBuf> {
     )
 }
 
-/// Probe PATH for `name`, `name.exe`, then `name<ext>` for each entry in
-/// `extra_exts`. Returns the first existing path found.
-///
-/// `extra_exts` entries must include the leading dot (e.g. `".cmd"`).
-fn which_in_path_with_exts(name: &str, extra_exts: &[&str]) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    for dir in env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-        let with_exe = dir.join(format!("{name}.exe"));
-        if with_exe.exists() {
-            return Some(with_exe);
-        }
-        for ext in extra_exts {
-            debug_assert!(
-                ext.starts_with('.'),
-                "extra_exts entries must include the leading dot (got `{ext}`)"
-            );
-            let with_ext = dir.join(format!("{name}{ext}"));
-            if with_ext.exists() {
-                return Some(with_ext);
-            }
-        }
+/// Windows package managers also install an extensionless POSIX peer, which
+/// CreateProcess cannot execute. Keep it out of the Windows search entirely.
+/// Unix retains its extensionless-first lookup, including the prior .exe fallback.
+fn executable_extensions(windows: bool) -> &'static [&'static str] {
+    if windows {
+        &[".exe", ".cmd", ".bat"]
+    } else {
+        &["", ".exe"]
     }
-    None
 }
 
-/// Probe PATH for `name`, additionally checking `.cmd` and `.bat` extensions
-/// on Windows (where npm installs shim `.cmd` files into `node_modules/.bin`).
+/// Search one directory using an ordered suffix list; an empty suffix permits
+/// an extensionless launcher. A directory with a matching name is not a tool.
+fn find_executable_in_dir(dir: &Path, name: &str, extensions: &[&str]) -> Option<PathBuf> {
+    extensions
+        .iter()
+        .map(|ext| dir.join(format!("{name}{ext}")))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Preserve PATH directory precedence, applying the platform's suffix order
+/// within each directory. Return the explicit path for native batch spawning.
+fn which_in_path_with_exts(name: &str, extensions: &[&str]) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path).find_map(|dir| find_executable_in_dir(&dir, name, extensions))
+}
+
 fn which_in_path(name: &str) -> Option<PathBuf> {
-    // Runtime cfg! so the extension list is compiled in on all platforms but
-    // only activates on Windows; Linux CI still compiles the full code path.
-    let extra_exts: &[&str] = if cfg!(target_os = "windows") {
-        &[".cmd", ".bat"]
-    } else {
-        &[]
-    };
-    which_in_path_with_exts(name, extra_exts)
+    which_in_path_with_exts(name, executable_extensions(cfg!(windows)))
 }
 
 fn render_summary(schema_count: usize, ssr_count: usize, tsc_failed: bool) -> String {
@@ -929,7 +917,7 @@ mod tests {
         std::fs::write(tmp.path.join("tsc"), "").unwrap();
 
         with_path(tmp.path.as_os_str(), || {
-            let result = which_in_path_with_exts("tsc", &[]);
+            let result = which_in_path_with_exts("tsc", &[""]);
             assert!(result.is_some(), "expected Some, got None");
             let p = result.unwrap();
             assert!(p.is_absolute(), "path should be absolute: {}", p.display());
@@ -975,7 +963,11 @@ mod tests {
         let tmp = TmpDir::new("locate-tsc");
         let bin_dir = tmp.path.join("node_modules").join(".bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(bin_dir.join("tsc"), "").unwrap();
+        std::fs::write(
+            bin_dir.join(if cfg!(windows) { "tsc.cmd" } else { "tsc" }),
+            "",
+        )
+        .unwrap();
 
         let result = locate_tsc(&tmp.path).expect("locate_tsc should succeed");
         assert!(
@@ -988,5 +980,59 @@ mod tests {
             PathBuf::from("tsc"),
             "locate_tsc must not return bare 'tsc'"
         );
+    }
+
+    #[test]
+    fn windows_lookup_ignores_posix_peer_and_prefers_native_files() {
+        let tmp = TmpDir::new("native-files");
+        write(&tmp.path, "tsc", "#!/bin/sh\n");
+        write(&tmp.path, "tsc.cmd", "@echo off\n");
+        write(&tmp.path, "tsc.bat", "@echo off\n");
+        std::fs::create_dir(tmp.path.join("tsc.exe")).unwrap();
+        let windows = executable_extensions(true);
+        assert_eq!(
+            find_executable_in_dir(&tmp.path, "tsc", windows),
+            Some(tmp.path.join("tsc.cmd"))
+        );
+        std::fs::remove_dir(tmp.path.join("tsc.exe")).unwrap();
+        write(&tmp.path, "tsc.exe", "native executable");
+        assert_eq!(
+            find_executable_in_dir(&tmp.path, "tsc", windows),
+            Some(tmp.path.join("tsc.exe"))
+        );
+        assert_eq!(
+            find_executable_in_dir(&tmp.path, "tsc", executable_extensions(false)),
+            Some(tmp.path.join("tsc")),
+            "Unix must retain its extensionless-first lookup"
+        );
+        std::fs::remove_file(tmp.path.join("tsc.exe")).unwrap();
+        std::fs::remove_file(tmp.path.join("tsc.cmd")).unwrap();
+        assert_eq!(
+            find_executable_in_dir(&tmp.path, "tsc", windows),
+            Some(tmp.path.join("tsc.bat"))
+        );
+        std::fs::remove_file(tmp.path.join("tsc.bat")).unwrap();
+        assert_eq!(find_executable_in_dir(&tmp.path, "tsc", windows), None);
+    }
+
+    #[test]
+    fn windows_path_lookup_skips_posix_peers_and_keeps_directory_precedence() {
+        let first = TmpDir::new("first PATH entry");
+        let second = TmpDir::new("second PATH entry");
+        write(&first.path, "tsc", "#!/bin/sh\n");
+        write(&second.path, "tsc.exe", "native executable");
+        let path = env::join_paths([&first.path, &second.path]).unwrap();
+        with_path(&path, || {
+            assert_eq!(
+                which_in_path_with_exts("tsc", executable_extensions(true)),
+                Some(second.path.join("tsc.exe"))
+            );
+            write(&first.path, "tsc.cmd", "@echo off\n");
+            assert_eq!(
+                which_in_path_with_exts("tsc", executable_extensions(true)),
+                Some(first.path.join("tsc.cmd")),
+                "a later .exe must not outrank an earlier directory's .cmd"
+            );
+        });
     }
 }
