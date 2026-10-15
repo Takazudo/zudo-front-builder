@@ -210,6 +210,59 @@ fn nested_markdown_intrinsics_do_not_redeclare_components_map_and_members_surviv
 }
 
 #[test]
+fn decimal_comparison_payloads_survive_component_discovery() {
+    for expression in [
+        "`x<1.5`",
+        "`x < 1.5`",
+        "`x<1.5; y<2.25; z < 3.75`",
+        "`const x = 1;\nif (x<1.5) {\nconsole.log(x<2.25);\n}`",
+        "`void main() {\nif (uv.x<1.5 && uv.y<2.25) {\ngl_FragColor = vec4(1.0);\n}\n}`",
+        "'x<1.5'",
+        "\"x<1.5\"",
+        "({ nested: { js: `x<1.5` } }).nested.js",
+    ] {
+        let element = format!("<Preview js={{{expression}}} />");
+        for source in [
+            element.clone(),
+            format!("<Note>\n\n{element}\n\n</Note>"),
+            format!("{{true ? {element} : null}}"),
+        ] {
+            let out = emit_with_defaults(&source);
+            assert!(out.contains(expression), "payload changed: {source}\n{out}");
+            assert!(out.contains("const Preview ="), "{out}");
+            for numeric_head in ["1", "2", "3"] {
+                assert!(!out.contains(&format!("const {numeric_head} =")), "{out}");
+            }
+            #[cfg(feature = "compiler")]
+            SwcPipeline::new()
+                .compile(
+                    &out,
+                    &CompileOptions::default().with_filename("decimal.tsx"),
+                )
+                .expect("decimal payload must leave a valid JSX module");
+        }
+    }
+}
+
+#[test]
+fn expression_members_and_template_interpolation_keep_complete_binding_heads() {
+    let source = "<Preview child={<UI.Group.Anchor />} other={<ui.Anchor />} unicode={<Δ.Anchor />} combined={<A\u{0301}.Anchor />} dollar={<UI$Kit.An$chor />} js={`x<1.5 ${<Inner.Anchor />}`} />";
+    let out = emit_with_defaults(source);
+    for head in ["Preview", "UI", "ui", "Δ", "A\u{0301}", "UI$Kit", "Inner"] {
+        assert!(out.contains(&format!("const {head} =")), "{out}");
+    }
+    assert!(!out.contains("const A ="), "{out}");
+    assert!(out.contains("`x<1.5 ${<Inner.Anchor />}`"), "{out}");
+    #[cfg(feature = "compiler")]
+    SwcPipeline::new()
+        .compile(
+            &out,
+            &CompileOptions::default().with_filename("members.tsx"),
+        )
+        .expect("expression members must leave a valid JSX module");
+}
+
+#[test]
 fn bare_pipeline_runs_no_plugins_on_jsx_path() {
     // `Pipeline::with_mdx()` ships zero visitors. The hast detour
     // still runs (we built a tree, walked it, emitted JSX), but no
