@@ -814,9 +814,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
         fs::create_dir_all(&project).unwrap();
+        // Match the canonical project identity returned by gathering even
+        // when TMPDIR has a symlinked ancestor (as it does on macOS).
+        let project = fs::canonicalize(project).unwrap();
         let inputs = CssSourcePlanInputs {
             project_root: project.clone(),
-            first_party_root: temp.path().to_path_buf(),
+            first_party_root: project.parent().unwrap().to_path_buf(),
             configured_output_dir: project.join("src/custom-output"),
             pass_output_dir: Some(project.join("src/assets-current")),
             default_content_roots: vec![project.join("src")],
@@ -1228,6 +1231,88 @@ mod tests {
         .unwrap();
         fs::write(package.join("index.js"), "export {};").unwrap();
         package
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_project_keeps_source_identity_and_exclusions() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("physical");
+        let project = workspace.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let workspace = fs::canonicalize(workspace).unwrap();
+        let project = fs::canonicalize(project).unwrap();
+        let alias = temp.path().join("linked-tmp");
+        std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+        let aliased_project = alias.join("project");
+        assert_ne!(aliased_project, project);
+        fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'project'\n",
+        )
+        .unwrap();
+        write(&workspace, "view.tsx", "p-1");
+        write(&project, "src/page.tsx", "p-2");
+        write(&project, "packages/ui/dist/view.tsx", "p-3");
+        write(&project, "ui/view.tsx", "p-4");
+        write(&project, "ui/excluded.tsx", "p-5");
+        write(&project, "src/pass-output/stale.tsx", "p-6");
+        write(&project, "ui/generated/cache.tsx", "p-7");
+        let inputs = CssSourcePlanInputs {
+            project_root: aliased_project.clone(),
+            pass_output_dir: Some(aliased_project.join("src/pass-output")),
+            zfb_written_roots: zfb_types::ScratchLayout::for_scratch_dir(
+                &aliased_project,
+                aliased_project.join("ui/generated"),
+            )
+            .written_roots(),
+            ..Default::default()
+        };
+        let config = sources_config(vec![(
+            None,
+            serde_json::json!({
+                "roots": ["./ui"],
+                "packageRoots": ["./packages/ui"],
+                "exclude": ["ui/excluded.tsx"]
+            }),
+        )]);
+        let gathered = gather(&inputs, &config).unwrap();
+        assert_eq!(gathered.project_root, project);
+        assert_eq!(gathered.first_party_root, workspace);
+        assert!(gathered.root_package_claimed);
+        assert_eq!(gathered.declared_project_roots, [project.join("ui")]);
+        assert_eq!(
+            gathered.declared_package_roots,
+            [project.join("packages/ui")]
+        );
+        assert_eq!(gathered.author_exclusions[0].declaring_dir, project);
+        let plan = build_css_source_plan(&gathered);
+        assert!(plan
+            .roots
+            .iter()
+            .any(|root| root.label == "root/project/ui"));
+        assert!(plan
+            .roots
+            .iter()
+            .any(|root| root.label == "package-root/project/packages/ui"));
+        let candidates = live(&plan);
+        for expected in ["p-1", "p-2", "p-3", "p-4"] {
+            assert!(candidates.contains(expected), "{expected}");
+        }
+        for excluded in ["p-5", "p-6", "p-7"] {
+            assert!(!candidates.contains(excluded), "{excluded}");
+        }
+
+        // A package declaration which aliases the project must still be
+        // rejected for both scanning and recursive watching.
+        std::os::unix::fs::symlink(&project, project.join("packages/self")).unwrap();
+        for root in [".", "..", "./packages/self"] {
+            let config =
+                sources_config(vec![(None, serde_json::json!({ "packageRoots": [root] }))]);
+            let error = format!("{:#}", gather(&inputs, &config).unwrap_err());
+            assert!(error.contains("ancestors"), "{root}: {error}");
+            assert!(declared_package_root_watch_paths(&aliased_project, &config).is_empty());
+        }
     }
 
     #[test]

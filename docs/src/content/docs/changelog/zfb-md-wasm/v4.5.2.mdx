@@ -1,0 +1,16 @@
+---
+title: v4.5.2
+sidebar_position: 39
+---
+
+# v4.5.2
+
+Released: 2026-10-15
+
+## Bug Fixes
+
+- `compile` and `renderHtml` no longer wrap a whole one-line explicit `<table>…</table>`, or another compact intrinsic table, in a paragraph. This is the same fix as in the `@takazudo/zfb` engine. Before, these tables emitted invalid `p > table` HTML (413d37ab).
+
+## Other Changes
+
+- Shipped sizes: the root (`.`) and `./render` artifacts grow with the table fix. Root goes from 1,522,071 B to 1,525,107 B gzip-9, and `./render` from 1,095,081 B to 1,097,098 B gzip-9. `./highlight` and `./parse` keep their byte sizes. All four `.wasm` artifacts also embed `ZFB_RELEASE_VERSION`, so all four SHA-256 digests change in v4.5.2, including the two whose sizes did not move. Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.5.2-shipped-artifacts.json` Release asset (e10fb703).

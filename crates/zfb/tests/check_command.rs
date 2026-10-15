@@ -13,7 +13,9 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+#[cfg(unix)]
+use zfb_test_utils::locate_esbuild;
+use zfb_test_utils::zfb_binary;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -93,24 +95,32 @@ fn check_fails_with_schema_violation() {
 
 /// Exercise the tsc failure-folding path in `zfb check`.
 ///
-/// All existing tests pass `--skip-tsc`, so this is the only test that
-/// drives the tsc subprocess code path to a non-zero exit.
+/// This deterministic fixture drives the tsc subprocess to a non-zero exit
+/// without requiring an installed TypeScript compiler.
 ///
-/// Fixture: `check-tsc-fail/` contains a committed shell stub at
-/// `node_modules/.bin/tsc` that always exits 1, matching the tsc
-/// convention for "type errors found". The stub is deterministic and
-/// runs in any POSIX shell (CI uses Ubuntu/Linux). Schema validation
-/// passes (the content is valid) so the only failure is tsc.
+/// Fixture: `check-tsc-fail/` contains committed POSIX and Windows shims
+/// that report a TypeScript error and exit 1 after checking `--noEmit`.
+/// Copy it to a path with spaces to exercise native shim path handling.
+/// Schema validation passes, so the only failure is tsc.
 ///
 /// Rationale: this exercises `run_tsc → locate_tsc` (which prefers
 /// `node_modules/.bin/tsc`) and the `tsc_failed = true` branch that
 /// folds tsc failure into the check summary.
 #[test]
 fn check_fails_when_tsc_exits_nonzero() {
-    let dir = fixture("check-tsc-fail");
+    let temp = tempfile::Builder::new()
+        .prefix("zfb tsc failure ")
+        .tempdir()
+        .expect("create TypeScript fixture directory with spaces");
+    copy_dir_recursive(&fixture("check-tsc-fail"), temp.path()).expect("copy tsc fixture");
+    let dir = temp.path().to_path_buf();
 
     // Sanity: the stub must exist and be executable.
-    let stub = dir.join("node_modules/.bin/tsc");
+    let stub = dir.join(if cfg!(windows) {
+        "node_modules/.bin/tsc.cmd"
+    } else {
+        "node_modules/.bin/tsc"
+    });
     assert!(
         stub.exists(),
         "tsc stub must exist at {}: run `git submodule update` or check that \
@@ -144,6 +154,10 @@ fn check_fails_when_tsc_exits_nonzero() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("error TS2345"),
+        "the real platform shim must execute and report its TypeScript error:\n{combined}"
+    );
 
     // `zfb check` must report a tsc-related failure in its summary.
     // `render_summary(0, true)` produces "check failed: type errors".
@@ -151,6 +165,37 @@ fn check_fails_when_tsc_exits_nonzero() {
         combined.contains("type errors") || combined.contains("check failed"),
         "expected 'type errors' or 'check failed' in output:\n{combined}",
     );
+}
+
+/// Windows package-manager bins contain an extensionless POSIX peer as well
+/// as the native batch shim. The PATH fallback must execute the batch shim.
+#[test]
+#[cfg(windows)]
+fn check_prefers_windows_path_shim_over_posix_peer() {
+    let temp = tempfile::Builder::new()
+        .prefix("zfb tsc PATH ")
+        .tempdir()
+        .expect("create PATH directory with spaces");
+    std::fs::write(temp.path().join("tsc"), "#!/bin/sh\nexit 99\n").unwrap();
+    std::fs::write(
+        temp.path().join("tsc.cmd"),
+        "@echo off\nif not \"%~1\"==\"--noEmit\" exit /b 97\nif not \"%~2\"==\"\" exit /b 98\necho WINDOWS_TSC_PATH_SHIM_RAN\nexit /b 0\n",
+    )
+    .unwrap();
+    let mut entries = vec![temp.path().to_path_buf()];
+    if let Some(existing) = env::var_os("PATH") {
+        entries.extend(env::split_paths(&existing));
+    }
+    let output = Command::new(zfb_binary!())
+        .arg("check")
+        .current_dir(fixture("check-good"))
+        .env("PATH", env::join_paths(entries).unwrap())
+        .output()
+        .expect("spawn zfb check with a native PATH shim");
+    let combined = combined_output(&output);
+    assert!(output.status.success(), "{combined}");
+    assert!(combined.contains("WINDOWS_TSC_PATH_SHIM_RAN"), "{combined}");
+    assert!(combined.contains("no errors"), "{combined}");
 }
 
 /// The command-level typecheck must reject raw-text children in a real
@@ -338,7 +383,6 @@ fn ssr_request_param_negative_check_is_silent() {
 /// buildable copy of a checked-in fixture into a tempdir (the build tests
 /// below add a `node_modules` symlink and a `package.json` alongside the
 /// copy, which must not touch the checked-in fixture).
-#[cfg(unix)]
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {

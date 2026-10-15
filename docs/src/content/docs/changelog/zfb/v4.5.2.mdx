@@ -1,0 +1,14 @@
+---
+title: v4.5.2
+sidebar_position: 153
+---
+
+# v4.5.2
+
+Released: 2026-10-15
+
+## Bug Fixes
+
+- `zfb dev` now prints `ready on …` only after the route table and documents are published. Before, the banner followed the TCP bind, so under cold-lazy boot `/` and other page routes answered 404 for about a second after it appeared. The bind now logs `listening on <host>:<port> (routes pending)`, and the listener, `public/` assets, and live-reload stay available during boot. If the cold boot fails, a later successful watcher rebuild prints the ready banner (2ef0f6f5).
+- MDX: a whole one-line explicit `<table>…</table>`, and other compact intrinsic tables, no longer get wrapped in a paragraph. Before, they emitted invalid `p > table` HTML. They are now lifted out of the paragraph on both MDX compile routes (413d37ab).
+- Wind: source-plan diagnostics now handle a project reached through a symlinked path, such as macOS's `/var` → `/private/var` temporary directory. Explicit `--source` classification and exclusion reasons (outDir, zfb scratch root, `--output` path) now match and print project-relative paths, the same as for the canonical project path (688167cb).

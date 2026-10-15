@@ -16,7 +16,7 @@ fn mdx_compile_matches_the_zudo_react_roundtrip_goldens() {
     use std::fs;
     use std::path::Path;
 
-    const CASES: [&str; 7] = [
+    const CASES: [&str; 9] = [
         "ordered-start-3",
         "ordered-resumed",
         "ordered-start-1",
@@ -24,6 +24,8 @@ fn mdx_compile_matches_the_zudo_react_roundtrip_goldens() {
         "aligned-table",
         "footnote",
         "link-image-heading",
+        "explicit-table-sections",
+        "explicit-table-compact",
     ];
 
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))

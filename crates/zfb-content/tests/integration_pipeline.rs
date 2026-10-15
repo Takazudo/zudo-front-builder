@@ -2,7 +2,7 @@
 //!
 //! For each markdown/MDX fixture under `tests/fixtures/`:
 //! 1. Read the file.
-//! 2. Strip frontmatter (if any) via `frontmatter::parse`.
+//! 2. Strip frontmatter (if any) via `frontmatter::extract_markdown`.
 //! 3. Run the body through a fully-wired `Pipeline` (all 7 plugins).
 //! 4. Serialize to HTML.
 //! 5. Compare against the snapshot under `tests/fixtures/snapshots/`.

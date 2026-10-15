@@ -118,7 +118,7 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 
 ## dev サーバーとの関係
 
-dev サーバー（`zfb-server`）は、オーケストレーターの出力の上に乗る薄い読み手です。`PageCache`（URL パスからレンダリング済み HTML へのマップで、レンダリングごとに更新される）、`ReloadEvent` 値の `tokio::sync::broadcast` チャンネル、そしてキャッシュ・`dist/assets/`・`public/`・`/__zfb/reload` の SSE エンドポイントを配信する `axum` ルーターを所有します。
+dev サーバー（`zfb-server`）は、オーケストレーターの出力の上に乗る薄い読み手です。`PageCache`（URL パスからレンダリング済み HTML へのマップで、レンダリングごとに更新される）、`ReloadEvent` 値の `tokio::sync::broadcast` チャンネル、そしてキャッシュ・予約された `/assets/` マウント（dev が生成したアセット、次に `public/assets/`、次に `dist/assets/` のシード）・`public/`・`/__zfb/reload` の SSE エンドポイントを配信する `axum` ルーターを所有します。
 
 配線箇所は `zfb-server` の `livereload.rs` にある `outcome_to_events` です。noop でないすべての `BuildOutcome` は `ReloadEvent` の 3 つのバリアントのうち 1 つ以上に変換され、ブロードキャストされます。CSS のみの変更は `Css` イベントを発し、ブラウザはクライアントの状態を失うことなくスタイルシートをインプレースで差し替えます。共有アイランドバンドルが変わった場合は `Islands` イベントを発し、ブラウザは新しいバンドルを動的インポートしてハイドレーションをやり直します。それ以外はすべて `Page` イベントを発し、`location.reload()` をトリガーします。イベント種別の完全な内訳と、どの編集シナリオがどのイベントを発火させるかについては [Dev mode lifecycle](../architecture/dev-mode-lifecycle.mdx#3-つの-sse-イベント種別) を参照してください。
 

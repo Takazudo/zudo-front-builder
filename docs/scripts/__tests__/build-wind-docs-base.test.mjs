@@ -7,15 +7,28 @@ import { configAtBase, buildAtBase } from "../build-wind-docs-base.mjs";
 
 const source = 'export default zudoDoc({\n    base: "/",\n});\n';
 
-test("prefix builds change the supported literal config, not generated HTML", () => {
-  assert.equal(
-    configAtBase(source, "/wind-docs-preview/"),
-    source.replace('base: "/"', 'base: "/wind-docs-preview/"'),
+test("prefix builds configure the base and flat public files for a whole-tree mount", async () => {
+  const configured = configAtBase(
+    `const zudoDoc = (settings) => ({ ...settings, copyPublicWithBase: true });\n${source}`,
+    "/wind-docs-preview/",
   );
+  const { default: config } = await import(
+    `data:text/javascript,${encodeURIComponent(configured)}`
+  );
+  assert.equal(config.base, "/wind-docs-preview/");
+  assert.equal(config.copyPublicWithBase, false);
   for (const base of ["/", "../escape/", "/prefix?query/", '";process.exit();//']) {
     assert.throws(() => configAtBase(source, base));
   }
   assert.throws(() => configAtBase(source + source, "/prefix/"), /exactly one/);
+  assert.throws(
+    () => configAtBase(source.replace("export default ", "const config = "), "/prefix/"),
+    /exactly one default export/,
+  );
+  assert.throws(
+    () => configAtBase(`const __windDocsSubpathConfig = {};\n${source}`, "/prefix/"),
+    /reserved preview binding/,
+  );
 });
 
 test("config is restored after successful, failed, and throwing builds", () => {
@@ -28,6 +41,7 @@ test("config is restored after successful, failed, and throwing builds", () => {
         assert.equal(command, "pnpm");
         assert.deepEqual(args, ["--filter", "docs", "build"]);
         assert.match(readFileSync(configPath, "utf8"), /base: "\/prefix\/"/);
+        assert.match(readFileSync(configPath, "utf8"), /copyPublicWithBase: false/);
         if (outcome === "throw") throw new Error("launch failed");
         return { status: outcome === "success" ? 0 : 1 };
       };

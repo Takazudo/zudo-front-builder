@@ -16,9 +16,9 @@
 //!    against this state per affected route, so a single edit triggers
 //!    one in-process render — not a fresh host boot.
 //!
-//! Then it binds the address from `args.host:args.port`, prints the
-//! ready banner via [`crate::output::ready`], and runs the axum server
-//! until Ctrl+C.
+//! Then it binds the address from `args.host:args.port` and starts the axum
+//! server. The ready banner follows coherent document/entry publication;
+//! the listener and live-reload endpoints remain available during boot.
 //!
 //! ## Lifecycle of the renderer state
 //!
@@ -1688,6 +1688,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let client_script_companion_ledger =
         Arc::new(Mutex::new(ClientScriptCompanionLedger::default()));
     let document_obligations = Arc::new(Mutex::new(DocumentObligations::default()));
+    // Readiness is a publication boundary, not a successful TCP bind (#4261).
+    // A watch channel retains a commit that races the server's first poll; it
+    // also lets a later successful watcher repair announce a failed cold boot.
+    let (readiness_tx, mut readiness_rx) = tokio::sync::watch::channel(());
+    let readiness_state = Arc::clone(&islands_bundle_url_handle);
 
     // The pipeline's initial-build completion is validated by
     // `run_boot_render` (known routes + zero rendered is not success), so hold
@@ -1938,6 +1943,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     publication.abort_document_update_before_write();
                     let restored_previous =
                         !matches!(publication.documents, zfb_server::DocumentSlot::Pending);
+                    if publication.is_ready() {
+                        let _ = readiness_tx.send(());
+                    }
                     drop(publication);
                     if restored_previous {
                         let aborted = islands_ledger
@@ -1992,6 +2000,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         publication.begin_document_update();
                     }
                 }
+            }
+            if publication.is_ready() {
+                let _ = readiness_tx.send(());
             }
             drop(publication);
 
@@ -2988,7 +2999,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // `defer_dev_bundle` is set.
     let ssr_route_set_for_boot = ssr_route_set.clone();
 
-    // 6. Build the serve options and announce readiness.
+    // 6. Build the serve options. Readiness follows document publication.
     //
     // Issue #229: thread `cfg.base` through so the dev server mounts
     // pages, assets, and live-reload under the same prefix the build
@@ -3155,9 +3166,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //    the server already accepts connections.
     //
     //    Ordering guarantees preserved:
-    //    - The port-in-use error still surfaces BEFORE the ready banner:
-    //      we bind here, return on failure, and only print the banner
-    //      after a successful bind.
+    //    - The port-in-use error surfaces before any listening/ready message.
+    //      The ready banner additionally waits for coherent publication.
     //    - No leaked background task on a failed bind: the deferred task
     //      is spawned ONLY after the bind succeeds, so a bind failure
     //      returns with nothing to abort.
@@ -3366,6 +3376,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 // bundle. Blocking `std::thread::sleep` is fine: request
                 // handling runs on other multi-thread runtime workers.
                 // Independent of the digest / boot-render / islands slow-steps.
+                // Process-level readiness regression barrier (#4261). The
+                // test owns this file outside the watched project and releases
+                // it after proving the listener is live and readiness pending.
+                if let Some(release) = std::env::var_os("ZFB_DEV_TEST_BUNDLE_RELEASE_FILE") {
+                    let release = PathBuf::from(release);
+                    eprintln!("deferred bundle waiting for test release");
+                    while !release.exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
                 if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
                     if let Ok(ms) = raw.trim().parse::<u64>() {
                         if ms > 0 {
@@ -3712,7 +3732,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Issue #1718 (Watcher Liveness epic #1716) — spawn the watcher-
     // liveness self-check now that the listener is bound, for the same
     // reason `boot_handle` above is deferred: nothing here may precede or
-    // delay the ready banner printed just below. The ENTIRE lifecycle —
+    // delay the listening signal printed just below. The ENTIRE lifecycle —
     // scratch-dir creation, stale-session sweeping, the 10s handshake,
     // any warning, and teardown — lives inside `spawn_watcher_liveness_probe`
     // itself; `run()` only retains the handle so a graceful Ctrl+C can
@@ -3761,7 +3781,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // the port (e.g. the dev E2E harness, #1018). For a fixed port the
     // two values are identical, so existing UX is unchanged.
     let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-    output::ready_with_interfaces("http", &host, bound_port);
+    // Keep this bind signal distinct from the ready URL: callers waiting for
+    // `ready on` must never observe Cold's empty route-table scaffold (#4261).
+    output::info(format!("listening on {host}:{bound_port} (routes pending)"));
 
     // Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
     // signal so axum drains in-flight connections before exiting. The
@@ -3770,8 +3792,35 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
+    // Poll readiness alongside HTTP, never before starting the server: early
+    // public/SSE requests and graceful shutdown must not wait for cold boot.
+    let announce_readiness = async {
+        while readiness_rx.changed().await.is_ok() {
+            // Re-read the authoritative state: a watcher transaction may have
+            // begun between a successful commit's notification and this poll.
+            if readiness_state
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_ready()
+            {
+                output::ready_with_interfaces("http", &host, bound_port);
+                return;
+            }
+        }
+        // The supervised boot/serve arms own a closed publication lifecycle.
+        // Waiting here keeps that closure from announcing readiness or spinning.
+        std::future::pending::<()>().await;
+    };
+    let serve_with_readiness = async {
+        let serve = serve_with_listener(opts, listener, ctrl_c);
+        tokio::pin!(serve);
+        tokio::select! {
+            result = &mut serve => result,
+            () = announce_readiness => serve.await,
+        }
+    };
     let result = tokio::select! {
-        res = serve_with_listener(opts, listener, ctrl_c) => {
+        res = serve_with_readiness => {
             boot_handle.abort();
             // Issue #2103 — abort the `_redirects` watch task alongside
             // `boot_handle` on the graceful-shutdown path, for symmetry;
@@ -10035,9 +10084,9 @@ fn boot_dev_renderer(
         // e2e falsifiable wherever the BOOT bundle runs. In the correct ordering
         // a boot-lazy + servable-`dist/` boot takes the scaffold branch above,
         // so this eager seam never fires and only the deferred-task seam does
-        // (after bind → banner stays fast). If the deferral is reverted — the
+        // (after bind → listening signal stays fast). If the deferral is reverted — the
         // boot bundle moved back here, before `TcpListener::bind` — THIS seam
-        // fires before bind and delays the ready banner past the e2e's deadline,
+        // fires before bind and delays the listening signal past the e2e's deadline,
         // failing the guard. Without a co-located eager seam, an un-defer revert
         // would silently pass. Runs synchronously in `run` before bind, so the
         // blocking sleep delays bind exactly as a real pre-bind bundle would.
