@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      RUSTUP_TOOLCHAIN: "1.99.0"
       CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -80,7 +81,7 @@ jobs:
           cargo fmt --all --check 2>&1 | tee target/plugin-publication-evidence/fmt.log
       - name: Retain reports including failures
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rolldown-plugin-publication-${{ github.sha }}
           path: |

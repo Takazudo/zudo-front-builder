@@ -23,7 +23,7 @@ pub(super) async fn generate_and_close(bundler: &mut Bundler) -> Result<String> 
         for warning in &result.warnings {
             let message = warning.to_diagnostic().convert_to_string(false);
             if warning.kind().to_string() == "UNRESOLVED_IMPORT" {
-                bail!("{message}");
+                bail!("plugin probe refused unresolved-import warning: {message}");
             }
             eprintln!("{message}");
         }
@@ -50,13 +50,13 @@ fn finish<T>(generated: Result<T>, closed: Result<()>) -> Result<T> {
     match (generated, closed) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(generation), Err(close)) => {
-            Err(anyhow!("{generation:#}\nAdditionally, cleanup failed: {close:#}"))
-        }
+        (Err(generation), Err(close)) => Err(anyhow!(
+            "{generation:#}\nAdditionally, cleanup failed: {close:#}"
+        )),
     }
 }
 
-/// Reserve only a new path; never truncate or remove somebody else's output.
+/// Reserve only a new path; never truncate or remove pre-existing output.
 /// This is the standalone probe's output, not production's locked stage guard.
 pub(super) fn publish_new(path: &Path, code: &str) -> Result<()> {
     publish_with(path, |file| file.write_all(code.as_bytes()))
@@ -171,7 +171,7 @@ mod tests {
         async fn close_bundle(
             &self,
             _ctx: &PluginContext,
-            _args: Option<&HookCloseBundleArgs>,
+            _args: Option<&HookCloseBundleArgs<'_>>,
         ) -> Result<()> {
             self.closes.fetch_add(1, Ordering::SeqCst);
             if self.fail_close {
@@ -214,7 +214,10 @@ mod tests {
         let (result, closes) = run(fixture.options("export default () => 17;"), false, false);
         let code = result.unwrap();
         assert_eq!(closes, 1);
-        assert!(!fixture.output().exists(), "generate must never write output");
+        assert!(
+            !fixture.output().exists(),
+            "generate must never write output"
+        );
         assert!(code.contains("sourceMappingURL=data:"));
         publish_new(&fixture.output(), &code).unwrap();
         assert_eq!(std::fs::read_to_string(fixture.output()).unwrap(), code);
@@ -254,10 +257,9 @@ mod tests {
             false,
             false,
         );
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("absent-probe-package"));
+        let message = result.unwrap_err().to_string();
+        assert!(message.starts_with("plugin probe refused unresolved-import warning:"));
+        assert!(message.contains("absent-probe-package"));
         assert_eq!(closes, 1);
         assert!(!fixture.output().exists());
     }
@@ -265,11 +267,12 @@ mod tests {
     #[test]
     fn missing_relative_import_is_closed_without_publishing() {
         let fixture = Fixture::new();
-        let (result, closes) = run(fixture.options("import './absent-source.ts';"), false, false);
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("absent-source.ts"));
+        let (result, closes) = run(
+            fixture.options("import './absent-source.ts';"),
+            false,
+            false,
+        );
+        assert!(result.unwrap_err().to_string().contains("absent-source.ts"));
         assert_eq!(closes, 1);
         assert!(!fixture.output().exists());
     }
