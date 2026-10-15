@@ -66,7 +66,7 @@
 //! nested host) can observe them.
 //!
 //! **Issue #3190** (epic #3187, #3181) adds two `e2e_3190_*` functions after
-//! those: over the same root site, a SINGLE edit written the instant `ready`
+//! those: over the same root site, a SINGLE edit written the instant `listening`
 //! is printed must be served, including when it lands before the watcher is
 //! armed at all (the orchestrator's watch-arm reconcile recovers it).
 //!
@@ -218,6 +218,17 @@ fn spawn_dev_with_env(
     }
 }
 
+fn parse_binding_port(log: &str) -> Option<u16> {
+    log.lines().find_map(|line| {
+        let address = line
+            .split_once("listening on ")?
+            .1
+            .split_whitespace()
+            .next()?;
+        address.rsplit_once(':')?.1.parse().ok()
+    })
+}
+
 fn parse_ready_port(log: &str) -> Option<u16> {
     let mut rest = log;
     while let Some(index) = rest.find("http://") {
@@ -240,6 +251,18 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 /// Returns `None` when `zfb dev` exited with a recognized environmental skip
 /// indicator (no embedded V8 / no esbuild); otherwise the bound port.
 async fn wait_for_ready(session: &mut DevSession) -> Option<u16> {
+    wait_for_port_signal(session, parse_ready_port, "ready").await
+}
+
+async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
+    wait_for_port_signal(session, parse_binding_port, "listening").await
+}
+
+async fn wait_for_port_signal(
+    session: &mut DevSession,
+    parse_port: fn(&str) -> Option<u16>,
+    signal: &str,
+) -> Option<u16> {
     let started = Instant::now();
     loop {
         if let Some(status) = session.guard.try_status() {
@@ -251,17 +274,17 @@ async fn wait_for_ready(session: &mut DevSession) -> Option<u16> {
                 );
                 return None;
             }
-            panic!("`zfb dev` exited before readiness with {status:?}\n{logs}");
+            panic!("`zfb dev` exited before {signal} with {status:?}\n{logs}");
         }
         if let Some(port) =
-            parse_ready_port(&fs::read_to_string(&session.stdout_path).unwrap_or_default())
+            parse_port(&fs::read_to_string(&session.stdout_path).unwrap_or_default())
         {
-            assert_ne!(port, 0, "ready banner reported literal port 0");
+            assert_ne!(port, 0, "{signal} banner reported literal port 0");
             return Some(port);
         }
         assert!(
             started.elapsed() < BOOT_DEADLINE,
-            "`zfb dev --port 0` did not become ready in {}s\n{}",
+            "`zfb dev --port 0` did not report {signal} in {}s\n{}",
             BOOT_DEADLINE.as_secs(),
             session.logs(),
         );
@@ -1328,7 +1351,7 @@ async fn e2e_3163_deferred_cold_boot_ssr_workspace_json_edit_is_served() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #3190 (epic #3187, source #3181) — the first edit right after `ready`
+// Issue #3190 (epic #3187, source #3181) — the first edit right after `listening`
 // ---------------------------------------------------------------------------
 
 /// Issue #3190 — poll budget after the single edit. The reporter's later
@@ -1376,11 +1399,11 @@ async fn write_once_until_served(
 }
 
 /// Issue #3190 — boot the scenario-(a) root site with `extra_env`, write
-/// `packages/data/value.json` ONCE the instant `ready` is printed (no boot
+/// `packages/data/value.json` ONCE the instant `listening` is printed (no boot
 /// page poll first), and require that single edit to be served. Returns the
 /// session and page URL for follow-up edits, or `None` on an environmental
 /// skip.
-async fn first_edit_right_after_ready_3190(
+async fn first_edit_right_after_bind_3190(
     workspace: &Path,
     extra_env: &[(&str, &str)],
     label: &str,
@@ -1392,7 +1415,9 @@ async fn first_edit_right_after_ready_3190(
     // These regressions specifically exercise the eager read-before-watch window.
     let mut env = vec![("ZFB_DEV_BOOT_LAZY", "0")];
     env.extend_from_slice(extra_env);
-    let (session, page_url) = boot_3163(workspace, &esbuild, &env, "").await?;
+    let mut session = spawn_dev_with_env(workspace, &esbuild, &env, "");
+    let port = wait_for_binding_port(&mut session).await?;
+    let page_url = format!("http://localhost:{port}/");
     let latency = write_once_until_served(
         &loopback_client(),
         &workspace.join("packages/data/value.json"),
@@ -1407,7 +1432,7 @@ async fn first_edit_right_after_ready_3190(
 }
 
 /// Issue #3190 (#3181's repro) — root site, eager boot (no `dist/`): a single
-/// edit of `packages/data/value.json` written the instant `ready` is printed
+/// edit of `packages/data/value.json` written the instant `listening` is printed
 /// must be served. Later single edits in the same session are timed and
 /// printed as `[#3190 timing]` lines (the #3181 latency note).
 ///
@@ -1421,10 +1446,10 @@ async fn e2e_3190_root_site_ssr_workspace_json_edit_right_after_ready_is_served(
     let _serial = SERIAL.lock().await;
     let workspace = tempfile::tempdir().expect("#3190 fixture tempdir");
     let _runtime = write_root_site_3163(workspace.path());
-    let Some((session, page_url, first)) = first_edit_right_after_ready_3190(
+    let Some((session, page_url, first)) = first_edit_right_after_bind_3190(
         workspace.path(),
         &[],
-        "#3190: the first edit right after `ready` is served",
+        "#3190: the first edit right after `listening` is served",
     )
     .await
     else {
@@ -1453,7 +1478,7 @@ async fn e2e_3190_root_site_ssr_workspace_json_edit_right_after_ready_is_served(
 
 /// Issue #3190 — the same single edit, with both boot windows of a large site
 /// widened by the existing test seams: the orchestrator (and so the watcher)
-/// starts 2 s after `ready` (`ZFB_DEV_TEST_SLOW_DIGEST_MS`), and the eager
+/// starts 2 s after `listening` (`ZFB_DEV_TEST_SLOW_DIGEST_MS`), and the eager
 /// boot render takes 2 s (`ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS`). The edit lands
 /// after the eager bundle read `value.json` and before any watch covers it,
 /// so it produces no filesystem event at all.
@@ -1469,7 +1494,7 @@ async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
     let _serial = SERIAL.lock().await;
     let workspace = tempfile::tempdir().expect("#3190 fixture tempdir");
     let _runtime = write_root_site_3163(workspace.path());
-    let Some((session, _, _)) = first_edit_right_after_ready_3190(
+    let Some((session, _, _)) = first_edit_right_after_bind_3190(
         workspace.path(),
         &[
             ("ZFB_DEV_TEST_SLOW_DIGEST_MS", "2000"),
@@ -1496,7 +1521,7 @@ async fn e2e_3190_edit_before_the_watcher_is_armed_is_served() {
 // ---------------------------------------------------------------------------
 
 /// The #3190 seams that widen both boot windows: the orchestrator (and so the
-/// watcher) starts 2 s after `ready`, and the eager boot render takes 2 s.
+/// watcher) starts 2 s after `listening`, and the eager boot render takes 2 s.
 const SLOW_WATCH_ARM_ENV: [(&str, &str); 3] = [
     ("ZFB_DEV_BOOT_LAZY", "0"),
     ("ZFB_DEV_TEST_SLOW_DIGEST_MS", "2000"),
@@ -1515,7 +1540,7 @@ fn dev_loop_basic_fixture() -> PathBuf {
 }
 
 /// Boot `root` with [`SLOW_WATCH_ARM_ENV`], rewrite `edited` ONCE (through
-/// `edit`) the instant `ready` is printed, and require `url_path` to serve
+/// `edit`) the instant `listening` is printed, and require `url_path` to serve
 /// `marker` and the watch-arm reconcile to name the edited file. Returns
 /// `false` on an environmental skip.
 async fn single_edit_before_watch_arm_is_served(
@@ -1534,7 +1559,7 @@ async fn single_edit_before_watch_arm_is_served(
     let after = edit(before.clone());
     assert_ne!(before, after, "{label}: the edit must change the file");
     let mut session = spawn_dev_with_env(root, &esbuild, &SLOW_WATCH_ARM_ENV, "");
-    let Some(port) = wait_for_ready(&mut session).await else {
+    let Some(port) = wait_for_binding_port(&mut session).await else {
         return false;
     };
     write_once_until_served(

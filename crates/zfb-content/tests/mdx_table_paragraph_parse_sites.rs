@@ -16,6 +16,9 @@ use zfb_md_ast::{BuildContext, DirectiveSpec, MarkdownFeaturesConfig, Transclude
 mod table_tags;
 use table_tags::{assert_no_structure_paragraph, table_tag_sequence};
 
+const COMPACT_TABLE_REPRO: &str =
+    "<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>B</td></tr></tbody></table>";
+
 const TABLE_REPRO: &str =
     "<table>\n<thead><tr><th>A</th></tr></thead>\n<tbody>\n<tr><td>B</td></tr>\n</tbody>\n</table>\n";
 
@@ -117,6 +120,34 @@ fn transcluded_explicit_table_is_unwrapped_on_the_jsx_path() {
     assert_no_structure_paragraph(&seq, &out);
     assert_eq!(
         seq,
+        ["table", "thead", "tr", "th", "tbody", "tr", "td"],
+        "{out}"
+    );
+}
+
+#[test]
+fn compact_table_is_unwrapped_at_html_and_transclude_parse_sites() {
+    let hast = Pipeline::new().run(COMPACT_TABLE_REPRO).expect("render ok");
+    assert_html_table_unwrapped(&zfb_content::serializer::serialize(&hast));
+
+    let dir = tmpdir();
+    let html = render_with_context(&mut Pipeline::new(), dir.path(), COMPACT_TABLE_REPRO);
+    assert_html_table_unwrapped(&html);
+
+    let include = include_snippet(dir.path(), COMPACT_TABLE_REPRO);
+    let html = render_with_context(&mut pipeline_with_transclude(), dir.path(), &include);
+    assert_html_table_unwrapped(&html);
+
+    let mut p = pipeline_with_transclude();
+    p.set_build_context_roots(dir.path().to_path_buf(), dir.path().join("public"));
+    let opts = zfb_content::MdxJsxOptions::default()
+        .with_filename("page.mdx".to_string())
+        .with_source_path(dir.path().join("page.mdx"));
+    let out =
+        zfb_content::mdx_to_jsx_module_with_pipeline(&include, opts, &mut p).expect("compile ok");
+    assert!(!out.contains("<_components.p>"), "{out}");
+    assert_eq!(
+        table_tag_sequence(&out),
         ["table", "thead", "tr", "th", "tbody", "tr", "td"],
         "{out}"
     );
