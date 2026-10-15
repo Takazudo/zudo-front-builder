@@ -6,6 +6,41 @@ owner's merge decision; it does not mark ready, merge, deploy or publish.
 This Cloud session owns verification and CI triage under
 `CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
 
+## Approved repair increment
+
+The owner approved explicit unsupported raw CSS in the experimental backend and
+a narrowly reviewed nonadditive producer-lock transition, without changing the
+native pin, numerical ceilings or platform evidence gates. The prior rejected
+runs below retain their original identities and conclusions.
+
+- Raw CSS now fails with `ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED` based on the effective
+  native loader, before publication. Explicit text/file CSS resources still
+  work. Native negative tests assert no newly created output and preserve
+  another owner's bundle/metafile; both original esbuild CSS assertions remain.
+- A private prepared-path adapter delegates mapping selection, extension probes,
+  package main/index, imports and side-effect metadata to the pinned resolver.
+  Only selected trailing-directory mappings receive basename-file-before-main
+  handling. It does not trim every slash or restore excluded live-tree files.
+  Independent review reproduced a `rootDirs` escape in the native relative
+  directory probe. That combination now fails explicitly before resolution or
+  publication; a red-before-fix/green-after-fix native test retains the guard.
+- WASM now calls the existing YAML parser through a typed Markdown-only result
+  after the same filename gates. This removes redundant filename/TSX dispatch
+  and impossible absent-body branches; it does not change parsing, diagnostics,
+  exports, compiler settings or ceilings. Local Linux render gzip-9 moved from
+  1,100,167 to 1,099,914 bytes with Rust 1.99.0, wasm-bindgen 0.2.121,
+  Binaryen 130.0.0 and Node 24.14.0. CI remains the authoritative size gate.
+- The [reviewed Cargo transition](../../research/v3-island-size/cargo-transitions/README.md)
+  binds the exact old/new locks, every changed record and an approved manifest
+  digest. Default additive proof and the live strict checker stay intact.
+  Policy-test success is not platform budget admission. No held #4234 policy is
+  activated and no package/dependency pin or lockfile changes in this repair.
+
+Darwin's existing contract additionally records package 4.5.0 while this source
+is 4.5.2. Its native handoff must reconcile that separate release identity before
+a Cargo-only re-pin; this approval does not silently waive it. No native Mac task
+has been started. This Cloud session remains the verification/CI-triage owner.
+
 ## Integrated source and scope
 
 Merge `d5bff12f08cd55548df42f7fb8f45a7bdff9fbfa` has parents
@@ -88,7 +123,7 @@ shares newer smallvec/bitflags; deno_core and V8 versions are unchanged. The
 verifier retains actual locked normal/build/feature graphs for all three modes.
 Thus an optional backend does not imply an unchanged normal producer closure.
 
-## Provenance decision still required
+## Historical provenance blocker (before owner approval)
 
 The active `cargo-producer-lock` transition accepts additions only when all old
 package records remain byte-identical. Changed versions, dependency features,
@@ -116,7 +151,7 @@ eight cases in each workspace/packed mode, two complete saved dist passes,
 normalization and unchanged strict checker results. `enforce=false` collection
 success would not itself mean budget/provenance acceptance.
 
-## CI-authoritative WASM regression
+## Historical CI-authoritative WASM regression
 
 [Health run 38705578695, job 116324103686](https://github.com/Takazudo/zudo-front-builder/actions/runs/38705578695/job/116324103686)
 on candidate `51649ccaba6e86cc499783062084d78e9f124f8b` built all four outputs:
@@ -215,7 +250,7 @@ native tree shaking legitimately removed it. Data now reaches the observable JSX
 call, retaining the original assertion and making the oracle independent of that
 optimization.
 
-Seven assertions remain compatibility gates, not skipped/passed checks:
+At `adb507f7`, seven assertions remained compatibility gates, not skipped/passed checks:
 
 - Six directory-target tests expose absolute tsconfig paths ending `/` in pinned
   `oxc_resolver` 11.24.3. `tsconfig.rs:437–447` and `path.rs:110–111` retain the
@@ -246,8 +281,8 @@ external effects in its final merge authorization. No workflow permission or
 secret change, manual deployment or release dispatch is made here. Package
 publication requires the separate release/manual workflow.
 
-**Not ready to merge while prepared-contract failures, the nonadditive provenance
-rejection and render-WASM ceiling failure remain.** Experimental opt-in remains the intended direction;
+**The historical rejected candidates below were not ready to merge. Current
+acceptance still requires exact-source CI and native producer provenance.** Experimental opt-in remains the intended direction;
 these are integration gates, not a proposal to remove the experiment. Hard
 native termination, production plugin lifecycle, optional-native platform claims
 #4123, packaging/performance #4124 and broader #318 adoption remain separate.

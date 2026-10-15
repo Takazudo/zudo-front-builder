@@ -9,14 +9,14 @@
 three-configuration verifier and automatic merge workflow effects. The direction
 is an explicit experimental opt-in for dogfooding; esbuild remains the default.
 
-Whole-PR acceptance is blocked by seven retained prepared-contract assertions
-(six trailing-directory resolution cases and unsupported raw CSS bundling),
-the nonadditive Cargo provenance transition
-and a newly measured render-WASM gzip result of 1,100,087 bytes against the
-unchanged 1,100,000 ceiling. The older provenance-only failures below did not
-establish this new numerical regression. No held policy, contract digest or
-ceiling is changed. Required CI, independent runtime verification and the
-owner's final merge/deployment authorization remain distinct.
+The owner-approved repair increment is recorded in the integration review:
+explicit raw-CSS rejection, contextual trailing-directory resolution, a typed
+Markdown frontmatter path for the unchanged render-WASM ceiling, and an exact
+reviewed Cargo transition. The historical seven prepared failures and 1,100,087
+byte CI rejection remain historical evidence. Current exact-source CI and native
+platform admission are separate gates; policy tests do not repin a live contract.
+Darwin also has an existing 4.5.0→4.5.2 release-identity prerequisite. No held
+policy or numerical ceiling changed; no native Mac task has been started.
 
 ## Supervision increment from `8cd83962`
 

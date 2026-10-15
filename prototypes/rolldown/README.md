@@ -4,10 +4,19 @@ Direction: **experimental opt-in for dogfooding**, subject to the whole-PR integ
 
 The opt-in is deliberately internal: compile `rolldown-prototype` on `zfb-build` and `zfb-islands` (or the forwarding `zfb` CLI feature), then set `ZFB_ROLLDOWN_PROTOTYPE=1`. Without both, the existing esbuild path runs. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
 
-The shared browser/SSR adapter still synchronously joins a scoped thread and uses
-native `write` before validating the result. It does not acquire the standalone
-plugin probe's supervisor, admission or joined-publication guarantees. The real
+The shared browser/SSR adapter generates in memory, validates warnings and graph
+provenance, and publishes after its scoped worker/runtime has joined. It remains
+synchronous and does not acquire the standalone plugin probe's supervisor,
+admission or request cancellation. The real
 plugin/config callers remain on esbuild, and hard native termination remains open.
+
+Raw CSS bundling is deliberately unsupported by this experimental backend at
+its unchanged native pin. A real CSS loader fails with
+`ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED` before any output is published. Explicit text
+and file resources remain supported, and ordinary esbuild CSS behavior is unchanged.
+Selected trailing-directory tsconfig mappings combined with nonempty `rootDirs`
+are rejected with `ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED`; the prototype does
+not permit that native fallback to escape the prepared shadow.
 
 ## Whole-PR integration verification
 
