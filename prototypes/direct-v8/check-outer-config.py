@@ -5,11 +5,17 @@ This is a baseline-only observer, not candidate CLI integration. Only the
 ephemeral fixture directory is normalized by the Rust example.
 """
 import argparse
-import hashlib
+import importlib.util
 import json
 from pathlib import Path
-import subprocess
 import sys
+
+
+# -I excludes sibling imports. Load only this checkout's known helper.
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("runner_protocol", Path(__file__).with_name("runner-protocol.py"))
+protocol = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(protocol)
 
 CASES = [
     ("object", "{}", "dist"),
@@ -22,35 +28,46 @@ CASES = [
 ]
 
 
+def run(runner, *, timeout=60):
+    requests = [{"name": name, "source": "export default " + source + ";"}
+                for name, source, _ in CASES]
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+                                   "ZFB_OUTER_CONFIG_RECEIPT ", len(CASES), timeout=timeout)
+    receipts = result["receipts"]
+    rows = []
+    for index, (name, _, expected) in enumerate(CASES):
+        receipt = receipts[index] if index < len(receipts) else None
+        failures = []
+        if not isinstance(receipt, dict):
+            failures.append("missing or invalid receipt")
+        else:
+            if receipt.get("case") != name:
+                failures.append("case name or order differs")
+            if isinstance(expected, str):
+                if receipt.get("ok") is not True or receipt.get("outDir") != expected:
+                    failures.append("expected successful outDir differs")
+            elif receipt.get("ok") is not False or not isinstance(receipt.get("error"), str):
+                failures.append("expected failure with a string error")
+            elif not all(fragment in receipt["error"] for fragment in expected):
+                failures.append("expected error fragments differ")
+        rows.append({"name": name, "expected": expected, "passed": not failures,
+                     "failures": failures, "receipt": receipt})
+    result.update(observer="normal CLI outer loader (Deno default)",
+                  runner_sha256=result["executable_sha256"], requests=requests, rows=rows,
+                  passed=result["passed"] and all(row["passed"] for row in rows))
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    requests = [{"name": name, "source": "export default " + source + ";"}
-                for name, source, _ in CASES]
-    proc = subprocess.run([str(args.runner.resolve())], text=True,
-                          input="".join(json.dumps(r) + "\n" for r in requests),
-                          capture_output=True, timeout=60, check=False)
-    prefix = "ZFB_OUTER_CONFIG_RECEIPT "
-    receipts = [json.loads(line[len(prefix):]) for line in proc.stdout.splitlines()
-                if line.startswith(prefix)]
-    rows = []
-    for (name, _, expected), receipt in zip(CASES, receipts):
-        passed = receipt["case"] == name
-        if isinstance(expected, str):
-            passed &= receipt.get("ok") is True and receipt.get("outDir") == expected
-        else:
-            passed &= receipt.get("ok") is False and all(x in receipt.get("error", "") for x in expected)
-        rows.append({"name": name, "expected": expected, "passed": passed, "receipt": receipt})
-    passed = proc.returncode == 0 and len(rows) == len(CASES) and all(row["passed"] for row in rows)
-    report = {"observer": "normal CLI outer loader (Deno default)",
-              "runner_sha256": hashlib.sha256(args.runner.read_bytes()).hexdigest(),
-              "requests": requests, "exit_code": proc.returncode,
-              "stderr": proc.stderr, "passed": passed, "rows": rows}
+    report = run(args.runner)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print("outer config", "PASS" if passed else "FAIL", sum(r["passed"] for r in rows), "/", len(CASES))
-    return 0 if passed else 1
+    print("outer config", "PASS" if report["passed"] else "FAIL",
+          sum(r["passed"] for r in report["rows"]), "/", len(CASES))
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":

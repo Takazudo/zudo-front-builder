@@ -102,7 +102,7 @@ never a baseline/Node/Deno fallback.
 Run all focused refusal suites without a Cargo build or a second target directory:
 
 ```sh
-python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_accept*.py'
+python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
 ```
 
 `test_accept.py` uses shell-script stand-ins and mocked builds/gates to check
@@ -111,8 +111,34 @@ adds real small subprocesses for launch failures, nonzero exits, watchdog output
 and malformed gate reports, plus injected setup failures and interruptions.
 `test_accept_reports.py` adds report mutation matrices, a small subprocess pair,
 and full-entry-point cases with mocked native execution and real gate/report
-aggregation. These tests prove harness orchestration and rejection, not native
-V8 or browser behavior.
+aggregation. `test_checker_protocol.py` runs the config, service-mode and
+outer-config checkers as real subprocesses with tiny stand-in executables,
+plus a bounded real watchdog. The stand-ins use only Python's standard library
+and disable site-package startup. These tests prove checker/harness behavior,
+not native V8 or browser behavior.
+
+The config/services and outer-config checkers share `runner-protocol.py` for
+exact framed receipt counts and failure evidence. Missing, extra, malformed or
+non-object receipts fail; malformed slots do not shift later case attribution.
+Success/error flags must be JSON booleans, missing values are not null, and
+errors must be strings. Duplicate JSON keys, non-finite numbers and container
+nesting beyond 128 levels are refused. The nesting limit keeps rejected receipts
+from preventing serialization of the failure report.
+LF alone frames receipts; Unicode line separators inside JSON strings are valid.
+Launch failures, watchdogs and executable changes retain failed reports, with
+pre/post executable hashes and captured streams. Invalid UTF-8 fails the run and
+is preserved losslessly in the corresponding `stdout_base64`/`stderr_base64`
+field alongside replacement-decoded diagnostics. A failed baseline does not
+prevent observing the candidate. Empty or invalid config corpora are refused
+before execution; the recorded corpus hash binds the bytes actually loaded,
+both engines receive those same loaded inputs, and later corpus mutation fails
+the overall checker even if both individual engine results passed.
+
+To run only the checker protocol suite:
+
+```sh
+python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_checker*.py'
+```
 
 Command steps are registered before launch. Failed launches retain an error and
 `exit_code: null`; watchdogs also retain a null exit code rather than inventing
