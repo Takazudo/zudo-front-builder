@@ -33,7 +33,7 @@
 //!   is escaped once for the JS string literal, then injected raw at
 //!   runtime — visually faithful, no double-escape.
 //! - Frontmatter: NOT handled here. The caller is expected to strip
-//!   YAML/TOML frontmatter via `crate::frontmatter::parse` first.
+//!   YAML/TOML frontmatter via `crate::frontmatter::extract_markdown` first.
 //!
 //! ## Error path
 //!
