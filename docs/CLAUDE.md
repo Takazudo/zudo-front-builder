@@ -2,8 +2,8 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 4.4.0,
-`@takazudo/zudo-doc` / `zudo-doc-history-server` 6.1.1 and `@takazudo/zdtp` 0.8.6 (#3329). Verify
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 4.5.2,
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 6.2.0 and `@takazudo/zdtp` 0.8.6 (#3329). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
@@ -28,10 +28,12 @@ This register is a keep-list, not a request to add dependencies. Re-check the in
 ## tsconfig.json inlines zudo-doc's base config
 
 `docs/tsconfig.json` copies the `compilerOptions` and `files` of
-`@takazudo/zudo-doc@6.1.1/tsconfig.base.json` instead of extending it (#3556). The upstream file
-sets `baseUrl: "."`, which this host's TypeScript 7 rejects (TS5102) even when inherited through
-`extends`. The copy drops only `baseUrl` and adds `types: ["node"]` (TypeScript 6+ no longer
-auto-loads `@types/*`). It keeps the base's `jsxImportSource: "@takazudo/zfb/zudo-react"` and has no
+`@takazudo/zudo-doc@6.2.0/tsconfig.base.json` instead of extending it (#3556).
+The copy was introduced because 6.1.1 set
+`baseUrl: "."`, which TypeScript 7 rejects (TS5102) even when inherited through `extends`.
+Upstream 6.2.0 removes `baseUrl`; the compiler options now match except for the host
+`types: ["node"]` addition (TypeScript 6+ no longer auto-loads `@types/*`).
+It keeps the base's `jsxImportSource: "@takazudo/zfb/zudo-react"` and has no
 `paths`: the old `react` → `preact/compat` aliases are gone, and nothing imports `@/`. When zudo-doc
 is bumped, diff its new `tsconfig.base.json` against this file and carry over any change, then
 update its entry in the root `ZUDO_DEPS_PINS.md` (provenance for this copy, the adapted route stubs
@@ -216,7 +218,7 @@ predictable. An actual anchor-validation gate would be a larger, separate decisi
 The following keys are set in `zfb.config.ts`'s `zudoDoc({ ... })` call:
 
 - **siteName / siteDescription / siteUrl / githubUrl** — site identity, used in metadata and chrome
-- **base** — `/` for normal deployments. `scripts/build-wind-docs-base.mjs` temporarily sets a literal prefix for actual subpath browser verification, then restores this config. The test server mounts the untouched output at that prefix so missing asset/link rewrites fail. The pinned config evaluator has no `process` global, so do not read environment variables directly here.
+- **base** — `/` for normal deployments. `scripts/build-wind-docs-base.mjs` temporarily sets a literal prefix and `copyPublicWithBase: false` for actual subpath browser verification, then restores this config. The test server mounts the untouched output at that prefix so missing asset/link rewrites fail. The pinned config evaluator has no `process` global, so do not read environment variables directly here.
 - **metaTags** — `<head>` metadata; shallow-merged wholesale (a supplied nested object replaces the package default, not patches it — all keys must be given even when only a couple differ)
 - **logo** — `/img/logo.svg`, reproducing the pre-v4 home hero mask (v4's own default is an auto-generated mark)
 - **locales** — the `ja` locale, mapped to `src/content/docs-ja`
