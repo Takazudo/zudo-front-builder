@@ -1,0 +1,50 @@
+{
+  "source": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+  "scope": "Read-only independent current-source review. No patch bytes, edits, pushes, Cargo builds or native execution.",
+  "findings": [
+    {
+      "priority": "high",
+      "file": "prototypes/direct-v8/check-config.py",
+      "lines": [41, 45],
+      "finding": "Non-boolean ok:1 is equal to True; absent value is read as None, so expected null passes. Both actual checker processes and accept.py engine counters accept the report.",
+      "evidence": "reproductions.json; invalid-config-real-process-report.json",
+      "disposition": "Unresolved current-source defect; matches unavailable patch intended scope."
+    },
+    {
+      "priority": "high",
+      "file": "prototypes/direct-v8/check-outer-config.py",
+      "lines": [39, 47],
+      "finding": "zip drops extra framed receipts; 8 receipts for 7 cases yields PASS 7/7 and integer-zero exit, also accepted by accept.outer_counts.",
+      "evidence": "reproductions.json; extra-outer-real-process-report.json",
+      "disposition": "Unresolved current-source defect; matches unavailable patch intended scope."
+    },
+    {
+      "priority": "medium",
+      "file": "prototypes/direct-v8/check-config.py",
+      "lines": [32, 39],
+      "finding": "Non-object [] receipt raises AttributeError. Valid JSON with literal U+2028 inside a string raises JSONDecodeError due to splitlines. run returns no structured observation; main never launches candidate after that baseline exception.",
+      "evidence": "Bounded Python mock-subprocess reproduction in tool transcript.",
+      "disposition": "Unresolved; proposed patch unavailable."
+    }
+  ],
+  "oracle_review": {
+    "existing_tests": "test_accept_reports.py tests report consistency with synthetic passing rows and mutation matrices; main test doubles native execution but retains real gate aggregation. Two tests run small real subprocess report writers. These do not validate checker receipt parsing/semantics.",
+    "compatibility": "All six original saved gate reports plus two lifecycle generated reports pass current actual aggregator callbacks; historical-report-only evidence is separate in historical-compatibility.json.",
+    "timeout": "acceptance logs explicitly distinguish watchdog failure from completion. subprocess.run timeout does not establish whole child-tree cleanup. No cleanup claim inferred."
+  },
+  "runtime_source_review": {
+    "roots": "NativeHost fields place context/modules/services/foreground before OwnedIsolate and thread guard last. Drop removes service/module slots, drops transport before resolver, clears module roots while isolate remains live. ForegroundRegistration closes early-construction entries; disarm transfers ownership to NativeHost.",
+    "foreground": "Weak registry and queue closed flag discard queued/late tasks; custom platform post wraps waker panic in catch_unwind. Existing tests cover ownership transfer, closed queue, native cached-Wasm foreground posting, and repeated disposal. Arbitrary cross-thread isolate-address reuse is not established by these tests.",
+    "callbacks": "Inspected bootstrap, fixed bridge, module resolver/import callbacks and diagnostics handlers; panic containment is explicit. No reproduced native callback defect.",
+    "transport": "Captured mode/client/Rc budget/config precede authored conversion; pending fetch owns DTOs and future; cancel drops transport before JS promise rejection. Existing loopback tests observe zero starts for eager abort and socket close while host remains live; source-only here.",
+    "module_authority": "Native Worker loader delegates resolve/load to shared BundleModuleLoader; canonical target/same-parent checks and canonical read preserve alias scope and diagnostic attribution.",
+    "thread_initialization": "OnceLock applies to standalone direct-V8 initializer and HostThreadGuard tracks direct hosts per thread. It does not unify deno_core and direct-host initialization/thread ownership; documented phase-two boundary remains.",
+    "send_sync": "No unsafe Send/Sync implementation introduced or observed; Rc/RefCell and owned request/response values preserve thread ownership.",
+    "verdict": "No new runtime defect reproduced. Source inspection is not native lifetime, cleanup, scheduling or browser verification."
+  },
+  "blocked_review": [
+    "Actual patch hash/content/applicability, runner-protocol.py, its 28 tests, and modified dynamic import behavior under -I -B cannot be reviewed without patch bytes.",
+    "Combined 92-test inventory cannot be verified at this source; manager observed 64 current acceptance tests.",
+    "Native verification and source-bound replay are manager-owned; no result inferred from historical reports."
+  ]
+}
