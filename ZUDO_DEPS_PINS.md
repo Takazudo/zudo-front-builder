@@ -10,10 +10,10 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: docs/tsconfig.json
 - source: packages/zudo-doc/tsconfig.base.json
 - track: releases
-- pinned: e37130018ee2ca0bf71e39a639e328a9621d4659 (v6.1.1)
-- updated: 2026-10-12
+- pinned: 6542b8300f4a554247563a3bac53e415a63ded51 (v6.2.0)
+- updated: 2026-10-15
 - sync: diff `docs/node_modules/@takazudo/zudo-doc/tsconfig.base.json` against `docs/tsconfig.json` after a bump
-- notes: reconciled against the installed 6.1.1 tarball (SHA-256 `10ddb7317cef4f9ed58a714cfcb8192277d073f6c4c7e6c8933aaa45447823bf`, byte-identical to the file at tag v6.1.1 and to 6.0.1); the package publishes no `gitHead`, so the pin is the release tag commit. Local customizations: drop `baseUrl` (TypeScript 7 rejects it, TS5102), add `types: ["node"]`, add host `include` (`src`, `pages`, `zfb.config.ts`) and relocate `files` under `./node_modules/@takazudo/zudo-doc/`, keep `jsxImportSource: "@takazudo/zfb/zudo-react"`, and add no React→Preact `paths`
+- notes: reconciled against the installed 6.2.0 tarball (tsconfig SHA-256 `2f71d96614fd68f9b16caf307b4b1267ebf1988880e4fd0a08f1cd8a93ddeea6`); the package publishes no `gitHead`, so the pin is the release tag commit. Upstream removed `baseUrl`, leaving the adapted file unchanged. Local customizations: add `types: ["node"]`, add host `include` (`src`, `pages`, `zfb.config.ts`) and relocate `files` under `./node_modules/@takazudo/zudo-doc/`, keep `jsxImportSource: "@takazudo/zfb/zudo-react"`, and add no React→Preact `paths`
 
 ## zudo-doc route stubs
 
@@ -23,9 +23,9 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - source: packages/create-zudo-doc/templates/base/pages/docs/[[...slug]].tsx
 - track: releases
 - pinned: unknown
-- observed-head: e37130018ee2ca0bf71e39a639e328a9621d4659 (v6.1.1, recorded 2026-10-12; non-authoritative)
-- updated: 2026-10-12
-- notes: the template has no locale counterpart at v6.1.1, and it did not change between v6.0.1 and v6.1.1. Local customizations: the static `../src/chrome-bindings` island-scanner seed import, the `DocHistoryBoundary` merge over `chromeBindings`, and in the locale stub the per-locale content dir, EN fallback `isFallback` and EN `docsDir` for doc history. `docs/pages/index.tsx` and `docs/pages/[locale].tsx` are host-authored, not copies
+- observed-head: 6542b8300f4a554247563a3bac53e415a63ded51 (v6.2.0, recorded 2026-10-15; non-authoritative)
+- updated: 2026-10-15
+- notes: the template is byte-identical between v6.1.1 and v6.2.0; the original adaptation pin remains unknown. The v6.2.0 generator still has no locale counterpart. Local customizations: the static `../src/chrome-bindings` island-scanner seed import, the `DocHistoryBoundary` merge over `chromeBindings`, and in the locale stub the per-locale content dir, EN fallback `isFallback` and EN `docsDir` for doc history. `docs/pages/index.tsx` and `docs/pages/[locale].tsx` are host-authored, not copies
 
 ## zudo-sg generated styleguide outputs
 
@@ -34,7 +34,7 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: tests/published-preset-identity/site/src/styleguide/sg-registry.ts, tests/published-preset-identity/site/src/styleguide/token-manifest.ts
 - source: packages/styleguide (the `gen-registry` / `gen-token-manifest` CLI)
 - track: releases
-- pinned: ca02daecdc5b9f97fd6c583d6a97ea7400c242a3 (v0.5.3)
-- updated: 2026-10-13
+- pinned: 03a726f64ff0b26ac9f1aa746eb068a8ea7f4d03 (v0.5.4)
+- updated: 2026-10-15
 - sync: in an isolated copy of `tests/published-preset-identity/site/` (see its README), `npx zudo-sg gen-registry && npx zudo-sg gen-token-manifest`, then copy changed `src/styleguide/*.ts` back
-- notes: regenerated with 0.5.3 on 2026-10-13 in an isolated copy with no output change (0.5.3 publishes no `gitHead`, so the pin is the `v0.5.3` release tag commit); `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
+- notes: regenerated with 0.5.4 on 2026-10-15 in an isolated registry-installed copy with no output change (0.5.4 publishes no `gitHead`, so the pin is the `v0.5.4` release tag commit); `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
