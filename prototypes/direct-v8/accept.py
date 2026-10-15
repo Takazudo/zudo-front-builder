@@ -306,7 +306,7 @@ class Acceptance:
             if not isinstance(report, dict):
                 raise ValueError("gate report must be a JSON object")
             # Count extraction is part of validating the report's structure.
-            # A passing flag cannot rescue malformed structured data.
+            # A passing flag cannot rescue missing or contradictory evidence.
             summary["counts"] = counts(report)
             if not report_passed(report):
                 errors.append(f"{label}: gate report does not record a pass")
@@ -320,7 +320,7 @@ class Acceptance:
 
 
 def report_passed(report):
-    """Whether a checker's JSON report records a pass.
+    """Read the reported pass flag; count callbacks validate the evidence too.
 
     check-http.py, check-outer-config.py and check-generated.py write a
     top-level `passed`; check-config.py and check-modules.py write one
@@ -335,27 +335,116 @@ def report_passed(report):
         all(isinstance(r, dict) and r.get("passed") is True for r in results)
 
 
+def passed_row_names(rows, label):
+    """Validate evidence beneath a claimed pass, never vacuous all([])."""
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"{label}: expected nonempty rows")
+    names = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("passed") is not True:
+            raise ValueError(f"{label}: every row must explicitly pass")
+        name = row.get("name")
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise ValueError(f"{label}: row names must be nonempty and unique")
+        names.append(name)
+    return names
+
+
+def passed_exit(report, label):
+    if type(report.get("exit_code")) is not int or report["exit_code"] != 0:
+        raise ValueError(f"{label}: success requires an observed integer exit_code of zero")
+
+
+def passed_engine_pair(results, label):
+    if not isinstance(results, list) or len(results) != 2:
+        raise ValueError(f"{label}: expected exactly two engine results")
+    names = []
+    for result in results:
+        if not isinstance(result, dict) or result.get("passed") is not True:
+            raise ValueError(f"{label}: every engine must explicitly pass")
+        engine = result.get("engine")
+        if engine not in (BASELINE_ENGINE, CANDIDATE_ENGINE) or engine in names:
+            raise ValueError(f"{label}: expected one baseline and one candidate engine")
+        passed_exit(result, f"{label} {engine}")
+        names.append(engine)
+    return results
+
+
 def engine_counts(report):
+    # Sparse failed reports (for example, a watchdog) retain their available
+    # counts. A claimed success, however, must contain coherent paired evidence.
+    if report_passed(report):
+        cases = []
+        for result in passed_engine_pair(report.get("results"), "engine results"):
+            names = passed_row_names(result.get("rows"), result["engine"])
+            expected, received = result.get("expected_count"), result.get("receipt_count")
+            if type(expected) is not int or type(received) is not int or \
+                    expected <= 0 or expected != received or expected != len(names):
+                raise ValueError(f"{result['engine']}: expected, receipt and row counts must agree and be nonzero")
+            cases.append(names)
+        if cases[0] != cases[1]:
+            raise ValueError("engine results: baseline and candidate case names/order differ")
     return [{"engine": r.get("engine"), "executable_sha256": r.get("executable_sha256"),
              "receipts": r.get("receipt_count"), "expected": r.get("expected_count"),
-             "rows_passed": sum(1 for row in r.get("rows", []) if row.get("passed")),
+             "rows_passed": sum(1 for row in r.get("rows", []) if row.get("passed") is True),
              "passed": r.get("passed")} for r in report.get("results", [])]
 
 
 def rows_counts(report):
     rows = report.get("rows", [])
-    return {"rows": len(rows), "rows_passed": sum(1 for row in rows if row.get("passed")),
+    if report.get("passed") is True:
+        passed_row_names(rows, "rows")
+    return {"rows": len(rows), "rows_passed": sum(1 for row in rows if row.get("passed") is True),
             "passed": report.get("passed")}
 
 
+def http_counts(report):
+    result = rows_counts(report)
+    if report.get("passed") is True:
+        for row in report["rows"]:
+            passed_engine_pair(row.get("results"), f"HTTP {row['name']}")
+    return result
+
+
+def outer_counts(report):
+    result = rows_counts(report)
+    if report.get("passed") is True:
+        passed_exit(report, "outer config")
+        requests = report.get("requests")
+        if not isinstance(requests, list) or \
+                any(not isinstance(request, dict) for request in requests) or \
+                [request.get("name") for request in requests] != [row["name"] for row in report["rows"]]:
+            raise ValueError("outer config: request and row names/order must agree")
+    return result
+
+
 def generated_counts(report):
+    if report.get("passed") is True:
+        names = []
+        for side, engine in (("baseline", BASELINE_ENGINE), ("candidate", CANDIDATE_ENGINE)):
+            result = report.get(side)
+            if not isinstance(result, dict) or result.get("passed") is not True or result.get("engine") != engine:
+                raise ValueError(f"generated {side}: expected an explicitly passing {engine} result")
+            names.append(passed_row_names(result.get("rows"), f"generated {side}"))
+        if names[0] != names[1] or "authored-mapped-throw" not in names[0]:
+            raise ValueError("generated: engine case names/order must agree and include authored-mapped-throw")
+        parity = passed_row_names(report.get("byte_and_value_parity"), "generated parity")
+        if parity != [name for name in names[0] if name != "authored-mapped-throw"]:
+            raise ValueError("generated: parity must cover every non-throw case in order")
+        browser = report.get("browser")
+        if not isinstance(browser, dict) or browser.get("passed") is not True or "not_run" in browser:
+            raise ValueError("generated browser: expected an explicitly passing, executed browser check")
+        passed_exit(browser, "generated browser")
+        digest = report.get("snapshot_manifest_sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("generated: missing or invalid snapshot manifest SHA-256")
     result = {"passed": report.get("passed"), "snapshot_manifest_sha256": report.get("snapshot_manifest_sha256")}
     for side in ("baseline", "candidate"):
         rows = report.get(side, {}).get("rows", [])
-        result[side] = {"packets": len(rows), "packets_passed": sum(1 for r in rows if r.get("passed"))}
+        result[side] = {"packets": len(rows), "packets_passed": sum(1 for r in rows if r.get("passed") is True)}
     parity = report.get("byte_and_value_parity", [])
     result["parity_rows"] = len(parity)
-    result["parity_passed"] = sum(1 for r in parity if r.get("passed"))
+    result["parity_passed"] = sum(1 for r in parity if r.get("passed") is True)
     result["browser"] = report.get("browser", {}).get("passed")
     return result
 
@@ -441,14 +530,14 @@ def main():
                                             "--candidate", candidate], out / "services-gate.json", engine_counts)
         unchanged("services")
         gates["http"] = acceptance.gate("gate-http", ["check-http.py", "--baseline", baseline,
-                                        "--candidate", candidate], out / "http-gate.json", rows_counts)
+                                        "--candidate", candidate], out / "http-gate.json", http_counts)
         unchanged("http")
         gates["modules"] = acceptance.gate("gate-modules", ["check-modules.py", "--baseline", baseline,
                                            "--candidate", candidate, "--fixture-dir", out / "modules-fixtures"],
                                            out / "modules-gate.json", engine_counts)
         unchanged("modules")
         gates["outer_config"] = acceptance.gate("gate-outer-config", ["check-outer-config.py", "--runner", outer],
-                                                out / "outer-config-gate.json", rows_counts)
+                                                out / "outer-config-gate.json", outer_counts)
         unchanged("outer-config")
         if args.generated:
             # Pin each build output immediately: a later Cargo command must not

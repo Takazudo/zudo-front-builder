@@ -99,7 +99,7 @@ executable, a runner that exits 2 because its feature is off (the all-targets
 trap above), a wrong engine identity or a failed probe is refused, and there is
 never a baseline/Node/Deno fallback.
 
-Run both focused refusal suites without a Cargo build or a second target directory:
+Run all focused refusal suites without a Cargo build or a second target directory:
 
 ```sh
 python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_accept*.py'
@@ -109,7 +109,10 @@ python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_accept*.py'
 executable integrity throughout the full entry point. `test_accept_failures.py`
 adds real small subprocesses for launch failures, nonzero exits, watchdog output
 and malformed gate reports, plus injected setup failures and interruptions.
-These tests prove harness orchestration and rejection, not native V8 or browser behavior.
+`test_accept_reports.py` adds report mutation matrices, a small subprocess pair,
+and full-entry-point cases with mocked native execution and real gate/report
+aggregation. These tests prove harness orchestration and rejection, not native
+V8 or browser behavior.
 
 Command steps are registered before launch. Failed launches retain an error and
 `exit_code: null`; watchdogs also retain a null exit code rather than inventing
@@ -122,6 +125,25 @@ A missing, unreadable, malformed or structurally invalid gate report fails that
 gate while retaining its diagnostics in `errors`. A failed command cannot be
 rescued by a passing report, and both diagnostics survive when the command and
 report fail independently. Valid failure reports keep their row counts.
+A reported `passed: true` is not sufficient evidence. Successful rows must be
+nonempty, uniquely named and explicitly boolean-true. Config/services/modules
+require exactly one baseline and one candidate, observed integer-zero exits,
+matching nonzero expected/receipt/row counts and identical ordered case names.
+Every HTTP row requires its own passing engine pair. Outer-config requests must
+match the reported rows in order, with an observed successful runner exit.
+Generated reports require both correctly identified passing engines, matching
+case rows including `authored-mapped-throw`, passing parity rows for every
+non-throw case in order, an explicitly successful non-skipped browser check with
+an integer-zero exit, and a well-formed snapshot manifest digest. Boolean values
+are not accepted as integer counts or exits; truthy values are not counted as
+passing rows. Sparse failure reports retain whatever counts they can represent
+without satisfying these success requirements, and remain failures.
+
+These are report-consistency checks, not receipt authentication or a replacement
+for the checkers' independent expected corpus, executable integrity checks or
+frozen-snapshot verification. Consistent fabricated reports do not prove native
+execution. Raw gate reports and historical native evidence are not rewritten.
+
 Once the run output is initialized, `acceptance.json` is written on operational
 errors and interruptions as long as the output remains writable. Unexpected
 harness bugs and interruptions are recorded and re-raised, not silently swallowed.

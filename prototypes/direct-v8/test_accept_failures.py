@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Failure-evidence regressions; these do not exercise Cargo or either engine.
 
-Run both focused suites from the repository root with:
+Run all focused suites from the repository root with:
   python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_accept*.py'
 
 Tiny Python/shell subprocesses exercise actual launch, exit, watchdog and gate
@@ -157,7 +157,7 @@ class GateFailureTest(unittest.TestCase):
                 self.assertTrue(result["errors"])
 
     def test_failed_command_cannot_be_overridden_by_a_passing_report(self):
-        result = self.gate(b'{"passed": true, "rows": [{"passed": true}]}', code=7)
+        result = self.gate(b'{"passed": true, "rows": [{"name": "fixture", "passed": true}]}', code=7)
         self.assertIs(result["passed"], False)
         self.assertEqual(result["counts"]["rows_passed"], 1)
         self.assertIn("exit 7", " ".join(result["errors"]))
@@ -177,11 +177,19 @@ class GateFailureTest(unittest.TestCase):
         self.assertTrue(result["errors"])
 
     def test_valid_success_preserves_all_existing_count_formats(self):
+        # These are synthetic successes, not native receipts. Empty evidence
+        # and one-sided engine results are now deliberately rejected.
+        row = {"name": "fixture", "passed": True}
+        mapped_throw = {"name": "authored-mapped-throw", "passed": True}
         fixtures = [
-            ({"passed": True, "rows": [{"passed": True}]}, accept.rows_counts),
-            ({"results": [{"passed": True, "rows": [{"passed": True}]}]}, accept.engine_counts),
-            ({"passed": True, "baseline": {"rows": []}, "candidate": {"rows": []},
-              "byte_and_value_parity": [], "browser": {"passed": True}}, accept.generated_counts),
+            ({"passed": True, "rows": [row]}, accept.rows_counts),
+            ({"results": [{"engine": engine, "passed": True, "rows": [row],
+                           "expected_count": 1, "receipt_count": 1, "exit_code": 0}
+                          for engine in (accept.BASELINE_ENGINE, accept.CANDIDATE_ENGINE)]}, accept.engine_counts),
+            ({"passed": True, "snapshot_manifest_sha256": "a" * 64,
+              "baseline": {"engine": accept.BASELINE_ENGINE, "passed": True, "rows": [row, mapped_throw]},
+              "candidate": {"engine": accept.CANDIDATE_ENGINE, "passed": True, "rows": [row, mapped_throw]},
+              "byte_and_value_parity": [row], "browser": {"passed": True, "exit_code": 0}}, accept.generated_counts),
         ]
         for report, counts in fixtures:
             with self.subTest(counts=counts.__name__):
@@ -192,7 +200,7 @@ class GateFailureTest(unittest.TestCase):
 
     def test_explicit_report_path_is_used_for_generated_style_gate(self):
         output = self.root / "generated-results.json"
-        result = self.gate(b'{"passed": true, "rows": []}', report_path=output)
+        result = self.gate(b'{"passed": true, "rows": [{"name": "fixture", "passed": true}]}', report_path=output)
         self.assertIs(result["passed"], True)
         self.assertEqual(result["output"], str(output))
         self.assertFalse(self.output.exists())
