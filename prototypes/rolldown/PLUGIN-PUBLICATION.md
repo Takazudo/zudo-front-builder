@@ -68,6 +68,12 @@ additional asset through the real native `emit_file_async` hook instead. Neither
 failed run is called green. The exactly-once assertion is retained, and new
 native dual-error tests verify both primary diagnostics and no close retry.
 
+[Run 38677900100](https://github.com/Takazudo/zudo-front-builder/actions/runs/38677900100)
+on `4227e3ed` passed all 15 example tests, four library tests, the locked build
+and feature-off check, and all 36 semantic rows. Its overall result was still
+failure: rustfmt required one new test call to be collapsed onto one line.
+That formatting-only correction is replayed rather than exempted from CI.
+
 `.github/workflows/rolldown-plugin-publication.yml` checks the exact pushed SHA
 with Rust 1.99.0 explicitly selected, locked native and feature-off builds,
 library and regression tests, and the unchanged 36-row differential matrix.

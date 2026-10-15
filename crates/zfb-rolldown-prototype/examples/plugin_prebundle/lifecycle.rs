@@ -396,11 +396,7 @@ mod tests {
     #[test]
     fn scan_and_automatic_close_errors_keep_the_original_without_retry() {
         let fixture = Fixture::new();
-        let (result, closes) = run(
-            fixture.options("import './absent-source.ts';"),
-            false,
-            true,
-        );
+        let (result, closes) = run(fixture.options("import './absent-source.ts';"), false, true);
         let message = result.unwrap_err().to_string();
         assert!(message.contains("absent-source.ts"));
         assert!(message.contains("deliberate-close-failure"));
