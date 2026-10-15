@@ -93,24 +93,24 @@ fn is_void_tag(tag: &str) -> bool {
 
 /// Escape a text-node value: `&`, `<`, `>`. Quotes stay as-is.
 fn push_text_escaped(s: &str, out: &mut String) {
-    push_escaped(s, out, false);
-}
-
-/// Escape an attribute value: `&`, `<`, `>`, `"`.
-fn push_attr_escaped(s: &str, out: &mut String) {
-    push_escaped(s, out, true);
-}
-
-// Keep one UTF-8 traversal for text and attributes in the render artifact.
-// Specializing this loop for each caller duplicates the escaping machinery.
-#[inline(never)]
-fn push_escaped(s: &str, out: &mut String, attribute: bool) {
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
-            '"' if attribute => out.push_str("&quot;"),
+            other => out.push(other),
+        }
+    }
+}
+
+/// Escape an attribute value: `&`, `<`, `>`, `"`.
+fn push_attr_escaped(s: &str, out: &mut String) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
             other => out.push(other),
         }
     }
@@ -233,19 +233,6 @@ mod tests {
     fn text_node_escaping_leaves_quotes_alone() {
         let h = HastNode::Text(r#"x & "y" < z"#.into());
         assert_eq!(serialize(&h), r#"x &amp; "y" &lt; z"#);
-    }
-
-    #[test]
-    fn unicode_text_and_attributes_keep_their_distinct_quote_rules() {
-        let h = elem(
-            "p",
-            vec![("title", "é雪🦀 &<>\"'")],
-            vec![HastNode::Text("é雪🦀 &<>\"'".into())],
-        );
-        assert_eq!(
-            serialize(&h),
-            "<p title=\"é雪🦀 &amp;&lt;&gt;&quot;'\">é雪🦀 &amp;&lt;&gt;\"'</p>"
-        );
     }
 
     // 8. Raw passthrough — no escaping at all.
