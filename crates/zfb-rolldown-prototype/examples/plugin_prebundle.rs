@@ -1,6 +1,9 @@
 //! Bounded plugin-option feasibility probe, not a production caller.
 //! Real Node execution in plugin-prebundle.mjs owns the semantic oracles.
 #[cfg(feature = "native")]
+#[path = "plugin_prebundle/job.rs"]
+mod job;
+#[cfg(feature = "native")]
 #[path = "plugin_prebundle/lifecycle.rs"]
 mod lifecycle;
 #[cfg(feature = "native")]
@@ -17,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         AddonOutputOption, BundlerTransformOptions, CodeSplittingMode, Either, OutputFormat,
         Platform, SourceMapType,
     };
-    use std::path::Path;
+    use std::{path::Path, time::Duration};
 
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
@@ -49,18 +52,21 @@ fn main() -> anyhow::Result<()> {
         }),
         ..Default::default()
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
-    let generated = runtime.block_on(lifecycle::generate_and_close(
-        options,
-        vec![PackageExternals::new_shared(PackageExternals)],
-    ));
-    // No output exists during native work or runtime teardown. This shutdown
-    // is not time-bounded; do not present it as active-build cancellation.
-    drop(runtime);
-    lifecycle::publish_new(Path::new(&args[1]), &generated?)?;
+    let job = job::Job::spawn(options, vec![PackageExternals::new_shared(PackageExternals)])?;
+    let completed = match job.wait(Duration::from_secs(300)) {
+        job::Wait::Joined(completed) => completed,
+        job::Wait::Pending(job) => {
+            job.cancellation().cancel();
+            eprintln!(
+                "plugin probe deadline expired; publication revoked; waiting for native shutdown (not bounded)"
+            );
+            // Cancellation is cooperative, not a way to kill a native thread.
+            // Keep ownership and join instead of detaching work or claiming it
+            // has stopped. The completed object must still refuse publication.
+            job.join()
+        }
+    };
+    completed.publish(Path::new(&args[1]))?;
     eprintln!("zfb-plugin-probe: native rolldown 24bc2d0");
     Ok(())
 }
