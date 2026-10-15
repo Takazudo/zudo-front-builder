@@ -15,7 +15,13 @@ Refusals (the run fails, nothing is reported as passed):
     wrong engine, or a runner whose probe value is wrong;
   - any recorded executable whose bytes change or which disappears/loses
     execute permission during subsequent builds, fixture preparation or gates;
-  - any gate that fails; there is no baseline/Node/Deno fallback executor.
+  - any gate that fails or writes an unreadable/malformed report; there is no
+    baseline/Node/Deno fallback executor.
+
+Failed commands retain their logs and step metadata, including partial raw
+watchdog output. Once a run's output directory is initialized, failures and
+interruptions save acceptance.json (provided the output remains writable).
+Unexpected harness bugs are recorded and re-raised, never converted to passes.
 
 The Rust commands and gates run through the heavy guard when --guard names one.
 This is Linux x86_64 native evidence only; it proves nothing about other
@@ -107,8 +113,18 @@ def verify_executables_unchanged(runners, after):
 
 
 def parse_receipts(stdout):
-    return [json.loads(line[len(RECEIPT_PREFIX):]) for line in stdout.splitlines()
-            if line.startswith(RECEIPT_PREFIX)]
+    receipts = []
+    for line in stdout.splitlines():
+        if not line.startswith(RECEIPT_PREFIX):
+            continue
+        try:
+            receipt = json.loads(line[len(RECEIPT_PREFIX):])
+        except ValueError as error:
+            raise Refusal(f"invalid host receipt JSON: {error}") from error
+        if not isinstance(receipt, dict):
+            raise Refusal("host receipt must be a JSON object")
+        receipts.append(receipt)
+    return receipts
 
 
 def verify_runner(path, expected_engine, label, timeout=60):
@@ -127,10 +143,15 @@ def verify_runner(path, expected_engine, label, timeout=60):
                               timeout=timeout, check=False)
     except subprocess.TimeoutExpired as error:
         raise Refusal(f"{label}: engine probe watchdog expired after {timeout}s") from error
+    except OSError as error:
+        raise Refusal(f"{label}: cannot execute engine probe {path}: {type(error).__name__}: {error}") from error
     if proc.returncode == 2 and "requires the" in proc.stderr and "feature" in proc.stderr:
         raise Refusal(f"{label}: {path} is the feature-disabled form of the runner "
                       f"({proc.stderr.strip()}); rebuild it with its explicit feature command")
-    receipts = parse_receipts(proc.stdout)
+    try:
+        receipts = parse_receipts(proc.stdout)
+    except Refusal as error:
+        raise Refusal(f"{label}: {error}") from error
     if proc.returncode != 0 or len(receipts) != 1:
         raise Refusal(f"{label}: engine probe failed (exit {proc.returncode}, "
                       f"{len(receipts)} receipt(s)); stderr: {proc.stderr.strip()[:400]}")
@@ -187,29 +208,47 @@ class Acceptance:
         self.steps = []
         self.env = os.environ.copy()
 
+    def write_logs(self, label, stdout, stderr):
+        # TimeoutExpired streams are bytes even with text=True, and can stop
+        # midway through a UTF-8 sequence. Preserve them without decoding.
+        for suffix, output in (("stdout", stdout), ("stderr", stderr)):
+            data = output.encode("utf-8") if isinstance(output, str) else output
+            (self.logs / f"{label}.{suffix}").write_bytes(data or b"")
+
     def run(self, label, argv, *, guarded=False, env=None, cwd=ROOT, timeout=7200, stdin=None):
         command = [str(x) for x in argv]
         if guarded and self.args.guard:
             command = ["bash", str(self.args.guard), "--", *command]
         start = time.monotonic()
         merged = self.env | (env or {})
+        step = {"label": label, "argv": command, "cwd": str(cwd), "guarded": guarded,
+                "exit_code": None, "passed": False, "watchdog_seconds": timeout,
+                "env": {name: merged[name] for name in RECORDED_ENV if name in merged}}
+        # Register before launching so even a spawn failure or interruption
+        # remains an observation. No exit code is invented for an unobserved exit.
+        self.steps.append(step)
         try:
             proc = subprocess.run(command, cwd=cwd, env=merged, input=stdin, text=True,
                                   capture_output=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as error:
-            self.steps.append({"label": label, "argv": command, "cwd": str(cwd), "guarded": guarded,
-                               "watchdog_seconds": timeout, "passed": False})
-            raise Refusal(f"{label}: watchdog expired after {timeout}s; a watchdog is a failed "
-                          "observation, never clean completion") from error
-        (self.logs / f"{label}.stdout").write_text(proc.stdout)
-        (self.logs / f"{label}.stderr").write_text(proc.stderr)
-        step = {"label": label, "argv": command, "cwd": str(cwd), "guarded": guarded,
-                "exit_code": proc.returncode, "seconds": round(time.monotonic() - start, 1),
-                "env": {name: merged[name] for name in RECORDED_ENV if name in merged}}
-        self.steps.append(step)
-        if proc.returncode != 0:
-            raise Refusal(f"{label} failed (exit {proc.returncode}); see {self.logs}/{label}.stderr")
-        return proc
+            step["error"] = (f"{label}: watchdog expired after {timeout}s; a watchdog is a failed "
+                             "observation, never clean completion")
+            self.write_logs(label, error.stdout, error.stderr)
+            raise Refusal(step["error"]) from error
+        except OSError as error:
+            step["error"] = f"{label}: cannot execute {command[0]}: {type(error).__name__}: {error}"
+            self.write_logs(label, None, None)
+            raise Refusal(step["error"]) from error
+        else:
+            step["exit_code"] = proc.returncode
+            self.write_logs(label, proc.stdout, proc.stderr)
+            if proc.returncode != 0:
+                step["error"] = f"{label} failed (exit {proc.returncode}); see {self.logs}/{label}.stderr"
+                raise Refusal(step["error"])
+            step["passed"] = True
+            return proc
+        finally:
+            step["seconds"] = round(time.monotonic() - start, 1)
 
     def cargo_target_dir(self):
         proc = self.run("cargo-metadata-target", ["cargo", "metadata", "--locked", "--no-deps",
@@ -255,15 +294,28 @@ class Acceptance:
         writes when that differs from `output`.
         """
         argv = [sys.executable, "-I", "-B", HERE / argv[0], *argv[1:], "--output", output]
-        passed = True
+        errors = []
         try:
             self.run(label, argv, guarded=True)
-        except Refusal:
-            passed = False
+        except Refusal as error:
+            errors.append(str(error))
         report_path = Path(report_path or output)
-        report = json.loads(report_path.read_text()) if report_path.is_file() else None
-        summary = {"output": str(report_path), "passed": passed and report_passed(report),
-                   "counts": counts(report) if report is not None else None}
+        summary = {"output": str(report_path), "passed": False, "counts": None}
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if not isinstance(report, dict):
+                raise ValueError("gate report must be a JSON object")
+            # Count extraction is part of validating the report's structure.
+            # A passing flag cannot rescue malformed structured data.
+            summary["counts"] = counts(report)
+            if not report_passed(report):
+                errors.append(f"{label}: gate report does not record a pass")
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            errors.append(f"{label}: invalid gate report {report_path}: {type(error).__name__}: {error}")
+            summary["counts"] = None
+        summary["passed"] = not errors
+        if errors:
+            summary["errors"] = errors
         return summary
 
 
@@ -279,7 +331,8 @@ def report_passed(report):
     if "passed" in report:
         return report["passed"] is True
     results = report.get("results")
-    return bool(results) and all(isinstance(r, dict) and r.get("passed") is True for r in results)
+    return isinstance(results, list) and bool(results) and \
+        all(isinstance(r, dict) and r.get("passed") is True for r in results)
 
 
 def engine_counts(report):
@@ -441,7 +494,17 @@ def main():
     except Refusal as error:
         report["error"] = str(error)
         report["passed"] = False
-    (out / "acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        report["error"] = f"{type(error).__name__}: {error}"
+        report["passed"] = False
+    except BaseException as error:
+        # Persist the failed observation, but preserve traceback/interrupt
+        # semantics for unexpected bugs and cancellation. Never hide them.
+        report["error"] = f"{type(error).__name__}: {error}"
+        report["passed"] = False
+        raise
+    finally:
+        (out / "acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
     print("direct-v8 acceptance", "PASS" if report["passed"] else "FAIL", out / "acceptance.json")
     if report.get("error"):
         print(report["error"], file=sys.stderr)

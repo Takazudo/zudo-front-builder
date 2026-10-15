@@ -97,10 +97,34 @@ command, exit code, duration, executable digest and gate count is written to
 `<output>/acceptance.json`; the gates' own JSON lands beside it. A missing
 executable, a runner that exits 2 because its feature is off (the all-targets
 trap above), a wrong engine identity or a failed probe is refused, and there is
-never a baseline/Node/Deno fallback. `python3 -I -B prototypes/direct-v8/test_accept.py`
-covers those refusals with shell-script stand-ins and no second target
-directory. Its full-entry-point regression cases use mocked builds and gates:
-they test harness orchestration and rejection, not native V8 or browser behavior.
+never a baseline/Node/Deno fallback.
+
+Run both focused refusal suites without a Cargo build or a second target directory:
+
+```sh
+python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_accept*.py'
+```
+
+`test_accept.py` uses shell-script stand-ins and mocked builds/gates to check
+executable integrity throughout the full entry point. `test_accept_failures.py`
+adds real small subprocesses for launch failures, nonzero exits, watchdog output
+and malformed gate reports, plus injected setup failures and interruptions.
+These tests prove harness orchestration and rejection, not native V8 or browser behavior.
+
+Command steps are registered before launch. Failed launches retain an error and
+`exit_code: null`; watchdogs also retain a null exit code rather than inventing
+an observed process exit. Both retain timing, command, guard/environment context
+and `passed: false`. Command stdout/stderr logs are saved on normal and failed
+exits, including the raw partial bytes captured by a watchdog; partial UTF-8 is
+not decoded or discarded. This does not establish clean child-tree shutdown.
+
+A missing, unreadable, malformed or structurally invalid gate report fails that
+gate while retaining its diagnostics in `errors`. A failed command cannot be
+rescued by a passing report, and both diagnostics survive when the command and
+report fail independently. Valid failure reports keep their row counts.
+Once the run output is initialized, `acceptance.json` is written on operational
+errors and interruptions as long as the output remains writable. Unexpected
+harness bugs and interruptions are recorded and re-raised, not silently swallowed.
 
 `acceptance.json` retains completed gate summaries even when a later integrity
 check refuses the run. The additive `executable_checks` ledger names each
