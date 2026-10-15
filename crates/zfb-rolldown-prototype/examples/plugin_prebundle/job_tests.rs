@@ -18,7 +18,10 @@ impl Fixture {
         let path = std::env::temp_dir().join(format!(
             "zfb-cancel-{}-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
@@ -49,7 +52,11 @@ impl Drop for Fixture {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase { Load, Close, RuntimeShutdown }
+enum Phase {
+    Load,
+    Close,
+    RuntimeShutdown,
+}
 
 #[derive(Debug)]
 struct Pause {
@@ -61,13 +68,20 @@ struct Pause {
 impl Pause {
     fn block(&self) -> Result<()> {
         self.entered.send(())?;
-        self.release.lock().unwrap().recv_timeout(Duration::from_secs(10))?;
+        self.release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))?;
         Ok(())
     }
 }
 impl Plugin for Pause {
-    fn name(&self) -> Cow<'static, str> { "zfb-cancellation-native-pause".into() }
-    fn register_hook_usage(&self) -> HookUsage { HookUsage::Load | HookUsage::CloseBundle }
+    fn name(&self) -> Cow<'static, str> {
+        "zfb-cancellation-native-pause".into()
+    }
+    fn register_hook_usage(&self) -> HookUsage {
+        HookUsage::Load | HookUsage::CloseBundle
+    }
     async fn load(
         &self,
         _ctx: SharedLoadPluginContext,
@@ -91,14 +105,21 @@ impl Plugin for Pause {
             let release = self.release.clone();
             tokio::task::spawn_blocking(move || {
                 entered.send(()).unwrap();
-                release.lock().unwrap().recv_timeout(Duration::from_secs(10)).unwrap();
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
             });
         }
         Ok(())
     }
 }
 
-fn paused(fixture: &Fixture, phase: Phase) -> (Job, Receiver<()>, SyncSender<()>, Arc<AtomicUsize>) {
+fn paused(
+    fixture: &Fixture,
+    phase: Phase,
+) -> (Job, Receiver<()>, SyncSender<()>, Arc<AtomicUsize>) {
     let (entered, ready) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
     let closes = Arc::new(AtomicUsize::new(0));
@@ -110,7 +131,8 @@ fn paused(fixture: &Fixture, phase: Phase) -> (Job, Receiver<()>, SyncSender<()>
             release: Arc::new(Mutex::new(resume)),
             closes: closes.clone(),
         })],
-    ).unwrap();
+    )
+    .unwrap();
     (job, ready, release, closes)
 }
 
@@ -132,7 +154,9 @@ fn native_success_is_joined_before_caller_publication() {
     };
     assert!(!fixture.output().exists());
     completed.publish(&fixture.output()).unwrap();
-    assert!(std::fs::read_to_string(fixture.output()).unwrap().contains("sourceMappingURL=data:"));
+    assert!(std::fs::read_to_string(fixture.output())
+        .unwrap()
+        .contains("sourceMappingURL=data:"));
     assert_eq!(cancel.cancel(), CancelOutcome::TooLate);
 }
 
@@ -145,10 +169,19 @@ fn active_native_load_cancellation_reaches_a_checkpoint_and_never_publishes() {
     assert_eq!(cancel.cancel(), CancelOutcome::Cancelled);
     let job = pending(job);
     assert!(!fixture.output().exists());
-    assert_eq!(closes.load(Ordering::SeqCst), 0, "do not close while native load is active");
+    assert_eq!(
+        closes.load(Ordering::SeqCst),
+        0,
+        "do not close while native load is active"
+    );
     release.send(()).unwrap();
     let completed = job.join();
-    assert!(completed.result.as_ref().unwrap_err().to_string().contains("plugin probe cancelled"));
+    assert!(completed
+        .result
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("plugin probe cancelled"));
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     assert!(completed.publish(&fixture.output()).is_err());
     assert!(!fixture.output().exists());
@@ -179,8 +212,15 @@ fn cancellation_during_close_preserves_cleanup_and_discards_late_success() {
     assert!(!fixture.output().exists());
     release.send(()).unwrap();
     let completed = job.join();
-    assert!(completed.result.is_ok(), "generation completed before close was paused");
-    assert!(completed.publish(&fixture.output()).unwrap_err().to_string().contains("discarded"));
+    assert!(
+        completed.result.is_ok(),
+        "generation completed before close was paused"
+    );
+    assert!(completed
+        .publish(&fixture.output())
+        .unwrap_err()
+        .to_string()
+        .contains("discarded"));
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     assert!(!fixture.output().exists());
 }
@@ -226,11 +266,13 @@ fn cancellation_after_commit_started_reports_too_late_not_false_success() {
     let (entered, ready) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
     let output = fixture.output();
-    let publisher = thread::spawn(move || completed.commit_with(|code| {
-        entered.send(()).unwrap();
-        resume.recv_timeout(Duration::from_secs(10)).unwrap();
-        lifecycle::publish_new(&output, code)
-    }));
+    let publisher = thread::spawn(move || {
+        completed.commit_with(|code| {
+            entered.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+            lifecycle::publish_new(&output, code)
+        })
+    });
     ready.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(cancel.cancel(), CancelOutcome::TooLate);
     release.send(()).unwrap();
@@ -262,7 +304,8 @@ fn dropping_owner_requests_cancellation_and_joins_instead_of_detaching() {
         }
         finished.store(true, Ordering::Release);
         Ok("must never publish".into())
-    }).unwrap();
+    })
+    .unwrap();
     let cancellation = job.cancellation();
     drop(job);
     assert!(exited.load(Ordering::Acquire));
@@ -281,7 +324,11 @@ fn worker_panic_is_joined_and_never_published() {
 #[test]
 fn native_build_error_preserves_the_primary_diagnostic_without_output() {
     let fixture = Fixture::new();
-    let job = Job::spawn(fixture.options("import './absent-native-source.ts';"), Vec::new()).unwrap();
+    let job = Job::spawn(
+        fixture.options("import './absent-native-source.ts';"),
+        Vec::new(),
+    )
+    .unwrap();
     let error = job.join().publish(&fixture.output()).unwrap_err();
     assert!(error.to_string().contains("absent-native-source.ts"));
     assert!(!fixture.output().exists());

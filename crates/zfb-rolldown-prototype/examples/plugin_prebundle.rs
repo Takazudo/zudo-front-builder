@@ -52,7 +52,10 @@ fn main() -> anyhow::Result<()> {
         }),
         ..Default::default()
     };
-    let job = job::Job::spawn(options, vec![PackageExternals::new_shared(PackageExternals)])?;
+    let job = job::Job::spawn(
+        options,
+        vec![PackageExternals::new_shared(PackageExternals)],
+    )?;
     let completed = match job.wait(Duration::from_secs(300)) {
         job::Wait::Joined(completed) => completed,
         job::Wait::Pending(job) => {

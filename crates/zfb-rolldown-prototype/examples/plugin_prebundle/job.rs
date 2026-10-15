@@ -38,7 +38,10 @@ impl Cancellation {
     /// Competes atomically with publication. Never acknowledge cancellation
     /// and subsequently publish. Repeated cancellation is idempotent.
     pub(super) fn cancel(&self) -> CancelOutcome {
-        match self.0.compare_exchange(ACTIVE, CANCELLED, Ordering::AcqRel, Ordering::Acquire) {
+        match self
+            .0
+            .compare_exchange(ACTIVE, CANCELLED, Ordering::AcqRel, Ordering::Acquire)
+        {
             Ok(_) | Err(CANCELLED) => CancelOutcome::Cancelled,
             Err(_) => CancelOutcome::TooLate,
         }
@@ -113,7 +116,10 @@ impl Job {
     ) -> Result<Self> {
         Self::spawn_worker(move |cancellation| {
             cancellation.check()?;
-            plugins.insert(0, CancellationChecks::new_shared(CancellationChecks(cancellation)));
+            plugins.insert(
+                0,
+                CancellationChecks::new_shared(CancellationChecks(cancellation)),
+            );
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -126,14 +132,19 @@ impl Job {
         })
     }
 
-    fn spawn_worker(work: impl FnOnce(Cancellation) -> Result<String> + Send + 'static) -> Result<Self> {
+    fn spawn_worker(
+        work: impl FnOnce(Cancellation) -> Result<String> + Send + 'static,
+    ) -> Result<Self> {
         let cancellation = Cancellation::default();
         let signal = cancellation.clone();
         let worker = thread::Builder::new()
             .name("zfb-plugin-probe".into())
             .spawn(move || work(signal))
             .context("spawn owned native plugin probe")?;
-        Ok(Self { worker: Some(worker), cancellation })
+        Ok(Self {
+            worker: Some(worker),
+            cancellation,
+        })
     }
 
     pub(super) fn cancellation(&self) -> Cancellation {
@@ -158,13 +169,23 @@ impl Job {
 
     /// Intentionally unbounded. Use wait() to retain a still-pending owner.
     pub(super) fn join(mut self) -> Completed {
-        let result = self.worker.take().expect("owned worker").join().unwrap_or_else(|panic| {
-            let message = panic.downcast_ref::<&str>().copied()
-                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("non-string panic");
-            Err(anyhow!("native plugin worker panicked: {message}"))
-        });
-        Completed { result, cancellation: self.cancellation.clone() }
+        let result = self
+            .worker
+            .take()
+            .expect("owned worker")
+            .join()
+            .unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("non-string panic");
+                Err(anyhow!("native plugin worker panicked: {message}"))
+            });
+        Completed {
+            result,
+            cancellation: self.cancellation.clone(),
+        }
     }
 }
 
@@ -198,14 +219,20 @@ impl Completed {
             Ok(code) => code,
             Err(error) => {
                 let _ = self.cancellation.0.compare_exchange(
-                    ACTIVE, FINISHED, Ordering::AcqRel, Ordering::Acquire,
+                    ACTIVE,
+                    FINISHED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
                 );
                 return Err(error);
             }
         };
-        if self.cancellation.0.compare_exchange(
-            ACTIVE, COMMITTING, Ordering::AcqRel, Ordering::Acquire,
-        ).is_err() {
+        if self
+            .cancellation
+            .0
+            .compare_exchange(ACTIVE, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             bail!("plugin probe cancelled; joined output discarded without publication");
         }
         // Cancellation after this linearization point explicitly returns
