@@ -37,9 +37,50 @@ runs below retain their original identities and conclusions.
   activated and no package/dependency pin or lockfile changes in this repair.
 
 Darwin's existing contract additionally records package 4.5.0 while this source
-is 4.5.2. Its native handoff must reconcile that separate release identity before
-a Cargo-only re-pin; this approval does not silently waive it. No native Mac task
-has been started. This Cloud session remains the verification/CI-triage owner.
+is 4.5.2. Its handoff first measures incorporated main `57f625a2` natively and
+uses the existing release-identity transition in an isolated old-lock checkout,
+then measures the final candidate and applies the reviewed Cargo transition.
+Both stages retain unchanged-total/source/platform gates; no composed policy is
+needed. No native Mac task has been started. This Cloud session remains the
+verification/CI-triage owner.
+
+### Repair candidate evidence
+
+Candidate `61af5455bb34fdc78ddb89b3b7e0f0fb43338783` was pushed non-force and
+read back. [Health run 38717438201, WASM job 116363531178](https://github.com/Takazudo/zudo-front-builder/actions/runs/38717438201/job/116363531178)
+built all four artifacts under their unchanged ceilings, passed 238 npm tests
+and export/resource assertions, then failed only the stale measured-size record
+comparison. These CI values refresh the manifest and eight documentation files:
+
+| Artifact | Final WASM | gzip-9 | Unchanged ceiling |
+| --- | ---: | ---: | ---: |
+| root | 3379537 | 1517312 | 1600000 |
+| highlight | 1540963 | 821001 | 880000 |
+| render | 2212451 | 1099769 | 1100000 |
+| parse | 701755 | 285136 | 325000 |
+
+The render result is 318 bytes below the prior rejected CI candidate and 231
+below its ceiling. The existing graph upgrades remain; no dependency downgrade,
+size allowance, compiler flag or assertion changed. Local Linux output differs
+and is not copied into the CI-only manifest.
+
+Local `bac4c3b3` integrated verification passed after genuine regeneration of all
+173 Wind previews; only the compiler fingerprint changed. The replay passed
+42 example + 11 library tests, all 36 original differential rows, all 67 prepared
+contracts for both selected backends, 24 islands + one CLI cross-pipeline test
+in each of three configurations, 394 client-library tests, and the real
+browser/SSR/production/client-worker harnesses using Chromium 154.0.8037.57.
+Rustfmt and native all-target Clippy passed. Cargo policy tests passed 164/164.
+The default/render WASM native tests, 20 frontmatter tests and 238 npm tests
+passed; the four-artifact local strict record comparison remained correctly red
+because only CI values belong in that manifest.
+
+The broad local root run passed 926 tests and failed two existing docs-supervisor
+process-reaping tests; isolated retry also failed (three cases). The reported
+descendants were observed as `Z` processes adopted by container PID 1. Assertions
+and concurrent docs work were left intact; hosted exact-head Health is required.
+The initial expanded candidate also rejected the stale Wind fingerprint; that
+failure is retained, followed by the single-field regenerated manifest repair.
 
 ## Integrated source and scope
 
