@@ -714,23 +714,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.5.0");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.5.2");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("dcf1e9235882e365a63cee9d551c58c9f0c19107");
+    expect(darwinContract.baselineSourceSha).toBe("57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "ci-artifact",
-      runId: 38484730560,
-      jobId: 115595518482,
-      artifact: { id: 11859331067 },
+      runId: 38729255517,
+      jobId: 116402683813,
+      artifact: { id: 11968814824 },
     });
     // pnpmLockSha256 comes from the native v4.4.0 fingerprint migration (#4194);
     // cargoLockSha256 and the ceilings below follow run 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "56e687fe05e0b84949881583381551b060cd357f43b0bf6b6bf0b27c2cc95b9a",
+      "01972f66763ceaf7c0d526c43c0c0084de64f7cb5cea99b71ef9f79bf2789e0b",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
