@@ -1,8 +1,29 @@
 # Internal direct-Rust Rolldown feasibility probe (#318)
 
-Decision: **continue narrowly**, retaining this as a draft experiment. The pinned Rust API can produce executable ZFB browser and embedded-V8 SSR bundles with authoritative graph/output provenance. The standalone client-script entry and its declared module workers now also run through the native adapter behind the same opt-in. These fixtures do not justify a default switch or a speed claim. See [FINDINGS.md](FINDINGS.md) for the evidence and ownership costs.
+Direction: **experimental opt-in for dogfooding**, subject to the whole-PR integration gates. PR #4120 remains draft until its owner reviews those gates; successful prototype checks alone do not authorize merging. The pinned Rust API can produce executable ZFB browser and embedded-V8 SSR bundles with authoritative graph/output provenance. The standalone client-script entry and its declared module workers run through the same opt-in. These fixtures do not justify a default switch or a speed claim. See [FINDINGS.md](FINDINGS.md) for the evidence and ownership costs.
 
 The opt-in is deliberately internal: compile `rolldown-prototype` on `zfb-build` and `zfb-islands` (or the forwarding `zfb` CLI feature), then set `ZFB_ROLLDOWN_PROTOTYPE=1`. Without both, the existing esbuild path runs. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
+
+The shared browser/SSR adapter still synchronously joins a scoped thread and uses
+native `write` before validating the result. It does not acquire the standalone
+plugin probe's supervisor, admission or joined-publication guarantees. The real
+plugin/config callers remain on esbuild, and hard native termination remains open.
+
+## Whole-PR integration verification
+
+After installing the pinned tools and building the local SDK packages, run
+`bash prototypes/rolldown/verify-integration.sh` through the shared heavy guard.
+It checks feature-absent execution, compiled-but-unselected execution, explicit
+native selection, the no-V8 compile boundary, Wind freshness and the existing
+prepared/browser/SSR/production/client-worker harnesses. Reports and dependency
+graphs are written under `target/rolldown-integration-evidence`. The read-only
+exact-SHA workflow runs this alongside the plugin regressions; ordinary required
+CI and island provenance remain separate gates.
+
+The browser probes normally use Playwright's pinned Chromium. An explicitly
+supplied `ZFB_CHROMIUM_EXECUTABLE=/absolute/path/to/chromium` can use an installed
+browser when downloads are unavailable; both probes print its actual version.
+Record that environment separately from CI, without claiming platform equivalence.
 
 ## Reproduce (Linux x86_64)
 

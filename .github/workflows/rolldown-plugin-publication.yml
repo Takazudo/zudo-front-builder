@@ -5,10 +5,15 @@ on:
   push:
     branches: [prototype/318-rolldown-native]
     paths:
-      - crates/zfb-rolldown-prototype/**
-      - prototypes/rolldown/plugin-prebundle.mjs
+      - crates/**
+      - prototypes/rolldown/**
+      - packages/**
+      - docs/scripts/**
+      - docs/public/wind-examples/**
       - .github/workflows/rolldown-plugin-publication.yml
       - Cargo.lock
+      - Cargo.toml
+      - pnpm-lock.yaml
 
 permissions:
   contents: read
@@ -21,7 +26,7 @@ jobs:
   verify:
     if: github.repository == 'Takazudo/zudo-front-builder'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: "1.99.0"
       CARGO_BUILD_JOBS: "2"
@@ -79,6 +84,23 @@ jobs:
           set -euo pipefail
           mkdir -p target/plugin-publication-evidence
           cargo fmt --all --check 2>&1 | tee target/plugin-publication-evidence/fmt.log
+      - name: Prepare whole-PR integration tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/rolldown-package-manager" --no-audit --no-fund pnpm@12.8.2
+          export PATH="$RUNNER_TEMP/rolldown-package-manager/node_modules/.bin:$PATH"
+          echo "$RUNNER_TEMP/rolldown-package-manager/node_modules/.bin" >> "$GITHUB_PATH"
+          pnpm install --frozen-lockfile
+          pnpm -C packages/zfb-slugify build
+          pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb build
+          npm install --prefix "$PWD/target/rolldown-tools" --no-audit --no-fund hono@4.12.25 @playwright/test@1.58.2
+          "$PWD/target/rolldown-tools/node_modules/.bin/playwright" install --with-deps chromium
+          echo "ZFB_PROTOTYPE_TOOLS=$PWD/target/rolldown-tools" >> "$GITHUB_ENV"
+      - name: Verify experimental dispatch and ordinary configurations
+        shell: bash
+        run: bash prototypes/rolldown/verify-integration.sh
       - name: Retain reports including failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -87,5 +109,9 @@ jobs:
           path: |
             target/plugin-publication-evidence
             target/rolldown-plugin-probe
+            target/rolldown-integration-evidence
+            target/rolldown-prototype/*.json
+            target/rolldown-client-scripts/*/evidence
+            target/rolldown-production/*/evidence
           include-hidden-files: true
           retention-days: 14
