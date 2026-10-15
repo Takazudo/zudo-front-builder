@@ -212,6 +212,8 @@ It takes no artifact argument and runs nothing natively. It refuses a contract t
 
 ## Cargo producer-lock transitions (#4214)
 
+The default path remains additive-only. PR #4120 additionally authorizes one [exact non-additive #318 transition](cargo-transitions/README.md) through optional `--reviewed-cargo-transition`: its full old/new lock pair, record inventory, 14 shared replacements, nine incidental Windows edges, and producer feature review are explicit. This is structural policy authorization only. The ordinary budget checker, live platform pins, zero allowances, numerical ceilings, native platform evidence, saved-byte checks, and all other rebaseline gates remain unchanged. Current measurements remain rejected until qualifying evidence separately re-pins each platform. Held #4234 is not activated.
+
 `Cargo.lock` is outside the pnpm fingerprint, and both contracts pin its whole-file hash in `toolchain.cargoLockSha256`. Earlier Rust-only lock moves were recorded by hand-editing that hash ([#4159](https://github.com/Takazudo/zudo-front-builder/issues/4159), [#4173](https://github.com/Takazudo/zudo-front-builder/issues/4173)), which left `platformStatus` and `baselineEvidence` describing runs measured at the previous lockfile. `--reason cargo-producer-lock` replaces that with a reviewed, evidence-bound transition for an **additive** producer-lock change, such as a new crate that the measured `zfb` binary does not link. It needs a schemaVersion 3 contract and a fresh artifact measured at the new lock on each platform, and it is not a force or ignore-provenance flag: it binds the exact old and new hashes and the exact added records.
 
 ```sh

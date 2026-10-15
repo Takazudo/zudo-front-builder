@@ -35,6 +35,7 @@ import {
   makeHelperCheckout,
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
+import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const liveContract = JSON.parse(
@@ -1343,6 +1344,48 @@ describe("cargo-producer-lock (#4214)", () => {
     expect(section).toContain("`ctor@0.2.9`, `zfb-css-node@0.0.0`");
     expect(section).toContain("only `toolchain.cargoLockSha256` moved");
     expect(rewriteTestPins(testSource, next)).toBe(rewriteTestPins(testSource, v3));
+  });
+
+  it("accepts only the reviewed non-additive lock with unchanged artifact identity and totals", () => {
+    const lock = reviewedCargoLock();
+    const base = structuredClone(v3);
+    base.toolchain.cargoLockSha256 = lock.expectedOldSha;
+    const measured = {
+      ...cargoEvidence,
+      cargoLock: lock,
+      identity: { ...cargoEvidence.identity, cargoLockSha256: lock.expectedNewSha },
+    };
+    const next = rebaselineContract(
+      base,
+      totalsFrom(base),
+      measured,
+      "cargo-producer-lock",
+    ).contract;
+    expect(next.toolchain.cargoLockSha256).toBe(lock.expectedNewSha);
+    expect(next.ceilings).toEqual(base.ceilings);
+    expect(next.allowance).toEqual(base.allowance);
+    expect(next.platformStatus).toContain("reviewed non-additive");
+    expect(next.baselineEvidence.cargoTransition.changed).toHaveLength(46);
+    const raw = totalsFrom(base, { "packed/model": { raw: base.ceilings.packed.model.raw + 1 } });
+    expect(() => rebaselineContract(base, raw, measured, "cargo-producer-lock")).toThrow(
+      /raw totals changed/,
+    );
+    expect(() =>
+      rebaselineContract(
+        base,
+        totalsFrom(base),
+        { ...measured, identity: { ...measured.identity, cargoLockSha256: OLD } },
+        "cargo-producer-lock",
+      ),
+    ).toThrow(/artifact measured/);
+    expect(() =>
+      rebaselineContract(
+        base,
+        totalsFrom(base),
+        { ...measured, version: "unreviewed" },
+        "cargo-producer-lock",
+      ),
+    ).toThrow(/packageVersion/);
   });
 
   it("parses Cargo.lock losslessly and diffs it record by record", () => {
