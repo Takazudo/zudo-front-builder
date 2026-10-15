@@ -1457,6 +1457,15 @@ struct LoadedSourceMap {
     dir: PathBuf,
 }
 
+/// Internal #318 evidence seam: use the production stack projection unchanged.
+#[cfg(feature = "rolldown-prototype")]
+#[doc(hidden)]
+pub fn prototype_project_error(body: &str, map: &Path, project_root: &Path) -> Option<String> {
+    let loaded = load_sourcemap(map)?;
+    let bundle = map.file_name()?.to_str()?.strip_suffix(".map")?;
+    reproject_first_frame(body, &loaded, bundle, project_root).authored
+}
+
 fn load_sourcemap(path: &Path) -> Option<LoadedSourceMap> {
     let raw = fs::read(path).ok()?;
     let map = sourcemap::SourceMap::from_reader(raw.as_slice()).ok()?;

@@ -1038,6 +1038,60 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
     );
 }
 
+/// The parent entry is entirely staged. Only the declared worker reaches a
+/// first-party file outside the stage, so this catches missing per-worker audit.
+#[test]
+#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            client_script_worker_stage_escape_audit_rejects_dependency -- --ignored"]
+fn client_script_worker_stage_escape_audit_rejects_dependency() {
+    use zfb_islands::ClientScriptWorkerEntry;
+
+    let project = tempfile::tempdir().unwrap();
+    let stage = project.path().join("stage");
+    let pages = stage.join("pages");
+    std::fs::create_dir_all(&pages).unwrap();
+    let entry = pages.join("safe.client.ts");
+    let worker = pages.join("escape.worker.ts");
+    let escaped = project.path().join("outside.ts");
+    std::fs::write(&entry, "console.log('staged entry');\n").unwrap();
+    std::fs::write(
+        &worker,
+        "import { value } from '../../outside'; self.postMessage(value);\n",
+    )
+    .unwrap();
+    std::fs::write(&escaped, "export const value = 'outside stage';\n").unwrap();
+    let worker_filename = module_worker_filename(&stage, &worker).unwrap();
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_working_dir(&stage)
+            .with_stage_audit(StageAuditPolicy {
+                stage_roots: vec![stage.clone()],
+                first_party_root: project.path().to_path_buf(),
+            }),
+    );
+    let error = bundler
+        .bundle_client_script_file_with_workers(
+            "safe",
+            &entry,
+            &[ClientScriptWorkerEntry {
+                filename: worker_filename,
+                source_path: worker.clone(),
+            }],
+            &BundleConfig::production()
+                .with_outdir(stage.join("dist"))
+                .with_minify(false),
+        )
+        .expect_err("declared worker dependency outside stage must be rejected");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("stage-escape audit failed for client-script module worker"),
+        "{message}"
+    );
+    assert!(message.contains("outside.ts"), "{message}");
+    assert!(message.contains("escape.worker.ts"), "{message}");
+}
+
 /// Model the command-layer preprocessing stage: config files and rewritten
 /// sources/helpers all live under the same shadow root. Both the client entry
 /// and worker must discover that physical config and resolve aliases to the

@@ -919,6 +919,243 @@ fn nearest_typescript_config(source_path: &Path, boundary: Option<&Path>) -> Opt
     }
 }
 
+/// The pinned native resolver discovers only tsconfig.json and does not honor
+/// package.json#tsconfig in extends. Materialize the already selected per-entry
+/// policy without changing ordinary esbuild discovery or writing into packages.
+#[cfg(any(test, feature = "rolldown-prototype"))]
+fn native_entry_config(
+    cmd: &Command,
+    source_path: &Path,
+    boundary: Option<&Path>,
+) -> Result<Option<tempfile::NamedTempFile>> {
+    let cwd = cmd.get_current_dir().unwrap_or_else(|| Path::new("."));
+    let selected = cmd
+        .get_args()
+        .filter_map(|arg| arg.to_str()?.strip_prefix("--tsconfig="))
+        .last()
+        .map(|path| cwd.join(path))
+        .or_else(|| nearest_typescript_config(source_path, boundary));
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let selected = std::path::absolute(selected).context("absolute native config selection")?;
+    let preserve_symlinks = cmd.get_args().any(|arg| arg == "--preserve-symlinks");
+    let effective = native_effective_config(&selected, preserve_symlinks)?;
+    let file = tempfile::Builder::new()
+        .prefix("zfb-native-config-")
+        .suffix(".json")
+        .tempfile()
+        .context("allocate native per-entry config")?;
+    std::fs::write(file.path(), serde_json::to_vec(&effective)?)
+        .context("write native per-entry config")?;
+    Ok(Some(file))
+}
+
+#[cfg(any(test, feature = "rolldown-prototype"))]
+fn native_effective_config(path: &Path, preserve_symlinks: bool) -> Result<serde_json::Value> {
+    let (mut effective, paths_dir) =
+        native_config_chain(path, preserve_symlinks, 0, &mut BTreeSet::new())?;
+    let options = effective
+        .get_mut("compilerOptions")
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    let base = options
+        .get("baseUrl")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .or(paths_dir);
+    if let Some(paths) = options.get_mut("paths") {
+        let base = base.context("native config paths declaring directory")?;
+        for targets in paths
+            .as_object_mut()
+            .context("native config paths must be an object")?
+            .values_mut()
+        {
+            native_config_paths(targets, &base)?;
+        }
+    }
+    Ok(serde_json::Value::Object(effective))
+}
+
+#[cfg(any(test, feature = "rolldown-prototype"))]
+fn native_config_chain(
+    path: &Path,
+    preserve_symlinks: bool,
+    depth: usize,
+    visiting: &mut BTreeSet<PathBuf>,
+) -> Result<(serde_json::Map<String, serde_json::Value>, Option<PathBuf>)> {
+    anyhow::ensure!(
+        depth <= 8,
+        "native config extends exceeded 8 levels: {}",
+        path.display()
+    );
+    let identity = std::fs::canonicalize(path)
+        .with_context(|| format!("resolve native config {}", path.display()))?;
+    anyhow::ensure!(
+        visiting.insert(identity.clone()),
+        "cyclic native config extends: {}",
+        path.display()
+    );
+    let path = if preserve_symlinks {
+        path.to_path_buf()
+    } else {
+        identity.clone()
+    };
+    let dir = path.parent().context("native config directory")?;
+    let raw = std::fs::read_to_string(&path)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&zfb_plugin_resolver::strip_tsconfig_jsonc(&raw))
+            .with_context(|| format!("parse native config {}", path.display()))?;
+    let object = value
+        .as_object()
+        .context("native config must be an object")?;
+    // Relocating these would require project ownership/template evaluation,
+    // which this bounded compatibility layer does not implement.
+    anyhow::ensure!(
+        !value.to_string().contains("${configDir}"),
+        "native configDir templates are unsupported: {}",
+        path.display()
+    );
+    if let Some(references) = object.get("references") {
+        anyhow::ensure!(
+            references.as_array().is_some_and(Vec::is_empty),
+            "native config project references are unsupported: {}",
+            path.display()
+        );
+    }
+    let parents = match object.get("extends") {
+        None => Vec::new(),
+        Some(serde_json::Value::String(parent)) => vec![parent.as_str()],
+        Some(serde_json::Value::Array(parents)) => parents
+            .iter()
+            .map(|parent| {
+                parent
+                    .as_str()
+                    .context("native config extends entries must be strings")
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(_) => anyhow::bail!(
+            "native config extends must be a string or array: {}",
+            path.display()
+        ),
+    };
+    let mut effective = serde_json::Map::new();
+    let mut compiler = serde_json::Map::new();
+    let mut paths_dir = None;
+    for parent in parents {
+        let resolved = zfb_plugin_resolver::resolve_tsconfig_extends_file(dir, parent)
+            .with_context(|| {
+                format!(
+                    "native config {} extends unresolved target {parent:?}",
+                    path.display()
+                )
+            })?;
+        let (mut parent, parent_paths_dir) =
+            native_config_chain(&resolved, preserve_symlinks, depth + 1, visiting)?;
+        if let Some(options) = parent.remove("compilerOptions") {
+            if options.get("paths").is_some() {
+                paths_dir = parent_paths_dir;
+            }
+            compiler.extend(
+                options
+                    .as_object()
+                    .expect("normalized compiler options")
+                    .clone(),
+            );
+        }
+        // Resolve each parent independently before overlaying it. Flattening a
+        // deduplicated dependency list would break diamond-extends precedence.
+        effective.extend(parent);
+    }
+    let mut local = object.clone();
+    local.remove("extends");
+    local.remove("references");
+    if let Some(options) = local.remove("compilerOptions") {
+        let mut options = options
+            .as_object()
+            .context("native compilerOptions must be an object")?
+            .clone();
+        for key in [
+            "baseUrl",
+            "rootDir",
+            "outDir",
+            "declarationDir",
+            "outFile",
+            "tsBuildInfoFile",
+        ] {
+            if let Some(value) = options.get_mut(key) {
+                native_config_path(value, dir)?;
+            }
+        }
+        for key in ["rootDirs", "typeRoots"] {
+            if let Some(value) = options.get_mut(key) {
+                native_config_paths(value, dir)?;
+            }
+        }
+        if let Some(paths) = options.get("paths") {
+            // Keep targets relative until the entire chain selects its final
+            // baseUrl, which may be declared by a different parent or the leaf.
+            for targets in paths
+                .as_object()
+                .context("native config paths must be an object")?
+                .values()
+            {
+                anyhow::ensure!(
+                    targets
+                        .as_array()
+                        .is_some_and(|items| items.iter().all(serde_json::Value::is_string)),
+                    "native config paths targets must be arrays of strings"
+                );
+            }
+            paths_dir = Some(dir.to_path_buf());
+        }
+        compiler.extend(options);
+    }
+    for key in ["files", "include", "exclude"] {
+        if let Some(value) = local.get_mut(key) {
+            native_config_paths(value, dir)?;
+        }
+    }
+    effective.extend(local);
+    effective.insert(
+        "compilerOptions".into(),
+        serde_json::Value::Object(compiler),
+    );
+    visiting.remove(&identity);
+    Ok((effective, paths_dir))
+}
+
+#[cfg(any(test, feature = "rolldown-prototype"))]
+fn native_config_path(value: &mut serde_json::Value, base: &Path) -> Result<()> {
+    let path = value
+        .as_str()
+        .context("native config path must be a string")?;
+    *value = serde_json::Value::String(base.join(path).to_string_lossy().into_owned());
+    Ok(())
+}
+
+#[cfg(any(test, feature = "rolldown-prototype"))]
+fn native_config_paths(value: &mut serde_json::Value, base: &Path) -> Result<()> {
+    for path in value
+        .as_array_mut()
+        .context("native config paths must be an array")?
+    {
+        native_config_path(path, base)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rolldown-prototype")]
+fn run_native_entry(cmd: &mut Command, source_path: &Path, boundary: Option<&Path>) -> Result<()> {
+    let config = native_entry_config(cmd, source_path, boundary)?;
+    if let Some(config) = &config {
+        cmd.arg(format!("--tsconfig={}", config.path().display()));
+    }
+    // Keep the config owner alive through native generation and runtime teardown.
+    zfb_rolldown_prototype::run_prepared(cmd)
+}
+
 fn build_job_resolver_inputs(
     working_dir: &Path,
     source_path: &Path,
@@ -1355,11 +1592,27 @@ impl EsbuildSubprocessBundler {
             cmd.arg(arg);
         }
 
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
+        #[cfg(feature = "rolldown-prototype")]
+        let native = zfb_rolldown_prototype::enabled();
+        #[cfg(not(feature = "rolldown-prototype"))]
+        let native = false;
+        #[cfg(feature = "rolldown-prototype")]
+        if native {
+            run_native_entry(
+                &mut cmd,
+                entry_tmp.path(),
+                self.config.tsconfig_search_boundary.as_deref(),
+            )?;
+        }
+        let output = if native {
+            None
+        } else {
+            Some(cmd.output().with_context(|| {
+                format!("failed to spawn {}", self.config.binary_path.display())
+            })?)
+        };
 
-        if !output.status.success() {
+        if let Some(output) = output.filter(|output| !output.status.success()) {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let friendly = redact_temp_path(
                 &stderr,
@@ -1448,14 +1701,27 @@ impl EsbuildSubprocessBundler {
                     worker_cmd.arg(arg);
                 }
 
-                let worker_output = worker_cmd.output().with_context(|| {
-                    format!(
-                        "failed to spawn {} for module-worker entry {}",
-                        self.config.binary_path.display(),
-                        worker.source_path().display()
-                    )
-                })?;
-                if !worker_output.status.success() {
+                #[cfg(feature = "rolldown-prototype")]
+                if native {
+                    run_native_entry(
+                        &mut worker_cmd,
+                        worker.source_path(),
+                        self.config.tsconfig_search_boundary.as_deref(),
+                    )?;
+                }
+                let worker_output = if native {
+                    None
+                } else {
+                    Some(worker_cmd.output().with_context(|| {
+                        format!(
+                            "failed to spawn {} for module-worker entry {}",
+                            self.config.binary_path.display(),
+                            worker.source_path().display()
+                        )
+                    })?)
+                };
+                if let Some(worker_output) = worker_output.filter(|output| !output.status.success())
+                {
                     let stderr = String::from_utf8_lossy(&worker_output.stderr);
                     let friendly = redact_temp_path(
                         &stderr,
@@ -2830,6 +3096,11 @@ impl EsbuildSubprocessBundler {
             )
         }));
 
+        #[cfg(feature = "rolldown-prototype")]
+        let native = zfb_rolldown_prototype::enabled();
+        #[cfg(not(feature = "rolldown-prototype"))]
+        let native = false;
+
         for (output_stem, source_path, label) in jobs {
             let job_resolver = build_job_resolver_inputs(
                 &self.config.working_dir,
@@ -2870,11 +3141,37 @@ impl EsbuildSubprocessBundler {
             for arg in &args {
                 cmd.arg(arg);
             }
-            let output = cmd.output().with_context(|| {
-                format!("failed to spawn {}", self.config.binary_path.display())
-            })?;
+            #[cfg(feature = "rolldown-prototype")]
+            if native {
+                run_native_entry(
+                    &mut cmd,
+                    &source_path,
+                    self.config.tsconfig_search_boundary.as_deref(),
+                )?;
+                if std::env::var_os("ZFB_DEV_TIMING").is_some() {
+                    let kind = if label == "client script" {
+                        "entry"
+                    } else {
+                        "worker"
+                    };
+                    let relative_source = source_path
+                        .strip_prefix(&self.config.working_dir)
+                        .unwrap_or(&source_path);
+                    eprintln!(
+                        "[zfb-timing] rolldown-prototype client-script job={output_stem} kind={kind} source={}",
+                        relative_source.display()
+                    );
+                }
+            }
+            let output = if native {
+                None
+            } else {
+                Some(cmd.output().with_context(|| {
+                    format!("failed to spawn {}", self.config.binary_path.display())
+                })?)
+            };
 
-            if !output.status.success() {
+            if let Some(output) = output.filter(|output| !output.status.success()) {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let friendly = redact_temp_path(
                     &stderr,
@@ -2927,6 +3224,243 @@ mod tests {
     use super::*;
 
     const TEST_BUILD_TOKEN: &str = "0123456789abcdef";
+
+    #[test]
+    fn native_config_discovers_jsconfig_and_reloads_package_selected_parent() {
+        let owner = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(owner.path()).unwrap();
+        let package = root.as_path().join("node_modules/@scope/config");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(root.as_path().join("src")).unwrap();
+        std::fs::write(
+            root.as_path().join("jsconfig.json"),
+            r#"{"extends":"@scope/config"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("assignment.json"),
+            r#"{"compilerOptions":{"useDefineForClassFields":false}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("define.json"),
+            r#"{"compilerOptions":{"useDefineForClassFields":true}}"#,
+        )
+        .unwrap();
+        let mut cmd = Command::new("unused");
+        cmd.current_dir(root.as_path());
+        for (selected, expected) in [("assignment.json", false), ("define.json", true)] {
+            std::fs::write(
+                package.join("package.json"),
+                format!(r#"{{"tsconfig":"{selected}"}}"#),
+            )
+            .unwrap();
+            let file = native_entry_config(&cmd, &root.as_path().join("src/worker.ts"), None)
+                .unwrap()
+                .unwrap();
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
+            assert_eq!(
+                value["compilerOptions"]["useDefineForClassFields"],
+                expected
+            );
+            assert!(
+                !file.path().starts_with(root.as_path()),
+                "dependency directories need not be writable"
+            );
+            assert_eq!(std::fs::read_dir(&package).unwrap().count(), 3);
+            let path = file.path().to_path_buf();
+            drop(file);
+            assert!(!path.exists(), "materialized config must retain an owner");
+        }
+    }
+
+    #[test]
+    fn native_config_keeps_diamond_precedence_and_original_path_bases() {
+        let owner = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(owner.path()).unwrap();
+        let base = root.as_path().join("base");
+        let leaf = root.as_path().join("leaf");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(base.join("common.json"), r#"{"compilerOptions":{"useDefineForClassFields":false,"baseUrl":"assets","paths":{"shared/*":["shared/*"]},"rootDirs":["src"]},"include":["src/**/*.ts"]}"#).unwrap();
+        std::fs::write(
+            base.join("a.json"),
+            r#"{"extends":"./common.json","compilerOptions":{"useDefineForClassFields":true}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("b.json"),
+            r#"{"extends":"./common.json","compilerOptions":{"paths":{"worker/*":["workers/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            leaf.join("jsconfig.json"),
+            r#"{"extends":["../base/a.json","../base/b.json"],"compilerOptions":{"strict":true}}"#,
+        )
+        .unwrap();
+        let value = native_effective_config(&leaf.join("jsconfig.json"), false).unwrap();
+        let options = &value["compilerOptions"];
+        assert_eq!(
+            options["useDefineForClassFields"], false,
+            "later parent's inherited value overrides earlier parent's own value"
+        );
+        assert_eq!(options["strict"], true);
+        assert_eq!(options["baseUrl"], base.join("assets").to_str().unwrap());
+        assert_eq!(
+            options["paths"]["worker/*"][0],
+            base.join("assets/workers/*").to_str().unwrap()
+        );
+        assert!(
+            options["paths"].get("shared/*").is_none(),
+            "paths maps replace rather than deep-merge"
+        );
+        assert_eq!(options["rootDirs"][0], base.join("src").to_str().unwrap());
+        assert_eq!(
+            value["include"][0],
+            base.join("src/**/*.ts").to_str().unwrap()
+        );
+        assert!(value.get("extends").is_none());
+    }
+
+    #[test]
+    fn native_config_explicit_selection_wins_and_boundary_stops_discovery() {
+        let owner = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(owner.path()).unwrap();
+        let project = root.as_path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            root.as_path().join("jsconfig.json"),
+            r#"{"compilerOptions":{"strict":false}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("selected.json"),
+            r#"{"compilerOptions":{"strict":true}}"#,
+        )
+        .unwrap();
+        let source = project.join("worker.ts");
+        let mut cmd = Command::new("unused");
+        cmd.current_dir(&project);
+        assert!(native_entry_config(&cmd, &source, Some(&project))
+            .unwrap()
+            .is_none());
+        cmd.arg("--tsconfig=selected.json");
+        let selected = native_entry_config(&cmd, &source, Some(&project))
+            .unwrap()
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(selected.path()).unwrap()).unwrap();
+        assert_eq!(value["compilerOptions"]["strict"], true);
+        cmd.arg("--tsconfig=missing.json");
+        assert!(
+            native_entry_config(&cmd, &source, None).is_err(),
+            "never fall back from an invalid explicit selection"
+        );
+    }
+
+    #[test]
+    fn native_config_effective_base_url_anchors_inherited_paths() {
+        let owner = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(owner.path()).unwrap();
+        let parent = root.as_path().join("parent");
+        let leaf = root.as_path().join("leaf");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&leaf).unwrap();
+        std::fs::write(
+            parent.join("paths.json"),
+            r#"{"compilerOptions":{"paths":{"chosen":["./chosen.ts"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            parent.join("base.json"),
+            r#"{"compilerOptions":{"baseUrl":"sibling"}}"#,
+        )
+        .unwrap();
+        for (config, expected) in [
+            (
+                r#"{"extends":"../parent/paths.json","compilerOptions":{"baseUrl":"local"}}"#,
+                leaf.join("local/./chosen.ts"),
+            ),
+            (
+                r#"{"extends":["../parent/paths.json","../parent/base.json"]}"#,
+                parent.join("sibling/./chosen.ts"),
+            ),
+            (
+                r#"{"extends":"../parent/paths.json"}"#,
+                parent.join("./chosen.ts"),
+            ),
+        ] {
+            let selected = leaf.join("tsconfig.json");
+            std::fs::write(&selected, config).unwrap();
+            let value = native_effective_config(&selected, false).unwrap();
+            assert_eq!(
+                value["compilerOptions"]["paths"]["chosen"][0],
+                expected.to_str().unwrap()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_config_preserves_requested_symlink_path_semantics() {
+        let owner = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(owner.path()).unwrap();
+        let real = root.as_path().join("real");
+        let lexical = root.as_path().join("project");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::create_dir(&lexical).unwrap();
+        std::fs::write(
+            real.join("base.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"chosen":["./chosen.ts"]}}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(real.join("base.json"), lexical.join("tsconfig.json")).unwrap();
+        for (preserve, base) in [(false, &real), (true, &lexical)] {
+            let mut cmd = Command::new("unused");
+            cmd.current_dir(&lexical);
+            if preserve {
+                cmd.arg("--preserve-symlinks");
+            }
+            let file = native_entry_config(&cmd, &lexical.join("worker.ts"), None)
+                .unwrap()
+                .unwrap();
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
+            assert_eq!(
+                value["compilerOptions"]["paths"]["chosen"][0],
+                base.join("././chosen.ts").to_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn native_config_rejects_invalid_cyclic_and_excessive_extends() {
+        let owner = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(owner.path()).unwrap();
+        let path = root.as_path().join("tsconfig.json");
+        for invalid in [
+            r#"{"extends":[7]}"#,
+            r#"{"extends":"absent-package"}"#,
+            r#"{"extends":"./tsconfig.json"}"#,
+            r#"{"compilerOptions":{"paths":{"@/*":"wrong-type"}}}"#,
+            r#"{"references":[{"path":"./other"}]}"#,
+            r#"{"compilerOptions":{"baseUrl":"${configDir}"}}"#,
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(native_effective_config(&path, false).is_err(), "{invalid}");
+        }
+        for index in 0..10 {
+            let value = if index == 9 {
+                "{}".to_owned()
+            } else {
+                format!(r#"{{"extends":"./{}.json"}}"#, index + 1)
+            };
+            std::fs::write(root.as_path().join(format!("{index}.json")), value).unwrap();
+        }
+        let error = native_effective_config(&root.as_path().join("0.json"), false).unwrap_err();
+        assert!(error.to_string().contains("exceeded 8 levels"));
+    }
 
     /// Write an in-project entry-shaped file and backdate its mtime by `age`.
     fn write_entry_aged(dir: &Path, name: &str, age: std::time::Duration) -> PathBuf {
