@@ -2538,8 +2538,7 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
         "import Widget from \"@/components/widget\";\n\
          import Data from \"@/data\";\n\
          export default function Page() {\n\
-             const _ = [Widget, Data];\n\
-             return <Widget />;\n\
+             return <Widget data={Data} />;\n\
          }\n",
     )
     .unwrap();
@@ -2569,8 +2568,8 @@ fn user_tsconfig_paths_coexist_with_plugin_aliases() {
          resolve in the same bundle.",
     );
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
-    // Both targets' identifiers (`Widget`, `Data`) survive into the
-    // bundle — esbuild does not minify here.
+    // Both mappings feed the observable JSX call. An unused local array can
+    // legitimately disappear during tree shaking even without minification.
     assert!(
         body.contains("Widget"),
         "user tsconfig_paths entry (`@/components/*`) must resolve and the \

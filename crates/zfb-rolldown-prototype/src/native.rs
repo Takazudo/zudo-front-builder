@@ -128,7 +128,7 @@ impl Plugin for GraphPlugin {
 /// on a scoped thread, so callers already running a Tokio/V8 host remain valid.
 pub fn run_prepared(cmd: &Command) -> Result<()> {
     let request = Request::decode(cmd)?;
-    std::thread::scope(|scope| {
+    let files = std::thread::scope(|scope| {
         scope
             .spawn(move || {
                 tokio::runtime::Builder::new_multi_thread()
@@ -139,9 +139,21 @@ pub fn run_prepared(cmd: &Command) -> Result<()> {
             })
             .join()
             .map_err(|_| anyhow::anyhow!("Rolldown prototype thread panicked"))?
-    })
+    })?;
+    // Native warnings and graph validation may reject an otherwise generated
+    // bundle. Publish only validated bytes after the scoped worker and its
+    // private runtime have actually joined. This synchronous adapter does not
+    // provide the standalone probe's supervisor or cancellation deadlines.
+    for (path, bytes) in files {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)
+            .with_context(|| format!("write native output {}", path.display()))?;
+    }
+    Ok(())
 }
-async fn run(request: Request) -> Result<()> {
+async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let start = Instant::now();
     let inputs = Arc::new(Mutex::new(BTreeMap::new()));
     let copy_outputs = Arc::new(Mutex::new(BTreeMap::new()));
@@ -159,7 +171,12 @@ async fn run(request: Request) -> Result<()> {
         .context("output location")?;
     let mut bundler = Bundler::with_plugins(request.options, vec![GraphPlugin::new_shared(plugin)])
         .map_err(|e| anyhow::anyhow!("Rolldown options: {e:?}"))?;
-    let result = bundler.write().await.map_err(|e| {
+    let generated = bundler.generate().await;
+    // This adapter has only GraphPlugin, which has no close hook. Sequential
+    // close also clears the pinned driver's retained state on returned errors;
+    // a cleanup error must never replace the original generation diagnostic.
+    let closed = bundler.close().await;
+    let result = generated.map_err(|e| {
         anyhow::anyhow!(
             "Rolldown native diagnostic: {}",
             e.into_vec()
@@ -169,6 +186,7 @@ async fn run(request: Request) -> Result<()> {
                 .join("\n")
         )
     })?;
+    closed.map_err(|e| anyhow::anyhow!("Rolldown close diagnostic: {e:?}"))?;
     for warning in &result.warnings {
         if warning.kind().to_string() == "UNRESOLVED_IMPORT" {
             bail!(
@@ -180,11 +198,13 @@ async fn run(request: Request) -> Result<()> {
     let bundle_us = start.elapsed().as_micros();
     let post = Instant::now();
     let mut outputs = BTreeMap::new();
+    let mut files = Vec::new();
     let mut copied_sources = BTreeMap::new();
     let copy_outputs = copy_outputs.lock().unwrap().clone();
     let mut inputs = inputs.lock().unwrap().clone();
     for output in result.assets {
         let path = outdir.join(output.filename());
+        files.push((path.clone(), output.content_as_bytes().to_vec()));
         match &output {
             Output::Chunk(chunk) => {
                 let provenance: BTreeMap<_, _> = chunk
@@ -293,12 +313,12 @@ async fn run(request: Request) -> Result<()> {
         eprintln!("Rolldown warning: {warning}");
     }
     if let Some(path) = request.metafile {
-        std::fs::write(
+        files.push((
             path,
             serde_json::to_vec_pretty(
                 &json!({"inputs":inputs,"outputs":outputs,"zfbBackend":"rolldown-24bc2d0","warnings":warnings}),
             )?,
-        )?;
+        ));
     }
     if std::env::var_os("ZFB_DEV_TIMING").is_some() {
         eprintln!(
@@ -306,5 +326,5 @@ async fn run(request: Request) -> Result<()> {
             post.elapsed().as_micros()
         );
     }
-    Ok(())
+    Ok(files)
 }

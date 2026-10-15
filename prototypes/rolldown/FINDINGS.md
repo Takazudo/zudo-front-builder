@@ -9,7 +9,9 @@
 three-configuration verifier and automatic merge workflow effects. The direction
 is an explicit experimental opt-in for dogfooding; esbuild remains the default.
 
-Whole-PR acceptance is blocked by the nonadditive Cargo provenance transition
+Whole-PR acceptance is blocked by seven retained prepared-contract assertions
+(six trailing-directory resolution cases and unsupported raw CSS bundling),
+the nonadditive Cargo provenance transition
 and a newly measured render-WASM gzip result of 1,100,087 bytes against the
 unchanged 1,100,000 ceiling. The older provenance-only failures below did not
 establish this new numerical regression. No held policy, contract digest or

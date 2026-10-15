@@ -21,10 +21,13 @@ islands / standalone-client dispatch, fixtures, workflows and derived records.
 Only exact `ZFB_ROLLDOWN_PROTOTYPE=1` with the compile feature selects native.
 Feature-absent and compiled-but-unselected execution retain esbuild; native
 errors propagate without fallback. Plugin/config production callers stay on
-esbuild. The shared adapter's synchronous scoped-thread join and `bundler.write`
-before post-validation remain separate from the standalone plugin supervisor's
-responsiveness, admission and joined-publication guarantees. It also lacks the
-probe's explicit normal-return close handling. No new native feature was added.
+esbuild. A reproduced error-publication defect changed the shared adapter to
+in-memory generation, sequential normal-return close, warning/graph validation,
+and publication after the synchronous scoped worker/runtime join. It still has
+no supervisor, admission bound or request cancellation. Returned filesystem write
+errors can leave partial output, as before; this is not a transactional publisher.
+Its sole GraphPlugin has no close hook, so it does not require the standalone
+probe's scan-error close observer. No new backend or native feature was added.
 
 Independent review found the existing worker stage-escape ignored test missing
 from the governance manifest. It is now registered; the measured inventory is
@@ -200,6 +203,39 @@ normalization. The strict checker rejected the local/workspace/packed Cargo
 lock identities; it reported no numerical ceiling violation. Collection is
 evidence, not accepted provenance, and does not replace native Darwin evidence.
 
+### Additional prepared-contract gates
+
+The first clean replay at `ee33548b` reached the wider prepared-bundle suite and
+found nine failures that earlier selected suites had not exercised. The excluded
+alias test proved a real defect: native `write()` emitted disallowed fallback
+bytes before warning validation returned an error. Generation and validation now
+precede publication after actual join; that original assertion passes. A separate
+paths/plugin-alias fixture used its Data import only in an unused local array;
+native tree shaking legitimately removed it. Data now reaches the observable JSX
+call, retaining the original assertion and making the oracle independent of that
+optimization.
+
+Seven assertions remain compatibility gates, not skipped/passed checks:
+
+- Six directory-target tests expose absolute tsconfig paths ending `/` in pinned
+  `oxc_resolver` 11.24.3. `tsconfig.rs:437–447` and `path.rs:110–111` retain the
+  trailing slash; `cache/cache_impl.rs:165–171` compares raw parent path spelling
+  and loses package-main lookup. `tsconfig_resolver.rs:333–338` resolves `.` and
+  does not reproduce esbuild's directory/basename-child precedence. The explicit
+  main-fields option is preserved; the neutral-platform hint is not the cause.
+  Minimal native fixtures reproduce the failure with a main entry and pass only
+  after an index entry is supplied. Trimming the slash would permit an excluded
+  outside sibling and violate the existing assertions. Correct ordered contextual
+  resolution is a separate targeted compatibility repair, not a default change.
+- The CSS-context test reaches CSS bundling explicitly rejected by Rolldown at
+  `24bc2d0`. Adding a CSS backend/plugin or changing the native pin is outside this
+  increment. Existing CSS-module behavior and browser/production CSS preparation
+  are distinct from this raw-CSS graph test.
+
+The verifier runs every prepared test binary with `--no-fail-fast`, continues
+independent checks, and returns failure if any prepared suite failed. No assertion
+is removed, caught as success, ignored or relabeled optional.
+
 ## Automatic merge effects and decision boundary
 
 The main-relative diff includes `docs/scripts/wind-compatibility-pages.mjs` and
@@ -210,8 +246,8 @@ external effects in its final merge authorization. No workflow permission or
 secret change, manual deployment or release dispatch is made here. Package
 publication requires the separate release/manual workflow.
 
-**Not ready to merge while the nonadditive provenance rejection and render-WASM
-ceiling failure remain.** Experimental opt-in remains the intended direction;
+**Not ready to merge while prepared-contract failures, the nonadditive provenance
+rejection and render-WASM ceiling failure remain.** Experimental opt-in remains the intended direction;
 these are integration gates, not a proposal to remove the experiment. Hard
 native termination, production plugin lifecycle, optional-native platform claims
 #4123, packaging/performance #4124 and broader #318 adoption remain separate.

@@ -5,6 +5,7 @@ cd "$(dirname "$0")/../.."
 : "${ZFB_ESBUILD_BIN:?absolute pinned esbuild executable required}"
 : "${ZFB_PROTOTYPE_TOOLS:?prepared Hono and Playwright tools required}"
 mkdir -p target/rolldown-integration-evidence
+failed_suites=()
 run() {
   local name="$1"
   shift
@@ -46,7 +47,11 @@ for backend in esbuild rolldown; do
   if [[ "$backend" == rolldown ]]; then export ZFB_ROLLDOWN_PROTOTYPE=1; fi
   run "$backend-islands" cargo test --locked -p zfb-islands --features rolldown-prototype --test integration -- --ignored
   run "$backend-client" cargo test --locked -p zfb --features rolldown-prototype --test client_bundling_cross_pipeline real_binary_build_and_dev_cover_client_bundling_contract -- --ignored --exact
-  run "$backend-prepared" cargo test --locked -p zfb-build --features rolldown-prototype --test bundler_css_modules --test bundler_workspace_pkg_alias --test bundler_main_fields --test bundler_exact_match_resolution
+  # Finish every prepared-contract binary and the independent browser/client
+  # checks even when one contract fails. The final result remains a failure.
+  if ! run "$backend-prepared" cargo test --locked -p zfb-build --features rolldown-prototype --no-fail-fast --test bundler_css_modules --test bundler_workspace_pkg_alias --test bundler_main_fields --test bundler_exact_match_resolution; then
+    failed_suites+=("$backend-prepared")
+  fi
   run "$backend-stage-escape" cargo test --locked -p zfb-build --features rolldown-prototype --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored
 done
 unset ZFB_ROLLDOWN_PROTOTYPE
@@ -57,3 +62,7 @@ run production node prototypes/rolldown/production.mjs
 run client-browser node prototypes/rolldown/client-scripts.mjs
 git diff --exit-code
 test -z "$(git status --porcelain --untracked-files=no)"
+if (( ${#failed_suites[@]} )); then
+  printf 'Failed integration suites: %s\n' "${failed_suites[*]}" >&2
+  exit 1
+fi
