@@ -93,24 +93,24 @@ fn is_void_tag(tag: &str) -> bool {
 
 /// Escape a text-node value: `&`, `<`, `>`. Quotes stay as-is.
 fn push_text_escaped(s: &str, out: &mut String) {
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            other => out.push(other),
-        }
-    }
+    push_escaped(s, out, false);
 }
 
 /// Escape an attribute value: `&`, `<`, `>`, `"`.
 fn push_attr_escaped(s: &str, out: &mut String) {
+    push_escaped(s, out, true);
+}
+
+// Keep one UTF-8 traversal for text and attributes in the render artifact.
+// Specializing this loop for each caller duplicates the escaping machinery.
+#[inline(never)]
+fn push_escaped(s: &str, out: &mut String, attribute: bool) {
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
+            '"' if attribute => out.push_str("&quot;"),
             other => out.push(other),
         }
     }

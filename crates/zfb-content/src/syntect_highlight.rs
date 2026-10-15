@@ -881,15 +881,7 @@ fn fallback_lines(code: &str, slug: &str) -> HighlightedLines {
 /// byte-identical to what the single `color:` path would emit — minus the alpha
 /// channel, which is intentionally dropped for the dual custom-property form.
 fn color_to_hex(c: Color) -> String {
-    // Fixed-width RGB needs no general-purpose integer formatting machinery.
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(7);
-    out.push('#');
-    for channel in [c.r, c.g, c.b] {
-        out.push(HEX[usize::from(channel >> 4)] as char);
-        out.push(HEX[usize::from(channel & 15)] as char);
-    }
-    out
+    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
 
 /// Build a [`DualHighlightedLines`] for the dual fallback path (unknown lang,
@@ -1682,37 +1674,6 @@ mod tests {
             a: 0x80,
         };
         assert_eq!(color_to_hex(c2), "#010203");
-    }
-
-    #[test]
-    fn color_to_hex_preserves_every_channel_value() {
-        for value in 0..=u8::MAX {
-            for c in [
-                Color {
-                    r: value,
-                    g: 0,
-                    b: 255,
-                    a: 0,
-                },
-                Color {
-                    r: 255,
-                    g: value,
-                    b: 0,
-                    a: 127,
-                },
-                Color {
-                    r: 0,
-                    g: 255,
-                    b: value,
-                    a: 255,
-                },
-            ] {
-                assert_eq!(
-                    color_to_hex(c),
-                    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
-                );
-            }
-        }
     }
 
     // ── Class-emission highlighting (highlight_lines_classes) ──────────────
