@@ -383,7 +383,11 @@ async function development(browser, root, env, backend, workerStems) {
   }
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  executablePath: process.env.ZFB_CHROMIUM_EXECUTABLE,
+});
+console.log(`Chromium ${browser.version()}`);
 try {
   for (const backend of ["esbuild", "rolldown"]) {
     const root = join(output, backend, "project");

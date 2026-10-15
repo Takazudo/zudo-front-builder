@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 const tools = resolve(process.env.ZFB_PROTOTYPE_TOOLS ?? "target/rolldown-tools");
 const { chromium } = await import(pathToFileURL(join(tools, "node_modules/playwright/index.mjs")));
 const root = resolve(process.argv[2]);
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  executablePath: process.env.ZFB_CHROMIUM_EXECUTABLE,
+});
+console.log(`Chromium ${browser.version()}`);
 try {
   for (const backend of ["esbuild", "rolldown"]) {
     console.log(`Checking ${backend} runtime`);
