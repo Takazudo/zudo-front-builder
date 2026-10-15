@@ -1,0 +1,219 @@
+# Experimental integration review — 2026-10-15
+
+The requested direction is an explicitly experimental opt-in for dogfooding,
+with esbuild still the default. This pass prepares existing PR #4120 for the
+owner's merge decision; it does not mark ready, merge, deploy or publish.
+This Cloud session owns verification and CI triage under
+`CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
+
+## Integrated source and scope
+
+Merge `d5bff12f08cd55548df42f7fb8f45a7bdff9fbfa` has parents
+`e6da2aba57b486738a1108ae4c211c57fa534499` (prototype) and
+`57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6` (actual main, v4.5.2).
+All 11 intervening main commits were integrated. Generated-data conflicts used
+main's newer CI-measured WASM records and corresponding docs as the baseline;
+Wind previews were then regenerated with the combined-source workspace compiler.
+No held prerequisite or direct-V8 #4242 branch was imported.
+
+The source review covers optional Cargo edges, the native adapter, shared SSR /
+islands / standalone-client dispatch, fixtures, workflows and derived records.
+Only exact `ZFB_ROLLDOWN_PROTOTYPE=1` with the compile feature selects native.
+Feature-absent and compiled-but-unselected execution retain esbuild; native
+errors propagate without fallback. Plugin/config production callers stay on
+esbuild. The shared adapter's synchronous scoped-thread join and `bundler.write`
+before post-validation remain separate from the standalone plugin supervisor's
+responsiveness, admission and joined-publication guarantees. It also lacks the
+probe's explicit normal-return close handling. No new native feature was added.
+
+Independent review found the existing worker stage-escape ignored test missing
+from the governance manifest. It is now registered; the measured inventory is
+85 ignored tests (60 env-gate, 23 heavy, two verification). Existing health
+integration-binary coverage already includes it; parity reports zero uncovered.
+The whole-PR verifier preserves exact-SHA checkout, read-only permissions,
+locked/frozen dependencies, assertions and tracked cleanliness. The explicit
+installed-Chromium override changes only test launch and prints browser version.
+
+## Cargo resolution evidence
+
+| Input | Packages | SHA-256 |
+| --- | ---: | --- |
+| Main Cargo.lock | 601 | `2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e` |
+| Prototype Cargo.lock | 696 | `13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37` |
+
+Main to prototype adds 111 identities, removes 16 and changes 46 surviving
+records. Fourteen removed records are version replacements; `papaya` and `seize`
+are replaced by the resolver's new dependency structure.
+
+| Shared package | Main | Prototype | Required native minimum |
+| --- | --- | --- | --- |
+| bitflags | 2.11.1 | 2.13.2 | 2.13.0 |
+| fast-glob | 1.0.1 | 1.1.2 | 1.1.0 |
+| json-escape-simd | 3.1.0 | 3.1.2 | 3.1.1 |
+| memchr | 2.8.0 | 2.8.3 | 2.8.2 |
+| oxc_resolver | 11.19.1 | 11.24.3 | 11.24.3 |
+| regex | 1.12.3 | 1.13.1 | 1.13.0 |
+| regex-automata | 0.4.14 | 0.4.18 | 0.4.16 via new regex |
+| regex-syntax | 0.8.10 | 0.8.11 | 0.8.11 via new regex |
+| rustc-hash | 2.1.2 | 2.1.3 | 2.1.3 |
+| serde_json | 1.0.149 | 1.0.151 | 1.0.150 |
+| simd-json | 0.17.0 | 0.18.1 | 0.18.0 via resolver |
+| smallvec | 1.15.1 | 1.16.3 | 1.16.0 |
+| unicode-segmentation | 1.13.2 | 1.13.3 | 1.13.3 via OXC diagnostics |
+| uuid | 1.23.1 | 1.28.0 | 1.27.0 |
+
+The minima were checked against Rolldown commit
+`24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9` and resolved dependency manifests.
+Starting from actual main's lock with combined manifests, Cargo metadata fails
+on rustc-hash 2.1.2 versus >=2.1.3. Unlocking only that package fails on
+oxc_resolver 11.19.1 versus >=11.24.3. Unlocking the 11 directly required shared
+packages resolves successfully. Preserving existing prototype serde_json 1.0.151
+and syn 3.0.7 rather than taking two fresh upgrades reproduces the prior lock
+**byte for byte**. No lock was hand-assembled and no dependency/source pin changed.
+
+Nine Windows dependency-edge reselections also reproduce from the main-seeded
+resolution. `anstyle-query`, `anstyle-wincon` and `socket2` select windows-sys
+0.60.2; `errno`, `is-terminal`, `rustix`, `tempfile` and `winapi-util` select
+0.52.0; `nu-ansi-term` selects 0.59.0 instead of main's 0.61.2. Their manifests
+allow 0.61.2, so these are compatible solver consequences, not native minimum
+requirements. Cargo offers no narrow per-parent edge update. They are recorded
+Windows verification debt; Linux results do not prove that platform.
+
+Default-V8 and no-V8 graphs contain no Rolldown when the feature is absent, but
+they share the newer resolver, JSON, CSS and SWC dependencies. Default V8 also
+shares newer smallvec/bitflags; deno_core and V8 versions are unchanged. The
+verifier retains actual locked normal/build/feature graphs for all three modes.
+Thus an optional backend does not imply an unchanged normal producer closure.
+
+## Provenance decision still required
+
+The active `cargo-producer-lock` transition accepts additions only when all old
+package records remain byte-identical. Changed versions, dependency features,
+removed records and even dependency-name disambiguation violate it. This delta
+is not admissible under that reason, the pnpm-only #4218 direction, release-bump
+or runtime-identity. Held draft #4234 remains untouched.
+
+A narrowly reviewed nonadditive Cargo transition decision needs this exact delta
+and minima, final feature graphs, ordinary-producer checks, qualifying Linux and
+native Darwin measurements, and unchanged numerical ceilings. The parent must
+authorize that prerequisite separately; this pass neither activates a held
+policy nor changes a live contract digest. Historical platform artifacts do not
+qualify the new source.
+
+For separately authorized native collection, the existing command is:
+
+```sh
+gh workflow run island-size-darwin.yml --ref prototype/318-rolldown-native \
+  -f ref=<reviewed-final-SHA> -f platform=both -f enforce=false
+```
+
+This is an outstanding parent-coordination action, **not dispatched here**.
+Require native macos-15 arm64 and Linux x64 artifacts, the pinned toolchain,
+eight cases in each workspace/packed mode, two complete saved dist passes,
+normalization and unchanged strict checker results. `enforce=false` collection
+success would not itself mean budget/provenance acceptance.
+
+## CI-authoritative WASM regression
+
+[Health run 38705578695, job 116324103686](https://github.com/Takazudo/zudo-front-builder/actions/runs/38705578695/job/116324103686)
+on candidate `51649ccaba6e86cc499783062084d78e9f124f8b` built all four outputs:
+
+| Artifact | Final WASM bytes | gzip-9 bytes | Unchanged gzip ceiling |
+| --- | ---: | ---: | ---: |
+| root | 3398069 | 1526466 | 1600000 |
+| highlight | 1540963 | 821001 | 880000 |
+| render | 2213332 | **1100087** | **1100000** |
+| parse | 703502 | 285765 | 325000 |
+
+Render is 2,989 gzip bytes above main's measured 1,097,098, and 87 above its
+ceiling. The build correctly failed; downstream npm/export/package checks were
+skipped. These are measured rejected outputs, not new accepted shipped records.
+Main's shipped manifest/doc baseline is retained rather than labeling the
+out-of-budget result accepted or increasing a ceiling.
+
+Independent graph diagnosis found six upgraded runtime packages in render WASM:
+serde_json, memchr, smallvec, rustc-hash, regex-automata and regex-syntax. It has no
+Rolldown/OXC/SWC/V8/Tokio, no serde_json preserve_order, and flate2 still uses
+miniz_oxide. Render/compiler source, WASM build configuration and root profiles
+match main. No supported native-only feature removal fixes the cause. A measured
+code-size/dependency remediation with the unchanged ceiling is required; no
+speculative patch downgrade, Unicode/performance-table removal, allow-over-ceiling
+flag or hand-edited measurement is used to manufacture green.
+
+## Verification ledger
+
+The reproducible command is `bash prototypes/rolldown/verify-integration.sh`
+through the configured heavy guard, after package/tool preparation. It covers
+feature absent; compiled feature with environment unset; explicit native opt-in;
+no-V8 compilation; Wind library/preview/freshness; prepared/browser/SSR/production
+and standalone-client real Chromium/dev-edit/negative harnesses. The existing
+42 native plugin tests, four library tests and 36 semantic rows remain in the
+same read-only exact-SHA workflow. This is a broader experimental check, not a
+replacement for required health or provenance acceptance.
+
+All 173 Wind previews were genuinely regenerated. Only the compiler fingerprint
+changed; rendered CSS/assets are unchanged. The reviewed Wind source closure
+still matches its existing digest; no support pin/catalog assertion changed.
+Local browser download received a domain-forbidden response even on the exact
+escalated retry. Tests use installed Chromium 154.0.8037.57 explicitly; CI uses
+Playwright 1.58.2's Chromium. Local Node was initially 24.19.0; final toolchain
+replay uses the installed pinned Node 24.14.0. Rust is 1.99.0, pnpm 12.8.2, Linux
+x86_64. Distinct environments are not labeled equivalent.
+
+Initial health workspace tests reported 909 root tests passed and two failures,
+both the unchanged Linux/Darwin Cargo provenance assertions. Required broad
+Rust steps after that failed prerequisite were skipped, not passed. Native and
+normal-path measurement evidence is collected independently. Final exact-head
+results and remaining failures are recorded in the PR description.
+
+Expanded candidate `415c702f05396cbd3fda996382f32b1265c0f5f6` reproduced
+two native adapter defects in both local execution and
+[exact-source CI run 38706267179](https://github.com/Takazudo/zudo-front-builder/actions/runs/38706267179):
+terminal `?url` resources failed loading, and a package-selected `jsconfig.json`
+change updated a worker URL without changing its emitted class-field semantics.
+The unchanged suite passed 22 of 24 tests under explicit native selection;
+all 24 passed with the feature absent and with it compiled but unselected.
+The native loader now reads the underlying terminal-`?url` file while retaining
+the full resolved provenance ID. Native hashes use the pinned alphanumeric
+alphabet so the resource name/hash delimiter stays unambiguous. Resource
+admission rules and their negative assertions remain unchanged.
+The alphabet is a bundler-wide native option: other hashed native chunks/assets
+can change filenames too; the esbuild path is unaffected.
+
+Native islands/client jobs now materialize the selected per-entry config with
+nearest `tsconfig.json`/`jsconfig.json` discovery, package-declared inherited
+configs and ordered recursive inheritance. The temporary config stays owned
+through native runtime teardown. The ordinary esbuild branch is unchanged.
+Project references and `${configDir}` templates fail explicitly in this bounded
+normalizer; they are not claimed as supported. Independent review checks
+inheritance precedence and config-relative paths, including diamond inheritance.
+Review found and corrected premature inherited-path absolutization and lost
+`--preserve-symlinks` config anchoring before integration. Six focused tests
+cover those cases, package-config reload, explicit selection/search boundaries,
+diamond precedence and invalid/cyclic/excessive inheritance. The repair pass
+passed all 24 original real-native integration tests and 394 client-library
+tests, including the existing resource-oracle rejection cases.
+
+The ordinary Linux size collection completed all eight fixtures in both
+workspace and packed modes, including two complete saved-dist passes and
+normalization. The strict checker rejected the local/workspace/packed Cargo
+lock identities; it reported no numerical ceiling violation. Collection is
+evidence, not accepted provenance, and does not replace native Darwin evidence.
+
+## Automatic merge effects and decision boundary
+
+The main-relative diff includes `docs/scripts/wind-compatibility-pages.mjs` and
+the regenerated preview manifest. A merge therefore matches `docs-deploy.yml`'s
+main-push paths: successful build runs Wrangler production deployment, Cloudflare
+domain configuration and IFTTT notification. The parent must include those
+external effects in its final merge authorization. No workflow permission or
+secret change, manual deployment or release dispatch is made here. Package
+publication requires the separate release/manual workflow.
+
+**Not ready to merge while the nonadditive provenance rejection and render-WASM
+ceiling failure remain.** Experimental opt-in remains the intended direction;
+these are integration gates, not a proposal to remove the experiment. Hard
+native termination, production plugin lifecycle, optional-native platform claims
+#4123, packaging/performance #4124 and broader #318 adoption remain separate.
+PR #4120 stays open/draft; #318/#4098/#4123/#4124/#4133 stay open and roadmap
+#3328 -> #3329 -> #4099 and supervisor #3230 remain unchanged.

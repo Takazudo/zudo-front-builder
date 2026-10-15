@@ -2,6 +2,20 @@
 
 **The isolated plugin alias defect is repaired and verified; keep the live plugin caller on esbuild.** The expanded plugin option probe now passes 18 contracts on each real backend. This is a bounded Linux capability result, not production plugin acceptance or permission to adopt Rolldown by default. PR #4120 remains open and draft.
 
+## Whole-PR experimental integration
+
+[The integration review](INTEGRATION-20261015.md) records the merge of actual main
+`57f625a2`, the main-seeded Cargo resolution experiment, shared producer impact,
+three-configuration verifier and automatic merge workflow effects. The direction
+is an explicit experimental opt-in for dogfooding; esbuild remains the default.
+
+Whole-PR acceptance is blocked by the nonadditive Cargo provenance transition
+and a newly measured render-WASM gzip result of 1,100,087 bytes against the
+unchanged 1,100,000 ceiling. The older provenance-only failures below did not
+establish this new numerical regression. No held policy, contract digest or
+ceiling is changed. Required CI, independent runtime verification and the
+owner's final merge/deployment authorization remain distinct.
+
 ## Supervision increment from `8cd83962`
 
 [Owned supervision and cancellation](PLUGIN-CANCELLATION.md) now documents the

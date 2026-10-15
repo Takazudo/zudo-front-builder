@@ -11,6 +11,8 @@ plugin/config callers remain on esbuild, and hard native termination remains ope
 
 ## Whole-PR integration verification
 
+See [the current integration review](INTEGRATION-20261015.md) for lock/provenance
+and size blockers, source identities and merge-triggered workflow effects.
 After installing the pinned tools and building the local SDK packages, run
 `bash prototypes/rolldown/verify-integration.sh` through the shared heavy guard.
 It checks feature-absent execution, compiled-but-unselected execution, explicit

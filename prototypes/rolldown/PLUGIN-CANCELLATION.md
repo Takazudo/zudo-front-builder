@@ -7,8 +7,8 @@ native shutdown deadline or production plugin adoption.
 
 ## Supervisor increment from `8cd83962`
 
-The standalone CLI now exercises a prototype-private `Supervisor` with capacity
-2. The synchronous root owns all helper handles. Requests own only a delivery
+The standalone CLI now exercises a prototype-private `Supervisor` with capacity two.
+The synchronous root owns all helper handles. Requests own only a delivery
 mailbox and a cancellation signal: dropping an unpolled request, a polled future,
 or its joined result revokes unpublished output without joining native work,
 shutting down a runtime, sleeping, or transferring a worker from a destructor.
