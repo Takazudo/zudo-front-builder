@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     use anyhow::bail;
     use packages::PackageExternals;
     use rolldown::plugin::Plugin;
-    use rolldown::{Bundler, BundlerOptions, ResolveOptions};
+    use rolldown::{BundlerOptions, ResolveOptions};
     use rolldown_common::{
         AddonOutputOption, BundlerTransformOptions, CodeSplittingMode, Either, OutputFormat,
         Platform, SourceMapType,
@@ -53,14 +53,10 @@ fn main() -> anyhow::Result<()> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let generated = runtime.block_on(async {
-        let mut bundler = Bundler::with_plugins(
-            options,
-            vec![PackageExternals::new_shared(PackageExternals)],
-        )
-        .map_err(|error| anyhow::anyhow!("Rolldown options: {error:?}"))?;
-        lifecycle::generate_and_close(&mut bundler).await
-    });
+    let generated = runtime.block_on(lifecycle::generate_and_close(
+        options,
+        vec![PackageExternals::new_shared(PackageExternals)],
+    ));
     // No output exists during native work or runtime teardown. This shutdown
     // is not time-bounded; do not present it as active-build cancellation.
     drop(runtime);
