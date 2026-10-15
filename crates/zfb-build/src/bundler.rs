@@ -450,9 +450,8 @@ pub struct BundlerInput {
     ///
     /// When `Some(path)`, a **symlink** `<shadow>/node_modules →
     /// <path>` is created so esbuild finds packages there first.
-    /// The path MUST be an existing directory. On platforms where
-    /// symlinks are restricted, a junction is attempted; if both
-    /// fail, [`bundle`] returns an error.
+    /// The path MUST be an existing directory. Windows uses an unprivileged
+    /// directory junction. Failure to create the link is a build error.
     ///
     /// In a typical pnpm workspace, pass
     /// `<workspace-root>/node_modules/.pnpm/node_modules` to give
@@ -1950,6 +1949,36 @@ impl Drop for ShadowSession {
     }
 }
 
+fn remove_shadow_entry(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            zfb_types::directory_link::remove(path)
+        }
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn ensure_dependency_link(target: &Path, link: &Path) -> std::io::Result<bool> {
+    let canonical = fs::canonicalize(target)?;
+    if !canonical.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "dependency root is not a directory",
+        ));
+    }
+    if fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink())
+        && fs::canonicalize(link).is_ok_and(|existing| existing == canonical)
+    {
+        return Ok(false);
+    }
+    remove_shadow_entry(link)?;
+    zfb_types::directory_link::create(target, link)?;
+    Ok(true)
+}
+
 /// Remove every entry inside `dir` without removing `dir` itself.
 /// Symlinked children (e.g. the `node_modules` link) are removed as
 /// links, never followed into.
@@ -1976,19 +2005,7 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
         if entry.file_name().to_str() == Some(SHADOW_SESSION_LOCK_FILE_NAME) {
             continue;
         }
-        let ft = entry.file_type().with_context(|| {
-            format!(
-                "shadow session: failed to stat shadow entry {}",
-                entry.path().display()
-            )
-        })?;
-        let result = if ft.is_dir() {
-            fs::remove_dir_all(entry.path())
-        } else {
-            // Files AND symlinks (symlink_metadata-based file_type reports
-            // a symlink-to-dir as symlink, not dir — remove_file is right).
-            fs::remove_file(entry.path())
-        };
+        let result = remove_shadow_entry(&entry.path());
         result.with_context(|| {
             format!(
                 "shadow session: failed to wipe shadow entry {}",
@@ -2428,6 +2445,19 @@ impl<'s> ShadowWriter<'s> {
         }
     }
 
+    fn forget_dependency_root(&self, path: &Path) {
+        self.forget_verified_under(path);
+        if let Some(cell) = &self.session {
+            if let Ok(rel) = self.rel_of(path) {
+                let mut session = cell.borrow_mut();
+                session.written.retain(|p, _| !p.starts_with(&rel));
+                session.content_skip.clear();
+                session.source_skip.clear();
+                session.mirror_skip.clear();
+            }
+        }
+    }
+
     fn rel_of(&self, to: &Path) -> std::io::Result<PathBuf> {
         to.strip_prefix(&self.shadow_root)
             .map(|p| p.to_path_buf())
@@ -2462,7 +2492,7 @@ impl<'s> ShadowWriter<'s> {
             // against writing THROUGH a pre-existing symlink into the
             // user's source tree (#553); for the plain-write sites it is
             // a no-op ENOENT unlink (the prod shadow tempdir is fresh).
-            let _ = fs::remove_file(to);
+            remove_shadow_entry(to)?;
             return fs::write(to, bytes);
         };
         let rel = self.rel_of(to)?;
@@ -2498,7 +2528,7 @@ impl<'s> ShadowWriter<'s> {
                     self.forget_verified_under(to);
                     session.written.retain(|p, _| !p.starts_with(&rel));
                 }
-                let _ = fs::remove_file(to);
+                remove_shadow_entry(to)?;
                 fs::write(to, bytes)?;
                 session.written.insert(rel, hash);
                 Ok(())
@@ -2512,7 +2542,7 @@ impl<'s> ShadowWriter<'s> {
     fn copy_if_changed(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.session.is_none() {
             self.ensure_parent_contained("copy to", to)?;
-            let _ = fs::remove_file(to);
+            remove_shadow_entry(to)?;
             return fs::copy(from, to).map(|_| ());
         }
         let bytes = fs::read(from)?;
@@ -2592,7 +2622,7 @@ impl<'s> ShadowWriter<'s> {
                         to.display()
                     )));
                 }
-                fs::remove_file(to)?;
+                remove_shadow_entry(to)?;
                 self.forget_verified_under(to);
                 cell.borrow_mut().written.remove(&rel);
             }
@@ -2795,7 +2825,7 @@ impl<'s> ShadowWriter<'s> {
                     });
                 }
             }
-            match fs::remove_file(&abs) {
+            match remove_shadow_entry(&abs) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 // Any other failure is a hard error: a stale file we
@@ -5058,34 +5088,8 @@ pub fn bundle_with_session(
         let workspace_node_modules = first_party_root.join("node_modules");
         if workspace_node_modules.is_dir() {
             let work_nm = work.join("node_modules");
-            #[cfg(unix)]
-            {
-                let already_correct = fs::read_link(&work_nm)
-                    .map(|t| t == workspace_node_modules)
-                    .unwrap_or(false);
-                if !already_correct {
-                    let _ = fs::remove_file(&work_nm);
-                    let _ = fs::remove_dir_all(&work_nm);
-                    writer.forget_verified_under(&work_nm);
-                    std::os::unix::fs::symlink(&workspace_node_modules, &work_nm).with_context(
-                        || {
-                            format!(
-                                "bundler: failed to symlink workspace node_modules {} → {}",
-                                workspace_node_modules.display(),
-                                work_nm.display()
-                            )
-                        },
-                    )?;
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                fs::create_dir_all(&work_nm).with_context(|| {
-                    format!(
-                        "bundler: failed to create workspace node_modules dir {}",
-                        work_nm.display()
-                    )
-                })?;
+            if ensure_dependency_link(&workspace_node_modules, &work_nm)? {
+                writer.forget_verified_under(&work_nm);
             }
         }
     }
@@ -5114,81 +5118,27 @@ pub fn bundle_with_session(
     //     `<shadow>/node_modules` symlink to the live tree would survive, and the
     //     staging loops' `ensure_dir` would follow it out of the shadow). When the
     //     session later returns to an empty exclude the branch below re-creates it.
-    if let Some(ref nm_dir) = input.node_modules_dir {
-        let shadow_nm = shadow.join("node_modules");
-        if bundle_exclude.is_empty() && !isolated_dependency_view_active {
-            #[cfg(unix)]
+    let shadow_nm = shadow.join("node_modules");
+    writer.ensure_parent_contained("reconcile dependency root", &shadow_nm)?;
+    if let Some(nm_dir) = input
+        .node_modules_dir
+        .as_ref()
+        .filter(|_| bundle_exclude.is_empty() && !isolated_dependency_view_active)
+    {
+        if ensure_dependency_link(nm_dir, &shadow_nm)? {
+            writer.forget_dependency_root(&shadow_nm);
+        }
+    } else {
+        match fs::symlink_metadata(&shadow_nm) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink() || input.node_modules_dir.is_none() =>
             {
-                // Session mode (#993) reuses the persistent shadow across
-                // calls, so the link usually already exists — re-creating it
-                // unconditionally would fail with AlreadyExists. Recreate only
-                // when missing or pointing elsewhere. (Sessionless path: the
-                // tempdir is fresh, read_link fails, behaviour is identical
-                // to the previous unconditional symlink.) The link bypasses
-                // the ShadowWriter bookkeeping entirely — the prune pass can
-                // never see it, and guards against it anyway.
-                let already_correct = fs::read_link(&shadow_nm)
-                    .map(|t| &t == nm_dir)
-                    .unwrap_or(false);
-                if !already_correct {
-                    // Clear whatever occupies the slot: a stale symlink, OR a
-                    // REAL staged `node_modules` dir left by a previous
-                    // exclusions tick of this persistent session (which stages
-                    // deps in place under `<shadow>/node_modules`). remove_file
-                    // clears a symlink; remove_dir_all clears a real dir; the
-                    // other no-ops.
-                    let _ = fs::remove_file(&shadow_nm);
-                    let _ = fs::remove_dir_all(&shadow_nm);
-                    writer.forget_verified_under(&shadow_nm);
-                    std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
-                        format!(
-                            "bundler: failed to symlink node_modules {} → {}",
-                            nm_dir.display(),
-                            shadow_nm.display()
-                        )
-                    })?;
-                }
+                remove_shadow_entry(&shadow_nm)?;
+                writer.forget_dependency_root(&shadow_nm);
             }
-            #[cfg(not(unix))]
-            {
-                // On Windows, attempt a directory junction.
-                fs::create_dir_all(&shadow_nm).with_context(|| {
-                    format!("bundler: failed to create node_modules dir in shadow tree")
-                })?;
-            }
-        } else {
-            // Staged-only dependency view: remove any stale live symlink from a previous
-            // empty-exclude tick of a persistent session. `remove_file` deletes
-            // the symlink itself (not its target); a real staged `node_modules`
-            // dir written by the staging loops below is left untouched because it
-            // is a directory, not a symlink (so this no-ops it). Absence + real
-            // staged copies is the steady state.
-            #[cfg(unix)]
-            {
-                if fs::symlink_metadata(&shadow_nm)
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-                {
-                    let _ = fs::remove_file(&shadow_nm);
-                    writer.forget_verified_under(&shadow_nm);
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                if fs::symlink_metadata(&shadow_nm)
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-                {
-                    // A Windows symlink may be a file-symlink or a
-                    // directory-symlink/junction. Remove the LINK itself without
-                    // recursing into its target: `remove_file` clears a
-                    // file-symlink, `remove_dir` clears a dir-symlink/junction
-                    // (NOT `remove_dir_all`, which could follow the link and
-                    // delete the target tree's contents). The other no-ops.
-                    let _ = fs::remove_file(&shadow_nm);
-                    let _ = fs::remove_dir(&shadow_nm);
-                }
-            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
 
@@ -8649,13 +8599,16 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     // Remove any pre-existing entry at `to` so we never try to symlink
     // over an existing file. Forward-compatible with a future
     // persistent-shadow refactor (out of scope for this epic).
-    let _ = fs::remove_file(to);
+    remove_shadow_entry(to)?;
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(from, to)
     }
     #[cfg(windows)]
     {
+        if from.is_dir() {
+            return zfb_types::directory_link::create(from, to);
+        }
         // File symlinks on Windows require admin OR Developer Mode OR
         // SeCreateSymbolicLinkPrivilege. Fall back to fs::copy when the
         // privilege is missing so the bundler keeps working in
@@ -8998,12 +8951,12 @@ fn link_ordinary_dependency_to_canonical_source(
     project_root: &Path,
     writer: &ShadowWriter<'_>,
 ) -> Result<bool> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (logical_root, source_root, dest, project_root, writer);
         return Ok(false);
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         if !project_path_is_inside_node_modules(logical_root, project_root) {
             return Ok(false);
@@ -16030,7 +15983,7 @@ mod tests {
         assert!(!is_type_declaration_file(Path::new("x/d.ts.js")));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn ordinary_dependency_identity_links_preserve_distinct_physical_versions() {
         let project = tempfile::tempdir().unwrap();
@@ -16072,7 +16025,7 @@ mod tests {
     /// `link-workspace-packages: deep` shape). Returns
     /// `(store package.json dir, ancestor dest, nested logical, nested dest,
     /// writer)` with the ancestor link already established.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn write_nested_workspace_under_linked_ancestor_fixture(
         base: &Path,
         stage: &Path,
@@ -16102,10 +16055,11 @@ mod tests {
         fs::create_dir_all(&store).unwrap();
         fs::write(store.join("package.json"), r#"{"name":"parent-pkg"}"#).unwrap();
         fs::create_dir_all(store.join("node_modules")).unwrap();
-        std::os::unix::fs::symlink(&nested, store.join("node_modules/nested-pkg")).unwrap();
+        zfb_types::directory_link::create(&nested, &store.join("node_modules/nested-pkg")).unwrap();
 
         // The project's own `node_modules` mirrors that same nested shape.
-        std::os::unix::fs::symlink(&store, project.join("node_modules/parent-pkg")).unwrap();
+        zfb_types::directory_link::create(&store, &project.join("node_modules/parent-pkg"))
+            .unwrap();
 
         let writer = ShadowWriter::new(stage.to_path_buf(), None, true, None).unwrap();
 
@@ -16128,7 +16082,7 @@ mod tests {
         (store, ancestor_dest, nested_logical, nested_dest, writer)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn nested_workspace_dependency_under_linked_ancestor_names_both_packages_and_suggests_a_fix() {
         let tmp = tempfile::tempdir().unwrap();
@@ -16186,7 +16140,7 @@ mod tests {
     /// Second half of the acceptance criteria: the error above must be
     /// surfaced without ever touching the linked install — no file written
     /// or deleted under it.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn nested_workspace_dependency_under_linked_ancestor_writes_nothing_to_the_linked_install() {
         let tmp = tempfile::tempdir().unwrap();
@@ -23336,7 +23290,10 @@ mod tests {
         let work_nm = |session: &ShadowSession| session.shadow_root().join("node_modules");
         let link_targets_workspace_node_modules = |session: &ShadowSession| {
             fs::read_link(work_nm(session))
-                .map(|target| target == ws_root.join("node_modules"))
+                .map(|target| {
+                    fs::canonicalize(target).unwrap()
+                        == fs::canonicalize(ws_root.join("node_modules")).unwrap()
+                })
                 .unwrap_or(false)
         };
 
@@ -23444,7 +23401,7 @@ mod tests {
     /// `<work>/node_modules` symlink to a LIVE workspace sibling (case 2) must
     /// be flagged with the bundler's exact arg shape, regardless of
     /// `bundle.exclude` (the stage-escape audit takes no exclusion predicate).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn stage_escape_audit_flags_workspace_package_name_reach_through_work_node_modules() {
         let tmp = tempfile::tempdir().unwrap();
@@ -23462,7 +23419,8 @@ mod tests {
         // the package itself is the pnpm-style symlink to the live sibling
         // (canonical target carries NO further node_modules segment).
         fs::create_dir_all(work.join("node_modules/@acme")).unwrap();
-        std::os::unix::fs::symlink(&live_sibling, work.join("node_modules/@acme/shared")).unwrap();
+        zfb_types::directory_link::create(&live_sibling, &work.join("node_modules/@acme/shared"))
+            .unwrap();
 
         // esbuild (cwd = `shadow`) records the input it resolved through the
         // link, keyed relative to its cwd: `../node_modules/@acme/shared/...`.
@@ -23490,7 +23448,7 @@ mod tests {
     /// third-party dep resolving to `.pnpm` (case 3) — must ALL pass. Even
     /// when a staged file's canonical path escapes the stage, the LOGICAL
     /// spelling still names a location inside `work` (case 1, allowed).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn stage_escape_audit_allows_staged_project_sibling_and_third_party_inputs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -23509,7 +23467,7 @@ mod tests {
         let pnpm_pkg = work.join("node_modules/.pnpm/left-pad@1.0.0/node_modules/left-pad");
         fs::create_dir_all(&pnpm_pkg).unwrap();
         fs::write(pnpm_pkg.join("index.js"), "module.exports = 1;\n").unwrap();
-        std::os::unix::fs::symlink(&pnpm_pkg, work.join("node_modules/left-pad")).unwrap();
+        zfb_types::directory_link::create(&pnpm_pkg, &work.join("node_modules/left-pad")).unwrap();
 
         let metafile = r#"{"inputs": {
             "app.ts": {"imports": []},
@@ -27640,11 +27598,98 @@ mod tests {
         );
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_session_removes_live_links_when_excluded_or_unconfigured() {
+        let project = tempfile::tempdir().unwrap();
+        let install = tempfile::tempdir().unwrap();
+        fs::write(install.path().join("sentinel"), "keep").unwrap();
+        let mut session = ShadowSession::new(project.path()).unwrap();
+        let shadow_nm = session.shadow_root().join("node_modules");
+        let input = || BundlerInput {
+            node_modules_dir: Some(install.path().to_path_buf()),
+            ..make_minimal_input(&project)
+        };
+        for excluded in [true, false] {
+            bundle_with_session(input(), Some(&mut session)).unwrap();
+            assert_eq!(fs::read(shadow_nm.join("sentinel")).unwrap(), b"keep");
+            let changed = if excluded {
+                BundlerInput {
+                    bundle_exclude: vec!["**/*.secret".into()],
+                    ..input()
+                }
+            } else {
+                BundlerInput {
+                    node_modules_dir: None,
+                    ..input()
+                }
+            };
+            bundle_with_session(changed, Some(&mut session)).unwrap();
+            assert!(!fs::symlink_metadata(&shadow_nm).is_ok_and(|m| m.file_type().is_symlink()));
+            assert!(!shadow_nm.join("sentinel").exists());
+            assert_eq!(fs::read(install.path().join("sentinel")).unwrap(), b"keep");
+        }
+        bundle_with_session(input(), Some(&mut session)).unwrap();
+        drop(session);
+        assert_eq!(fs::read(install.path().join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_links_reuse_replace_and_unlink_without_touching_installs() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first install with spaces");
+        let second = temp.path().join("second install");
+        let shadow = temp.path().join("shadow");
+        for path in [&first, &second, &shadow] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(first.join("sentinel"), "first").unwrap();
+        fs::write(second.join("sentinel"), "second").unwrap();
+        let link = shadow.join("node_modules");
+        assert!(ensure_dependency_link(&first, &link).unwrap());
+        assert_eq!(fs::read(link.join("sentinel")).unwrap(), b"first");
+        assert!(!ensure_dependency_link(&first.join("."), &link).unwrap());
+        assert!(ensure_dependency_link(&second, &link).unwrap());
+        assert_eq!(fs::read(link.join("sentinel")).unwrap(), b"second");
+        assert_eq!(fs::read(first.join("sentinel")).unwrap(), b"first");
+        assert!(ensure_dependency_link(&temp.path().join("missing"), &link).is_err());
+        assert_eq!(fs::read(link.join("sentinel")).unwrap(), b"second");
+
+        // A staged-only/exclusions tick removes the link, then owns a real dir.
+        zfb_types::directory_link::remove(&link).unwrap();
+        fs::create_dir(&link).unwrap();
+        fs::write(link.join("staged-only"), "staged").unwrap();
+        assert!(ensure_dependency_link(&first, &link).unwrap());
+        assert!(!link.join("staged-only").exists());
+        wipe_dir_contents(&shadow).unwrap();
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(fs::read(first.join("sentinel")).unwrap(), b"first");
+        assert_eq!(fs::read(second.join("sentinel")).unwrap(), b"second");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn shadow_writer_replaces_directory_link_leaf_without_changing_target() {
+        for session_mode in [false, true] {
+            with_containment_writer(session_mode, |writer, shadow, outside| {
+                let package = outside.join("package");
+                fs::create_dir(&package).unwrap();
+                fs::write(package.join("sentinel"), "keep").unwrap();
+                let leaf = shadow.join("leaf");
+                zfb_types::directory_link::create(&package, &leaf).unwrap();
+                writer.write_if_changed(&leaf, b"new file").unwrap();
+                assert_eq!(fs::read(&leaf).unwrap(), b"new file");
+                assert_eq!(fs::read(package.join("sentinel")).unwrap(), b"keep");
+            });
+        }
+    }
+
     // ── ShadowWriter containment guard (#3185) ───────────────────────────
 
     /// Run `check` against a passthrough or a session writer with a fresh
     /// shadow root and a separate "real install" directory.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn with_containment_writer(session_mode: bool, check: fn(&ShadowWriter<'_>, &Path, &Path)) {
         let outside = tempfile::tempdir().unwrap();
         if session_mode {
@@ -27661,16 +27706,16 @@ mod tests {
     }
 
     /// `<outside>/pkg/b/file` holding `REAL`, linked into the shadow as `a`.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn link_real_install_into_shadow(shadow: &Path, outside: &Path) -> PathBuf {
         let real = outside.join("pkg/b/file");
         fs::create_dir_all(real.parent().unwrap()).unwrap();
         fs::write(&real, "REAL").unwrap();
-        std::os::unix::fs::symlink(outside.join("pkg"), shadow.join("a")).unwrap();
+        zfb_types::directory_link::create(&outside.join("pkg"), &shadow.join("a")).unwrap();
         real
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn assert_refused_through_link(result: std::io::Result<()>, shadow: &Path) {
         let err = result.expect_err("a write through a link out of the shadow must be refused");
         let message = err.to_string();
@@ -27681,19 +27726,19 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor_passthrough() {
         with_containment_writer(false, refuses_writes_through_a_linked_ancestor);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn shadow_writer_containment_refuses_writes_through_a_linked_ancestor_session() {
         with_containment_writer(true, refuses_writes_through_a_linked_ancestor);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn refuses_writes_through_a_linked_ancestor(
         writer: &ShadowWriter<'_>,
         shadow: &Path,
@@ -27781,7 +27826,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&copied).unwrap(), "NEW");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn shadow_writer_ensure_dir_keeps_a_link_created_this_call() {
         let project = tempfile::tempdir().unwrap();
@@ -27792,7 +27837,7 @@ mod tests {
         let dep = root.join("dep");
 
         // A previous call's link is stale and may become a real directory.
-        std::os::unix::fs::symlink(outside.path().join("pkg"), &dep).unwrap();
+        zfb_types::directory_link::create(&outside.path().join("pkg"), &dep).unwrap();
         {
             let writer = ShadowWriter::new(root.clone(), Some(&mut session), false, None).unwrap();
             writer.ensure_dir(&dep).unwrap();
@@ -27812,7 +27857,7 @@ mod tests {
         assert!(fs::symlink_metadata(&dep).unwrap().file_type().is_symlink());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn shadow_session_prune_never_deletes_through_a_linked_ancestor() {
         let project = tempfile::tempdir().unwrap();
@@ -27853,7 +27898,7 @@ mod tests {
     /// first-party-root file under it. The same file is skipped; a different
     /// one (or a missing path) behind that link is an error; nothing is
     /// written either way.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn classifies_hoisted_work_node_modules_destinations(
         writer: &ShadowWriter<'_>,
         work: &Path,
@@ -27862,8 +27907,11 @@ mod tests {
         let installed = workspace.join("node_modules/pkg/dist/file.mjs");
         fs::create_dir_all(installed.parent().unwrap()).unwrap();
         fs::write(&installed, "INSTALLED").unwrap();
-        std::os::unix::fs::symlink(workspace.join("node_modules"), work.join("node_modules"))
-            .unwrap();
+        zfb_types::directory_link::create(
+            &workspace.join("node_modules"),
+            &work.join("node_modules"),
+        )
+        .unwrap();
         let site = workspace.join("apps/site");
         fs::create_dir_all(&site).unwrap();
 
@@ -27908,13 +27956,13 @@ mod tests {
         assert!(!workspace.join("node_modules/pkg/absent").exists());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn exact_target_destination_through_hoisted_work_node_modules_link_passthrough() {
         with_containment_writer(false, classifies_hoisted_work_node_modules_destinations);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn exact_target_destination_through_hoisted_work_node_modules_link_session() {
         with_containment_writer(true, classifies_hoisted_work_node_modules_destinations);
@@ -27925,7 +27973,7 @@ mod tests {
     /// canonical install and must skip the same file instead of writing
     /// through the link. The installed file survives both ticks and the
     /// prune of tick N's copy.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn exact_target_session_copy_then_link_keeps_the_installed_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -27938,7 +27986,8 @@ mod tests {
         fs::write(&installed, "INSTALLED_HOOKS").unwrap();
         let project = base.join("site");
         fs::create_dir_all(project.join("node_modules")).unwrap();
-        std::os::unix::fs::symlink(&store, project.join("node_modules/vendor-lib")).unwrap();
+        zfb_types::directory_link::create(&store, &project.join("node_modules/vendor-lib"))
+            .unwrap();
         let physical = project.join("node_modules/vendor-lib/hooks/dist/hooks.mjs");
 
         let mut session = ShadowSession::new(&project).unwrap();

@@ -178,6 +178,33 @@ fn first_valid_array_target_fails_when_it_is_non_css() {
 }
 
 #[test]
+fn non_css_export_diagnostic_is_relative_under_canonical_and_native_roots() {
+    let tmp = tempfile::Builder::new()
+        .prefix("css export with spaces ")
+        .tempdir()
+        .unwrap();
+    package(
+        tmp.path(),
+        "widget-css",
+        r#"{"exports":{"./styles.css":["./nested/index.js","./style.css"]}}"#,
+        &[
+            ("nested/index.js", "export default 1;"),
+            ("style.css", ".selected {}"),
+        ],
+    );
+    for root in [
+        tmp.path().to_path_buf(),
+        fs::canonicalize(tmp.path()).unwrap(),
+    ] {
+        let error = authored_import_error(&root, "widget-css/styles.css");
+        assert!(
+            error.contains("non-CSS target \"./nested/index.js\""),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn null_and_unlisted_exports_block_physical_files() {
     let tmp = tempfile::tempdir().unwrap();
     package(
