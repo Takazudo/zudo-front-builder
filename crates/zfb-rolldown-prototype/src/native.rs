@@ -40,14 +40,18 @@ impl Plugin for GraphPlugin {
         ctx: SharedLoadPluginContext,
         args: &HookLoadArgs<'_>,
     ) -> Result<Option<HookLoadOutput>> {
+        // ZFB's resource contract permits exactly the terminal ?url suffix.
+        // Keep the resolved ID (including the suffix) in native provenance,
+        // but read the underlying file and derive its output extension from it.
+        let file_id = args.id.strip_suffix("?url").unwrap_or(args.id);
         if !self
             .file_extensions
             .iter()
-            .any(|ext| args.id.ends_with(ext))
+            .any(|ext| file_id.ends_with(ext))
         {
             return Ok(None);
         }
-        let path = Path::new(args.id);
+        let path = Path::new(file_id);
         let reference = ctx
             .emit_file_async(EmittedAsset {
                 name: Some(

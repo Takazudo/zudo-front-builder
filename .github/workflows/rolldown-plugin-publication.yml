@@ -110,6 +110,7 @@ jobs:
             target/plugin-publication-evidence
             target/rolldown-plugin-probe
             target/rolldown-integration-evidence
+            !target/rolldown-integration-evidence/zfb-feature-absent
             target/rolldown-prototype/*.json
             target/rolldown-client-scripts/*/evidence
             target/rolldown-production/*/evidence

@@ -28,6 +28,11 @@ impl Request {
         let mut options = BundlerOptions {
             cwd: Some(cwd.clone()),
             code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
+            // Resource admission separates the source name from its hash at
+            // the final '-'. Base64 hashes can themselves end in '-' or
+            // contain that delimiter; use the pinned alphanumeric alphabet
+            // without changing the existing resource admission contract.
+            hash_characters: Some(rolldown_common::HashCharacters::Base36),
             ..Default::default()
         };
         let mut resolve = rolldown::ResolveOptions::default();

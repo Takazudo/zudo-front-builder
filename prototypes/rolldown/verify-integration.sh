@@ -21,6 +21,8 @@ unset ZFB_ROLLDOWN_PROTOTYPE
 } > target/rolldown-integration-evidence/identity.txt
 run format cargo fmt --all --check
 run feature-absent-build cargo build --locked -p zfb --bin zfb
+cp target/debug/zfb target/rolldown-integration-evidence/zfb-feature-absent
+sha256sum target/rolldown-integration-evidence/zfb-feature-absent > target/rolldown-integration-evidence/default-binary.txt
 run feature-absent-islands cargo test --locked -p zfb-islands --test integration -- --ignored
 run feature-absent-client cargo test --locked -p zfb --test client_bundling_cross_pipeline real_binary_build_and_dev_cover_client_bundling_contract -- --ignored --exact
 cargo tree --locked -p zfb -e normal,build,features > target/rolldown-integration-evidence/default-graph.txt
@@ -37,6 +39,7 @@ run wind-en node docs/scripts/generate-wind-reference.mjs --locale en --check
 run wind-ja node docs/scripts/generate-wind-reference.mjs --locale ja --check
 run wasm-docs node scripts/assert-md-wasm-size-docs.mjs
 run native-build cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype --features zfb/rolldown-prototype,zfb-build/rolldown-prototype,zfb-islands/rolldown-prototype,zfb-rolldown-prototype/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle
+sha256sum target/debug/zfb > target/rolldown-integration-evidence/native-binary.txt
 cargo tree --locked -p zfb --features rolldown-prototype -e normal,build,features > target/rolldown-integration-evidence/native-graph.txt
 for backend in esbuild rolldown; do
   unset ZFB_ROLLDOWN_PROTOTYPE
