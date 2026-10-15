@@ -11,6 +11,10 @@ mod lifecycle;
 mod packages;
 
 #[cfg(feature = "native")]
+#[path = "plugin_prebundle/supervisor.rs"]
+mod supervisor;
+
+#[cfg(feature = "native")]
 fn main() -> anyhow::Result<()> {
     use anyhow::bail;
     use packages::PackageExternals;
@@ -52,24 +56,30 @@ fn main() -> anyhow::Result<()> {
         }),
         ..Default::default()
     };
-    let job = job::Job::spawn(
+    let mut supervisor = supervisor::Supervisor::new(2)?;
+    let mut request = supervisor.submit(
         options,
         vec![PackageExternals::new_shared(PackageExternals)],
+        Some(std::time::Instant::now() + Duration::from_secs(300)),
     )?;
-    let completed = match job.wait(Duration::from_secs(300)) {
-        job::Wait::Joined(completed) => completed,
-        job::Wait::Pending(job) => {
-            job.cancellation().cancel();
-            eprintln!(
-                "plugin probe deadline expired; publication revoked; waiting for native shutdown (not bounded)"
-            );
-            // Cancellation is cooperative, not a way to kill a native thread.
-            // Keep ownership and join instead of detaching work or claiming it
-            // has stopped. The completed object must still refuse publication.
-            job.join()
+    let started = std::time::Instant::now();
+    let completed = loop {
+        if let Some(completed) = request.try_take() {
+            break completed;
         }
+        if started.elapsed() >= Duration::from_secs(300) {
+            request.cancel();
+            eprintln!("plugin probe job {} deadline expired; publication revoked; shutdown {:?}; root drain is not bounded", request.id, supervisor.shutdown()?);
+            supervisor.drain()?;
+            break request
+                .try_take()
+                .expect("drained worker delivered its result");
+        }
+        // This is the synchronous CLI root, never a request executor/drop path.
+        std::thread::sleep(Duration::from_millis(1));
     };
     completed.publish(Path::new(&args[1]))?;
+    supervisor.drain()?;
     eprintln!("zfb-plugin-probe: native rolldown 24bc2d0");
     Ok(())
 }

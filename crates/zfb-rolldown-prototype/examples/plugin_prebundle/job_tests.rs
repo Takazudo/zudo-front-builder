@@ -103,7 +103,9 @@ impl Plugin for Pause {
         } else if self.phase == Phase::RuntimeShutdown {
             let entered = self.entered.clone();
             let release = self.release.clone();
+            let (started, running) = mpsc::sync_channel(1);
             tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
                 entered.send(()).unwrap();
                 release
                     .lock()
@@ -111,15 +113,28 @@ impl Plugin for Pause {
                     .recv_timeout(Duration::from_secs(10))
                     .unwrap();
             });
+            // Runtime shutdown may discard a blocking task that has not started.
+            // Establish active work before allowing close/runtime teardown.
+            running.recv_timeout(Duration::from_secs(10))?;
         }
         Ok(())
     }
 }
 
-fn paused(
-    fixture: &Fixture,
-    phase: Phase,
-) -> (Job, Receiver<()>, SyncSender<()>, Arc<AtomicUsize>) {
+struct Release(SyncSender<()>);
+impl std::ops::Deref for Release {
+    type Target = SyncSender<()>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl Drop for Release {
+    fn drop(&mut self) {
+        let _ = self.0.try_send(());
+    }
+}
+
+fn paused(fixture: &Fixture, phase: Phase) -> (Job, Receiver<()>, Release, Arc<AtomicUsize>) {
     let (entered, ready) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
     let closes = Arc::new(AtomicUsize::new(0));
@@ -133,7 +148,7 @@ fn paused(
         })],
     )
     .unwrap();
-    (job, ready, release, closes)
+    (job, ready, Release(release), closes)
 }
 
 fn pending(job: Job) -> Job {
@@ -168,6 +183,7 @@ fn active_native_load_cancellation_reaches_a_checkpoint_and_never_publishes() {
     let cancel = job.cancellation();
     assert_eq!(cancel.cancel(), CancelOutcome::Cancelled);
     let job = pending(job);
+    let release = release; // Release the gate before this rebound Job on unwind.
     assert!(!fixture.output().exists());
     assert_eq!(
         closes.load(Ordering::SeqCst),
@@ -193,6 +209,7 @@ fn timeout_retains_owner_without_implicitly_cancelling_or_closing() {
     let (job, ready, release, closes) = paused(&fixture, Phase::Load);
     ready.recv_timeout(Duration::from_secs(10)).unwrap();
     let job = pending(job);
+    let release = release; // Release the gate before this rebound Job on unwind.
     assert!(job.cancellation().check().is_ok());
     assert_eq!(closes.load(Ordering::SeqCst), 0);
     assert!(!fixture.output().exists());
@@ -208,6 +225,7 @@ fn cancellation_during_close_preserves_cleanup_and_discards_late_success() {
     ready.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(job.cancellation().cancel(), CancelOutcome::Cancelled);
     let job = pending(job);
+    let release = release; // Release the gate before this rebound Job on unwind.
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     assert!(!fixture.output().exists());
     release.send(()).unwrap();
@@ -229,9 +247,16 @@ fn cancellation_during_close_preserves_cleanup_and_discards_late_success() {
 fn live_runtime_blocking_task_prevents_joined_claim_after_generation_and_close() {
     let fixture = Fixture::new();
     let (job, ready, release, closes) = paused(&fixture, Phase::RuntimeShutdown);
-    ready.recv_timeout(Duration::from_secs(10)).unwrap();
+    if let Err(error) = ready.recv_timeout(Duration::from_secs(10)) {
+        let _ = release.try_send(());
+        panic!(
+            "runtime gate did not start: {error}; worker result: {:?}",
+            job.join().result
+        );
+    }
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     let job = pending(job);
+    let release = release; // Release the gate before this rebound Job on unwind.
     assert_eq!(job.cancellation().cancel(), CancelOutcome::Cancelled);
     assert!(!fixture.output().exists());
     release.send(()).unwrap();
@@ -266,17 +291,20 @@ fn cancellation_after_commit_started_reports_too_late_not_false_success() {
     let (entered, ready) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
     let output = fixture.output();
-    let publisher = thread::spawn(move || {
-        completed.commit_with(|code| {
-            entered.send(()).unwrap();
-            resume.recv_timeout(Duration::from_secs(10)).unwrap();
-            lifecycle::publish_new(&output, code)
-        })
+    thread::scope(|scope| {
+        let publisher = scope.spawn(move || {
+            completed.commit_with(|code| {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(10)).unwrap();
+                lifecycle::publish_new(&output, code)
+            })
+        });
+        let release = Release(release);
+        ready.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(cancel.cancel(), CancelOutcome::TooLate);
+        release.send(()).unwrap();
+        publisher.join().unwrap().unwrap();
     });
-    ready.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!(cancel.cancel(), CancelOutcome::TooLate);
-    release.send(()).unwrap();
-    publisher.join().unwrap().unwrap();
     assert!(fixture.output().exists());
 }
 

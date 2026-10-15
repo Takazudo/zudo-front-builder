@@ -15,8 +15,11 @@ use std::{
         Arc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
+
+#[cfg(test)]
+use std::time::Duration;
 
 const ACTIVE: u8 = 0;
 const CANCELLED: u8 = 1;
@@ -24,7 +27,15 @@ const COMMITTING: u8 = 2;
 const FINISHED: u8 = 3;
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct Cancellation(Arc<AtomicU8>);
+pub(super) struct Cancellation(Arc<Signal>);
+
+#[derive(Debug, Default)]
+struct Signal {
+    state: AtomicU8,
+    deadline: Option<Instant>,
+    #[cfg(test)]
+    forced_expiry: std::sync::atomic::AtomicBool,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum CancelOutcome {
@@ -35,11 +46,46 @@ pub(super) enum CancelOutcome {
 }
 
 impl Cancellation {
+    pub(super) fn with_deadline(deadline: Option<Instant>) -> Self {
+        Self(Arc::new(Signal {
+            state: AtomicU8::new(ACTIVE),
+            deadline,
+            #[cfg(test)]
+            forced_expiry: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+
+    #[cfg(test)]
+    pub(super) fn expire_for_test(&self) {
+        self.0.forced_expiry.store(true, Ordering::Release);
+    }
+
+    pub(super) fn deadline_exceeded(&self) -> bool {
+        #[cfg(test)]
+        if self.0.forced_expiry.load(Ordering::Acquire) {
+            return true;
+        }
+        self.0
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    pub(super) fn expire(&self) {
+        if self.deadline_exceeded() {
+            self.cancel();
+        }
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.0.state.load(Ordering::Acquire) == CANCELLED
+    }
+
     /// Competes atomically with publication. Never acknowledge cancellation
     /// and subsequently publish. Repeated cancellation is idempotent.
     pub(super) fn cancel(&self) -> CancelOutcome {
         match self
             .0
+            .state
             .compare_exchange(ACTIVE, CANCELLED, Ordering::AcqRel, Ordering::Acquire)
         {
             Ok(_) | Err(CANCELLED) => CancelOutcome::Cancelled,
@@ -48,7 +94,8 @@ impl Cancellation {
     }
 
     fn check(&self) -> Result<()> {
-        if self.0.load(Ordering::Acquire) == CANCELLED {
+        self.expire();
+        if self.0.state.load(Ordering::Acquire) == CANCELLED {
             bail!("plugin probe cancelled; publication revoked");
         }
         Ok(())
@@ -103,6 +150,7 @@ pub(super) struct Job {
     cancellation: Cancellation,
 }
 
+#[cfg(test)]
 #[must_use = "Pending still owns live work; it is not a completed cancellation"]
 pub(super) enum Wait {
     Joined(Completed),
@@ -110,11 +158,17 @@ pub(super) enum Wait {
 }
 
 impl Job {
-    pub(super) fn spawn(
+    #[cfg(test)]
+    pub(super) fn spawn(options: BundlerOptions, plugins: Vec<SharedPluginable>) -> Result<Self> {
+        Self::spawn_with(Cancellation::default(), options, plugins)
+    }
+
+    pub(super) fn spawn_with(
+        cancellation: Cancellation,
         options: BundlerOptions,
         mut plugins: Vec<SharedPluginable>,
     ) -> Result<Self> {
-        Self::spawn_worker(move |cancellation| {
+        Self::spawn_worker_with(cancellation, move |cancellation| {
             cancellation.check()?;
             plugins.insert(
                 0,
@@ -132,10 +186,17 @@ impl Job {
         })
     }
 
+    #[cfg(test)]
     fn spawn_worker(
         work: impl FnOnce(Cancellation) -> Result<String> + Send + 'static,
     ) -> Result<Self> {
-        let cancellation = Cancellation::default();
+        Self::spawn_worker_with(Cancellation::default(), work)
+    }
+
+    pub(super) fn spawn_worker_with(
+        cancellation: Cancellation,
+        work: impl FnOnce(Cancellation) -> Result<String> + Send + 'static,
+    ) -> Result<Self> {
         let signal = cancellation.clone();
         let worker = thread::Builder::new()
             .name("zfb-plugin-probe".into())
@@ -147,12 +208,14 @@ impl Job {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn cancellation(&self) -> Cancellation {
         self.cancellation.clone()
     }
 
     /// Returns ownership on timeout. It neither cancels implicitly nor detaches
     /// the thread. Joining a finished handle also collects panic/error results.
+    #[cfg(test)]
     pub(super) fn wait(self, timeout: Duration) -> Wait {
         let start = Instant::now();
         loop {
@@ -214,11 +277,11 @@ impl Completed {
         self.commit_with(|code| lifecycle::publish_new(path, code))
     }
 
-    fn commit_with(self, write: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+    pub(super) fn commit_with(self, write: impl FnOnce(&str) -> Result<()>) -> Result<()> {
         let code = match self.result {
             Ok(code) => code,
             Err(error) => {
-                let _ = self.cancellation.0.compare_exchange(
+                let _ = self.cancellation.0.state.compare_exchange(
                     ACTIVE,
                     FINISHED,
                     Ordering::AcqRel,
@@ -227,9 +290,12 @@ impl Completed {
                 return Err(error);
             }
         };
+        // Deadline eligibility is sampled immediately before the publication CAS.
+        self.cancellation.expire();
         if self
             .cancellation
             .0
+            .state
             .compare_exchange(ACTIVE, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
@@ -238,7 +304,7 @@ impl Completed {
         // Cancellation after this linearization point explicitly returns
         // TooLate. It cannot report success while the synchronous write runs.
         let result = write(&code);
-        self.cancellation.0.store(FINISHED, Ordering::Release);
+        self.cancellation.0.state.store(FINISHED, Ordering::Release);
         result
     }
 }
