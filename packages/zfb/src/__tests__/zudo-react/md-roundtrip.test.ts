@@ -17,6 +17,7 @@ describe("md-wasm compiler output rendered by zudo-react", () => {
   it("loads every checked-in roundtrip case", () => {
     expect(cases.map(({ name }) => name)).toEqual([
       "aligned-table",
+      "explicit-table-compact",
       "explicit-table-sections",
       "footnote",
       "link-image-heading",
@@ -65,6 +66,26 @@ describe("md-wasm compiler output rendered by zudo-react", () => {
       ]);
       expect(cells[3]?.hasAttribute("style")).toBe(false);
       expect(cells[7]?.hasAttribute("style")).toBe(false);
+    }
+
+    if (name === "explicit-table-compact") {
+      // Check raw server output as well as the parsed DOM: HTML parsers
+      // repair p > table by moving the table and inserting empty paragraphs.
+      expect(html).not.toMatch(/<p[^>]*>\s*<table/);
+      expect(Array.from(container.children).map((child) => child.tagName)).toEqual([
+        "TABLE",
+        "P",
+        "TABLE",
+        "P",
+      ]);
+      expect(container.querySelector("table > thead > tr > th")?.textContent).toBe("A");
+      expect(container.querySelector("table > tbody > tr > td")?.textContent).toBe("B");
+      expect(container.querySelector("table.compact td")?.textContent).toBe("C");
+      expect(Array.from(container.querySelectorAll("p")).map((p) => p.textContent?.trim())).toEqual(
+        ["Before bold inline.", "After."],
+      );
+      expect(container.querySelector("p > strong")?.textContent).toBe("bold");
+      expect(container.querySelector("p > span")?.textContent).toBe("inline");
     }
 
     if (name === "explicit-table-sections") {

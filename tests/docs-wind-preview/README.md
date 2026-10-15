@@ -19,7 +19,9 @@ pnpm exec playwright test --config tests/docs-wind-preview/playwright.config.mjs
 ```
 
 For a genuine subpath build, use the checked-in helper to temporarily set the
-literal `base` config, build, and restore the config. Pass that same prefix as
+literal `base` config and select `copyPublicWithBase: false`, build, and restore the config.
+The flat public layout matches the test server's whole-tree mount at the prefix;
+leaving the default on nests public files twice and makes favicon requests fail. Pass that same prefix as
 `WIND_DOCS_BASE` only to the browser runner/server, which mounts the untouched
 `dist/` under that path:
 

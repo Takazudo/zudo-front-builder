@@ -28,12 +28,15 @@
 // fingerprint and inventory on the real lock (repinFingerprintHelper below; the
 // Darwin script reuses it). A helper edit that moves the fingerprint is refused.
 // `--reason cargo-producer-lock` (#4214, schemaVersion 3) records one reviewed
-// additive Cargo.lock move from a fresh artifact: it binds the old and new lock
+// Cargo.lock move from a fresh artifact, additive by default: it binds the old and new lock
 // hashes and an explicit `name@version` allowlist, proves every old
 // `[[package]]` record survives byte-identical and that the additions are
 // exactly the allowlist (proveCargoProducerLock below; the Darwin script reuses
 // it), and moves only the Cargo hash and its evidence. `release-bump` and
 // `runtime-identity` refuse any Cargo.lock movement and name this reason.
+// Optional --reviewed-cargo-transition recognizes only the separately reviewed
+// #318 non-additive lock pair and its complete record inventory. It does not
+// bypass artifact, platform, identity or unchanged-total validation.
 
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -102,6 +105,10 @@ export const REASONS = Object.freeze({
 
 export const FINGERPRINT_HELPER_REASON = "fingerprint-helper";
 export const CARGO_PRODUCER_LOCK_REASON = "cargo-producer-lock";
+// Digest of the checked-in, separately approved decision, including its graph
+// identities and rationale. A caller-supplied JSON is evidence, not authority.
+const REVIEWED_CARGO_TRANSITION_SHA256 =
+  "e4b89f02bea8ed6eace98023c08561ff9de2289a65d7fd5b14e0e3d6c1d008ed";
 
 // Contract schema versions a reason may rewrite; `requires` is the oldest.
 export function acceptedSchemas(reason) {
@@ -366,6 +373,7 @@ export const CARGO_ARGS = Object.freeze([
   "expected-new-cargo-sha",
   "old-cargo-lock",
   "added-packages",
+  "reviewed-cargo-transition",
 ]);
 // The only keys a cargo-producer-lock transition may write; baselineEvidence is
 // replaced as a whole.
@@ -398,7 +406,8 @@ export function parseAddedPackages(text) {
 }
 
 // `values` are the parsed `--key value` pairs; the Cargo arguments belong to
-// cargo-producer-lock alone, which requires all four.
+// cargo-producer-lock alone, which requires the original four. The reviewed
+// transition file is optional and cannot authorize any other lock pair.
 export function checkCargoProducerLockArgs(values) {
   if (values.reason !== CARGO_PRODUCER_LOCK_REASON) {
     const stray = CARGO_ARGS.filter((key) => Object.hasOwn(values, key));
@@ -407,7 +416,7 @@ export function checkCargoProducerLockArgs(values) {
     }
     return;
   }
-  for (const key of CARGO_ARGS) {
+  for (const key of CARGO_ARGS.filter((key) => key !== "reviewed-cargo-transition")) {
     if (!values[key]) throw new Error("required --" + key);
   }
   for (const key of ["expected-old-cargo-sha", "expected-new-cargo-sha"]) {
@@ -492,7 +501,155 @@ export function diffCargoLocks(oldText, newText) {
   return { problems, added, changed, removed, duplicates: [...new Set(duplicates)] };
 }
 
-// Proves one reviewed additive Cargo.lock transition and returns the
+// Optional, separately reviewed non-additive decision. This is an exact byte
+// transition, never a wildcard exception for changed records. The normal proof
+// remains additive-only, and neither proof admits measurements on its own.
+export function proveReviewedCargoTransition(reviewText, oldText, newText) {
+  let review;
+  try {
+    review = JSON.parse(reviewText);
+  } catch {
+    throw cargoError("invalid reviewed Cargo transition JSON");
+  }
+  const keys = (value, expected) =>
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    isDeepStrictEqual(Object.keys(value).sort(), [...expected].sort());
+  if (
+    !keys(review, ["schemaVersion", "id", "oldSha", "newSha", "delta", "review"]) ||
+    review.schemaVersion !== 1 ||
+    review.id !== "rolldown-native-318" ||
+    review.oldSha !== "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e" ||
+    review.newSha !== "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37"
+  ) {
+    throw cargoError("unsupported reviewed Cargo transition schema or identity");
+  }
+  if (review.oldSha !== sha256(oldText) || review.newSha !== sha256(newText)) {
+    throw cargoError("reviewed Cargo transition old/new hashes do not match the exact lock bytes");
+  }
+  const before = parseCargoLock(oldText, "old Cargo.lock");
+  const after = parseCargoLock(newText, "new Cargo.lock");
+  const beforeMap = new Map(before.packages.map((record) => [record.id, record.body]));
+  const afterMap = new Map(after.packages.map((record) => [record.id, record.body]));
+  if (
+    beforeMap.size !== before.packages.length ||
+    afterMap.size !== after.packages.length ||
+    before.header !== after.header ||
+    !isDeepStrictEqual(before.other, after.other)
+  ) {
+    throw cargoError(
+      "reviewed Cargo transition has duplicate identities or changed header/sections",
+    );
+  }
+  const delta = { added: [], changed: [], removed: [] };
+  for (const id of [...new Set([...beforeMap.keys(), ...afterMap.keys()])].sort()) {
+    const old = beforeMap.get(id);
+    const next = afterMap.get(id);
+    if (old === next) continue;
+    const row = {
+      id,
+      beforeSha256: old ? sha256(old) : null,
+      afterSha256: next ? sha256(next) : null,
+    };
+    delta[!old ? "added" : !next ? "removed" : "changed"].push(row);
+  }
+  if (!isDeepStrictEqual(review.delta, delta)) {
+    throw cargoError(
+      "reviewed Cargo transition inventory differs from the exact added/changed/removed records",
+    );
+  }
+  const detail = review.review;
+  if (
+    !keys(detail, [
+      "sourceSha",
+      "decision",
+      "sharedReplacements",
+      "windowsEdges",
+      "featureGraphs",
+      "nativeMeasurement",
+    ]) ||
+    !/^[0-9a-f]{40}$/.test(detail.sourceSha) ||
+    typeof detail.decision !== "string" ||
+    !detail.decision ||
+    detail.nativeMeasurement !== "required-separately-for-each-platform"
+  ) {
+    throw cargoError("reviewed Cargo transition is missing its review or native measurement gate");
+  }
+  for (const [name, count, rowKeys] of [
+    ["sharedReplacements", 14, ["name", "from", "to", "minimum", "reason"]],
+    ["windowsEdges", 9, ["id", "from", "to", "reason"]],
+  ]) {
+    const rows = detail[name];
+    if (
+      !Array.isArray(rows) ||
+      rows.length !== count ||
+      rows.some(
+        (row) =>
+          !keys(row, rowKeys) || rowKeys.some((key) => typeof row[key] !== "string" || !row[key]),
+      ) ||
+      new Set(rows.map((row) => row.name ?? row.id)).size !== count
+    ) {
+      throw cargoError("reviewed Cargo transition needs the complete " + name + " review");
+    }
+  }
+  for (const replacement of detail.sharedReplacements) {
+    if (
+      !delta.removed.some((row) => row.id === replacement.name + "@" + replacement.from) ||
+      !delta.added.some((row) => row.id === replacement.name + "@" + replacement.to)
+    ) {
+      throw cargoError("reviewed shared replacement is not in the lock delta: " + replacement.name);
+    }
+  }
+  for (const edge of detail.windowsEdges) {
+    if (
+      !delta.changed.some((row) => row.id === edge.id) ||
+      !edge.from.startsWith("windows-sys ") ||
+      !edge.to.startsWith("windows-sys ") ||
+      !beforeMap.get(edge.id)?.includes(' "' + edge.from + '",') ||
+      !afterMap.get(edge.id)?.includes(' "' + edge.to + '",')
+    ) {
+      throw cargoError("reviewed Windows edge is not in the lock delta: " + edge.id);
+    }
+  }
+  const graphs = detail.featureGraphs;
+  const graphCommands = {
+    default: "cargo tree --locked -p zfb -e normal,build,features",
+    native: "cargo tree --locked -p zfb --features rolldown-prototype -e normal,build,features",
+    "no-v8": "cargo tree --locked -p zfb --no-default-features -e normal,build,features",
+  };
+  if (
+    !Array.isArray(graphs) ||
+    !isDeepStrictEqual(graphs.map((graph) => graph.mode).sort(), ["default", "native", "no-v8"]) ||
+    graphs.some(
+      (graph) =>
+        !keys(graph, ["mode", "command", "sourceSha", "platform", "sha256"]) ||
+        graph.sourceSha !== detail.sourceSha ||
+        graph.platform !== "linux-x64" ||
+        graph.command !== graphCommands[graph.mode] ||
+        !/^[0-9a-f]{64}$/.test(graph.sha256),
+    )
+  ) {
+    throw cargoError(
+      "reviewed Cargo transition needs all three identified producer feature graphs",
+    );
+  }
+  if (sha256(reviewText) !== REVIEWED_CARGO_TRANSITION_SHA256) {
+    throw cargoError(
+      "reviewed Cargo transition manifest digest differs from the approved decision",
+    );
+  }
+  return {
+    id: review.id,
+    manifestSha256: sha256(reviewText),
+    sourceSha: detail.sourceSha,
+    added: delta.added.map((row) => row.id),
+    changed: delta.changed.map((row) => row.id),
+    removed: delta.removed.map((row) => row.id),
+  };
+}
+
+// Proves an additive or explicitly reviewed exact Cargo.lock transition and returns the
 // `cargoTransition` evidence, or throws naming every failed check. `contractSha`
 // is the pinned hash, `artifactSha` the measured run's, `newText` the checkout's
 // Cargo.lock and `oldText` the operator-supplied old lock.
@@ -505,6 +662,7 @@ export function proveCargoProducerLock({
   newText,
   added,
   oldLockSource,
+  reviewedTransitionText,
 }) {
   const problems = [];
   if (expectedOldSha === expectedNewSha) {
@@ -529,6 +687,14 @@ export function proveCargoProducerLock({
     );
   }
   if (problems.length > 0) throw cargoError(problems.join("; "));
+  if (reviewedTransitionText !== undefined) {
+    const proof = proveReviewedCargoTransition(reviewedTransitionText, oldText, newText);
+    if (!isDeepStrictEqual([...added].sort(), proof.added)) {
+      throw cargoError("--added-packages differs from the reviewed new identities");
+    }
+    const { id, manifestSha256, sourceSha, ...delta } = proof;
+    return { oldSha, newSha, ...delta, oldLockSource, review: { id, manifestSha256, sourceSha } };
+  }
   const diff = diffCargoLocks(oldText, newText);
   const allowlist = [...added].sort();
   const found = [...diff.added].sort();
@@ -690,6 +856,27 @@ function metricText() {
 }
 
 export function cargoTransitionMarkdown(transition) {
+  if (transition.review) {
+    return (
+      "`Cargo.lock` moved from `" +
+      transition.oldSha +
+      "` to `" +
+      transition.newSha +
+      "` under reviewed non-additive transition `" +
+      transition.review.id +
+      "` (manifest SHA-256 `" +
+      transition.review.manifestSha256 +
+      "`): " +
+      transition.added.length +
+      " new identities, " +
+      transition.changed.length +
+      " changed records and " +
+      transition.removed.length +
+      " removed identities, proved against `" +
+      transition.oldLockSource +
+      "`."
+    );
+  }
   return (
     "`Cargo.lock` moved from `" +
     transition.oldSha +
@@ -707,6 +894,26 @@ export function cargoTransitionMarkdown(transition) {
 }
 
 export function cargoTransitionText(transition) {
+  if (transition.review) {
+    return (
+      "Cargo.lock " +
+      transition.oldSha +
+      " to " +
+      transition.newSha +
+      " under reviewed non-additive transition " +
+      transition.review.id +
+      " (manifest SHA-256 " +
+      transition.review.manifestSha256 +
+      "): " +
+      transition.added.length +
+      " new identities, " +
+      transition.changed.length +
+      " changed records and " +
+      transition.removed.length +
+      " removed identities, proved against " +
+      transition.oldLockSource
+    );
+  }
   return (
     "Cargo.lock " +
     transition.oldSha +
@@ -933,7 +1140,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       evidence.runId +
       " at " +
       sourceText(evidence.sourceSha, evidence.headSha) +
-      " after a reviewed additive Cargo.lock transition (" +
+      " after a reviewed " +
+      (cargoTransition.review ? "non-additive" : "additive") +
+      " Cargo.lock transition (" +
       cargoTransitionText(cargoTransition) +
       "). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. " +
       gzipSummary +
@@ -1002,7 +1211,9 @@ export function rebaselineContract(contract, totals, evidence, reason) {
               gzipSummary +
               "."
             : reason === CARGO_PRODUCER_LOCK_REASON
-              ? "Reviewed additive Cargo.lock transition at unchanged v" +
+              ? "Reviewed " +
+                (cargoTransition.review ? "non-additive" : "additive") +
+                " Cargo.lock transition at unchanged v" +
                 previousVersion +
                 " (" +
                 cargoTransitionText(cargoTransition) +
@@ -1181,7 +1392,9 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       closing;
   } else if (reason === CARGO_PRODUCER_LOCK_REASON) {
     body =
-      "The Linux contract recorded a reviewed additive `Cargo.lock` transition at v" +
+      "The Linux contract recorded a reviewed " +
+      (contract.baselineEvidence.cargoTransition.review ? "non-additive" : "additive") +
+      " `Cargo.lock` transition at v" +
       version +
       " from " +
       run +
@@ -1591,6 +1804,11 @@ export function readCargoLockEvidence(args, root) {
     oldText: readFileSync(args["old-cargo-lock"], "utf8"),
     newText: readFileSync(join(root, "Cargo.lock"), "utf8"),
     oldLockSource: args["old-cargo-lock"],
+    ...(args["reviewed-cargo-transition"]
+      ? {
+          reviewedTransitionText: readFileSync(args["reviewed-cargo-transition"], "utf8"),
+        }
+      : {}),
   };
 }
 

@@ -1,0 +1,55 @@
+#318 bounded production/adjacent transition evidence, 2026-10-10
+Final exact repository SHA and terminal CI are in PR4120; final pin24bc2d0.
+Initial current/parent passes preceded stronger graph assertions; corrected parent matrix includes them.
+
+zfb-production-build.log
+    Finished `dev` profile [unoptimized] target(s) in 56.17s
+heavy-guard: verdict=PASS exit=0 secs=56 min_mem_mb=15408 reason=-
+
+zfb-current-pin-matrix.log
+esbuild: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+rolldown: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+production esbuild: real full + runtime rebundle, V8 scratch + adapter, SSG filtering, MDX/CSS/alias/CJS, Wasm, original mapping, graph/provenance, negatives PASS; copied-glue SSR contract unsupported (separate reproduction); evidence=/workspace/zudo-front-builder/target/rolldown-production/esbuild/evidence
+production rolldown: real full + runtime rebundle, V8 scratch + adapter, SSG filtering, MDX/CSS/alias/CJS, Wasm, original mapping, graph/provenance, negatives PASS; copied-glue SSR contract unsupported (separate reproduction); evidence=/workspace/zudo-front-builder/target/rolldown-production/rolldown/evidence
+Equivalent production inputs: response semantics, Wasm manifest, and explicit unsupported SSR copied-resource result agree across backends.
+heavy-guard: verdict=PASS exit=0 secs=15 min_mem_mb=16965 reason=-
+
+zfb-adjacent-build.log
+    Finished `dev` profile [unoptimized] target(s) in 34.80s
+heavy-guard: verdict=PASS exit=0 secs=35 min_mem_mb=15394 reason=-
+
+zfb-adjacent-matrix.log
+esbuild: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+rolldown: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+production esbuild: real full + runtime rebundle, V8 scratch + adapter, SSG filtering, MDX/CSS/alias/CJS, Wasm, original mapping, graph/provenance, negatives PASS; copied-glue SSR contract unsupported (separate reproduction); evidence=/workspace/zudo-front-builder/target/rolldown-production/esbuild/evidence
+production rolldown: real full + runtime rebundle, V8 scratch + adapter, SSG filtering, MDX/CSS/alias/CJS, Wasm, original mapping, graph/provenance, negatives PASS; copied-glue SSR contract unsupported (separate reproduction); evidence=/workspace/zudo-front-builder/target/rolldown-production/rolldown/evidence
+Equivalent production inputs: response semantics, Wasm manifest, and explicit unsupported SSR copied-resource result agree across backends.
+heavy-guard: verdict=PASS exit=0 secs=14 min_mem_mb=16687 reason=-
+
+zfb-adjacent-fixed-build.log
+    Finished `dev` profile [unoptimized] target(s) in 11.37s
+heavy-guard: verdict=PASS exit=0 secs=11 min_mem_mb=15321 reason=-
+
+zfb-adjacent-fixed-matrix.log
+esbuild: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+rolldown: real Chromium hydration + split import + module worker + Wasm + glue after production rename PASS
+production esbuild: real full + runtime rebundle, V8 scratch + adapter, SSG filtering, MDX/CSS/alias/CJS, Wasm, original mapping, graph/provenance, negatives PASS; copied-glue SSR contract unsupported (separate reproduction); evidence=/workspace/zudo-front-builder/target/rolldown-production/esbuild/evidence
+production rolldown: real full + runtime rebundle, V8 scratch + adapter, SSG filtering, MDX/CSS/alias/CJS, Wasm, original mapping, graph/provenance, negatives PASS; copied-glue SSR contract unsupported (separate reproduction); evidence=/workspace/zudo-front-builder/target/rolldown-production/rolldown/evidence
+Equivalent production inputs: response semantics, Wasm manifest, and explicit unsupported SSR copied-resource result agree across backends.
+heavy-guard: verdict=PASS exit=0 secs=14 min_mem_mb=16508 reason=-
+
+zfb-current-fixed-build.log
+    Finished `dev` profile [unoptimized] target(s) in 11.88s
+heavy-guard: verdict=PASS exit=0 secs=12 min_mem_mb=15294 reason=-
+
+zfb-production-final-clippy.log
+    Finished `dev` profile [unoptimized] target(s) in 4.35s
+
+zfb-production-wind-preview.log
+Wind previews regenerated: 173 samples (including diagnostic fixtures)
+Wind previews fresh: 173 samples (including diagnostic fixtures)
+
+Earlier copied-glue URL minimum reproduction (both failed before adapter):
+esbuild: No matching export in "components/runtime-glue.zfb-resource.mjs" for import "default"
+Rolldown: [MISSING_EXPORT] "default" is not exported by "components/runtime-glue.zfb-resource.mjs".
+The final harness reproduces these as expected limitation legs; ordinary SSR glue module42 is separate.

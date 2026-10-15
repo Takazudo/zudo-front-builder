@@ -181,11 +181,18 @@ function localizedNote(value, locale, field) {
 // The noyalib 0.0.53 and 0.0.55 pins (#4159, #4173) move only Cargo.toml/Cargo.lock.
 // The CSS addon (#4149) adds only disjoint Cargo.lock entries; reviewed Wind
 // sources, resolved dependency graph, support pin and utility catalog are unchanged.
-// The shared host extraction (#4238) changes zfb-render and adds zfb-js-host in
-// Cargo.lock. All 155 lock records reachable from zudo-wind and the other 99
-// fingerprint files are unchanged; support pin and compatibility claims remain.
+// #4120 post-sync: unchanged Wind sources/catalog; shared-lock dependency changes
+// verified by 117 library tests and 173 regenerated previews (no CSS byte changes).
+// Exact source/CI/artifact provenance: prototypes/rolldown/POST-SYNC.md.
+// #4120 plugin probe: only the prototype root lock edge to the existing pinned
+// resolver changes this closure. Wind sources/catalog and locked subgraph stay
+// unchanged; replay evidence: prototypes/rolldown/PLUGIN-ALIAS-VERIFICATION.md.
+// #4242 reconciliation: the 99 non-lock fingerprint inputs and all 164 lock
+// records reachable from zudo-wind (including dev/optional/platform edges) are
+// unchanged versus accepted main b8a2a9d0. The shared-host extraction only moves
+// other workspace lock records; see prototypes/direct-v8/evidence/reconcile-main-2026-10-15/.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "5b41b6e0d0b6dbb43f75599705df5cd8d05fec950b9520ebe4fb032b29b55001";
+  "bbfe6f81ab92f52c9e90e169ea1dd82cd3046b71a41b0588d55e3d30242dc4a2";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
