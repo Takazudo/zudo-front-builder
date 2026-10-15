@@ -20,10 +20,10 @@ use thiserror::Error;
 
 use crate::tsx_frontmatter::{self, TsxFrontmatter, TsxFrontmatterError};
 
-/// Result of the YAML-only [`parse`] helper. Internal — the public
-/// surface is [`UnifiedFrontmatter`].
+/// Markdown-only frontmatter and body, returned by [`extract_markdown`].
+/// Unlike [`UnifiedFrontmatter`], the body and its offset are always present.
 #[derive(Debug, Clone)]
-pub(crate) struct Parsed {
+pub struct MarkdownFrontmatter {
     /// Parsed frontmatter as JSON. `Null` if there is no frontmatter or
     /// it is empty. We deserialize directly into JSON so the public
     /// surface speaks one value type.
@@ -94,7 +94,7 @@ pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, Frontmat
 
     match ext {
         "md" | "mdx" => {
-            let parsed = parse(source)?;
+            let parsed = extract_markdown(source)?;
             Ok(UnifiedFrontmatter {
                 value: parsed.frontmatter,
                 body: Some(parsed.body),
@@ -194,8 +194,10 @@ pub fn strip_yaml_frontmatter(input: &str) -> &str {
     input
 }
 
-/// YAML-only frontmatter parser. Internal helper — external code
-/// should call [`extract`] instead.
+/// Extract YAML frontmatter from a source already known to be Markdown/MDX.
+/// This is the same parser used by [`extract`], without filename dispatch or
+/// TSX-only result fields. Callers that accept arbitrary extensions should use
+/// [`extract`] instead; this function does not validate a filename.
 ///
 /// Recognised forms:
 /// - `---\n<yaml>\n---\n<body>`
@@ -205,7 +207,7 @@ pub fn strip_yaml_frontmatter(input: &str) -> &str {
 /// the entire input is treated as body and `frontmatter` is set to
 /// `Null`. The YAML is deserialized straight into `serde_json::Value`
 /// so the resulting struct is already in the public dialect.
-pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
+pub fn extract_markdown(input: &str) -> Result<MarkdownFrontmatter, FrontmatterError> {
     // Strip a leading UTF-8 BOM (U+FEFF, encoded as `\xEF\xBB\xBF`) if
     // present. Editors on Windows still occasionally write a BOM into
     // .md files, and without this strip the `---\n` prefix check
@@ -228,7 +230,7 @@ pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
     } else if let Some(rest) = stripped.strip_prefix("---\r\n") {
         rest
     } else {
-        return Ok(Parsed {
+        return Ok(MarkdownFrontmatter {
             frontmatter: JsonValue::Null,
             body: stripped.to_string(),
             body_offset: bom_len,
@@ -256,7 +258,7 @@ pub(crate) fn parse(input: &str) -> Result<Parsed, FrontmatterError> {
 
     let body = stripped[body_offset_in_stripped..].to_string();
 
-    Ok(Parsed {
+    Ok(MarkdownFrontmatter {
         frontmatter,
         body,
         body_offset: body_offset_in_stripped + bom_len,
@@ -327,7 +329,7 @@ mod tests {
     #[test]
     fn parse_standard_frontmatter_with_body() {
         let input = "---\ntitle: Hello\ndraft: false\n---\n# Body\n\nSome text.\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
         assert_eq!(
             parsed.frontmatter["title"].as_str(),
             Some("Hello"),
@@ -341,7 +343,7 @@ mod tests {
     #[test]
     fn parse_no_frontmatter() {
         let input = "# Just markdown\n\nNo frontmatter here.\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
         assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, input);
         assert_eq!(parsed.body_offset, 0);
@@ -350,7 +352,7 @@ mod tests {
     #[test]
     fn parse_empty_frontmatter() {
         let input = "---\n---\nbody starts here\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
         assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, "body starts here\n");
         assert_eq!(&input[parsed.body_offset..], parsed.body);
@@ -362,7 +364,7 @@ mod tests {
         // .md files. Without the strip the `---\n` prefix check
         // would miss and classify the entire file as body.
         let input = "\u{FEFF}---\ntitle: BOM\n---\nbody\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
         assert_eq!(parsed.frontmatter["title"].as_str(), Some("BOM"));
         assert_eq!(parsed.body, "body\n");
         // body_offset is documented as a byte offset into the ORIGINAL input
@@ -373,7 +375,7 @@ mod tests {
     #[test]
     fn parse_bom_with_no_frontmatter_opener() {
         let input = "\u{FEFF}plain body without frontmatter\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
         assert!(parsed.frontmatter.is_null());
         assert_eq!(parsed.body, "plain body without frontmatter\n");
         // body_offset must skip the BOM so &input[body_offset..] == body.
@@ -383,7 +385,7 @@ mod tests {
     #[test]
     fn parse_crlf_line_endings() {
         let input = "---\r\ntitle: CRLF\r\ncount: 3\r\n---\r\nbody line\r\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
         assert_eq!(parsed.frontmatter["title"].as_str(), Some("CRLF"));
         assert_eq!(parsed.frontmatter["count"].as_i64(), Some(3));
         assert_eq!(parsed.body, "body line\r\n");
@@ -394,7 +396,7 @@ mod tests {
     fn parse_malformed_yaml_returns_error() {
         // Unbalanced bracket -> serde_yaml will reject.
         let input = "---\ntitle: [unterminated\n---\nbody\n";
-        let err = parse(input).expect_err("should fail");
+        let err = extract_markdown(input).expect_err("should fail");
         assert!(
             matches!(err, FrontmatterError::Yaml(_)),
             "expected Yaml error, got {err:?}",
@@ -404,7 +406,7 @@ mod tests {
     #[test]
     fn parse_unterminated_frontmatter_returns_error() {
         let input = "---\ntitle: Forever\nbody but no closing\n";
-        let err = parse(input).expect_err("should fail");
+        let err = extract_markdown(input).expect_err("should fail");
         assert!(matches!(err, FrontmatterError::Unterminated));
     }
 
@@ -414,7 +416,7 @@ mod tests {
             tags:\n  - rust\n  - markdown\n  - frontmatter\n\
             author:\n  name: Alice\n  handle: alice42\n\
             ---\n# Title\n";
-        let parsed = parse(input).expect("parse ok");
+        let parsed = extract_markdown(input).expect("parse ok");
 
         let tags = parsed.frontmatter["tags"]
             .as_array()

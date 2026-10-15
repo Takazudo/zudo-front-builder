@@ -33,7 +33,7 @@
 //!   is escaped once for the JS string literal, then injected raw at
 //!   runtime — visually faithful, no double-escape.
 //! - Frontmatter: NOT handled here. The caller is expected to strip
-//!   YAML/TOML frontmatter via `crate::frontmatter::parse` first.
+//!   YAML/TOML frontmatter via `crate::frontmatter::extract_markdown` first.
 //!
 //! ## Error path
 //!
@@ -258,6 +258,11 @@ fn mdx_to_jsx_module_inner(
     if parse_options.constructs.gfm_autolink_literal {
         crate::plugins::unwrap_nested_links(&mut root);
     }
+    // Splice away the paragraphs markdown-rs wraps around text-bearing lines
+    // inside an explicit `<table>` (zfb#4232) — `table > p` is rejected by the
+    // renderer. Runs before `collect_headings` so its document-order walk
+    // sees the final tree; rationale in `plugins::table_paragraph`.
+    crate::plugins::unwrap_table_paragraphs(&mut root);
 
     // When a pipeline is supplied, run the mdast visitors and detour
     // through hast (#121). Otherwise stay on the original mdast→JSX

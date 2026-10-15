@@ -24,6 +24,7 @@ import {
 import {
   measuredIdentity,
   measuredTotals,
+  proveCargoProducerLock,
   rebaselineContract,
 } from "../rebaseline-island-size-linux.mjs";
 import { asSchemaV2 } from "./fixtures/island-size-checkout.mjs";
@@ -484,12 +485,15 @@ function makeState(
   platform = baseContract.platform,
   base = baseContract,
   packageVersion = base.toolchain.packageVersion,
+  historicalCargoSha = null,
 ) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
   tempRoots.push(root);
   const sourceSha = "1".repeat(40);
   const normalized = normalizedSchema(base.schemaVersion);
   const localInputs = currentLocalInputs(base, packageVersion);
+  // Synthetic historical identity only; never a live measurement or re-pin.
+  if (historicalCargoSha !== null) localInputs.cargoLockSha256 = historicalCargoSha;
   const packageInputs = makePackageInputs(root, packageVersion);
   const workspace = buildMode(
     root,
@@ -543,6 +547,46 @@ function validate(state) {
     expectedSourceSha: state.sourceSha,
     localInputs: state.localInputs,
     platform: state.platform,
+  });
+}
+
+function assertHistoricalContractAndReviewedCargoGate(contract) {
+  const historical = makeState(
+    contract.platform,
+    contract,
+    contract.toolchain.packageVersion,
+    contract.toolchain.cargoLockSha256,
+  );
+  expect(validate(historical)).toEqual({ errors: [], passed: true });
+  const current = makeState(contract.platform, contract);
+  if (current.localInputs.cargoLockSha256 === contract.toolchain.cargoLockSha256) {
+    expect(validate(current)).toEqual({ errors: [], passed: true });
+    return;
+  }
+  const directory = join(sizeDir, "cargo-transitions");
+  const reviewedTransitionText = readFileSync(join(directory, "rolldown-native-318.json"), "utf8");
+  const review = JSON.parse(reviewedTransitionText);
+  const proof = proveCargoProducerLock({
+    contractSha: contract.toolchain.cargoLockSha256,
+    artifactSha: current.localInputs.cargoLockSha256,
+    expectedOldSha: review.oldSha,
+    expectedNewSha: review.newSha,
+    oldText: readFileSync(join(directory, "rolldown-native-318.old.lock"), "utf8"),
+    newText: readFileSync(join(repoRoot, "Cargo.lock"), "utf8"),
+    added: review.delta.added.map((row) => row.id),
+    oldLockSource: "rolldown-native-318.old.lock",
+    reviewedTransitionText,
+  });
+  expect(proof.review.id).toBe("rolldown-native-318");
+  // Policy authorization does NOT admit the new producer. Fresh platform-native
+  // bytes and the existing rebaseline gates must move the live contract first.
+  expect(validate(current)).toEqual({
+    passed: false,
+    errors: [
+      "local Cargo.lock: SHA-256 differs from the reviewed contract",
+      "workspace provenance: Cargo lockfile differs from the contract",
+      "packed provenance: Cargo lockfile differs from the contract",
+    ],
   });
 }
 
@@ -671,26 +715,26 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.5.0");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.5.2");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("dcf1e9235882e365a63cee9d551c58c9f0c19107");
+    expect(darwinContract.baselineSourceSha).toBe("42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "ci-artifact",
-      runId: 38484730560,
-      jobId: 115595518482,
-      artifact: { id: 11859331067 },
+      runId: 38730893656,
+      jobId: 116408109872,
+      artifact: { id: 11970467336 },
     });
     // pnpmLockSha256 comes from the native v4.4.0 fingerprint migration (#4194);
     // cargoLockSha256 and the ceilings below follow run 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "56e687fe05e0b84949881583381551b060cd357f43b0bf6b6bf0b27c2cc95b9a",
+      "01972f66763ceaf7c0d526c43c0c0084de64f7cb5cea99b71ef9f79bf2789e0b",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e",
+      "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
     // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
@@ -729,8 +773,7 @@ describe("island shipped-size budget", () => {
         );
       }
     }
-    const state = makeState(darwinContract.platform, darwinContract);
-    expect(validate(state)).toEqual({ errors: [], passed: true });
+    assertHistoricalContractAndReviewedCargoGate(darwinContract);
   });
 
   it("records the reviewed Linux x64 ceilings with zero allowance", () => {
@@ -738,7 +781,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("4.5.0");
+    expect(linuxContract.toolchain.packageVersion).toBe("4.5.2");
     expect(linuxContract.schemaVersion).toBe(3);
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(linuxContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
@@ -764,8 +807,7 @@ describe("island shipped-size budget", () => {
       "json-api": { raw: 64705, gzipNormalized: 22296 },
       "multi-island": { raw: 64827, gzipNormalized: 22294 },
     });
-    const state = makeState(linuxContract.platform, linuxContract);
-    expect(validate(state)).toEqual({ errors: [], passed: true });
+    assertHistoricalContractAndReviewedCargoGate(linuxContract);
   });
 
   it("accepts a contract written by the release re-pin helper", () => {
@@ -1316,23 +1358,30 @@ describe("island shipped-size budget", () => {
   });
 });
 
-// The 5ea14d57 (S7a) contracts are the exact inputs of the v4.5.0 re-pins; the
-// constants keep the assertion alive in a shallow checkout where git cannot
-// resolve that commit.
+// Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
+// Exact immediate inputs of the current producer-lock transitions. Constants
+// preserve the assertions in shallow CI; full checkouts also compare git bytes
+// and predecessor metadata below.
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    sha256: "a49081369b11369ac3b79ca2a86974b4ea15c73240b75cb619ae057fe79b4d6e",
+    commit: "3f98944e427e4555ad7b13564d94857680cfb61d",
+    sha256: "43c6f316923ccf1ccedd12dc203ec2e14eb6b3aeaafe06b59b62d49a67bbb1f6",
+    baselineSourceSha: "60b484c6fb1fb6d3d90d3bb853dc3cbc11e5ba2a",
+    baselineRunId: 38683888974,
   },
   {
     file: "decision.json",
-    sha256: "02f2a5dcd40aad62879f8f4dcddd95c24fcedf342599bdb05255cacde4ab4f12",
+    commit: "42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd",
+    sha256: "46a2782e5fb9d90cfac117e3a88e6cab4f3dd3e707ca91abdf58dfdfaca4eeb1",
+    baselineSourceSha: "57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6",
+    baselineRunId: 38729255517,
   },
 ];
 
 describe("live contracts record their authentic predecessor", () => {
-  for (const { file, sha256 } of repinnedFromContracts) {
+  for (const { file, commit, sha256, baselineSourceSha, baselineRunId } of repinnedFromContracts) {
     it(file + " carries a flat repinnedFrom with a verified contract reference", () => {
       const contract = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
       const repinnedFrom = contract.baselineEvidence.repinnedFrom;
@@ -1346,33 +1395,44 @@ describe("live contracts record their authentic predecessor", () => {
       ]);
       expect(repinnedFrom).toMatchObject({
         schemaVersion: 3,
-        outcome: "cargo-producer-lock-transition",
-        packageVersion: "4.4.0",
-        baselineSourceSha: "05ab82100e8f15fa714db9fd1fb5b8e51b41abaf",
-        baselineRunId: 38451538696,
+        outcome: "release-version-stamp",
+        packageVersion: "4.5.2",
+        baselineSourceSha,
+        baselineRunId,
       });
       expect(repinnedFrom).not.toHaveProperty("baselineEvidence");
       expect(repinnedFrom).not.toHaveProperty("repinnedFrom");
       expect(repinnedFrom.contract).toEqual({
         sha256,
-        commit: cargoTransitionCommit,
+        commit,
         path: "research/v3-island-size/" + file,
       });
-      let blob = null;
+      let commitAvailable = false;
       try {
-        execFileSync("git", ["cat-file", "-e", repinnedFrom.contract.commit + "^{commit}"], {
+        execFileSync("git", ["cat-file", "-e", commit + "^{commit}"], {
           cwd: repoRoot,
           stdio: "ignore",
         });
-        blob = execFileSync(
-          "git",
-          ["show", repinnedFrom.contract.commit + ":" + repinnedFrom.contract.path],
-          { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
-        );
+        commitAvailable = true;
       } catch {
-        // shallow checkout: the pinned constant above is the assertion
+        // Shallow checkout: the pinned constants above remain mandatory.
       }
-      if (blob) expect(createHash("sha256").update(blob).digest("hex")).toBe(sha256);
+      if (commitAvailable) {
+        const blob = execFileSync("git", ["show", commit + ":" + repinnedFrom.contract.path], {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        expect(createHash("sha256").update(blob).digest("hex")).toBe(sha256);
+        const predecessor = JSON.parse(blob.toString("utf8"));
+        expect(repinnedFrom).toEqual({
+          schemaVersion: predecessor.schemaVersion,
+          outcome: predecessor.outcome,
+          packageVersion: predecessor.toolchain.packageVersion,
+          baselineSourceSha: predecessor.baselineSourceSha,
+          baselineRunId: predecessor.baselineEvidence.runId,
+          contract: { sha256, commit, path: "research/v3-island-size/" + file },
+        });
+      }
     });
   }
 

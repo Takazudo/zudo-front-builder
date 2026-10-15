@@ -54,7 +54,7 @@ The split permits one locked and one unlocked test to run concurrently while kee
 
 ## `#[ignore]` manifest table
 
-**84** ignored Rust tests = **59** `env-gate` + **23** `heavy` + **2** `verification` + **0** `pending-feature` + **0** `flaky` (re-measured 2026-10, #4002 — re-run the greps above rather than trusting this sentence). No `flaky:`- or `pending-feature:`-tagged test exists; the two `verification:` rows are one-time extraction/measurement aids. Rows are keyed by path + test fn name, with each test's scheduled home: exam.yml's `quarantine-heavy` job (weekly, T3, allowed-to-fail) runs the env-gate + heavy subset via an exact-name filterset; health.yml (T1) also runs the named linked-watch row on every PR.
+**85** ignored Rust tests = **60** `env-gate` + **23** `heavy` + **2** `verification` + **0** `pending-feature` + **0** `flaky` (re-measured 2026-10-15, #4120 — re-run the greps above rather than trusting this sentence). No `flaky:`- or `pending-feature:`-tagged test exists; the two `verification:` rows are one-time extraction/measurement aids. Rows are keyed by path + test fn name, with each test's scheduled home: exam.yml's `quarantine-heavy` job (weekly, T3, allowed-to-fail) runs the env-gate + heavy subset via an exact-name filterset; health.yml (T1) also runs the named linked-watch row on every PR.
 
 | Test (path + test fn) | Tag | Where / how it runs |
 |---|---|---|
@@ -67,6 +67,7 @@ The split permits one locked and one unlocked test to run concurrently while kee
 | `crates/zfb-islands/tests/integration.rs` `shared_bundle_discovers_marked_glue_and_wasm_resources` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs` `client_script_real_esbuild_bundles_discovered_entry` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs` `client_script_shadow_jobs_resolve_project_tsconfig_aliases` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs` `client_script_worker_stage_escape_audit_rejects_dependency` | `env-gate` (esbuild) | Same workspace-resolved health.yml integration-binary lane; also replayed with the native opt-in in #4120. |
 | `crates/zfb-islands/tests/integration.rs` `islands_shadow_raw_import_bundles_text` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs` `islands_shadow_alias_raw_import_bundles_text` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs` `client_script_raw_import_bundles_text` | `env-gate` (esbuild) | Same as above. |

@@ -1,0 +1,13 @@
+---
+title: v4.5.1
+sidebar_position: 152
+---
+
+# v4.5.1
+
+Released: 2026-10-15
+
+## Bug Fixes
+
+- `zfb dev` now serves files under `public/assets/` live, through the same contained `/assets` chain as the generated assets. Before, the reserved `/assets` mount intercepted them, so they returned 404 until a `zfb build` copied a stale snapshot into `dist/assets`, and they never resolved under a `base` prefix. Edits, additions, and deletions are picked up immediately. `public/assets/` files that collide with generated names (`styles.css`, `islands.js`, `islands-*.js`, `client/`) are refused, and each one gets a boot warning that names the configured public directory (9b1a30c8, 31b4be90).
+- MDX: explicit HTML tables whose rows or sections share a line with text, such as `<thead><tr><th>A</th></tr></thead>`, no longer get paragraph-wrapped into `table > p > thead` or `tbody > p > tr`. That wrapping made zudo-react rendering fail with `ZR_PARSER_CONTEXT`. The paragraphs are now unwrapped at every MDX parse site: the compile parse, the content pipeline, transclusion, and directive re-parsing. Cell and caption content, components, GFM pipe tables, and `{…}`-wrapped tables are unchanged (5fb773fc).

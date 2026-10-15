@@ -116,7 +116,7 @@ use zfb_content::facade::PipelineOptions;
 #[cfg(feature = "parse")]
 use zfb_content::facade::{GfmOptions, InteropMdastNode, ParseMdastOptions};
 #[cfg(any(feature = "render", feature = "parse"))]
-use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
+use zfb_content::frontmatter::{extract_markdown, FrontmatterError, MarkdownFrontmatter};
 #[cfg(feature = "render")]
 use zfb_content::pipeline::Pipeline;
 #[cfg(any(feature = "render", feature = "parse"))]
@@ -320,7 +320,6 @@ struct SelectedParseSource {
 
 #[cfg(feature = "parse")]
 fn select_parse_source(
-    filename: &str,
     source: &str,
     policy: FrontmatterPolicy,
 ) -> Result<SelectedParseSource, (JsonValue, Box<Diagnostic>)> {
@@ -333,31 +332,26 @@ fn select_parse_source(
             markdown_frontmatter: false,
         });
     }
-    let extracted = extract_from_filename(filename, source).map_err(|error| {
+    let MarkdownFrontmatter {
+        frontmatter,
+        body,
+        body_offset,
+    } = extract_markdown(source).map_err(|error| {
         (
             JsonValue::Null,
             Box::new(frontmatter_diagnostic(&error, source)),
         )
     })?;
-    let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
-        return Err((
-            JsonValue::Null,
-            Box::new(Diagnostic::error(
-                "options",
-                format!("filename `{filename}` did not resolve to a markdown body"),
-            )),
-        ));
-    };
     let recognized = body_offset > bom_offset;
     Ok(match policy {
         FrontmatterPolicy::Extract => SelectedParseSource {
-            frontmatter: extracted.value,
+            frontmatter,
             input: body,
             input_offset: body_offset,
             markdown_frontmatter: false,
         },
         FrontmatterPolicy::Node => SelectedParseSource {
-            frontmatter: extracted.value,
+            frontmatter,
             input: source[bom_offset..].to_string(),
             input_offset: bom_offset,
             markdown_frontmatter: recognized,
@@ -448,7 +442,14 @@ fn prepare(
         return Err(Box::new((JsonValue::Null, diag)));
     }
 
-    let extracted = match extract_from_filename(&filename, source) {
+    // The extension gate above already establishes Markdown input. Use its
+    // typed result directly, avoiding a second dispatch and impossible absent
+    // body/TSX branches in the shipped WASM.
+    let MarkdownFrontmatter {
+        frontmatter,
+        body,
+        body_offset,
+    } = match extract_markdown(source) {
         Ok(uf) => uf,
         Err(e) => {
             return Err(Box::new((
@@ -457,17 +458,6 @@ fn prepare(
             )))
         }
     };
-    let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
-        // Unreachable after the extension gate above (`.md`/`.mdx` always
-        // yields a body), kept as a diagnostic rather than a panic per the
-        // wasm trap contract.
-        let diag = Diagnostic::error(
-            "options",
-            format!("filename `{filename}` did not resolve to a markdown body"),
-        );
-        return Err(Box::new((JsonValue::Null, diag)));
-    };
-    let frontmatter = extracted.value;
     let inferred_render_dialect = match extension {
         Some("md") => ParseDialect::Markdown,
         Some("mdx") => ParseDialect::Mdx,
@@ -1170,7 +1160,7 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
         input,
         input_offset,
         markdown_frontmatter,
-    } = match select_parse_source(&filename, source, opts.frontmatter) {
+    } = match select_parse_source(source, opts.frontmatter) {
         Ok(selected) => selected,
         Err((frontmatter, diagnostic)) => return fail(frontmatter, *diagnostic),
     };

@@ -5,11 +5,11 @@
   "type": "module",
   "dependencies": {
     "@takazudo/zdtp": "0.8.6",
-    "@takazudo/zfb": "4.4.0",
-    "@takazudo/zfb-md-wasm": "4.4.0",
-    "@takazudo/zfb-runtime": "4.4.0",
-    "@takazudo/zudo-doc": "6.1.1",
-    "@takazudo/zudo-sg": "0.5.3",
+    "@takazudo/zfb": "4.5.2",
+    "@takazudo/zfb-md-wasm": "4.5.2",
+    "@takazudo/zfb-runtime": "4.5.2",
+    "@takazudo/zudo-doc": "6.2.0",
+    "@takazudo/zudo-sg": "0.5.4",
     "diff": "8.0.4",
     "katex": "0.16.38",
     "zod": "4.3.6"

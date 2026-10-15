@@ -69,6 +69,7 @@ import {
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
 import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
+import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
@@ -1355,6 +1356,39 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
       check,
       lock,
     );
+
+  it("keeps native platform, exact source and total gates for the reviewed non-additive lock", () => {
+    const lock = reviewedCargoLock();
+    const { artifact, contract } = fixture({
+      tweak: (p) => {
+        p.cargoLockSha256 = lock.expectedNewSha;
+      },
+    });
+    contract.toolchain.cargoLockSha256 = lock.expectedOldSha;
+    expect(validateDarwinEvidence(contract, artifact, SOURCE_SHA, "cargo-producer-lock")).toEqual(
+      [],
+    );
+    const { contract: next, gzipMoves } = run(contract, artifact, { lock });
+    expect(next.ceilings).toEqual(contract.ceilings);
+    expect(next.allowance).toEqual(contract.allowance);
+    expect(next.platformStatus).toContain("reviewed non-additive");
+    expect(darwinCargoProducerLockReadmeSection(next, gzipMoves)).toContain("46 changed records");
+    const other = fixture({
+      tweak: (p) => {
+        p.cargoLockSha256 = lock.expectedNewSha;
+        p.platform = { os: "linux", arch: "x64" };
+      },
+    });
+    expect(
+      validateDarwinEvidence(contract, other.artifact, SOURCE_SHA, "cargo-producer-lock").length,
+    ).toBeGreaterThan(0);
+    expect(
+      validateDarwinEvidence(contract, artifact, "f".repeat(40), "cargo-producer-lock").length,
+    ).toBeGreaterThan(0);
+    const grown = structuredClone(contract);
+    grown.ceilings.packed.model.gzipNormalized += 1;
+    expect(() => run(grown, artifact, { lock })).toThrow(/gzipNormalized totals changed/);
+  });
 
   it("moves only the Cargo hash and its evidence", () => {
     const { artifact, contract } = fixture();

@@ -14,7 +14,19 @@ export function configAtBase(source, base) {
   if ([...source.matchAll(declaration)].length !== 1) {
     throw new Error("Expected exactly one literal root base declaration in docs config");
   }
-  return source.replace(declaration, `    base: ${JSON.stringify(base)},`);
+  const defaultExport = /^export default /gm;
+  if ([...source.matchAll(defaultExport)].length !== 1) {
+    throw new Error("Expected exactly one default export in docs config");
+  }
+  const binding = "__windDocsSubpathConfig";
+  if (source.includes(binding)) {
+    throw new Error(`Docs config already contains reserved preview binding ${binding}`);
+  }
+  const configured = source
+    .replace(declaration, `    base: ${JSON.stringify(base)},`)
+    .replace(defaultExport, `const ${binding} = `);
+  // The preview server mounts the whole output tree at base, so public files stay flat.
+  return `${configured}\nexport default { ...${binding}, copyPublicWithBase: false };\n`;
 }
 
 export function buildAtBase(
