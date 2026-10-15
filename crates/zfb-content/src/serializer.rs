@@ -235,6 +235,19 @@ mod tests {
         assert_eq!(serialize(&h), r#"x &amp; "y" &lt; z"#);
     }
 
+    #[test]
+    fn unicode_text_and_attributes_keep_their_distinct_quote_rules() {
+        let h = elem(
+            "p",
+            vec![("title", "é雪🦀 &<>\"'")],
+            vec![HastNode::Text("é雪🦀 &<>\"'".into())],
+        );
+        assert_eq!(
+            serialize(&h),
+            "<p title=\"é雪🦀 &amp;&lt;&gt;&quot;'\">é雪🦀 &amp;&lt;&gt;\"'</p>"
+        );
+    }
+
     // 8. Raw passthrough — no escaping at all.
     #[test]
     fn raw_node_passes_through_verbatim() {
