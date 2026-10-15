@@ -1582,7 +1582,18 @@ fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
 
     let error = bundle(input).expect_err("CSS context must not fall through to live excluded CSS");
     let message = format!("{error:#}");
-    assert!(message.contains("project:theme"), "{message}");
+    if cfg!(feature = "rolldown-prototype")
+        && std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
+    {
+        assert!(
+            message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
+            "{message}"
+        );
+        assert!(!root.join("dist-css-context-excluded/bundle.mjs").exists());
+        assert!(!root.join("dist-css-context-excluded/bundle.css").exists());
+    } else {
+        assert!(message.contains("project:theme"), "{message}");
+    }
     assert!(!message.contains("failed to parse"), "{message}");
 }
 
@@ -1627,7 +1638,23 @@ fn css_import_context_keeps_css_when_invalid_ts_alternate_is_excluded() {
     input.extra_loader_args = vec!["--loader:.css=css".to_string()];
     input.bundle_exclude = vec!["src/theme.ts".to_string()];
 
-    bundle(input).expect("CSS context must resolve the allowed CSS candidate");
+    let result = bundle(input);
+    if cfg!(feature = "rolldown-prototype")
+        && std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
+    {
+        // Raw CSS is explicitly outside the native prototype's accepted
+        // contract. Keep the ordinary esbuild success assertion below intact.
+        let error = result.expect_err("native raw CSS must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
+            "{message}"
+        );
+        assert!(!root.join("dist-css-context-allowed/bundle.mjs").exists());
+        assert!(!root.join("dist-css-context-allowed/bundle.css").exists());
+        return;
+    }
+    result.expect("CSS context must resolve the allowed CSS candidate");
     let css = fs::read_to_string(root.join("dist-css-context-allowed/bundle.css")).unwrap();
     assert!(css.contains("ALLOWED_CONTEXT_CSS"), "{css}");
 }

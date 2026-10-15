@@ -1,10 +1,14 @@
 mod copy_reference;
+#[cfg(test)]
+mod css_tests;
 mod prepared;
+mod trailing_paths;
 use anyhow::{bail, Context, Result};
 use prepared::Request;
 use rolldown::plugin::{
-    HookBuildEndArgs, HookLoadArgs, HookLoadOutput, HookResolveFileUrlArgs, HookUsage, Plugin,
-    PluginContext, SharedLoadPluginContext,
+    HookBuildEndArgs, HookLoadArgs, HookLoadOutput, HookResolveFileUrlArgs, HookTransformArgs,
+    HookTransformOutput, HookUsage, Plugin, PluginContext, SharedLoadPluginContext,
+    SharedTransformPluginContext,
 };
 use rolldown::Bundler;
 use rolldown_common::{EmittedAsset, ModuleType, Output};
@@ -33,7 +37,23 @@ impl Plugin for GraphPlugin {
         "zfb-prototype-provenance".into()
     }
     fn register_hook_usage(&self) -> HookUsage {
-        HookUsage::BuildEnd | HookUsage::Load | HookUsage::ResolveFileUrl
+        HookUsage::BuildEnd | HookUsage::Load | HookUsage::ResolveFileUrl | HookUsage::Transform
+    }
+    async fn transform(
+        &self,
+        _ctx: SharedTransformPluginContext,
+        args: &HookTransformArgs<'_>,
+    ) -> Result<Option<HookTransformOutput>> {
+        // Inspect the effective native loader, not a filename guess: CSS
+        // deliberately loaded as a file or text remains a supported resource.
+        // Raw CSS is outside this experiment's contract at the pinned engine.
+        if matches!(args.module_type, ModuleType::Css) {
+            bail!(
+                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: raw CSS bundling is unsupported by the experimental native backend: {}",
+                args.id
+            );
+        }
+        Ok(None)
     }
     async fn load(
         &self,
@@ -169,10 +189,17 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         .map(|p| Path::new(p).parent().unwrap().to_path_buf())
         .or_else(|| request.options.dir.as_ref().map(PathBuf::from))
         .context("output location")?;
-    let mut bundler = Bundler::with_plugins(request.options, vec![GraphPlugin::new_shared(plugin)])
-        .map_err(|e| anyhow::anyhow!("Rolldown options: {e:?}"))?;
+    let trailing_paths = trailing_paths::TrailingPaths::new(&request.options);
+    let mut bundler = Bundler::with_plugins(
+        request.options,
+        vec![
+            trailing_paths::TrailingPaths::new_shared(trailing_paths),
+            GraphPlugin::new_shared(plugin),
+        ],
+    )
+    .map_err(|e| anyhow::anyhow!("Rolldown options: {e:?}"))?;
     let generated = bundler.generate().await;
-    // This adapter has only GraphPlugin, which has no close hook. Sequential
+    // This adapter's private plugins have no close hooks. Sequential
     // close also clears the pinned driver's retained state on returned errors;
     // a cleanup error must never replace the original generation diagnostic.
     let closed = bundler.close().await;
