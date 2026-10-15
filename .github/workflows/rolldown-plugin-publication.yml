@@ -1,0 +1,90 @@
+# Bounded prototype evidence only; no production adoption or publication.
+name: Rolldown plugin publication barrier (#4120)
+
+on:
+  push:
+    branches: [prototype/318-rolldown-native]
+    paths:
+      - crates/zfb-rolldown-prototype/**
+      - prototypes/rolldown/plugin-prebundle.mjs
+      - .github/workflows/rolldown-plugin-publication.yml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rolldown-4120-plugin-publication
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'Takazudo/zudo-front-builder'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      ZFB_PROBE_SOURCE: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24.14.0"
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: "1.99.0"
+          components: rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: rolldown-4120-debug-no-debuginfo
+          cache-on-failure: true
+      - name: Record exact source and prepare pinned reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/plugin-publication-evidence
+          { git rev-parse HEAD; rustc -vV; node -v; uname -a; sha256sum Cargo.lock pnpm-lock.yaml; } > target/plugin-publication-evidence/identity.txt
+          npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
+          ESBUILD="$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild"
+          echo "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014  $ESBUILD" | sha256sum -c -
+          echo "ZFB_ESBUILD_BIN=$ESBUILD" >> "$GITHUB_ENV"
+      - name: Check native lifecycle regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/native-tests.log
+          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 | tee target/plugin-publication-evidence/library-tests.log
+          cargo check --locked -p zfb-rolldown-prototype --no-default-features --all-targets 2>&1 | tee target/plugin-publication-evidence/feature-off.log
+          cargo build --locked -p zfb-rolldown-prototype --features native --example plugin_prebundle 2>&1 | tee target/plugin-publication-evidence/build.log
+      - name: Replay every existing esbuild and native semantic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node prototypes/rolldown/plugin-prebundle.mjs 2>&1 | tee target/plugin-publication-evidence/semantic-probe.log
+          sha256sum target/debug/examples/plugin_prebundle "$ZFB_ESBUILD_BIN" > target/plugin-publication-evidence/binaries.txt
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Check Rust formatting
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/plugin-publication-evidence
+          cargo fmt --all --check 2>&1 | tee target/plugin-publication-evidence/fmt.log
+      - name: Retain reports including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rolldown-plugin-publication-${{ github.sha }}
+          path: |
+            target/plugin-publication-evidence
+            target/rolldown-plugin-probe
+          include-hidden-files: true
+          retention-days: 14

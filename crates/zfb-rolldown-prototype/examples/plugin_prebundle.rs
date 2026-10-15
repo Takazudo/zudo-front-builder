@@ -1,6 +1,9 @@
 //! Bounded plugin-option feasibility probe, not a production caller.
 //! Real Node execution in plugin-prebundle.mjs owns the semantic oracles.
 #[cfg(feature = "native")]
+#[path = "plugin_prebundle/lifecycle.rs"]
+mod lifecycle;
+#[cfg(feature = "native")]
 #[path = "plugin_prebundle/packages.rs"]
 mod packages;
 
@@ -18,7 +21,7 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 {
-        bail!("usage: plugin_prebundle ABSOLUTE_ENTRY ABSOLUTE_OUTFILE");
+        bail!("usage: plugin_prebundle ABSOLUTE_ENTRY ABSOLUTE_NEW_OUTFILE");
     }
     if !args.iter().all(|arg| Path::new(arg).is_absolute()) {
         bail!("probe paths must be absolute");
@@ -50,36 +53,18 @@ fn main() -> anyhow::Result<()> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    runtime.block_on(async {
+    let generated = runtime.block_on(async {
         let mut bundler = Bundler::with_plugins(
             options,
             vec![PackageExternals::new_shared(PackageExternals)],
         )
         .map_err(|error| anyhow::anyhow!("Rolldown options: {error:?}"))?;
-        let result = bundler.write().await.map_err(|errors| {
-            anyhow::anyhow!(
-                "{}",
-                errors
-                    .into_vec()
-                    .iter()
-                    .map(|error| error.to_diagnostic().convert_to_string(false))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        })?;
-        for warning in &result.warnings {
-            let message = warning.to_diagnostic().convert_to_string(false);
-            if warning.kind().to_string() == "UNRESOLVED_IMPORT" {
-                bail!("{message}");
-            }
-            eprintln!("{message}");
-        }
-        bundler
-            .close()
-            .await
-            .map_err(|error| anyhow::anyhow!("close plugin probe bundle: {error:?}"))?;
-        Ok::<_, anyhow::Error>(())
-    })?;
+        lifecycle::generate_and_close(&mut bundler).await
+    });
+    // No output exists during native work or runtime teardown. This shutdown
+    // is not time-bounded; do not present it as active-build cancellation.
+    drop(runtime);
+    lifecycle::publish_new(Path::new(&args[1]), &generated?)?;
     eprintln!("zfb-plugin-probe: native rolldown 24bc2d0");
     Ok(())
 }
