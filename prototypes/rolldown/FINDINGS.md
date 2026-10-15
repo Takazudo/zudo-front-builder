@@ -2,7 +2,25 @@
 
 **The isolated plugin alias defect is repaired and verified; keep the live plugin caller on esbuild.** The expanded plugin option probe now passes 18 contracts on each real backend. This is a bounded Linux capability result, not production plugin acceptance or permission to adopt Rolldown by default. PR #4120 remains open and draft.
 
-## Latest implementation and execution
+## Supervision increment from `8cd83962`
+
+[Owned supervision and cancellation](PLUGIN-CANCELLATION.md) now documents the
+CLI's bounded admission, non-blocking request drop, independent cancellation
+deadlines, fixed join lanes, and explicit unbounded root drain. Actual join
+remains the publication boundary. The 16 new supervisor regressions run beside
+all 26 existing example tests and the unchanged 36-row differential matrix.
+Final-head run evidence belongs to the PR report; historical runs below retain
+their own source identities.
+
+Independent review reproduced `is_finished()` preceding blocked TLS destruction;
+fixed join lanes avoid head-of-line blocking without weakening actual join.
+Pinned source also shows global Rayon deferred destruction after generation,
+with its private drain at next build entry. Owned-job drain is therefore not
+universal Rolldown quiescence, and hard bounded native termination is still
+unproved. Production staging/caller adoption stays gated. No pin, dependency,
+lockfile, generated artifact or production backend changed in this increment.
+
+## Earlier alias implementation and execution
 
 The native example now delegates local mappings to Rolldown's own resolver before externalizing ordinary unresolved packages. It preserves genuinely external dependencies, including entry-adjacent nested-package lookup. It does not hardcode aliases, implement a second tsconfig resolver, classify every node_modules path as external, or convert configuration/package-import failures into successful external imports.
 
