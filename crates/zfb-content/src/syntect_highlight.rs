@@ -146,9 +146,10 @@ impl Highlighter {
 
     /// List built-in theme names.
     pub fn theme_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.theme_set.themes.keys().cloned().collect();
-        names.sort();
-        names
+        // ThemeSet stores themes in a BTreeMap, whose keys are already sorted.
+        // Sorting the collected names again pulls an unnecessary sorting path
+        // into render-only Wasm when pipeline construction validates themes.
+        self.theme_set.themes.keys().cloned().collect()
     }
 
     /// Set the default theme used when callers don't pass one.
@@ -1010,6 +1011,19 @@ mod tests {
                 "missing built-in theme `{expected}`; got: {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn theme_names_remain_sorted_after_custom_insertions() {
+        let mut h = Highlighter::new();
+        h.theme_set.themes.clear();
+        for name in ["雪", "z-custom", "A-custom", "é", "a-custom"] {
+            h.theme_set.themes.insert(name.into(), Theme::default());
+        }
+        assert_eq!(
+            h.theme_names(),
+            ["A-custom", "a-custom", "z-custom", "é", "雪"]
+        );
     }
 
     #[test]
