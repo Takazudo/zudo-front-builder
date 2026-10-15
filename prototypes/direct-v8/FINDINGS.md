@@ -865,3 +865,61 @@ The final Wind manifest delta is exactly `compiler.sourceSha256`
 That provenance-only refresh does not alter the tested host, corpora, build
 producer, harness or frozen acceptance snapshot. The final commit records tested
 predecessor `14e021f1`; it does not claim a replay of its own hash.
+
+## Checker protocol continuation (2026-10-15)
+
+The attachment was recovered through the parent's exact text handoff after
+Library downloads failed in this environment. Decoding transport XML entities
+reproduced exactly 43,482 bytes and SHA-256
+`c7a5dc3b570b7c74892a60553d9a147d0e95278191fe38d4faccbaa1e22b6f12`.
+It applied cleanly over `656a1b42`, whose only changes from `8bddd9ea` were
+baseline evidence. Earlier failed transfers and baseline receipts remain intact;
+their patch-blocked status is historical, superseded by this verified recovery.
+
+The shared config/outer receipt parser now enforces exact framed counts, actual
+boolean statuses, present values, string errors and strict JSON. Malformed slots
+retain their positions, LF alone frames receipts, invalid UTF-8 retains raw
+bytes, and failed baseline execution still permits the candidate observation.
+Loaded corpus bytes and pre/post executable identity are checked. Independent
+review confirmed compatibility with the stricter `accept.py` aggregation.
+
+The unchanged baseline suite passed 64 tests; the exact attachment passed the
+combined 92-test suite. Review then reproduced a pre-existing evidence-loss edge:
+1,100-level JSON could parse but fail report serialization with `RecursionError`.
+Three new regressions initially failed (two failures, one error). A small
+iterative 128-level nesting limit and normalized decoder recursion failure now
+preserve rejected slots, raw output and subsequent observations, and refuse deep
+corpora before launch. Independent review approved the repair; all 95 combined
+tests, 14 Python syntax checks, formatting and diff checks passed.
+
+Fresh native acceptance passed at clean committed checkpoint
+`cc56b15a38173b9a276cb997ef12230fdc370cd0`: 45 native and 9 shared-service tests;
+63 config, 27 service and 47 module/worker cases per engine; 8 HTTP, 7 outer-config,
+8 generated packets per engine and 7 exact parity rows. No corpus was reduced.
+The patched checkers' real reports passed the actual aggregation path, including
+matching pre/post corpus and executable digests with no protocol failures.
+
+The producer generated a new frozen snapshot, manifest SHA-256
+`f8ca3168c0a53badcf308677bc04f1d3686e1af3a4dbffe9d152038a22a150f2`.
+Both engines consumed identical input bytes; all 54 frozen files were rehashed.
+The authored throw matched `throw.ts:6:9` and its exact source content.
+Chromium 154.0.8037.57 observed `Count: 0` → `Count: 1` and expected CSS
+`rgb(12, 34, 56)` without page/console errors. All six executable digests and
+execute permissions remained valid. V8 147.4.0, esbuild 0.25.12 and existing
+dependency pins were preserved. This reused the warm target, not a cold benchmark.
+
+New receipts and the independent review are under
+[checker-linux-2026-10-15-cloud](evidence/checker-linux-2026-10-15-cloud/README.md).
+The later evidence-only commit is distinct from measured source `cc56b15a`;
+runtime, harness, corpus, producer, locks and toolchain inputs are unchanged.
+Rust/runtime inputs and all six executable bytes also match the earlier baseline,
+so the same-session runtime-risk review remains applicable. No new runtime defect
+was observed. No separate workspace/default/no-V8, Clippy, md-Wasm or CSS-addon
+batch was rerun for this Python-only change; older results retain their source.
+
+#4234, #4259 and #4260 remain open drafts and unmerged. Cargo-provenance failures,
+compatible paired Linux/Darwin native size evidence and integration/activation
+remain unresolved. No held branch was imported, merged or modified. No phase-two
+CLI adoption, live operation, dispatch, issue closure or Rolldown change occurred.
+The non-UTF-8 page postprocessing limitation remains separate from Worker binary
+responses. Phase-one integration acceptance is not complete.
