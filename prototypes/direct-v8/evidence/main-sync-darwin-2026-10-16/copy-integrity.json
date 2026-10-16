@@ -36,7 +36,8 @@
     "logs/wind-reference-tests.log": "2e68a1a1de66b30ec3193f81e12561e08b7756da53704cc27bf2cb2b8907a422",
     "modules-gate.json": "a9c26a7297ae2c1891f0528dfa1bb6664d3026e61e49c9c8719707379928c250",
     "outer-config-gate.json": "d79ee990656f230f8b7747c065b814328a6b4a363154fc6e9766cc27bc74849d",
-    "services-gate.json": "5f2c4e802bf38d724970c881bc7044b2d5c5c11549d0407bff666a14b06b7a37"
+    "services-gate.json": "5f2c4e802bf38d724970c881bc7044b2d5c5c11549d0407bff666a14b06b7a37",
+    "logs/host-tools.txt": "262b568b0fd8b5a8899d70e26b9010b75038edc8af4aa482ae263c8b7287d9c6"
   },
   "parsed_equal": {
     "acceptance.json": true,
@@ -87,6 +88,7 @@
     "logs/wind-generator-tests.log": "1acddc588348cbc66ca829c82dac029b14ca4101dd3f29f7b985dbb562b26d32",
     "logs/wind-lib-attempt1-guard-not-invoked.log": "438482bc8e94481e308aab4457951840402fe39228b07d7a275d367a45b529f6",
     "logs/wind-lib.log": "554bcb8e39d74aadce5356e82846ff07e9842406962ac5d3e9fa62a057397e64",
-    "logs/wind-reference-tests.log": "2e68a1a1de66b30ec3193f81e12561e08b7756da53704cc27bf2cb2b8907a422"
+    "logs/wind-reference-tests.log": "2e68a1a1de66b30ec3193f81e12561e08b7756da53704cc27bf2cb2b8907a422",
+    "logs/host-tools.txt": "262b568b0fd8b5a8899d70e26b9010b75038edc8af4aa482ae263c8b7287d9c6"
   }
 }

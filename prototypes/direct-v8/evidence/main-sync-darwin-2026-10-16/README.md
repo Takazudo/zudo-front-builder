@@ -10,7 +10,10 @@ size measurement.
 Host: native Darwin arm64 (macOS 26.6.1, not Rosetta), rustup Rust/Cargo
 1.99.0 (`b940084d7`), official Node v24.14.0 (binary digest equal to the
 nodejs.org darwin-arm64 tarball), Python 3.12.13, pnpm 12.8.2. Heavy builds and
-gates ran one at a time under the machine heavy guard. The earlier Linux
+gates ran one at a time under the machine heavy guard. `logs/host-tools.txt`
+records the OS, the official Node tarball and binary digests against nodejs.org
+`SHASUMS256.txt`, the rustc/cargo identity, the no-V8 Wind compiler digest and
+the esbuild digest. The earlier Linux
 receipts in `refresh-linux-2026-10-16/` were produced on Linux x86_64 with Rust
 1.99.1. This run neither replaces nor qualifies them; it is separate Darwin
 evidence.
@@ -63,11 +66,19 @@ limitation string still says "Linux x86_64 native evidence only". The recorded
   `zfb-css package_exports_imports` 22: all passed.
 - Python checker suite, 95 tests: passed with `TMPDIR` on a non-symlinked
   directory (`python-checker-resolved-tmpdir.log`). With the default macOS
-  `TMPDIR`, the suite reports 42 errors (`python-checker.log`). The tests mock
-  `ROOT` with an unresolved `/var/folders/…` path, while `accept.py` compares
-  it with a resolved `/private/var/…` output path. That is a harness
-  portability gap on Darwin, not a behavior change from this merge. It is
-  recorded, and neither test is modified.
+  `TMPDIR`, the suite reports 42 errors (`python-checker.log`):
+  - 41 are `SystemExit: 2` (`--output must be a new directory below … target/`).
+    The tests mock `ROOT` with an unresolved `/var/folders/…` path, while
+    `accept.py` compares it with a resolved `/private/var/…` output path. That
+    is a harness portability gap on Darwin, not a behavior change from this
+    merge.
+  - 1 is `KeyError: 'stdout_base64'` in
+    `test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows`. The
+    report omits that key unless non-UTF-8 bytes arrive before the 0.3 s
+    watchdog fires, so this is a timing race. It passed in the second run, but
+    a pass on rerun is a flaky-test triage signal, not a clean pass.
+
+  Both are recorded, and no test was modified.
 
 ## Producer closures (Cargo metadata, not native measurement)
 
