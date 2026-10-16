@@ -8,15 +8,17 @@ separately with an instrumented edge probe.
 ## Test-only repair
 
 The partial-byte test waits for a socket acknowledgment after the fixture writes
-both streams, using a test-local `Popen` subclass. The fixture writes before
+both streams, using a test-local `Popen` subclass. The fixture writes without
 reading stdin, so construction does not depend on the later `communicate(input)`.
 The real `subprocess.run` then owns the unchanged 300ms communication timeout,
 kill, wait, and captured bytes. Readiness failure is a test failure and reaps the
 direct fixture child. Its 10-second safety ceiling matches the existing CLI
 fixture ceiling; it is not a new production timeout.
 
-A separate unsynchronized real-child test requires watchdog failure without an
-output precondition. The partial-byte test still requires exact invalid UTF-8
+A separate unsynchronized real-child fixture blocks before either stream can
+write. Its test requires watchdog failure, empty stdout/stderr, no base64 fields,
+zero receipts and seven failed rows. It passes through the original timeout path
+whether the interpreter has started or is still starting. The partial-byte test still requires exact invalid UTF-8
 bytes and stderr, failed outer rows, and null reported exit status. Additional
 controls reject missing readiness and an expired readiness wait, and ensure
 valid receipts cannot rescue a watchdog failure. No fixed startup sleep, retry,
@@ -27,6 +29,24 @@ complete recovery of bytes written at the kill boundary, native V8 behavior,
 production readiness, or descendant cleanup. The source production files remain
 unchanged. Native macOS acceptance of these Python tests is still required; no
 native build is necessary.
+
+## Relationship to the Mac diagnosis
+
+The Mac report is correct that an ordinary fixture cannot make the production
+`subprocess.run` deadline wait for interpreter readiness. This patch does not
+make that claim. Only the output-dependent test replaces `Popen` construction
+with a subclass that launches a real child and waits for its socket acknowledgment
+before returning. CPython starts the communication timeout after construction.
+Consequently cold interpreter startup is outside this test's 300ms communication
+window, bounded instead by its explicit 10-second fixture readiness wait. This
+is a test-local stdlib seam; the production API and runtime policy are unchanged.
+
+The test therefore proves exact reporting of bytes already written before the
+communication timeout is armed. It does not prove output will appear within
+300ms of an ordinary spawn. The unsynchronized silent fixture explicitly covers
+timeout before first output. Existing ordinary runner and frozen-wire tests
+still exercise stdin delivery before output. No test here proves recovery of
+unread bytes at the kill boundary, or repairs the native cold-start latency.
 
 ## Production choices requiring agreement
 

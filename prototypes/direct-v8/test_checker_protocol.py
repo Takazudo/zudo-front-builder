@@ -320,16 +320,28 @@ class CheckerProtocolTest(unittest.TestCase):
         self.assertEqual(len(report["rows"]), 7)
         self.assertTrue(all(not row["passed"] for row in report["rows"]))
 
-    def test_real_watchdog_fails_outer_rows_without_output_precondition(self):
+    def test_real_watchdog_before_first_output_fails_outer_rows(self):
         outer = self.load("check-outer-config.py")
-        runner = self.runner(b"", extra="import signal; signal.pause()")
-        # This is deliberately unsynchronized: expiry is failure even when the
-        # interpreter has not started. No output is required to prove expiry.
-        self.assert_watchdog_rows(outer.run(runner, timeout=0.3))
+        runner = self.root / "silent-runner"
+        runner.write_text(
+            f"#!{sys.executable} -S\nimport signal\n"
+            "signal.pause()\n"
+            "raise AssertionError('fixture must be killed before producing output')\n"
+        )
+        runner.chmod(0o755)
+        # No readiness seam: the real timeout must fail whether Python has
+        # started or is still starting. Neither stream can have a first write.
+        report = outer.run(runner, timeout=0.3)
+        self.assert_watchdog_rows(report)
+        self.assertEqual(report["stdout"], "")
+        self.assertEqual(report["stderr"], "")
+        self.assertNotIn("stdout_base64", report)
+        self.assertNotIn("stderr_base64", report)
+        self.assertEqual(report["receipt_count"], 0)
 
     def ready_fixture(self, outer, payload, *, signal_ready=True):
         # Test-only seam around Popen construction, not production readiness.
-        # The fixture writes before reading stdin, so waiting here cannot
+        # The fixture writes without reading stdin, so waiting here cannot
         # deadlock on subprocess.run's later communicate(input=...). The real
         # subprocess.run still owns timeout, kill, wait and output capture.
         reader, writer = socket.socketpair()
