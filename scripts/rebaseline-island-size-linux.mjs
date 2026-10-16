@@ -1634,17 +1634,41 @@ export function resolveDependencyEntry(entry, records) {
   };
 }
 
+// This bounded reader must never interpret string contents as TOML metadata.
+function manifestLines(text) {
+  return text.split("\n").map((line) => {
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (quote !== null) {
+        if (quote === '"' && char === "\\") i++;
+        else if (char === quote) quote = null;
+      } else if (char === "#") {
+        return line.slice(0, i);
+      } else if (char === '"' || char === "'") {
+        if (line.slice(i, i + 3) === char.repeat(3)) {
+          throw rewireError("manifest contains unsupported multiline TOML strings; refusing");
+        }
+        quote = char;
+      }
+    }
+    if (quote !== null)
+      throw rewireError("manifest contains an unterminated TOML string; refusing");
+    return line;
+  });
+}
+
 // The `[package]` table of a manifest: name, version and publish, read with a
 // minimal single-table TOML reader (quoted strings and booleans only).
 export function readManifestPackage(text) {
-  const lines = text.split("\n");
+  const lines = manifestLines(text);
   const start = lines.findIndex((line) => line.trim() === "[package]");
   if (start < 0) return null;
   const table = {};
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line.startsWith("[")) break;
-    const entry = /^([A-Za-z_-]+)\s*=\s*(.+?)\s*(?:#.*)?$/.exec(line);
+    const entry = /^([A-Za-z_-]+)\s*=\s*(.+?)\s*$/.exec(line);
     if (!entry) continue;
     const [, key, raw] = entry;
     if (/^"(?:[^"\\]|\\.)*"$/.test(raw)) table[key] = JSON.parse(raw);
@@ -1658,7 +1682,7 @@ export function readManifestPackage(text) {
 // root manifest's `[workspace] members` globs (literal paths and a trailing
 // `*` segment, which is how this workspace lists its crates).
 export function workspaceMemberProblem(rootManifest, manifestPath) {
-  const lines = rootManifest.split("\n");
+  const lines = manifestLines(rootManifest);
   const start = lines.findIndex((line) => line.trim() === "[workspace]");
   if (start < 0) return "the root Cargo.toml has no [workspace] table";
   let end = lines.findIndex((line, i) => i > start && /^\s*\[/.test(line));

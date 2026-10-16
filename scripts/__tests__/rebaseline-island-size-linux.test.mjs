@@ -3561,6 +3561,40 @@ describe("cargo-internal-rewire (#4258)", () => {
     expect(resolveDependencyEntry("bad entry here now", records).problem).toMatch(/malformed/);
   });
 
+  it.each(['"""', "'''"])("refuses metadata hidden in %s multiline strings", (delimiter) => {
+    const text =
+      '[package]\nname = "x"\nversion = "0.0.0"\ndescription = ' +
+      delimiter +
+      "\npublish = false\n" +
+      delimiter +
+      "\n";
+    expect(() => readManifestPackage(text)).toThrow(/unsupported multiline TOML strings/);
+    expect(() =>
+      workspaceMemberProblem(
+        "description = " + delimiter + '\n[workspace]\nmembers = ["crates/*"]\n' + delimiter + "\n",
+        "crates/x/Cargo.toml",
+      ),
+    ).toThrow(/unsupported multiline TOML strings/);
+  });
+
+  it("ignores TOML comments without truncating quoted hashes", () => {
+    expect(
+      readManifestPackage('[package] # comment\nname = "x#y" # comment\npublish = false # """\n'),
+    ).toEqual({ name: "x#y", publish: false });
+    expect(
+      workspaceMemberProblem(
+        '[workspace]\nmembers = [\n"crates/zfb", # "crates/zfb-js-host"\n]\n',
+        "crates/zfb-js-host/Cargo.toml",
+      ),
+    ).toMatch(/not a workspace member path/);
+    expect(
+      workspaceMemberProblem(
+        '[workspace]\nmembers = ["crates/*"]\nexclude = [\n# "crates/zfb"\n]\n',
+        "crates/zfb/Cargo.toml",
+      ),
+    ).toBeNull();
+  });
+
   it("reads the [package] table and workspace membership from manifests", () => {
     expect(readManifestPackage(REWIRE_MANIFESTS["crates/zfb-js-host/Cargo.toml"])).toEqual({
       name: "zfb-js-host",
@@ -4596,6 +4630,30 @@ describe("cargo-internal-rewire (#4258)", () => {
           repo.git("commit", "-qam", "fixture: committed publishable internal crate");
         },
         message: /crates\/zfb-js-host\/Cargo\.toml does not set publish = false/,
+      },
+      {
+        name: "publish metadata hidden in a multiline description",
+        setup: () => {
+          writeRewireManifests(repo.root, (path, text) =>
+            path.endsWith("zfb-js-host/Cargo.toml")
+              ? text.replace("publish = false\n", 'description = """\npublish = false\n"""\n')
+              : text,
+          );
+          repo.git("commit", "-qam", "fixture: committed multiline description");
+        },
+        message: /unsupported multiline TOML strings/,
+      },
+      {
+        name: "workspace membership mentioned only in a comment",
+        setup: () => {
+          writeRewireManifests(repo.root, (path, text) =>
+            path === "Cargo.toml"
+              ? '[workspace]\nmembers = [\n"crates/zfb-render", # "crates/zfb-js-host"\n]\nresolver = "2"\n'
+              : text,
+          );
+          repo.git("commit", "-qam", "fixture: commented workspace member");
+        },
+        message: /crates\/zfb-js-host\/Cargo\.toml is not a workspace member path/,
       },
       {
         name: "a wrong-platform artifact",
