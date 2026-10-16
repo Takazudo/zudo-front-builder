@@ -8,11 +8,14 @@ import base64
 import hashlib
 import importlib.util
 import json
+import select
+import socket
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 BASELINE = "deno_core 0.399.0 / v8 147.4.0"
@@ -310,18 +313,91 @@ class CheckerProtocolTest(unittest.TestCase):
                 self.assertEqual(report["results"], [])
                 self.assertFalse(marker.exists())
 
-    def test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows(self):
-        outer = self.load("check-outer-config.py")
-        payload = b"partial \xf0\x9f"
-        runner = self.runner(payload, extra="import time; time.sleep(30)")
-        report = outer.run(runner, timeout=0.3)
+    def assert_watchdog_rows(self, report):
         self.assertFalse(report["passed"])
         self.assertIsNone(report["exit_code"])
         self.assertIn("watchdog", report["watchdog"])
-        self.assertEqual(base64.b64decode(report["stdout_base64"]), payload)
-        self.assertEqual(report["stderr"], "fixture stderr\n")
         self.assertEqual(len(report["rows"]), 7)
         self.assertTrue(all(not row["passed"] for row in report["rows"]))
+
+    def test_real_watchdog_fails_outer_rows_without_output_precondition(self):
+        outer = self.load("check-outer-config.py")
+        runner = self.runner(b"", extra="import signal; signal.pause()")
+        # This is deliberately unsynchronized: expiry is failure even when the
+        # interpreter has not started. No output is required to prove expiry.
+        self.assert_watchdog_rows(outer.run(runner, timeout=0.3))
+
+    def ready_fixture(self, outer, payload, *, signal_ready=True):
+        # Test-only seam around Popen construction, not production readiness.
+        # The fixture writes before reading stdin, so waiting here cannot
+        # deadlock on subprocess.run's later communicate(input=...). The real
+        # subprocess.run still owns timeout, kill, wait and output capture.
+        reader, writer = socket.socketpair()
+        with reader, writer:
+            runner = self.root / "ready-runner"
+            runner.write_text(
+                f"#!{sys.executable} -S\nimport os, signal\n"
+                f"os.write(1, {payload!r})\n"
+                "os.write(2, b'fixture stderr\\n')\n"
+                + (f"os.write({writer.fileno()}, b'R')\nsignal.pause()\n"
+                   if signal_ready else "")
+            )
+            runner.chmod(0o755)
+            children = []
+            testcase = self
+
+            class ReadyPopen(subprocess.Popen):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, pass_fds=(writer.fileno(),), **kwargs)
+                    children.append(self)
+                    writer.close()
+                    try:
+                        # Same 10s fixture/CLI safety ceiling used by invoke().
+                        readable, _, _ = select.select([reader], [], [], 10)
+                        testcase.assertTrue(readable, "fixture readiness deadline expired")
+                        testcase.assertEqual(reader.recv(1), b"R", "fixture exited before readiness")
+                    except BaseException:
+                        self.kill()
+                        self.wait(timeout=10)
+                        for stream in (self.stdin, self.stdout, self.stderr):
+                            if stream is not None:
+                                stream.close()
+                        raise
+
+            with mock.patch.object(subprocess, "Popen", ReadyPopen):
+                try:
+                    return outer.run(runner, timeout=0.3)
+                finally:
+                    self.assertTrue(children)
+                    self.assertIsNotNone(children[0].returncode, "fixture was not reaped")
+
+    def test_real_watchdog_preserves_ready_partial_bytes_and_failed_outer_rows(self):
+        outer = self.load("check-outer-config.py")
+        payload = b"partial \xf0\x9f"
+        report = self.ready_fixture(outer, payload)
+        self.assert_watchdog_rows(report)
+        self.assertIn("stdout_base64", report, "ready fixture's non-UTF-8 output was lost")
+        self.assertEqual(base64.b64decode(report["stdout_base64"]), payload)
+        self.assertEqual(report["stderr"], "fixture stderr\n")
+
+    def test_watchdog_fixture_missing_readiness_fails_and_reaps(self):
+        outer = self.load("check-outer-config.py")
+        with self.assertRaisesRegex(AssertionError, "fixture exited before readiness"):
+            self.ready_fixture(outer, b"", signal_ready=False)
+
+    def test_watchdog_fixture_readiness_deadline_fails_and_reaps(self):
+        outer = self.load("check-outer-config.py")
+        with mock.patch.object(select, "select", return_value=([], [], [])):
+            with self.assertRaisesRegex(AssertionError, "fixture readiness deadline expired"):
+                self.ready_fixture(outer, b"")
+
+    def test_valid_ready_receipts_do_not_rescue_watchdog(self):
+        outer = self.load("check-outer-config.py")
+        report = self.ready_fixture(outer, framed(OUTER_PREFIX, outer_receipts()))
+        self.assertFalse(report["passed"])
+        self.assertIsNone(report["exit_code"])
+        self.assertIn("watchdog", report["watchdog"])
+        self.assertEqual(report["receipt_count"], 7)
 
     def test_changed_bytes_or_execute_permission_fail_after_zero_exit(self):
         payload = framed(HOST_PREFIX, [{"engine": CANDIDATE, "ok": True, "value": {"probe": 42}}])
