@@ -1885,15 +1885,15 @@ fn starts_with_block_level_tag(s: &str) -> bool {
 /// We do NOT try to be a full JSX parser — the rule is:
 ///   - find `<` not preceded by `<` (skips `<<` artefacts);
 ///   - the parsed name must be a component identifier or member;
-///   - subsequent chars are Unicode alphanumeric / `_` / `$` / `.` (dotted
+///   - subsequent chars are JavaScript identifier continuations / `.` (dotted
 ///     names like `<Foo.Bar>` are tracked under their head, which is
 ///     all the preamble emits anyway);
 ///   - skip closing tags (`</Name>`), they're picked up by the
 ///     matching open.
 ///
-/// The logic is intentionally permissive — false positives only mean
-/// the module declares a `const Name = …` it never uses, which is
-/// harmless dead code. False negatives (missing a real reference)
+/// The scan is intentionally permissive, but every dotted segment must
+/// be a valid identifier so literal comparisons cannot create numeric
+/// bindings. False negatives (missing a real reference)
 /// would surface as a `ReferenceError` at runtime, which the existing
 /// `if (!Name) throw new Error(...)` preamble already converts into a
 /// readable diagnostic.
@@ -1935,7 +1935,7 @@ fn collect_jsx_component_names(jsx: &str, out: &mut std::collections::BTreeSet<S
         }
         let start = j;
         for c in jsx[j..].chars() {
-            if c.is_alphanumeric() || c == '_' || c == '$' || c == '.' {
+            if markdown::id_cont(c, true) || c == '$' || c == '.' {
                 j += c.len_utf8();
             } else {
                 break;
@@ -3350,9 +3350,11 @@ fn js_string_literal(s: &str) -> String {
 /// names. A member with a lowercase head still refers to a JavaScript
 /// object, rather than an intrinsic HTML tag.
 fn is_component_identifier(name: &str) -> bool {
-    !name.contains('-')
-        && !name.contains(':')
-        && (name.contains('.') || name.chars().next().is_some_and(char::is_uppercase))
+    name.split('.').all(|segment| {
+        let mut chars = segment.chars();
+        chars.next().is_some_and(markdown::id_start)
+            && chars.all(|c| markdown::id_cont(c, false) || c == '$')
+    }) && (name.contains('.') || name.chars().next().is_some_and(char::is_uppercase))
 }
 
 // -----------------------------------------------------------------------------
@@ -5485,6 +5487,32 @@ mod tests {
         assert!(!is_component_identifier("note"));
         assert!(!is_component_identifier("p"));
         assert!(!is_component_identifier(""));
+    }
+
+    #[test]
+    fn component_members_require_identifier_segments() {
+        for name in ["1.5", "UI.1", "UI..Anchor", ".UI", "UI.", "UI.foo-bar"] {
+            assert!(!is_component_identifier(name), "{name}");
+        }
+        for name in [
+            "UI.Anchor",
+            "ui.Anchor",
+            "UI.Group.Anchor",
+            "UI$Kit.An$chor",
+            "Δ.Anchor",
+            "A\u{0301}Anchor",
+            "A\u{0301}.Anchor",
+            "A\u{200c}.Anchor",
+            "UI.default",
+        ] {
+            assert!(is_component_identifier(name), "{name}");
+            let mut names = std::collections::BTreeSet::new();
+            collect_jsx_component_names(&format!("<{name} />"), &mut names);
+            assert_eq!(names, [name.split('.').next().unwrap().to_string()].into());
+        }
+        let mut names = std::collections::BTreeSet::new();
+        collect_jsx_component_names("<Preview js={`x<1.5; y<2.25`} />", &mut names);
+        assert_eq!(names, ["Preview".to_string()].into());
     }
 
     /// Three headings → 3-element `headings` array exported alongside
