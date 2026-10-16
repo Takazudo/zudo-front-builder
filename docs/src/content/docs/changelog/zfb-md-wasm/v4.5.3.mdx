@@ -1,0 +1,19 @@
+---
+title: v4.5.3
+sidebar_position: 40
+---
+
+# v4.5.3
+
+Released: 2026-10-16
+
+## Bug Fixes
+
+- `compile` keeps the authored whitespace of multiline MDX expressions. Template literals and other string payloads in attributes, spreads, flow/text expressions, and nested JSX no longer lose meaningful indentation, tabs, or blank lines. This is the same fix as in the `@takazudo/zfb` engine. `parseToAst` output is unchanged (3a9eb1d3).
+- `compile` no longer rejects a valid template string that contains a decimal comparison, such as `` <Preview js={`x<1.5`} /> ``. Before, it returned `code: null` with `Unexpected numeric literal`. This is the same fix as in the `@takazudo/zfb` engine (ca85c800).
+
+## Other Changes
+
+- Plain Markdown inputs skip a redundant frontmatter dispatch (d8295446).
+- `highlightCode` avoids re-sorting theme names that are already ordered (95109f60).
+- Shipped sizes (CI-measured at v4.5.3, gzip-9): root (`.`) 1,521,731 B, `./highlight` 821,788 B, `./render` 1,098,982 B, `./parse` 285,309 B. All four are inside their ceilings. The documented size tables were reconciled with these hosted production measurements (3d53b57a). All four `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so all four SHA-256 digests change in v4.5.3 whether or not an artifact's byte size moved. Re-verify pinned digests against `@takazudo/zfb-md-wasm/shipped-artifacts.json` or the `zfb-md-wasm-4.5.3-shipped-artifacts.json` Release asset.

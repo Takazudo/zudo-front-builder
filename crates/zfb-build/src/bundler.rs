@@ -1221,6 +1221,7 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
 struct ShadowParentEnv {
     temp_dir: PathBuf,
     xdg_cache_home: Option<OsString>,
+    #[cfg_attr(windows, allow(dead_code))]
     home: Option<OsString>,
     #[cfg_attr(not(windows), allow(dead_code))]
     local_app_data: Option<OsString>,
@@ -1949,6 +1950,19 @@ impl Drop for ShadowSession {
     }
 }
 
+// File replacement must reject real directories; only owned cleanup and explicit
+// persistent-session directory transitions may remove them recursively (#4269).
+fn unlink_shadow_file(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            zfb_types::directory_link::remove(path)
+        }
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn remove_shadow_entry(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -2492,7 +2506,7 @@ impl<'s> ShadowWriter<'s> {
             // against writing THROUGH a pre-existing symlink into the
             // user's source tree (#553); for the plain-write sites it is
             // a no-op ENOENT unlink (the prod shadow tempdir is fresh).
-            remove_shadow_entry(to)?;
+            unlink_shadow_file(to)?;
             return fs::write(to, bytes);
         };
         let rel = self.rel_of(to)?;
@@ -2528,7 +2542,7 @@ impl<'s> ShadowWriter<'s> {
                     self.forget_verified_under(to);
                     session.written.retain(|p, _| !p.starts_with(&rel));
                 }
-                remove_shadow_entry(to)?;
+                unlink_shadow_file(to)?;
                 fs::write(to, bytes)?;
                 session.written.insert(rel, hash);
                 Ok(())
@@ -2542,7 +2556,7 @@ impl<'s> ShadowWriter<'s> {
     fn copy_if_changed(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         if self.session.is_none() {
             self.ensure_parent_contained("copy to", to)?;
-            remove_shadow_entry(to)?;
+            unlink_shadow_file(to)?;
             return fs::copy(from, to).map(|_| ());
         }
         let bytes = fs::read(from)?;
@@ -6343,6 +6357,43 @@ fn rewrite_esbuild_module_labels_at_path(
     }
 }
 
+/// Lexical display identity only: never use this to authorize filesystem access.
+fn esbuild_module_label_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path = {
+        use std::path::{Component, Prefix};
+        // esbuild emits forward slashes even for Windows verbatim paths.
+        let spelling = path.to_string_lossy().replace('/', "\\");
+        let mut components = Path::new(&spelling).components();
+        let ordinary_prefix = match components.next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => Some(PathBuf::from(format!("{}:", drive as char))),
+                Prefix::VerbatimUNC(server, share) => Some(PathBuf::from(format!(
+                    "\\\\{}\\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                ))),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(mut ordinary) = ordinary_prefix {
+            ordinary.extend(components);
+            ordinary
+        } else {
+            PathBuf::from(spelling)
+        }
+    };
+    #[cfg(windows)]
+    {
+        normalize_path_lexical(&path)
+    }
+    #[cfg(not(windows))]
+    {
+        normalize_path_lexical(path)
+    }
+}
+
 fn rewrite_esbuild_module_labels(
     bundle: &str,
     metafile_bytes: &[u8],
@@ -6359,11 +6410,17 @@ fn rewrite_esbuild_module_labels(
     let metafile: serde_json::Value = serde_json::from_slice(metafile_bytes).ok()?;
     let inputs = metafile.get("inputs")?.as_object()?;
     let mut labels = HashMap::new();
+    let shadow = esbuild_module_label_path(shadow);
+    let project_root = esbuild_module_label_path(project_root);
+    let work_root = esbuild_module_label_path(work_root);
     for key in inputs.keys() {
-        if !key.starts_with("../") || key.contains(['\r', '\n', '\u{2028}', '\u{2029}']) {
+        let input = esbuild_module_label_path(Path::new(key));
+        if (!key.starts_with("../") && !(cfg!(windows) && input.is_absolute()))
+            || key.contains(['\r', '\n', '\u{2028}', '\u{2029}'])
+        {
             continue;
         }
-        let path = normalize_path_lexical(&shadow.join(key));
+        let path = normalize_path_lexical(&shadow.join(input));
         let components: Vec<_> = path.components().collect();
         let label = if let Some(index) = components
             .iter()
@@ -6371,9 +6428,11 @@ fn rewrite_esbuild_module_labels(
         {
             let tail = components[index + 1..].iter().collect::<PathBuf>();
             format!("node_modules/{}", rel_to_forward_slash(&tail))
-        } else if let Ok(rel) = path.strip_prefix(normalize_path_lexical(project_root)) {
+        } else if let Ok(rel) = path.strip_prefix(&shadow) {
             rel_to_forward_slash(rel)
-        } else if let Ok(rel) = path.strip_prefix(normalize_path_lexical(work_root)) {
+        } else if let Ok(rel) = path.strip_prefix(&project_root) {
+            rel_to_forward_slash(rel)
+        } else if let Ok(rel) = path.strip_prefix(&work_root) {
             rel_to_forward_slash(rel)
         } else if let Some(name) = path.file_name() {
             format!("external/{}", name.to_string_lossy())
@@ -6433,6 +6492,43 @@ fn rewrite_esbuild_module_labels(
 #[cfg(test)]
 mod esbuild_module_label_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_shadow_labels_drop_only_the_metafile_backed_comment_prefix() {
+        for (key, shadow) in [
+            (
+                "//?/C:/tmp/random-shadow/pages/index.tsx",
+                "C:\\tmp\\random-shadow",
+            ),
+            (
+                "C:/tmp/random-shadow/pages/index.tsx",
+                "\\\\?\\C:\\tmp\\random-shadow",
+            ),
+            (
+                "//?/UNC/server/share/random-shadow/pages/index.tsx",
+                "\\\\server\\share\\random-shadow",
+            ),
+        ] {
+            let bundle = format!(
+                "// {key}\r\nconst text = `\n// {key}\n`;\nconst quoted = '// {key}'; // {key}\n// {key}.unlisted\n"
+            );
+            let metafile = serde_json::json!({"inputs": {key: {}}});
+            let rewritten = rewrite_esbuild_module_labels(
+                &bundle,
+                &serde_json::to_vec(&metafile).unwrap(),
+                Path::new(shadow),
+                Path::new("C:/project"),
+                Path::new(shadow),
+            )
+            .unwrap();
+            assert_eq!(
+                rewritten,
+                bundle.replacen(&format!("// {key}\r\n"), "// pages/index.tsx\r\n", 1),
+                "only the actual absolute module-label comment may change"
+            );
+        }
+    }
 
     #[test]
     fn rewrites_only_metafile_backed_js_comments() {
@@ -8583,11 +8679,9 @@ fn materialise_mdx_components_file(
 /// Symlink `from` at `to`, falling back to `fs::copy` on platforms that
 /// do not support file symlinks or when the necessary privilege is absent.
 ///
-/// Any pre-existing entry at `to` is removed first so we never attempt to
-/// create a symlink over an existing path. The removal error is ignored
-/// (the entry may not exist yet on the first materialise pass). This is
-/// forward-compatible with a future persistent-shadow refactor where the
-/// shadow tree is reused across builds.
+/// A pre-existing file or link at `to` is unlinked first without following
+/// its target. Real directories are rejected; the session writer handles
+/// owned directory-to-file transitions before calling this helper.
 ///
 /// - **Unix**: uses [`std::os::unix::fs::symlink`].
 /// - **Windows**: tries [`std::os::windows::fs::symlink_file`]; falls back
@@ -8596,10 +8690,7 @@ fn materialise_mdx_components_file(
 ///   incurs no regression on unprivileged Windows contexts).
 /// - **Other platforms**: unconditional `fs::copy`.
 fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
-    // Remove any pre-existing entry at `to` so we never try to symlink
-    // over an existing file. Forward-compatible with a future
-    // persistent-shadow refactor (out of scope for this epic).
-    remove_shadow_entry(to)?;
+    unlink_shadow_file(to)?;
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(from, to)
@@ -27676,12 +27767,52 @@ mod tests {
                 let package = outside.join("package");
                 fs::create_dir(&package).unwrap();
                 fs::write(package.join("sentinel"), "keep").unwrap();
-                let leaf = shadow.join("leaf");
-                zfb_types::directory_link::create(&package, &leaf).unwrap();
-                writer.write_if_changed(&leaf, b"new file").unwrap();
-                assert_eq!(fs::read(&leaf).unwrap(), b"new file");
-                assert_eq!(fs::read(package.join("sentinel")).unwrap(), b"keep");
+                let source = outside.join("source.txt");
+                fs::write(&source, b"new file").unwrap();
+                for operation in ["write", "copy", "link"] {
+                    let leaf = shadow.join(operation);
+                    zfb_types::directory_link::create(&package, &leaf).unwrap();
+                    match operation {
+                        "write" => writer.write_if_changed(&leaf, b"new file"),
+                        "copy" => writer.copy_if_changed(&source, &leaf),
+                        "link" => writer.symlink_if_absent(&source, &leaf),
+                        _ => unreachable!(),
+                    }
+                    .unwrap();
+                    assert_eq!(fs::read(&leaf).unwrap(), b"new file");
+                    assert_eq!(fs::read(package.join("sentinel")).unwrap(), b"keep");
+                }
             });
+        }
+    }
+
+    #[test]
+    fn shadow_writer_passthrough_preserves_real_directory_destinations() {
+        let shadow = tempfile::tempdir().unwrap();
+        let source = shadow.path().join("source.txt");
+        fs::write(&source, "new file").unwrap();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+
+        for populated in [false, true] {
+            for operation in ["write", "copy", "link"] {
+                let destination = shadow.path().join(format!("{operation}-{populated}"));
+                fs::create_dir(&destination).unwrap();
+                let sentinel = destination.join("sentinel");
+                if populated {
+                    fs::write(&sentinel, "keep").unwrap();
+                }
+                let result = match operation {
+                    "write" => writer.write_if_changed(&destination, b"new file"),
+                    "copy" => writer.copy_if_changed(&source, &destination),
+                    "link" => writer.symlink_if_absent(&source, &destination),
+                    _ => unreachable!(),
+                };
+                assert!(result.is_err(), "{operation} must reject a real directory");
+                assert!(fs::symlink_metadata(&destination).unwrap().is_dir());
+                if populated {
+                    assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+                }
+            }
         }
     }
 
