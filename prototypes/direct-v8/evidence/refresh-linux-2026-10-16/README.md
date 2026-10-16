@@ -44,6 +44,11 @@ workspace-resolved default-producer metadata proofs. `standalone-graph.json`
 separately selects the direct-V8 host and verifies 152 normal/build rows with no
 Deno. A future actual CLI graph tied to its exact feature build is still unproved.
 Neither prepared proof admits artifacts or establishes live predecessor approval.
+The pure proof was rerun against the formatted durable declaration and closure
+files before its output was committed; its input digests were not substituted
+manually. Final remote refresh found newer held heads `35a68f17` (#4234, test-only)
+and `9912ad75` (#4259, documentation-only). Neither changes the measured source
+or the recorded proof-tooling identity, and neither was imported.
 
 Two inherited Cargo-provenance budget assertions remain failing. No ceilings,
 allowances, policy, live contract, package version or runtime selection was
