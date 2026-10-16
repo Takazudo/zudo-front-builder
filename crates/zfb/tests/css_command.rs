@@ -3224,7 +3224,9 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
             "--no-save",
             "--package-lock=false",
         ])
-        .arg(&tarball)
+        // npm treats a canonical Windows verbatim path as a malformed file URL.
+        // Keep the known sibling path relative and pass it as one argument.
+        .arg(Path::new("../tarballs").join(tarball.file_name().expect("tarball filename")))
         .current_dir(&consumer)
         .output()
         .expect("spawn npm install");
