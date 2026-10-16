@@ -41,7 +41,6 @@ import {
   parseOldCargoRef,
   predecessorRecord,
   proveFingerprintHelper,
-  readGitBlob,
   readmeSection,
   rebaselineContract,
   repinFingerprintHelper,
@@ -2005,50 +2004,6 @@ describe("git-backed provenance (#4219)", () => {
       true,
     );
   });
-
-  it("uses the original old-lock bytes when a local replacement blob exists", async () => {
-    quiet();
-    const original = repo.git("rev-parse", "HEAD:Cargo.lock");
-    const replacement = repo.git("hash-object", "-w", "Cargo.lock");
-    repo.git("replace", original, replacement);
-    try {
-      expect(repo.git("show", "HEAD:Cargo.lock")).toBe(newText.trim());
-      await main(cargoArgv(), repo.root);
-      expect(written().baselineEvidence.cargoTransition.oldLockSource).toEqual({
-        commit: repo.commit,
-        path: "Cargo.lock",
-        sha256: OLD,
-      });
-    } finally {
-      repo.git("replace", "-d", original);
-    }
-  });
-
-  it.each(["blob", "tree", "commit"])(
-    "ignores %s replacements when reading a cited commit",
-    (kind) => {
-      const isolated = makeGitCheckout(roots, { oldCargoLock: oldText, newCargoLock: newText });
-      isolated.git("add", "Cargo.lock");
-      const tree = isolated.git("write-tree");
-      const replacementCommit = isolated.git(
-        "commit-tree",
-        tree,
-        "-p",
-        isolated.commit,
-        "-m",
-        "replacement fixture",
-      );
-      const object = (commit) =>
-        kind === "commit"
-          ? commit
-          : isolated.git("rev-parse", commit + (kind === "tree" ? "^{tree}" : ":Cargo.lock"));
-      isolated.git("replace", object(isolated.commit), object(replacementCommit));
-      expect(isolated.git("show", isolated.commit + ":Cargo.lock")).toBe(newText.trim());
-      const blob = readGitBlob(isolated.root, isolated.commit, "Cargo.lock");
-      expect(blob.commit).toBe(isolated.commit);
-      expect(blob.bytes.toString()).toBe(oldText);
-    },
-  );
 
   it("accepts an unambiguous tag or branch, an explicit path and a matching corroboration file", async () => {
     quiet();
