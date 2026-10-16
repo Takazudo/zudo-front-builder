@@ -335,6 +335,17 @@ class OutputBoundaryTest(unittest.TestCase):
         self.assert_refused(self.root / "target" / "link" / "run", self.outside / "run")
         self.assert_refused(self.alias / "target" / "link" / "run", self.outside / "run")
 
+    def test_target_itself_and_existing_outputs_are_refused(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.main(self.alias / "target")
+        self.assertEqual(raised.exception.code, 2)
+        existing = self.root / "target" / "existing"
+        existing.mkdir()
+        with self.assertRaises(SystemExit) as raised:
+            self.main(self.alias / "target" / "existing")
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(list(existing.iterdir()), [])
+
     def test_parent_traversal_cannot_escape(self):
         self.assert_refused(self.root / "target" / ".." / ".." / "outside" / "run", self.outside / "run")
 
