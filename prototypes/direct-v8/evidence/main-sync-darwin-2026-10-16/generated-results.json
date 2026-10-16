@@ -1,0 +1,254 @@
+{
+  "passed": true,
+  "limitations": [
+    "No candidate CLI/dev reload integration or live-idle cancellation claim.",
+    "Watchdogs are failures; installed Chromium is explicit and no browser download is attempted."
+  ],
+  "snapshot_manifest_sha256": "7a0ec90aa8b98b0109e4292fd3a01b0c7cfa8d7caf0f4205793027d096c4703f",
+  "harness_sha256": {
+    "prepare-fixtures.py": "7ca7dcb4d6e3c1a8cd7e73aa7cb75634c495422ed2c890d0e4e63c265548e03b",
+    "check-generated.py": "677ee7c9ad90f355f75c94ea7444b16251f153fc603274e68b83b158ef45de58",
+    "browser-check.mjs": "1e4837f40913fc8ad6ee6d8054489919f3e54d25e3c862fbb5fbf226a1d53e62"
+  },
+  "executables": {
+    "baseline": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+      "sha256": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911"
+    },
+    "candidate": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+      "sha256": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925"
+    },
+    "postprocessor": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_postprocess",
+      "sha256": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72"
+    },
+    "node": {
+      "path": "/Users/takazudo/.nodenv/versions/24.14.0/bin/node",
+      "sha256": "20a18709f0154d668f1bd6f6ea8c2a7ae001447b4b2c339732f22e57a8767a55"
+    },
+    "chromium": {
+      "path": "/Users/takazudo/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "sha256": "b1b9e2dd063115031f08eadc10ed381ca0fa05b2284baff8f721d87f5f0f61b7"
+    }
+  },
+  "input_sha256": "3fdebaa7d9fe91c84791df2ed4957dfc6da2696035da5650b5905c73c7e438c1",
+  "baseline": {
+    "engine": "deno_core 0.399.0 / v8 147.4.0",
+    "passed": true,
+    "rows": [
+      {
+        "name": "emitted-config",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "d99429ae4b1dfdfec3cc7a29f6def04abf66c50c43e7d3f2c9b70cc95493aa63",
+        "error": null
+      },
+      {
+        "name": "generated-main",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "generated-wrapper-inner",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "prepared-plugin-and-binary-request",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "39e7cd63e69ecbedbe885197ba5e6f71ece2e6e0cbb6ac3da405f17e198f58b5",
+        "error": null
+      },
+      {
+        "name": "authored-mapped-throw",
+        "passed": true,
+        "failures": [],
+        "error": "runtime error: Error: direct-v8-authored-map-sentinel\n    at fail (file:///zfb/throw.mjs:5:9)\n    at Object.fetch (file:///zfb/throw.mjs:9:12)\n    at Object.dispatch (zfb:host_shim:310:47)\n    at zfb:dispatch:1:18",
+        "console": "[error] direct-v8-negative-before-throw",
+        "mapped_frames": [
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 6,
+              "column": 9,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          },
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 11,
+              "column": 12,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fresh-after-handler-failure",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-2",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-3",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "b8792f5527a407e8053b4eba86417dc060f1f1e5eaaf46522607c906d3fb683e",
+        "error": null
+      }
+    ]
+  },
+  "candidate": {
+    "engine": "direct v8 147.4.0",
+    "passed": true,
+    "rows": [
+      {
+        "name": "emitted-config",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "630418b855851a7a50fa42744364003e48f408db98c6d4422e95c6009b9bba91",
+        "error": null
+      },
+      {
+        "name": "generated-main",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "generated-wrapper-inner",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "prepared-plugin-and-binary-request",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "0878c63990c80890e561ada665d7bdbbb8892b7a40d26d776ffe6bf162e0760e",
+        "error": null
+      },
+      {
+        "name": "authored-mapped-throw",
+        "passed": true,
+        "failures": [],
+        "error": "config evaluation error: Error: direct-v8-authored-map-sentinel\n    at fail (file:///zfb/throw.mjs:5:9)\n    at Object.fetch (file:///zfb/throw.mjs:9:12)\n    at Object.dispatch (zfb:host_globals:310:47)",
+        "console": "[error] direct-v8-negative-before-throw",
+        "mapped_frames": [
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 6,
+              "column": 9,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          },
+          {
+            "ok": true,
+            "value": {
+              "file": "throw.ts",
+              "line": 11,
+              "column": 12,
+              "source_content": "// Source-map expectation: Error construction at line 6, column 9 (1-based).\nconst marker: string = \"direct-v8-negative-before-throw\";\n\nfunction fail(): never {\n  console.error(marker);\n  throw new Error(\"direct-v8-authored-map-sentinel\");\n}\n\nexport default {\n  async fetch(): Promise<Response> {\n    return fail();\n  },\n};\n"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fresh-after-handler-failure",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-2",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      },
+      {
+        "name": "finite-create-load-dispatch-drop-3",
+        "passed": true,
+        "failures": [],
+        "receipt_sha256": "98f465dffadd1edb47ca70412fff7b82296aefdf2716aa79e74e587cac55fe9c",
+        "error": null
+      }
+    ]
+  },
+  "byte_and_value_parity": [
+    {
+      "name": "emitted-config",
+      "passed": true
+    },
+    {
+      "name": "generated-main",
+      "passed": true
+    },
+    {
+      "name": "generated-wrapper-inner",
+      "passed": true
+    },
+    {
+      "name": "prepared-plugin-and-binary-request",
+      "passed": true
+    },
+    {
+      "name": "fresh-after-handler-failure",
+      "passed": true
+    },
+    {
+      "name": "finite-create-load-dispatch-drop-2",
+      "passed": true
+    },
+    {
+      "name": "finite-create-load-dispatch-drop-3",
+      "passed": true
+    }
+  ],
+  "browser": {
+    "executablePath": "/Users/takazudo/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    "origin": "http://127.0.0.1:56258",
+    "passed": true,
+    "version": "149.0.7827.55",
+    "initialText": "Count: 0",
+    "css": "rgb(12, 34, 56)",
+    "afterClickText": "Count: 1",
+    "pageErrors": [],
+    "consoleErrors": [],
+    "exit_code": 0,
+    "command": [
+      "/Users/takazudo/.nodenv/versions/24.14.0/bin/node",
+      "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/browser-check.mjs",
+      "http://127.0.0.1:56258",
+      "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/generated/frozen/expected.json",
+      "/Users/takazudo/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/generated-results/browser.json"
+    ],
+    "executable_sha256": "b1b9e2dd063115031f08eadc10ed381ca0fa05b2284baff8f721d87f5f0f61b7",
+    "candidate_html_sha256": "c1943cff6c862313dd7187897ecd67138650216656175463448fcbad50d231b6",
+    "stylesheet": ["/assets/styles-1f03d86f.css"],
+    "island_modules": ["/assets/islands-46342adf.js"]
+  }
+}

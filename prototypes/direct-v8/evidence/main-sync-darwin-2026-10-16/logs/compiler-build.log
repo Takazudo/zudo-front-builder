@@ -1,0 +1,598 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.228
+   Compiling allocator-api2 v0.2.21
+   Compiling serde v1.0.228
+   Compiling once_cell v1.21.4
+   Compiling foldhash v0.2.0
+   Compiling equivalent v1.0.2
+   Compiling version_check v0.9.5
+   Compiling siphasher v1.0.3
+   Compiling bitflags v2.13.2
+   Compiling pin-project-lite v0.2.17
+   Compiling percent-encoding v2.3.2
+   Compiling bytes v1.11.1
+   Compiling rustc-hash v2.1.3
+   Compiling zmij v1.0.21
+   Compiling smallvec v1.16.3
+   Compiling log v0.4.29
+   Compiling hashbrown v0.17.1
+   Compiling ryu v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling stable_deref_trait v1.2.1
+   Compiling syn v2.0.117
+   Compiling tracing-core v0.1.36
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.48
+   Compiling utf8_iter v1.0.4
+   Compiling rustversion v1.0.22
+   Compiling icu_normalizer_data v2.2.0
+   Compiling thiserror v2.0.18
+   Compiling icu_properties_data v2.2.0
+   Compiling indexmap v2.14.0
+   Compiling autocfg v1.5.0
+   Compiling num-traits v0.2.19
+   Compiling unicode-width v0.2.2
+   Compiling unicode-id-start v1.4.0
+   Compiling static_assertions v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling ahash v0.8.12
+   Compiling castaway v0.2.4
+   Compiling rand_core v0.6.4
+   Compiling either v1.15.0
+   Compiling futures-core v0.3.32
+   Compiling rand v0.8.6
+   Compiling phf_shared v0.13.1
+   Compiling phf_shared v0.11.3
+   Compiling mio v1.2.0
+   Compiling socket2 v0.6.3
+   Compiling generic-array v0.14.7
+   Compiling phf_generator v0.11.3
+   Compiling find-msvc-tools v0.1.9
+   Compiling typenum v1.20.0
+   Compiling parking_lot_core v0.9.12
+   Compiling shlex v1.3.0
+   Compiling cc v1.2.62
+   Compiling num-integer v0.1.46
+   Compiling synstructure v0.13.2
+   Compiling fastrand v2.4.1
+   Compiling scopeguard v1.2.0
+   Compiling data-encoding v2.11.0
+   Compiling lock_api v0.4.14
+   Compiling phf_generator v0.13.1
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling getrandom v0.2.17
+   Compiling bumpalo v3.19.0
+   Compiling outref v0.5.2
+   Compiling vsimd v0.8.0
+   Compiling digest v0.10.7
+   Compiling swc_macros_common v1.0.1
+   Compiling cpufeatures v0.2.17
+   Compiling serde_derive v1.0.228
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.5
+   Compiling thiserror-impl v2.0.18
+   Compiling tracing-attributes v0.1.31
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.2
+   Compiling phf_macros v0.11.3
+   Compiling hashbrown v0.14.5
+   Compiling zerovec v0.11.6
+   Compiling zerotrie v0.2.4
+   Compiling phf v0.11.3
+   Compiling base64-simd v0.8.0
+   Compiling tracing v0.1.44
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_locale_core v2.2.0
+   Compiling icu_collections v2.2.0
+   Compiling errno v0.3.14
+   Compiling http v1.4.0
+   Compiling anyhow v1.0.103
+   Compiling hashbrown v0.16.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling radium v0.7.0
+   Compiling icu_provider v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling phf_macros v0.13.1
+   Compiling base64 v0.22.1
+   Compiling num-bigint v0.4.6
+   Compiling futures-io v0.3.32
+   Compiling slab v0.4.12
+   Compiling unicode-segmentation v1.13.3
+   Compiling futures-task v0.3.32
+   Compiling tap v1.0.1
+   Compiling phf v0.13.1
+   Compiling wyz v0.5.1
+   Compiling http-body v1.0.1
+   Compiling is_ci v1.2.0
+   Compiling uuid v1.28.0
+   Compiling funty v2.0.0
+   Compiling httparse v1.10.1
+   Compiling bytes-str v0.2.7
+   Compiling debugid v0.8.0
+   Compiling triomphe v0.1.15
+   Compiling is-terminal v0.4.17
+   Compiling idna_adapter v1.2.2
+   Compiling tower-service v0.3.3
+   Compiling idna v1.1.0
+   Compiling if_chain v1.0.3
+   Compiling heck v0.5.0
+   Compiling owo-colors v4.3.0
+   Compiling bitvec v1.0.1
+   Compiling url v2.5.8
+   Compiling supports-color v2.1.0
+   Compiling hstr v4.0.2
+   Compiling supports-color v3.0.2
+   Compiling ring v0.17.14
+   Compiling scoped-tls v1.0.1
+   Compiling better_scoped_tls v1.0.1
+   Compiling swc_visit v2.0.1
+   Compiling swc_atoms v10.0.0
+   Compiling signal-hook-registry v1.4.8
+   Compiling from_variant v3.0.0
+   Compiling ast_node v6.1.0
+   Compiling tokio-macros v2.7.0
+   Compiling swc_eq_ignore_macros v1.0.1
+   Compiling parking_lot v0.12.5
+   Compiling zeroize v1.8.2
+   Compiling try-lock v0.2.5
+   Compiling smawk v0.3.3
+   Compiling unicode-linebreak v0.1.5
+   Compiling crossbeam-utils v0.8.21
+   Compiling siphasher v0.3.11
+   Compiling want v0.3.1
+   Compiling textwrap v0.16.2
+   Compiling rustls-pki-types v1.14.1
+   Compiling tokio v1.52.3
+   Compiling swc_sourcemap v10.0.2
+   Compiling is-macro v0.3.7
+   Compiling string_enum v1.0.2
+   Compiling oxc-miette-derive v2.7.1
+   Compiling aho-corasick v1.1.4
+   Compiling atomic-waker v1.1.2
+   Compiling untrusted v0.9.0
+   Compiling crc32fast v1.5.0
+   Compiling futures-sink v0.3.32
+   Compiling oxc-miette v2.7.1
+   Compiling swc_common v24.0.0
+   Compiling sha2 v0.10.9
+   Compiling sync_wrapper v1.0.2
+   Compiling dtoa v1.0.11
+   Compiling adler2 v2.0.1
+   Compiling rustls v0.23.45
+   Compiling regex-syntax v0.8.11
+   Compiling same-file v1.0.6
+   Compiling oxc_data_structures v0.95.0
+   Compiling simd-adler32 v0.3.9
+   Compiling tower-layer v0.3.3
+   Compiling miniz_oxide v0.8.9
+   Compiling oxc_allocator v0.95.0
+   Compiling walkdir v2.5.0
+   Compiling swc_ecma_ast v26.0.0
+   Compiling dtoa-short v0.3.5
+   Compiling oxc_ast_macros v0.95.0
+   Compiling cssparser-macros v0.6.1
+   Compiling compact_str v0.9.0
+   Compiling seq-macro v0.3.6
+   Compiling subtle v2.6.1
+   Compiling ipnet v2.12.0
+   Compiling dragonbox_ecma v0.1.12
+   Compiling syn v1.0.109
+   Compiling cow-utils v0.1.3
+   Compiling hex v0.4.3
+   Compiling oxc_estree v0.95.0
+   Compiling crossbeam-epoch v0.9.20
+   Compiling oxc_span v0.95.0
+   Compiling flate2 v1.1.9
+   Compiling regex-automata v0.4.18
+   Compiling nonmax v0.5.5
+   Compiling oxc_index v4.1.0
+   Compiling http-body-util v0.1.3
+   Compiling sha1 v0.10.6
+   Compiling futures-macro v0.3.32
+   Compiling compact_str v0.7.1
+   Compiling swc_ecma_visit v26.0.0
+   Compiling num_cpus v1.17.0
+   Compiling par-core v2.0.0
+   Compiling dragonbox_ecma v0.0.5
+   Compiling oxc_syntax v0.95.0
+   Compiling futures-util v0.3.32
+   Compiling rustls-webpki v0.103.15
+   Compiling crossbeam-deque v0.8.6
+   Compiling zfb-types v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-types)
+   Compiling oxc_diagnostics v0.95.0
+   Compiling swc_ecma_utils v32.0.0
+   Compiling webpki-roots v1.0.7
+   Compiling pkg-config v0.3.33
+   Compiling precomputed-hash v0.1.1
+   Compiling onig_sys v69.9.3
+   Compiling oxc_regular_expression v0.95.0
+   Compiling swc_ecma_parser v42.0.0
+   Compiling swc_config_macro v1.0.1
+   Compiling bstr v1.12.1
+   Compiling httpdate v1.0.3
+   Compiling self_cell v1.2.2
+   Compiling powerfmt v0.2.0
+   Compiling rustix v1.1.4
+   Compiling mime v0.3.17
+   Compiling libm v0.2.16
+   Compiling deranged v0.5.8
+   Compiling globset v0.4.18
+   Compiling oxc_ast v0.95.0
+   Compiling swc_config v5.0.0
+   Compiling swc_ecma_hooks v0.10.0
+   Compiling futures-channel v0.3.32
+   Compiling ahash v0.7.8
+   Compiling getrandom v0.4.2
+   Compiling num-conv v0.2.1
+   Compiling unicase v2.9.0
+   Compiling noyalib v0.0.55
+   Compiling time-core v0.1.8
+   Compiling unicode-id v0.3.6
+   Compiling time v0.3.47
+   Compiling markdown v1.0.0
+   Compiling mime_guess v2.0.5
+   Compiling hyper v1.9.0
+   Compiling swc_ecma_transforms_base v46.0.1
+   Compiling swc_ecma_transforms_react v52.0.0
+   Compiling regex v1.13.1
+   Compiling swc_allocator v5.0.0
+   Compiling swc_ecma_codegen_macros v2.0.2
+   Compiling phf_codegen v0.13.1
+   Compiling quick-xml v0.41.0
+   Compiling ascii v1.1.0
+   Compiling swc_core v74.0.2
+   Compiling unicode-general-category v1.1.0
+   Compiling plist v1.10.0
+   Compiling swc_ecma_codegen v29.0.0
+   Compiling selectors v0.37.0
+   Compiling swc_ecma_transforms_typescript v52.0.0
+   Compiling onig v6.5.3
+   Compiling hyper-util v0.1.20
+   Compiling zfb-md-ast v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-ast)
+   Compiling oxc_ecmascript v0.95.0
+   Compiling tower v0.5.3
+   Compiling ptr_meta_derive v0.1.4
+   Compiling tokio-util v0.7.18
+   Compiling bincode v1.3.3
+   Compiling derive_more-impl v2.1.1
+   Compiling garde_derive v0.22.1
+   Compiling phf_codegen v0.11.3
+   Compiling compact_str v0.8.1
+   Compiling rayon-core v1.13.0
+   Compiling virtue v0.0.18
+   Compiling fnv v1.0.7
+   Compiling roxmltree v0.20.0
+   Compiling outref v0.1.0
+   Compiling rkyv v0.7.46
+   Compiling imagesize v0.14.0
+   Compiling garde v0.22.1
+   Compiling tempfile v3.27.0
+   Compiling derive_more v2.1.1
+   Compiling zfb-md-extras v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-extras)
+   Compiling bincode_derive v2.0.1
+   Compiling noyalib-serde-yaml v0.0.55
+   Compiling simd-abstraction v0.7.1
+   Compiling syntect v5.3.0
+   Compiling parcel_selectors v0.28.2
+   Compiling ptr_meta v0.1.4
+   Compiling hashbrown v0.12.3
+   Compiling oxc_ast_visit v0.95.0
+   Compiling ignore v0.4.25
+   Compiling tokio-rustls v0.26.4
+   Compiling rkyv_derive v0.7.46
+   Compiling cssparser v0.36.0
+   Compiling cssparser v0.33.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling halfbrown v0.4.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling float-cmp v0.10.0
+   Compiling itertools v0.14.0
+   Compiling rand_core v0.9.5
+   Compiling servo_arc v0.4.3
+   Compiling fsevent-sys v4.1.0
+   Compiling notify-types v2.1.0
+   Compiling http-range-header v0.4.2
+   Compiling seahash v4.1.0
+   Compiling matches v0.1.10
+   Compiling unty v0.0.4
+   Compiling html-escape v0.2.14
+   Compiling zfb-toolchain-pins v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-toolchain-pins)
+   Compiling notify v8.2.0
+   Compiling zfb-content v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-content)
+   Compiling bincode v2.0.1
+   Compiling tower-http v0.6.10
+   Compiling oxc_semantic v0.95.0
+   Compiling data-url v0.1.1
+   Compiling rand_chacha v0.9.0
+   Compiling value-trait v0.12.1
+   Compiling hyper-rustls v0.27.9
+   Compiling base64-simd v0.7.0
+   Compiling const-str-proc-macro v0.3.2
+   Compiling convert_case v0.6.0
+   Compiling cobs v0.3.0
+   Compiling async-trait v0.1.89
+   Compiling encoding_rs v0.8.35
+   Compiling simdutf8 v0.1.5
+   Compiling arrayvec v0.7.6
+   Compiling escape-simd v0.1.0
+   Compiling oxc_sourcemap v6.1.1
+   Compiling vlq v0.5.1
+   Compiling zfb-js-host v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-js-host)
+   Compiling parcel_sourcemap v2.1.1
+   Compiling json-escape-simd v3.1.2
+   Compiling zfb-render v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-render)
+   Compiling fast-glob v1.1.2
+   Compiling const-str v0.3.2
+   Compiling lol_html v2.9.0
+   Compiling simd-json v0.18.1
+   Compiling lightningcss-derive v1.0.0-alpha.43
+   Compiling postcard v1.1.3
+   Compiling rayon v1.12.0
+   Compiling reqwest v0.12.28
+   Compiling rand v0.9.4
+   Compiling zfb-graph v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-graph)
+   Compiling zfb-watcher v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-watcher)
+   Compiling cssparser-color v0.1.0
+   Compiling zfb-plugin-resolver v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-plugin-resolver)
+   Compiling dashmap v6.2.1
+   Compiling sourcemap v9.3.2
+   Compiling serde-content v0.1.2
+   Compiling dashmap v5.5.3
+   Compiling itertools v0.10.5
+   Compiling compact_str v0.10.0
+   Compiling wait-timeout v0.2.1
+   Compiling json-strip-comments v3.1.1
+   Compiling lazy_static v1.5.0
+   Compiling utf8parse v0.2.2
+   Compiling pathdiff v0.2.3
+   Compiling nodejs-built-in-modules v1.0.0
+   Compiling pastey v0.1.1
+   Compiling oxc_resolver v11.24.3
+   Compiling anstyle-parse v1.0.0
+   Compiling zfb-build v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-build)
+   Compiling lightningcss v1.0.0-alpha.71
+   Compiling minify-html-common v0.0.3
+   Compiling tungstenite v0.29.0
+   Compiling xattr v1.6.1
+   Compiling oxc-browserslist v2.3.1
+   Compiling filetime v0.2.28
+   Compiling colorchoice v1.0.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v1.0.0
+   Compiling tar v0.4.45
+   Compiling oxc_compat v0.95.0
+   Compiling oxc_codegen v0.95.0
+   Compiling zfb-binfetch v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-binfetch)
+   Compiling tokio-tungstenite v0.29.0
+   Compiling oxc_mangler v0.95.0
+   Compiling oxc_traverse v0.95.0
+   Compiling oxc_parser v0.95.0
+   Compiling axum-core v0.5.6
+   Compiling serde_path_to_error v0.1.20
+   Compiling clap_lex v1.1.0
+   Compiling strsim v0.11.1
+   Compiling matchit v0.8.4
+   Compiling clap_builder v4.6.0
+   Compiling axum v0.8.9
+   Compiling zfb-islands v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-islands)
+   Compiling zfb-config-loader v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-config-loader)
+   Compiling oxc_minifier v0.95.0
+   Compiling zfb v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb)
+   Compiling tokio-stream v0.1.18
+   Compiling clap_derive v4.6.1
+   Compiling include_dir_macros v0.7.4
+   Compiling clap v4.6.1
+   Compiling zudo-wind v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zudo-wind)
+   Compiling include_dir v0.7.4
+   Compiling zfb-server v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-server)
+warning: zfb@0.0.0: Downloading esbuild 0.25.12 from https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.12.tgz ...
+warning: zfb@0.0.0: ✓ esbuild 0.25.12 installed at /Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb/binaries/esbuild/esbuild (sha256 3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5)
+   Compiling zfb-css v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-css)
+   Compiling zfb-router v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-router)
+   Compiling zfb-diagnostics v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-diagnostics)
+   Compiling local-ip-address v0.6.13
+   Compiling minify-html v0.18.1
+warning: unused import: `std::collections::BTreeMap`
+  --> crates/zfb/src/commands/plugins.rs:10:5
+   |
+10 | use std::collections::BTreeMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::Path`
+  --> crates/zfb/src/commands/plugins.rs:11:5
+   |
+11 | use std::path::Path;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `SetupCommand`
+  --> crates/zfb/src/commands/plugins.rs:19:74
+   |
+19 |     DevRegisterContext, DevRequest, DevResponse, PluginHost, PluginSpec, SetupCommand,
+   |                                                                          ^^^^^^^^^^^^
+
+warning: variant `WarnAndEmpty` is never constructed
+   --> crates/zfb/src/commands/bundler_input.rs:159:5
+    |
+155 | pub(crate) enum CssModuleFailMode {
+    |                 ----------------- variant in this enum
+...
+159 |     WarnAndEmpty,
+    |     ^^^^^^^^^^^^
+    |
+    = note: `CssModuleFailMode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `MaterializedRoute` is never constructed
+  --> crates/zfb/src/commands/package_routes.rs:81:19
+   |
+81 | pub(crate) struct MaterializedRoute {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `OverlayResolution` is never constructed
+   --> crates/zfb/src/commands/package_routes.rs:101:19
+    |
+101 | pub(crate) struct OverlayResolution {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `StaticInjectedSeed` is never constructed
+   --> crates/zfb/src/commands/package_routes.rs:125:19
+    |
+125 | pub(crate) struct StaticInjectedSeed {
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: method `output_path` is never used
+   --> crates/zfb/src/commands/package_routes.rs:138:19
+    |
+135 | impl StaticInjectedSeed {
+    | ----------------------- method in this implementation
+...
+138 |     pub(crate) fn output_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^
+
+warning: function `static_injected_seeds` is never used
+   --> crates/zfb/src/commands/package_routes.rs:186:15
+    |
+186 | pub(crate) fn static_injected_seeds(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `surviving_injected_routes` is never used
+   --> crates/zfb/src/commands/package_routes.rs:249:15
+    |
+249 | pub(crate) fn surviving_injected_routes(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `url_path_extension` is never used
+   --> crates/zfb/src/commands/package_routes.rs:266:4
+    |
+266 | fn url_path_extension(url: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_build_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:287:15
+    |
+287 | pub(crate) fn resolve_build_pages_root(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_dev_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:335:15
+    |
+335 | pub(crate) fn resolve_dev_pages_root(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:383:4
+    |
+383 | fn resolve_pages_root(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:686:4
+    |
+686 | fn package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `project_local_package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:707:4
+    |
+707 | fn project_local_package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `staged_package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:717:4
+    |
+717 | fn staged_package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `relative_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:755:4
+    |
+755 | fn relative_import_specifier(pages_rel: &Path, logical_entrypoint: &Path) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `valid_package_name` is never used
+   --> crates/zfb/src/commands/package_routes.rs:766:4
+    |
+766 | fn valid_package_name(name: &str) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `lexical_relative_path` is never used
+   --> crates/zfb/src/commands/package_routes.rs:788:4
+    |
+788 | fn lexical_relative_path(from_dir: &Path, to: &Path) -> Option<PathBuf> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `collect_user_pages_shape_keys` is never used
+   --> crates/zfb/src/commands/package_routes.rs:825:4
+    |
+825 | fn collect_user_pages_shape_keys(real_pages_dir: &Path) -> Result<HashSet<String>> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pattern_to_pages_rel` is never used
+   --> crates/zfb/src/commands/package_routes.rs:854:15
+    |
+854 | pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `private_segment_warning` is never used
+   --> crates/zfb/src/commands/package_routes.rs:918:15
+    |
+918 | pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -> Option<String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `synthesize_static_overlay_module_with_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:983:4
+    |
+983 | fn synthesize_static_overlay_module_with_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `push_inlined_prerender` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1007:4
+     |
+1007 | fn push_inlined_prerender(out: &mut String, prerender: Option<bool>) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_dynamic_pattern` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1022:4
+     |
+1022 | fn is_dynamic_pattern(pattern: &str) -> bool {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `synthesize_dynamic_overlay_module_with_specifier` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1088:4
+     |
+1088 | fn synthesize_dynamic_overlay_module_with_specifier(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `copy_dir_recursive` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1204:4
+     |
+1204 | fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `json_string` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1237:4
+     |
+1237 | fn json_string(s: &str) -> String {
+     |    ^^^^^^^^^^^
+
+warning: `zfb` (lib) generated 29 warnings (run `cargo fix --lib -p zfb` to apply 3 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 24s
+heavy-guard: verdict=PASS exit=0 secs=205 min_mem_mb=989 reason=-
+exit=0

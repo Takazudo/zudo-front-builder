@@ -1,0 +1,8 @@
+error: rustc 1.94.0 is not supported by the following package:
+  oxc_resolver@11.24.3 requires rustc 1.95.0
+Either upgrade rustc or select compatible dependency versions with
+`cargo update <name>@<current-ver> --precise <compatible-ver>`
+where `<compatible-ver>` is the latest version supporting rustc 1.94.0
+
+heavy-guard: verdict=FAIL exit=101 secs=2 min_mem_mb=1201 reason=-
+exit=101

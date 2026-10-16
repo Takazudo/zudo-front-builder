@@ -1,0 +1,83 @@
+   Compiling smallvec v1.16.3
+   Compiling serde v1.0.228
+   Compiling hashbrown v0.14.5
+   Compiling serde_json v1.0.151
+   Compiling form_urlencoded v1.2.2
+   Compiling foldhash v0.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling cssparser v0.33.0
+   Compiling triomphe v0.1.15
+   Compiling num-bigint v0.4.6
+   Compiling bytes-str v0.2.7
+   Compiling idna_adapter v1.2.2
+   Compiling hstr v4.0.2
+   Compiling idna v1.1.0
+   Compiling hashbrown v0.16.1
+   Compiling regex-automata v0.4.18
+   Compiling url v2.5.8
+   Compiling swc_atoms v10.0.0
+   Compiling halfbrown v0.4.0
+   Compiling float-cmp v0.10.0
+   Compiling markdown v1.0.0
+   Compiling parcel_selectors v0.28.2
+   Compiling swc_common v24.0.0
+   Compiling zfb-types v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-types)
+   Compiling parcel_sourcemap v2.1.1
+   Compiling value-trait v0.12.1
+   Compiling cssparser-color v0.1.0
+   Compiling swc_ecma_ast v26.0.0
+   Compiling globset v0.4.18
+   Compiling dashmap v5.5.3
+   Compiling serde-content v0.1.2
+   Compiling plist v1.10.0
+   Compiling simd-json v0.18.1
+   Compiling lightningcss v1.0.0-alpha.71
+   Compiling zfb-md-ast v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-ast)
+   Compiling ignore v0.4.25
+   Compiling noyalib v0.0.55
+   Compiling dashmap v6.2.1
+   Compiling bincode v1.3.3
+   Compiling zfb-md-extras v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-extras)
+   Compiling syntect v5.3.0
+   Compiling oxc_resolver v11.24.3
+   Compiling swc_ecma_visit v26.0.0
+   Compiling swc_ecma_parser v42.0.0
+   Compiling noyalib-serde-yaml v0.0.55
+   Compiling garde v0.22.1
+   Compiling swc_ecma_utils v32.0.0
+   Compiling swc_ecma_transforms_base v46.0.1
+   Compiling swc_core v74.0.2
+   Compiling zfb-content v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-content)
+   Compiling zudo-wind v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zudo-wind)
+   Compiling zfb-css v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-css)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.59s
+     Running tests/package_exports_imports.rs (target/debug/deps/package_exports_imports-7662677ce85e8038)
+
+running 22 tests
+test bare_package_import_keeps_legacy_style_field_resolution ... ok
+test escaping_export_target_has_a_specific_error ... ok
+test error_names_null_export_reason ... ok
+test conditional_export_uses_package_key_order ... ok
+test exact_scoped_export_maps_to_css_file ... ok
+test exact_unscoped_export_maps_to_css_file ... ok
+test missing_package_has_a_specific_error ... ok
+test malformed_package_json_has_a_specific_error ... ok
+test missing_export_target_names_the_target ... ok
+test exported_import_keeps_cascade_layer_and_supports_wrappers ... ok
+test first_valid_array_target_fails_when_it_is_non_css ... ok
+test exported_stylesheet_urls_are_attributed_to_the_real_target_file ... ok
+test missing_physical_subpath_names_the_package_and_path ... ok
+test nested_conditions_and_array_skip_invalid_target ... ok
+test nested_style_condition_precedes_default_fallback ... ok
+test non_css_export_diagnostic_is_relative_under_canonical_and_native_roots ... ok
+test nearest_package_blocks_ancestor_version ... ok
+test package_without_exports_resolves_physical_subpath ... ok
+test pnpm_style_package_symlink_returns_canonical_target ... ok
+test selected_non_css_target_fails_without_trying_another_condition ... ok
+test wildcard_export_maps_to_css_file ... ok
+test null_and_unlisted_exports_block_physical_files ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+heavy-guard: verdict=PASS exit=0 secs=42 min_mem_mb=1055 reason=-

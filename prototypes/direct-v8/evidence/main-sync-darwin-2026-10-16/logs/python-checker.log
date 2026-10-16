@@ -1,0 +1,750 @@
+Python 3.12.13
+EEEEEEEEEEEEEEEEEEEEEE.EE...........................EEEEEEE..EEEEEEEEEE............................................E....
+======================================================================
+ERROR: test_builds_cannot_repin_a_previously_built_executable (test_accept.AcceptanceIntegrityTest.test_builds_cannot_repin_a_previously_built_executable) (label='build-zfb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 242, in test_builds_cannot_repin_a_previously_built_executable
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_builds_cannot_repin_a_previously_built_executable (test_accept.AcceptanceIntegrityTest.test_builds_cannot_repin_a_previously_built_executable) (label='build-wrapper-test')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 242, in test_builds_cannot_repin_a_previously_built_executable
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_completed_gates_survive_a_later_integrity_refusal (test_accept.AcceptanceIntegrityTest.test_completed_gates_survive_a_later_integrity_refusal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 276, in test_completed_gates_survive_a_later_integrity_refusal
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-services", name="candidate")
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest.test_every_recorded_executable_is_checked_after_generated_gate) (name='baseline')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest.test_every_recorded_executable_is_checked_after_generated_gate) (name='candidate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest.test_every_recorded_executable_is_checked_after_generated_gate) (name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest.test_every_recorded_executable_is_checked_after_generated_gate) (name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest.test_every_recorded_executable_is_checked_after_generated_gate) (name='zfb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest.test_every_recorded_executable_is_checked_after_generated_gate) (name='wrapper_test_binary')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_fixture_mutation_is_refused_before_generated_gate (test_accept.AcceptanceIntegrityTest.test_fixture_mutation_is_refused_before_generated_gate) (name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 233, in test_fixture_mutation_is_refused_before_generated_gate
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_fixture_mutation_is_refused_before_generated_gate (test_accept.AcceptanceIntegrityTest.test_fixture_mutation_is_refused_before_generated_gate) (name='zfb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 233, in test_fixture_mutation_is_refused_before_generated_gate
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_fixture_mutation_is_refused_before_generated_gate (test_accept.AcceptanceIntegrityTest.test_fixture_mutation_is_refused_before_generated_gate) (name='wrapper_test_binary')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 233, in test_fixture_mutation_is_refused_before_generated_gate
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_gate_failure_is_not_overwritten_by_successful_integrity_checks (test_accept.AcceptanceIntegrityTest.test_gate_failure_is_not_overwritten_by_successful_integrity_checks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 286, in test_gate_failure_is_not_overwritten_by_successful_integrity_checks
+    status, report, _, _ = self.run_acceptance(generated=True, fail_at="gate-config")
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_missing_generated_build_output_is_refused_at_registration (test_accept.AcceptanceIntegrityTest.test_missing_generated_build_output_is_refused_at_registration) (mutation='delete')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 262, in test_missing_generated_build_output_is_refused_at_registration
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_missing_generated_build_output_is_refused_at_registration (test_accept.AcceptanceIntegrityTest.test_missing_generated_build_output_is_refused_at_registration) (mutation='chmod')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 262, in test_missing_generated_build_output_is_refused_at_registration
+    status, report, _, visited = self.run_acceptance(
+                                 ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest.test_missing_or_nonexecutable_files_write_failure_receipts) (mutation='delete', name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest.test_missing_or_nonexecutable_files_write_failure_receipts) (mutation='delete', name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest.test_missing_or_nonexecutable_files_write_failure_receipts) (mutation='chmod', name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest.test_missing_or_nonexecutable_files_write_failure_receipts) (mutation='chmod', name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_outer_config_gate_checks_all_three_executables_without_generated (test_accept.AcceptanceIntegrityTest.test_outer_config_gate_checks_all_three_executables_without_generated) (name='baseline')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 215, in test_outer_config_gate_checks_all_three_executables_without_generated
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-outer-config", name=name)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_outer_config_gate_checks_all_three_executables_without_generated (test_accept.AcceptanceIntegrityTest.test_outer_config_gate_checks_all_three_executables_without_generated) (name='candidate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 215, in test_outer_config_gate_checks_all_three_executables_without_generated
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-outer-config", name=name)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_outer_config_gate_checks_all_three_executables_without_generated (test_accept.AcceptanceIntegrityTest.test_outer_config_gate_checks_all_three_executables_without_generated) (name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 215, in test_outer_config_gate_checks_all_three_executables_without_generated
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-outer-config", name=name)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_unchanged_executables_pass_in_both_modes (test_accept.AcceptanceIntegrityTest.test_unchanged_executables_pass_in_both_modes) (generated=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 202, in test_unchanged_executables_pass_in_both_modes
+    status, report, original, _ = self.run_acceptance(generated=generated)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_unchanged_executables_pass_in_both_modes (test_accept.AcceptanceIntegrityTest.test_unchanged_executables_pass_in_both_modes) (generated=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 202, in test_unchanged_executables_pass_in_both_modes
+    status, report, original, _ = self.run_acceptance(generated=generated)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 196, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_existing_refusals_still_write_failure_receipts (test_accept_failures.MainFailureReceiptTest.test_existing_refusals_still_write_failure_receipts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 279, in test_existing_refusals_still_write_failure_receipts
+    self.run_failure(accept.Refusal("candidate refused"))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+                     ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest.test_expected_operational_errors_write_failure_receipts) (error='FileNotFoundError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+                     ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest.test_expected_operational_errors_write_failure_receipts) (error='PermissionError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+                     ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest.test_expected_operational_errors_write_failure_receipts) (error='ValueError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+                     ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest.test_expected_operational_errors_write_failure_receipts) (error='CalledProcessError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+                     ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_interrupt_writes_failure_receipt_and_still_propagates (test_accept_failures.MainFailureReceiptTest.test_interrupt_writes_failure_receipt_and_still_propagates)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 286, in test_interrupt_writes_failure_receipt_and_still_propagates
+    report = self.run_failure(KeyboardInterrupt(), propagates=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 260, in run_failure
+    accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_unexpected_bugs_write_failure_receipts_and_still_propagate (test_accept_failures.MainFailureReceiptTest.test_unexpected_bugs_write_failure_receipts_and_still_propagate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 282, in test_unexpected_bugs_write_failure_receipts_and_still_propagate
+    report = self.run_failure(RuntimeError("unexpected harness bug"), propagates=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 260, in run_failure
+    accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_complete_reports_pass_in_both_modes_with_existing_count_shapes (test_accept_reports.MainReportConsistencyTest.test_complete_reports_pass_in_both_modes_with_existing_count_shapes) (include_generated=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 319, in test_complete_reports_pass_in_both_modes_with_existing_count_shapes
+    status, report = self.run_acceptance(include_generated=include_generated)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_complete_reports_pass_in_both_modes_with_existing_count_shapes (test_accept_reports.MainReportConsistencyTest.test_complete_reports_pass_in_both_modes_with_existing_count_shapes) (include_generated=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 319, in test_complete_reports_pass_in_both_modes_with_existing_count_shapes
+    status, report = self.run_acceptance(include_generated=include_generated)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest.test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt) (label='gate-config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest.test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt) (label='gate-services')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest.test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt) (label='gate-http')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest.test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt) (label='gate-modules')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest.test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt) (label='gate-outer-config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest.test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt) (label='gate-generated')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_http_and_outer_use_the_specialized_validators (test_accept_reports.MainReportConsistencyTest.test_http_and_outer_use_the_specialized_validators) (key='http')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 352, in test_http_and_outer_use_the_specialized_validators
+    status, report = self.run_acceptance(corrupt=corrupt)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_http_and_outer_use_the_specialized_validators (test_accept_reports.MainReportConsistencyTest.test_http_and_outer_use_the_specialized_validators) (key='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 352, in test_http_and_outer_use_the_specialized_validators
+    status, report = self.run_acceptance(corrupt=corrupt)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+             ^^^^^^^^^^^^^
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2650, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Users/takazudo/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py", line 2637, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows (test_checker_protocol.CheckerProtocolTest.test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 321, in test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows
+    self.assertEqual(base64.b64decode(report["stdout_base64"]), payload)
+                                      ~~~~~~^^^^^^^^^^^^^^^^^
+KeyError: 'stdout_base64'
+
+----------------------------------------------------------------------
+Ran 95 tests in 30.337s
+
+FAILED (errors=42)
