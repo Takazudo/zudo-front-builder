@@ -59,11 +59,13 @@ fn local_css_imports_are_resolved_to_real_paths() {
     .unwrap();
     fs::write(real_ds.join("dist/tokens.css"), "body{}\n").unwrap();
 
-    // pnpm/workspace shape: the package is a symlink into node_modules.
-    #[cfg(unix)]
+    // pnpm/workspace shape: a symlink on Unix or an unprivileged Windows junction.
     {
-        std::os::unix::fs::symlink(&real_ds, proj.join("node_modules/@scope/design-system"))
-            .unwrap();
+        zfb_types::directory_link::create(
+            &real_ds,
+            &proj.join("node_modules/@scope/design-system"),
+        )
+        .unwrap();
 
         let resolved = resolve_css_imports(&proj.join("styles/styles.css"), &proj);
 

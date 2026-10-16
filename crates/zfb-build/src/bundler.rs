@@ -1221,6 +1221,7 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
 struct ShadowParentEnv {
     temp_dir: PathBuf,
     xdg_cache_home: Option<OsString>,
+    #[cfg_attr(windows, allow(dead_code))]
     home: Option<OsString>,
     #[cfg_attr(not(windows), allow(dead_code))]
     local_app_data: Option<OsString>,
@@ -6356,6 +6357,43 @@ fn rewrite_esbuild_module_labels_at_path(
     }
 }
 
+/// Lexical display identity only: never use this to authorize filesystem access.
+fn esbuild_module_label_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path = {
+        use std::path::{Component, Prefix};
+        // esbuild emits forward slashes even for Windows verbatim paths.
+        let spelling = path.to_string_lossy().replace('/', "\\");
+        let mut components = Path::new(&spelling).components();
+        let ordinary_prefix = match components.next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => Some(PathBuf::from(format!("{}:", drive as char))),
+                Prefix::VerbatimUNC(server, share) => Some(PathBuf::from(format!(
+                    "\\\\{}\\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                ))),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(mut ordinary) = ordinary_prefix {
+            ordinary.extend(components);
+            ordinary
+        } else {
+            PathBuf::from(spelling)
+        }
+    };
+    #[cfg(windows)]
+    {
+        normalize_path_lexical(&path)
+    }
+    #[cfg(not(windows))]
+    {
+        normalize_path_lexical(path)
+    }
+}
+
 fn rewrite_esbuild_module_labels(
     bundle: &str,
     metafile_bytes: &[u8],
@@ -6372,11 +6410,17 @@ fn rewrite_esbuild_module_labels(
     let metafile: serde_json::Value = serde_json::from_slice(metafile_bytes).ok()?;
     let inputs = metafile.get("inputs")?.as_object()?;
     let mut labels = HashMap::new();
+    let shadow = esbuild_module_label_path(shadow);
+    let project_root = esbuild_module_label_path(project_root);
+    let work_root = esbuild_module_label_path(work_root);
     for key in inputs.keys() {
-        if !key.starts_with("../") || key.contains(['\r', '\n', '\u{2028}', '\u{2029}']) {
+        let input = esbuild_module_label_path(Path::new(key));
+        if (!key.starts_with("../") && !(cfg!(windows) && input.is_absolute()))
+            || key.contains(['\r', '\n', '\u{2028}', '\u{2029}'])
+        {
             continue;
         }
-        let path = normalize_path_lexical(&shadow.join(key));
+        let path = normalize_path_lexical(&shadow.join(input));
         let components: Vec<_> = path.components().collect();
         let label = if let Some(index) = components
             .iter()
@@ -6384,9 +6428,11 @@ fn rewrite_esbuild_module_labels(
         {
             let tail = components[index + 1..].iter().collect::<PathBuf>();
             format!("node_modules/{}", rel_to_forward_slash(&tail))
-        } else if let Ok(rel) = path.strip_prefix(normalize_path_lexical(project_root)) {
+        } else if let Ok(rel) = path.strip_prefix(&shadow) {
             rel_to_forward_slash(rel)
-        } else if let Ok(rel) = path.strip_prefix(normalize_path_lexical(work_root)) {
+        } else if let Ok(rel) = path.strip_prefix(&project_root) {
+            rel_to_forward_slash(rel)
+        } else if let Ok(rel) = path.strip_prefix(&work_root) {
             rel_to_forward_slash(rel)
         } else if let Some(name) = path.file_name() {
             format!("external/{}", name.to_string_lossy())
@@ -6446,6 +6492,43 @@ fn rewrite_esbuild_module_labels(
 #[cfg(test)]
 mod esbuild_module_label_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_shadow_labels_drop_only_the_metafile_backed_comment_prefix() {
+        for (key, shadow) in [
+            (
+                "//?/C:/tmp/random-shadow/pages/index.tsx",
+                "C:\\tmp\\random-shadow",
+            ),
+            (
+                "C:/tmp/random-shadow/pages/index.tsx",
+                "\\\\?\\C:\\tmp\\random-shadow",
+            ),
+            (
+                "//?/UNC/server/share/random-shadow/pages/index.tsx",
+                "\\\\server\\share\\random-shadow",
+            ),
+        ] {
+            let bundle = format!(
+                "// {key}\r\nconst text = `\n// {key}\n`;\nconst quoted = '// {key}'; // {key}\n// {key}.unlisted\n"
+            );
+            let metafile = serde_json::json!({"inputs": {key: {}}});
+            let rewritten = rewrite_esbuild_module_labels(
+                &bundle,
+                &serde_json::to_vec(&metafile).unwrap(),
+                Path::new(shadow),
+                Path::new("C:/project"),
+                Path::new(shadow),
+            )
+            .unwrap();
+            assert_eq!(
+                rewritten,
+                bundle.replacen(&format!("// {key}\r\n"), "// pages/index.tsx\r\n", 1),
+                "only the actual absolute module-label comment may change"
+            );
+        }
+    }
 
     #[test]
     fn rewrites_only_metafile_backed_js_comments() {

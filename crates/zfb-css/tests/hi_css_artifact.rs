@@ -64,6 +64,14 @@ fn light_dark_dark_arg(value: &str) -> Option<&str> {
 }
 
 #[test]
+fn embedded_artifact_uses_lf_line_endings() {
+    assert!(
+        !default_hi_css().as_bytes().contains(&b'\r'),
+        "embedded highlight CSS must not inherit Windows checkout line endings"
+    );
+}
+
+#[test]
 fn artifact_is_at_most_6kb() {
     let css = default_hi_css();
     assert!(
