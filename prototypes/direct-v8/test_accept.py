@@ -135,7 +135,8 @@ class AcceptanceIntegrityTest(unittest.TestCase):
     def run_acceptance(self, *, generated=False, mutate_at=None, name="outer_config",
                        mutation="rewrite", fail_at=None):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # accept.ROOT is canonical in production; macOS TMPDIR is a /var -> /private/var alias.
+            root = Path(directory).resolve()
             target = root / "target"
             examples = target / "debug" / "examples"
             examples.mkdir(parents=True)
