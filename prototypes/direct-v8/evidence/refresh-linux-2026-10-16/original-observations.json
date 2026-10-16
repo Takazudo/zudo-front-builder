@@ -16,7 +16,7 @@
       "kind": "inherited Cargo provenance tests",
       "passed": 30,
       "failed": 2,
-      "log": "inherited-budget-and-premanifest.log",
+      "log": "inherited-budget-and-premature-reference.log",
       "cause": "Both reviewed-ceiling assertions reject current Cargo transition; no policy or live contract changed"
     },
     {
