@@ -7,7 +7,39 @@ merge, dispatch native probes, or change live contracts in this continuation.
 The standalone direct-V8 implementation and its original receipts remain in
 [#4242](https://github.com/Takazudo/zudo-front-builder/pull/4242).
 
-## 1. Exact identities and evidence boundaries
+## Refreshed source and evidence (2026-10-16)
+
+The historical prepared-input table below is retained as history, not an admission
+for the current source. The latest continuation reconciles accepted main
+`151d9d97` into source checkpoint `546fce7cd3efccb1a9f05e8a51a9d889a545c256`.
+No held foundation/admission/collection branch was imported.
+
+Current accepted-main lock SHA-256 is
+`13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37`;
+candidate lock SHA-256 is
+`230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138`.
+The added host record requires the explicit `base64 0.22.1` edge. Old declarations
+with a bare `base64` edge and old lock hashes must not be used for this source.
+
+Fresh declaration, immutable-source proof, default-producer closure receipts,
+and a separate standalone host graph are in
+[evidence/refresh-linux-2026-10-16](evidence/refresh-linux-2026-10-16/README.md).
+Default-producer metadata records Linux 497→498 and Darwin 481→482, with only the
+internal host row added and no external feature movement. The independently
+selected standalone host graph has 152 rows and excludes Deno. The future actual
+CLI feature-exact graph remains unimplemented and unproved. The prepared proof
+uses held tooling `16bb9165e10f6d5e984d1e2125a2f7830fbf7927` from a detached
+checkout; it is not native artifact admission or authority to activate.
+
+The ordered gates remain #4234's qualifying both-platform control/replay, then
+#4234 → #4259 integration, independent #4260 repair/integration, refreshed runtime
+source, compatible Linux/Darwin native workspace and packed measurements, paired
+staging/review, separately authorized live apply, and final enforced verification.
+Revalidate all identities against the actually integrated tooling and sources at
+that boundary. Do not execute the historical example hashes below unchanged.
+No default switch, Deno removal, phase-two CLI adoption or publication is implied.
+
+## 1. Historical identities and evidence boundaries
 
 | Input | Value |
 | --- | --- |

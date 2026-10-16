@@ -1,0 +1,27 @@
+✔ seed schema and compiler/source intent are explicit (21.119183ms)
+✔ undeclared ordinary classes cannot silently pass a positive sample (0.750721ms)
+✔ uppercase HTML class attributes cannot evade candidate intent (0.184648ms)
+✔ scaffolding cannot emulate utilities or overlap utility intent (0.296116ms)
+✔ static source and candidate-source configuration cannot bypass validation (0.240182ms)
+✔ fragment metadata is restricted to the native no-script preview base (0.384509ms)
+✔ only negative fixtures may select source origin and non-strict warning behavior (0.393712ms)
+✔ CSS and source-plan lessons cannot relax positive validation (1.336693ms)
+✔ positive warning-only ZW014 and missing-token failures are rejected (0.268274ms)
+✔ diagnostic fixtures require exact code and error/warning outcome (0.376006ms)
+✔ scoped overrides remove a missing token without mutating shared config (0.483658ms)
+✔ asset identity works under a deployed base path (0.312531ms)
+✔ fragment metadata changes freshness even when compiled CSS is unchanged (15.8911ms)
+✔ source exclusion fixtures use exact shared files and stay freshness checked (6.131293ms)
+✔ mock compiler pins flags and deterministic provenance; stale CSS fails without rewriting (7.046441ms)
+✔ compiler changes require new provenance; published docs compiler cannot satisfy pin (8.691859ms)
+✔ missing artifact fails freshness (0.155294ms)
+✔ required Docs gate fails closed for preview failures, cancellation and unexplained skips (18.492583ms)
+✔ the required Docs gate changed-file closures cover content, assets, tests, and compiler inputs (0.475476ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 157.443943

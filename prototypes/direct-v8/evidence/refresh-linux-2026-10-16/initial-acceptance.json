@@ -1,0 +1,643 @@
+{
+  "schema": 1,
+  "passed": false,
+  "steps": [
+    {
+      "label": "prepare-icu",
+      "argv": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/prepare-icu.py"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": false,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 2.3
+    },
+    {
+      "label": "cargo-metadata-target",
+      "argv": ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": false,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 0.0
+    },
+    {
+      "label": "services-tests",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--features",
+        "services"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 9.0
+    },
+    {
+      "label": "build-baseline",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-render",
+        "--example",
+        "direct_v8_baseline"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 39.2
+    },
+    {
+      "label": "build-outer-config",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb",
+        "--example",
+        "direct_v8_outer_config"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 90.4
+    },
+    {
+      "label": "build-candidate",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--example",
+        "direct_v8"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 20.6
+    },
+    {
+      "label": "candidate-lib-tests",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--lib"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 3.5
+    },
+    {
+      "label": "gate-config",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/check-config.py",
+        "--baseline",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+        "--output",
+        "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/config-gate.json"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 1.4
+    },
+    {
+      "label": "gate-services",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/check-config.py",
+        "--kind",
+        "script",
+        "--cases",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/service-cases.json",
+        "--baseline",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+        "--output",
+        "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/services-gate.json"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 1.1
+    },
+    {
+      "label": "gate-http",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/check-http.py",
+        "--baseline",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+        "--output",
+        "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/http-gate.json"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 0.8
+    },
+    {
+      "label": "gate-modules",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/check-modules.py",
+        "--baseline",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+        "--fixture-dir",
+        "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/modules-fixtures",
+        "--output",
+        "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/modules-gate.json"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 1.1
+    },
+    {
+      "label": "gate-outer-config",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder/prototypes/direct-v8/check-outer-config.py",
+        "--runner",
+        "/workspace/zudo-front-builder/target/debug/examples/direct_v8_outer_config",
+        "--output",
+        "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/outer-config-gate.json"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 1.0
+    },
+    {
+      "label": "build-postprocessor",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-build",
+        "--no-default-features",
+        "--example",
+        "direct_v8_postprocess"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 33.5
+    },
+    {
+      "label": "build-zfb",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb",
+        "--bin",
+        "zfb"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 43.7
+    },
+    {
+      "label": "build-wrapper-test",
+      "argv": [
+        "bash",
+        "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/workspace/zudo-front-builder",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+      },
+      "seconds": 24.7
+    }
+  ],
+  "limitations": [
+    "Linux x86_64 native evidence only; other platforms untested.",
+    "Standalone runners prove host behavior, not candidate CLI/factory/dev-reload integration.",
+    "A watchdog expiry is a failed observation, never clean shutdown evidence.",
+    "No baseline, Node or Deno fallback executor is selected when the candidate is missing."
+  ],
+  "executables": {
+    "baseline": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+      "sha256": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+      "engine": "deno_core 0.399.0 / v8 147.4.0",
+      "receipt": {
+        "engine": "deno_core 0.399.0 / v8 147.4.0",
+        "ok": true,
+        "value": {
+          "probe": 42,
+          "text": "direct-v8-accept"
+        }
+      }
+    },
+    "candidate": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+      "sha256": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+      "engine": "direct v8 147.4.0",
+      "receipt": {
+        "engine": "direct v8 147.4.0",
+        "ok": true,
+        "value": {
+          "probe": 42,
+          "text": "direct-v8-accept"
+        }
+      }
+    },
+    "outer_config": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_outer_config",
+      "sha256": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+    },
+    "postprocessor": {
+      "path": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_postprocess",
+      "sha256": "51b866d40c411d81ede8671a8395b0d09d6b8b3f06f5aba020e064477af7b555"
+    },
+    "zfb": {
+      "path": "/workspace/zudo-front-builder/target/debug/zfb",
+      "sha256": "01c0f41fc34e64c450dfa8704c4403d01996ab4035f0934ca784ef6b53ee0d65"
+    },
+    "wrapper_test_binary": {
+      "path": "/workspace/zudo-front-builder/target/debug/deps/zfb-39535c91d66e11dd",
+      "sha256": "6c6d7306709eab0ad2a0846a91f3d07f98be59a2bbc8f78d02a059c4c5fc2587"
+    }
+  },
+  "gates": {
+    "config": {
+      "output": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/config-gate.json",
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        }
+      ]
+    },
+    "services": {
+      "output": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/services-gate.json",
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        }
+      ]
+    },
+    "http": {
+      "output": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/http-gate.json",
+      "passed": true,
+      "counts": {
+        "rows": 8,
+        "rows_passed": 8,
+        "passed": true
+      }
+    },
+    "modules": {
+      "output": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/modules-gate.json",
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        }
+      ]
+    },
+    "outer_config": {
+      "output": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/outer-config-gate.json",
+      "passed": true,
+      "counts": {
+        "rows": 7,
+        "rows_passed": 7,
+        "passed": true
+      }
+    }
+  },
+  "executable_checks": [
+    {
+      "after": "runner probes",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+      }
+    },
+    {
+      "after": "config",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+      }
+    },
+    {
+      "after": "services",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+      }
+    },
+    {
+      "after": "http",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+      }
+    },
+    {
+      "after": "modules",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+      }
+    },
+    {
+      "after": "outer-config",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5"
+      }
+    },
+    {
+      "after": "postprocessor build",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5",
+        "postprocessor": "51b866d40c411d81ede8671a8395b0d09d6b8b3f06f5aba020e064477af7b555"
+      }
+    },
+    {
+      "after": "zfb build",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5",
+        "postprocessor": "51b866d40c411d81ede8671a8395b0d09d6b8b3f06f5aba020e064477af7b555",
+        "zfb": "01c0f41fc34e64c450dfa8704c4403d01996ab4035f0934ca784ef6b53ee0d65"
+      }
+    },
+    {
+      "after": "generated-prerequisite builds",
+      "passed": true,
+      "sha256": {
+        "baseline": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+        "candidate": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+        "outer_config": "25d6ec965dc980fe3a9aa894e1c8a86a91735de23df75d7b5d8d652a9fb199c5",
+        "postprocessor": "51b866d40c411d81ede8671a8395b0d09d6b8b3f06f5aba020e064477af7b555",
+        "zfb": "01c0f41fc34e64c450dfa8704c4403d01996ab4035f0934ca784ef6b53ee0d65",
+        "wrapper_test_binary": "6c6d7306709eab0ad2a0846a91f3d07f98be59a2bbc8f78d02a059c4c5fc2587"
+      }
+    }
+  ],
+  "environment": {
+    "commit": "546fce7cd3efccb1a9f05e8a51a9d889a545c256",
+    "status_porcelain": "",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "env": {
+      "ZFB_ESBUILD_BIN": "/workspace/task-tools/package/bin/esbuild"
+    }
+  },
+  "icu": {
+    "path": "/workspace/zudo-front-builder/target/direct-v8-inputs/icu77/icudtl.dat",
+    "sha256": "1cf67874b5a87a8363a86fb3f81e3cbbed54d389062dab8fb52308d5cf8c8612",
+    "archive_sha256_pin": "a9efff8990a82c1ae664292507e1a5c6749ddd2312898cdf9cd7cb1fd4bc64c6"
+  },
+  "target_directory": "/workspace/zudo-front-builder/target",
+  "services_tests": {
+    "status": "ok",
+    "passed": 9,
+    "failed": 0
+  },
+  "candidate_lib_tests": {
+    "status": "ok",
+    "passed": 45,
+    "failed": 0
+  },
+  "error": "FileNotFoundError: [Errno 2] No such file or directory: 'rustup'"
+}

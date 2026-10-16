@@ -1,0 +1,39 @@
+{
+  "original_observations": [
+    {
+      "kind": "compiler build failure",
+      "verdict": "FAIL exit=101 secs=207",
+      "cause": "Pinned esbuild downloader exhausted 5 attempts; no source assertion failure",
+      "resolution": "Separately fetched esbuild 0.25.12 from same registry URL; SHA-256 matches repository bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014; guarded retry passed"
+    },
+    {
+      "kind": "first native acceptance failure",
+      "receipt": "initial-acceptance.json",
+      "cause": "FileNotFoundError: rustup absent; standalone toolchain needs explicit --rustc",
+      "resolution": "Full acceptance repeated in new output directory with explicit /workspace/task-tools/rust/bin/rustc"
+    },
+    {
+      "kind": "inherited Cargo provenance tests",
+      "passed": 30,
+      "failed": 2,
+      "log": "inherited-budget-and-premanifest.log",
+      "cause": "Both reviewed-ceiling assertions reject current Cargo transition; no policy or live contract changed"
+    },
+    {
+      "kind": "premature Wind reference suite",
+      "tests_discovered": 0,
+      "cause": "Manifest still contained merge conflict markers during compiler build",
+      "resolution": "After genuine generation all 22 reference tests passed"
+    },
+    {
+      "kind": "setup",
+      "cause": "Default pnpm11.19 incompatible; first commit hook refused",
+      "resolution": "Used repository-pinned pnpm12.8.2 through corepack; frozen dependency install and normal commit hooks passed"
+    },
+    {
+      "kind": "incorrect test path attempt",
+      "cause": "node --test was initially given nonexistent docs/scripts paths; no tests ran",
+      "resolution": "Used discovered paths:19 generator and22 reference tests passed"
+    }
+  ]
+}

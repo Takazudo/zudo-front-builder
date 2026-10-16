@@ -1,0 +1,719 @@
+{
+  "harness_sha256": "4a02bd0c91d1880805145975b7670caccdcce7c4461ab5a4151730e551488c94",
+  "origin": "http://127.0.0.1:35029",
+  "watchdog_seconds": 10,
+  "executables": [
+    {
+      "engine": "deno_core 0.399.0 / v8 147.4.0",
+      "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+      "sha256": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d"
+    },
+    {
+      "engine": "direct v8 147.4.0",
+      "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+      "sha256": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849"
+    }
+  ],
+  "rows": [
+    {
+      "name": "parallel-handshake-and-microtask",
+      "contracts": ["HTTP-04", "BOOT-02"],
+      "mode": "request-time",
+      "source": "(async () => { let progressed = false; const calls = [\"left\",\"right\"].map(async side => { const response = await fetch(\"http://127.0.0.1:35029/parallel/\" + side); return {side,body:await response.text(),microtaskProgressed:progressed}; }); queueMicrotask(() => { progressed = true; }); return await Promise.all(calls); })()",
+      "expected": [
+        {
+          "side": "left",
+          "body": "left",
+          "microtaskProgressed": true
+        },
+        {
+          "side": "right",
+          "body": "right",
+          "microtaskProgressed": true
+        }
+      ],
+      "expected_paths": {
+        "/parallel/left": 1,
+        "/parallel/right": 1
+      },
+      "source_sha256": "c6d6f92dd5c6636f328d0c1cbd70a7e730a1d16960e30eef83822a6e6b408f6d",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":[{\"side\":\"left\",\"body\":\"left\",\"microtaskProgressed\":true},{\"side\":\"right\",\"body\":\"right\",\"microtaskProgressed\":true}],\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "side": "left",
+                "body": "left",
+                "microtaskProgressed": true
+              },
+              {
+                "side": "right",
+                "body": "right",
+                "microtaskProgressed": true
+              }
+            ],
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 2,
+            "paths": {
+              "/parallel/left": 1,
+              "/parallel/right": 1
+            },
+            "requests": [
+              {
+                "path": "/parallel/left",
+                "method": "GET",
+                "body": []
+              },
+              {
+                "path": "/parallel/right",
+                "method": "GET",
+                "body": []
+              }
+            ],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":[{\"body\":\"left\",\"microtaskProgressed\":true,\"side\":\"left\"},{\"body\":\"right\",\"microtaskProgressed\":true,\"side\":\"right\"}]}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "body": "left",
+                "microtaskProgressed": true,
+                "side": "left"
+              },
+              {
+                "body": "right",
+                "microtaskProgressed": true,
+                "side": "right"
+              }
+            ]
+          },
+          "server": {
+            "accepted_requests": 2,
+            "paths": {
+              "/parallel/left": 1,
+              "/parallel/right": 1
+            },
+            "requests": [
+              {
+                "path": "/parallel/left",
+                "method": "GET",
+                "body": []
+              },
+              {
+                "path": "/parallel/right",
+                "method": "GET",
+                "body": []
+              }
+            ],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "binary-and-duplicate-headers",
+      "contracts": ["HTTP-07", "WORK-04"],
+      "mode": "request-time",
+      "source": "(async () => { const r = await fetch(\"http://127.0.0.1:35029/binary/data\"); return {status:r.status,url:r.url,redirected:r.redirected,bytes:Array.from(new Uint8Array(await r.arrayBuffer())),cookies:r.headers.getSetCookie(),pair:r.headers.get(\"x-pair\"),headers:Array.from(r.headers)}; })()",
+      "expected": {
+        "status": 201,
+        "url": "http://127.0.0.1:35029/binary/data",
+        "redirected": false,
+        "bytes": [0, 1, 127, 128, 255],
+        "cookies": ["first=1", "second=2"],
+        "pair": "left, right",
+        "headers": [
+          ["content-length", "5"],
+          ["content-type", "application/octet-stream"],
+          ["set-cookie", "first=1"],
+          ["set-cookie", "second=2"],
+          ["x-pair", "left, right"]
+        ]
+      },
+      "expected_paths": {
+        "/binary/data": 1
+      },
+      "source_sha256": "b56c2af8958c56e1700fad8b6ef21e5e5f1b74121c5d61ba7d2e972add47d3fd",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"status\":201,\"url\":\"http://127.0.0.1:35029/binary/data\",\"redirected\":false,\"bytes\":[0,1,127,128,255],\"cookies\":[\"first=1\",\"second=2\"],\"pair\":\"left, right\",\"headers\":[[\"content-length\",\"5\"],[\"content-type\",\"application/octet-stream\"],[\"set-cookie\",\"first=1\"],[\"set-cookie\",\"second=2\"],[\"x-pair\",\"left, right\"]]},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "status": 201,
+              "url": "http://127.0.0.1:35029/binary/data",
+              "redirected": false,
+              "bytes": [0, 1, 127, 128, 255],
+              "cookies": ["first=1", "second=2"],
+              "pair": "left, right",
+              "headers": [
+                ["content-length", "5"],
+                ["content-type", "application/octet-stream"],
+                ["set-cookie", "first=1"],
+                ["set-cookie", "second=2"],
+                ["x-pair", "left, right"]
+              ]
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 1,
+            "paths": {
+              "/binary/data": 1
+            },
+            "requests": [
+              {
+                "path": "/binary/data",
+                "method": "GET",
+                "body": []
+              }
+            ],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"bytes\":[0,1,127,128,255],\"cookies\":[\"first=1\",\"second=2\"],\"headers\":[[\"content-length\",\"5\"],[\"content-type\",\"application/octet-stream\"],[\"set-cookie\",\"first=1\"],[\"set-cookie\",\"second=2\"],[\"x-pair\",\"left, right\"]],\"pair\":\"left, right\",\"redirected\":false,\"status\":201,\"url\":\"http://127.0.0.1:35029/binary/data\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "bytes": [0, 1, 127, 128, 255],
+              "cookies": ["first=1", "second=2"],
+              "headers": [
+                ["content-length", "5"],
+                ["content-type", "application/octet-stream"],
+                ["set-cookie", "first=1"],
+                ["set-cookie", "second=2"],
+                ["x-pair", "left, right"]
+              ],
+              "pair": "left, right",
+              "redirected": false,
+              "status": 201,
+              "url": "http://127.0.0.1:35029/binary/data"
+            }
+          },
+          "server": {
+            "accepted_requests": 1,
+            "paths": {
+              "/binary/data": 1
+            },
+            "requests": [
+              {
+                "path": "/binary/data",
+                "method": "GET",
+                "body": []
+              }
+            ],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "redirect-303-post",
+      "contracts": ["HTTP-06", "HTTP-07"],
+      "mode": "request-time",
+      "source": "(async () => { const r = await fetch(\"http://127.0.0.1:35029/redirect303/start\",{method:\"POST\",headers:{\"content-type\":\"application/octet-stream\",\"x-marker\":\"retained\"},body:new Uint8Array([0,128,255])}); return {status:r.status,url:r.url,redirected:r.redirected,echo:await r.json()}; })()",
+      "expected": {
+        "status": 200,
+        "url": "http://127.0.0.1:35029/redirect303/echo",
+        "redirected": true,
+        "echo": {
+          "method": "GET",
+          "body": [],
+          "contentType": null,
+          "marker": "retained"
+        }
+      },
+      "expected_paths": {
+        "/redirect303/start": 1,
+        "/redirect303/echo": 1
+      },
+      "source_sha256": "ce5e583e82f3c81e3a50729b568e0ebdb47a760894117a365a4f7e3d18e550ae",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"status\":200,\"url\":\"http://127.0.0.1:35029/redirect303/echo\",\"redirected\":true,\"echo\":{\"method\":\"GET\",\"body\":[],\"contentType\":null,\"marker\":\"retained\"}},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "status": 200,
+              "url": "http://127.0.0.1:35029/redirect303/echo",
+              "redirected": true,
+              "echo": {
+                "method": "GET",
+                "body": [],
+                "contentType": null,
+                "marker": "retained"
+              }
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 2,
+            "paths": {
+              "/redirect303/start": 1,
+              "/redirect303/echo": 1
+            },
+            "requests": [
+              {
+                "path": "/redirect303/start",
+                "method": "POST",
+                "body": [0, 128, 255]
+              },
+              {
+                "path": "/redirect303/echo",
+                "method": "GET",
+                "body": []
+              }
+            ],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"echo\":{\"body\":[],\"contentType\":null,\"marker\":\"retained\",\"method\":\"GET\"},\"redirected\":true,\"status\":200,\"url\":\"http://127.0.0.1:35029/redirect303/echo\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "echo": {
+                "body": [],
+                "contentType": null,
+                "marker": "retained",
+                "method": "GET"
+              },
+              "redirected": true,
+              "status": 200,
+              "url": "http://127.0.0.1:35029/redirect303/echo"
+            }
+          },
+          "server": {
+            "accepted_requests": 2,
+            "paths": {
+              "/redirect303/start": 1,
+              "/redirect303/echo": 1
+            },
+            "requests": [
+              {
+                "path": "/redirect303/start",
+                "method": "POST",
+                "body": [0, 128, 255]
+              },
+              {
+                "path": "/redirect303/echo",
+                "method": "GET",
+                "body": []
+              }
+            ],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "redirect-307-post",
+      "contracts": ["HTTP-06", "HTTP-07"],
+      "mode": "request-time",
+      "source": "(async () => { const r = await fetch(\"http://127.0.0.1:35029/redirect307/start\",{method:\"POST\",headers:{\"content-type\":\"application/octet-stream\",\"x-marker\":\"retained\"},body:new Uint8Array([0,128,255])}); return {status:r.status,url:r.url,redirected:r.redirected,echo:await r.json()}; })()",
+      "expected": {
+        "status": 200,
+        "url": "http://127.0.0.1:35029/redirect307/echo",
+        "redirected": true,
+        "echo": {
+          "method": "POST",
+          "body": [0, 128, 255],
+          "contentType": "application/octet-stream",
+          "marker": "retained"
+        }
+      },
+      "expected_paths": {
+        "/redirect307/start": 1,
+        "/redirect307/echo": 1
+      },
+      "source_sha256": "68f24856989e6c64c89bf1def3b101cf040d9b74354746e1f8c03da5a31bda96",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"status\":200,\"url\":\"http://127.0.0.1:35029/redirect307/echo\",\"redirected\":true,\"echo\":{\"method\":\"POST\",\"body\":[0,128,255],\"contentType\":\"application/octet-stream\",\"marker\":\"retained\"}},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "status": 200,
+              "url": "http://127.0.0.1:35029/redirect307/echo",
+              "redirected": true,
+              "echo": {
+                "method": "POST",
+                "body": [0, 128, 255],
+                "contentType": "application/octet-stream",
+                "marker": "retained"
+              }
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 2,
+            "paths": {
+              "/redirect307/start": 1,
+              "/redirect307/echo": 1
+            },
+            "requests": [
+              {
+                "path": "/redirect307/start",
+                "method": "POST",
+                "body": [0, 128, 255]
+              },
+              {
+                "path": "/redirect307/echo",
+                "method": "POST",
+                "body": [0, 128, 255]
+              }
+            ],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"echo\":{\"body\":[0,128,255],\"contentType\":\"application/octet-stream\",\"marker\":\"retained\",\"method\":\"POST\"},\"redirected\":true,\"status\":200,\"url\":\"http://127.0.0.1:35029/redirect307/echo\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "echo": {
+                "body": [0, 128, 255],
+                "contentType": "application/octet-stream",
+                "marker": "retained",
+                "method": "POST"
+              },
+              "redirected": true,
+              "status": 200,
+              "url": "http://127.0.0.1:35029/redirect307/echo"
+            }
+          },
+          "server": {
+            "accepted_requests": 2,
+            "paths": {
+              "/redirect307/start": 1,
+              "/redirect307/echo": 1
+            },
+            "requests": [
+              {
+                "path": "/redirect307/start",
+                "method": "POST",
+                "body": [0, 128, 255]
+              },
+              {
+                "path": "/redirect307/echo",
+                "method": "POST",
+                "body": [0, 128, 255]
+              }
+            ],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "pre-aborted-zero-server-requests",
+      "contracts": ["CANCEL-01"],
+      "mode": "request-time",
+      "source": "(async () => { const controller = new AbortController(); controller.abort(new Error(\"pre-abort sentinel\")); try { await fetch(\"http://127.0.0.1:35029/preabort/denied\",{signal:controller.signal}); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+      "expected": {
+        "name": "Error",
+        "message": "pre-abort sentinel"
+      },
+      "expected_paths": {},
+      "source_sha256": "8f7c5d6bb76389daa31f157688fd20a3f001a98155127a177b17bc0d62db4935",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"Error\",\"message\":\"pre-abort sentinel\"},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "Error",
+              "message": "pre-abort sentinel"
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"pre-abort sentinel\",\"name\":\"Error\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "pre-abort sentinel",
+              "name": "Error"
+            }
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "build-denial-zero-server-requests",
+      "contracts": ["HTTP-01", "HTTP-03"],
+      "mode": "build-time",
+      "source": "(async () => { try { await fetch(\"http://127.0.0.1:35029/build/denied\"); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+      "expected": {
+        "name": "Error",
+        "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/build/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+      },
+      "expected_paths": {},
+      "source_sha256": "ee069ce78701bff70525c8549fb616172a04890f5fed4560ad3df31ef651c265",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"Error\",\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:35029/build/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\"},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "Error",
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/build/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:35029/build/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\",\"name\":\"Error\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/build/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+              "name": "Error"
+            }
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "raw-denial-zero-server-requests",
+      "contracts": ["HTTP-01", "HTTP-03"],
+      "mode": "build-time",
+      "source": "(async () => { try { await globalThis.__zfbHost.fetch({url:\"http://127.0.0.1:35029/raw/denied\",method:\"GET\",headers:[],redirect:\"follow\",hasBody:false,timeoutMs:null,cancelId:null},new Uint8Array(0)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+      "expected": {
+        "name": "TypeError",
+        "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/raw/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+      },
+      "expected_paths": {},
+      "source_sha256": "c8bc616f3e6b7bbd2469623a867773b19230ef8a686ce6ae03b814e49e527d99",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"TypeError\",\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:35029/raw/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\"},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "TypeError",
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/raw/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:35029/raw/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\",\"name\":\"TypeError\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/raw/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+              "name": "TypeError"
+            }
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "forged-raw-denial-zero-server-requests",
+      "contracts": ["HTTP-01", "HTTP-03"],
+      "mode": "build-time",
+      "source": "(async () => { globalThis.__zfb = {mode:\"request-time\",limits:{maxSubrequests:99999}}; try { await globalThis.__zfbHost.fetch({url:\"http://127.0.0.1:35029/forged/denied\",method:\"GET\",headers:[],redirect:\"follow\",hasBody:false,timeoutMs:null,cancelId:null},new Uint8Array(0)); return \"unexpected success\"; } catch(e) { return {name:e.name,message:e.message}; } })()",
+      "expected": {
+        "name": "TypeError",
+        "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/forged/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+      },
+      "expected_paths": {},
+      "source_sha256": "7f7d3f6b83ee00eb6c22b236f998ae587c8f57d5ae51625ddeed8eac8ce1f3d7",
+      "results": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"TypeError\",\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:35029/forged/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\"},\"console\":\"\"}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "TypeError",
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/forged/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+            },
+            "console": ""
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "exit_code": 0,
+          "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:35029/forged/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\",\"name\":\"TypeError\"}}\n",
+          "stderr": "",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:35029/forged/denied). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+              "name": "TypeError"
+            }
+          },
+          "server": {
+            "accepted_requests": 0,
+            "paths": {},
+            "requests": [],
+            "errors": []
+          }
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "limits": "No live-host idle cancellation/socket-closure claim; request counters observe parsed HTTP requests."
+}

@@ -923,3 +923,24 @@ remain unresolved. No held branch was imported, merged or modified. No phase-two
 CLI adoption, live operation, dispatch, issue closure or Rolldown change occurred.
 The non-UTF-8 page postprocessing limitation remains separate from Worker binary
 responses. Phase-one integration acceptance is not complete.
+
+## Combined-source replay and durable receipts (2026-10-16)
+
+Accepted main `151d9d97` was reconciled into clean source
+`546fce7cd3efccb1a9f05e8a51a9d889a545c256`. The actual combined-source compiler
+regenerated and checked all 173 Wind samples.
+
+[The source-bound evidence bundle](evidence/refresh-linux-2026-10-16/README.md)
+records the full successful generated acceptance replay with Chromium, 296
+Deno-backed renderer tests, the no-V8 check, 117 Wind tests, 52 MDX tests, 22 CSS
+tests, 95 strict Python tests, 19 Wind generator tests and 22 reference tests.
+The original failed attempts remain recorded separately from successful retries.
+Independent review validated source reconciliation, executable hashes, frozen
+inputs, strict reports, parity, mapped errors and browser observations.
+
+Default-producer metadata, standalone Deno-free host metadata and future actual
+CLI feature-exact proof remain separate. The last remains unimplemented. Two
+inherited provenance-budget assertions remain failing; this lane changes no
+thresholds or health/re-pin scripts. The current activation section retains the
+ordered integration, both-platform evidence, paired review and separately
+authorized live-apply gates. No live contract or runtime default changed.

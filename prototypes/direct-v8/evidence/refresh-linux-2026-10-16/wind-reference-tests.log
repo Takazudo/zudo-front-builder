@@ -1,0 +1,10 @@
+note: You are running `vp test` as a Vite+ built-in command. If you meant to run the test npm script, use `vpr test` instead.
+
+ RUN  v5.0.1 /workspace/zudo-front-builder
+
+
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+   Start at  04:41:28
+   Duration  611ms (tests 68%, transform 18%, import 14%, worker 1%)
+

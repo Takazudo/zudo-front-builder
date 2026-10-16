@@ -1,0 +1,2 @@
+FileNotFoundError: [Errno 2] No such file or directory: 'rustup'
+direct-v8 acceptance FAIL /workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/acceptance.json

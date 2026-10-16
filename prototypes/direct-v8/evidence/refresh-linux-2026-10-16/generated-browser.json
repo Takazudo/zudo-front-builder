@@ -1,0 +1,11 @@
+{
+  "executablePath": "/usr/bin/chromium",
+  "origin": "http://127.0.0.1:37381",
+  "passed": true,
+  "version": "151.0.7922.173",
+  "initialText": "Count: 0",
+  "css": "rgb(12, 34, 56)",
+  "afterClickText": "Count: 1",
+  "pageErrors": [],
+  "consoleErrors": []
+}

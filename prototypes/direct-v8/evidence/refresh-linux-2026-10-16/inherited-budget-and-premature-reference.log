@@ -1,0 +1,67 @@
+note: You are running `vp test` as a Vite+ built-in command. If you meant to run the test npm script, use `vpr test` instead.
+
+ RUN  v5.0.1 /workspace/zudo-front-builder
+
+ ❯ |scripts| scripts/__tests__/generate-wind-reference.test.mjs (0 test)
+ ❯ |scripts| scripts/__tests__/island-size-budget.test.mjs (32 tests | 2 failed) 1125ms
+   ❯ island shipped-size budget (32)
+     × records the reviewed Darwin arm64 ceilings with zero allowance 62ms
+     × records the reviewed Linux x64 ceilings with zero allowance 30ms
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |scripts| scripts/__tests__/generate-wind-reference.test.mjs [ scripts/__tests__/generate-wind-reference.test.mjs ]
+SyntaxError: Expected double-quoted property name in JSON at position 64 (line 5 column 1)
+ ❯ loadPreviewContext docs/scripts/wind-reference-editorial.mjs:170:25
+    168| export function loadPreviewContext(root, exampleRecords) {
+    169|   const publicDir = join(root, "docs/public");
+    170|   const manifest = JSON.parse(readFileSync(join(publicDir, "wind-examp…
+       |                         ^
+    171|   const baseConfig = JSON.parse(
+    172|     readFileSync(join(root, "docs/wind-examples/base-config.json"), "u…
+ ❯ scripts/__tests__/generate-wind-reference.test.mjs:330:17
+ ❯ VitestModuleRunner.directRequest node_modules/.pnpm/@voidzero-dev+vite-plus-core@1.0.0_@types+node@22.19.17_esbuild@0.28.1_tsx@4.23.1_typescript@6.0.3_yaml@2.9.0/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/module-runner.js:1272:59
+ ❯ VitestModuleRunner.cachedRequest node_modules/.pnpm/@voidzero-dev+vite-plus-core@1.0.0_@types+node@22.19.17_esbuild@0.28.1_tsx@4.23.1_typescript@6.0.3_yaml@2.9.0/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/module-runner.js:1179:73
+ ❯ VitestModuleRunner.import node_modules/.pnpm/@voidzero-dev+vite-plus-core@1.0.0_@types+node@22.19.17_esbuild@0.28.1_tsx@4.23.1_typescript@6.0.3_yaml@2.9.0/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/module-runner.js:1134:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |scripts| scripts/__tests__/island-size-budget.test.mjs > island shipped-size budget > records the reviewed Darwin arm64 ceilings with zero allowance
+Error: --reason cargo-producer-lock: the contract pins Cargo.lock 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37, not --expected-old-cargo-sha; the checkout's Cargo.lock hashes to 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138, not --expected-new-cargo-sha; the artifact measured Cargo.lock 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138, not --expected-new-cargo-sha
+ ❯ cargoError scripts/rebaseline-island-size-linux.mjs:389:10
+    387|
+    388| function cargoError(message) {
+    389|   return new Error("--reason " + CARGO_PRODUCER_LOCK_REASON + ": " + m…
+       |          ^
+    390| }
+    391|
+ ❯ proveCargoProducerLock scripts/rebaseline-island-size-linux.mjs:689:34
+ ❯ assertHistoricalContractAndReviewedCargoGate scripts/__tests__/island-size-budget.test.mjs:568:17
+ ❯ scripts/__tests__/island-size-budget.test.mjs:775:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  |scripts| scripts/__tests__/island-size-budget.test.mjs > island shipped-size budget > records the reviewed Linux x64 ceilings with zero allowance
+Error: --reason cargo-producer-lock: the contract pins Cargo.lock 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37, not --expected-old-cargo-sha; the checkout's Cargo.lock hashes to 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138, not --expected-new-cargo-sha; the artifact measured Cargo.lock 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138, not --expected-new-cargo-sha
+ ❯ cargoError scripts/rebaseline-island-size-linux.mjs:389:10
+    387|
+    388| function cargoError(message) {
+    389|   return new Error("--reason " + CARGO_PRODUCER_LOCK_REASON + ": " + m…
+       |          ^
+    390| }
+    391|
+ ❯ proveCargoProducerLock scripts/rebaseline-island-size-linux.mjs:689:34
+ ❯ assertHistoricalContractAndReviewedCargoGate scripts/__tests__/island-size-budget.test.mjs:568:17
+ ❯ scripts/__tests__/island-size-budget.test.mjs:809:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 30 passed (32)
+   Start at  04:38:33
+   Duration  1.43s (tests 84%, transform 11%, import 4%, worker 1%)
+
