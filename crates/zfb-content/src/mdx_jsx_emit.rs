@@ -249,6 +249,7 @@ fn mdx_to_jsx_module_inner(
         // markdown-rs's Display already emits "line:col-line:col: reason".
         PipelineError::Parse(format!("{}: {m}", opts.filename))
     })?;
+    crate::mdx_expression_source::restore(&mut root, input);
     // Strip autolink literals markdown-rs created inside a link label
     // (zfb#2388) before anything else sees them — they would emit a nested
     // `<a>`, which is invalid HTML. Gated on the construct that produces the
