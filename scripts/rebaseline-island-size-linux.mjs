@@ -2227,12 +2227,13 @@ function gitOptions(root) {
 }
 
 function git(root, args) {
-  return execFileSync("git", args, gitOptions(root));
+  return execFileSync("git", ["--no-replace-objects", ...args], gitOptions(root));
 }
 
 // Like git() but returns {status, stdout, stderr} so a warning on success is visible.
 function runGit(root, args) {
-  const result = spawnSync("git", args, gitOptions(root));
+  // Local refs/replace must not substitute bytes beneath an immutable citation.
+  const result = spawnSync("git", ["--no-replace-objects", ...args], gitOptions(root));
   if (result.error) throw result.error;
   return result;
 }
