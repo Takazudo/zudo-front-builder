@@ -1360,17 +1360,10 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate inputs of the current producer-lock transitions. Constants
+// Exact immediate input of the remaining Darwin producer-lock transition. Constants
 // preserve the assertions in shallow CI; full checkouts also compare git bytes
 // and predecessor metadata below.
 const repinnedFromContracts = [
-  {
-    file: "decision-linux-x64.json",
-    commit: "3f98944e427e4555ad7b13564d94857680cfb61d",
-    sha256: "43c6f316923ccf1ccedd12dc203ec2e14eb6b3aeaafe06b59b62d49a67bbb1f6",
-    baselineSourceSha: "60b484c6fb1fb6d3d90d3bb853dc3cbc11e5ba2a",
-    baselineRunId: 38683888974,
-  },
   {
     file: "decision.json",
     commit: "42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd",
@@ -1380,7 +1373,7 @@ const repinnedFromContracts = [
   },
 ];
 
-describe("live contracts record their authentic predecessor", () => {
+describe("live contracts preserve released evidence and authentic predecessors", () => {
   for (const { file, commit, sha256, baselineSourceSha, baselineRunId } of repinnedFromContracts) {
     it(file + " carries a flat repinnedFrom with a verified contract reference", () => {
       const contract = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
@@ -1435,6 +1428,20 @@ describe("live contracts record their authentic predecessor", () => {
       }
     });
   }
+
+  it("preserves the released v4.5.3 Linux contract without stale predecessor metadata", () => {
+    const blob = readFileSync(join(sizeDir, "decision-linux-x64.json"));
+    // Released main d70dd6d9 owns these bytes; reconciliation must not re-pin them.
+    expect(createHash("sha256").update(blob).digest("hex")).toBe(
+      "08abd3ff01c2927e90121e6bdb98697a62626516d1763e48c13b4f25031ba9cd",
+    );
+    const contract = JSON.parse(blob.toString("utf8"));
+    expect(contract.outcome).toBe("release-version-stamp");
+    expect(contract.toolchain.packageVersion).toBe("4.5.3");
+    expect(contract.baselineSourceSha).toBe("37b40de3a49fa019d30f414328a42b45e4672d4a");
+    expect(contract.baselineEvidence.runId).toBe(38887632282);
+    expect(contract.baselineEvidence).not.toHaveProperty("repinnedFrom");
+  });
 
   it("keeps the dated README corrections", () => {
     const readme = readFileSync(join(sizeDir, "README.md"), "utf8");

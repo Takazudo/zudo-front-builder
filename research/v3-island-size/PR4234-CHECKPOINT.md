@@ -1,8 +1,8 @@
 # PR #4234: refreshed candidate requires new evidence
 
 This checkpoint separates historical evidence from the candidate after merging
-main `308160a944d86880d7d1222a2ebca584825f8cea` (including Windows repair #4286).
-The merge commit is `101cbac6`; the final candidate includes this documentation.
+released main `d70dd6d94ab1b89a65fee9ed7727747d1de860f2` (v4.5.3, including Windows repair #4286).
+The release reconciliation merge is `61c01f01`; the final candidate includes this documentation.
 Use the full final PR head recorded in the PR receipt for every new request.
 
 ## Historical receipts remain bound to their original source
@@ -23,12 +23,29 @@ These are real historical results, not missing work and not qualification of the
 The old [Health run 38852240208](https://github.com/Takazudo/zudo-front-builder/actions/runs/38852240208)
 remains failed; later main repairs do not retroactively change its result.
 
+The intermediate candidate `64b9be27ab425f8cb4441d6ffb83e5d55ca8e12f`
+incorporated main `308160a9`: its 440 focused tests, independent review, five green
+workflows and Linux Health measurement in run 38891170976 are also historical now.
+[That receipt](https://github.com/Takazudo/zudo-front-builder/pull/4234#issuecomment-6214490597)
+retains measured merge SHA `93c741d18e3ed0ed5436168f87f03b97310352c5` and artifact
+
+12042618220. Cloud could read its logs but the ZIP returned HTTP Forbidden; its
+
+metadata/upload digest is not locally verified. Do not retry blocked artifact storage.
+
 ## Refreshed candidate verification
 
-Main merged without conflicts. The existing Git `--no-replace-objects` hardening,
+The release merge resolved conflicts in the README and Linux contract by retaining
+both dated narratives and the exact released-main Linux contract. The release-owner
+[probe checkpoint](https://github.com/Takazudo/zudo-front-builder/pull/4288#issuecomment-6214128473)
+says measurements were carried into the bump commit. No new baseline was inferred.
+Linux's superseded Cargo-transition predecessor metadata remains historical; it is
+not transplanted into the v4.5.3 release baseline. Darwin's existing authenticated
+predecessor metadata is retained. Released package versions, locks, defaults and
+ceilings are preserved. The existing Git `--no-replace-objects` hardening,
 immutable lock and immediate-predecessor provenance, paired transition checks and
 strict verification remain intact. No new pin, threshold, allowance, runtime default
-or release change is authorized. PR #4260, child #4259 and V8 PR #4242 remain separate.
+or additional release change is authorized. PR #4260, child #4259 and V8 PR #4242 remain separate.
 
 The manager runs the nine focused suites (Linux/Darwin rebaseline, reviewed Cargo
 transition CLI, Cargo producer transition, budget, lock fingerprint, identity
@@ -64,6 +81,10 @@ The Mac lane independently downloads and verifies the Darwin artifact from that
 same run, confirms native host identity and exact candidate checkout, and performs
 its read-only loader/strict-budget replay with unchanged artifact-byte digests.
 It does not dispatch a duplicate run. Report unavailable steps as unavailable.
+The released main still carries a v4.5.2 Darwin baseline alongside v4.5.3 packages;
+record exactly which strict checks accept or reject that evidence. A new baseline
+or policy decision requires separate authorization, not a softened assertion or
+silent re-pin. Preserve the original failed run if any check rejects the candidate.
 
 Keep PR #4234 draft and unmerged pending the integration decision. New exact-head
 CI, supported measurements, both-platform control/replay and the integration decision
