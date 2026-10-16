@@ -783,7 +783,8 @@ fn resolve_exported_css_subpath(
         return Err(PackageResolutionError::NonCssExport {
             package: package.to_string(),
             subpath: subpath.to_string(),
-            target: export_target_for_path(path, &selected_root),
+            // Both paths are canonical: Windows verbatim prefixes must agree.
+            target: export_target_for_path(&real, &selected_root),
         });
     }
     Ok(path.to_path_buf())
@@ -1232,8 +1233,12 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&real_ds, proj.join("node_modules/@scope/design-system"))
             .unwrap();
-        #[cfg(not(unix))]
-        return; // symlink semantics differ; this test is unix-only
+        #[cfg(windows)]
+        zfb_types::directory_link::create(
+            &real_ds,
+            &proj.join("node_modules/@scope/design-system"),
+        )
+        .unwrap();
 
         let resolved = resolve_css_imports(&proj.join("styles/styles.css"), &proj);
         let tokens_real = fs::canonicalize(real_ds.join("dist/tokens.css")).unwrap();
