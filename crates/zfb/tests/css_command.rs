@@ -3137,7 +3137,8 @@ fn wind_library_fixture(root: &Path) -> PathBuf {
 
 #[test]
 fn wind_library_manifest_reaches_a_packed_consumer() {
-    let npm = Command::new("npm")
+    let npm_executable = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    let npm = Command::new(npm_executable)
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
@@ -3145,7 +3146,10 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
         eprintln!("[wind_library_consumer] esbuild or npm unavailable; skipping");
         return;
     };
-    let temp = tempfile::tempdir().expect("create library tempdir");
+    let temp = tempfile::Builder::new()
+        .prefix("zfb packed consumer with spaces ")
+        .tempdir()
+        .expect("create library tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let library = wind_library_fixture(&root);
     let library_flags = ["--config", "wind.config.json", "--source", "**/*.tsx"];
@@ -3189,7 +3193,7 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
     fs::remove_file(library.join("dist/legacy.tsx")).expect("drop stale source before packing");
     let tarballs = root.join("tarballs");
     fs::create_dir_all(&tarballs).unwrap();
-    let packed = Command::new("npm")
+    let packed = Command::new(npm_executable)
         .args(["pack", "--ignore-scripts", "--pack-destination"])
         .arg(&tarballs)
         .current_dir(&library)
@@ -3210,7 +3214,7 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
         r#"{"name":"consumer","private":true,"type":"module"}"#,
     )
     .unwrap();
-    let installed = Command::new("npm")
+    let installed = Command::new(npm_executable)
         .args([
             "install",
             "--offline",
@@ -3220,7 +3224,9 @@ fn wind_library_manifest_reaches_a_packed_consumer() {
             "--no-save",
             "--package-lock=false",
         ])
-        .arg(&tarball)
+        // npm treats a canonical Windows verbatim path as a malformed file URL.
+        // Keep the known sibling path relative and pass it as one argument.
+        .arg(Path::new("../tarballs").join(tarball.file_name().expect("tarball filename")))
         .current_dir(&consumer)
         .output()
         .expect("spawn npm install");

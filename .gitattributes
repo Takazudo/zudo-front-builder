@@ -6,6 +6,9 @@
 *.ts text eol=lf
 *.sh text eol=lf
 
+# Embedded CSS and byte-exact CSS goldens must survive Windows autocrlf checkouts.
+*.css text eol=lf
+
 # This fixture is an exact byte-for-byte zudo-wind output golden. The CSS
 # pipeline can retain a final blank line at its combine boundary.
 crates/zfb/tests/fixtures/css-determinism/golden.css whitespace=-blank-at-eof
