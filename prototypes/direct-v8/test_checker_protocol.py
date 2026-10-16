@@ -340,15 +340,17 @@ class CheckerProtocolTest(unittest.TestCase):
         self.assertEqual(report["receipt_count"], 0)
 
     def ready_fixture(self, outer, payload, *, signal_ready=True):
-        # Test-only seam around Popen construction, not production readiness.
-        # The fixture writes without reading stdin, so waiting here cannot
-        # deadlock on subprocess.run's later communicate(input=...). The real
-        # subprocess.run still owns timeout, kill, wait and output capture.
+        # Test-only communication seam, not production readiness. Feed the
+        # bounded fixture input before waiting for its acknowledgment, retaining
+        # the original stdin -> output -> timeout sequence. Real communicate
+        # still owns capture/expiry, and subprocess.run owns kill/wait.
         reader, writer = socket.socketpair()
         with reader, writer:
             runner = self.root / "ready-runner"
+            captured_wire = self.root / "ready-input"
             runner.write_text(
-                f"#!{sys.executable} -S\nimport os, signal\n"
+                f"#!{sys.executable} -S\nimport os, signal, sys\nfrom pathlib import Path\n"
+                f"Path({str(captured_wire)!r}).write_bytes(sys.stdin.buffer.read())\n"
                 f"os.write(1, {payload!r})\n"
                 "os.write(2, b'fixture stderr\\n')\n"
                 + (f"os.write({writer.fileno()}, b'R')\nsignal.pause()\n"
@@ -363,11 +365,21 @@ class CheckerProtocolTest(unittest.TestCase):
                     super().__init__(*args, pass_fds=(writer.fileno(),), **kwargs)
                     children.append(self)
                     writer.close()
+
+                def communicate(self, input=None, timeout=None):
+                    # At most PIPE_BUF bytes fit atomically in the empty pipe,
+                    # even if the cold interpreter has not started reading.
+                    testcase.assertIsNotNone(input)
+                    testcase.assertLessEqual(len(input), select.PIPE_BUF)
+                    self.stdin.write(input)
+                    self.stdin.close()
+                    self.stdin = None
                     try:
                         # Same 10s fixture/CLI safety ceiling used by invoke().
                         readable, _, _ = select.select([reader], [], [], 10)
                         testcase.assertTrue(readable, "fixture readiness deadline expired")
                         testcase.assertEqual(reader.recv(1), b"R", "fixture exited before readiness")
+                        testcase.assertEqual(captured_wire.read_bytes(), input)
                     except BaseException:
                         self.kill()
                         self.wait(timeout=10)
@@ -375,6 +387,7 @@ class CheckerProtocolTest(unittest.TestCase):
                             if stream is not None:
                                 stream.close()
                         raise
+                    return super().communicate(timeout=timeout)
 
             with mock.patch.object(subprocess, "Popen", ReadyPopen):
                 try:

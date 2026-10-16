@@ -8,10 +8,13 @@ separately with an instrumented edge probe.
 ## Test-only repair
 
 The partial-byte test waits for a socket acknowledgment after the fixture writes
-both streams, using a test-local `Popen` subclass. The fixture writes without
-reading stdin, so construction does not depend on the later `communicate(input)`.
-The real `subprocess.run` then owns the unchanged 300ms communication timeout,
-kill, wait, and captured bytes. Readiness failure is a test failure and reaps the
+both streams, using a test-local `Popen` subclass. Its communication wrapper
+feeds the fixture's input and closes stdin before waiting for acknowledgment.
+The fixture reads stdin to EOF, records it, writes both streams and signals ready.
+The test verifies exact input delivery and then delegates to real `communicate`
+with the unchanged 300ms timeout. Real `subprocess.run` still owns kill and wait.
+The input is asserted to fit within `PIPE_BUF` before feeding the empty pipe,
+so cold interpreter startup cannot block that write. Readiness failure is a test failure and reaps the
 direct fixture child. Its 10-second safety ceiling matches the existing CLI
 fixture ceiling; it is not a new production timeout.
 
@@ -34,19 +37,19 @@ native build is necessary.
 
 The Mac report is correct that an ordinary fixture cannot make the production
 `subprocess.run` deadline wait for interpreter readiness. This patch does not
-make that claim. Only the output-dependent test replaces `Popen` construction
-with a subclass that launches a real child and waits for its socket acknowledgment
-before returning. CPython starts the communication timeout after construction.
-Consequently cold interpreter startup is outside this test's 300ms communication
-window, bounded instead by its explicit 10-second fixture readiness wait. This
-is a test-local stdlib seam; the production API and runtime policy are unchanged.
+make that claim. Only the output-dependent test uses a `Popen` subclass whose
+communication wrapper sends the small fixture input, waits for acknowledgment,
+and then invokes the real `communicate(timeout=0.3)`. Consequently cold interpreter
+startup is outside this test's 300ms communication window, bounded instead by its
+explicit 10-second fixture readiness wait. This is a test-local stdlib seam; the
+production API and runtime policy are unchanged.
 
-The test therefore proves exact reporting of bytes already written before the
-communication timeout is armed. It does not prove output will appear within
-300ms of an ordinary spawn. The unsynchronized silent fixture explicitly covers
-timeout before first output. Existing ordinary runner and frozen-wire tests
-still exercise stdin delivery before output. No test here proves recovery of
-unread bytes at the kill boundary, or repairs the native cold-start latency.
+The test proves exact reporting of bytes already written before the communication
+timeout is armed, and retains the original stdin-then-output-then-timeout sequence.
+It does not prove output will appear within 300ms of an ordinary spawn. The
+unsynchronized silent fixture explicitly covers timeout before first output.
+No test here proves recovery of unread bytes at the kill boundary, or repairs the
+native cold-start latency.
 
 ## Production choices requiring agreement
 
