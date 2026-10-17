@@ -1,0 +1,57 @@
+{
+  "source_checkpoint": "546fce7cd3efccb1a9f05e8a51a9d889a545c256",
+  "accepted_main": "151d9d972c2bea4e99e224534681163471f1e8fa",
+  "starting_remote_head": "d541a25ebf3c8048411f31703d4dba6bbb420b57",
+  "source_status_at_recording": "",
+  "file_sha256": {
+    "Cargo.lock": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
+    "Cargo.toml": "30cd2d6138555778cdc357f8d783951e1ae7382c4adf4f7dc5e8130ce8c164d5",
+    "crates/zfb-js-host/Cargo.toml": "c0ddb808a53113215a6e4bd11891c6a75404ab944676d23805e82dfac8dd8480",
+    "crates/zfb-render/Cargo.toml": "b4a6e02611270daf9e5e64e480630255b9f8ddc1a560fbe801a5da7981aadc92",
+    "pnpm-lock.yaml": "43f5b3f540cbaccc9286b389e168c69c5c559872c2762c029b21adb5d139aff4",
+    "research/v3-island-size/decision.json": "b8b990cb7a0429cafa57a68145b3b7c7122894a0eeaefc4782954a84c2ca71bc",
+    "research/v3-island-size/decision-linux-x64.json": "07c3e68c8e3c6e00fc008db543dc1d52c3152ed2e92b2296c7cdafe67cae8b89"
+  },
+  "tooling_source": "16bb9165e10f6d5e984d1e2125a2f7830fbf7927",
+  "recorder_source": "017dd9c47e3c35945351fee617159b56e4d11db4",
+  "recorder_sha256": "f7346f7672147ae589a04438887a6950af869090bf11cb0009b06281a8be8160",
+  "checks": {
+    "python_checker_tests": {
+      "command": "python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'",
+      "passed": 95,
+      "failed": 0
+    },
+    "python_syntax": {
+      "files": 14,
+      "passed": true
+    },
+    "cargo_fmt": {
+      "passed": true
+    },
+    "wind_generator_tests": {
+      "passed": 19,
+      "failed": 0
+    },
+    "wind_reference_tests": {
+      "passed": 22,
+      "failed": 0
+    }
+  },
+  "wind": {
+    "command": "cargo build --locked -p zfb --no-default-features; node docs/scripts/wind-preview-assets.mjs --compiler /workspace/zudo-front-builder/target/debug/zfb; same generator --check",
+    "compiler_sha256": "621aa7be8e6859f7f173484353494701a52b771fa8109956da61a2fb26d64656",
+    "compiler_source_sha256": "5d8550d43e971df6636ce85d87a129e37fcf9a72d62749d850a781cdcd189d0a",
+    "examples": 173,
+    "generation": "passed",
+    "freshness": "passed",
+    "delta": "Only compiler.sourceSha256; example rows and assets unchanged",
+    "build_retry_guard": "PASS exit=0 secs=10"
+  },
+  "boundaries": {
+    "held_branches_imported": false,
+    "live_activation": false,
+    "native_size_measurements": false,
+    "cli_adoption": false,
+    "default_switch": false
+  }
+}

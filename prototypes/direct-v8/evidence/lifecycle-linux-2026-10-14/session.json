@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-14",
+  "sourceCheckpoint": "14e021f19d09287dbc3fb8a0ac86254379113092",
+  "sourceWasClean": true,
+  "initialRuntimeHead": "99e4c26a5695d9440436f69312bd388b57acaba5",
+  "integratedMain": "fbb7921d8fb3f28d859bbd4cf5737759f547866a",
+  "refreshMerge": "1accd515cf99140f78a9808b39b95a4036f4e70c",
+  "startup": {
+    "delivery": "workspace AGENTS.md; no separate saved-startup-field delivery proof",
+    "exit": 0,
+    "profileSource": "67f64089eb5c55d40aa846a9f158af66e5d84317",
+    "profileClean": true,
+    "snapshot": "3d5441ff538c288923340368c5b64a5ff97890042430211c20bb0348357bac61",
+    "stdout": "/tmp/v8-fresh-startup-context.txt",
+    "stdoutLines": 1157,
+    "outerOutputTruncatedThenCapturedAndFullyRead": true,
+    "nativeDiscoveryClaim": false
+  },
+  "permissions": {
+    "rootCargoProbe": "OS Permission denied before and after approved exact escalation; no protected content read",
+    "toolchain": "fresh public rustup into /workspace/shared, repository stable selection; HOME and CODEX_HOME unchanged",
+    "artifactGhRedirect": "external Forbidden even with approved escalation; exact artifact fetched through authorized connector"
+  },
+  "review": {
+    "agent": "lifetime_review",
+    "independent": true,
+    "remainingFindings": 0,
+    "covered": [
+      "early returns and drop ordering",
+      "field Arc release",
+      "per-queue weak ownership",
+      "late posts",
+      "real native callback panic containment",
+      "isolate-owned native task disposal"
+    ]
+  },
+  "scope": {
+    "taskLockVersionContractChanges": false,
+    "upstreamMoves": "main4.5.1 pnpm lock/package versions, Linux predecessor contract and source changes retained",
+    "rawFixture": "normal hook initially rewrote upstream raw Markdown fixture despite existing formatter exclude. Exact upstream bytes restored in3e11f6a1 with only LEFTHOOK_EXCLUDE=format-mdx; scoped glob check honors existing exclusion. No hook config/source edit.",
+    "forbiddenOperationsPerformed": false
+  },
+  "conclusions": {
+    "permittedImplementationBatch": "implementation and fresh acceptance passed; broader results recorded separately",
+    "phaseOneIntegrationAccepted": false,
+    "actualCliAdoptionCompleted": false
+  },
+  "verificationScope": "Acceptance and broad verification began at clean source checkpoint; only evidence/documentation written during subsequent broad checks.",
+  "wind": {
+    "compilerBuild": ["cargo", "build", "--locked", "-p", "zfb", "--no-default-features"],
+    "generate": [
+      "node",
+      "docs/scripts/wind-preview-assets.mjs",
+      "--compiler",
+      "/workspace/zudo-front-builder/target/debug/zfb"
+    ],
+    "check": "same generator command with --check; passed173 samples",
+    "generatorTests": "19passed",
+    "conflictResolution": "Regenerated manifest from actual combined compiler source, no chosen manifest side or hand-written digest",
+    "finalRegeneration": "After final source14e021f1, freshness check failed only manifest digest. Regenerated173 samples using acceptance-built actual compiler and rechecked PASS; no source edit after replay.",
+    "finalDiff": {
+      "only": "compiler.sourceSha256",
+      "before": "84c528158051b1f74cddc091b5046da3809a65b8095378657a687f65df201955",
+      "after": "a621c16cc7c3df8138d8cd3451f9b28470d8bd1c79222a8e5e1b9f00bd3703ea",
+      "generatedRowsAndAssetBytesUnchanged": true
+    }
+  },
+  "initialSourceCheckpoint": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+  "finalSourceChange": "14e021f1 moves byte-identical production items before unchanged test module to fix native Clippy; independent byte comparison confirmed order-only."
+}

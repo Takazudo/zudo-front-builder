@@ -187,8 +187,12 @@ function localizedNote(value, locale, field) {
 // #4120 plugin probe: only the prototype root lock edge to the existing pinned
 // resolver changes this closure. Wind sources/catalog and locked subgraph stay
 // unchanged; replay evidence: prototypes/rolldown/PLUGIN-ALIAS-VERIFICATION.md.
+// #4242 reconciliation: the 99 non-lock fingerprint inputs and all 164 lock
+// records reachable from zudo-wind (including dev/optional/platform edges) are
+// unchanged versus accepted main b8a2a9d0. The shared-host extraction only moves
+// other workspace lock records; see prototypes/direct-v8/evidence/reconcile-main-2026-10-15/.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "c11e6436e2d7760fe88f70f0caaa6676b841c78256914106464d50ba2fc37f69";
+  "bbfe6f81ab92f52c9e90e169ea1dd82cd3046b71a41b0588d55e3d30242dc4a2";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

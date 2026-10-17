@@ -1,0 +1,83 @@
+{
+  "reviewer": "/root/patch_review",
+  "source_checkpoint": "cc56b15a38173b9a276cb997ef12230fdc370cd0",
+  "scope": "Independent read-only review of checker protocol patch and acceptance aggregation; no repository edits, builds or native runs by reviewer.",
+  "original_patch": {
+    "path": "/workspace/pr4242-text-input/pr4242-checker-protocol-verified.patch",
+    "bytes": 43482,
+    "sha256": "c7a5dc3b570b7c74892a60553d9a147d0e95278191fe38d4faccbaa1e22b6f12",
+    "identity_source": "Manager supplied verified patch identity; reviewer inspected applied source.",
+    "base_head": "656a1b421317eecd0e65d15e9875c88613660e73",
+    "files": [
+      "README.md",
+      "check-config.py",
+      "check-outer-config.py",
+      "runner-protocol.py",
+      "test_checker_protocol.py"
+    ],
+    "reviewed_properties": [
+      "Strict JSON flags and values",
+      "Exact receipt counts and malformed-slot preservation",
+      "Failure evidence without false passes",
+      "Loaded corpus and executable identities",
+      "Dynamic sibling import under Python -I",
+      "Watchdog failure without child-tree cleanup claims",
+      "Compatibility with stricter accept.py report aggregation"
+    ]
+  },
+  "finding": {
+    "status": "repaired and independently approved",
+    "description": "Excessively nested JSON could parse successfully but cause RecursionError during indented report serialization, leaving no report. This was a pre-existing hardening gap, not a false-pass path.",
+    "reproduction": "prefix + b'{\"deep\":' + b'[' * 1100 + b'0' + b']' * 1100 + b'}\\n'",
+    "observed_environment": "Python 3.12.14; recursion limit 1000",
+    "observed_before_repair": {
+      "config_exit": 1,
+      "config_report_exists": false,
+      "candidate_observed": true,
+      "outer_exit": 1,
+      "outer_report_exists": false
+    },
+    "minimal_repair": "Strict parse_json converts decoder RecursionError to ValueError and checks container nesting iteratively with maximum depth 128. Excessively nested receipts retain raw stdout and failed slots; excessively nested corpora are refused before launch.",
+    "repair_review": "Implementation and three real-subprocess regression oracles independently reviewed; no blocking findings."
+  },
+  "independent_checks": {
+    "focused_command": "python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_checker_protocol.py' -k deep -v",
+    "focused_result": {
+      "tests": 3,
+      "seconds": 0.156,
+      "passed": true
+    },
+    "focused_cases": [
+      "Deep semantically valid baseline receipt retains failure evidence and successful candidate observation",
+      "Deep outer receipt retains rejected slot, exact stdout and later passing rows",
+      "Deep corpus writes failure report and launches neither engine"
+    ],
+    "patched_reports": [
+      "Successful tiny config checker report accepted by accept.py engine_counts/report_passed",
+      "Successful tiny outer checker report accepted by accept.py outer_counts/report_passed",
+      "Corpus mutation with individually passing engines remains failed under accept.py report_passed"
+    ],
+    "historical_native_reports": {
+      "directory": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1",
+      "purpose": "Saved-report compatibility only; not fresh patched-source native evidence.",
+      "aggregated_counts": {
+        "config_per_engine": 63,
+        "services_per_engine": 27,
+        "modules_per_engine": 47,
+        "http_rows": 8,
+        "outer_rows": 7
+      },
+      "maximum_container_depth": 11,
+      "corpus_maximum_depths": {
+        "config-cases.json": 5,
+        "service-cases.json": 6
+      }
+    }
+  },
+  "disposition": "Approved for source checkpoint and manager-owned native replay. No remaining independent review blockers.",
+  "limits": [
+    "Manager reported checkpoint SHA; reviewer did not create the commit.",
+    "Manager owns combined-suite and fresh native replay outcomes; those are not asserted here.",
+    "No proof of child-tree cleanup or additional platforms."
+  ]
+}

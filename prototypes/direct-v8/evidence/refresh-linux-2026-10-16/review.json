@@ -1,0 +1,33 @@
+{
+  "reviewer": "/root/review_refresh",
+  "settings": "Separate inherited-context agent; precise model/effort not independently exposed",
+  "source": "546fce7cd3efccb1a9f05e8a51a9d889a545c256",
+  "scope": "Read-only independent source, merge, metadata and saved native evidence review; no native rerun by reviewer",
+  "findings": [],
+  "source_review": [
+    "All nine accepted-main files byte-identical to151d9d97",
+    "No runtime/host merge-induced defect found; reviewed core construction/drop, foreground queue lifetime, driver/dispatch budget and bridge initialization",
+    "All780 compiler digest inputs tracked and identical to measured commit; only manifest compiler digest changes",
+    "Only host lock record added and renderer rewired; explicit base64 0.22.1 preserved"
+  ],
+  "metadata_review": [
+    "Immutable lock/manifests/declaration and closure hashes agree",
+    "Linux497 to498; Darwin481 to482; prior rows unchanged",
+    "Standalone152 normal/build rows, pinned V8 147.4.0 and no Deno",
+    "Latest proof tooling16bb9165 matches detached checkout; no artifact admission claimed"
+  ],
+  "native_receipt_review": [
+    "Six current executable files match recorded SHA-256;12 integrity checkpoints consistent",
+    "Strict report count validators pass:63config/27services/47modules per engine,8HTTP,7outer-config,8generated per engine and7parity",
+    "All54 frozen files match exact inventory,size,hashes",
+    "Both engines received byte-identical generated inputs;16 framed generated receipts bind engine identities and hashes",
+    "Authored throw maps to throw.ts:6:9 with matching content",
+    "Chromium151.0.7922.173 counter0 to1, expected CSS,no page/console errors;HTML/browser executable hashes match",
+    "Initial acceptance remains failed for missing rustup; successful retry records explicit rustc"
+  ],
+  "limitations": [
+    "Not an independent native rerun",
+    "Linux standalone evidence only; no Darwin or candidate CLI proof",
+    "Prepared metadata does not establish live predecessor approval or integration acceptance"
+  ]
+}

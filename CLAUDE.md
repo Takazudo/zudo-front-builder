@@ -111,6 +111,21 @@ Confirmation topics collect evidence and missing coverage; they never manufactur
   necessary final verification/fixing round on the integrated result. Package publication is
   a separate boundary: the release procedure's verification and publication gates still apply.
 
+### Platform-bound verification on GitHub-hosted runners
+
+- Prefer the existing workflows on standard GitHub-hosted runners for Linux-native builds,
+  tests, and measurements (`health.yml`, `island-size-darwin.yml` with `platform=linux-x64`).
+  A Mac-only local session is not a reason to ask the owner for WSL work or to add emulation.
+- Run OS/CPU-specific acceptance on a matching runner. Keep a replay of saved artifact bytes
+  distinct from a native measurement or native execution, and label an emulated replay as such.
+- Record the exact source SHA (and merge ref for PR runs), runner image and toolchain,
+  run/job/artifact IDs, artifact digest, and the first result plus every retry.
+- Standard GitHub-hosted runners are free for this public repository
+  ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
+  Do not use larger runners or other billed compute without owner approval. Avoid duplicate
+  dispatches and purposeless reruns, and keep artifact size and retention to what the evidence needs.
+- Using Actions never implies approval for deployment, release, or broader permissions.
+
 ## Worktree push policy (enforced)
 
 This repo uses `/x-wt-teams` for multi-topic development. Child agents work in git worktrees under `worktrees/`. **Pushing from a worktree is forbidden.** Only the manager session — running from the main repo at the repo root — pushes, after merging topic branches into the base branch locally.

@@ -1,0 +1,1531 @@
+{
+  "corpus_sha256": "e52f9362ef1741ef25eb85718da5bedffeb33410db528c5380e7cc1d3c2d144c",
+  "results": [
+    {
+      "engine": "deno_core 0.399.0 / v8 147.4.0",
+      "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+      "executable_sha256": "ce5d736d4c7ae0057d4cb9b706f6f2df1900be1f6fa8cf79b62f1d3ded41bd22",
+      "exit_code": 0,
+      "receipt_count": 63,
+      "expected_count": 63,
+      "stderr": "",
+      "passed": true,
+      "rows": [
+        {
+          "name": "plain-object",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42,
+              "nested": {
+                "enabled": true
+              },
+              "title": "zfb"
+            }
+          }
+        },
+        {
+          "name": "empty-object",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {}
+          }
+        },
+        {
+          "name": "top-level-null",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-undefined",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-number",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-string",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-boolean",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-function",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-async-function",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-symbol",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "missing-default",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "default export must be a plain object"
+          }
+        },
+        {
+          "name": "top-level-array",
+          "contracts": ["CFG-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [
+              1,
+              "two",
+              {
+                "three": true
+              }
+            ]
+          }
+        },
+        {
+          "name": "array-omission-slots",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [null, null, null, null, null, null, null, 0]
+          }
+        },
+        {
+          "name": "top-level-date",
+          "contracts": ["CFG-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": "2020-01-02T03:04:05.000Z"
+          }
+        },
+        {
+          "name": "invalid-date",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": null
+          }
+        },
+        {
+          "name": "nested-date",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "date": "2020-01-02T03:04:05.000Z"
+            }
+          }
+        },
+        {
+          "name": "omitted-object-fields",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "keep": 7,
+              "nan": null,
+              "pos": null,
+              "neg": null
+            }
+          }
+        },
+        {
+          "name": "class-instance",
+          "contracts": ["CFG-01", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "boxed-number",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": 7
+          }
+        },
+        {
+          "name": "boxed-string",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": "zfb"
+          }
+        },
+        {
+          "name": "boxed-symbol",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {}
+          }
+        },
+        {
+          "name": "map-and-set",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "map": {},
+              "set": {}
+            }
+          }
+        },
+        {
+          "name": "null-prototype-object",
+          "contracts": ["CFG-01", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "promise-default-is-not-awaited",
+          "contracts": ["CFG-01", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {}
+          }
+        },
+        {
+          "name": "getter-value",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "tojson-object",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "tojson-scalar",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": "serialized"
+          }
+        },
+        {
+          "name": "tojson-null",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": null
+          }
+        },
+        {
+          "name": "nested-bigint",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify threw: TypeError: Do not know how to serialize a BigInt"
+          }
+        },
+        {
+          "name": "boxed-bigint",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify threw: TypeError: Do not know how to serialize a BigInt"
+          }
+        },
+        {
+          "name": "circular-object",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify threw: TypeError: Converting circular structure to JSON\n    --> starting at object with constructor 'Object'\n    --- property 'self' closes the circle"
+          }
+        },
+        {
+          "name": "throwing-getter",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify threw: Error: getter-marker"
+          }
+        },
+        {
+          "name": "throwing-tojson",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify threw: Error: tojson-marker"
+          }
+        },
+        {
+          "name": "tojson-undefined",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)"
+          }
+        },
+        {
+          "name": "tojson-symbol",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)"
+          }
+        },
+        {
+          "name": "mutable-stringify-replacement",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "replacement": 42
+            }
+          }
+        },
+        {
+          "name": "stringify-json-receiver",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": 42
+          }
+        },
+        {
+          "name": "stringify-not-callable",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify is not a function"
+          }
+        },
+        {
+          "name": "json-not-object",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON is not an object"
+          }
+        },
+        {
+          "name": "stringify-throw",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify threw: Error: stringify-marker"
+          }
+        },
+        {
+          "name": "stringify-non-string",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)"
+          }
+        },
+        {
+          "name": "stringify-invalid-json",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: serde_json parsing of stringify result failed: expected ident at line 1 column 2"
+          }
+        },
+        {
+          "name": "web-bootstrap-and-no-node-globals",
+          "contracts": ["CFG-05"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "pathname": "/a",
+              "textEncoder": "function",
+              "textDecoder": "function",
+              "process": "undefined",
+              "Buffer": "undefined",
+              "bytes": [122, 102, 98]
+            }
+          }
+        },
+        {
+          "name": "remaining-static-import-relative",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code."
+          }
+        },
+        {
+          "name": "remaining-static-import-bare",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code."
+          }
+        },
+        {
+          "name": "remaining-static-import-node",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code."
+          }
+        },
+        {
+          "name": "remaining-static-import-absolute-file",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code."
+          }
+        },
+        {
+          "name": "remaining-static-import-remote",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code."
+          }
+        },
+        {
+          "name": "remaining-dynamic-import",
+          "contracts": ["CFG-06", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: TypeError: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.\n    at async file:///zfb-config-eval/main.mjs:1:1"
+          }
+        },
+        {
+          "name": "caught-dynamic-import-error",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "denied": true
+            }
+          }
+        },
+        {
+          "name": "top-level-throw",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: Error: top-level-marker\n    at file:///zfb-config-eval/main.mjs:1:7"
+          }
+        },
+        {
+          "name": "top-level-await-rejection",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: Error: await-marker\n    at file:///zfb-config-eval/main.mjs:1:22"
+          }
+        },
+        {
+          "name": "syntax-error",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config module load error: Uncaught SyntaxError: Unexpected token ';'\n    at file:///zfb-config-eval/main.mjs:1:18"
+          }
+        },
+        {
+          "name": "top-level-await-resolved",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "top-level-await-microtasks",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "intl-bootstrap",
+          "contracts": ["NATIVE-01", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "intl": "1/2/2020",
+              "number": "1,234,567",
+              "date": "2020-01-02T03:04:05.000Z",
+              "locale": -1
+            }
+          }
+        },
+        {
+          "name": "dynamic-self-chain",
+          "contracts": ["CFG-06", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "done": true
+            }
+          }
+        },
+        {
+          "name": "microtask-throw",
+          "contracts": ["BOOT-02", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: Error: microtask-boom\n    at file:///zfb-config-eval/main.mjs:1:27\n    at ext:core/01_core.js:569:9"
+          }
+        },
+        {
+          "name": "unhandled-rejection",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: Error: unhandled-boom\n    at file:///zfb-config-eval/main.mjs:1:16"
+          }
+        },
+        {
+          "name": "import-meta-resolve-coercion",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "boxed": "file:///zfb-config-eval/main.mjs"
+            }
+          }
+        },
+        {
+          "name": "import-meta-resolve-arity",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "config evaluation error: TypeError: Invalid arguments\n    at file:///zfb-config-eval/main.mjs:1:33"
+          }
+        },
+        {
+          "name": "file-url-shim-normalization",
+          "contracts": ["BOOT-03", "CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "url": "file:/zfb-config-eval/main.mjs"
+            }
+          }
+        },
+        {
+          "name": "async-wasm-config-platform-tasks",
+          "contracts": ["CFG-07", "NATIVE-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        }
+      ]
+    },
+    {
+      "engine": "direct v8 147.4.0",
+      "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+      "executable_sha256": "8d6975c6daacc3a32d54007853c263c14eb37dc4fc03246683d0fabf1e702fe2",
+      "exit_code": 0,
+      "receipt_count": 63,
+      "expected_count": 63,
+      "stderr": "",
+      "passed": true,
+      "rows": [
+        {
+          "name": "plain-object",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42,
+              "nested": {
+                "enabled": true
+              },
+              "title": "zfb"
+            }
+          }
+        },
+        {
+          "name": "empty-object",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {}
+          }
+        },
+        {
+          "name": "top-level-null",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-undefined",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-number",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-string",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-boolean",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-function",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-async-function",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-symbol",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "missing-default",
+          "contracts": ["CFG-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "default export must be a plain object",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-array",
+          "contracts": ["CFG-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [
+              1,
+              "two",
+              {
+                "three": true
+              }
+            ]
+          }
+        },
+        {
+          "name": "array-omission-slots",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [null, null, null, null, null, null, null, 0]
+          }
+        },
+        {
+          "name": "top-level-date",
+          "contracts": ["CFG-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": "2020-01-02T03:04:05.000Z"
+          }
+        },
+        {
+          "name": "invalid-date",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": null
+          }
+        },
+        {
+          "name": "nested-date",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "date": "2020-01-02T03:04:05.000Z"
+            }
+          }
+        },
+        {
+          "name": "omitted-object-fields",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "keep": 7,
+              "nan": null,
+              "neg": null,
+              "pos": null
+            }
+          }
+        },
+        {
+          "name": "class-instance",
+          "contracts": ["CFG-01", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "boxed-number",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": 7
+          }
+        },
+        {
+          "name": "boxed-string",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": "zfb"
+          }
+        },
+        {
+          "name": "boxed-symbol",
+          "contracts": ["CFG-02", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {}
+          }
+        },
+        {
+          "name": "map-and-set",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "map": {},
+              "set": {}
+            }
+          }
+        },
+        {
+          "name": "null-prototype-object",
+          "contracts": ["CFG-01", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "promise-default-is-not-awaited",
+          "contracts": ["CFG-01", "CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {}
+          }
+        },
+        {
+          "name": "getter-value",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "tojson-object",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "tojson-scalar",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": "serialized"
+          }
+        },
+        {
+          "name": "tojson-null",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": null
+          }
+        },
+        {
+          "name": "nested-bigint",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify threw: TypeError: Do not know how to serialize a BigInt\n    at JSON.stringify (<anonymous>)",
+            "ok": false
+          }
+        },
+        {
+          "name": "boxed-bigint",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify threw: TypeError: Do not know how to serialize a BigInt\n    at JSON.stringify (<anonymous>)",
+            "ok": false
+          }
+        },
+        {
+          "name": "circular-object",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify threw: TypeError: Converting circular structure to JSON\n    --> starting at object with constructor 'Object'\n    --- property 'self' closes the circle\n    at JSON.stringify (<anonymous>)",
+            "ok": false
+          }
+        },
+        {
+          "name": "throwing-getter",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify threw: Error: getter-marker\n    at get answer (file:///zfb-config-eval/main.mjs:1:39)\n    at JSON.stringify (<anonymous>)",
+            "ok": false
+          }
+        },
+        {
+          "name": "throwing-tojson",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify threw: Error: tojson-marker\n    at Object.toJSON (file:///zfb-config-eval/main.mjs:1:35)\n    at JSON.stringify (<anonymous>)",
+            "ok": false
+          }
+        },
+        {
+          "name": "tojson-undefined",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)",
+            "ok": false
+          }
+        },
+        {
+          "name": "tojson-symbol",
+          "contracts": ["CFG-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)",
+            "ok": false
+          }
+        },
+        {
+          "name": "mutable-stringify-replacement",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "replacement": 42
+            }
+          }
+        },
+        {
+          "name": "stringify-json-receiver",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": 42
+          }
+        },
+        {
+          "name": "stringify-not-callable",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify is not a function",
+            "ok": false
+          }
+        },
+        {
+          "name": "json-not-object",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON is not an object",
+            "ok": false
+          }
+        },
+        {
+          "name": "stringify-throw",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify threw: Error: stringify-marker\n    at JSON.stringify (file:///zfb-config-eval/main.mjs:1:32)",
+            "ok": false
+          }
+        },
+        {
+          "name": "stringify-non-string",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: JSON.stringify returned a non-string value (unexpected)",
+            "ok": false
+          }
+        },
+        {
+          "name": "stringify-invalid-json",
+          "contracts": ["CFG-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: serde_json parsing of stringify result failed: expected ident at line 1 column 2",
+            "ok": false
+          }
+        },
+        {
+          "name": "web-bootstrap-and-no-node-globals",
+          "contracts": ["CFG-05"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "Buffer": "undefined",
+              "bytes": [122, 102, 98],
+              "pathname": "/a",
+              "process": "undefined",
+              "textDecoder": "function",
+              "textEncoder": "function"
+            }
+          }
+        },
+        {
+          "name": "remaining-static-import-relative",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
+            "ok": false
+          }
+        },
+        {
+          "name": "remaining-static-import-bare",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
+            "ok": false
+          }
+        },
+        {
+          "name": "remaining-static-import-node",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
+            "ok": false
+          }
+        },
+        {
+          "name": "remaining-static-import-absolute-file",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
+            "ok": false
+          }
+        },
+        {
+          "name": "remaining-static-import-remote",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "Error: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.",
+            "ok": false
+          }
+        },
+        {
+          "name": "remaining-dynamic-import",
+          "contracts": ["CFG-06", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: TypeError: zfb.config.ts: bare imports and node:* specifiers are not available inside the config evaluator. zfb.config.ts is a data config, not a general Node script \u2014 move runtime imports to your application code.\n    at file:///zfb-config-eval/main.mjs:1:1",
+            "ok": false
+          }
+        },
+        {
+          "name": "caught-dynamic-import-error",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "denied": true
+            }
+          }
+        },
+        {
+          "name": "top-level-throw",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: top-level-marker\n    at file:///zfb-config-eval/main.mjs:1:7",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-await-rejection",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: await-marker\n    at file:///zfb-config-eval/main.mjs:1:22",
+            "ok": false
+          }
+        },
+        {
+          "name": "syntax-error",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config module load error: SyntaxError: Unexpected token ';'\n    at file:///zfb-config-eval/main.mjs:1:18",
+            "ok": false
+          }
+        },
+        {
+          "name": "top-level-await-resolved",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "top-level-await-microtasks",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        },
+        {
+          "name": "intl-bootstrap",
+          "contracts": ["NATIVE-01", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "date": "2020-01-02T03:04:05.000Z",
+              "intl": "1/2/2020",
+              "locale": -1,
+              "number": "1,234,567"
+            }
+          }
+        },
+        {
+          "name": "dynamic-self-chain",
+          "contracts": ["CFG-06", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "done": true
+            }
+          }
+        },
+        {
+          "name": "microtask-throw",
+          "contracts": ["BOOT-02", "CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Uncaught Error: microtask-boom\n    at file:///zfb-config-eval/main.mjs:1:27",
+            "ok": false
+          }
+        },
+        {
+          "name": "unhandled-rejection",
+          "contracts": ["CFG-07"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: unhandled-boom\n    at file:///zfb-config-eval/main.mjs:1:16",
+            "ok": false
+          }
+        },
+        {
+          "name": "import-meta-resolve-coercion",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "boxed": "file:///zfb-config-eval/main.mjs"
+            }
+          }
+        },
+        {
+          "name": "import-meta-resolve-arity",
+          "contracts": ["CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: TypeError: Invalid arguments\n    at file:///zfb-config-eval/main.mjs:1:33",
+            "ok": false
+          }
+        },
+        {
+          "name": "file-url-shim-normalization",
+          "contracts": ["BOOT-03", "CFG-06"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "url": "file:/zfb-config-eval/main.mjs"
+            }
+          }
+        },
+        {
+          "name": "async-wasm-config-platform-tasks",
+          "contracts": ["CFG-07", "NATIVE-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "answer": 42
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

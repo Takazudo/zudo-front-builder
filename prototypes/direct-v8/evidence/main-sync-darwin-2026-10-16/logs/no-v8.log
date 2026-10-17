@@ -1,0 +1,572 @@
+    Checking cfg-if v1.0.4
+    Checking itoa v1.0.18
+    Checking libc v0.2.186
+    Checking serde_core v1.0.228
+    Checking allocator-api2 v0.2.21
+   Compiling siphasher v1.0.3
+    Checking equivalent v1.0.2
+    Checking foldhash v0.2.0
+    Checking memchr v2.8.3
+    Checking once_cell v1.21.4
+    Checking smallvec v1.16.3
+    Checking rustc-hash v2.1.3
+    Checking log v0.4.29
+    Checking bitflags v2.13.2
+    Checking hashbrown v0.17.1
+    Checking zmij v1.0.21
+    Checking percent-encoding v2.3.2
+    Checking stable_deref_trait v1.2.1
+    Checking pin-project-lite v0.2.17
+    Checking bytes v1.11.1
+    Checking ryu v1.0.23
+   Compiling phf_shared v0.11.3
+    Checking getrandom v0.3.4
+    Checking zerocopy v0.8.48
+   Compiling phf_generator v0.11.3
+    Checking zerofrom v0.1.8
+    Checking thiserror v2.0.18
+    Checking yoke v0.8.2
+    Checking unicode-width v0.2.2
+    Checking unicode-id-start v1.4.0
+    Checking castaway v0.2.4
+    Checking static_assertions v1.1.0
+    Checking num-traits v0.2.19
+    Checking zerovec v0.11.6
+    Checking tracing-core v0.1.36
+    Checking scopeguard v1.2.0
+    Checking lock_api v0.4.14
+    Checking parking_lot_core v0.9.12
+    Checking tracing v0.1.44
+    Checking new_debug_unreachable v1.0.6
+    Checking either v1.15.0
+   Compiling phf_macros v0.11.3
+   Compiling phf_shared v0.13.1
+    Checking tinystr v0.8.3
+    Checking litemap v0.8.2
+    Checking serde v1.0.228
+    Checking indexmap v2.14.0
+    Checking writeable v0.6.3
+    Checking potential_utf v0.1.5
+    Checking zerotrie v0.2.4
+    Checking icu_locale_core v2.2.0
+    Checking utf8_iter v1.0.4
+    Checking num-integer v0.1.46
+    Checking icu_collections v2.2.0
+    Checking icu_normalizer_data v2.2.0
+    Checking serde_json v1.0.151
+    Checking icu_properties_data v2.2.0
+    Checking phf v0.11.3
+    Checking data-encoding v2.11.0
+   Compiling phf_generator v0.13.1
+    Checking icu_provider v2.2.0
+    Checking num-bigint v0.4.6
+    Checking form_urlencoded v1.2.2
+    Checking icu_normalizer v2.2.0
+    Checking icu_properties v2.2.0
+    Checking typenum v1.20.0
+    Checking errno v0.3.14
+    Checking bumpalo v3.19.0
+    Checking outref v0.5.2
+    Checking vsimd v0.8.0
+    Checking parking_lot v0.12.5
+    Checking anyhow v1.0.103
+    Checking generic-array v0.14.7
+    Checking hashbrown v0.16.1
+   Compiling phf_macros v0.13.1
+    Checking base64-simd v0.8.0
+    Checking idna_adapter v1.2.2
+    Checking idna v1.1.0
+    Checking ahash v0.8.12
+    Checking cpufeatures v0.2.17
+    Checking tap v1.0.1
+    Checking url v2.5.8
+    Checking hashbrown v0.14.5
+    Checking wyz v0.5.1
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking radium v0.7.0
+    Checking futures-core v0.3.32
+    Checking digest v0.10.7
+    Checking phf v0.13.1
+    Checking is_ci v1.2.0
+    Checking uuid v1.28.0
+    Checking funty v2.0.0
+    Checking triomphe v0.1.15
+    Checking bytes-str v0.2.7
+    Checking getrandom v0.2.17
+    Checking debugid v0.8.0
+    Checking is-terminal v0.4.17
+    Checking if_chain v1.0.3
+    Checking bitvec v1.0.1
+    Checking hstr v4.0.2
+    Checking supports-color v2.1.0
+    Checking supports-color v3.0.2
+    Checking signal-hook-registry v1.4.8
+    Checking mio v1.2.0
+    Checking socket2 v0.6.3
+    Checking scoped-tls v1.0.1
+    Checking swc_atoms v10.0.0
+    Checking better_scoped_tls v1.0.1
+    Checking owo-colors v4.3.0
+    Checking swc_visit v2.0.1
+    Checking smawk v0.3.3
+    Checking tokio v1.52.3
+    Checking siphasher v0.3.11
+    Checking futures-sink v0.3.32
+    Checking unicode-linebreak v0.1.5
+    Checking precomputed-hash v0.1.1
+    Checking http v1.4.0
+    Checking aho-corasick v1.1.4
+    Checking textwrap v0.16.2
+    Checking base64 v0.22.1
+    Checking unicode-segmentation v1.13.3
+    Checking crossbeam-utils v0.8.21
+    Checking oxc-miette v2.7.1
+    Checking regex-syntax v0.8.11
+    Checking same-file v1.0.6
+    Checking dtoa v1.0.11
+    Checking oxc_data_structures v0.95.0
+    Checking dtoa-short v0.3.5
+    Checking walkdir v2.5.0
+    Checking oxc_allocator v0.95.0
+   Compiling oxc_ast_macros v0.95.0
+    Checking compact_str v0.9.0
+    Checking swc_sourcemap v10.0.2
+   Compiling phf_codegen v0.11.3
+    Checking cow-utils v0.1.3
+    Checking oxc_estree v0.95.0
+    Checking http-body v1.0.1
+    Checking oxc_span v0.95.0
+    Checking sha2 v0.10.9
+    Checking simd-adler32 v0.3.9
+    Checking swc_common v24.0.0
+    Checking futures-io v0.3.32
+    Checking slab v0.4.12
+    Checking regex-automata v0.4.18
+    Checking adler2 v2.0.1
+    Checking nonmax v0.5.5
+    Checking futures-task v0.3.32
+    Checking miniz_oxide v0.8.9
+    Checking oxc_index v4.1.0
+    Checking futures-util v0.3.32
+    Checking dragonbox_ecma v0.1.12
+    Checking crossbeam-epoch v0.9.20
+    Checking crc32fast v1.5.0
+    Checking sha1 v0.10.6
+    Checking httparse v1.10.1
+    Checking compact_str v0.7.1
+    Checking num_cpus v1.17.0
+    Checking par-core v2.0.0
+    Checking hex v0.4.3
+    Checking tower-service v0.3.3
+    Checking swc_ecma_ast v26.0.0
+    Checking zeroize v1.8.2
+    Checking dragonbox_ecma v0.0.5
+    Checking rustls-pki-types v1.14.1
+    Checking oxc_syntax v0.95.0
+    Checking zfb-types v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-types)
+    Checking flate2 v1.1.9
+    Checking crossbeam-deque v0.8.6
+    Checking oxc_diagnostics v0.95.0
+    Checking mime v0.3.17
+    Checking try-lock v0.2.5
+    Checking httpdate v1.0.3
+    Checking untrusted v0.9.0
+    Checking ring v0.17.14
+    Checking want v0.3.1
+    Checking oxc_regular_expression v0.95.0
+    Checking futures-channel v0.3.32
+    Checking sync_wrapper v1.0.2
+    Checking bstr v1.12.1
+    Checking tower-layer v0.3.3
+    Checking self_cell v1.2.2
+    Checking atomic-waker v1.1.2
+   Compiling unicase v2.9.0
+    Checking powerfmt v0.2.0
+    Checking deranged v0.5.8
+   Compiling mime_guess v2.0.5
+    Checking rustls-webpki v0.103.15
+    Checking hyper v1.9.0
+    Checking globset v0.4.18
+    Checking oxc_ast v0.95.0
+    Checking swc_ecma_visit v26.0.0
+    Checking swc_ecma_parser v42.0.0
+    Checking swc_config v5.0.0
+    Checking http-body-util v0.1.3
+    Checking num-conv v0.2.1
+    Checking subtle v2.6.1
+    Checking ipnet v2.12.0
+    Checking time-core v0.1.8
+    Checking unicode-id v0.3.6
+    Checking markdown v1.0.0
+    Checking hyper-util v0.1.20
+    Checking swc_ecma_utils v32.0.0
+    Checking swc_ecma_hooks v0.10.0
+    Checking time v0.3.47
+    Checking rustls v0.23.45
+    Checking onig_sys v69.9.3
+    Checking libm v0.2.16
+    Checking rustix v1.1.4
+    Checking tower v0.5.3
+    Checking regex v1.13.1
+    Checking tokio-util v0.7.18
+    Checking swc_allocator v5.0.0
+   Compiling phf_codegen v0.13.1
+    Checking quick-xml v0.41.0
+    Checking swc_ecma_transforms_base v46.0.1
+    Checking ascii v1.1.0
+    Checking tokio-rustls v0.26.4
+    Checking swc_ecma_codegen v29.0.0
+   Compiling selectors v0.37.0
+    Checking noyalib v0.0.55
+    Checking plist v1.10.0
+    Checking swc_ecma_transforms_react v52.0.0
+    Checking onig v6.5.3
+    Checking ahash v0.7.8
+    Checking getrandom v0.4.2
+    Checking oxc_ecmascript v0.95.0
+    Checking zfb-md-ast v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-ast)
+    Checking swc_ecma_transforms_typescript v52.0.0
+    Checking webpki-roots v1.0.7
+    Checking serde_urlencoded v0.7.1
+    Checking bincode v1.3.3
+    Checking compact_str v0.8.1
+    Checking fnv v1.0.7
+    Checking fastrand v2.4.1
+    Checking roxmltree v0.20.0
+    Checking outref v0.1.0
+    Checking http-range-header v0.4.2
+    Checking imagesize v0.14.0
+    Checking tower-http v0.6.10
+    Checking garde v0.22.1
+    Checking zfb-md-extras v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-extras)
+    Checking noyalib-serde-yaml v0.0.55
+    Checking simd-abstraction v0.7.1
+    Checking tempfile v3.27.0
+    Checking syntect v5.3.0
+    Checking derive_more v2.1.1
+    Checking hyper-rustls v0.27.9
+    Checking ptr_meta v0.1.4
+    Checking swc_core v74.0.2
+    Checking hashbrown v0.12.3
+    Checking unicode-general-category v1.1.0
+    Checking oxc_ast_visit v0.95.0
+    Checking ignore v0.4.25
+   Compiling parcel_selectors v0.28.2
+    Checking cssparser v0.33.0
+    Checking cssparser v0.36.0
+    Checking halfbrown v0.4.0
+    Checking ppv-lite86 v0.2.21
+    Checking itertools v0.14.0
+    Checking float-cmp v0.10.0
+   Compiling string_cache_codegen v0.5.4
+    Checking rand_core v0.9.5
+    Checking servo_arc v0.4.3
+    Checking notify-types v2.1.0
+    Checking fsevent-sys v4.1.0
+    Checking mac v0.1.1
+    Checking unty v0.0.4
+    Checking html-escape v0.2.14
+    Checking seahash v4.1.0
+    Checking matches v0.1.10
+    Checking data-url v0.1.1
+    Checking rkyv v0.7.46
+   Compiling convert_case v0.6.0
+    Checking zfb-content v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-content)
+    Checking oxc_semantic v0.95.0
+    Checking bincode v2.0.1
+    Checking futf v0.1.5
+   Compiling markup5ever v0.12.1
+    Checking notify v8.2.0
+    Checking rand_chacha v0.9.0
+    Checking value-trait v0.12.1
+    Checking reqwest v0.12.28
+    Checking base64-simd v0.7.0
+    Checking rayon-core v1.13.0
+    Checking cobs v0.3.0
+    Checking encoding_rs v0.8.35
+    Checking vlq v0.5.1
+    Checking utf-8 v0.7.6
+    Checking simdutf8 v0.1.5
+    Checking arrayvec v0.7.6
+    Checking escape-simd v0.1.0
+    Checking zfb-js-host v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-js-host)
+    Checking simd-json v0.18.1
+    Checking fast-glob v1.1.2
+    Checking json-escape-simd v3.1.2
+    Checking zfb-render v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-render)
+    Checking tendril v0.4.3
+    Checking parcel_sourcemap v2.1.1
+    Checking rayon v1.12.0
+    Checking postcard v1.1.3
+    Checking lol_html v2.9.0
+    Checking const-str v0.3.2
+    Checking rand v0.9.4
+    Checking zfb-watcher v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-watcher)
+    Checking zfb-graph v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-graph)
+   Compiling lightningcss-derive v1.0.0-alpha.43
+    Checking cssparser-color v0.1.0
+    Checking zfb-plugin-resolver v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-plugin-resolver)
+    Checking sourcemap v9.3.2
+    Checking dashmap v6.2.1
+    Checking string_cache v0.8.9
+    Checking dashmap v5.5.3
+    Checking serde-content v0.1.2
+    Checking itertools v0.10.5
+    Checking compact_str v0.10.0
+    Checking json-strip-comments v3.1.1
+    Checking wait-timeout v0.2.1
+    Checking utf8parse v0.2.2
+    Checking zfb-toolchain-pins v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-toolchain-pins)
+    Checking nodejs-built-in-modules v1.0.0
+    Checking lazy_static v1.5.0
+    Checking pathdiff v0.2.3
+    Checking oxc_resolver v11.24.3
+    Checking zfb-build v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-build)
+    Checking anstyle-parse v1.0.0
+    Checking lightningcss v1.0.0-alpha.71
+   Compiling xattr v1.6.1
+   Compiling minify-html-common v0.0.3
+    Checking tungstenite v0.29.0
+    Checking oxc-browserslist v2.3.1
+    Checking oxc_sourcemap v6.1.1
+   Compiling filetime v0.2.28
+   Compiling html5ever v0.27.0
+    Checking is_terminal_polyfill v1.70.2
+    Checking anstyle v1.0.14
+    Checking anstyle-query v1.1.5
+    Checking colorchoice v1.0.5
+   Compiling tar v0.4.45
+    Checking anstream v1.0.0
+   Compiling zfb-binfetch v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-binfetch)
+    Checking oxc_compat v0.95.0
+    Checking oxc_codegen v0.95.0
+    Checking tokio-tungstenite v0.29.0
+    Checking oxc_traverse v0.95.0
+    Checking oxc_mangler v0.95.0
+    Checking oxc_parser v0.95.0
+    Checking axum-core v0.5.6
+    Checking serde_path_to_error v0.1.20
+    Checking strsim v0.11.1
+    Checking matchit v0.8.4
+    Checking clap_lex v1.1.0
+    Checking axum v0.8.9
+    Checking clap_builder v4.6.0
+    Checking oxc_minifier v0.95.0
+    Checking zfb-config-loader v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-config-loader)
+   Compiling zfb v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb)
+    Checking zfb-islands v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-islands)
+    Checking xml5ever v0.18.1
+    Checking tokio-stream v0.1.18
+    Checking include_dir v0.7.4
+    Checking markup5ever_rcdom v0.3.0
+    Checking clap v4.6.1
+    Checking zfb-router v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-router)
+    Checking zfb-diagnostics v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-diagnostics)
+    Checking local-ip-address v0.6.13
+    Checking zfb-test-utils v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-test-utils)
+    Checking zfb-server v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-server)
+warning: zfb@0.0.0: esbuild binary already present at /Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb/binaries/esbuild/esbuild with correct SHA-256 — skipping download.
+    Checking zudo-wind v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zudo-wind)
+    Checking zfb-css v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-css)
+    Checking minify-html v0.18.1
+warning: unused import: `std::collections::BTreeMap`
+  --> crates/zfb/src/commands/plugins.rs:10:5
+   |
+10 | use std::collections::BTreeMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::Path`
+  --> crates/zfb/src/commands/plugins.rs:11:5
+   |
+11 | use std::path::Path;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `SetupCommand`
+  --> crates/zfb/src/commands/plugins.rs:19:74
+   |
+19 |     DevRegisterContext, DevRequest, DevResponse, PluginHost, PluginSpec, SetupCommand,
+   |                                                                          ^^^^^^^^^^^^
+
+warning: variant `WarnAndEmpty` is never constructed
+   --> crates/zfb/src/commands/bundler_input.rs:159:5
+    |
+155 | pub(crate) enum CssModuleFailMode {
+    |                 ----------------- variant in this enum
+...
+159 |     WarnAndEmpty,
+    |     ^^^^^^^^^^^^
+    |
+    = note: `CssModuleFailMode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `MaterializedRoute` is never constructed
+  --> crates/zfb/src/commands/package_routes.rs:81:19
+   |
+81 | pub(crate) struct MaterializedRoute {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `OverlayResolution` is never constructed
+   --> crates/zfb/src/commands/package_routes.rs:101:19
+    |
+101 | pub(crate) struct OverlayResolution {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `StaticInjectedSeed` is never constructed
+   --> crates/zfb/src/commands/package_routes.rs:125:19
+    |
+125 | pub(crate) struct StaticInjectedSeed {
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: method `output_path` is never used
+   --> crates/zfb/src/commands/package_routes.rs:138:19
+    |
+135 | impl StaticInjectedSeed {
+    | ----------------------- method in this implementation
+...
+138 |     pub(crate) fn output_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^
+
+warning: function `static_injected_seeds` is never used
+   --> crates/zfb/src/commands/package_routes.rs:186:15
+    |
+186 | pub(crate) fn static_injected_seeds(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `surviving_injected_routes` is never used
+   --> crates/zfb/src/commands/package_routes.rs:249:15
+    |
+249 | pub(crate) fn surviving_injected_routes(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `url_path_extension` is never used
+   --> crates/zfb/src/commands/package_routes.rs:266:4
+    |
+266 | fn url_path_extension(url: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_build_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:287:15
+    |
+287 | pub(crate) fn resolve_build_pages_root(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_dev_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:335:15
+    |
+335 | pub(crate) fn resolve_dev_pages_root(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:383:4
+    |
+383 | fn resolve_pages_root(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:686:4
+    |
+686 | fn package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `project_local_package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:707:4
+    |
+707 | fn project_local_package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `staged_package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:717:4
+    |
+717 | fn staged_package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `relative_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:755:4
+    |
+755 | fn relative_import_specifier(pages_rel: &Path, logical_entrypoint: &Path) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `valid_package_name` is never used
+   --> crates/zfb/src/commands/package_routes.rs:766:4
+    |
+766 | fn valid_package_name(name: &str) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `lexical_relative_path` is never used
+   --> crates/zfb/src/commands/package_routes.rs:788:4
+    |
+788 | fn lexical_relative_path(from_dir: &Path, to: &Path) -> Option<PathBuf> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `collect_user_pages_shape_keys` is never used
+   --> crates/zfb/src/commands/package_routes.rs:825:4
+    |
+825 | fn collect_user_pages_shape_keys(real_pages_dir: &Path) -> Result<HashSet<String>> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pattern_to_pages_rel` is never used
+   --> crates/zfb/src/commands/package_routes.rs:854:15
+    |
+854 | pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `private_segment_warning` is never used
+   --> crates/zfb/src/commands/package_routes.rs:918:15
+    |
+918 | pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -> Option<String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `synthesize_static_overlay_module_with_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:983:4
+    |
+983 | fn synthesize_static_overlay_module_with_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `push_inlined_prerender` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1007:4
+     |
+1007 | fn push_inlined_prerender(out: &mut String, prerender: Option<bool>) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_dynamic_pattern` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1022:4
+     |
+1022 | fn is_dynamic_pattern(pattern: &str) -> bool {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `synthesize_dynamic_overlay_module_with_specifier` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1088:4
+     |
+1088 | fn synthesize_dynamic_overlay_module_with_specifier(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `copy_dir_recursive` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1204:4
+     |
+1204 | fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `json_string` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1237:4
+     |
+1237 | fn json_string(s: &str) -> String {
+     |    ^^^^^^^^^^^
+
+warning: `zfb` (lib) generated 29 warnings (run `cargo fix --lib -p zfb` to apply 3 suggestions)
+warning: field `entrypoint` is never read
+  --> crates/zfb/src/commands/package_routes.rs:91:16
+   |
+81 | pub(crate) struct MaterializedRoute {
+   |                   ----------------- field in this struct
+...
+91 |     pub(crate) entrypoint: PathBuf,
+   |                ^^^^^^^^^^
+   |
+   = note: `MaterializedRoute` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `zfb` (lib test) generated 5 warnings (4 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 59s
+heavy-guard: verdict=PASS exit=0 secs=120 min_mem_mb=998 reason=-

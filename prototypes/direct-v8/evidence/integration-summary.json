@@ -1,0 +1,42 @@
+{
+  "source_commit": "8dcdfb35b5f97c32eac5684d1535e82fbf6e024c",
+  "note": "Final Rust source tested before/at this checkpoint; later commits only fixtures/evidence/docs. Native source was frozen during its tests and committed unchanged.",
+  "baseline_tests": {
+    "library": 210,
+    "config": 14,
+    "browser_event": 4,
+    "console": 3,
+    "dispatch_mode": 9,
+    "node_stubs": 6,
+    "plugin_resolver": 18,
+    "smoke": 32
+  },
+  "native_tests": 40,
+  "paired": {
+    "config": 63,
+    "services": 27,
+    "http": 8,
+    "module_worker_utility": 47,
+    "generated_packets_per_engine": 8
+  },
+  "outer_config": 7,
+  "chromium": {
+    "version": "154.0.8037.57",
+    "sessions": 1,
+    "passed": true
+  },
+  "workspace_all_targets": "pass",
+  "no_v8_check": "pass",
+  "native_clippy": "pass",
+  "workspace_clippy": "pass",
+  "format": "pass",
+  "wind_preview_samples": 173,
+  "wind_preview_tests": 19,
+  "island_policy": {
+    "passed": false,
+    "tests_passed": 30,
+    "tests_failed": 2,
+    "reason": "Existing reviewed Cargo.lock/provenance mismatch; no policy or ceiling changed"
+  },
+  "other_candidate_platforms": "not run"
+}

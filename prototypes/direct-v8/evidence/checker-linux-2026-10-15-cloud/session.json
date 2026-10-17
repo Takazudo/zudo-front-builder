@@ -1,0 +1,287 @@
+{
+  "scope": "Hash-verified checker patch integration, independent repair/review and fresh source-bound Linux native replay; no phase-one integration or activation claim",
+  "starting_remote_head": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+  "resumed_remote_head": "656a1b421317eecd0e65d15e9875c88613660e73",
+  "source_checkpoint": "cc56b15a38173b9a276cb997ef12230fdc370cd0",
+  "source_status_before_and_after_replay": "clean",
+  "patch": {
+    "library_id": "libfile_ad7d6b3433b48191ba5380a16b2ebbfc",
+    "file_id": "file_000000003d5c81fdab8d7bf9d25bf69c",
+    "filename": "pr4242-checker-protocol(3).patch",
+    "bytes": 43482,
+    "sha256": "c7a5dc3b570b7c74892a60553d9a147d0e95278191fe38d4faccbaa1e22b6f12",
+    "disposition": "Applied after clean git apply --check at656a1b42; original five-file diff then augmented only by reviewed nesting fix/tests/docs",
+    "recovery": "Parent supplied complete text read from successfully materialized attachment. Verbatim transport text was43505 bytes SHA256 f8ed9d4a647f165d779ed265c6c839d795190278977e399e19fa16364a56523a. Decoding4lt/1gt/2amp XML entities exactly reproduced required size and SHA-256; no content guessed. Both local copies retained outside checkout.",
+    "prior_transfer_failures": "Four supported helper invocations failed download (initial two, renewed attempt after parent recovery, exact escalated retry). No destination file from those attempts; no safety rejection on them. Prior upload denial not bypassed."
+  },
+  "verification": {
+    "baseline": {
+      "tests": 64,
+      "seconds": 2.696,
+      "passed": true
+    },
+    "exact_patch_combined": {
+      "tests": 92,
+      "seconds": 5.679,
+      "passed": true
+    },
+    "nesting_regression_before_fix": {
+      "tests": 3,
+      "seconds": 0.224,
+      "failures": 2,
+      "errors": 1,
+      "passed": false,
+      "detail": "Semantically valid1100-deep extra receipt data caused report serialization RecursionError; deep corpus reached execution instead of refusal."
+    },
+    "reviewed_final_combined": {
+      "tests": 95,
+      "seconds": 5.955,
+      "passed": true
+    },
+    "command": "python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_*.py' -v",
+    "syntax": "14 Python files AST-parsed",
+    "format": "Repository Markdown formatting and normal commit hook passed",
+    "diff_check": "pass",
+    "independent_review": "review.json; three added deep regressions independently passed0.156s",
+    "transient_disconnect": "One subsequent read/format command failed to create process due exec-server transport disconnected. Reconnected same environment, checked existing test log95pass and preserved work; no test retry relabeled."
+  },
+  "native": {
+    "exit_code": 0,
+    "first_patched_source_attempt": true,
+    "output": "target/direct-v8-accept-checker-20261015-cc56b15a",
+    "receipt": "acceptance.json",
+    "environment": {
+      "commit": "cc56b15a38173b9a276cb997ef12230fdc370cd0",
+      "status_porcelain": "",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "machine": "x86_64",
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "ZFB_ESBUILD_BIN": "/workspace/zfb-tools/esbuild-0.25.12"
+      }
+    },
+    "counts": {
+      "config": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "f1fac15ab3ba4ab65b2315eba7c3c7afbf47b4d632473ddf182e45711cf8936a",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "c3ba30dfde4ccae42261562f2f16208c72e16938167f73cb9d63d2c9b7ca263e",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        }
+      ],
+      "services": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "f1fac15ab3ba4ab65b2315eba7c3c7afbf47b4d632473ddf182e45711cf8936a",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "c3ba30dfde4ccae42261562f2f16208c72e16938167f73cb9d63d2c9b7ca263e",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        }
+      ],
+      "http": {
+        "rows": 8,
+        "rows_passed": 8,
+        "passed": true
+      },
+      "modules": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "f1fac15ab3ba4ab65b2315eba7c3c7afbf47b4d632473ddf182e45711cf8936a",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "c3ba30dfde4ccae42261562f2f16208c72e16938167f73cb9d63d2c9b7ca263e",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        }
+      ],
+      "outer_config": {
+        "rows": 7,
+        "rows_passed": 7,
+        "passed": true
+      },
+      "generated": {
+        "passed": true,
+        "snapshot_manifest_sha256": "f8ca3168c0a53badcf308677bc04f1d3686e1af3a4dbffe9d152038a22a150f2",
+        "baseline": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "candidate": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "parity_rows": 7,
+        "parity_passed": 7,
+        "browser": true
+      }
+    },
+    "snapshot_manifest_sha256": "f8ca3168c0a53badcf308677bc04f1d3686e1af3a4dbffe9d152038a22a150f2",
+    "reported_generated_input_sha256": "d92de2b6e8be100b9f68273be4d7790ad2bf59c2173baad82c547ff67fb6f405",
+    "baseline_candidate_wire_sha256": "da6faf732afac62787b1a14a6afe159e88e4b25b5f98d930b538df68957bc850",
+    "frozen_files_rehashed": 54,
+    "all_six_executables_rehashed_and_executable": true,
+    "authored_mapping": "Both engines match authored throw.ts line6 column9 and exact source content",
+    "guards": {
+      "services-tests.stderr": "PASS exit=0 secs=1 min_mem_mb=17177 reason=-",
+      "build-wrapper-test.stderr": "PASS exit=0 secs=0 min_mem_mb=16842 reason=-",
+      "build-candidate.stderr": "PASS exit=0 secs=2 min_mem_mb=17146 reason=-",
+      "gate-services.stderr": "PASS exit=0 secs=1 min_mem_mb=16908 reason=-",
+      "gate-outer-config.stderr": "PASS exit=0 secs=0 min_mem_mb=16799 reason=-",
+      "build-zfb.stderr": "PASS exit=0 secs=1 min_mem_mb=16747 reason=-",
+      "build-postprocessor.stderr": "PASS exit=0 secs=0 min_mem_mb=16809 reason=-",
+      "build-baseline.stderr": "PASS exit=0 secs=0 min_mem_mb=17150 reason=-",
+      "gate-config.stderr": "PASS exit=0 secs=1 min_mem_mb=16913 reason=-",
+      "gate-http.stderr": "PASS exit=0 secs=1 min_mem_mb=16929 reason=-",
+      "candidate-lib-tests.stderr": "PASS exit=0 secs=1 min_mem_mb=16914 reason=-",
+      "build-outer-config.stderr": "PASS exit=0 secs=1 min_mem_mb=17142 reason=-",
+      "gate-modules.stderr": "PASS exit=0 secs=1 min_mem_mb=16865 reason=-",
+      "prepare-fixtures.stderr": "PASS exit=0 secs=2 min_mem_mb=16868 reason=-",
+      "gate-generated.stderr": "PASS exit=0 secs=2 min_mem_mb=16789 reason=-"
+    },
+    "command": [
+      "python3",
+      "-I",
+      "-B",
+      "prototypes/direct-v8/accept.py",
+      "--output",
+      "target/direct-v8-accept-checker-20261015-cc56b15a",
+      "--guard",
+      "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+      "--generated",
+      "--esbuild",
+      "/workspace/zfb-tools/esbuild-0.25.12",
+      "--chromium",
+      "/usr/bin/chromium",
+      "--node",
+      "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+      "--rustc",
+      "/workspace/zfb-rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc"
+    ]
+  },
+  "setup": {
+    "pnpm": "12.8.2",
+    "node": "24.19.0",
+    "rustc": "1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "1.99.0 (5f94df478 2026-08-27)",
+    "chromium": "154.0.8037.57",
+    "esbuild": "0.25.12",
+    "esbuild_sha256": "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014",
+    "guard": "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+    "guard_sha256": "074a463dd6b3a65b7e2168df95b200c0192c414862375bcfb95f979c34c67ee7",
+    "guard_lock": "/home/agent/.agent-guard/heavy",
+    "guard_note": "Sandboxed no-op could not create the published lock; exact escalated no-op passed. All native acceptance commands used escalation and the actual guard. No heavy command ran unguarded.",
+    "target": "/workspace/zudo-front-builder-pr4242/target",
+    "rust_install": "Official sh.rustup.rs installer, workspace-owned CARGO_HOME/RUSTUP_HOME, --no-modify-path, pinned toolchain 1.99.0; no repository pin changes",
+    "dependencies": "npm exec --yes --cache /workspace/zfb-npm-cache --package pnpm@12.8.2 -- pnpm install --frozen-lockfile --store-dir /workspace/zfb-pnpm-store; exited 0, standard lifecycle hooks ran, tracked files unchanged"
+  },
+  "native_environment_exports": {
+    "CARGO_HOME": "/workspace/zfb-cargo",
+    "RUSTUP_HOME": "/workspace/zfb-rustup",
+    "RUSTUP_TOOLCHAIN": "1.99.0",
+    "PATH_prefix": "/workspace/zfb-cargo/bin",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "ZFB_ESBUILD_BIN": "/workspace/zfb-tools/esbuild-0.25.12"
+  },
+  "runtime_and_regression_scope": {
+    "review": "Prior same-session runtime risk review in ../baseline-linux-2026-10-15-cloud/independent-review.json remains applicable: no Rust/runtime/Cargo input changes from8b tocc; all six native executable digests identical, and native tests/gates rerun atcc. No new native defect observed.",
+    "batch_selection": "Only Python checker/tests and documentation changed. Combined95 plus complete native acceptance covers affected inputs. No separate full workspace/all-target/default/no-V8/Clippy/md-Wasm/CSS-addon batch rerun or claimed current; historical results remain attributed to their own source.",
+    "limits": "Watchdog is failed observation, not child-tree cleanup. Warm existing target; no cold-build benchmark. Non-UTF-8 page postprocessing limitation unchanged and separate from Worker binary response support."
+  },
+  "infrastructure": {
+    "4234": {
+      "draft": true,
+      "state": "open",
+      "merged": false,
+      "head": "ff9816d4fc15d1bb14d0711647e5ec373a2bcc52"
+    },
+    "4259": {
+      "draft": true,
+      "state": "open",
+      "merged": false,
+      "head": "714e65cd01ab674d668aac7db1a3a5a31c03e9e7"
+    },
+    "4260": {
+      "draft": true,
+      "state": "open",
+      "merged": false,
+      "head": "572b174f70664e2fe4d91c552439eb3d137f848a"
+    }
+  },
+  "integration_boundary": "Prerequisites remain open/draft/unmerged on refresh. Authorized integration then refreshed source then compatible Linux/Darwin native size evidence then paired staging/review then separately authorized live apply then final enforced verification. No held stack import or activation. Phase-two CLI/factory/dev-reload adoption not started.",
+  "historical_receipts": "All earlier receipts unchanged, including baseline missing-JS-dependency failure and pre-patch successful replay. Earlier patch-blocked status is historical and superseded by this verified recovery.",
+  "evidence_commit_equivalence": "The later evidence commit was not itself natively executed. It changes only evidence and FINDINGS; runtime, harness, corpus, producer, locks and toolchain match cc56b15a. Final head and exact-head CI belong in PR discussion.",
+  "original_output_sha256": {
+    "acceptance.json": "c37092500e8b8c7893aad988f09adc4031dbac860e8fb6b5667347c6b35b5b3a",
+    "config-gate.json": "80e3be57e1225f1c53702b9b47f34fdb962ee5db12b3090e1a076f46b8d45912",
+    "services-gate.json": "32c0abd77d2e72cea5ae695f123496d263615dbd60f11d80d6264e828a7b3384",
+    "http-gate.json": "3d0482706a8a3f392d752e9bc62b246d056fd2ad919347192b1dff8e2e85d4c9",
+    "modules-gate.json": "2199033562881f587c77fff1f0f88a8e10cf18c140fea106b85ef4689dbc2b4d",
+    "outer-config-gate.json": "28b6ab36daa4c46b149e4ca76f985b52f2ab9b44737fdc0148e970a250838103",
+    "generated-results.json": "27048828f33f4d1de080ab34b2d46db8dfc463184aa0f8c3bf5cfcf8bdf6d948",
+    "generated-manifest.json": "f8ca3168c0a53badcf308677bc04f1d3686e1af3a4dbffe9d152038a22a150f2",
+    "review.json": "31065f3aec4c644035e9d1594658879cbf9070b35142dc9b104c5ee143d31baf"
+  },
+  "evidence_review": {
+    "result": "Independent review approved; no factual issues",
+    "checks": [
+      "9 JSON copies semantically equal originals and9 original hashes",
+      "6 exact gate aggregation summaries",
+      "Strict config/services/outer reports and pre/post identities",
+      "54 frozen files and7policy inputs",
+      "Cleancc56b15a producer and acceptance source",
+      "Identical engine wires and authored mapping",
+      "Chromium154 observation",
+      "Only FINDINGS and new evidence differ from measured checkpoint"
+    ]
+  },
+  "prepush_ci_diagnosis": {
+    "observed_remote_head": "656a1b421317eecd0e65d15e9875c88613660e73",
+    "pr_mergeable": false,
+    "pr_mergeable_state": "dirty",
+    "pr_merge_commit_sha": null,
+    "stale_merge_ref": "79cd2043b27b5d51dbbe5908bb86bcc839055f92",
+    "stale_merge_ref_parents": [
+      "fbb7921d8fb3f28d859bbd4cf5737759f547866a",
+      "e4bbcfb7a6ca13b5dbbf5724ae66cd0aa6dfa72a"
+    ],
+    "current_main": "57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6",
+    "read_only_merge_tree": "git merge-tree --write-tree --messages HEAD origin/main reports content conflict docs/public/wind-examples/manifest.json. No checkout/ref changed; generated file not manually edited.",
+    "workflow_source": "health.yml has pull_request base main/base/** and main-only push; no workflow path exclusion explains missing runs.",
+    "documentation": "https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request",
+    "interpretation": "Reported and independently reproduced merge conflict is consistent with GitHub documented suppression of pull_request workflows. Stale merge ref is not a current-head CI checkout. Resolve during authorized integrated-main source refresh using real Wind generator; no dispatch or ready/reopen workaround."
+  }
+}

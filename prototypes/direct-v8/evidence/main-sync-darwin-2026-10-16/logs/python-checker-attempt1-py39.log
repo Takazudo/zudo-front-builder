@@ -1,0 +1,1561 @@
+EE....EE..EEE.................EEEE..................FFF.FF.FFFF.FFFFF.FFFFEFFFF
+======================================================================
+ERROR: test_builds_cannot_repin_a_previously_built_executable (test_accept.AcceptanceIntegrityTest) (label='build-zfb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 242, in test_builds_cannot_repin_a_previously_built_executable
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_builds_cannot_repin_a_previously_built_executable (test_accept.AcceptanceIntegrityTest) (label='build-wrapper-test')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 242, in test_builds_cannot_repin_a_previously_built_executable
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_completed_gates_survive_a_later_integrity_refusal (test_accept.AcceptanceIntegrityTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 276, in test_completed_gates_survive_a_later_integrity_refusal
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-services", name="candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest) (name='baseline')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest) (name='candidate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest) (name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest) (name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest) (name='zfb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_every_recorded_executable_is_checked_after_generated_gate (test_accept.AcceptanceIntegrityTest) (name='wrapper_test_binary')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 224, in test_every_recorded_executable_is_checked_after_generated_gate
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_fixture_mutation_is_refused_before_generated_gate (test_accept.AcceptanceIntegrityTest) (name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 233, in test_fixture_mutation_is_refused_before_generated_gate
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_fixture_mutation_is_refused_before_generated_gate (test_accept.AcceptanceIntegrityTest) (name='zfb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 233, in test_fixture_mutation_is_refused_before_generated_gate
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_fixture_mutation_is_refused_before_generated_gate (test_accept.AcceptanceIntegrityTest) (name='wrapper_test_binary')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 233, in test_fixture_mutation_is_refused_before_generated_gate
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_gate_failure_is_not_overwritten_by_successful_integrity_checks (test_accept.AcceptanceIntegrityTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 286, in test_gate_failure_is_not_overwritten_by_successful_integrity_checks
+    status, report, _, _ = self.run_acceptance(generated=True, fail_at="gate-config")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_missing_generated_build_output_is_refused_at_registration (test_accept.AcceptanceIntegrityTest) (mutation='delete')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 262, in test_missing_generated_build_output_is_refused_at_registration
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_missing_generated_build_output_is_refused_at_registration (test_accept.AcceptanceIntegrityTest) (mutation='chmod')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 262, in test_missing_generated_build_output_is_refused_at_registration
+    status, report, _, visited = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest) (mutation='delete', name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest) (mutation='delete', name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest) (mutation='chmod', name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_missing_or_nonexecutable_files_write_failure_receipts (test_accept.AcceptanceIntegrityTest) (mutation='chmod', name='postprocessor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 253, in test_missing_or_nonexecutable_files_write_failure_receipts
+    status, report, _, _ = self.run_acceptance(
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_outer_config_gate_checks_all_three_executables_without_generated (test_accept.AcceptanceIntegrityTest) (name='baseline')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 215, in test_outer_config_gate_checks_all_three_executables_without_generated
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-outer-config", name=name)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_outer_config_gate_checks_all_three_executables_without_generated (test_accept.AcceptanceIntegrityTest) (name='candidate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 215, in test_outer_config_gate_checks_all_three_executables_without_generated
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-outer-config", name=name)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_outer_config_gate_checks_all_three_executables_without_generated (test_accept.AcceptanceIntegrityTest) (name='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 215, in test_outer_config_gate_checks_all_three_executables_without_generated
+    status, report, _, _ = self.run_acceptance(mutate_at="gate-outer-config", name=name)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_unchanged_executables_pass_in_both_modes (test_accept.AcceptanceIntegrityTest) (generated=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 202, in test_unchanged_executables_pass_in_both_modes
+    status, report, original, _ = self.run_acceptance(generated=generated)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_unchanged_executables_pass_in_both_modes (test_accept.AcceptanceIntegrityTest) (generated=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 202, in test_unchanged_executables_pass_in_both_modes
+    status, report, original, _ = self.run_acceptance(generated=generated)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in run_acceptance
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 150, in <dictcomp>
+    original = {key: accept.sha(path) for key, path in paths.items()}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_accepts_the_right_engine_and_value_and_binds_the_digest (test_accept.VerifyRunnerTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 49, in test_accepts_the_right_engine_and_value_and_binds_the_digest
+    result = accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_refuses_a_failed_probe_and_a_wrong_probe_value (test_accept.VerifyRunnerTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 79, in test_refuses_a_failed_probe_and_a_wrong_probe_value
+    accept.verify_runner(failed, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_refuses_a_probe_that_never_answers (test_accept.VerifyRunnerTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 93, in test_refuses_a_probe_that_never_answers
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate", timeout=1)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_refuses_the_baseline_passed_as_the_candidate (test_accept.VerifyRunnerTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 74, in test_refuses_the_baseline_passed_as_the_candidate
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_refuses_the_feature_disabled_runner (test_accept.VerifyRunnerTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept.py", line 69, in test_refuses_the_feature_disabled_runner
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_existing_refusals_still_write_failure_receipts (test_accept_failures.MainFailureReceiptTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 279, in test_existing_refusals_still_write_failure_receipts
+    self.run_failure(accept.Refusal("candidate refused"))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest) (error='FileNotFoundError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest) (error='PermissionError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest) (error='ValueError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_expected_operational_errors_write_failure_receipts (test_accept_failures.MainFailureReceiptTest) (error='CalledProcessError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 275, in test_expected_operational_errors_write_failure_receipts
+    report = self.run_failure(error)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 263, in run_failure
+    self.assertEqual(accept.main(), 1)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_interrupt_writes_failure_receipt_and_still_propagates (test_accept_failures.MainFailureReceiptTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 286, in test_interrupt_writes_failure_receipt_and_still_propagates
+    report = self.run_failure(KeyboardInterrupt(), propagates=True)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 260, in run_failure
+    accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_unexpected_bugs_write_failure_receipts_and_still_propagate (test_accept_failures.MainFailureReceiptTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 282, in test_unexpected_bugs_write_failure_receipts_and_still_propagate
+    report = self.run_failure(RuntimeError("unexpected harness bug"), propagates=True)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 260, in run_failure
+    accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_existing_executable_with_missing_interpreter_is_a_refusal (test_accept_failures.ProbeFailureTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 238, in test_existing_executable_with_missing_interpreter_is_a_refusal
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_malformed_and_nonobject_receipts_are_explicit_refusals (test_accept_failures.ProbeFailureTest) (payload='{"engine":')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 231, in test_malformed_and_nonobject_receipts_are_explicit_refusals
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_malformed_and_nonobject_receipts_are_explicit_refusals (test_accept_failures.ProbeFailureTest) (payload='null')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 231, in test_malformed_and_nonobject_receipts_are_explicit_refusals
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_malformed_and_nonobject_receipts_are_explicit_refusals (test_accept_failures.ProbeFailureTest) (payload='[]')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 231, in test_malformed_and_nonobject_receipts_are_explicit_refusals
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_malformed_and_nonobject_receipts_are_explicit_refusals (test_accept_failures.ProbeFailureTest) (payload='42')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 231, in test_malformed_and_nonobject_receipts_are_explicit_refusals
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_malformed_and_nonobject_receipts_are_explicit_refusals (test_accept_failures.ProbeFailureTest) (payload='true')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_failures.py", line 231, in test_malformed_and_nonobject_receipts_are_explicit_refusals
+    accept.verify_runner(path, accept.CANDIDATE_ENGINE, "candidate")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 137, in verify_runner
+    recorded = record_executable(path, label)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 98, in record_executable
+    return {"path": str(path), "sha256": sha(path)}
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 83, in sha
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+ERROR: test_complete_reports_pass_in_both_modes_with_existing_count_shapes (test_accept_reports.MainReportConsistencyTest) (include_generated=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 319, in test_complete_reports_pass_in_both_modes_with_existing_count_shapes
+    status, report = self.run_acceptance(include_generated=include_generated)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_complete_reports_pass_in_both_modes_with_existing_count_shapes (test_accept_reports.MainReportConsistencyTest) (include_generated=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 319, in test_complete_reports_pass_in_both_modes_with_existing_count_shapes
+    status, report = self.run_acceptance(include_generated=include_generated)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest) (label='gate-config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest) (label='gate-services')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest) (label='gate-http')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest) (label='gate-modules')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest) (label='gate-outer-config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt (test_accept_reports.MainReportConsistencyTest) (label='gate-generated')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 332, in test_every_gate_rejects_bare_success_in_the_final_acceptance_receipt
+    status, report = self.run_acceptance(corrupt=lambda reports: reports.update({label: {"passed": True}}))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_http_and_outer_use_the_specialized_validators (test_accept_reports.MainReportConsistencyTest) (key='http')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 352, in test_http_and_outer_use_the_specialized_validators
+    status, report = self.run_acceptance(corrupt=corrupt)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_http_and_outer_use_the_specialized_validators (test_accept_reports.MainReportConsistencyTest) (key='outer_config')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 352, in test_http_and_outer_use_the_specialized_validators
+    status, report = self.run_acceptance(corrupt=corrupt)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_accept_reports.py", line 313, in run_acceptance
+    status = accept.main()
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/accept.py", line 465, in main
+    parser.error("--output must be a new directory below this repository's ignored target/")
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2575, in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/argparse.py", line 2562, in exit
+    _sys.exit(status)
+SystemExit: 2
+
+======================================================================
+ERROR: test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 317, in test_real_watchdog_preserves_partial_bytes_and_failed_outer_rows
+    report = outer.run(runner, timeout=0.3)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 34, in run
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+======================================================================
+FAIL: test_baseline_only_mode_and_console_noise_remain_supported (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 261, in test_baseline_only_mode_and_console_noise_remain_supported
+    proc, report = self.config(payload, candidate=False)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_changed_bytes_or_execute_permission_fail_after_zero_exit (test_checker_protocol.CheckerProtocolTest) (change="Path(__file__).write_text(Path(__file__).read_text() + '# changed')")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 331, in test_changed_bytes_or_execute_permission_fail_after_zero_exit
+    proc, report = self.config(payload, extra=change)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_changed_bytes_or_execute_permission_fail_after_zero_exit (test_checker_protocol.CheckerProtocolTest) (change='Path(__file__).chmod(0o644)')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 331, in test_changed_bytes_or_execute_permission_fail_after_zero_exit
+    proc, report = self.config(payload, extra=change)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_corpus_hash_binds_loaded_bytes_and_mutation_fails (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 221, in test_corpus_hash_binds_loaded_bytes_and_mutation_fails
+    proc, report = self.config(payload, extra=f"Path({str(self.corpus)!r}).write_text('[]')")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_deep_baseline_receipt_keeps_failure_and_candidate_evidence (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 379, in test_deep_baseline_receipt_keeps_failure_and_candidate_evidence
+    proc, report = self.invoke("check-config.py", ["--baseline", baseline, "--candidate", candidate,
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_deep_outer_receipt_retains_slot_and_later_rows (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 392, in test_deep_outer_receipt_retains_slot_and_later_rows
+    proc, report = self.outer(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 91, in outer
+    return self.invoke("check-outer-config.py", ["--runner", self.runner(payload, exit_code=exit_code)])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 74, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 66, in main
+    report = run(args.runner)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 34, in run
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_deleted_executable_does_not_erase_a_failure_report (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 229, in test_deleted_executable_does_not_erase_a_failure_report
+    proc, report = self.config(payload, extra="Path(__file__).unlink()")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_duplicate_json_keys_and_nonfinite_numbers_are_rejected (test_checker_protocol.CheckerProtocolTest) (suffix='"ok":false,"ok":true,"value":{"probe":42}')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 163, in test_duplicate_json_keys_and_nonfinite_numbers_are_rejected
+    proc, report = self.config(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_duplicate_json_keys_and_nonfinite_numbers_are_rejected (test_checker_protocol.CheckerProtocolTest) (suffix='"ok":true,"value":{"probe":42},"extra":NaN')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 163, in test_duplicate_json_keys_and_nonfinite_numbers_are_rejected
+    proc, report = self.config(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_duplicate_json_keys_and_nonfinite_numbers_are_rejected (test_checker_protocol.CheckerProtocolTest) (suffix='"ok":true,"value":{"probe":0,"probe":42}')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 163, in test_duplicate_json_keys_and_nonfinite_numbers_are_rejected
+    proc, report = self.config(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_error_payload_must_be_a_string_not_an_array_of_fragments (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 176, in test_error_payload_must_be_a_string_not_an_array_of_fragments
+    proc, report = self.config(framed(HOST_PREFIX, [{"engine": CANDIDATE, "ok": False, "error": ["sentinel"]}]), expected_ok=False)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_existing_positive_protocols_pass (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 94, in test_existing_positive_protocols_pass
+    proc, report = self.config(framed(HOST_PREFIX, [{"engine": CANDIDATE, "ok": True, "value": {"probe": 42}}]))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_explicit_null_is_valid_but_boolean_is_not_integer_value (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 269, in test_explicit_null_is_valid_but_boolean_is_not_integer_value
+    proc, report = self.config(framed(HOST_PREFIX, [{"engine": CANDIDATE, "ok": True, "value": None}]))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_extra_outer_receipt_is_not_silently_truncated (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 120, in test_extra_outer_receipt_is_not_silently_truncated
+    proc, report = self.outer(framed(OUTER_PREFIX, rows + [rows[0]]))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 91, in outer
+    return self.invoke("check-outer-config.py", ["--runner", self.runner(payload, exit_code=exit_code)])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 74, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 66, in main
+    report = run(args.runner)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 34, in run
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_invalid_outer_json_keeps_positions_and_later_rows (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 150, in test_invalid_outer_json_keeps_positions_and_later_rows
+    proc, report = self.outer(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 91, in outer
+    return self.invoke("check-outer-config.py", ["--runner", self.runner(payload, exit_code=exit_code)])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 74, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 66, in main
+    report = run(args.runner)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 34, in run
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_invalid_utf8_is_retained_and_cannot_pass (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 169, in test_invalid_utf8_is_retained_and_cannot_pass
+    proc, report = self.config(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_json_float_overflow_is_not_a_finite_receipt (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 358, in test_json_float_overflow_is_not_a_finite_receipt
+    proc, report = self.config(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_malformed_and_nonobject_receipts_save_both_engine_observations (test_checker_protocol.CheckerProtocolTest) (payload=b'{"ok":')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 141, in test_malformed_and_nonobject_receipts_save_both_engine_observations
+    proc, report = self.config(malformed)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_malformed_and_nonobject_receipts_save_both_engine_observations (test_checker_protocol.CheckerProtocolTest) (payload=b'null')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 141, in test_malformed_and_nonobject_receipts_save_both_engine_observations
+    proc, report = self.config(malformed)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_malformed_and_nonobject_receipts_save_both_engine_observations (test_checker_protocol.CheckerProtocolTest) (payload=b'[]')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 141, in test_malformed_and_nonobject_receipts_save_both_engine_observations
+    proc, report = self.config(malformed)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_malformed_and_nonobject_receipts_save_both_engine_observations (test_checker_protocol.CheckerProtocolTest) (payload=b'42')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 141, in test_malformed_and_nonobject_receipts_save_both_engine_observations
+    proc, report = self.config(malformed)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_missing_baseline_does_not_hide_candidate_observation (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 196, in test_missing_baseline_does_not_hide_candidate_observation
+    proc, report = self.invoke("check-config.py", ["--baseline", self.root / "absent", "--candidate", candidate, "--cases", self.corpus])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 115, in main
+    report["results"].append(run(args.candidate, "direct v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_missing_interpreter_is_not_an_observed_process_exit (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 341, in test_missing_interpreter_is_not_an_observed_process_exit
+    proc, report = self.invoke("check-outer-config.py", ["--runner", runner])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 74, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 66, in main
+    report = run(args.runner)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 34, in run
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_missing_receipts_keep_all_expected_failure_rows (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 127, in test_missing_receipts_keep_all_expected_failure_rows
+    proc, report = self.config(b"")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_missing_value_is_not_a_successful_null (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 114, in test_missing_value_is_not_a_successful_null
+    proc, report = self.config(framed(HOST_PREFIX, [{"engine": CANDIDATE, "ok": True}]))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_nonzero_exit_cannot_be_rescued_by_valid_rows (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 186, in test_nonzero_exit_cannot_be_rescued_by_valid_rows
+    proc, report = self.config(framed(HOST_PREFIX, [{"engine": CANDIDATE, "ok": True, "value": {"probe": 42}}]), exit_code=7)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_numeric_success_or_failure_flags_cannot_pass_config (test_checker_protocol.CheckerProtocolTest) (ok=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 107, in test_numeric_success_or_failure_flags_cannot_pass_config
+    proc, report = self.config(framed(HOST_PREFIX, [doc]), expected_ok=ok)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_numeric_success_or_failure_flags_cannot_pass_config (test_checker_protocol.CheckerProtocolTest) (ok=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 107, in test_numeric_success_or_failure_flags_cannot_pass_config
+    proc, report = self.config(framed(HOST_PREFIX, [doc]), expected_ok=ok)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_original_semantic_error_category_and_fragments_still_pass (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 368, in test_original_semantic_error_category_and_fragments_still_pass
+    proc, report = self.invoke("check-config.py", ["--baseline", runners[0], "--candidate", runners[1], "--cases", self.corpus])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_service_mode_and_frozen_wire_reach_both_processes (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 250, in test_service_mode_and_frozen_wire_reach_both_processes
+    proc, report = self.invoke("check-config.py", ["--baseline", runners[0], "--candidate", runners[1],
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_signal_exit_is_recorded_not_called_a_success (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 349, in test_signal_exit_is_recorded_not_called_a_success
+    proc, report = self.invoke("check-outer-config.py", ["--runner", runner])
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 74, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 66, in main
+    report = run(args.runner)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py", line 34, in run
+    result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_unicode_line_separators_inside_json_are_not_frame_boundaries (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 283, in test_unicode_line_separators_inside_json_are_not_frame_boundaries
+    proc, report = self.config(payload)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+======================================================================
+FAIL: test_wrong_engine_and_reordered_outer_results_are_rejected (test_checker_protocol.CheckerProtocolTest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 288, in test_wrong_engine_and_reordered_outer_results_are_rejected
+    proc, report = self.config(framed(HOST_PREFIX, [{"engine": BASELINE, "ok": True, "value": {"probe": 42}}]))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 88, in config
+    return self.invoke("check-config.py", args)
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/test_checker_protocol.py", line 71, in invoke
+    self.assertTrue(output.is_file(), f"missing failure report; exit={process.returncode}: {process.stderr}")
+AssertionError: False is not true : missing failure report; exit=1: Traceback (most recent call last):
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 135, in <module>
+    sys.exit(main())
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 113, in main
+    report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py", line 37, in run
+    result = protocol.run_receipts(binary, wire, "ZFB_HOST_RECEIPT ", len(cases))
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 91, in run_receipts
+    result["executable_sha256"] = digest("before execution")
+  File "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/runner-protocol.py", line 74, in digest
+    return hashlib.file_digest(stream, "sha256").hexdigest()
+AttributeError: module 'hashlib' has no attribute 'file_digest'
+
+
+----------------------------------------------------------------------
+Ran 95 tests in 13.382s
+
+FAILED (failures=33, errors=53)

@@ -1,0 +1,188 @@
+{
+  "scope": "Independent preparation and existing-source Linux replay; required checker patch could not be materialized",
+  "starting_remote_head": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+  "measured_source": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+  "starting_main": "57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6",
+  "pr_metadata_head": "bcc29ea133949408e0a329f2b0d6c9d0a4017ca6",
+  "patch": {
+    "filename": "pr4242-checker-protocol(3).patch",
+    "library_id": "libfile_ad7d6b3433b48191ba5380a16b2ebbfc",
+    "file_id": "file_000000003d5c81fdab8d7bf9d25bf69c",
+    "expected_size": 43482,
+    "expected_sha256": "c7a5dc3b570b7c74892a60553d9a147d0e95278191fe38d4faccbaa1e22b6f12",
+    "attempts": 2,
+    "method": "Library prepare_materialize for known reference, then current bundled helper materialize with unchanged transfer object; explicit workspace destinations; one bounded retry",
+    "result": "Both helper commands exited 1: library file transfer failed: download failed; destination files absent. No underlying cause supplied.",
+    "readable": false,
+    "actual_sha256": null,
+    "applied": false,
+    "reviewed": false,
+    "safety": "Prior GitHub helper-upload denial was not bypassed; no patch reconstruction or upload attempted."
+  },
+  "cheap_verification": {
+    "command": "python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_*.py' -v",
+    "passed": 64,
+    "failed": 0,
+    "seconds": 2.646,
+    "python": "3.12.14",
+    "syntax": "All 12 existing Python files AST-parsed",
+    "diff_check": "pass",
+    "missing_inventory": "28 proposed checker tests unavailable; combined 92-test inventory not verified"
+  },
+  "setup": {
+    "pnpm": "12.8.2",
+    "node": "24.19.0",
+    "rustc": "1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "1.99.0 (5f94df478 2026-08-27)",
+    "chromium": "154.0.8037.57",
+    "esbuild": "0.25.12",
+    "esbuild_sha256": "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014",
+    "guard": "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+    "guard_sha256": "074a463dd6b3a65b7e2168df95b200c0192c414862375bcfb95f979c34c67ee7",
+    "guard_lock": "/home/agent/.agent-guard/heavy",
+    "guard_note": "Sandboxed no-op could not create the published lock; exact escalated no-op passed. All native acceptance commands used escalation and the actual guard. No heavy command ran unguarded.",
+    "target": "/workspace/zudo-front-builder-pr4242/target",
+    "rust_install": "Official sh.rustup.rs installer, workspace-owned CARGO_HOME/RUSTUP_HOME, --no-modify-path, pinned toolchain 1.99.0; no repository pin changes",
+    "dependencies": "npm exec --yes --cache /workspace/zfb-npm-cache --package pnpm@12.8.2 -- pnpm install --frozen-lockfile --store-dir /workspace/zfb-pnpm-store; exited 0, standard lifecycle hooks ran, tracked files unchanged"
+  },
+  "original_native_failure": {
+    "output": "target/direct-v8-accept-baseline-20261015-0733",
+    "failed_step": "build-outer-config",
+    "exit_code": 101,
+    "guard_verdict": "FAIL",
+    "reason": "crates/zfb/build.rs:718 required hono@4.12.25 under node_modules/.pnpm; frozen workspace dependencies were not installed",
+    "shared_services_passed": 9,
+    "baseline_build": "passed",
+    "disposition": "Provisioned frozen dependencies; retried from same clean SHA with same target in new unique output; original failure preserved"
+  },
+  "unperformed_checks": "No Rust/source implementation changed. No additional all-target workspace build, Clippy, no-V8, md-Wasm/CSS-addon link or baseline regression batch performed; historical checks are not relabeled as current results.",
+  "infrastructure": {
+    "4234": {
+      "draft": true,
+      "state": "open",
+      "merged": false,
+      "head": "ff9816d4fc15d1bb14d0711647e5ec373a2bcc52"
+    },
+    "4259": {
+      "draft": true,
+      "state": "open",
+      "merged": false,
+      "head": "714e65cd01ab674d668aac7db1a3a5a31c03e9e7"
+    },
+    "4260": {
+      "draft": true,
+      "state": "open",
+      "merged": false,
+      "head": "572b174f70664e2fe4d91c552439eb3d137f848a"
+    }
+  },
+  "initial_exact_head_ci": {
+    "sha": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+    "check_runs": 0,
+    "statuses": 0,
+    "combined_status": "pending",
+    "unfiltered_actions_runs": 0,
+    "interpretation": "Missing runs are not passes; stale PR metadata does not override actual Git branch ref. Historical Cargo-provenance failures remain failures."
+  },
+  "boundaries": [
+    "Patch recovery, independent proposed-code review, combined tests and patched-source replay still required",
+    "Authorized prerequisite integration then source refresh then compatible Linux/Darwin size evidence then paired staging/review then separately authorized live apply then final enforced verification",
+    "No merge/ready/main/force push, held stack import, issue closure, manual dispatch, live staging/apply, release/version change, publication/deployment or phase-two CLI adoption",
+    "Rolldown #4120 untouched",
+    "Non-UTF-8 page postprocessing limitation remains separate from Worker binary responses; no unrelated repair",
+    "No cold-build benchmark or child-tree cleanup claim"
+  ],
+  "native_retry": {
+    "exit_code": 0,
+    "output": "target/direct-v8-accept-baseline-20261015-retry1",
+    "acceptance": "acceptance.json",
+    "generated_results": "generated-results.json",
+    "frozen_manifest": "generated-manifest.json",
+    "source_clean_before_and_after": true,
+    "counts_unchanged_from_history": true,
+    "cold_build_benchmark": false,
+    "guard_verdicts": {
+      "services-tests.stderr": "PASS exit=0 secs=0 min_mem_mb=17082 reason=-",
+      "build-wrapper-test.stderr": "PASS exit=0 secs=18 min_mem_mb=15875 reason=-",
+      "build-candidate.stderr": "PASS exit=0 secs=8 min_mem_mb=16475 reason=-",
+      "gate-services.stderr": "PASS exit=0 secs=0 min_mem_mb=16815 reason=-",
+      "gate-outer-config.stderr": "PASS exit=0 secs=0 min_mem_mb=16748 reason=-",
+      "build-zfb.stderr": "PASS exit=0 secs=36 min_mem_mb=15435 reason=-",
+      "build-postprocessor.stderr": "PASS exit=0 secs=28 min_mem_mb=15615 reason=-",
+      "build-baseline.stderr": "PASS exit=0 secs=0 min_mem_mb=17140 reason=-",
+      "gate-config.stderr": "PASS exit=0 secs=1 min_mem_mb=16809 reason=-",
+      "gate-http.stderr": "PASS exit=0 secs=0 min_mem_mb=16737 reason=-",
+      "candidate-lib-tests.stderr": "PASS exit=0 secs=2 min_mem_mb=16613 reason=-",
+      "build-outer-config.stderr": "PASS exit=0 secs=11 min_mem_mb=16264 reason=-",
+      "gate-modules.stderr": "PASS exit=0 secs=1 min_mem_mb=16723 reason=-",
+      "prepare-fixtures.stderr": "PASS exit=0 secs=2 min_mem_mb=16969 reason=-",
+      "gate-generated.stderr": "PASS exit=0 secs=2 min_mem_mb=16865 reason=-"
+    },
+    "limitations": "Existing checker weaknesses remain; this successful baseline observation does not validate proposed hardening or replace its combined native replay."
+  },
+  "receipts_original_sha256": {
+    "acceptance.json": "79b7ed83b9c0c6dca988505830c970c2926370dfb5b954923c1fda5838416fc0",
+    "config-gate.json": "00a23034b8114905d3692d434026927c28e966272f31d1e2f0d93321ef582ae8",
+    "services-gate.json": "89a1c230dbc460731f5577b77544c1d829b83032be1a1422c60fd94a3be8f2ec",
+    "http-gate.json": "a17e538a9fa57640f9277c9f7574de162e68f982cfecc31ee73462f78deb85b7",
+    "modules-gate.json": "108c07ae36518cba6ad004120189e51c3eb0a206bfa9817c468dea0e02e567be",
+    "outer-config-gate.json": "d1f306ad47c2ab13545235d0ecc3c17a514049ae94e688be1710dcc4442bb98f",
+    "generated-results.json": "c98e1cf97422b7c57d04326d7ce7e2fd02fc735140ff60781b1e862e1729dc1b",
+    "generated-manifest.json": "7cf6dcfb1dec29bfe9afa07a4130f87256c63269ca90f5a0d56cbeda1f15a1ae",
+    "initial-acceptance.json": "e4ef66b552e8092825f762127ab639c76f17a2c4d42a186686f6b930f7f187c9",
+    "independent-review.json": "b2ed24ec4267f1dac861a2b71a9d8cb36aaa7e41e3b7d91d4fad1a771f3ec87e",
+    "reproductions.json": "5e125cee40f4c234e91c00ee2d85e5507b78d4f0fc7e082b38bfc672241a5072",
+    "historical-compatibility.json": "5552ba910620b935ee7abbb48989225f58a067516b49fe768bf5b7c568a1e119"
+  },
+  "native_command": [
+    "python3",
+    "-I",
+    "-B",
+    "prototypes/direct-v8/accept.py",
+    "--output",
+    "target/direct-v8-accept-baseline-20261015-retry1",
+    "--guard",
+    "/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh",
+    "--generated",
+    "--esbuild",
+    "/workspace/zfb-tools/esbuild-0.25.12",
+    "--chromium",
+    "/usr/bin/chromium",
+    "--node",
+    "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+    "--rustc",
+    "/workspace/zfb-rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc"
+  ],
+  "native_environment": {
+    "CARGO_HOME": "/workspace/zfb-cargo",
+    "RUSTUP_HOME": "/workspace/zfb-rustup",
+    "RUSTUP_TOOLCHAIN": "1.99.0",
+    "PATH_prefix": "/workspace/zfb-cargo/bin",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "ZFB_ESBUILD_BIN": "/workspace/zfb-tools/esbuild-0.25.12"
+  },
+  "post_replay_validation": {
+    "frozen_manifest_files_verified": 54,
+    "method": "Recomputed every manifest file SHA-256 and byte length from the new frozen snapshot",
+    "copied_native_reports": "All gate, acceptance, generated result and manifest JSON values equal original outputs after repository formatting",
+    "runtime_input_equivalence_to_historical_source": "git diff --name-only 14e021f19d09287dbc3fb8a0ac86254379113092 HEAD -- crates Cargo.toml Cargo.lock rust-toolchain.toml returned empty. Historical harness checks not reused because harness changed."
+  },
+  "evidence_review": {
+    "result": "No blocking factual issues",
+    "checks": [
+      "54 frozen files: set, SHA-256 and lengths",
+      "6 native executable digests and execute permissions",
+      "5 producer tool hashes and policy/harness inputs",
+      "15 guard verdicts and native logs45/9",
+      "Clean8b acceptance and producer source bindings",
+      "Identical baseline/candidate input.jsonl",
+      "Authored throw source and mapping throw.ts:6:9 in both engines",
+      "Original outer build failure101 missing hono",
+      "9 native JSON copies semantically identical to original run outputs",
+      "Original-output hashes match original bytes"
+    ],
+    "disposition": "Clarified original-byte digest versus repository-formatted JSON distinction in README; no implementation change"
+  }
+}

@@ -1,0 +1,779 @@
+{
+  "schema": 1,
+  "passed": true,
+  "steps": [
+    {
+      "label": "prepare-icu",
+      "argv": [
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/prepare-icu.py"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": false,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0"
+      },
+      "seconds": 0.4
+    },
+    {
+      "label": "cargo-metadata-target",
+      "argv": ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": false,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 0.1
+    },
+    {
+      "label": "services-tests",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--features",
+        "services"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 19.6
+    },
+    {
+      "label": "build-baseline",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-render",
+        "--example",
+        "direct_v8_baseline"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 5.5
+    },
+    {
+      "label": "build-outer-config",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb",
+        "--example",
+        "direct_v8_outer_config"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 171.7
+    },
+    {
+      "label": "build-candidate",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--example",
+        "direct_v8"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 28.1
+    },
+    {
+      "label": "candidate-lib-tests",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--lib"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 6.9
+    },
+    {
+      "label": "gate-config",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py",
+        "--baseline",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/config-gate.json"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 1.1
+    },
+    {
+      "label": "gate-services",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-config.py",
+        "--kind",
+        "script",
+        "--cases",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/service-cases.json",
+        "--baseline",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/services-gate.json"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 0.7
+    },
+    {
+      "label": "gate-http",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-http.py",
+        "--baseline",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/http-gate.json"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 0.7
+    },
+    {
+      "label": "gate-modules",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-modules.py",
+        "--baseline",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+        "--fixture-dir",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/modules-fixtures",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/modules-gate.json"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 0.8
+    },
+    {
+      "label": "gate-outer-config",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-outer-config.py",
+        "--runner",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_outer_config",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/outer-config-gate.json"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 4.9
+    },
+    {
+      "label": "build-postprocessor",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-build",
+        "--no-default-features",
+        "--example",
+        "direct_v8_postprocess"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 61.2
+    },
+    {
+      "label": "build-zfb",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb",
+        "--bin",
+        "zfb"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/00e2e11a-8fba-4b5b-92fd-bfd31a2f3635/scratchpad/esbuild-0.25.12"
+      },
+      "seconds": 95.4
+    },
+    {
+      "label": "build-wrapper-test",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat",
+        "ZFB_ESBUILD_BIN": "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/00e2e11a-8fba-4b5b-92fd-bfd31a2f3635/scratchpad/esbuild-0.25.12"
+      },
+      "seconds": 43.3
+    },
+    {
+      "label": "prepare-fixtures",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/prepare-fixtures.py",
+        "--zfb",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/zfb",
+        "--esbuild",
+        "/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/00e2e11a-8fba-4b5b-92fd-bfd31a2f3635/scratchpad/esbuild-0.25.12",
+        "--wrapper-test-binary",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/deps/zfb-4d2377067482aa74",
+        "--rustc",
+        "/Users/takazudo/.rustup/toolchains/1.99.0-aarch64-apple-darwin/bin/rustc",
+        "--node",
+        "/Users/takazudo/.anyenv/envs/nodenv/versions/24.14.0/bin/node",
+        "--producer-build-command",
+        "{\"ZFB_ESBUILD_BIN\": \"/private/tmp/claude-501/-Users-takazudo-repos-myoss-zfb/00e2e11a-8fba-4b5b-92fd-bfd31a2f3635/scratchpad/esbuild-0.25.12\", \"argv\": [\"bash\", \"/Users/takazudo/.claude/scripts/heavy-guard.sh\", \"--\", \"cargo\", \"build\", \"--locked\", \"-p\", \"zfb\", \"--bin\", \"zfb\"], \"env\": {\"RUSTUP_TOOLCHAIN\": \"1.99.0\", \"ZFB_V8_ICU_DATA\": \"/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat\"}}",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/generated"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 12.1
+    },
+    {
+      "label": "gate-generated",
+      "argv": [
+        "bash",
+        "/Users/takazudo/.claude/scripts/heavy-guard.sh",
+        "--",
+        "/Users/takazudo/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12",
+        "-I",
+        "-B",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/prototypes/direct-v8/check-generated.py",
+        "--snapshot",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/generated/frozen",
+        "--baseline",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+        "--candidate",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+        "--postprocessor",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_postprocess",
+        "--node",
+        "/Users/takazudo/.anyenv/envs/nodenv/versions/24.14.0/bin/node",
+        "--chromium",
+        "/Users/takazudo/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        "--output",
+        "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/generated-results"
+      ],
+      "cwd": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync",
+      "guarded": true,
+      "exit_code": 0,
+      "passed": true,
+      "watchdog_seconds": 7200,
+      "env": {
+        "RUSTUP_TOOLCHAIN": "1.99.0",
+        "ZFB_V8_ICU_DATA": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat"
+      },
+      "seconds": 6.6
+    }
+  ],
+  "limitations": [
+    "Linux x86_64 native evidence only; other platforms untested.",
+    "Standalone runners prove host behavior, not candidate CLI/factory/dev-reload integration.",
+    "A watchdog expiry is a failed observation, never clean shutdown evidence.",
+    "No baseline, Node or Deno fallback executor is selected when the candidate is missing."
+  ],
+  "executables": {
+    "baseline": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_baseline",
+      "sha256": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+      "engine": "deno_core 0.399.0 / v8 147.4.0",
+      "receipt": {
+        "engine": "deno_core 0.399.0 / v8 147.4.0",
+        "ok": true,
+        "value": {
+          "probe": 42,
+          "text": "direct-v8-accept"
+        }
+      }
+    },
+    "candidate": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8",
+      "sha256": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+      "engine": "direct v8 147.4.0",
+      "receipt": {
+        "engine": "direct v8 147.4.0",
+        "ok": true,
+        "value": {
+          "probe": 42,
+          "text": "direct-v8-accept"
+        }
+      }
+    },
+    "outer_config": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_outer_config",
+      "sha256": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+    },
+    "postprocessor": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/examples/direct_v8_postprocess",
+      "sha256": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72"
+    },
+    "zfb": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/zfb",
+      "sha256": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84"
+    },
+    "wrapper_test_binary": {
+      "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/debug/deps/zfb-4d2377067482aa74",
+      "sha256": "561684ed1695c9eb7a237d8a9f6b452995956947bffdbe2c201358c5b96e6324"
+    }
+  },
+  "gates": {
+    "config": {
+      "output": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/config-gate.json",
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        }
+      ]
+    },
+    "services": {
+      "output": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/services-gate.json",
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        }
+      ]
+    },
+    "http": {
+      "output": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/http-gate.json",
+      "passed": true,
+      "counts": {
+        "rows": 8,
+        "rows_passed": 8,
+        "passed": true
+      }
+    },
+    "modules": {
+      "output": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/modules-gate.json",
+      "passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        }
+      ]
+    },
+    "outer_config": {
+      "output": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/outer-config-gate.json",
+      "passed": true,
+      "counts": {
+        "rows": 7,
+        "rows_passed": 7,
+        "passed": true
+      }
+    },
+    "generated": {
+      "output": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-accept-darwin-cc349413/generated-results/results.json",
+      "passed": true,
+      "counts": {
+        "passed": true,
+        "snapshot_manifest_sha256": "7a0ec90aa8b98b0109e4292fd3a01b0c7cfa8d7caf0f4205793027d096c4703f",
+        "baseline": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "candidate": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "parity_rows": 7,
+        "parity_passed": 7,
+        "browser": true
+      }
+    }
+  },
+  "executable_checks": [
+    {
+      "after": "runner probes",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+      }
+    },
+    {
+      "after": "config",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+      }
+    },
+    {
+      "after": "services",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+      }
+    },
+    {
+      "after": "http",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+      }
+    },
+    {
+      "after": "modules",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+      }
+    },
+    {
+      "after": "outer-config",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2"
+      }
+    },
+    {
+      "after": "postprocessor build",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+        "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72"
+      }
+    },
+    {
+      "after": "zfb build",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+        "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72",
+        "zfb": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84"
+      }
+    },
+    {
+      "after": "generated-prerequisite builds",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+        "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72",
+        "zfb": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84",
+        "wrapper_test_binary": "561684ed1695c9eb7a237d8a9f6b452995956947bffdbe2c201358c5b96e6324"
+      }
+    },
+    {
+      "after": "fixture preparation",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+        "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72",
+        "zfb": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84",
+        "wrapper_test_binary": "561684ed1695c9eb7a237d8a9f6b452995956947bffdbe2c201358c5b96e6324"
+      }
+    },
+    {
+      "after": "generated",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+        "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72",
+        "zfb": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84",
+        "wrapper_test_binary": "561684ed1695c9eb7a237d8a9f6b452995956947bffdbe2c201358c5b96e6324"
+      }
+    },
+    {
+      "after": "final verification",
+      "passed": true,
+      "sha256": {
+        "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+        "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+        "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+        "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72",
+        "zfb": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84",
+        "wrapper_test_binary": "561684ed1695c9eb7a237d8a9f6b452995956947bffdbe2c201358c5b96e6324"
+      }
+    }
+  ],
+  "environment": {
+    "commit": "cc3494135de356a56386b604c5117c67aa1c6df2",
+    "status_porcelain": "",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.1",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "python": "3.12.13 (main, Mar 10 2026, 18:18:07) [Clang 21.1.4 ]",
+    "platform": "macOS-26.6.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "env": {
+      "RUSTUP_TOOLCHAIN": "1.99.0"
+    }
+  },
+  "icu": {
+    "path": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target/direct-v8-inputs/icu77/icudtl.dat",
+    "sha256": "1cf67874b5a87a8363a86fb3f81e3cbbed54d389062dab8fb52308d5cf8c8612",
+    "archive_sha256_pin": "a9efff8990a82c1ae664292507e1a5c6749ddd2312898cdf9cd7cb1fd4bc64c6"
+  },
+  "target_directory": "/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/target",
+  "services_tests": {
+    "status": "ok",
+    "passed": 9,
+    "failed": 0
+  },
+  "candidate_lib_tests": {
+    "status": "ok",
+    "passed": 45,
+    "failed": 0
+  },
+  "executables_after": {
+    "baseline": "f6f225c4858ead564bd9d4ca60546cbd53e430b37a39c01a83cb4e2a4acb5911",
+    "candidate": "1c24ba62a50d0581eba45953fa04c9eccd5d0cae3c70c54fc1f3314ba4fe5925",
+    "outer_config": "f748687bbd0a90b6198099355c931a778992f330493cdecb3b8fb75c7606c9d2",
+    "postprocessor": "5b2688330c58913773aa729e587a8b6ba486ed8d84fe2e64cbdccd62d5048b72",
+    "zfb": "32e92490038821be684cf486a567f5b9dbd687b36e290e7bfd7c8c5a51dbce84",
+    "wrapper_test_binary": "561684ed1695c9eb7a237d8a9f6b452995956947bffdbe2c201358c5b96e6324"
+  }
+}

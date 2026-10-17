@@ -1,0 +1,405 @@
+{
+  "schema": 1,
+  "producer": {
+    "commit": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+    "status": "",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "changed_files": {},
+    "policy_inputs": {
+      "Cargo.toml": "30cd2d6138555778cdc357f8d783951e1ae7382c4adf4f7dc5e8130ce8c164d5",
+      "Cargo.lock": "d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb",
+      "rust-toolchain.toml": "3e18e70208ee460635e239a91c142cf67371feafb718b05617ff06f388bf96df",
+      "pnpm-lock.yaml": "ee4accdbbbe22851c41ac529d492fbb6c03b007061ed0042068b2551731b5817",
+      "package.json": "0a98b6b3615789982e0f74c7f2690555ec678cd7a31bb1fc69d0773de62198ce",
+      "packages/zfb/package.json": "8013677564cfdcebc1f72ea229cdaa583c6e925b22235565eb9208e31db0dec2",
+      "crates/zfb-toolchain-pins/src/lib.rs": "1b6f9886a64c718d74ad41184d1051800e57cb90ab2b7ccf57da02cd72fffc53"
+    }
+  },
+  "producer_build_command_supplied": "{\"ZFB_ESBUILD_BIN\": \"/workspace/zfb-tools/esbuild-0.25.12\", \"argv\": [\"bash\", \"/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh\", \"--\", \"cargo\", \"build\", \"--locked\", \"-p\", \"zfb\", \"--bin\", \"zfb\"], \"env\": {\"CARGO_BUILD_JOBS\": \"4\", \"CARGO_PROFILE_DEV_DEBUG\": \"0\", \"CARGO_PROFILE_TEST_DEBUG\": \"0\", \"RUSTUP_TOOLCHAIN\": \"1.99.0\", \"ZFB_ESBUILD_BIN\": \"/workspace/zfb-tools/esbuild-0.25.12\", \"ZFB_V8_ICU_DATA\": \"/workspace/zudo-front-builder-pr4242/target/direct-v8-inputs/icu77/icudtl.dat\"}}",
+  "tools": {
+    "zfb": {
+      "path": "/workspace/zudo-front-builder-pr4242/target/debug/zfb",
+      "sha256": "35b5d3657f6f831503927f75f96e5ab4b219d43553896ae7fb814fc46a8fb64e"
+    },
+    "esbuild": {
+      "path": "/workspace/zfb-tools/esbuild-0.25.12",
+      "sha256": "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
+    },
+    "wrapper_test_binary": {
+      "path": "/workspace/zudo-front-builder-pr4242/target/debug/deps/zfb-4e375712b1045073",
+      "sha256": "c9f6f3b039ddfcc0abed93cf4142be3b1fa26ff6de7aa0cc28678b91e3364b28"
+    },
+    "rustc": {
+      "path": "/workspace/zfb-rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f"
+    },
+    "node": {
+      "path": "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+      "sha256": "bc17c508ffeed0ec622934f9b7fa72f8e78da65350e63c3eceb56fa688aa5e12"
+    }
+  },
+  "versions": {
+    "zfb": "zfb 0.0.0",
+    "esbuild": "0.25.12",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+    "node": "v24.19.0"
+  },
+  "environment": {
+    "ZFB_ESBUILD_BIN": "/workspace/zfb-tools/esbuild-0.25.12",
+    "ZFB_NODE_BIN": "/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node",
+    "ZFB_V8_ICU_DATA": "/workspace/zudo-front-builder-pr4242/target/direct-v8-inputs/icu77/icudtl.dat",
+    "CARGO_BUILD_JOBS": "4",
+    "RUSTUP_TOOLCHAIN": "1.99.0"
+  },
+  "commands": [
+    {
+      "label": "zfb-version",
+      "argv": ["/workspace/zudo-front-builder-pr4242/target/debug/zfb", "-V"],
+      "cwd": "/workspace/zudo-front-builder-pr4242",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "esbuild-version",
+      "argv": ["/workspace/zfb-tools/esbuild-0.25.12", "--version"],
+      "cwd": "/workspace/zudo-front-builder-pr4242",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "rustc-version",
+      "argv": ["/workspace/zfb-rustup/toolchains/1.99.0-x86_64-unknown-linux-gnu/bin/rustc", "-vV"],
+      "cwd": "/workspace/zudo-front-builder-pr4242",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "node-version",
+      "argv": ["/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node", "--version"],
+      "cwd": "/workspace/zudo-front-builder-pr4242",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "real-zfb-build",
+      "argv": ["/workspace/zudo-front-builder-pr4242/target/debug/zfb", "build"],
+      "cwd": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/site",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "canonical-wrapper",
+      "argv": [
+        "/workspace/zudo-front-builder-pr4242/target/debug/deps/zfb-4e375712b1045073",
+        "commands::dev::tests::direct_v8_export_canonical_wrapper",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "cwd": "/workspace/zudo-front-builder-pr4242",
+      "exit_code": 0,
+      "extra_env": {
+        "ZFB_DIRECT_V8_SITE": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/site",
+        "ZFB_DIRECT_V8_WRAPPER_OUT": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/frozen/wrapper"
+      }
+    },
+    {
+      "label": "config-bundle",
+      "argv": [
+        "/workspace/zfb-tools/esbuild-0.25.12",
+        "--bundle",
+        "--format=esm",
+        "--platform=neutral",
+        "--target=esnext",
+        "--log-level=warning",
+        "--alias:zfb/config=/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/frozen/config/zfb-config-stub.mjs",
+        "--alias:@takazudo/zfb/config=/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/frozen/config/zfb-config-stub.mjs",
+        "--outfile=config.mjs",
+        "zfb.config.ts"
+      ],
+      "cwd": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/frozen/config",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "negative-bundle",
+      "argv": [
+        "/workspace/zfb-tools/esbuild-0.25.12",
+        "throw.ts",
+        "--bundle",
+        "--format=esm",
+        "--platform=neutral",
+        "--target=es2022",
+        "--sourcemap=linked",
+        "--outfile=throw.mjs"
+      ],
+      "cwd": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/frozen/negative",
+      "exit_code": 0,
+      "extra_env": {}
+    },
+    {
+      "label": "plugin-bundle",
+      "argv": [
+        "/workspace/zfb-tools/esbuild-0.25.12",
+        "entry.ts",
+        "--bundle",
+        "--format=esm",
+        "--platform=neutral",
+        "--target=es2022",
+        "--external:plugin:answer",
+        "--external:virtual:message",
+        "--sourcemap=linked",
+        "--outfile=worker.mjs"
+      ],
+      "cwd": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-baseline-20261015-retry1/generated/frozen/plugin",
+      "exit_code": 0,
+      "extra_env": {}
+    }
+  ],
+  "files": {
+    "authored-site/components/counter.tsx": {
+      "bytes": 360,
+      "sha256": "1f96da29e532786f8a209d07b2c2cb81909cc2117c4b4748bfeac4c63e0d5163"
+    },
+    "authored-site/content/posts/hello.mdx": {
+      "bytes": 160,
+      "sha256": "374eeed30692321df76be2428cb520ee3b6fc74d8990060ae9625d3f4e78c426"
+    },
+    "authored-site/expected.json": {
+      "bytes": 2694,
+      "sha256": "52781e3967b5b790601571fb0168e60b27f5649794661d665a8b13ac34e27aa0"
+    },
+    "authored-site/pages/index.module.css": {
+      "bytes": 104,
+      "sha256": "27f5af8f078fb1d2007a793b588e58f78439bf348cdf2700b394882e9797b1f8"
+    },
+    "authored-site/pages/index.tsx": {
+      "bytes": 751,
+      "sha256": "e08ca914c4e42ef5958f1bbbf0bc0e94638d8c06b528119891558970703a7050"
+    },
+    "authored-site/pages/posts/[slug].tsx": {
+      "bytes": 657,
+      "sha256": "e8a83798b002a70de42cc2a724063761625c9a2094d47cc53f297531c71a59b2"
+    },
+    "authored-site/pages/wasm.tsx": {
+      "bytes": 590,
+      "sha256": "b7ba65878e971099a2d03f6c73d20e85e1a950ce6f1f5352cc2cb99dd074af7d"
+    },
+    "authored-site/wasm/answer.wasm": {
+      "bytes": 39,
+      "sha256": "ccf59f0f7a7625ee380ed228905aadfa11072ac14cea1c53d1e7f3953d4d48c6"
+    },
+    "authored-site/zfb.config.ts": {
+      "bytes": 155,
+      "sha256": "cf0443c083b5c11a2b39a764cdaf8542c0695f13ec9f249497f771ee6e5a1aa7"
+    },
+    "config/config.mjs": {
+      "bytes": 256,
+      "sha256": "da433c1a0c2cce07f4c6ff826c865ef530cd559d1442020afce4446074d53862"
+    },
+    "config/zfb-config-stub.mjs": {
+      "bytes": 2853,
+      "sha256": "25208714ed0705dac589be450c51c0bab0185d2206e466b4ea3c0a451600d5a5"
+    },
+    "config/zfb.config.ts": {
+      "bytes": 155,
+      "sha256": "cf0443c083b5c11a2b39a764cdaf8542c0695f13ec9f249497f771ee6e5a1aa7"
+    },
+    "dist/__zfb/routes.json": {
+      "bytes": 551,
+      "sha256": "7457cb9ff5b76a7b40dc63c156e8ef3d995b38ebfd2408b42215e9b7e52359c3"
+    },
+    "dist/assets/islands-46342adf.js": {
+      "bytes": 64534,
+      "sha256": "46342adf31f1bb729fe2b7a7808fee25f0fa6be3ef286a7c8eb425b4bd066b57"
+    },
+    "dist/assets/styles-1f03d86f.css": {
+      "bytes": 82,
+      "sha256": "1f03d86f909c419d310b128ba1f3a6d198b131d61c21d138fd83f4b06aa00265"
+    },
+    "dist/index.html": {
+      "bytes": 746,
+      "sha256": "c1943cff6c862313dd7187897ecd67138650216656175463448fcbad50d231b6"
+    },
+    "dist/posts/hello/index.html": {
+      "bytes": 573,
+      "sha256": "d305c19bd560266e6b36155f891cf12ba1a33ab3a350c74037be0b4d182136a6"
+    },
+    "dist/wasm/index.html": {
+      "bytes": 289,
+      "sha256": "2ffff393fe7301603d3ffae3e892bd2ae3f7a3ad31384db42059b6419fcf6c9d"
+    },
+    "expected.json": {
+      "bytes": 2694,
+      "sha256": "52781e3967b5b790601571fb0168e60b27f5649794661d665a8b13ac34e27aa0"
+    },
+    "main/answer-RYJHCJVQ.wasm": {
+      "bytes": 39,
+      "sha256": "ccf59f0f7a7625ee380ed228905aadfa11072ac14cea1c53d1e7f3953d4d48c6"
+    },
+    "main/bundle.mjs": {
+      "bytes": 159367,
+      "sha256": "348e88a6d61e42d81c8b266582a4e31b68a22ac28dee83d7ada104962af63ea6"
+    },
+    "main/bundle.mjs.map": {
+      "bytes": 387190,
+      "sha256": "aac2a2609ee94d04061357d751e9c0095e9e78afee6baa4c914aa7ad87b01e47"
+    },
+    "negative/producer-binary/README.md": {
+      "bytes": 1488,
+      "sha256": "a1bce1b7b871a42b69f2c69b6fc1ca6030f6ec8759f26f886f32fa76a484fd28"
+    },
+    "negative/producer-binary/pages/bytes.bin.tsx": {
+      "bytes": 342,
+      "sha256": "5647892d6b950f3bc5190849f062b1f0db10684ff88a13a4644c65baea0dafbe"
+    },
+    "negative/producer-binary/worker-expected.json": {
+      "bytes": 331,
+      "sha256": "051d9a72bf4ef7818c3d6bcd1459cb69814677ff4ca1ff89a7c440b5608d5561"
+    },
+    "negative/producer-binary/zfb.config.ts": {
+      "bytes": 93,
+      "sha256": "4ad04fce2a2e74b2a1d94e067d1ae701e428019d40672d25ab0bff81e06fd337"
+    },
+    "negative/throw.mjs": {
+      "bytes": 299,
+      "sha256": "8b38dcfa17fcbf55f542c77f04b9fdf63047607bb4e39325d9e374961b8841c8"
+    },
+    "negative/throw.mjs.map": {
+      "bytes": 602,
+      "sha256": "f89c7d5c440e99fbdd2062f6d9f0cd35ddcd24bdc82b7d302fc58b5d85e47800"
+    },
+    "negative/throw.ts": {
+      "bytes": 324,
+      "sha256": "4faa02537dcf7ce22687853e00f96e82a7655808692a8d8218e2a40d46e064c2"
+    },
+    "plugin/alias.mjs": {
+      "bytes": 26,
+      "sha256": "a2098bd92b10bf8b816d24b7556b1ce8c49a879d130489065ef1051c17e042f6"
+    },
+    "plugin/entry.ts": {
+      "bytes": 713,
+      "sha256": "694eeb29f9ea6773cefc739b1512cfe884bc784bd5e5eaf63bc84fa9a6213d4c"
+    },
+    "plugin/virtual.mjs": {
+      "bytes": 37,
+      "sha256": "0a7b92165c855a3ce9f5f3921acef53790e7259c1fc95139a7780406fc26dc90"
+    },
+    "plugin/worker.mjs": {
+      "bytes": 831,
+      "sha256": "d1510f9ed6f4f418e45a83096b8706118bae2639bd41ab5cca3997ee447780d5"
+    },
+    "plugin/worker.mjs.map": {
+      "bytes": 1459,
+      "sha256": "15b0269fb9eeec88e53925c9456f274f38a361f5a7ff293319c26ca96da8cf05"
+    },
+    "producer-logs/canonical-wrapper.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/canonical-wrapper.stdout": {
+      "bytes": 184,
+      "sha256": "4d93e01f9a734bc0ecf1b71a242ab2359138d84689f7d8e96d9e36221ba9775d"
+    },
+    "producer-logs/config-bundle.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/config-bundle.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/esbuild-version.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/esbuild-version.stdout": {
+      "bytes": 8,
+      "sha256": "ac134cf53a2f5d5520a44906b3bd542bffa2ca5862bae971f999b7c86ed4ce26"
+    },
+    "producer-logs/negative-bundle.stderr": {
+      "bytes": 64,
+      "sha256": "6dc630561f6195bb1bdb3a5c09c725fb1f51ab0ce2ff058ce5fe2fb8bd4408ed"
+    },
+    "producer-logs/negative-bundle.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/node-version.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/node-version.stdout": {
+      "bytes": 9,
+      "sha256": "b7677d3ec37ee1897ba07dc2cfe8292fe421c9ac93396cca5bbece486d1a2a41"
+    },
+    "producer-logs/plugin-bundle.stderr": {
+      "bytes": 66,
+      "sha256": "900a5d2f4b059dbd466e80a7871a18ec3fa551678cb7efdc4949c640e9f2a961"
+    },
+    "producer-logs/plugin-bundle.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/real-zfb-build.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/real-zfb-build.stdout": {
+      "bytes": 27,
+      "sha256": "d430568818b9758e9036933245de454cf6ce95a3a565df8df387429273836104"
+    },
+    "producer-logs/rustc-version.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/rustc-version.stdout": {
+      "bytes": 196,
+      "sha256": "b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112"
+    },
+    "producer-logs/zfb-version.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "producer-logs/zfb-version.stdout": {
+      "bytes": 10,
+      "sha256": "b73184fc5919f9960b8cc01e754ce5db5fd60edc4a9921ae28f913af708dfc29"
+    },
+    "wrapper/receipt.json": {
+      "bytes": 287,
+      "sha256": "16ea2cdbaed445322526fd2b4cd93a57b785963e0d5d6ab906ee1d94c6c2c7a9"
+    },
+    "wrapper/wrapper.mjs": {
+      "bytes": 5210,
+      "sha256": "2630ec453c6890aa6f3e808ad07d7e071852ccae5dc8e2d5b8cb59fafe8a9cc1"
+    }
+  },
+  "policy": {
+    "normal_cli_host": "deno_core 0.399.0 / v8 147.4.0",
+    "esbuild": "0.25.12",
+    "node_role": "producer/orchestrator only",
+    "wrapper": {
+      "producer": "commands::dev::wrap_dev_bundle_with_content_trace",
+      "inner_name": "file:///zfb/bundle.mjs",
+      "wrapper_name": "file:///zfb/__zfb_dev_content_trace_wrapper.mjs",
+      "bundle_sha256": "348e88a6d61e42d81c8b266582a4e31b68a22ac28dee83d7ada104962af63ea6",
+      "route_count": 3
+    },
+    "config_expected": {
+      "outDir": "dist",
+      "collections": [
+        {
+          "name": "posts",
+          "path": "content/posts"
+        }
+      ]
+    },
+    "negative_expected": {
+      "file_suffix": "throw.ts",
+      "line": 6,
+      "column": 9,
+      "message": "direct-v8-authored-map-sentinel",
+      "console": "direct-v8-negative-before-throw"
+    }
+  }
+}

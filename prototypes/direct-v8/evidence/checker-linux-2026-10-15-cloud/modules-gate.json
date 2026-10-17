@@ -1,0 +1,1489 @@
+{
+  "fixture_manifest": [
+    {
+      "path": "bundle/answer space.wasm",
+      "bytes": 39,
+      "sha256": "ccf59f0f7a7625ee380ed228905aadfa11072ac14cea1c53d1e7f3953d4d48c6",
+      "symlink": null
+    },
+    {
+      "path": "bundle/broken.wasm",
+      "bytes": 8,
+      "sha256": "dc0cbbe931352caad7a936203e1d540bb96efc8aaafbf760fb94774364aeac06",
+      "symlink": null
+    },
+    {
+      "path": "bundle/escape.wasm",
+      "bytes": 24,
+      "sha256": "156c6fe6d1c627ad769cbab00c3fa54e85c56709e184ad8009771c987a2b2e16",
+      "symlink": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/outside.js"
+    },
+    {
+      "path": "canonical/entry.js",
+      "bytes": 111,
+      "sha256": "523ddcfe643af2e522856b57348a70db90e2a6af7d213ac31480cec8a8cf6e26",
+      "symlink": null
+    },
+    {
+      "path": "canonical/escape-user.js",
+      "bytes": 52,
+      "sha256": "afd0486b55c401feef8ef9ceb934773527a8d9a09b9316b2f7f804e010feb184",
+      "symlink": null
+    },
+    {
+      "path": "canonical/escape.js",
+      "bytes": 24,
+      "sha256": "156c6fe6d1c627ad769cbab00c3fa54e85c56709e184ad8009771c987a2b2e16",
+      "symlink": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/outside.js"
+    },
+    {
+      "path": "canonical/missing-user.js",
+      "bytes": 44,
+      "sha256": "b5429363a227d2f67d5ded8fc20b6561acd2d917f85a96d825138bbf18fa32ff",
+      "symlink": null
+    },
+    {
+      "path": "canonical/sibling space.js",
+      "bytes": 23,
+      "sha256": "8c190428f4c50ac14ccb8c4a42b6c5eaa5187a2ae15fc0653b2d0c5c5c36f20e",
+      "symlink": null
+    },
+    {
+      "path": "canonical/sub/deep.js",
+      "bytes": 24,
+      "sha256": "e806078e6d6feb398a318f16bb4d520bfbd8091c01483fa650ddccc06e856cd8",
+      "symlink": null
+    },
+    {
+      "path": "canonical/typed.ts",
+      "bytes": 33,
+      "sha256": "f3df3febc36737678cd258a3b60ffc523da4403df97af1f31c52ddcbc00e4eb2",
+      "symlink": null
+    },
+    {
+      "path": "outside.js",
+      "bytes": 24,
+      "sha256": "156c6fe6d1c627ad769cbab00c3fa54e85c56709e184ad8009771c987a2b2e16",
+      "symlink": null
+    },
+    {
+      "path": "spelling/entry.js",
+      "bytes": 111,
+      "sha256": "523ddcfe643af2e522856b57348a70db90e2a6af7d213ac31480cec8a8cf6e26",
+      "symlink": "/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/entry.js"
+    }
+  ],
+  "requests_sha256": "2ca8f2df13a4afe0629562275a5c7100d7ee13a24e134f2c0a296eecfddecbd8",
+  "results": [
+    {
+      "engine": "deno_core 0.399.0 / v8 147.4.0",
+      "executable_sha256": "f1fac15ab3ba4ab65b2315eba7c3c7afbf47b4d632473ddf182e45711cf8936a",
+      "exit_code": 0,
+      "expected_count": 47,
+      "receipt_count": 47,
+      "stderr": "",
+      "passed": true,
+      "rows": [
+        {
+          "name": "static-dynamic-namespace-evaluation",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [91, 116, 114, 117, 101, 44, 116, 114, 117, 101, 44, 49, 44, 52, 50, 93]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "top-level-await",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [52, 50]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "import-meta",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [
+                    123, 34, 117, 114, 108, 34, 58, 34, 102, 105, 108, 101, 58, 47, 47, 47, 122,
+                    102, 98, 47, 98, 117, 110, 100, 108, 101, 46, 109, 106, 115, 34, 44, 34, 109,
+                    97, 105, 110, 34, 58, 116, 114, 117, 101, 44, 34, 102, 105, 108, 101, 110, 97,
+                    109, 101, 34, 58, 34, 47, 122, 102, 98, 47, 98, 117, 110, 100, 108, 101, 46,
+                    109, 106, 115, 34, 44, 34, 100, 105, 114, 110, 97, 109, 101, 34, 58, 34, 47,
+                    122, 102, 98, 34, 44, 34, 107, 101, 121, 115, 34, 58, 91, 34, 100, 105, 114,
+                    110, 97, 109, 101, 34, 44, 34, 102, 105, 108, 101, 110, 97, 109, 101, 34, 44,
+                    34, 109, 97, 105, 110, 34, 44, 34, 114, 101, 115, 111, 108, 118, 101, 34, 44,
+                    34, 117, 114, 108, 34, 93, 44, 34, 114, 101, 115, 111, 108, 118, 101, 100, 34,
+                    58, 34, 102, 105, 108, 101, 58, 47, 47, 47, 122, 102, 98, 47, 105, 100, 101,
+                    110, 116, 105, 116, 121, 46, 109, 106, 115, 34, 125
+                  ]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "dynamic-unknown",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: event loop error: TypeError: embedded V8 host: failed to resolve `not-registered` from `file:///zfb/bundle.mjs`: Relative import path \"not-registered\" not prefixed with / or ./ or ../ from \"file:///zfb/bundle.mjs\"\n    at async file:///zfb/bundle.mjs:1:1",
+            "console": ""
+          }
+        },
+        {
+          "name": "missing-export",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: Uncaught SyntaxError: The requested module './identity.mjs' does not provide an export named 'absent'\n    at file:///zfb/bundle.mjs:1:9",
+            "console": ""
+          }
+        },
+        {
+          "name": "strict-missing",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/bundle.mjs` has no `default` export \u2014 expected workerd shape `export default { fetch }`",
+            "console": ""
+          }
+        },
+        {
+          "name": "strict-undefined",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/bundle.mjs` has no `default` export \u2014 expected workerd shape `export default { fetch }`",
+            "console": ""
+          }
+        },
+        {
+          "name": "strict-null",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/bundle.mjs` `default` export is not an object (workerd shape requires `export default { fetch }`)",
+            "console": ""
+          }
+        },
+        {
+          "name": "strict-number",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/bundle.mjs` `default` export is not an object (workerd shape requires `export default { fetch }`)",
+            "console": ""
+          }
+        },
+        {
+          "name": "strict-fetch-missing",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/bundle.mjs` `default` export has no `fetch` property (workerd shape requires `export default { fetch }`)",
+            "console": ""
+          }
+        },
+        {
+          "name": "strict-fetch-not-callable",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/bundle.mjs` `default.fetch` is not callable (workerd shape requires `export default { fetch }`)",
+            "console": ""
+          }
+        },
+        {
+          "name": "boot-throw-logs",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: event loop error: Error: module-boot-error\n    at file:///zfb/bundle.mjs:1:45",
+            "console": "[warn] module-boot-sentinel"
+          }
+        },
+        {
+          "name": "handler-throw-logs",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: Error: handler-error\n    at Object.fetch (file:///zfb/bundle.mjs:1:65)\n    at Object.dispatch (zfb:host_shim:310:47)\n    at zfb:dispatch:1:18",
+            "console": "[error] handler-sentinel",
+            "responses": []
+          }
+        },
+        {
+          "name": "strict-inner-wrapper-once",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [91, 49, 44, 102, 97, 108, 115, 101, 93]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "invalid-inner-before-wrapper",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: bundle `file:///zfb/inner.mjs` `default` export has no `fetch` property (workerd shape requires `export default { fetch }`)",
+            "console": ""
+          }
+        },
+        {
+          "name": "empty-body-remains-absent",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [91, 102, 97, 108, 115, 101, 44, 91, 93, 93]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "cyclic-module-link",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [52, 50]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "dynamic-ext-error-class",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [34, 84, 121, 112, 101, 69, 114, 114, 111, 114, 34]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "request-binary-headers",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 201,
+                  "headers": [
+                    ["set-cookie", "a=1"],
+                    ["set-cookie", "b=2"],
+                    ["x-input", "kept"],
+                    ["x-method", "POST"]
+                  ],
+                  "body": [0, 255, 128, 65]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "sequential-dispatch-state",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [49]
+                },
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [50]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "canonical-alias-identity-space-sibling",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [91, 116, 114, 117, 101, 44, 116, 114, 117, 101, 44, 52, 50, 44, 49, 93]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "alias-prefix-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: failed to resolve `fixture-alias/deep` from `file:///zfb/bundle.mjs`: Relative import path \"fixture-alias/deep\" not prefixed with / or ./ or ../ from \"file:///zfb/bundle.mjs\"",
+            "console": ""
+          }
+        },
+        {
+          "name": "alias-descendant-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/sub/deep.js`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "console": ""
+          }
+        },
+        {
+          "name": "alias-upward-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/outside.js`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "console": ""
+          }
+        },
+        {
+          "name": "alias-symlink-escape-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/escape.js`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "console": ""
+          }
+        },
+        {
+          "name": "alias-missing-target",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: alias-rooted file `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/absent.js` (under plugin `fixture-plugin`'s alias) could not be read: No such file or directory (os error 2)",
+            "console": ""
+          }
+        },
+        {
+          "name": "alias-missing-sibling",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: alias-rooted file `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/absent.js` (under plugin `fixture-plugin`'s alias) could not be read: No such file or directory (os error 2)",
+            "console": ""
+          }
+        },
+        {
+          "name": "alias-typescript-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: alias target `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/typed.ts` (plugin `fixture-plugin`) has a TypeScript extension, but the V8 host only accepts pre-compiled ESM JavaScript. Point the alias at a `.js` file or have your bundler pre-process the target.",
+            "console": ""
+          }
+        },
+        {
+          "name": "prepared-virtual-evaluation-once",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [91, 116, 114, 117, 101, 44, 52, 50, 44, 49, 93]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "node-stubs-present-use-fails",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [
+                    34, 110, 111, 100, 101, 58, 42, 32, 105, 115, 32, 110, 111, 116, 32, 97, 118,
+                    97, 105, 108, 97, 98, 108, 101, 32, 117, 110, 100, 101, 114, 32, 116, 104, 101,
+                    32, 83, 83, 71, 32, 114, 117, 110, 116, 105, 109, 101, 34
+                  ]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "authored-ext-import-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: Importing ext: modules is only allowed from ext: and node: modules. Tried to import ext:zfb_node_stubs/node_stub.js from file:///zfb/bundle.mjs",
+            "console": ""
+          }
+        },
+        {
+          "name": "unknown-node-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: no in-memory source for `node:os`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "console": ""
+          }
+        },
+        {
+          "name": "wasm-compiled-uninstantiated-consumed",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [91, 116, 114, 117, 101, 44, 52, 50, 93]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "wasm-missing",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: Wasm asset expected at `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle/missing.wasm` could not be read: No such file or directory (os error 2)",
+            "console": ""
+          }
+        },
+        {
+          "name": "wasm-malformed",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: event loop error: CompileError: WebAssembly.Module(): expected magic word 00 61 73 6d, found 6e 6f 74 20 @+0\n    at file:///zfb/broken.wasm:1:16",
+            "console": ""
+          }
+        },
+        {
+          "name": "wasm-encoded-traversal",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: Wasm import `file:///zfb/%2e%2e%2foutside.wasm` escapes the bundle asset root `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle`",
+            "console": ""
+          }
+        },
+        {
+          "name": "wasm-symlink-escape",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: Wasm asset `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle/escape.wasm` escapes the bundle asset root `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle`",
+            "console": ""
+          }
+        },
+        {
+          "name": "wasm-general-file-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle/answer%20space.wasm`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "console": ""
+          }
+        },
+        {
+          "name": "wasm-memory-source-precedence",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [52, 50]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "fresh-host-after-failures",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "responses": [
+                {
+                  "status": 200,
+                  "headers": [["content-type", "application/json"]],
+                  "body": [34, 117, 110, 100, 101, 102, 105, 110, 101, 100, 34]
+                }
+              ],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "syntax-error-origin",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: load_main_es_module failed: Uncaught SyntaxError: Unexpected token '='\n    at file:///zfb/syntax-dependency.mjs:3:14",
+            "console": ""
+          }
+        },
+        {
+          "name": "utility-json-and-async-default",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "exports": {
+                "data": {
+                  "answer": 42,
+                  "nested": [true, null, "ok"]
+                }
+              },
+              "calls": ["hello Ada", "hello Lin"],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "utility-sync-string-coercion",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "exports": {},
+              "calls": ["42"],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "utility-without-worker-shape",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "exports": {
+                "data": 42
+              },
+              "calls": [],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "utility-noncallable-default",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "`default` export missing or not callable in `file:///zfb/utility.mjs`",
+            "console": ""
+          }
+        },
+        {
+          "name": "utility-boxed-string-and-map",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "exports": {
+                "boxed": {
+                  "0": "h",
+                  "1": "i"
+                },
+                "map": {
+                  "answer": 42,
+                  "nested": {
+                    "ok": true
+                  }
+                }
+              },
+              "calls": [],
+              "console": ""
+            }
+          }
+        },
+        {
+          "name": "utility-map-nonstring-key-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: export `map` is not JSON-serialisable: serde_v8 error: invalid type; expected: string, got: Number",
+            "console": ""
+          }
+        }
+      ]
+    },
+    {
+      "engine": "direct v8 147.4.0",
+      "executable_sha256": "c3ba30dfde4ccae42261562f2f16208c72e16938167f73cb9d63d2c9b7ca263e",
+      "exit_code": 0,
+      "expected_count": 47,
+      "receipt_count": 47,
+      "stderr": "module-boot-sentinel\nhandler-sentinel\n",
+      "passed": true,
+      "rows": [
+        {
+          "name": "static-dynamic-namespace-evaluation",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [91, 116, 114, 117, 101, 44, 116, 114, 117, 101, 44, 49, 44, 52, 50, 93],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "top-level-await",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [52, 50],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "import-meta",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [
+                    123, 34, 117, 114, 108, 34, 58, 34, 102, 105, 108, 101, 58, 47, 47, 47, 122,
+                    102, 98, 47, 98, 117, 110, 100, 108, 101, 46, 109, 106, 115, 34, 44, 34, 109,
+                    97, 105, 110, 34, 58, 116, 114, 117, 101, 44, 34, 102, 105, 108, 101, 110, 97,
+                    109, 101, 34, 58, 34, 47, 122, 102, 98, 47, 98, 117, 110, 100, 108, 101, 46,
+                    109, 106, 115, 34, 44, 34, 100, 105, 114, 110, 97, 109, 101, 34, 58, 34, 47,
+                    122, 102, 98, 34, 44, 34, 107, 101, 121, 115, 34, 58, 91, 34, 100, 105, 114,
+                    110, 97, 109, 101, 34, 44, 34, 102, 105, 108, 101, 110, 97, 109, 101, 34, 44,
+                    34, 109, 97, 105, 110, 34, 44, 34, 114, 101, 115, 111, 108, 118, 101, 34, 44,
+                    34, 117, 114, 108, 34, 93, 44, 34, 114, 101, 115, 111, 108, 118, 101, 100, 34,
+                    58, 34, 102, 105, 108, 101, 58, 47, 47, 47, 122, 102, 98, 47, 105, 100, 101,
+                    110, 116, 105, 116, 121, 46, 109, 106, 115, 34, 125
+                  ],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "dynamic-unknown",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: failed to resolve `not-registered` from `file:///zfb/bundle.mjs`: Relative import path \"not-registered\" not prefixed with / or ./ or ../ from \"file:///zfb/bundle.mjs\"\n    at file:///zfb/bundle.mjs:1:1",
+            "ok": false
+          }
+        },
+        {
+          "name": "missing-export",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: SyntaxError: The requested module './identity.mjs' does not provide an export named 'absent'\n    at file:///zfb/bundle.mjs:1:9",
+            "ok": false
+          }
+        },
+        {
+          "name": "strict-missing",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/bundle.mjs` has no `default` export \u2014 expected workerd shape `export default { fetch }`",
+            "ok": false
+          }
+        },
+        {
+          "name": "strict-undefined",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/bundle.mjs` has no `default` export \u2014 expected workerd shape `export default { fetch }`",
+            "ok": false
+          }
+        },
+        {
+          "name": "strict-null",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/bundle.mjs` `default` export is not an object (workerd shape requires `export default { fetch }`)",
+            "ok": false
+          }
+        },
+        {
+          "name": "strict-number",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/bundle.mjs` `default` export is not an object (workerd shape requires `export default { fetch }`)",
+            "ok": false
+          }
+        },
+        {
+          "name": "strict-fetch-missing",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/bundle.mjs` `default` export has no `fetch` property (workerd shape requires `export default { fetch }`)",
+            "ok": false
+          }
+        },
+        {
+          "name": "strict-fetch-not-callable",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/bundle.mjs` `default.fetch` is not callable (workerd shape requires `export default { fetch }`)",
+            "ok": false
+          }
+        },
+        {
+          "name": "boot-throw-logs",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "[warn] module-boot-sentinel",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: module-boot-error\n    at file:///zfb/bundle.mjs:1:45",
+            "ok": false
+          }
+        },
+        {
+          "name": "handler-throw-logs",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "[error] handler-sentinel",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: handler-error\n    at Object.fetch (file:///zfb/bundle.mjs:1:65)\n    at Object.dispatch (zfb:host_globals:310:47)",
+            "ok": false,
+            "responses": []
+          }
+        },
+        {
+          "name": "strict-inner-wrapper-once",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [91, 49, 44, 102, 97, 108, 115, 101, 93],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "invalid-inner-before-wrapper",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: bundle `file:///zfb/inner.mjs` `default` export has no `fetch` property (workerd shape requires `export default { fetch }`)",
+            "ok": false
+          }
+        },
+        {
+          "name": "empty-body-remains-absent",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [91, 102, 97, 108, 115, 101, 44, 91, 93, 93],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "cyclic-module-link",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [52, 50],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "dynamic-ext-error-class",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [34, 84, 121, 112, 101, 69, 114, 114, 111, 114, 34],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "request-binary-headers",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [0, 255, 128, 65],
+                  "headers": [
+                    ["set-cookie", "a=1"],
+                    ["set-cookie", "b=2"],
+                    ["x-input", "kept"],
+                    ["x-method", "POST"]
+                  ],
+                  "status": 201
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "sequential-dispatch-state",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [49],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                },
+                {
+                  "body": [50],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "canonical-alias-identity-space-sibling",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [91, 116, 114, 117, 101, 44, 116, 114, 117, 101, 44, 52, 50, 44, 49, 93],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "alias-prefix-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: failed to resolve `fixture-alias/deep` from `file:///zfb/bundle.mjs`: Relative import path \"fixture-alias/deep\" not prefixed with / or ./ or ../ from \"file:///zfb/bundle.mjs\"",
+            "ok": false
+          }
+        },
+        {
+          "name": "alias-descendant-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/sub/deep.js`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "ok": false
+          }
+        },
+        {
+          "name": "alias-upward-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/outside.js`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "ok": false
+          }
+        },
+        {
+          "name": "alias-symlink-escape-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/escape.js`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "ok": false
+          }
+        },
+        {
+          "name": "alias-missing-target",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: alias-rooted file `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/absent.js` (under plugin `fixture-plugin`'s alias) could not be read: No such file or directory (os error 2)",
+            "ok": false
+          }
+        },
+        {
+          "name": "alias-missing-sibling",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: alias-rooted file `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/absent.js` (under plugin `fixture-plugin`'s alias) could not be read: No such file or directory (os error 2)",
+            "ok": false
+          }
+        },
+        {
+          "name": "alias-typescript-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: alias target `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/canonical/typed.ts` (plugin `fixture-plugin`) has a TypeScript extension, but the V8 host only accepts pre-compiled ESM JavaScript. Point the alias at a `.js` file or have your bundler pre-process the target.",
+            "ok": false
+          }
+        },
+        {
+          "name": "prepared-virtual-evaluation-once",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [91, 116, 114, 117, 101, 44, 52, 50, 44, 49, 93],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "node-stubs-present-use-fails",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [
+                    34, 110, 111, 100, 101, 58, 42, 32, 105, 115, 32, 110, 111, 116, 32, 97, 118,
+                    97, 105, 108, 97, 98, 108, 101, 32, 117, 110, 100, 101, 114, 32, 116, 104, 101,
+                    32, 83, 83, 71, 32, 114, 117, 110, 116, 105, 109, 101, 34
+                  ],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "authored-ext-import-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: TypeError: Importing ext: modules is only allowed from ext: and node: modules. Tried to import ext:zfb_node_stubs/node_stub.js from file:///zfb/bundle.mjs",
+            "ok": false
+          }
+        },
+        {
+          "name": "unknown-node-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: no in-memory source for `node:os`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "ok": false
+          }
+        },
+        {
+          "name": "wasm-compiled-uninstantiated-consumed",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [91, 116, 114, 117, 101, 44, 52, 50, 93],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "wasm-missing",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: Wasm asset expected at `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle/missing.wasm` could not be read: No such file or directory (os error 2)",
+            "ok": false
+          }
+        },
+        {
+          "name": "wasm-malformed",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: CompileError: WebAssembly.Module(): expected magic word 00 61 73 6d, found 6e 6f 74 20 @+0\n    at file:///zfb/broken.wasm:1:16",
+            "ok": false
+          }
+        },
+        {
+          "name": "wasm-encoded-traversal",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: Wasm import `file:///zfb/%2e%2e%2foutside.wasm` escapes the bundle asset root `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle`",
+            "ok": false
+          }
+        },
+        {
+          "name": "wasm-symlink-escape",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: Wasm asset `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle/escape.wasm` escapes the bundle asset root `/workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle`",
+            "ok": false
+          }
+        },
+        {
+          "name": "wasm-general-file-denied",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: embedded V8 host: no in-memory source for `file:///workspace/zudo-front-builder-pr4242/target/direct-v8-accept-checker-20261015-cc56b15a/modules-fixtures/bundle/answer%20space.wasm`. Bundles loaded by this host must be self-contained ESM (the bundler inlines all imports); top-level `import` of an unknown specifier is unsupported.",
+            "ok": false
+          }
+        },
+        {
+          "name": "wasm-memory-source-precedence",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [52, 50],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "fresh-host-after-failures",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "console": "",
+              "responses": [
+                {
+                  "body": [34, 117, 110, 100, 101, 102, 105, 110, 101, 100, 34],
+                  "headers": [["content-type", "application/json"]],
+                  "status": 200
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "syntax-error-origin",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: SyntaxError: Unexpected token '='\n    at file:///zfb/syntax-dependency.mjs:3:14",
+            "ok": false
+          }
+        },
+        {
+          "name": "utility-json-and-async-default",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "calls": ["hello Ada", "hello Lin"],
+              "console": "",
+              "exports": {
+                "data": {
+                  "answer": 42,
+                  "nested": [true, null, "ok"]
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "utility-sync-string-coercion",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "calls": ["42"],
+              "console": "",
+              "exports": {}
+            }
+          }
+        },
+        {
+          "name": "utility-without-worker-shape",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "calls": [],
+              "console": "",
+              "exports": {
+                "data": 42
+              }
+            }
+          }
+        },
+        {
+          "name": "utility-noncallable-default",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: missing callable default export: file:///zfb/utility.mjs",
+            "ok": false
+          }
+        },
+        {
+          "name": "utility-boxed-string-and-map",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "calls": [],
+              "console": "",
+              "exports": {
+                "boxed": {
+                  "0": "h",
+                  "1": "i"
+                },
+                "map": {
+                  "answer": 42,
+                  "nested": {
+                    "ok": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "utility-map-nonstring-key-rejected",
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: export is not JSON-serialisable: Map key must be a string",
+            "ok": false
+          }
+        }
+      ]
+    }
+  ]
+}

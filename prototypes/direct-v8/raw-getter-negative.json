@@ -1,0 +1,6 @@
+{
+  "kind": "script",
+  "mode": "request-time",
+  "source": "(async()=>{let msg;try{await __zfbHost.fetch({get url(){throw new Error('getter-marker')},method:'GET',headers:[],hasBody:false},new Uint8Array())}catch(e){msg=e.message}return {msg,alive:42}})()",
+  "evidence_note": "Separate diagnostic negative, not part of the passing differential corpus. Baseline process aborted (-6) at serde_v8-0.308.0/de.rs:581:47 Option::unwrap during native op conversion. Candidate exited 0 with alive:42 and invalid-fetch-specification HostUnavailable message. Canonical shims pass plain owned data. No baseline implementation change or catastrophic-recovery guarantee is claimed."
+}

@@ -1,0 +1,15 @@
+{
+  "request": {
+    "url": "http://zfb.local/bytes.bin"
+  },
+  "expected": {
+    "status": 200,
+    "headers": [
+      ["content-type", "application/octet-stream"],
+      ["set-cookie", "first=1; Path=/"],
+      ["set-cookie", "second=2; Path=/"],
+      ["x-fixture", "left, right"]
+    ],
+    "body": [0, 1, 127, 128, 255]
+  }
+}

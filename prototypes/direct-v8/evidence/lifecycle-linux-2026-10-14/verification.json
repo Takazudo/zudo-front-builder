@@ -1,0 +1,171 @@
+{
+  "source": "a15e9a26d14e0c58e6d5ca1b43b3d3c8992fe4f9",
+  "status": "",
+  "checks": [
+    {
+      "name": "baseline-regressions",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-render",
+        "--lib",
+        "--test",
+        "config_eval",
+        "--test",
+        "embedded_v8_smoke",
+        "--test",
+        "embedded_v8_plugin_resolver",
+        "--test",
+        "embedded_v8_browser_event",
+        "--test",
+        "embedded_v8_console_logs",
+        "--test",
+        "embedded_v8_dispatch_mode",
+        "--test",
+        "embedded_v8_node_stubs"
+      ],
+      "exit": 0,
+      "seconds": 7.09,
+      "log": "/tmp/v8-verification/baseline-regressions.log"
+    },
+    {
+      "name": "workspace-all-targets",
+      "command": ["cargo", "build", "--locked", "--workspace", "--all-targets"],
+      "exit": 0,
+      "seconds": 146.07,
+      "log": "/tmp/v8-verification/workspace-all-targets.log"
+    },
+    {
+      "name": "no-v8",
+      "command": ["cargo", "check", "--locked", "--no-default-features", "-p", "zfb", "--tests"],
+      "exit": 0,
+      "seconds": 62.9,
+      "log": "/tmp/v8-verification/no-v8.log"
+    },
+    {
+      "name": "workspace-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 65.83,
+      "log": "/tmp/v8-verification/workspace-clippy.log"
+    },
+    {
+      "name": "native-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 101,
+      "seconds": 6.57,
+      "log": "/tmp/v8-verification/native-clippy.log"
+    },
+    {
+      "name": "fmt",
+      "command": ["cargo", "fmt", "--all", "--", "--check"],
+      "exit": 0,
+      "seconds": 2.9,
+      "log": "/tmp/v8-verification/fmt.log"
+    },
+    {
+      "name": "md-wasm-graphs",
+      "command": ["bash", "scripts/assert-zfb-md-wasm-graph.sh"],
+      "exit": 0,
+      "seconds": 1.55,
+      "log": "/tmp/v8-verification/md-wasm-graphs.log"
+    },
+    {
+      "name": "md-wasm-link",
+      "command": [
+        "cargo",
+        "rustc",
+        "--locked",
+        "-p",
+        "zfb-md-wasm",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--lib",
+        "--crate-type",
+        "cdylib"
+      ],
+      "exit": 0,
+      "seconds": 22.87,
+      "log": "/tmp/v8-verification/md-wasm-link.log"
+    },
+    {
+      "name": "css-addon-build",
+      "command": [
+        "cargo",
+        "rustc",
+        "--locked",
+        "-p",
+        "zfb-css-node",
+        "--lib",
+        "--no-default-features",
+        "--crate-type",
+        "cdylib"
+      ],
+      "exit": 0,
+      "seconds": 2.76,
+      "log": "/tmp/v8-verification/css-addon-build.log"
+    },
+    {
+      "name": "css-addon-load",
+      "command": [
+        "bash",
+        "-c",
+        "cp target/debug/libzfb_css_node.so target/lifecycle-css.node && node scripts/smoke-css-node.mjs target/lifecycle-css.node"
+      ],
+      "exit": 0,
+      "seconds": 0.05,
+      "log": "/tmp/v8-verification/css-addon-load.log"
+    },
+    {
+      "name": "restore-candidate",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "zfb-js-host",
+        "--no-default-features",
+        "--features",
+        "direct-v8",
+        "--example",
+        "direct_v8"
+      ],
+      "exit": 0,
+      "seconds": 0.18,
+      "log": "/tmp/v8-verification/restore-candidate.log"
+    }
+  ],
+  "initialOutcome": "10 passed, native Clippy failed items_after_test_module",
+  "retry": {
+    "source": "14e021f19d09287dbc3fb8a0ac86254379113092",
+    "nativeClippyExit": 0,
+    "fmtExit": 0,
+    "acceptance": "acceptance.json",
+    "sourceDifference": "production/test module ordering only; other broad checks remain observations on initial source, not falsely rerun",
+    "guard": "original shared guard; all expensive commands serialized"
+  }
+}

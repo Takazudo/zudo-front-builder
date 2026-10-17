@@ -1,0 +1,87 @@
+{
+  "description": "Actual failures retained separately from final passing receipts; no successful gate inferred from these.",
+  "diagnostic_overflow": [
+    {
+      "engine": "direct v8 147.4.0",
+      "executable_sha256": "49bdb6efa9b99b5ab14e98ef911c5324cb8c4af5590c7a0be9a6d2efce51a250",
+      "exit_code": 101,
+      "receipt_count": 21,
+      "expected_count": 47,
+      "stderr": "module-boot-sentinel\nhandler-sentinel\n\nthread 'main' (77449) panicked at crates/zfb-js-host/src/native/diagnostics.rs:44:18:\nattempt to add with overflow\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    },
+    {
+      "engine": "direct v8 147.4.0",
+      "executable_sha256": "49bdb6efa9b99b5ab14e98ef911c5324cb8c4af5590c7a0be9a6d2efce51a250",
+      "exit_code": 101,
+      "receipt_count": 28,
+      "expected_count": 63,
+      "stderr": "\nthread 'main' (77462) panicked at crates/zfb-js-host/src/native/diagnostics.rs:44:18:\nattempt to add with overflow\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    }
+  ],
+  "syntax_and_map_before_fix": {
+    "requests": [
+      {
+        "kind": "worker",
+        "name": "file:///zfb/bundle.mjs",
+        "source": "import \"./syntax-dependency.mjs\"; export default {fetch(){return new Response(\"ok\")}}",
+        "modules": [
+          {
+            "specifier": "file:///zfb/syntax-dependency.mjs",
+            "source": "\n\nexport const = ;"
+          }
+        ],
+        "requests": []
+      },
+      {
+        "kind": "utility",
+        "name": "file:///zfb/util.mjs",
+        "source": "export const map=new Map([[\"answer\",42],[\"nested\",{ok:true}]]); export const boxed=new String(\"hi\");",
+        "exports": ["map", "boxed"]
+      },
+      {
+        "kind": "utility",
+        "name": "file:///zfb/util.mjs",
+        "source": "export const map=new Map([[42,\"answer\"]]);",
+        "exports": ["map"]
+      }
+    ],
+    "results": [
+      {
+        "runner": "direct_v8_baseline",
+        "exit_code": 0,
+        "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":false,\"error\":\"runtime error: load_main_es_module failed: Uncaught SyntaxError: Unexpected token '='\\n    at file:///zfb/syntax-dependency.mjs:3:14\",\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"exports\":{\"map\":{\"answer\":42,\"nested\":{\"ok\":true}},\"boxed\":{\"0\":\"h\",\"1\":\"i\"}},\"calls\":[],\"console\":\"\"}}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":false,\"error\":\"runtime error: export `map` is not JSON-serialisable: serde_v8 error: invalid type; expected: string, got: Number\",\"console\":\"\"}\n",
+        "stderr": ""
+      },
+      {
+        "runner": "direct_v8",
+        "exit_code": 0,
+        "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"error\":\"config evaluation error: SyntaxError: Unexpected token '='\",\"ok\":false}\nZFB_HOST_RECEIPT {\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"calls\":[],\"console\":\"\",\"exports\":{\"boxed\":{\"0\":\"h\",\"1\":\"i\"},\"map\":{}}}}\nZFB_HOST_RECEIPT {\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"calls\":[],\"console\":\"\",\"exports\":{\"map\":{}}}}\n",
+        "stderr": ""
+      }
+    ]
+  },
+  "unresolved_tla": {
+    "request": {
+      "kind": "worker",
+      "name": "file:///zfb/stalled.mjs",
+      "source": "await new Promise(()=>{}); export default {fetch(){return new Response(\"unreachable\")}}",
+      "requests": []
+    },
+    "results": [
+      {
+        "runner": "direct_v8_baseline",
+        "exit_code": 0,
+        "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":false,\"error\":\"runtime error: event loop error: Top-level await promise never resolved\\n    at file:///zfb/stalled.mjs:1:1\",\"console\":\"\"}\n",
+        "stderr": "",
+        "watchdog": false
+      },
+      {
+        "runner": "direct_v8",
+        "exit_code": 0,
+        "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"error\":\"config evaluation error: dispatch promise is unresolved with no pending native work (direct-V8 prototype limitation)\",\"ok\":false}\n",
+        "stderr": "",
+        "watchdog": false
+      }
+    ]
+  }
+}

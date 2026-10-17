@@ -1,0 +1,75 @@
+{
+  "source": "546fce7cd3efccb1a9f05e8a51a9d889a545c256",
+  "status": "",
+  "checks": [
+    {
+      "name": "renderer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-render",
+        "--lib",
+        "--test",
+        "config_eval",
+        "--test",
+        "embedded_v8_smoke",
+        "--test",
+        "embedded_v8_plugin_resolver",
+        "--test",
+        "embedded_v8_browser_event",
+        "--test",
+        "embedded_v8_console_logs",
+        "--test",
+        "embedded_v8_dispatch_mode",
+        "--test",
+        "embedded_v8_node_stubs"
+      ],
+      "exit_code": 0,
+      "seconds": 11.56,
+      "log": "renderer.log",
+      "log_sha256": "91a3b2c77df9bb8852e9d471aa2fbfaff48408afeb7f1b5df4fd1dd08c874920"
+    },
+    {
+      "name": "no-v8",
+      "command": ["cargo", "check", "--locked", "--no-default-features", "-p", "zfb", "--tests"],
+      "exit_code": 0,
+      "seconds": 72.43,
+      "log": "no-v8.log",
+      "log_sha256": "835dd70763ea1f4a9f729eb0c98e6cab27d716677119fda29f02d092b4c9f97f"
+    },
+    {
+      "name": "wind",
+      "command": ["cargo", "test", "--locked", "-p", "zudo-wind", "--lib"],
+      "exit_code": 0,
+      "seconds": 20.36,
+      "log": "wind.log",
+      "log_sha256": "081be4fb1029c6387aeffd1414eea14b454056f5179362e8ef4498d1ce76c50a"
+    },
+    {
+      "name": "accepted-mdx",
+      "command": ["cargo", "test", "--locked", "-p", "zfb-content", "--test", "mdx_jsx_emit_hast"],
+      "exit_code": 0,
+      "seconds": 15.19,
+      "log": "accepted-mdx.log",
+      "log_sha256": "2b47b435ac663f3ff3e74449fac187f52085f52dc256334ee177b5d8fc30aa8a"
+    },
+    {
+      "name": "accepted-css",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "zfb-css",
+        "--test",
+        "package_exports_imports"
+      ],
+      "exit_code": 0,
+      "seconds": 21.64,
+      "log": "accepted-css.log",
+      "log_sha256": "9c4f3be2285674b67f5759142f8fc316014b869a4650f46606e3fe244970427f"
+    }
+  ]
+}

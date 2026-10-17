@@ -1,0 +1,116 @@
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde v1.0.228
+   Compiling smallvec v1.16.3
+   Compiling ahash v0.8.12
+   Compiling num-traits v0.2.19
+   Compiling phf_shared v0.11.3
+   Compiling yoke v0.8.2
+   Compiling percent-encoding v2.3.2
+   Compiling phf_generator v0.11.3
+   Compiling zerovec v0.11.6
+   Compiling zerotrie v0.2.4
+   Compiling form_urlencoded v1.2.2
+   Compiling either v1.15.0
+   Compiling tracing v0.1.44
+   Compiling swc_visit v2.0.1
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling triomphe v0.1.15
+   Compiling hashbrown v0.14.5
+   Compiling bytes-str v0.2.7
+   Compiling icu_collections v2.2.0
+   Compiling icu_locale_core v2.2.0
+   Compiling phf_macros v0.11.3
+   Compiling zfb-types v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-types)
+   Compiling hstr v4.0.2
+   Compiling markdown v1.0.0
+   Compiling num-integer v0.1.46
+   Compiling icu_provider v2.2.0
+   Compiling num-bigint v0.4.6
+   Compiling swc_atoms v10.0.0
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling phf v0.11.3
+   Compiling bumpalo v3.19.0
+   Compiling swc_core v74.0.2
+   Compiling plist v1.10.0
+   Compiling swc_allocator v5.0.0
+   Compiling regex-automata v0.4.18
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling noyalib v0.0.55
+   Compiling bincode v1.3.3
+   Compiling url v2.5.8
+   Compiling zfb-md-ast v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-ast)
+   Compiling syntect v5.3.0
+   Compiling swc_common v24.0.0
+   Compiling garde v0.22.1
+   Compiling globset v0.4.18
+   Compiling zfb-md-extras v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-md-extras)
+   Compiling swc_ecma_ast v26.0.0
+   Compiling noyalib-serde-yaml v0.0.55
+   Compiling swc_ecma_visit v26.0.0
+   Compiling swc_ecma_parser v42.0.0
+   Compiling swc_ecma_utils v32.0.0
+   Compiling swc_ecma_transforms_base v46.0.1
+   Compiling zfb-content v0.0.0 (/Users/takazudo/repos/myoss/zfb/worktrees/proto-4242-main-sync/crates/zfb-content)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.14s
+     Running tests/mdx_jsx_emit_hast.rs (target/debug/deps/mdx_jsx_emit_hast-bfaf76bc9d10759e)
+
+running 52 tests
+test bare_pipeline_runs_no_plugins_on_jsx_path ... ok
+test block_math_survives_hast_detour ... ok
+test compact_table_preserves_adjacent_markdown_and_inline_jsx ... ok
+test configured_pipelines_expose_nested_code_chain ... ok
+test default_features_keep_flat_heading_ids ... ok
+test compact_table_emits_without_an_enclosing_paragraph ... ok
+test code_title_plugin_fires_on_jsx_path ... ok
+test defaults_compose_for_titled_rust_block ... ok
+test directive_survives_with_hast_phase ... ok
+test empty_mdx_fragment_emits_valid_jsx ... ok
+test explicit_table_caption_colgroup_and_tfoot_emit_without_paragraph_wrappers ... ok
+test explicit_table_blank_lines_and_multiple_rows_emit_without_paragraph_wrappers ... ok
+test explicit_table_cell_content_keeps_its_paragraph_and_component ... ok
+test explicit_table_exploded_row_emits_without_paragraph_wrappers ... ok
+test explicit_table_leaves_surrounding_paragraphs_alone ... ok
+test explicit_table_sections_emit_without_paragraph_wrappers ... ok
+test expression_members_and_template_interpolation_keep_complete_binding_heads ... ok
+test expression_wrapped_table_is_unchanged ... ok
+test hierarchical_strategy_ids_match_in_both_paths ... ok
+test heading_links_plugin_fires_on_jsx_path ... ok
+test inline_math_survives_hast_detour ... ok
+test hierarchical_strategy_jsx_nested_heading_prefixed ... ok
+test lowercase_mdx_jsx_tags_route_through_components ... ok
+test lowercase_mdx_jsx_with_attrs_routes_through_components ... ok
+test decimal_comparison_payloads_survive_component_discovery ... ok
+test jsx_with_hast_detour_compiles_via_swc ... ok
+test manual_wiring_with_setter_keeps_headings_export_in_sync ... ok
+test manual_feature_registration_syncs_nested_code_chain ... ok
+test mdx_component_passthrough_survives_hast_detour ... ok
+test mermaid_plugin_fires_on_jsx_path ... ok
+test mdx_jsx_block_with_markdown_body_preserves_formatting ... ok
+test nested_and_top_level_same_text_share_dedup_numbering ... ok
+test multiple_and_deeply_nested_headings_in_one_jsx_pop_correct_slugs ... ok
+test nested_fence_dual_mode_gets_dual_markers ... ok
+test nested_fence_in_mdx_jsx_is_highlighted_inline_mode ... ok
+test nested_fence_output_converges_with_top_level_shape ... ok
+test nested_heading_in_mdx_jsx_gets_slug_id_anchor_and_toc_entry ... ok
+test nested_markdown_in_mdx_jsx_routes_through_components ... ok
+test nested_markdown_intrinsics_do_not_redeclare_components_map_and_members_survive ... ok
+test nested_mermaid_fence_becomes_mermaid_div ... ok
+test nested_titled_fence_composes_container_then_highlight ... ok
+test pascal_case_table_component_keeps_its_paragraph ... ok
+test pipeline_without_syntect_keeps_fallback_emission_byte_stable ... ok
+test ruby_caret_and_toc_export_together_on_jsx_compile_path ... ok
+test strip_md_ext_plugin_fires_on_jsx_path ... ok
+test syntect_plugin_fires_on_jsx_path ... ok
+test toc_export_plugin_emits_at_column_0_on_jsx_path ... ok
+test nested_fence_enrichment_fires_after_syntect ... ok
+test directive_nested_fence_is_highlighted_inline_mode ... ok
+test directive_nested_fence_is_highlighted_class_mode ... ok
+test nested_fence_in_mdx_jsx_is_highlighted_class_mode ... ok
+test directive_multi_block_body_and_top_level_note_jsx_both_highlight_in_class_mode ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+heavy-guard: verdict=PASS exit=0 secs=28 min_mem_mb=1284 reason=-

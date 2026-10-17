@@ -1,0 +1,191 @@
+   Compiling minify-html v0.18.1
+   Compiling zfb v0.0.0 (/workspace/zudo-front-builder/crates/zfb)
+warning: zfb@0.0.0: ZFB_ESBUILD_BIN is set — staging `/workspace/task-tools/package/bin/esbuild` directly into the vendor snapshot. SHA-256 pinning is skipped for override binaries; verifying the binary is the operator's responsibility (see BUILDING.md).
+warning: unused import: `std::collections::BTreeMap`
+  --> crates/zfb/src/commands/plugins.rs:10:5
+   |
+10 | use std::collections::BTreeMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::Path`
+  --> crates/zfb/src/commands/plugins.rs:11:5
+   |
+11 | use std::path::Path;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `SetupCommand`
+  --> crates/zfb/src/commands/plugins.rs:19:74
+   |
+19 |     DevRegisterContext, DevRequest, DevResponse, PluginHost, PluginSpec, SetupCommand,
+   |                                                                          ^^^^^^^^^^^^
+
+warning: variant `WarnAndEmpty` is never constructed
+   --> crates/zfb/src/commands/bundler_input.rs:159:5
+    |
+155 | pub(crate) enum CssModuleFailMode {
+    |                 ----------------- variant in this enum
+...
+159 |     WarnAndEmpty,
+    |     ^^^^^^^^^^^^
+    |
+    = note: `CssModuleFailMode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `MaterializedRoute` is never constructed
+  --> crates/zfb/src/commands/package_routes.rs:81:19
+   |
+81 | pub(crate) struct MaterializedRoute {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `OverlayResolution` is never constructed
+   --> crates/zfb/src/commands/package_routes.rs:101:19
+    |
+101 | pub(crate) struct OverlayResolution {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `StaticInjectedSeed` is never constructed
+   --> crates/zfb/src/commands/package_routes.rs:125:19
+    |
+125 | pub(crate) struct StaticInjectedSeed {
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: method `output_path` is never used
+   --> crates/zfb/src/commands/package_routes.rs:138:19
+    |
+135 | impl StaticInjectedSeed {
+    | ----------------------- method in this implementation
+...
+138 |     pub(crate) fn output_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^
+
+warning: function `static_injected_seeds` is never used
+   --> crates/zfb/src/commands/package_routes.rs:186:15
+    |
+186 | pub(crate) fn static_injected_seeds(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `surviving_injected_routes` is never used
+   --> crates/zfb/src/commands/package_routes.rs:249:15
+    |
+249 | pub(crate) fn surviving_injected_routes(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `url_path_extension` is never used
+   --> crates/zfb/src/commands/package_routes.rs:266:4
+    |
+266 | fn url_path_extension(url: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_build_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:287:15
+    |
+287 | pub(crate) fn resolve_build_pages_root(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_dev_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:335:15
+    |
+335 | pub(crate) fn resolve_dev_pages_root(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_pages_root` is never used
+   --> crates/zfb/src/commands/package_routes.rs:383:4
+    |
+383 | fn resolve_pages_root(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:686:4
+    |
+686 | fn package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `project_local_package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:707:4
+    |
+707 | fn project_local_package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `staged_package_route_entrypoint_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:717:4
+    |
+717 | fn staged_package_route_entrypoint_import_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `relative_import_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:755:4
+    |
+755 | fn relative_import_specifier(pages_rel: &Path, logical_entrypoint: &Path) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `valid_package_name` is never used
+   --> crates/zfb/src/commands/package_routes.rs:766:4
+    |
+766 | fn valid_package_name(name: &str) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `lexical_relative_path` is never used
+   --> crates/zfb/src/commands/package_routes.rs:788:4
+    |
+788 | fn lexical_relative_path(from_dir: &Path, to: &Path) -> Option<PathBuf> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `collect_user_pages_shape_keys` is never used
+   --> crates/zfb/src/commands/package_routes.rs:825:4
+    |
+825 | fn collect_user_pages_shape_keys(real_pages_dir: &Path) -> Result<HashSet<String>> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pattern_to_pages_rel` is never used
+   --> crates/zfb/src/commands/package_routes.rs:854:15
+    |
+854 | pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
+    |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `private_segment_warning` is never used
+   --> crates/zfb/src/commands/package_routes.rs:918:15
+    |
+918 | pub(crate) fn private_segment_warning(route: &InjectedRoute, pages_rel: &Path) -> Option<String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `synthesize_static_overlay_module_with_specifier` is never used
+   --> crates/zfb/src/commands/package_routes.rs:983:4
+    |
+983 | fn synthesize_static_overlay_module_with_specifier(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `push_inlined_prerender` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1007:4
+     |
+1007 | fn push_inlined_prerender(out: &mut String, prerender: Option<bool>) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_dynamic_pattern` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1022:4
+     |
+1022 | fn is_dynamic_pattern(pattern: &str) -> bool {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `synthesize_dynamic_overlay_module_with_specifier` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1088:4
+     |
+1088 | fn synthesize_dynamic_overlay_module_with_specifier(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `copy_dir_recursive` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1204:4
+     |
+1204 | fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `json_string` is never used
+    --> crates/zfb/src/commands/package_routes.rs:1237:4
+     |
+1237 | fn json_string(s: &str) -> String {
+     |    ^^^^^^^^^^^
+
+warning: `zfb` (lib) generated 29 warnings (run `cargo fix --lib -p zfb` to apply 3 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.43s
+heavy-guard: verdict=PASS exit=0 secs=10 min_mem_mb=16266 reason=-

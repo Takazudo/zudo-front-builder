@@ -466,6 +466,34 @@ async fn with_the_host_op_unreachable_both_entropy_apis_throw_and_write_nothing(
     );
 }
 
+/// Removing the backend globals must preserve the same fail-closed diagnostic
+/// as an absent operation, without a property-access TypeError from the adapter.
+#[tokio::test]
+async fn absent_backend_globals_preserve_the_entropy_unavailable_diagnostic() {
+    for absent in [
+        "globalThis.Deno = undefined",
+        "globalThis.Deno = { core: undefined }",
+    ] {
+        let script = format!(
+            r#"{HELPERS}
+            const originalDeno = globalThis.Deno;
+            try {{
+              {absent};
+              const bytes = new Uint8Array(1).fill(0x5a);
+              const thrown = expectThrow(() => crypto.getRandomValues(bytes));
+              return thrown + "\nuntouched=" + (bytes[0] === 0x5a);
+            }} finally {{
+              globalThis.Deno = originalDeno;
+            }}
+            "#
+        );
+        assert_eq!(
+            probe(&script, DispatchMode::RequestTime).await,
+            "Error|crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime\nuntouched=true"
+        );
+    }
+}
+
 /// A zero-length view is the ONE case that still succeeds with no
 /// entropy source at all — zero bytes cannot be weak, and the contract
 /// makes it a no-op that returns the view. Pinned separately so the

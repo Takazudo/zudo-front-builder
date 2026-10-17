@@ -1,0 +1,171 @@
+{
+  "source": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+  "new_native_execution": false,
+  "reports": [
+    {
+      "path": "prototypes/direct-v8/evidence/config-gate.json",
+      "validation": "historical-report-only",
+      "function": "engine_counts",
+      "reported_pass": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "ce5d736d4c7ae0057d4cb9b706f6f2df1900be1f6fa8cf79b62f1d3ded41bd22",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "8d6975c6daacc3a32d54007853c263c14eb37dc4fc03246683d0fabf1e702fe2",
+          "receipts": 63,
+          "expected": 63,
+          "rows_passed": 63,
+          "passed": true
+        }
+      ],
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/services-gate.json",
+      "validation": "historical-report-only",
+      "function": "engine_counts",
+      "reported_pass": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "ce5d736d4c7ae0057d4cb9b706f6f2df1900be1f6fa8cf79b62f1d3ded41bd22",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "8d6975c6daacc3a32d54007853c263c14eb37dc4fc03246683d0fabf1e702fe2",
+          "receipts": 27,
+          "expected": 27,
+          "rows_passed": 27,
+          "passed": true
+        }
+      ],
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/modules-gate.json",
+      "validation": "historical-report-only",
+      "function": "engine_counts",
+      "reported_pass": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "ce5d736d4c7ae0057d4cb9b706f6f2df1900be1f6fa8cf79b62f1d3ded41bd22",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "8d6975c6daacc3a32d54007853c263c14eb37dc4fc03246683d0fabf1e702fe2",
+          "receipts": 47,
+          "expected": 47,
+          "rows_passed": 47,
+          "passed": true
+        }
+      ],
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/http-gate.json",
+      "validation": "historical-report-only",
+      "function": "http_counts",
+      "reported_pass": true,
+      "counts": {
+        "rows": 8,
+        "rows_passed": 8,
+        "passed": true
+      },
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/outer-config-gate.json",
+      "validation": "historical-report-only",
+      "function": "outer_counts",
+      "reported_pass": true,
+      "counts": {
+        "rows": 7,
+        "rows_passed": 7,
+        "passed": true
+      },
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/generated-gate.json",
+      "validation": "historical-report-only",
+      "function": "generated_counts",
+      "reported_pass": true,
+      "counts": {
+        "passed": true,
+        "snapshot_manifest_sha256": "85708be0784247c25b95bfda3eb9cb146d39e85367499b958ddecccde92e8fed",
+        "baseline": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "candidate": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "parity_rows": 7,
+        "parity_passed": 7,
+        "browser": true
+      },
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/lifecycle-linux-2026-10-14/generated-results.json",
+      "validation": "historical-report-only",
+      "function": "generated_counts",
+      "reported_pass": true,
+      "counts": {
+        "passed": true,
+        "snapshot_manifest_sha256": "3486f80cd9c4ae216c7718cabea8f65637502e59f23d58a1d628e03a23451336",
+        "baseline": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "candidate": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "parity_rows": 7,
+        "parity_passed": 7,
+        "browser": true
+      },
+      "structurally_valid": true
+    },
+    {
+      "path": "prototypes/direct-v8/evidence/lifecycle-linux-2026-10-14/initial-generated-results.json",
+      "validation": "historical-report-only",
+      "function": "generated_counts",
+      "reported_pass": true,
+      "counts": {
+        "passed": true,
+        "snapshot_manifest_sha256": "3301f83a52c8ab76eea889af71a8dfd01e9b6410b9db8a62f3ecbcf03f2c2cbe",
+        "baseline": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "candidate": {
+          "packets": 8,
+          "packets_passed": 8
+        },
+        "parity_rows": 7,
+        "parity_passed": 7,
+        "browser": true
+      },
+      "structurally_valid": true
+    }
+  ]
+}

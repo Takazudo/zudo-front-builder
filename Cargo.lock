@@ -7439,6 +7439,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zfb-js-host"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "url",
+ "v8",
+]
+
+[[package]]
 name = "zfb-md-ast"
 version = "0.0.0"
 dependencies = [
@@ -7500,13 +7517,12 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha1",
- "sha2",
  "swc_core",
  "tempfile",
  "thiserror",
  "tokio",
  "zfb-content",
+ "zfb-js-host",
  "zfb-router",
  "zfb-types",
 ]

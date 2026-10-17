@@ -1,0 +1,235 @@
+{
+  "copies": [
+    {
+      "source": "/tmp/v8-current-evidence/review.json",
+      "copy": "review.json",
+      "originalSha256": "c0420640f5e6b87fe6f2d8e87ef7518046c7902c9e1cfa3f624f3dc672d9efe5",
+      "copySha256": "c0420640f5e6b87fe6f2d8e87ef7518046c7902c9e1cfa3f624f3dc672d9efe5",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/original-observations.json",
+      "copy": "original-observations.json",
+      "originalSha256": "da296c73db6a78e0ca1d00532871d264712143cfb3f95e41069e0281baf1cc86",
+      "copySha256": "da296c73db6a78e0ca1d00532871d264712143cfb3f95e41069e0281baf1cc86",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/session.json",
+      "copy": "session.json",
+      "originalSha256": "21ff15041e5782105e8cbe213d70959e248a74be0462996eb378a6da05ad7802",
+      "copySha256": "21ff15041e5782105e8cbe213d70959e248a74be0462996eb378a6da05ad7802",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/standalone-graph.json",
+      "copy": "standalone-graph.json",
+      "originalSha256": "a7e92364dbf1d51013eab68ac92975032cb664a3e5d284bf928c43909d10b6b9",
+      "copySha256": "5d6fce205b70d6f6231f98ca12263a27f0a515494d2384cccb21192ace6ff1f8",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/closure-new-aarch64-apple-darwin.json",
+      "copy": "closure-new-aarch64-apple-darwin.json",
+      "originalSha256": "846c91c2f342eef593d650bb6db577e104c963d1da6f15b49b21c7a3c59f0396",
+      "copySha256": "2f677921da64365bab62963a7bbeb3a9c735c92e2d139cb2a2ea7d63cdf1b219",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/closure-new-x86_64-unknown-linux-gnu.json",
+      "copy": "closure-new-x86_64-unknown-linux-gnu.json",
+      "originalSha256": "80e3668a82009f11aeab980214b0c601db943a6e580b71862c46e94977d6eb4c",
+      "copySha256": "c24db464875c47e53e9f48cbe9373c208361cbeed1bc1b261bb7d63150f5f2b1",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/closure-old-aarch64-apple-darwin.json",
+      "copy": "closure-old-aarch64-apple-darwin.json",
+      "originalSha256": "627f7214870e245584203dc090937974f7229a7508fee74596b1705e5cd18e1a",
+      "copySha256": "d5a6d90363cbf853e20610b74bc9266180f4dd93a624463e31bb6db807765ef3",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/closure-old-x86_64-unknown-linux-gnu.json",
+      "copy": "closure-old-x86_64-unknown-linux-gnu.json",
+      "originalSha256": "5a9e1cb78763680245097dd9d6d97c94e9fd3a9bf8f5c843c3d4e0a673924e94",
+      "copySha256": "cfc1dd28d0673242dd9a5187ce1125d7361579bd4028b614b60a350dfc4c65ce",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/v8-current-evidence/declaration.json",
+      "copy": "declaration.json",
+      "originalSha256": "361676c9c23b07acfd44d2b600b9167532f88decc4b33d7b789916de4b937f2a",
+      "copySha256": "204a8fa17f043503e652a0a8811d07e3143966cfb4ce490ac4429ed0104a369b",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/modules-gate.json",
+      "copy": "modules-gate.json",
+      "originalSha256": "0be73ff8948351dc5391b2845ad583ec2257f69309ef6bf6eccd51318ca39259",
+      "copySha256": "16c6652168a119d717a5b2f90959bceda513567b12024d043c1e28a038039179",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/config-gate.json",
+      "copy": "config-gate.json",
+      "originalSha256": "b0a01829ba80c8a7b2ca39563cfd7981101f80bec4c5cecea42341b008d86fd1",
+      "copySha256": "0b291b5c4df5cb7c7337aa0186d3b8d10a30ea18a8aebeb1298a74c5df63e0b7",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/acceptance.json",
+      "copy": "acceptance.json",
+      "originalSha256": "cab4eb4b51a4fe7fd97beaca7ea685894b29528c68666a31f5d0255229064ad6",
+      "copySha256": "73ea4c4ff4b34e0494cdcedb203d3e8edb65894c0aa3fd0b439811f3a10eb0d9",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/http-gate.json",
+      "copy": "http-gate.json",
+      "originalSha256": "6e0044fc1300d599caf234bd3279338965b981faea252d79ad2e2dc43f99d7e1",
+      "copySha256": "0e01640b6d3872032da6792738d996d1db19e941ae1334752f60e2dc1e4a3108",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/services-gate.json",
+      "copy": "services-gate.json",
+      "originalSha256": "8a731e28e8482487855ba54edae5d6db5303143987f87f83ce06a729d6bd1db1",
+      "copySha256": "4ffcea27d2235f66dbd20402bbcac106e1ae424bd3c9b323c9a33225e252b346",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/outer-config-gate.json",
+      "copy": "outer-config-gate.json",
+      "originalSha256": "564c775cd7dda4929a817ccbb1034e32655c6ef0da2ba530357169f13deb2b3c",
+      "copySha256": "229bb5f503d9714ce088b076ce9cb04c2ccdf00fd68dde2facdcd4bf83ed7783",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c/acceptance.json",
+      "copy": "initial-acceptance.json",
+      "originalSha256": "b58dacb5ec0d3219bff223302dfb4dfcd3a9d8aee6beaa81871ea885a3a9ec9d",
+      "copySha256": "2c39d8e6077c0c24405a8d385b4f4bf50a4d2ac9766a462de897fefd2771b05d",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/generated-results/results.json",
+      "copy": "generated-results.json",
+      "originalSha256": "b28768d73fa580416e18524944b98c552af6e73742c42ddfc4710edf3350965b",
+      "copySha256": "27477a78f5dc1a2d97a83d80cb4e1cf91005db845e82f5a80c03f37fefd3d022",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/generated/frozen/manifest.json",
+      "copy": "generated-manifest.json",
+      "originalSha256": "94e0cb7da1862e6ed7abf8f11173f59a3c0af3bf59d13578e9cf88b74dcfb9c6",
+      "copySha256": "4c8479ddc374b261341787f70cfbbc970947d1263f6bbafeaec6f86933b78755",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/generated/frozen/manifest.json",
+      "copy": "generated-manifest.raw",
+      "originalSha256": "94e0cb7da1862e6ed7abf8f11173f59a3c0af3bf59d13578e9cf88b74dcfb9c6",
+      "copySha256": "94e0cb7da1862e6ed7abf8f11173f59a3c0af3bf59d13578e9cf88b74dcfb9c6",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-accept-20261016-546fce7c-retry/generated-results/browser.json",
+      "copy": "generated-browser.json",
+      "originalSha256": "bca6203e5a601d0f3ddd1961e14764a91e362a89d688ddecb26f5112db090b05",
+      "copySha256": "bca6203e5a601d0f3ddd1961e14764a91e362a89d688ddecb26f5112db090b05",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-regressions-20261016/verification.json",
+      "copy": "verification.json",
+      "originalSha256": "488921c39da056111f9f8eee889f367da88e6b72fcb54774b85cea821ee8d7d3",
+      "copySha256": "1480255d5a891c6007fde32767c2bf6840facb2880418d212beeb33115243a13",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-regressions-20261016/no-v8.log",
+      "copy": "no-v8.log",
+      "originalSha256": "835dd70763ea1f4a9f729eb0c98e6cab27d716677119fda29f02d092b4c9f97f",
+      "copySha256": "835dd70763ea1f4a9f729eb0c98e6cab27d716677119fda29f02d092b4c9f97f",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-regressions-20261016/wind.log",
+      "copy": "wind.log",
+      "originalSha256": "081be4fb1029c6387aeffd1414eea14b454056f5179362e8ef4498d1ce76c50a",
+      "copySha256": "081be4fb1029c6387aeffd1414eea14b454056f5179362e8ef4498d1ce76c50a",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-regressions-20261016/accepted-css.log",
+      "copy": "accepted-css.log",
+      "originalSha256": "9c4f3be2285674b67f5759142f8fc316014b869a4650f46606e3fe244970427f",
+      "copySha256": "9c4f3be2285674b67f5759142f8fc316014b869a4650f46606e3fe244970427f",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-regressions-20261016/accepted-mdx.log",
+      "copy": "accepted-mdx.log",
+      "originalSha256": "2b47b435ac663f3ff3e74449fac187f52085f52dc256334ee177b5d8fc30aa8a",
+      "copySha256": "2b47b435ac663f3ff3e74449fac187f52085f52dc256334ee177b5d8fc30aa8a",
+      "parsedEquality": true
+    },
+    {
+      "source": "/workspace/zudo-front-builder/target/direct-v8-regressions-20261016/renderer.log",
+      "copy": "renderer.log",
+      "originalSha256": "91a3b2c77df9bb8852e9d471aa2fbfaff48408afeb7f1b5df4fd1dd08c874920",
+      "copySha256": "91a3b2c77df9bb8852e9d471aa2fbfaff48408afeb7f1b5df4fd1dd08c874920",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/scoped-tests.log",
+      "copy": "inherited-budget-and-premature-reference.log",
+      "originalSha256": "a968b3ecf8222a018e848041fc27f75e0136180bbb6cba6c5c79192b5caeef9f",
+      "copySha256": "a968b3ecf8222a018e848041fc27f75e0136180bbb6cba6c5c79192b5caeef9f",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/accept-20261016.log",
+      "copy": "initial-acceptance.log",
+      "originalSha256": "552480fb52a0ca7da5f8bc1d8d1e5d49b847988b8c51597c90e0acf5c4b14f61",
+      "copySha256": "552480fb52a0ca7da5f8bc1d8d1e5d49b847988b8c51597c90e0acf5c4b14f61",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/accept-20261016-retry.log",
+      "copy": "acceptance.log",
+      "originalSha256": "cb71156c81fad182d0dbf7894a49266c80d524a543c162d042aaf99c9a3fb191",
+      "copySha256": "cb71156c81fad182d0dbf7894a49266c80d524a543c162d042aaf99c9a3fb191",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/wind-build-retry.log",
+      "copy": "compiler-build-retry.log",
+      "originalSha256": "33dccad321fe0f46754d974c77926afbd9c2dee70e89b414bb7d5d3eba3fd346",
+      "copySha256": "33dccad321fe0f46754d974c77926afbd9c2dee70e89b414bb7d5d3eba3fd346",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/regression-batch.log",
+      "copy": "regression-guard.log",
+      "originalSha256": "fb2d57575a310acff647ba3619ab5549ff4fae9599c02f43acd5c193113ca1c1",
+      "copySha256": "fb2d57575a310acff647ba3619ab5549ff4fae9599c02f43acd5c193113ca1c1",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/wind-tests.log",
+      "copy": "wind-generator-tests.log",
+      "originalSha256": "1cfd85b3a854348f4c6dc70ea8f8dd8e0deb8887ec6c9a3af0492c5293299be7",
+      "copySha256": "1cfd85b3a854348f4c6dc70ea8f8dd8e0deb8887ec6c9a3af0492c5293299be7",
+      "parsedEquality": true
+    },
+    {
+      "source": "/tmp/wind-reference-retry.log",
+      "copy": "wind-reference-tests.log",
+      "originalSha256": "d0898f41b0af3e8afb0c0364e5a57b8095b7c7e3e0d26e38166ee0fa5e543c7a",
+      "copySha256": "d0898f41b0af3e8afb0c0364e5a57b8095b7c7e3e0d26e38166ee0fa5e543c7a",
+      "parsedEquality": true
+    }
+  ]
+}

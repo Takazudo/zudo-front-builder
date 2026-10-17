@@ -1,0 +1,2089 @@
+{
+  "passed": true,
+  "results": [
+    {
+      "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8_baseline",
+      "executable_sha256": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+      "exit_code": 0,
+      "stdout": "ZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"same\":true,\"prefix\":[173,173,173,173,173,173,173,173],\"suffix\":[173,173,173,173,173,173,173,173],\"byteLength\":8},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":[{\"name\":\"Int8Array\",\"same\":true},{\"name\":\"Uint8Array\",\"same\":true},{\"name\":\"Uint8ClampedArray\",\"same\":true},{\"name\":\"Int16Array\",\"same\":true},{\"name\":\"Uint16Array\",\"same\":true},{\"name\":\"Int32Array\",\"same\":true},{\"name\":\"Uint32Array\",\"same\":true},{\"name\":\"BigInt64Array\",\"same\":true},{\"name\":\"BigUint64Array\",\"same\":true}],\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"accepted\":true,\"error\":{\"name\":\"QuotaExceededError\",\"message\":\"crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes\"}},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":[{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: Array is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: Object is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: null is not an integer-typed ArrayBufferView\"},{\"name\":\"TypeMismatchError\",\"message\":\"crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView\"}],\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"shape\":true,\"length\":36},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"errors\":[{\"name\":\"Error\",\"message\":\"crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime\"},{\"name\":\"Error\",\"message\":\"crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime\"}],\"bytes\":[17,18],\"emptySame\":true},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"isPromise\":true,\"isArrayBuffer\":true,\"hex\":\"a9993e364706816aba3e25717850c26c9cd0d89d\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"isPromise\":true,\"isArrayBuffer\":true,\"hex\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"isPromise\":true,\"isArrayBuffer\":true,\"hex\":\"cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"isPromise\":true,\"isArrayBuffer\":true,\"hex\":\"ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.digest: unsupported algorithm \\\"MD5\\\". This host implements SHA-1, SHA-256, SHA-384, SHA-512.\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.digest: unsupported algorithm \\\" SHA-256 \\\". This host implements SHA-1, SHA-256, SHA-384, SHA-512.\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"isPromise\":true,\"name\":\"TypeError\",\"message\":\"crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"equal\":true,\"different\":false,\"empty\":true,\"error\":{\"name\":\"TypeError\",\"message\":\"crypto.subtle.timingSafeEqual: buffers must be the same byteLength\"}},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":[{\"method\":\"encrypt\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"decrypt\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"sign\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"verify\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"generateKey\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"deriveKey\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"deriveBits\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"importKey\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"exportKey\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"wrapKey\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"method\":\"unwrapKey\",\"callable\":true,\"promise\":true,\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"}],\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"cryptoKey\":\"undefined\",\"sameConstructor\":true,\"errors\":[{\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"},{\"name\":\"NotSupportedError\",\"message\":\"crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\"}]},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":[\"sync\",\"after-schedule\",\"microtask\",\"promise\"],\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"order\":[\"sync\",\"timer\"],\"numericIds\":true,\"increasing\":true},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"before\":0,\"results\":[{\"same\":true,\"target\":true,\"count\":2},2]},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"status\":201,\"statusText\":\"Created\",\"ok\":true,\"bodyNull\":true,\"headers\":[[\"set-cookie\",\"a=1\"],[\"set-cookie\",\"b=2\"],[\"x-test\",\"left, right\"]],\"cookies\":[\"a=1\",\"b=2\"],\"contentType\":null,\"bytes\":[0,1,127,128,255],\"cloneBytes\":[0,1,127,128,255],\"used\":true},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":[\"text/plain;charset=UTF-8\",\"application/x-www-form-urlencoded;charset=UTF-8\",null,\"custom/type\",\"application/json\"],\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"Error\",\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"TypeError\",\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"TypeError\",\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\"},\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":false,\"error\":\"runtime error: Error: service receipt sentinel\\n    at file:///zfb/service-probe.mjs:1:80\\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\\n    at Object.dispatch (zfb:host_shim:310:47)\\n    at zfb:dispatch:1:18\",\"console\":\"\"}\nZFB_HOST_RECEIPT {\"engine\":\"deno_core 0.399.0 / v8 147.4.0\",\"ok\":true,\"value\":{\"name\":\"QuotaExceededError\",\"message\":\"crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes\"},\"console\":\"\"}\n",
+      "stderr": "",
+      "receipt_count": 27,
+      "expected_count": 27,
+      "receipts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "same": true,
+            "prefix": [173, 173, 173, 173, 173, 173, 173, 173],
+            "suffix": [173, 173, 173, 173, 173, 173, 173, 173],
+            "byteLength": 8
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": [
+            {
+              "name": "Int8Array",
+              "same": true
+            },
+            {
+              "name": "Uint8Array",
+              "same": true
+            },
+            {
+              "name": "Uint8ClampedArray",
+              "same": true
+            },
+            {
+              "name": "Int16Array",
+              "same": true
+            },
+            {
+              "name": "Uint16Array",
+              "same": true
+            },
+            {
+              "name": "Int32Array",
+              "same": true
+            },
+            {
+              "name": "Uint32Array",
+              "same": true
+            },
+            {
+              "name": "BigInt64Array",
+              "same": true
+            },
+            {
+              "name": "BigUint64Array",
+              "same": true
+            }
+          ],
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "accepted": true,
+            "error": {
+              "name": "QuotaExceededError",
+              "message": "crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes"
+            }
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": [
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: Array is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: Object is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: null is not an integer-typed ArrayBufferView"
+            },
+            {
+              "name": "TypeMismatchError",
+              "message": "crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView"
+            }
+          ],
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "shape": true,
+            "length": 36
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "errors": [
+              {
+                "name": "Error",
+                "message": "crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime"
+              },
+              {
+                "name": "Error",
+                "message": "crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime"
+              }
+            ],
+            "bytes": [17, 18],
+            "emptySame": true
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "isPromise": true,
+            "isArrayBuffer": true,
+            "hex": "a9993e364706816aba3e25717850c26c9cd0d89d"
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "isPromise": true,
+            "isArrayBuffer": true,
+            "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "isPromise": true,
+            "isArrayBuffer": true,
+            "hex": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "isPromise": true,
+            "isArrayBuffer": true,
+            "hex": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "name": "NotSupportedError",
+            "message": "crypto.subtle.digest: unsupported algorithm \"MD5\". This host implements SHA-1, SHA-256, SHA-384, SHA-512."
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "name": "NotSupportedError",
+            "message": "crypto.subtle.digest: unsupported algorithm \" SHA-256 \". This host implements SHA-1, SHA-256, SHA-384, SHA-512."
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "isPromise": true,
+            "name": "TypeError",
+            "message": "crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array"
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "equal": true,
+            "different": false,
+            "empty": true,
+            "error": {
+              "name": "TypeError",
+              "message": "crypto.subtle.timingSafeEqual: buffers must be the same byteLength"
+            }
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": [
+            {
+              "method": "encrypt",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "decrypt",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "sign",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "verify",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "generateKey",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "deriveKey",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "deriveBits",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "importKey",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "exportKey",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "wrapKey",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            },
+            {
+              "method": "unwrapKey",
+              "callable": true,
+              "promise": true,
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+            }
+          ],
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "cryptoKey": "undefined",
+            "sameConstructor": true,
+            "errors": [
+              {
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              }
+            ]
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": ["sync", "after-schedule", "microtask", "promise"],
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "order": ["sync", "timer"],
+            "numericIds": true,
+            "increasing": true
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "before": 0,
+            "results": [
+              {
+                "same": true,
+                "target": true,
+                "count": 2
+              },
+              2
+            ]
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "status": 201,
+            "statusText": "Created",
+            "ok": true,
+            "bodyNull": true,
+            "headers": [
+              ["set-cookie", "a=1"],
+              ["set-cookie", "b=2"],
+              ["x-test", "left, right"]
+            ],
+            "cookies": ["a=1", "b=2"],
+            "contentType": null,
+            "bytes": [0, 1, 127, 128, 255],
+            "cloneBytes": [0, 1, 127, 128, 255],
+            "used": true
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": [
+            "text/plain;charset=UTF-8",
+            "application/x-www-form-urlencoded;charset=UTF-8",
+            null,
+            "custom/type",
+            "application/json"
+          ],
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "name": "Error",
+            "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "name": "TypeError",
+            "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "name": "TypeError",
+            "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+          },
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": false,
+          "error": "runtime error: Error: service receipt sentinel\n    at file:///zfb/service-probe.mjs:1:80\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\n    at Object.dispatch (zfb:host_shim:310:47)\n    at zfb:dispatch:1:18",
+          "console": ""
+        },
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "ok": true,
+          "value": {
+            "name": "QuotaExceededError",
+            "message": "crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes"
+          },
+          "console": ""
+        }
+      ],
+      "failures": [],
+      "passed": true,
+      "executable_sha256_after": "5d170348eab2680d8caec96bb2d868c20eab31cbe9b1d4fa917c40820cde811d",
+      "engine": "deno_core 0.399.0 / v8 147.4.0",
+      "rows": [
+        {
+          "name": "entropy-offset-identity-build",
+          "contracts": ["CRYPTO-01", "CRYPTO-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "same": true,
+              "prefix": [173, 173, 173, 173, 173, 173, 173, 173],
+              "suffix": [173, 173, 173, 173, 173, 173, 173, 173],
+              "byteLength": 8
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "entropy-integer-views-request",
+          "contracts": ["CRYPTO-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "name": "Int8Array",
+                "same": true
+              },
+              {
+                "name": "Uint8Array",
+                "same": true
+              },
+              {
+                "name": "Uint8ClampedArray",
+                "same": true
+              },
+              {
+                "name": "Int16Array",
+                "same": true
+              },
+              {
+                "name": "Uint16Array",
+                "same": true
+              },
+              {
+                "name": "Int32Array",
+                "same": true
+              },
+              {
+                "name": "Uint32Array",
+                "same": true
+              },
+              {
+                "name": "BigInt64Array",
+                "same": true
+              },
+              {
+                "name": "BigUint64Array",
+                "same": true
+              }
+            ],
+            "console": ""
+          }
+        },
+        {
+          "name": "entropy-quota-byte-boundary",
+          "contracts": ["CRYPTO-01", "HTTP-08"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "accepted": true,
+              "error": {
+                "name": "QuotaExceededError",
+                "message": "crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes"
+              }
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "entropy-invalid-views",
+          "contracts": ["CRYPTO-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: Array is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: Object is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: null is not an integer-typed ArrayBufferView"
+              },
+              {
+                "name": "TypeMismatchError",
+                "message": "crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView"
+              }
+            ],
+            "console": ""
+          }
+        },
+        {
+          "name": "uuid-v4-no-weak-fallback",
+          "contracts": ["CRYPTO-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "shape": true,
+              "length": 36
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "entropy-unavailable-fails-closed",
+          "contracts": ["CRYPTO-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "errors": [
+                {
+                  "name": "Error",
+                  "message": "crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime"
+                },
+                {
+                  "name": "Error",
+                  "message": "crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime"
+                }
+              ],
+              "bytes": [17, 18],
+              "emptySame": true
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-sha-1-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "isPromise": true,
+              "isArrayBuffer": true,
+              "hex": "a9993e364706816aba3e25717850c26c9cd0d89d"
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-sha-256-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "isPromise": true,
+              "isArrayBuffer": true,
+              "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-sha-384-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "isPromise": true,
+              "isArrayBuffer": true,
+              "hex": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-sha-512-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "isPromise": true,
+              "isArrayBuffer": true,
+              "hex": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-object-case-insensitive",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-unsupported-md5",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.digest: unsupported algorithm \"MD5\". This host implements SHA-1, SHA-256, SHA-384, SHA-512."
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-not-trimmed",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "NotSupportedError",
+              "message": "crypto.subtle.digest: unsupported algorithm \" SHA-256 \". This host implements SHA-1, SHA-256, SHA-384, SHA-512."
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "digest-invalid-buffer-rejects-promise",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "isPromise": true,
+              "name": "TypeError",
+              "message": "crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array"
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "timing-safe-equal-offset-and-length",
+          "contracts": ["CRYPTO-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "equal": true,
+              "different": false,
+              "empty": true,
+              "error": {
+                "name": "TypeError",
+                "message": "crypto.subtle.timingSafeEqual: buffers must be the same byteLength"
+              }
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "unsupported-subtle-methods",
+          "contracts": ["CRYPTO-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "method": "encrypt",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "decrypt",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "sign",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "verify",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "generateKey",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "deriveKey",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "deriveBits",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "importKey",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "exportKey",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "wrapKey",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              },
+              {
+                "method": "unwrapKey",
+                "callable": true,
+                "promise": true,
+                "name": "NotSupportedError",
+                "message": "crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+              }
+            ],
+            "console": ""
+          }
+        },
+        {
+          "name": "unsupported-digest-stream-and-crypto-key",
+          "contracts": ["CRYPTO-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "cryptoKey": "undefined",
+              "sameConstructor": true,
+              "errors": [
+                {
+                  "name": "NotSupportedError",
+                  "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+                },
+                {
+                  "name": "NotSupportedError",
+                  "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only."
+                }
+              ]
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "queue-microtask-order",
+          "contracts": ["BOOT-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": ["sync", "after-schedule", "microtask", "promise"],
+            "console": ""
+          }
+        },
+        {
+          "name": "microtask-timer-delay-and-clear-noop",
+          "contracts": ["BOOT-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "order": ["sync", "timer"],
+              "numericIds": true,
+              "increasing": true
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "message-channel-reference-and-listeners",
+          "contracts": ["BOOT-02", "BOOT-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "before": 0,
+              "results": [
+                {
+                  "same": true,
+                  "target": true,
+                  "count": 2
+                },
+                2
+              ]
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "binary-response-offset-headers-clone",
+          "contracts": ["WORK-03", "WORK-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "status": 201,
+              "statusText": "Created",
+              "ok": true,
+              "bodyNull": true,
+              "headers": [
+                ["set-cookie", "a=1"],
+                ["set-cookie", "b=2"],
+                ["x-test", "left, right"]
+              ],
+              "cookies": ["a=1", "b=2"],
+              "contentType": null,
+              "bytes": [0, 1, 127, 128, 255],
+              "cloneBytes": [0, 1, 127, 128, 255],
+              "used": true
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "response-body-content-types",
+          "contracts": ["WORK-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": [
+              "text/plain;charset=UTF-8",
+              "application/x-www-form-urlencoded;charset=UTF-8",
+              null,
+              "custom/type",
+              "application/json"
+            ],
+            "console": ""
+          }
+        },
+        {
+          "name": "fetch-build-denial",
+          "contracts": ["HTTP-01", "HTTP-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "Error",
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "raw-bridge-build-denial",
+          "contracts": ["HTTP-01", "HTTP-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "TypeError",
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "forged-mode-raw-bridge-build-denial",
+          "contracts": ["HTTP-01", "HTTP-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "TypeError",
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch."
+            },
+            "console": ""
+          }
+        },
+        {
+          "name": "uncaught-service-error-receipt",
+          "contracts": ["DIAG-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": false,
+            "error": "runtime error: Error: service receipt sentinel\n    at file:///zfb/service-probe.mjs:1:80\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\n    at Object.dispatch (zfb:host_shim:310:47)\n    at zfb:dispatch:1:18",
+            "console": ""
+          }
+        },
+        {
+          "name": "raw-entropy-quota-independent-of-js-limits",
+          "contracts": ["CRYPTO-01", "HTTP-08"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "engine": "deno_core 0.399.0 / v8 147.4.0",
+            "ok": true,
+            "value": {
+              "name": "QuotaExceededError",
+              "message": "crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes"
+            },
+            "console": ""
+          }
+        }
+      ]
+    },
+    {
+      "executable": "/workspace/zudo-front-builder/target/debug/examples/direct_v8",
+      "executable_sha256": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+      "exit_code": 0,
+      "stdout": "ZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"byteLength\":8,\"prefix\":[173,173,173,173,173,173,173,173],\"same\":true,\"suffix\":[173,173,173,173,173,173,173,173]}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":[{\"name\":\"Int8Array\",\"same\":true},{\"name\":\"Uint8Array\",\"same\":true},{\"name\":\"Uint8ClampedArray\",\"same\":true},{\"name\":\"Int16Array\",\"same\":true},{\"name\":\"Uint16Array\",\"same\":true},{\"name\":\"Int32Array\",\"same\":true},{\"name\":\"Uint32Array\",\"same\":true},{\"name\":\"BigInt64Array\",\"same\":true},{\"name\":\"BigUint64Array\",\"same\":true}]}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"accepted\":true,\"error\":{\"message\":\"crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes\",\"name\":\"QuotaExceededError\"}}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":[{\"message\":\"crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: Array is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: Object is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: null is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"},{\"message\":\"crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView\",\"name\":\"TypeMismatchError\"}]}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"length\":36,\"shape\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"bytes\":[17,18],\"emptySame\":true,\"errors\":[{\"message\":\"crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime\",\"name\":\"Error\"},{\"message\":\"crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime\",\"name\":\"Error\"}]}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"hex\":\"a9993e364706816aba3e25717850c26c9cd0d89d\",\"isArrayBuffer\":true,\"isPromise\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"hex\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"isArrayBuffer\":true,\"isPromise\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"hex\":\"cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7\",\"isArrayBuffer\":true,\"isPromise\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"hex\":\"ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\",\"isArrayBuffer\":true,\"isPromise\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"crypto.subtle.digest: unsupported algorithm \\\"MD5\\\". This host implements SHA-1, SHA-256, SHA-384, SHA-512.\",\"name\":\"NotSupportedError\"}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"crypto.subtle.digest: unsupported algorithm \\\" SHA-256 \\\". This host implements SHA-1, SHA-256, SHA-384, SHA-512.\",\"name\":\"NotSupportedError\"}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"isPromise\":true,\"message\":\"crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array\",\"name\":\"TypeError\"}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"different\":false,\"empty\":true,\"equal\":true,\"error\":{\"message\":\"crypto.subtle.timingSafeEqual: buffers must be the same byteLength\",\"name\":\"TypeError\"}}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":[{\"callable\":true,\"message\":\"crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"encrypt\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"decrypt\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"sign\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"verify\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"generateKey\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"deriveKey\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"deriveBits\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"importKey\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"exportKey\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"wrapKey\",\"name\":\"NotSupportedError\",\"promise\":true},{\"callable\":true,\"message\":\"crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"method\":\"unwrapKey\",\"name\":\"NotSupportedError\",\"promise\":true}]}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"cryptoKey\":\"undefined\",\"errors\":[{\"message\":\"crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"name\":\"NotSupportedError\"},{\"message\":\"crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.\",\"name\":\"NotSupportedError\"}],\"sameConstructor\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":[\"sync\",\"after-schedule\",\"microtask\",\"promise\"]}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"increasing\":true,\"numericIds\":true,\"order\":[\"sync\",\"timer\"]}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"before\":0,\"results\":[{\"count\":2,\"same\":true,\"target\":true},2]}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"bodyNull\":true,\"bytes\":[0,1,127,128,255],\"cloneBytes\":[0,1,127,128,255],\"contentType\":null,\"cookies\":[\"a=1\",\"b=2\"],\"headers\":[[\"set-cookie\",\"a=1\"],[\"set-cookie\",\"b=2\"],[\"x-test\",\"left, right\"]],\"ok\":true,\"status\":201,\"statusText\":\"Created\",\"used\":true}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":[\"text/plain;charset=UTF-8\",\"application/x-www-form-urlencoded;charset=UTF-8\",null,\"custom/type\",\"application/json\"]}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\",\"name\":\"Error\"}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\",\"name\":\"TypeError\"}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.\",\"name\":\"TypeError\"}}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"error\":\"config evaluation error: Error: service receipt sentinel\\n    at file:///zfb/service-probe.mjs:1:80\\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\\n    at Object.dispatch (zfb:host_globals:310:47)\",\"ok\":false}\nZFB_HOST_RECEIPT {\"console\":\"\",\"engine\":\"direct v8 147.4.0\",\"ok\":true,\"value\":{\"message\":\"crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes\",\"name\":\"QuotaExceededError\"}}\n",
+      "stderr": "",
+      "receipt_count": 27,
+      "expected_count": 27,
+      "receipts": [
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "byteLength": 8,
+            "prefix": [173, 173, 173, 173, 173, 173, 173, 173],
+            "same": true,
+            "suffix": [173, 173, 173, 173, 173, 173, 173, 173]
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": [
+            {
+              "name": "Int8Array",
+              "same": true
+            },
+            {
+              "name": "Uint8Array",
+              "same": true
+            },
+            {
+              "name": "Uint8ClampedArray",
+              "same": true
+            },
+            {
+              "name": "Int16Array",
+              "same": true
+            },
+            {
+              "name": "Uint16Array",
+              "same": true
+            },
+            {
+              "name": "Int32Array",
+              "same": true
+            },
+            {
+              "name": "Uint32Array",
+              "same": true
+            },
+            {
+              "name": "BigInt64Array",
+              "same": true
+            },
+            {
+              "name": "BigUint64Array",
+              "same": true
+            }
+          ]
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "accepted": true,
+            "error": {
+              "message": "crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes",
+              "name": "QuotaExceededError"
+            }
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": [
+            {
+              "message": "crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: Array is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: Object is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: null is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            },
+            {
+              "message": "crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView",
+              "name": "TypeMismatchError"
+            }
+          ]
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "length": 36,
+            "shape": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "bytes": [17, 18],
+            "emptySame": true,
+            "errors": [
+              {
+                "message": "crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
+                "name": "Error"
+              },
+              {
+                "message": "crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
+                "name": "Error"
+              }
+            ]
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "hex": "a9993e364706816aba3e25717850c26c9cd0d89d",
+            "isArrayBuffer": true,
+            "isPromise": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "isArrayBuffer": true,
+            "isPromise": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "hex": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7",
+            "isArrayBuffer": true,
+            "isPromise": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "hex": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+            "isArrayBuffer": true,
+            "isPromise": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "message": "crypto.subtle.digest: unsupported algorithm \"MD5\". This host implements SHA-1, SHA-256, SHA-384, SHA-512.",
+            "name": "NotSupportedError"
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "message": "crypto.subtle.digest: unsupported algorithm \" SHA-256 \". This host implements SHA-1, SHA-256, SHA-384, SHA-512.",
+            "name": "NotSupportedError"
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "isPromise": true,
+            "message": "crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array",
+            "name": "TypeError"
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "different": false,
+            "empty": true,
+            "equal": true,
+            "error": {
+              "message": "crypto.subtle.timingSafeEqual: buffers must be the same byteLength",
+              "name": "TypeError"
+            }
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": [
+            {
+              "callable": true,
+              "message": "crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "encrypt",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "decrypt",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "sign",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "verify",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "generateKey",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "deriveKey",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "deriveBits",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "importKey",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "exportKey",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "wrapKey",
+              "name": "NotSupportedError",
+              "promise": true
+            },
+            {
+              "callable": true,
+              "message": "crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+              "method": "unwrapKey",
+              "name": "NotSupportedError",
+              "promise": true
+            }
+          ]
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "cryptoKey": "undefined",
+            "errors": [
+              {
+                "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "name": "NotSupportedError"
+              },
+              {
+                "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "name": "NotSupportedError"
+              }
+            ],
+            "sameConstructor": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": ["sync", "after-schedule", "microtask", "promise"]
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "increasing": true,
+            "numericIds": true,
+            "order": ["sync", "timer"]
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "before": 0,
+            "results": [
+              {
+                "count": 2,
+                "same": true,
+                "target": true
+              },
+              2
+            ]
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "bodyNull": true,
+            "bytes": [0, 1, 127, 128, 255],
+            "cloneBytes": [0, 1, 127, 128, 255],
+            "contentType": null,
+            "cookies": ["a=1", "b=2"],
+            "headers": [
+              ["set-cookie", "a=1"],
+              ["set-cookie", "b=2"],
+              ["x-test", "left, right"]
+            ],
+            "ok": true,
+            "status": 201,
+            "statusText": "Created",
+            "used": true
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": [
+            "text/plain;charset=UTF-8",
+            "application/x-www-form-urlencoded;charset=UTF-8",
+            null,
+            "custom/type",
+            "application/json"
+          ]
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+            "name": "Error"
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+            "name": "TypeError"
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+            "name": "TypeError"
+          }
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "error": "config evaluation error: Error: service receipt sentinel\n    at file:///zfb/service-probe.mjs:1:80\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\n    at Object.dispatch (zfb:host_globals:310:47)",
+          "ok": false
+        },
+        {
+          "console": "",
+          "engine": "direct v8 147.4.0",
+          "ok": true,
+          "value": {
+            "message": "crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes",
+            "name": "QuotaExceededError"
+          }
+        }
+      ],
+      "failures": [],
+      "passed": true,
+      "executable_sha256_after": "747e2f33ed9370cc3516add6470e29575b09c8a06a2b055cc9f3886c5a661849",
+      "engine": "direct v8 147.4.0",
+      "rows": [
+        {
+          "name": "entropy-offset-identity-build",
+          "contracts": ["CRYPTO-01", "CRYPTO-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "byteLength": 8,
+              "prefix": [173, 173, 173, 173, 173, 173, 173, 173],
+              "same": true,
+              "suffix": [173, 173, 173, 173, 173, 173, 173, 173]
+            }
+          }
+        },
+        {
+          "name": "entropy-integer-views-request",
+          "contracts": ["CRYPTO-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "name": "Int8Array",
+                "same": true
+              },
+              {
+                "name": "Uint8Array",
+                "same": true
+              },
+              {
+                "name": "Uint8ClampedArray",
+                "same": true
+              },
+              {
+                "name": "Int16Array",
+                "same": true
+              },
+              {
+                "name": "Uint16Array",
+                "same": true
+              },
+              {
+                "name": "Int32Array",
+                "same": true
+              },
+              {
+                "name": "Uint32Array",
+                "same": true
+              },
+              {
+                "name": "BigInt64Array",
+                "same": true
+              },
+              {
+                "name": "BigUint64Array",
+                "same": true
+              }
+            ]
+          }
+        },
+        {
+          "name": "entropy-quota-byte-boundary",
+          "contracts": ["CRYPTO-01", "HTTP-08"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "accepted": true,
+              "error": {
+                "message": "crypto.getRandomValues: requested 65540 bytes, quota is 65536 bytes",
+                "name": "QuotaExceededError"
+              }
+            }
+          }
+        },
+        {
+          "name": "entropy-invalid-views",
+          "contracts": ["CRYPTO-01"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "message": "crypto.getRandomValues: Float32Array is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: Float64Array is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: DataView is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: ArrayBuffer is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: Array is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: Object is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: null is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              },
+              {
+                "message": "crypto.getRandomValues: undefined is not an integer-typed ArrayBufferView",
+                "name": "TypeMismatchError"
+              }
+            ]
+          }
+        },
+        {
+          "name": "uuid-v4-no-weak-fallback",
+          "contracts": ["CRYPTO-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "length": 36,
+              "shape": true
+            }
+          }
+        },
+        {
+          "name": "entropy-unavailable-fails-closed",
+          "contracts": ["CRYPTO-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "bytes": [17, 18],
+              "emptySame": true,
+              "errors": [
+                {
+                  "message": "crypto.getRandomValues: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
+                  "name": "Error"
+                },
+                {
+                  "message": "crypto.randomUUID: OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
+                  "name": "Error"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "digest-sha-1-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "hex": "a9993e364706816aba3e25717850c26c9cd0d89d",
+              "isArrayBuffer": true,
+              "isPromise": true
+            }
+          }
+        },
+        {
+          "name": "digest-sha-256-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+              "isArrayBuffer": true,
+              "isPromise": true
+            }
+          }
+        },
+        {
+          "name": "digest-sha-384-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "hex": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7",
+              "isArrayBuffer": true,
+              "isPromise": true
+            }
+          }
+        },
+        {
+          "name": "digest-sha-512-abc-offset",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "hex": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+              "isArrayBuffer": true,
+              "isPromise": true
+            }
+          }
+        },
+        {
+          "name": "digest-object-case-insensitive",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+          }
+        },
+        {
+          "name": "digest-unsupported-md5",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "crypto.subtle.digest: unsupported algorithm \"MD5\". This host implements SHA-1, SHA-256, SHA-384, SHA-512.",
+              "name": "NotSupportedError"
+            }
+          }
+        },
+        {
+          "name": "digest-not-trimmed",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "crypto.subtle.digest: unsupported algorithm \" SHA-256 \". This host implements SHA-1, SHA-256, SHA-384, SHA-512.",
+              "name": "NotSupportedError"
+            }
+          }
+        },
+        {
+          "name": "digest-invalid-buffer-rejects-promise",
+          "contracts": ["CRYPTO-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "isPromise": true,
+              "message": "crypto.subtle.digest: expected an ArrayBuffer or ArrayBufferView, got Array",
+              "name": "TypeError"
+            }
+          }
+        },
+        {
+          "name": "timing-safe-equal-offset-and-length",
+          "contracts": ["CRYPTO-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "different": false,
+              "empty": true,
+              "equal": true,
+              "error": {
+                "message": "crypto.subtle.timingSafeEqual: buffers must be the same byteLength",
+                "name": "TypeError"
+              }
+            }
+          }
+        },
+        {
+          "name": "unsupported-subtle-methods",
+          "contracts": ["CRYPTO-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [
+              {
+                "callable": true,
+                "message": "crypto.subtle.encrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "encrypt",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.decrypt is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "decrypt",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.sign is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "sign",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.verify is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "verify",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.generateKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "generateKey",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.deriveKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "deriveKey",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.deriveBits is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "deriveBits",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.importKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "importKey",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.exportKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "exportKey",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.wrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "wrapKey",
+                "name": "NotSupportedError",
+                "promise": true
+              },
+              {
+                "callable": true,
+                "message": "crypto.subtle.unwrapKey is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                "method": "unwrapKey",
+                "name": "NotSupportedError",
+                "promise": true
+              }
+            ]
+          }
+        },
+        {
+          "name": "unsupported-digest-stream-and-crypto-key",
+          "contracts": ["CRYPTO-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "cryptoKey": "undefined",
+              "errors": [
+                {
+                  "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                  "name": "NotSupportedError"
+                },
+                {
+                  "message": "crypto.subtle.DigestStream is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES implement this call \u2014 see research/2013-request-time-capability-contract.md. This host implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+                  "name": "NotSupportedError"
+                }
+              ],
+              "sameConstructor": true
+            }
+          }
+        },
+        {
+          "name": "queue-microtask-order",
+          "contracts": ["BOOT-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": ["sync", "after-schedule", "microtask", "promise"]
+          }
+        },
+        {
+          "name": "microtask-timer-delay-and-clear-noop",
+          "contracts": ["BOOT-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "increasing": true,
+              "numericIds": true,
+              "order": ["sync", "timer"]
+            }
+          }
+        },
+        {
+          "name": "message-channel-reference-and-listeners",
+          "contracts": ["BOOT-02", "BOOT-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "before": 0,
+              "results": [
+                {
+                  "count": 2,
+                  "same": true,
+                  "target": true
+                },
+                2
+              ]
+            }
+          }
+        },
+        {
+          "name": "binary-response-offset-headers-clone",
+          "contracts": ["WORK-03", "WORK-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "bodyNull": true,
+              "bytes": [0, 1, 127, 128, 255],
+              "cloneBytes": [0, 1, 127, 128, 255],
+              "contentType": null,
+              "cookies": ["a=1", "b=2"],
+              "headers": [
+                ["set-cookie", "a=1"],
+                ["set-cookie", "b=2"],
+                ["x-test", "left, right"]
+              ],
+              "ok": true,
+              "status": 201,
+              "statusText": "Created",
+              "used": true
+            }
+          }
+        },
+        {
+          "name": "response-body-content-types",
+          "contracts": ["WORK-04"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": [
+              "text/plain;charset=UTF-8",
+              "application/x-www-form-urlencoded;charset=UTF-8",
+              null,
+              "custom/type",
+              "application/json"
+            ]
+          }
+        },
+        {
+          "name": "fetch-build-denial",
+          "contracts": ["HTTP-01", "HTTP-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+              "name": "Error"
+            }
+          }
+        },
+        {
+          "name": "raw-bridge-build-denial",
+          "contracts": ["HTTP-01", "HTTP-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+              "name": "TypeError"
+            }
+          }
+        },
+        {
+          "name": "forged-mode-raw-bridge-build-denial",
+          "contracts": ["HTTP-01", "HTTP-03"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "fetch() called from SSG runtime (url=http://127.0.0.1:1/direct-v8-policy). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
+              "name": "TypeError"
+            }
+          }
+        },
+        {
+          "name": "uncaught-service-error-receipt",
+          "contracts": ["DIAG-02"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "error": "config evaluation error: Error: service receipt sentinel\n    at file:///zfb/service-probe.mjs:1:80\n    at Object.fetch (file:///zfb/service-probe.mjs:1:121)\n    at Object.dispatch (zfb:host_globals:310:47)",
+            "ok": false
+          }
+        },
+        {
+          "name": "raw-entropy-quota-independent-of-js-limits",
+          "contracts": ["CRYPTO-01", "HTTP-08"],
+          "passed": true,
+          "failures": [],
+          "receipt": {
+            "console": "",
+            "engine": "direct v8 147.4.0",
+            "ok": true,
+            "value": {
+              "message": "crypto.getRandomValues: requested 65537 bytes, quota is 65536 bytes",
+              "name": "QuotaExceededError"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "corpus_sha256": "a296d0aa2ee465dcc5a9e2927afa0449b7ec8dcf306233a2e1877715f7fe2112",
+  "corpus_sha256_after": "a296d0aa2ee465dcc5a9e2927afa0449b7ec8dcf306233a2e1877715f7fe2112"
+}

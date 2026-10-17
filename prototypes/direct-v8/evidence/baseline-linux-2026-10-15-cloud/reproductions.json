@@ -1,0 +1,70 @@
+{
+  "source": "8bddd9ea8a6256972afeeec284dcd38b2c32452d",
+  "patch_reviewed": false,
+  "observations": [
+    {
+      "finding": "integer ok and absent value accepted for expected null",
+      "observation": "real checker subprocesses, synthetic runner fixtures; no native V8",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder-pr4242/prototypes/direct-v8/check-config.py",
+        "--baseline",
+        "/tmp/pr4242-checker-repro-_3quzx49/baseline",
+        "--candidate",
+        "/tmp/pr4242-checker-repro-_3quzx49/candidate",
+        "--cases",
+        "/tmp/pr4242-checker-repro-_3quzx49/cases.json",
+        "--output",
+        "/tmp/pr4242-review/invalid-config-real-process-report.json"
+      ],
+      "exit_code": 0,
+      "stdout": "deno_core 0.399.0 / v8 147.4.0 PASS 1 / 1\ndirect v8 147.4.0 PASS 1 / 1\n",
+      "stderr": "",
+      "aggregator_report_passed": true,
+      "counts": [
+        {
+          "engine": "deno_core 0.399.0 / v8 147.4.0",
+          "executable_sha256": "29f919a3b6cce78782f535b8a842eb2d01b548498dd7c24187e03327233f4468",
+          "receipts": 1,
+          "expected": 1,
+          "rows_passed": 1,
+          "passed": true
+        },
+        {
+          "engine": "direct v8 147.4.0",
+          "executable_sha256": "483cdab833f5e6accbca13bad1b0943f233a681fdf6254e26882bcc9e3868b90",
+          "receipts": 1,
+          "expected": 1,
+          "rows_passed": 1,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "finding": "extra outer receipt silently truncated",
+      "observation": "real checker subprocess with synthetic runner fixture; no native V8",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "-I",
+        "-B",
+        "/workspace/zudo-front-builder-pr4242/prototypes/direct-v8/check-outer-config.py",
+        "--runner",
+        "/tmp/pr4242-checker-repro-_3quzx49/outer",
+        "--output",
+        "/tmp/pr4242-review/extra-outer-real-process-report.json"
+      ],
+      "emitted_receipts": 8,
+      "exit_code": 0,
+      "stdout": "outer config PASS 7 / 7\n",
+      "stderr": "",
+      "aggregator_report_passed": true,
+      "counts": {
+        "rows": 7,
+        "rows_passed": 7,
+        "passed": true
+      }
+    }
+  ]
+}

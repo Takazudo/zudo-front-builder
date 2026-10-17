@@ -1,0 +1,11 @@
+{
+  "executablePath": "/Users/takazudo/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  "origin": "http://127.0.0.1:56258",
+  "passed": true,
+  "version": "149.0.7827.55",
+  "initialText": "Count: 0",
+  "css": "rgb(12, 34, 56)",
+  "afterClickText": "Count: 1",
+  "pageErrors": [],
+  "consoleErrors": []
+}
