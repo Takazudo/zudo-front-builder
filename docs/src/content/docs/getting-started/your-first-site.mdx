@@ -4,6 +4,22 @@ description: Scaffold, run, and build a zfb project in about five minutes.
 sidebar_position: 3
 ---
 
+## The shortest workflow
+
+With the CLI installed, select the `node-free` template explicitly. Stop `dev` with Ctrl+C before continuing.
+
+```sh
+zfb new my-site --template node-free
+cd my-site
+zfb dev
+# Stop with Ctrl+C
+zfb check --skip-tsc
+zfb build
+zfb preview
+```
+
+`--skip-tsc` runs only the non-TypeScript checks. For full type checking, install Node.js and TypeScript and use `zfb check`. The npm distribution runs these same commands through `pnpm exec zfb` or `npx zfb`.
+
 Choose Basic blog for a package-based blog, or Node-free for a starter that runs without Node or a package install. Use either tab below to create, run, build, and preview your site after [Installation](./installation.mdx).
 
 <Tabs>

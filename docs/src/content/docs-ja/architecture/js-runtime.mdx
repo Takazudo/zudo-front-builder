@@ -43,7 +43,7 @@ zfb の対象読者は、すでに TSX を知っている frontend 開発者で�
 
 ## 今日動いているもの
 
-`zfb build` / `zfb dev` / `zfb preview` では、Rust のオーケストレーターが `deno_core` を介してインプロセスの V8 アイソレートを生成します。それは `@takazudo/zfb-runtime` が esbuild でビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
+`zfb build` / `zfb dev` では、Rust のオーケストレーターが `deno_core` を介してインプロセスの V8 アイソレートを生成します。それは `@takazudo/zfb-runtime` が esbuild でビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
 
 同じバンドル（`export default { fetch }`）は、`prerender = false` ルートのランタイム SSR 向けに Cloudflare Workers へ変更なしでデプロイされます。workerd がリクエスト時にそれを実行します。本番の経路は、どのビルド時エンジンがバンドルを生成したかを関知しません。
 
@@ -112,3 +112,9 @@ pub trait RenderHost {
 ```
 
 これがレンダラーが使うインターフェースの全体です。`zfb-render`、`zfb-build`、そしてフレームワークアダプターは、具体的なランタイムの名前を一切口にしません。呼び出し箇所に触れることなく実装を差し替えられます — 新しいホストを追加し、ベンチを再実行し、アダプターの結合テストを走らせてバイト単位で同一の HTML を確認します。
+
+## 現在のデフォルトと実験
+
+通常の経路は `deno_core` による組み込み V8 と esbuild です。Direct V8 と Rolldown は非デフォルトのプロトタイプであり、通常の CLI での有効化や切り替えは行われていません。
+
+`zfb preview` は再ビルドせず、ビルド済み出力を配信します。Cloudflare アダプターでは Wrangler に委譲します。一般に組み込み V8 でページを再レンダリングするコマンドではありません。

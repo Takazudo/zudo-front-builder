@@ -7,7 +7,7 @@ export default defineConfig(
     // ── Identity / URLs ────────────────────────────────────────────────
     siteName: "zfb",
     siteDescription:
-      "A Request/Response content engine: write TSX and MDX once for static HTML, Cloudflare Workers, or local apps.",
+      "Almost all everyday frontend development in one CLI: pages, content, interactivity, styles and production builds.",
     siteUrl: "https://zfb.takazudomodular.com",
     // Browser CI also builds this supported setting at a non-root prefix.
     base: "/",
@@ -29,11 +29,11 @@ export default defineConfig(
     logo: "/img/logo.svg",
     home: {
       wide: true,
-      introMarkdown: `Write your pages in TSX and MDX. zfb turns them into one Request/Response application: prerender it to static HTML, serve it on Cloudflare Workers, or run it as a local content server inside your own app.
+      introMarkdown: `Almost all everyday frontend development in one CLI. Create a site, develop pages, check content and types, build, and preview with zfb. Write TSX, MDX, Markdown or HTML; add zudo-react interactivity and zudo-wind styles as needed.
 
-For developers building content sites or adding content to a desktop app, zfb provides routing, rendering, and content collections as small, composable parts. The engine ships as a single Rust binary.
+Small, composable APIs remain the foundation. The standalone binary and npm package deliver the same CLI; full TypeScript checking and Cloudflare tooling still need Node.js.
 
-Read the [introduction](/docs/getting-started/introduction/) or explore the [three ways to run zfb](/docs/architecture/three-ways-to-run-zfb/).`,
+Start with [your first site](/docs/getting-started/your-first-site/), [Build with zfb](/docs/build-with-zfb/), or [Deploy & Embed](/docs/deploy-embed/)`,
       sitemapHeading: "",
     },
 
@@ -44,11 +44,11 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
         dir: "src/content/docs-ja",
         description:
           "Request/Response モデルのコンテンツエンジン。TSX と MDX を一度書けば、静的 HTML、Workers、ローカルアプリで使えます。",
-        introMarkdown: `TSX と MDX で書いたページを、zfb が 1 つの Request/Response アプリケーションにまとめます。静的 HTML にプリレンダリングする、Cloudflare Workers で配信する、自分のアプリの中でローカルコンテンツサーバーとして動かす、という 3 つの使い方ができます。
+        introMarkdown: `日々のフロントエンド開発のほとんどを 1 つの CLI で。zfb でサイトを作成し、開発、コンテンツと型のチェック、ビルド、プレビューまで進めます。TSX、MDX、Markdown、HTML でページを書き、必要に応じて zudo-react と zudo-wind を組み合わせます。
 
-コンテンツサイトを作る人や、デスクトップアプリにコンテンツを組み込みたい人のために、ルーティング、レンダリング、コンテンツコレクションを、小さく組み合わせやすい部品として提供します。エンジンは単一の Rust バイナリとして配布されます。
+基盤は小さく組み合わせやすい API です。スタンドアロンと npm は同じ CLI の配布方法です。完全な TypeScript チェックと Cloudflare のツールには Node.js が必要です。
 
-[はじめに](/ja/docs/getting-started/introduction/)と、[zfb を動かす 3 つの方法](/ja/docs/architecture/three-ways-to-run-zfb/)をご覧ください。`,
+[最初のサイト](/ja/docs/getting-started/your-first-site/)、[zfb で作る](/ja/docs/build-with-zfb/)、[デプロイと組み込み](/ja/docs/deploy-embed/)から始めてください。`,
       },
     },
     cjkFriendly: true,
@@ -89,16 +89,17 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
       ],
       copyright: `Copyright © ${new Date().getFullYear()} <a href="https://x.com/Takazudo">Takazudo</a>. Built with <a href="https://takazudomodular.com/pj/zudo-doc">zudo-doc</a>.`,
     },
-    siteTreeNavSecondary: ["playground", "changelog", "claude"],
+    siteTreeNavSecondary: [
+      "architecture",
+      "guides",
+      "markdown-features",
+      "playground",
+      "changelog",
+      "claude",
+    ],
     headerNav: [
       { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
-      { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
-      { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
-      {
-        label: "Markdown Features",
-        path: "/docs/markdown-features",
-        categoryMatch: "markdown-features",
-      },
+      { label: "Build with zfb", path: "/docs/build-with-zfb", categoryMatch: "build-with-zfb" },
       {
         label: "zudo-wind",
         path: "/docs/zudo-wind",
@@ -111,8 +112,16 @@ Read the [introduction](/docs/getting-started/introduction/) or explore the [thr
         ],
       },
       { label: "zudo-react", path: "/docs/zudo-react", categoryMatch: "zudo-react" },
+      { label: "Deploy & Embed", path: "/docs/deploy-embed", categoryMatch: "deploy-embed" },
       { label: "Reference", path: "/docs/api", categoryMatch: "api" },
       { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
+      { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
+      { label: "Migration & guides", path: "/docs/guides", categoryMatch: "guides" },
+      {
+        label: "Markdown Features",
+        path: "/docs/markdown-features",
+        categoryMatch: "markdown-features",
+      },
       {
         label: "Playground",
         path: "/docs/playground",

@@ -1,10 +1,10 @@
 # zudo-front-builder (zfb)
 
-A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
+Almost all everyday frontend development in one CLI: create, develop, check, build and preview. Write TSX, MDX, Markdown or HTML pages; compose content APIs, zudo-react interactivity and zudo-wind CSS. The standalone binary and npm distribution provide the same CLI. Full TypeScript checking and Cloudflare tooling still require Node.js.
 
 ## Install without Node
 
-No Node.js required. zfb ships as a self-contained binary with its esbuild executable embedded; CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://takazudomodular.com/pj/zudo-front-builder/docs/install/node-free/)** docs page.
+No Node.js required. zfb ships as a self-contained binary with its esbuild executable embedded; CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
 
 **Linux / macOS (curl):**
 
@@ -30,7 +30,7 @@ This downloads the `x86_64-pc-windows-msvc` binary, verifies its SHA-256 checksu
 
 ## Install via npm (Node required)
 
-For Node.js tools that need CSS directly, use the asynchronous [`compileCss` API](https://takazudomodular.com/pj/zudo-front-builder/docs/api/compile-css/) from `@takazudo/zfb/css` (Node ≥22). It accepts in-memory configuration and uses the same compiler as `zfb css`.
+For Node.js tools that need CSS directly, use the asynchronous [`compileCss` API](https://zfb.takazudomodular.com/docs/api/compile-css/) from `@takazudo/zfb/css` (Node ≥22). It accepts in-memory configuration and uses the same compiler as `zfb css`.
 
 ```sh
 # Scaffold a new site
@@ -46,7 +46,7 @@ pnpm add -D @takazudo/zfb
 
 ## Why Rust?
 
-Rust makes the framework itself fast, memory-safe, and distributable as a single binary — see the [architecture doc](./docs/src/content/docs/architecture/why-rust.mdx) (or the [docs site](https://takazudomodular.com/pj/zudo-front-builder/)) for the full rationale.
+Rust makes the framework itself fast, memory-safe, and distributable as a single binary — see the [architecture doc](./docs/src/content/docs/architecture/why-rust.mdx) (or the [docs site](https://zfb.takazudomodular.com/)) for the full rationale.
 
 ## What zfb is
 
@@ -54,7 +54,7 @@ zfb is the **engine**: router, renderer, content pipeline, and the small set of 
 
 zfb is built by one developer for the things that developer is making — zudo-doc documentation sites, CCResDoc, and the sites those serve. It is published because someone who thinks the same way may want it: people who want to drop a content engine into a Tauri-style app the way CCResDoc does, and people who want SSG and SSR as small composable parts rather than a whole framework that owns the site — the same Request/Response application, run three ways.
 
-At the start of the project everything felt big. Next.js is big, and Astro is lighter but still pulls in a large ecosystem of external libraries the author did not need. Today many small features can be built with AI assistance quickly and at high quality, so a library is no longer the default answer for each of them — those pieces are better kept under your own control than under someone else's release schedule. A tiny core CLI matched that goal, so zfb ships as one Rust binary with a small set of primitives rather than a plugin ecosystem. See [Design philosophy](./docs/src/content/docs/concepts/design-philosophy.mdx) for the fuller argument.
+At the start of the project everything felt big. Next.js is big, and Astro is lighter but still pulls in a large ecosystem of external libraries the author did not need. Today many small features can be built with AI assistance quickly and at high quality, so a library is no longer the default answer for each of them — those pieces are better kept under your own control than under someone else's release schedule. A tiny core CLI matched that goal, so zfb ships as one Rust binary with a small set of primitives rather than a plugin ecosystem. See [Design philosophy](./docs/src/content/docs/architecture/design-philosophy.mdx) for the fuller argument.
 
 | Shape | Drives `fetch` | Example |
 | --- | --- | --- |
@@ -62,13 +62,13 @@ At the start of the project everything felt big. Next.js is big, and Astro is li
 | SSR on Cloudflare Workers | the Worker request handler | `@takazudo/zfb-adapter-cloudflare` |
 | Local content server | a host process spawning the `zfb` binary | [CCResDoc](https://github.com/Takazudo/ccresdoc) |
 
-See [`concepts/choosing-zfb.mdx`](./docs/src/content/docs/concepts/choosing-zfb.mdx) for the longer answer on which shape fits.
+See [`architecture/choosing-zfb.mdx`](./docs/src/content/docs/architecture/choosing-zfb.mdx) for the longer answer on which shape fits.
 
 The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
 
 ## Docs site
 
-The documentation site lives under [`docs/`](./docs) and is published at <https://takazudomodular.com/pj/zudo-front-builder/>.
+The documentation site lives under [`docs/`](./docs) and is published at <https://zfb.takazudomodular.com/>.
 
 ## Limits
 

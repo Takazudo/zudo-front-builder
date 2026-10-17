@@ -7,8 +7,7 @@ category: Concepts
 
 <Info title="What this page covers">
 
-How zfb's surface area is split between **engine primitives** (the six
-things zfb commits to) and **framework concerns** (sidebars, search,
+How zfb's surface area is split between **engine primitives** (the capabilities zfb owns) and **framework concerns** (sidebars, search,
 blog conventions, theming) that live outside the engine.
 
 </Info>
@@ -30,10 +29,11 @@ Knowing which side a feature lives on tells you where to look for it,
 where to extend it, and what your project's responsibility is when zfb
 itself doesn't ship the answer.
 
-## The six engine primitives
+<a id="the-six-engine-primitives"></a>
 
-zfb v1 commits to exactly six primitives. Frameworks build on top of
-them; nothing else in zfb is part of the public surface contract.
+## Current engine surfaces
+
+The original six content primitives below remain useful building blocks. They are not the whole current API: the [CLI](../api/cli.mdx), [zudo-react](../zudo-react/index.mdx), [zudo-wind](../zudo-wind/index.mdx), [islands](./islands.mdx), [client scripts](../guides/client-scripts.mdx), [plugins](./plugins.mdx) and [adapters](./framework-adapters.mdx) also have documented contracts.
 
 1. **[Frontmatter](./frontmatter.mdx)** — unified contract across
    `.md`, `.mdx`, and `.tsx` sources. One JSON shape downstream.
@@ -122,8 +122,7 @@ validation and code-block enrichment instead. Neither set is universal.
 
 By keeping them opt-in (enabled per-project in `zfb.config.ts`) rather
 than Core, zfb avoids baking one framework's opinion into the engine.
-The six engine primitives remain the full public contract; the extras
-catalog is additive and independently togglable.
+The extras catalog is additive and independently togglable.
 
 See [Markdown Features](../markdown-features/index.mdx) for the full list.
 

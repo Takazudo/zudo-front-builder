@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   ARCHITECTURE_GROUPS,
+  BUILD_GROUPS,
+  DEPLOY_SLUGS,
   WIND_UTILITY_GROUPS,
   WIND_ENTRY_SLUGS,
   WIND_LEARN_SLUGS,
@@ -11,6 +13,9 @@ import {
 // zfb 2.20.2 drops MDX named imports; materialize only native component props.
 // The surrounding authored content is retained, and membership stays in one source.
 export const NAVIGATION_INDEX_MEMBERS = new Map([
+  ["build-with-zfb/index", BUILD_GROUPS.map((group) => group.slug)],
+  ...BUILD_GROUPS.map((group) => [group.slug, group.members]),
+  ["deploy-embed/index", DEPLOY_SLUGS],
   ["architecture/index", ARCHITECTURE_GROUPS.map((group) => group.slug)],
   ...ARCHITECTURE_GROUPS.map((group) => [group.slug, group.members]),
   ["zudo-wind/index", WIND_ENTRY_SLUGS],

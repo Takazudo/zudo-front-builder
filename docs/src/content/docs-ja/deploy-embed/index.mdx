@@ -1,0 +1,16 @@
+---
+title: デプロイと組み込み
+description: 静的ホスティング、Workers、ローカルサーバーと組み込み。
+sidebar_position: 40
+---
+
+## 配信先を選ぶ
+
+- **静的ホスティング** — `zfb build` の出力（標準は `dist/`）を静的ホストに配置します。`zfb preview` でビルド済み出力を確認します。サブパスでは `base` を設定して再ビルドし、リンクとアセットを確認してください。
+- **Cloudflare Workers** — リクエスト時の処理には Cloudflare アダプターと `prerender = false` を使います。Node.js と Wrangler が必要です。アダプター設定時の preview は Wrangler に委譲します。
+- **ローカルサーバー** — アプリから CLI を起動する構成は Desktop deployment を参照してください。
+- **ライブラリーとして組み込む** — ホストが処理を制御する場合は Embed as library の境界と制約を確認してください。
+
+zfb に `deploy` サブコマンドはありません。ホストの配信ツールを使います。
+
+<CategoryNav categories={["architecture/three-ways-to-run-zfb","guides/ssr-and-cloudflare-bindings","guides/desktop-deployment","guides/embed-as-library"]} />

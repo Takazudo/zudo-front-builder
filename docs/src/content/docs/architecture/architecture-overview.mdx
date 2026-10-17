@@ -152,9 +152,7 @@ the two-file worker output and how requests are dispatched at runtime, see
 The full rationale for this design is in [JS Runtime](../architecture/js-runtime.mdx):
 the embedded V8 host design and why the bundle contract is engine-agnostic.
 The SSG-first, Hono/Workers bundle shape was chosen to keep the build-time
-and production execution environments interchangeable, and the original
-in-process `deno_core` approach was superseded by the embedded V8 isolate
-once performance and isolation requirements became clear.
+and production execution environments compatible at the bundle boundary. The ordinary embedded V8 host is still backed by `deno_core`; direct V8 remains a non-default prototype.
 
 ## Layering summary
 
