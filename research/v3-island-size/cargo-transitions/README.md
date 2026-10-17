@@ -102,7 +102,7 @@ Only after qualifying native evidence exists may the corresponding existing plat
 ```text
 --expected-old-cargo-sha 2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e
 --expected-new-cargo-sha 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37
---old-cargo-lock research/v3-island-size/cargo-transitions/rolldown-native-318.old.lock
+--old-cargo-ref 2c988535e7c4dca5053941e430e390290c6b9396:research/v3-island-size/cargo-transitions/rolldown-native-318.old.lock
 --reviewed-cargo-transition research/v3-island-size/cargo-transitions/rolldown-native-318.json
 --added-packages <all 111 manifest delta.added identities, comma-separated>
 ```
@@ -114,3 +114,5 @@ node -e 'console.log(require("./research/v3-island-size/cargo-transitions/rolldo
 ```
 
 `--added-packages` lists new identities only for this reviewed mode; changed and removed records are bound separately by the exact manifest. The default invocation remains additive-only. The rebaseline scripts still recompute saved bytes, require unchanged raw and gzipNormalized totals and fixture set, match source/tool/platform/dependency identities, and allow only the existing Cargo hash/evidence keys to move. Neither ceilings nor allowances may move. Each platform remains independently pending until its own native evidence passes. No Linux-only command in this task repins Darwin.
+
+The commands above now use the immutable `--old-cargo-ref` input from #4219. The original native runs used the tracked file as recorded in their historical contracts; those receipts are unchanged. `--old-cargo-lock` is optional byte-for-byte corroboration, and cannot replace the immutable source reference.

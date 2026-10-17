@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
+import { parse } from "yaml";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workflow = readFileSync(joinRoot(".github/workflows/node-free-smoke.yml"), "utf8");
@@ -132,6 +133,9 @@ describe("showcase workflow tool provenance", () => {
   });
 
   it("declares no types on the pull_request trigger", () => {
-    expect(workflow).toMatch(/^on:\n {2}pull_request:\n {2}push:\n/m);
+    const triggers = parse(workflow).on;
+    expect(triggers).toHaveProperty("pull_request");
+    // A bare `pull_request:` parses to null; a mapping must not narrow the event types.
+    expect(triggers.pull_request ?? {}).not.toHaveProperty("types");
   });
 });
