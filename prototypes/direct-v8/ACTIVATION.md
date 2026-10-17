@@ -7,6 +7,30 @@ merge, dispatch native probes, or change live contracts in this continuation.
 The standalone direct-V8 implementation and its original receipts remain in
 [#4242](https://github.com/Takazudo/zudo-front-builder/pull/4242).
 
+## Current execution record (2026-10-17)
+
+The paired `cargo-internal-rewire` was staged, independently reviewed and applied on #4242.
+This supersedes the "not authorization" scope above only for that apply. Runtime activation,
+the default switch, Deno removal and release still need their own decisions.
+
+- **Prerequisite:** draft PR [#4295](https://github.com/Takazudo/zudo-front-builder/pull/4295)
+  re-pinned the Darwin contract to the v4.5.3 release baseline (`release-bump`, commit
+  `14c6981776b4544c6ccd1335f0daeb2da8d9f5f6`). It used native artifact 12062161089 of run
+  38936818267, measured at main source `0fb13d1635b6f78fc58dbfce79dc38f92df7fcd8`. That commit
+  was merged into #4242 (`4f07e4d4`); #4295 itself is not merged to main.
+- **Linux input:** Health run 39008132372, job 117324703148, artifact 12091848239, merge source
+  `e2e78eb78c631c351422a66bebf07fbaa00973e2`, probe head
+  `792c812325310df73540cc20aa590bb8de049d96`. The predecessor is the released contract at
+  `d70dd6d94ab1b89a65fee9ed7727747d1de860f2`. That run's own Health job concluded `failure` at
+  "Enforce Linux x64 island-size budgets", rejecting exactly the three old-Cargo-pin lines. This is
+  the expected pre-admission input (C), not a pass.
+- **Darwin input:** `island-size-darwin.yml` run 39015514836, job 117346719895, artifact
+  12093899220, source `792c8123…`. The predecessor is the release-bump contract at `14c69817`.
+- **Stage and apply:** both platforms were staged into one directory and applied as commit
+  `7b68afda`. Only the movable keys listed in D changed.
+- **Final verification** of the contract-containing head is recorded in the #4242 report,
+  not here.
+
 ## Refreshed source and evidence (2026-10-16)
 
 The historical prepared-input table below is retained as history, not an admission
@@ -244,11 +268,27 @@ from branch-name guesses. `NEW_CARGO_REF` identifies the candidate lock and
 manifests; `PREVIOUS_LINUX_REF` and `PREVIOUS_DARWIN_REF` identify exact existing
 contract bytes. `STAGE` is a new scratch directory, shared by both commands.
 
+These are the values of the 2026-10-17 run. The lock, ref and declaration
+values are fixed by the reviewed transition; the run, job, artifact and
+expiry values must be re-read from the API before any repeat. The
+contracts on #4242 are already past this transition and no longer match
+OLD_CARGO_SHA.
+
 ```sh
-OLD_CARGO_SHA=2726cdb828d0f3c6cea16f1d5f00d03625d21dfe9e0995d5142ef0246157678e
-NEW_CARGO_SHA=d0f3e6764ef9233e74ea89a931f9ebfcd6b05f429db36e5ce65f2ddd5685b1bb
-OLD_CARGO_REF=6fb3fbe0103c5c90799c3262ca5c1ab9ade0f27e
-DECLARATION=prototypes/direct-v8/evidence/cargo-rewire/declaration.json
+OLD_CARGO_SHA=13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37
+NEW_CARGO_SHA=230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138
+OLD_CARGO_REF=e1ef4f5b59a2bba260eac29ee8edfdfbcd928335
+NEW_CARGO_REF=792c812325310df73540cc20aa590bb8de049d96
+DECLARATION=prototypes/direct-v8/evidence/cargo-rewire-main-e1ef4f5b/declaration.json
+RECEIPTS=prototypes/direct-v8/evidence/cargo-rewire-main-e1ef4f5b
+PREVIOUS_LINUX_REF=d70dd6d94ab1b89a65fee9ed7727747d1de860f2
+PREVIOUS_DARWIN_REF=14c6981776b4544c6ccd1335f0daeb2da8d9f5f6
+LINUX_RUN=39008132372 LINUX_JOB=117324703148
+LINUX_HEAD=792c812325310df73540cc20aa590bb8de049d96
+LINUX_SOURCE=e2e78eb78c631c351422a66bebf07fbaa00973e2
+DARWIN_RUN=39015514836 DARWIN_JOB=117346719895 DARWIN_ARTIFACT_ID=12093899220
+DARWIN_EXPIRES=2026-11-16T07:56:46Z
+DARWIN_SOURCE=792c812325310df73540cc20aa590bb8de049d96
 
 node scripts/rebaseline-island-size-linux.mjs --artifact "$LINUX_ARTIFACT" \
   --run-id "$LINUX_RUN" --job-id "$LINUX_JOB" \
@@ -285,6 +325,12 @@ node scripts/rebaseline-island-size-darwin.mjs --artifact "$DARWIN_ARTIFACT" \
   again from reviewed inputs; there is no force path. Two platform fixture
   successes do not substitute for the native artifacts above.
 
+Historical values, kept for the record and not to be executed: the earlier
+prepared transition used `OLD_CARGO_SHA=2726cdb8…157678e`,
+`NEW_CARGO_SHA=d0f3e676…85b1bb`, `OLD_CARGO_REF=6fb3fbe0…` and
+`evidence/cargo-rewire/declaration.json`. Those lock hashes no longer
+describe main or this branch.
+
 ### E. Apply the pair, then obtain final enforced verification
 
 Only after explicit live-activation authorization and review of D:
@@ -295,7 +341,14 @@ git diff --check
 git diff -- research/v3-island-size scripts/__tests__/island-size-budget.test.mjs
 ```
 
-- [ ] Review and commit both platforms together. Apply verifies live/staged
+- [ ] Review and commit both platforms together. The pre-commit Oxfmt hook may
+  collapse short JSON arrays in the applied contracts. Check that the committed
+  contracts parse to the staged JSON with the same key order, and record the
+  committed bytes, not the staged ones, as the contract SHA-256. The hand-pinned
+  predecessor blocks in `island-size-budget.test.mjs` (`repinnedFromContracts`
+  and the Linux released-contract fixture block) are not rewritten by the
+  tools. Update them to the new authentic predecessors, have the edit reviewed
+  in a fresh context, and keep the live Cargo admission gate unchanged. Apply verifies live/staged
   hashes, prepares temporary siblings and attempts rollback on rename failure;
   it does not promise multi-file crash atomicity. Inspect all files after any
   interrupted apply before continuing.

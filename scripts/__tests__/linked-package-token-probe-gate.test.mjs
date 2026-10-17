@@ -266,9 +266,33 @@ describe("linked-package probe current-run prerequisite gate (#4200)", () => {
     expect(stepIf(upload)).toBe("always()");
   });
 
+  it.each([false, true])(
+    "runs linked-dist coverage with a successful build, prior failure=%s",
+    (failed) => {
+      const linkedDist = stepBlock("name: Declared linked dist dev watch row (#3931)");
+      expect(runs(linkedDist, { outcomes: { build_binary: "success" }, failed })).toBe(true);
+    },
+  );
+
+  it.each(["failure", "skipped", "cancelled", undefined])(
+    "does not run linked-dist coverage with build outcome %s",
+    (build) => {
+      const linkedDist = stepBlock("name: Declared linked dist dev watch row (#3931)");
+      expect(runs(linkedDist, { outcomes: { build_binary: build }, failed: true })).toBe(false);
+    },
+  );
+
+  it("does not run linked-dist coverage after cancellation even with a successful build", () => {
+    const linkedDist = stepBlock("name: Declared linked dist dev watch row (#3931)");
+    expect(runs(linkedDist, { outcomes: { build_binary: "success" }, cancelled: true })).toBe(
+      false,
+    );
+  });
+
   it("retains declared linked-dist Rust coverage and independent browser installations", () => {
     const linkedDist = stepBlock("name: Declared linked dist dev watch row (#3931)");
-    expect(stepIf(linkedDist)).toBe("always()");
+    expect(stepIf(linkedDist)).toBe("!cancelled() && steps.build_binary.outcome == 'success'");
+    expect(linkedDist).not.toContain("continue-on-error");
     for (const name of [
       "e2e_3163_nested_site_compiled_dist_sibling_edit_is_served",
       "e2e_3926_ignored_undeclared_sibling_writes_do_not_tick",

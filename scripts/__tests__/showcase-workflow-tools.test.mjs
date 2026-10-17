@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
+import { parse } from "yaml";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workflow = readFileSync(joinRoot(".github/workflows/node-free-smoke.yml"), "utf8");
@@ -28,20 +29,29 @@ function step(jobText, name) {
 }
 
 describe("showcase workflow tool provenance", () => {
-  it("gates the preview job on a non-draft, same-repository PR outside Dependabot", () => {
+  it("evaluates the preview guard for draft, fork, bot and trusted ready events", () => {
     const preview = job("showcase-preview");
-    const beforeSteps = preview.slice(0, preview.indexOf("    steps:\n"));
-    const condition = beforeSteps.match(/^    if: >-\n((?:      .+\n)+)/m)?.[1];
-
-    expect(condition?.trim().split(/\s+&&\s+/)).toEqual([
-      "github.event_name == 'pull_request'",
-      "github.event.pull_request.head.repo.full_name == github.repository",
-      "github.actor != 'dependabot[bot]'",
-      "!github.event.pull_request.draft",
-    ]);
+    const expression = preview.match(/^    if: >-\n((?:      .+\n)+)/m)[1];
+    const allowed = Function("github", "return (" + expression + ")");
+    const github = {
+      event_name: "pull_request",
+      repository: "owner/repo",
+      actor: "owner",
+      event: { pull_request: { draft: true, head: { repo: { full_name: "owner/repo" } } } },
+    };
+    expect(allowed(github)).toBe(false);
+    github.event.pull_request.draft = false;
+    expect(allowed(github)).toBe(true);
+    github.event.pull_request.head.repo.full_name = "fork/repo";
+    expect(allowed(github)).toBe(false);
+    github.event.pull_request.head.repo.full_name = "owner/repo";
+    github.actor = "dependabot[bot]";
+    expect(allowed(github)).toBe(false);
+    github.event_name = "push";
+    expect(allowed(github)).toBe(false);
   });
 
-  it("keeps draft filtering out of workflow triggers and verification jobs", () => {
+  it("keeps draft filtering out of triggers and verification jobs", () => {
     expect(workflow.slice(0, workflow.indexOf("\njobs:\n"))).not.toContain("pull_request.draft");
     for (const name of [
       "build-binary",
@@ -123,6 +133,9 @@ describe("showcase workflow tool provenance", () => {
   });
 
   it("declares no types on the pull_request trigger", () => {
-    expect(workflow).toMatch(/^on:\n {2}pull_request:\n {2}push:\n/m);
+    const triggers = parse(workflow).on;
+    expect(triggers).toHaveProperty("pull_request");
+    // A bare `pull_request:` parses to null; a mapping must not narrow the event types.
+    expect(triggers.pull_request ?? {}).not.toHaveProperty("types");
   });
 });
