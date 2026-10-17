@@ -29,6 +29,7 @@ import {
 } from "../rebaseline-island-size-linux.mjs";
 import { budgetAllowsRetention } from "../island-size-evidence.mjs";
 import { asSchemaV2 } from "./fixtures/island-size-checkout.mjs";
+import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
@@ -559,26 +560,20 @@ function assertHistoricalContractAndReviewedCargoGate(contract) {
     contract.toolchain.cargoLockSha256,
   );
   expect(validate(historical)).toEqual({ errors: [], passed: true });
+  // The historical #318 transition is proven from its frozen reviewed bytes,
+  // never from the live lock: that proof says nothing about a later candidate.
+  const lock = reviewedCargoLock();
+  const proof = proveCargoProducerLock({
+    contractSha: lock.expectedOldSha,
+    artifactSha: lock.expectedNewSha,
+    ...lock,
+  });
+  expect(proof.review.id).toBe("rolldown-native-318");
   const current = makeState(contract.platform, contract);
   if (current.localInputs.cargoLockSha256 === contract.toolchain.cargoLockSha256) {
     expect(validate(current)).toEqual({ errors: [], passed: true });
     return;
   }
-  const directory = join(sizeDir, "cargo-transitions");
-  const reviewedTransitionText = readFileSync(join(directory, "rolldown-native-318.json"), "utf8");
-  const review = JSON.parse(reviewedTransitionText);
-  const proof = proveCargoProducerLock({
-    contractSha: contract.toolchain.cargoLockSha256,
-    artifactSha: current.localInputs.cargoLockSha256,
-    expectedOldSha: review.oldSha,
-    expectedNewSha: review.newSha,
-    oldText: readFileSync(join(directory, "rolldown-native-318.old.lock"), "utf8"),
-    newText: readFileSync(join(repoRoot, "Cargo.lock"), "utf8"),
-    added: review.delta.added.map((row) => row.id),
-    oldLockSource: "rolldown-native-318.old.lock",
-    reviewedTransitionText,
-  });
-  expect(proof.review.id).toBe("rolldown-native-318");
   // Policy authorization does NOT admit the new producer. Fresh platform-native
   // bytes and the existing rebaseline gates must move the live contract first.
   expect(validate(current)).toEqual({
@@ -589,6 +584,13 @@ function assertHistoricalContractAndReviewedCargoGate(contract) {
       "packed provenance: Cargo lockfile differs from the contract",
     ],
   });
+  // Live admission gate: a lock the contract does not pin stays red until fresh
+  // native evidence moves the contract through a reviewed rebaseline.
+  expect.fail(
+    `live Cargo.lock ${current.localInputs.cargoLockSha256} is not admitted by the ` +
+      `${contract.platform.os}-${contract.platform.arch} contract, which pins ` +
+      contract.toolchain.cargoLockSha256,
+  );
 }
 
 function reload(state, mode) {
