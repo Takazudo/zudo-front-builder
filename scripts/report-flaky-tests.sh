@@ -78,8 +78,8 @@ ensure_label() {
 # ── Inspect evidence and extract flaky testcases ──────────────────────────
 # Prints one deduped test identity per line on stdout; evidence diagnostics
 # go to stderr so they cannot be mistaken for test identities. A testcase is
-# flaky iff it has a nested <flakyFailure> element — nextest's marker for
-# "failed on an earlier try, passed on the last try" (see the captured
+# flaky iff it has a direct <flakyFailure> element without a final failure.
+# This is nextest's "failed earlier, passed on the last try" marker (see the captured
 # fixture for the real shape). Missing/invalid inputs reduce coverage, never
 # establish a clean result. Counts describe observed elements, not suite
 # aggregate attributes (which overlap in nested suites).
@@ -93,7 +93,7 @@ def report(message):
 
 valid = zero = suites_count = testcases = failures = errors = skipped = 0
 flaky = set()
-outcomes = {"failure", "error", "skipped", "flakyFailure"}
+outcomes = {"failure", "error", "skipped", "flakyFailure", "rerunFailure"}
 output_tags = {"system-out", "system-err"}
 for path in sys.argv[1:]:
     try:
@@ -119,6 +119,13 @@ for path in sys.argv[1:]:
         or (node.tag in outcomes and any(
             child.tag not in output_tags for child in node
         ))
+        # nextest retains the first failure plus rerunFailure for failed retries.
+        # Neither an orphan retry nor contradictory pass-on-retry is usable evidence.
+        or (node.tag == "testcase" and node.find("rerunFailure") is not None
+            and node.find("failure") is None and node.find("error") is None)
+        or (node.tag == "testcase" and node.find("flakyFailure") is not None
+            and any(node.find(tag) is not None
+                    for tag in ("failure", "error", "skipped", "rerunFailure")))
         or (node.tag == "testcase" and node.find("flakyFailure") is not None
             and not (node.get("classname") or node.get("name")))
         or (node is not root and node.tag in ("testsuite", "testsuites")

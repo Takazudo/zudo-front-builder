@@ -242,6 +242,50 @@ CASE='captured fixture counts'
 OUTPUT=$OUTPUT_1
 contains 'suites=1; testcases=15; failures=0; errors=0; skipped=0; flaky-tests=1' 'captured retry is separate from final failures'
 
+# The suite is copied verbatim from the failing macOS exam artifact (see
+# fixture provenance). A failed retry is a final failure, never a flaky pass.
+RETRY_FIXTURE="$ROOT_DIR/tests/fixtures/rerun-failure-junit-example.xml"
+CASE='captured failed retry'
+run_dry "$RETRY_FIXTURE"
+contains 'coverage=complete; valid-reports=1/1' 'captured retry report accepted'
+contains 'suites=1; testcases=13; failures=1; errors=0; skipped=0; flaky-tests=0' 'failed retries count as one failed testcase'
+contains 'Zero flakes does not establish that all tests passed.' 'failed report is not a successful run'
+no_issues
+
+CASE='captured failed retry beside captured flaky pass'
+run_dry "$RETRY_FIXTURE" "$FIXTURE"
+contains 'coverage=complete; valid-reports=2/2' 'both captured reports retained'
+contains 'testcases=28; failures=1; errors=0; skipped=0; flaky-tests=1' 'failure and flaky pass remain distinct'
+contains "Flaky test detected (pass-on-retry): $EXPECTED_TEST_ID" 'genuine flaky pass still reported'
+COUNT=$(printf '%s\n' "$OUTPUT" | grep -c 'would create issue' || true)
+if [ "$COUNT" -eq 1 ]; then pass "$CASE: only genuine flake filed"; else fail "$CASE: $COUNT creates"; fi
+
+# Adversarial mutations are synthetic validation tests, not emitter captures.
+for BODY in \
+  '<rerunFailure/>' \
+  '<failure/><wrapper><rerunFailure/></wrapper>' \
+  '<failure/><system-out><rerunFailure/></system-out>' \
+  '<failure/><rerunFailure><unknown/></rerunFailure>' \
+  '<failure/><rerunFailure><system-out><failure/></system-out></rerunFailure>' \
+  '<failure/><rerunFailure/><flakyFailure/>' \
+  '<failure/><flakyFailure/>' \
+  '<error/><flakyFailure/>' \
+  '<skipped/><flakyFailure/>'; do
+  printf '<testsuite><testcase name="invalid" classname="sample">%s</testcase></testsuite>\n' "$BODY" > "$TMP_DIR/invalid-retry.xml"
+  CASE="invalid retry structure $BODY"
+  run_dry "$TMP_DIR/invalid-retry.xml"
+  contains 'invalid evidence' 'rejects invalid retry placement or contradictory outcome'
+  no_issues
+  not_clean
+done
+
+CASE='external entity in retry output'
+printf '%s\n' '<!DOCTYPE testsuite [<!ENTITY external SYSTEM "file:///etc/passwd">]><testsuite><testcase name="invalid" classname="sample"><failure/><rerunFailure>&external;</rerunFailure></testcase></testsuite>' > "$TMP_DIR/external-entity.xml"
+run_dry "$TMP_DIR/external-entity.xml"
+contains 'invalid evidence' 'external entity is not resolved'
+no_issues
+not_clean
+
 CASE='clean evidence'
 run_dry "$CLEAN_FIXTURE"
 contains 'coverage=complete; valid-reports=1/1' 'complete inspected coverage'
