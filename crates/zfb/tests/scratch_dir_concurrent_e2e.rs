@@ -487,8 +487,13 @@ async fn concurrent_scenario() {
     fs::write(&public_probe, PUBLIC_PROBE_BUILT).unwrap();
 
     fs::write(
+        root.join("components/other-badge.tsx"),
+        "\"use client\";\nexport function OtherBadge() { return <span>OTHER-ISLAND</span>; }\n",
+    )
+    .unwrap();
+    fs::write(
         root.join("pages/second.tsx"),
-        "import { Island } from '@takazudo/zfb';\nexport function OtherBadge() { return <span>OTHER-ISLAND</span>; }\nexport default function Page() { return <html><body><Island when=\"load\"><OtherBadge /></Island></body></html>; }\n",
+        "import { Island } from '@takazudo/zfb';\nimport { OtherBadge } from '../components/other-badge';\nexport default function Page() { return <html><body><Island when=\"load\"><OtherBadge /></Island></body></html>; }\n",
     ).unwrap();
 
     // Step 1: a prebuilt dist/ that carries the WRONG define.

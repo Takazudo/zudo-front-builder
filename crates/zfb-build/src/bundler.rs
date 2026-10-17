@@ -5929,7 +5929,7 @@ pub fn bundle_with_session(
             shadow.join("zudo-react-build.mjs"),
             format!(
                 "globalThis.__zfb ??= {{}}; globalThis.__zfb.zudoReactBuild = {}; globalThis.__zfb.zudoReactIslands = {};\n",
-                json_str(&build),
+                json_str(build),
                 serde_json::to_string(names)?
             ),
         )?;
