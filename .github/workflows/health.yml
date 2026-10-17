@@ -339,7 +339,14 @@ jobs:
       # zero samples for #2887's R-B/R-C rules (#2904). This is observability
       # only, not aggregation or storage: lines land in this job's own log
       # under GitHub's retention.
+      # Capture successful setup before contract tests: their verdict must not
+      # prevent the existing native build from collecting size evidence.
+      - name: Record successful native build prerequisites
+        id: native_prerequisites
+        run: echo "Native setup and package installation succeeded"
+
       - run: pnpm test:workspace
+        id: workspace_tests
         env:
           ZFB_SUPERVISOR_TIMELINE: "1"
 
@@ -371,6 +378,7 @@ jobs:
       # zfb_test_utils::locate_esbuild() resolves for the esbuild-gated
       # integration tests run below.
       - id: build_binary
+        if: ${{ !cancelled() && steps.native_prerequisites.outcome == 'success' }}
         run: cargo build --workspace --all-targets
 
       - name: Record default-layout binary provenance (#4012)
@@ -741,7 +749,7 @@ jobs:
           retention-days: 7
 
       - name: Declared linked dist dev watch row (#3931)
-        if: always()
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         run: |
           cargo test -p zfb --test dev_sibling_watch_1678_e2e e2e_3163_nested_site_compiled_dist_sibling_edit_is_served -- --include-ignored
           cargo test -p zfb --test dev_sibling_watch_1678_e2e e2e_3926_ignored_undeclared_sibling_writes_do_not_tick -- --include-ignored
@@ -858,11 +866,15 @@ jobs:
       # Keep the test suite on Node 22 above. The size contract pins Node and
       # zlib separately because gzip-9 is part of the measured byte oracle.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        id: size_node
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
         with:
           node-version: 24.14.0
           cache: pnpm
 
       - name: Assert island-size toolchain
+        id: size_toolchain
+        if: ${{ !cancelled() && steps.size_node.outcome == 'success' }}
         run: |
           node --input-type=module -e '
             if (process.version !== "v24.14.0") {
@@ -929,9 +941,13 @@ jobs:
       # Rebuild and pack both packages from this checkout so workspace and
       # published-consumer resolution are measured from the same source SHA.
       - name: Build and pack packages for island-size measurement
+        id: size_packages
+        if: ${{ !cancelled() && steps.build_binary.outcome == 'success' && steps.size_toolchain.outcome == 'success' }}
         run: |
           ZFB_SIZE_OUT="$GITHUB_WORKSPACE/target/island-size"
           ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
+          # A cached or interrupted prior run must not supply any package/output.
+          rm -rf "$ZFB_SIZE_OUT"
           mkdir -p "$ZFB_SIZE_OUT/pack" "$ZFB_SIZE_OUT/packed-package" "$ZFB_SIZE_OUT/packed-runtime" "$ZFB_SIZE_OUT/packed-slugify"
           pnpm -C packages/zfb-slugify build
           pnpm -C packages/zfb build
@@ -951,7 +967,9 @@ jobs:
       # measurement.json from the saved pass bytes, and check-budget.mjs
       # recomputes both metrics from those bytes before comparing raw and
       # gzipNormalized against the zero-allowance ceilings.
-      - name: Measure and enforce Linux x64 island-size budgets
+      - name: Collect Linux x64 island-size measurements
+        id: size_measurements
+        if: ${{ !cancelled() && steps.size_packages.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -989,24 +1007,29 @@ jobs:
             --measurement "$ZFB_SIZE_OUT/real-workspace/measurement.json"
           node research/v3-island-size/normalize-identity.mjs \
             --measurement "$ZFB_SIZE_OUT/real-packed/measurement.json"
-          node research/v3-island-size/check-budget.mjs \
-            --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" \
-            --packed "$ZFB_SIZE_OUT/real-packed/measurement.json" \
-            --contract research/v3-island-size/decision-linux-x64.json
 
-      # Keep the emitted JS, both-pass dist inventories, and the normalized
-      # sidecars for byte-level comparison when an exact ceiling fails (issue
-      # #3767). These two measurement trees are small; omit the packed
-      # tarballs and native binary.
+      # Preserve the enforced verdict. Only a complete pair that passes, or
+      # fails solely on the old Cargo pin with identical totals, is uploaded
+      # under the consumer's qualifying artifact name. Other diagnostics stay
+      # in the failed step log, never masquerading as activation evidence.
+      - name: Enforce Linux x64 island-size budgets
+        id: size_budget
+        if: ${{ !cancelled() && steps.size_measurements.outcome == 'success' }}
+        run: node scripts/island-size-evidence.mjs
+
+      # Keep emitted JS, both-pass dist inventories, and normalized sidecars
+      # for paired review, including an old-Cargo-pin-only enforced rejection.
+      # Incomplete or changed-total diagnostics are not qualifying evidence.
+      # Omit the packed tarballs and native binary; preserve the consumer layout.
       - name: Upload island-size measurement evidence
-        if: always()
+        if: ${{ !cancelled() && steps.size_measurements.outcome == 'success' && steps.size_budget.outputs.complete == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: island-size-linux-x64
           path: |
             target/island-size/real-workspace/
             target/island-size/real-packed/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).

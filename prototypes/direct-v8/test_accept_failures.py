@@ -241,7 +241,8 @@ class ProbeFailureTest(unittest.TestCase):
 class MainFailureReceiptTest(unittest.TestCase):
     def run_failure(self, error, *, propagates=False):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # accept.ROOT is canonical in production; macOS TMPDIR is a /var -> /private/var alias.
+            root = Path(directory).resolve()
             out = root / "target" / "failure"
 
             def metadata(instance):
@@ -285,6 +286,68 @@ class MainFailureReceiptTest(unittest.TestCase):
     def test_interrupt_writes_failure_receipt_and_still_propagates(self):
         report = self.run_failure(KeyboardInterrupt(), propagates=True)
         self.assertIn("KeyboardInterrupt", report["error"])
+
+
+class OutputBoundaryTest(unittest.TestCase):
+    """The target/ boundary holds for symlinked spellings without trusting them (macOS TMPDIR shape)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        base = Path(directory.name).resolve()
+        self.root = base / "repo"
+        (self.root / "target").mkdir(parents=True)
+        self.outside = base / "outside"
+        self.outside.mkdir()
+        self.alias = base / "alias"
+        self.alias.symlink_to(self.root, target_is_directory=True)
+
+    def main(self, output):
+        def refuse(instance):
+            raise accept.Refusal("stop after the boundary check")
+
+        with mock.patch.object(accept, "ROOT", self.root), \
+                mock.patch.object(accept.Acceptance, "environment", return_value={"fixture": True}), \
+                mock.patch.object(accept.Acceptance, "prepare_icu", return_value={"fixture": True}), \
+                mock.patch.object(accept.Acceptance, "cargo_target_dir", new=refuse), \
+                mock.patch.object(accept.sys, "argv", ["accept.py", "--output", str(output)]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return accept.main()
+
+    def assert_refused(self, output, escaped):
+        with self.assertRaises(SystemExit) as raised:
+            self.main(output)
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(escaped.exists())
+
+    def test_output_spelled_through_a_root_alias_is_accepted_at_its_canonical_path(self):
+        self.assertEqual(self.main(self.alias / "target" / "run"), 1)
+        report = json.loads((self.root / "target" / "run" / "acceptance.json").read_text())
+        self.assertIn("stop after the boundary check", report["error"])
+
+    def test_symlinked_target_directory_cannot_move_the_boundary(self):
+        (self.root / "target").rmdir()
+        (self.root / "target").symlink_to(self.outside, target_is_directory=True)
+        self.assert_refused(self.root / "target" / "run", self.outside / "run")
+
+    def test_symlink_inside_target_cannot_escape(self):
+        (self.root / "target" / "link").symlink_to(self.outside, target_is_directory=True)
+        self.assert_refused(self.root / "target" / "link" / "run", self.outside / "run")
+        self.assert_refused(self.alias / "target" / "link" / "run", self.outside / "run")
+
+    def test_target_itself_and_existing_outputs_are_refused(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.main(self.alias / "target")
+        self.assertEqual(raised.exception.code, 2)
+        existing = self.root / "target" / "existing"
+        existing.mkdir()
+        with self.assertRaises(SystemExit) as raised:
+            self.main(self.alias / "target" / "existing")
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(list(existing.iterdir()), [])
+
+    def test_parent_traversal_cannot_escape(self):
+        self.assert_refused(self.root / "target" / ".." / ".." / "outside" / "run", self.outside / "run")
 
 
 if __name__ == "__main__":

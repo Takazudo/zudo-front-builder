@@ -262,7 +262,8 @@ class MainReportConsistencyTest(unittest.TestCase):
 
     def run_acceptance(self, *, include_generated=True, corrupt=None):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # accept.ROOT is canonical in production; macOS TMPDIR is a /var -> /private/var alias.
+            root = Path(directory).resolve()
             target = root / "target"
             examples = target / "debug" / "examples"
             examples.mkdir(parents=True)
