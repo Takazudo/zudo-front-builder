@@ -4194,6 +4194,40 @@ fn dev_client_script_urls(url_prefix: &str, output_filenames: &HashSet<String>) 
 #[allow(clippy::too_many_arguments)] // shared boot/tick inputs remain independent of companion state ownership
 fn rebundle_islands(
     project_root: &Path,
+    assets_root: &Path,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    plugin_config: &crate::commands::build::IslandsPluginConfig,
+    url_prefix: &str,
+    url_handle: &zfb_server::IslandsBundleUrl,
+    companion_ledger: &Arc<Mutex<IslandsCompanionLedger>>,
+    raw_invalidation: &zfb_build::RawImportInvalidation,
+    package_route_entrypoints: &[PathBuf],
+) -> anyhow::Result<Option<IslandsBundleInfo>> {
+    rebundle_islands_inner(
+        project_root,
+        assets_root,
+        bundle_config,
+        plugin_config,
+        url_prefix,
+        url_handle,
+        companion_ledger,
+        raw_invalidation,
+        package_route_entrypoints,
+    )
+    .inspect_err(|_| {
+        // Registration can fail before disk writes while publication stays
+        // pending. Preserve the last bytes, but require a successful publish
+        // after recovery even if its graph returns to the same identity.
+        companion_ledger
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .invalidate_build_reuse();
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // same shared boot/tick inputs as the publication wrapper
+fn rebundle_islands_inner(
+    project_root: &Path,
     // Where dev assets are written + served from (issue #1189: the isolated
     // `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
     assets_root: &Path,

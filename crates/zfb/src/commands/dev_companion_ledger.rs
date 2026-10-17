@@ -111,6 +111,10 @@ impl ClientScriptCompanionLedger {
 }
 
 impl IslandsCompanionLedger {
+    pub(crate) fn invalidate_build_reuse(&mut self) {
+        self.published_build_token = None;
+    }
+
     pub(crate) fn begin(&mut self) {
         self.baseline_unresolved = self.unresolved.clone();
     }
@@ -236,6 +240,23 @@ mod tests {
             "aborted entry writes must force a repairing publication even after sources revert"
         );
         assert!(!ledger.can_reuse_build("second", |_| true));
+    }
+
+    #[test]
+    fn failed_preparation_requires_publication_after_same_identity_recovers() {
+        let mut ledger = IslandsCompanionLedger::default();
+        ledger.stage_build(names(&["chunk-a.js"]), "first".to_owned());
+        let _ = ledger.commit(false);
+        assert!(ledger.can_reuse_build("first", |_| true));
+        ledger.begin();
+        // A registration error may leave the document transaction pending,
+        // without invoking abort_candidate or staging any replacement files.
+        ledger.invalidate_build_reuse();
+        assert!(!ledger.can_reuse_build("first", |_| true));
+        ledger.stage_build(names(&["chunk-a.js"]), "first".to_owned());
+        let _ = ledger.commit(false);
+        assert!(ledger.can_reuse_build("first", |_| true));
+        assert_eq!(ledger.retained_len(), 0);
     }
 
     #[test]
