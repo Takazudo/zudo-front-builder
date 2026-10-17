@@ -1,6 +1,6 @@
-# Island-size lock fingerprint policy (proposal, pending owner review)
+# Island-size lock fingerprint policy
 
-Status: **proposal** for [#4187](https://github.com/Takazudo/zudo-front-builder/issues/4187), written under sub-issue [#4189](https://github.com/Takazudo/zudo-front-builder/issues/4189) of epic [#4188](https://github.com/Takazudo/zudo-front-builder/issues/4188). Sub-issue [#4190](https://github.com/Takazudo/zudo-front-builder/issues/4190) implements it as `research/v3-island-size/lock-fingerprint.mjs`. Owner review is required before live activation (the merge into `main`). Nothing in this document claims owner approval.
+Status: **live** since the schemaVersion 3 migration ([#4194](https://github.com/Takazudo/zudo-front-builder/issues/4194), `128f6fd4`) and the Release Convergence 4.5.0 epic ([#4208](https://github.com/Takazudo/zudo-front-builder/issues/4208), root PR [#4220](https://github.com/Takazudo/zudo-front-builder/pull/4220) merged at `f539612e`). It was originally proposed for [#4187](https://github.com/Takazudo/zudo-front-builder/issues/4187) (closed) under sub-issue [#4189](https://github.com/Takazudo/zudo-front-builder/issues/4189) of epic [#4188](https://github.com/Takazudo/zudo-front-builder/issues/4188), and sub-issue [#4190](https://github.com/Takazudo/zudo-front-builder/issues/4190) implemented it as `research/v3-island-size/lock-fingerprint.mjs`.
 
 Policy identity: `policyVersion: 1`, `parser: "yaml@2.9.0"`. Any change to the selection, classification, normalization, or canonical form below is a `policyVersion` bump, and the helper's own bytes are pinned by `helperSha256`.
 
@@ -11,13 +11,13 @@ Decided under [#4210](https://github.com/Takazudo/zudo-front-builder/issues/4210
 | Reason | May move in `dependencyFingerprint` | Native evidence | Status |
 | --- | --- | --- | --- |
 | `fingerprint-helper` | `helperSha256` only | none (T1-only; proves old blob at `--base-ref` = pinned value, and old vs new helper give identical `sha256` + `--explain` inventory on the real lock) | implemented (S4 [#4213](https://github.com/Takazudo/zudo-front-builder/issues/4213)) |
-| `dependency-graph` | `sha256` only | fresh, both platforms, totals unchanged | deferred: [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218) (item 9a) |
-| `fingerprint-policy` | `policyVersion` + `parser` + `sha256` + `helperSha256`, only together with a `policyVersion` increment | fresh, both platforms, totals unchanged | deferred: [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218) |
-| `release-bump`, `runtime-identity`, `lockfile-provenance`, `fingerprint-migration` | none (all four keys refused) | as today | unchanged |
+| `dependency-graph` | `sha256` only | fresh, both platforms, totals unchanged | implemented ([#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218), item 9a); live policy unchanged at 1; activation requires fresh native evidence (see [Future real activation](#11-future-real-activation)) |
+| `fingerprint-policy` | `policyVersion` + `parser` + `sha256` + `helperSha256`, only together with a `policyVersion` increment of exactly one that equals the checkout helper's exported `FINGERPRINT_POLICY_VERSION` | fresh, both platforms, totals unchanged | implemented ([#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218), item 9c); live policy unchanged at 1; activation requires fresh native evidence (see [Future real activation](#11-future-real-activation)) |
+| `release-bump`, `runtime-identity`, `lockfile-provenance`, `fingerprint-migration`, `cargo-producer-lock`, `cargo-internal-rewire` | none (all four keys refused) | as today | unchanged |
 
-A helper edit that changes the fingerprint's value is by definition a policy change, not helper maintenance: `fingerprint-helper` refuses it, and the path is `fingerprint-policy`. The rejected alternative for #4198 was a documented full re-pin; no existing reason accepts `helperSha256` movement, so it would still need either a hand edit (bypassing every fail-closed check) or a new reason anyway.
+A helper edit that changes the fingerprint's value is by definition a policy change, not helper maintenance: `fingerprint-helper` refuses it, and the path is `fingerprint-policy`. That reason refuses a `policyVersion` that does not move (`fingerprint-helper` or `dependency-graph` instead), one that moves by anything but exactly +1, a step that disagrees with the checkout helper's exported `FINGERPRINT_POLICY_VERSION`, and a `parser` or `helperSha256` move without a version step. Run provenance carries only `{policyVersion, sha256}`, so the re-pin proves `parser` and `helperSha256` against the checkout's own `lock-fingerprint.mjs`; the artifact does not attest them. It rewrites the policy identity line above together with both contracts. The rejected alternative for #4198 was a documented full re-pin; no existing reason accepts `helperSha256` movement, so it would still need either a hand edit (bypassing every fail-closed check) or a new reason anyway.
 
-Audited at `base/4187-island-lock-fingerprint` (head `183402a4`), `pnpm-lock.yaml` 6301 lines, package version 4.4.0. Every count and key list below was produced by parsing **both** YAML documents with `yaml@2.9.0` `parseAllDocuments(text, {uniqueKeys: true})` (0 errors, 0 warnings in each document) and walking the result, not by reading the file by eye.
+At the audit head (4.4.0): audited at `base/4187-island-lock-fingerprint` (head `183402a4`), `pnpm-lock.yaml` 6301 lines, package version 4.4.0. Every count and key list below was produced by parsing **both** YAML documents with `yaml@2.9.0` `parseAllDocuments(text, {uniqueKeys: true})` (0 errors, 0 warnings in each document) and walking the result, not by reading the file by eye.
 
 ## What the measured bytes are made of
 
@@ -152,7 +152,7 @@ Completeness check: the parsed key sets in the real lock are exactly doc 1 top `
 
 ## 4. Lockstep normalization rule
 
-Exactly one rewrite: within **selected** importers, a `specifier` whose value is exactly `workspace:<V>`, where `<V>` is the current `packages/zfb/package.json` `version`, becomes `workspace:<lockstep>`. Today that is the six `workspace:4.4.0` specifiers in `packages/zfb` (one `dependencies`, five `optionalDependencies`).
+Exactly one rewrite: within **selected** importers, a `specifier` whose value is exactly `workspace:<V>`, where `<V>` is the current `packages/zfb/package.json` `version`, becomes `workspace:<lockstep>`. At the audit head (4.4.0) that was the six `workspace:4.4.0` specifiers in `packages/zfb` (one `dependencies`, five `optionalDependencies`).
 
 Untouched: `workspace:*` (`packages/zfb-runtime` → `@takazudo/zfb`), any other `workspace:` form (`workspace:^…`, `workspace:~…`, a different version), every `version` value including `link:` targets, and every package/snapshot record. Nothing else version-like is normalized; registry versions of `@takazudo/*` in excluded importers are not visited at all.
 
@@ -213,18 +213,38 @@ Explicit boundaries (**not** pinned by this fingerprint):
 - The `packages/zfb` test-only `tsconfig.zudo-react-*.json` files are not part of `build`.
 - `pnpm-workspace.yaml` is pinned only through its projections into document 2 (`settings`, `catalogs`, `overrides`); its install-policy keys (`allowBuilds`, `minimumReleaseAge`, `engineStrict`, `peerDependencyRules`) do not change the resolved graph. `linkWorkspacePackages` does, but its effect is visible as `link:` versus registry `version` values in the importers.
 
-This epic edits no `health.yml` test wiring (per `crates/CLAUDE.md`); this topic changes no file other than this document.
+When this policy was proposed under #4189, that topic edited no `health.yml` test wiring (per `crates/CLAUDE.md`) and changed no file other than this document.
 
 ## 8c. Parser-bytes boundary
 
 The parser is pinned by the identity string `yaml@2.9.0` only. The installed `yaml` package bytes and integrity are **not** part of the fingerprint, because they live under the excluded root importer. This is accepted: the fingerprint is computed over canonical semantic content, so the parser's bytes do not change its value. A parser bug would surface as a parse error or a different canonical value, both of which fail closed, and replacing the parser is a `parser` identity change, which is an explicit policy bump. The helper refuses to run when the installed `yaml` package version differs from the pinned `parser` identity, so a root `yaml` bump cannot change the parser behind an unchanged identity string.
 
-## 9. Owner choices (recorded under #4210, implementation deferred)
+## 9. Owner choices (recorded under #4210; 9a and 9c implemented under #4218; 9b still deferred)
 
-- **(a) Post-v3 rebaseline reason for a reachable dependency change.** After migration, a change inside the included inputs (for example a TypeScript bump) moves the fingerprint and needs a native re-pin. `fingerprint-migration` covers only the one-time 2 → 3 migration. **Recorded recommendation:** a narrow `dependency-graph` reason that may move `sha256` only, requires fresh native evidence on both platforms, and refuses any total, identity, `policyVersion`, `parser`, or `helperSha256` movement (table in item 0). **Deferred** to [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218); until it lands, a reachable dependency change has no re-pin path and is a reviewed decision.
+- **(a) Post-v3 rebaseline reason for a reachable dependency change.** After migration, a change inside the included inputs (for example a TypeScript bump) moves the fingerprint and needs a native re-pin. `fingerprint-migration` covers only the one-time 2 → 3 migration. **Implemented under [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218) as `--reason dependency-graph`:** a narrow reason that may move `sha256` only, requires fresh native evidence on both platforms, and refuses any total, identity, `policyVersion`, `parser`, or `helperSha256` movement (table in item 0). The live contracts are unchanged by the implementation; using it is a real activation (item 11).
 - **(b) Excluding the packages' test-only dependencies.** This round includes `vite-plus`, `happy-dom`, `@types/node`, and the `typescript-5.9` / `typescript-6.0` aliases. **Decision: keep them included; deferred.** Splitting package importers by purpose (and how to prove a dependency is test-only) would be a `policyVersion` bump and is not scheduled.
-- **(c) Policy-version transitions.** A change to the selection, classification, normalization, canonical form, or parser identity is a `policyVersion` bump; no reason accepts it today. **Recorded:** a `fingerprint-policy` reason that may move `policyVersion` + `parser` + `sha256` + `helperSha256` only together with a `policyVersion` increment and fresh native evidence on both platforms. **Deferred** to [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218).
+- **(c) Policy-version transitions.** A change to the selection, classification, normalization, canonical form, or parser identity is a `policyVersion` bump. **Implemented under [#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218) as `--reason fingerprint-policy`** with the +1 lockstep rule: it may move `policyVersion` + `parser` + `sha256` + `helperSha256` only together with a `policyVersion` increment of exactly one that equals the checkout helper's exported `FINGERPRINT_POLICY_VERSION`, with `parser` and `helperSha256` proven against that helper, and fresh native evidence on both platforms. A parser change also bumps the root `yaml` devDependency in lockstep (item 8c), which moves `pnpm-lock.yaml`. The live policy stays at 1; using the reason is a real activation (item 11).
 
 ## 10. Owner review
 
-The importer table (item 1) and the field classification (item 3) are posted to #4187 as "Policy proposal (pending owner review)". No #4187 checklist item is ticked by this topic.
+Owner review: adopted under [#4210](https://github.com/Takazudo/zudo-front-builder/issues/4210); [#4187](https://github.com/Takazudo/zudo-front-builder/issues/4187) closed with the [#4208](https://github.com/Takazudo/zudo-front-builder/issues/4208) root merge.
+
+## 11. Future real activation
+
+The `dependency-graph` and `fingerprint-policy` reasons exist as capabilities. Implementing them moved no live identity: the policy is the one on the identity line at the top of this document, and the live contracts pin its fingerprint. A real activation of either reason requires:
+
+- Fresh enforced artifacts for the actual changed source on **both** platforms: Linux x64 from the `health` job's island-size step and Darwin arm64 from `island-size-darwin.yml`, each with both the workspace and packed matrices.
+- Every raw and `gzipNormalized` total unchanged, and an unchanged-input audit: package version, `Cargo.lock`, fixtures, runners, normalizer and toolchain all equal the contracts.
+
+The initial enforced collection may legitimately **fail** against the old fingerprint pin, because the contracts still pin the previous fingerprint. Then:
+
+1. Preserve that original run and its log.
+2. Prove that only the permitted identity delta caused the failure: every other `check-budget.mjs` line is clean and the totals are equal.
+3. Independently replay the saved bytes through the rebaseline CLIs.
+4. `--stage` both platforms into one directory and review it.
+5. `--apply` the paired re-pin in one commit.
+6. Obtain a final enforced success on the re-pinned contracts.
+
+Never relabel the original rejection as a pass, never hand-edit a bypass, and never demand a green run of the old contract before the re-pin.
+
+The fixture tests that accompany #4218 (a synthetic prior graph for `dependency-graph`, a synthetic policy-2 copy of the helper for `fingerprint-policy`, each in a disposable checkout) are not a claim that a real policy transition occurred. Choice 9b (excluding the packages' test-only dependencies) remains deferred.
