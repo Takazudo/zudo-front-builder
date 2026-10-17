@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -56,11 +57,13 @@ export function write(root, relative, bytes) {
 }
 
 // Returns the checkout root and the identity a native run of it would record.
-// `cargoLock` replaces the copied Cargo.lock with the given text.
-export function makeCheckout(roots, { cargoLock } = {}) {
+// `cargoLock` replaces the copied Cargo.lock and `pnpmLock` the copied
+// pnpm-lock.yaml with the given text. The checkout carries its own copy of
+// lock-fingerprint.mjs, which the rebaseline scripts load from the checkout.
+export function makeCheckout(roots, { cargoLock, pnpmLock } = {}) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-checkout-"));
   roots.push(root);
-  const lockText = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
+  const lockText = pnpmLock ?? readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
   const version = JSON.parse(readFileSync(join(repoRoot, "packages/zfb/package.json"))).version;
   const { inventory } = computeLockFingerprint({ lockText, currentVersion: version });
   for (const relative of [
@@ -79,6 +82,7 @@ export function makeCheckout(roots, { cargoLock } = {}) {
   }
   copy(root, "packages/zfb/package.json");
   if (cargoLock !== undefined) write(root, "Cargo.lock", cargoLock);
+  if (pnpmLock !== undefined) write(root, "pnpm-lock.yaml", pnpmLock);
   const fixtureSha256 = {};
   for (const name of [
     "event-only",
@@ -93,6 +97,7 @@ export function makeCheckout(roots, { cargoLock } = {}) {
     fixtureSha256[name] = sha(readFileSync(join(root, SIZE_DIR, "fixtures", name + ".tsx")));
   }
   write(root, SIZE_DIR + "/README.md", "# island size\n");
+  addHelper(root);
   const fingerprint = computeLockFingerprint({ lockText, currentVersion: version, repoRoot: root });
   return {
     root,
@@ -198,11 +203,7 @@ export function ceilingsOf(root) {
 export function makeHelperCheckout(roots) {
   const checkout = makeCheckout(roots);
   const { root } = checkout;
-  const helper = SIZE_DIR + "/lock-fingerprint.mjs";
-  copy(root, helper);
-  const yamlDir = dirname(createRequire(import.meta.url).resolve("yaml/package.json"));
-  mkdirSync(join(root, "node_modules"), { recursive: true });
-  symlinkSync(yamlDir, join(root, "node_modules", "yaml"), "dir");
+  const helper = HELPER_FILE;
   const contracts = {};
   for (const [name, file] of [
     ["linux", "decision-linux-x64.json"],
@@ -215,7 +216,167 @@ export function makeHelperCheckout(roots) {
     write(root, SIZE_DIR + "/" + file, JSON.stringify(contract, null, 2) + "\n");
     contracts[name] = contract;
   }
-  const git = (...args) =>
+  const git = gitIn(root);
+  git("init", "-q");
+  git("add", helper);
+  git("commit", "-qm", "pinned helper");
+  return { ...checkout, contracts, helperPath: join(root, helper), git };
+}
+
+const HELPER_FILE = SIZE_DIR + "/lock-fingerprint.mjs";
+
+// Copies the real lock-fingerprint.mjs into the checkout with `yaml`
+// resolvable from its directory, so its `--explain` runs against the checkout.
+function addHelper(root) {
+  const helper = HELPER_FILE;
+  copy(root, helper);
+  const yamlDir = dirname(createRequire(import.meta.url).resolve("yaml/package.json"));
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+  symlinkSync(yamlDir, join(root, "node_modules", "yaml"), "dir");
+  return helper;
+}
+
+// Test fixture — synthetic prior graph, not native evidence: a checkout whose
+// pnpm-lock.yaml is `pnpmLock` (the new graph), with the helper and the live
+// inventory file copied in. `priorFingerprint` is the contract-shape
+// fingerprint the real lock has at this checkout, standing for the graph a
+// contract pinned before the reviewed dependency change. `cargoLock`, when
+// given, replaces the copied Cargo.lock (a second checkout of another tree).
+export function makeGraphCheckout(roots, { pnpmLock, cargoLock } = {}) {
+  const checkout = makeCheckout(roots, { pnpmLock, cargoLock });
+  copy(checkout.root, SIZE_DIR + "/lock-fingerprint-inventory.json");
+  const prior = computeLockFingerprint({
+    lockText: readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8"),
+    currentVersion: checkout.version,
+    repoRoot: checkout.root,
+  });
+  return {
+    ...checkout,
+    priorFingerprint: {
+      policyVersion: prior.policyVersion,
+      parser: prior.parser,
+      helperSha256: prior.helperSha256,
+      sha256: prior.sha256,
+    },
+    priorPnpmLockSha256: sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
+  };
+}
+
+// Replaces exactly one occurrence of `from` in a helper source, so a fixture
+// edit that no longer applies fails loudly instead of testing the live helper.
+function replaceOnce(source, from, to) {
+  const at = source.indexOf(from);
+  if (at < 0 || source.indexOf(from, at + from.length) >= 0) {
+    throw new Error(
+      "test fixture: expected exactly one " + JSON.stringify(from) + " in the helper",
+    );
+  }
+  return source.slice(0, at) + to + source.slice(at + from.length);
+}
+
+// Test fixture — synthetic prior policy, not native evidence: a git checkout
+// whose COPY of lock-fingerprint.mjs is rewritten by `editHelper` (for example
+// to `FINGERPRINT_POLICY_VERSION = 2`), with the live inventory and
+// LOCK-FINGERPRINT-POLICY.md copied in. The live helper and its constants are
+// untouched. `priorFingerprint` is what the live (policy 1) helper computes at
+// this checkout, standing for the fingerprint the contracts pinned before the
+// policy change; `dependencyFingerprint` and `inventory` are the edited
+// helper's own `--explain` output. Commit with the returned `git` once the
+// contracts are written.
+export function makePolicyCheckout(roots, { editHelper } = {}) {
+  const checkout = makeCheckout(roots);
+  const { root } = checkout;
+  copy(root, SIZE_DIR + "/lock-fingerprint-inventory.json");
+  copy(root, SIZE_DIR + "/LOCK-FINGERPRINT-POLICY.md");
+  const helperPath = join(root, HELPER_FILE);
+  if (editHelper) writeFileSync(helperPath, editHelper(readFileSync(helperPath, "utf8")));
+  const explain = JSON.parse(
+    execFileSync(process.execPath, [realpathSync(helperPath), "--explain"]).toString("utf8"),
+  );
+  const { inventory, ...fingerprint } = explain;
+  const git = gitIn(root);
+  git("init", "-q");
+  return {
+    ...checkout,
+    priorFingerprint: checkout.dependencyFingerprint,
+    dependencyFingerprint: fingerprint,
+    inventory,
+    helperPath,
+    git,
+  };
+}
+
+// Test fixture: copies a single-platform stage directory's outputs onto the
+// live checkout so one platform's paired re-pin can be asserted in place. It is
+// not `--apply`, which also requires both platforms in the stage.
+export function landStaged(stage, root) {
+  const manifest = JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+  for (const path of Object.keys(manifest.destinations)) {
+    writeFileSync(join(root, path), readFileSync(join(stage, path)));
+  }
+}
+
+// Test fixture — synthetic prior policy, not native evidence. These helper
+// edits apply only to the COPY of lock-fingerprint.mjs inside a disposable
+// checkout; the live helper stays at FINGERPRINT_POLICY_VERSION = 1, and no
+// test here claims that a real policy transition occurred.
+const POLICY_LINE = "export const FINGERPRINT_POLICY_VERSION = 1;";
+export const policyHelper = {
+  // A policy-2 helper: policyVersion is inside the canonical input, so sha256 moves too.
+  v2: (source) => replaceOnce(source, POLICY_LINE, "export const FINGERPRINT_POLICY_VERSION = 2;"),
+  // Policy 2 with a changed canonical form and parser identity string.
+  v2Canonical: (source) =>
+    replaceOnce(
+      replaceOnce(
+        replaceOnce(
+          policyHelper.v2(source),
+          'export const FINGERPRINT_PARSER = "yaml@2.9.0";',
+          'export const FINGERPRINT_PARSER = "yaml@2.9.0+fixture";',
+        ),
+        "if (`yaml@${version}` !== FINGERPRINT_PARSER) {",
+        'if (`yaml@${version}` !== "yaml@2.9.0") {',
+      ),
+      "    buildInputs,\n  });",
+      "    buildInputs,\n    fixtureCanonicalForm: 2,\n  });",
+    ),
+  // Policy 2 with a parser identity that needs JSON escapes (quotes, a
+  // backslash) and carries a `$&` replacement pattern.
+  v2Escaped: (source) =>
+    replaceOnce(
+      replaceOnce(
+        policyHelper.v2(source),
+        'export const FINGERPRINT_PARSER = "yaml@2.9.0";',
+        'export const FINGERPRINT_PARSER = "yaml@2.9.0+\\"q\\"\\\\$&";',
+      ),
+      "if (`yaml@${version}` !== FINGERPRINT_PARSER) {",
+      'if (`yaml@${version}` !== "yaml@2.9.0") {',
+    ),
+  // Computes policy 2 but exports FINGERPRINT_POLICY_VERSION = 3.
+  exports3: (source) =>
+    replaceOnce(
+      replaceOnce(
+        replaceOnce(source, POLICY_LINE, "export const FINGERPRINT_POLICY_VERSION = 3;"),
+        "    policyVersion: FINGERPRINT_POLICY_VERSION,\n    parser: FINGERPRINT_PARSER,\n    environment,",
+        "    policyVersion: 2,\n    parser: FINGERPRINT_PARSER,\n    environment,",
+      ),
+      "  return {\n    policyVersion: FINGERPRINT_POLICY_VERSION,",
+      "  return {\n    policyVersion: 2,",
+    ),
+};
+
+// Test fixture: a git runner pinned to `root` with a fixed identity, no
+// signing or hooks, and no inherited GIT_DIR-style redirection. Returns stdout.
+function gitEnv() {
+  const env = { ...process.env };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) {
+    delete env[key];
+  }
+  return env;
+}
+
+export function gitIn(root) {
+  const env = gitEnv();
+  return (...args) =>
     execFileSync(
       "git",
       [
@@ -226,13 +387,69 @@ export function makeHelperCheckout(roots) {
         "-c",
         "commit.gpgsign=false",
         "-c",
+        "tag.gpgsign=false",
+        "-c",
         "core.hooksPath=/dev/null",
+        "-c",
+        "init.defaultBranch=main",
         ...args,
       ],
-      { cwd: root, stdio: "pipe" },
-    );
+      { cwd: root, stdio: "pipe", env },
+    )
+      .toString()
+      .trim();
+}
+
+// Test fixture: a disposable git checkout whose single commit holds the OLD
+// Cargo.lock and whatever `prepare` writes (a contract, an artifact); the NEW
+// Cargo.lock is then written to the working tree only, as a fresh producer-lock
+// move leaves it. `prepare` sees the identity a run at the new lock records.
+export function makeGitCheckout(roots, { oldCargoLock, newCargoLock, prepare } = {}) {
+  const checkout = makeCheckout(roots, { cargoLock: oldCargoLock });
+  const atNew = {
+    ...checkout,
+    cargoLockSha256: newCargoLock === undefined ? checkout.cargoLockSha256 : sha(newCargoLock),
+  };
+  prepare?.(atNew);
+  const git = gitIn(checkout.root);
   git("init", "-q");
-  git("add", helper);
-  git("commit", "-qm", "pinned helper");
-  return { ...checkout, contracts, helperPath: join(root, helper), git };
+  git("add", "-A");
+  git("commit", "-qm", "test fixture: old Cargo.lock");
+  const commit = git("rev-parse", "HEAD");
+  if (newCargoLock !== undefined) write(checkout.root, "Cargo.lock", newCargoLock);
+  return { ...atNew, git, commit };
+}
+
+// Test fixture: writes two dangling commit objects into the checkout whose
+// SHAs share their first four hex digits, so that prefix is an ambiguous short
+// commit name. Returns the shared prefix.
+export function addAmbiguousCommitPrefix(root) {
+  const git = gitIn(root);
+  const tree = git("rev-parse", "HEAD^{tree}");
+  const seen = new Map();
+  for (let i = 0; ; i += 1) {
+    const body =
+      "tree " +
+      tree +
+      "\nauthor t <t@example.invalid> 0 +0000\ncommitter t <t@example.invalid> 0 +0000\n\ntest fixture " +
+      i +
+      "\n";
+    const id = createHash("sha1")
+      .update("commit " + Buffer.byteLength(body) + "\0" + body)
+      .digest("hex");
+    const prefix = id.slice(0, 4);
+    const other = seen.get(prefix);
+    if (other !== undefined) {
+      for (const text of [other, body]) {
+        execFileSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], {
+          cwd: root,
+          env: gitEnv(),
+          input: text,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      }
+      return prefix;
+    }
+    seen.set(prefix, body);
+  }
 }

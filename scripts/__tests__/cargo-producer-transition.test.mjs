@@ -106,6 +106,7 @@ describe("reviewed non-additive producer lock transition", () => {
       reason: "cargo-producer-lock",
       "expected-old-cargo-sha": lock.expectedOldSha,
       "expected-new-cargo-sha": lock.expectedNewSha,
+      "old-cargo-ref": "HEAD",
       "old-cargo-lock": "old.lock",
       "added-packages": lock.added.join(","),
       "reviewed-cargo-transition": "review.json",

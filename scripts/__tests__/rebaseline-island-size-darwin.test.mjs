@@ -4,13 +4,15 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   NORMALIZED_SIDECAR,
@@ -20,10 +22,17 @@ import {
 } from "../../research/v3-island-size/normalize-identity.mjs";
 import {
   CARGO_PRODUCER_LOCK_MOVEMENT,
+  DEPENDENCY_GRAPH_MOVEMENT,
   FINGERPRINT_HELPER_MOVEMENT,
+  FINGERPRINT_POLICY_MOVEMENT,
+  applyStage,
+  assertAllowedMovement,
   assertLinuxX64Provenance,
   contractDiffKeys,
+  helperExplainBytes,
+  main as linuxMain,
   measuredTotals,
+  rewriteTestPins,
 } from "../rebaseline-island-size-linux.mjs";
 import {
   buildEvidence,
@@ -38,12 +47,28 @@ import {
   migrateDarwinFingerprint,
   parseArgs,
   repinDarwinContract,
+  repinDarwinDependencyGraph,
+  repinDarwinFingerprintPolicy,
   darwinRepinReadmeSection,
   rewriteDarwinTestPins,
   transitionDarwinCargoLock,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
-import { asSchemaV2, makeCheckout, makeHelperCheckout } from "./fixtures/island-size-checkout.mjs";
+import {
+  addAmbiguousCommitPrefix,
+  asSchemaV2,
+  ceilingsOf,
+  gitIn,
+  landStaged,
+  makeCheckout,
+  makeGitCheckout,
+  makeGraphCheckout,
+  makeHelperCheckout,
+  makePolicyCheckout,
+  policyHelper,
+  writeRuns,
+} from "./fixtures/island-size-checkout.mjs";
+import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -223,6 +248,22 @@ const args = {
   reason: "metric-migration",
 };
 
+// Test fixture: a digest-only previous-contract reference, as main records for
+// a contract that is not committed at HEAD.
+const PREVIOUS = { sha256: sha("previous contract bytes") };
+const REPINNED_FROM_KEYS = [
+  "schemaVersion",
+  "outcome",
+  "packageVersion",
+  "baselineSourceSha",
+  "baselineRunId",
+  "contract",
+];
+
+function evidenceFor(cliArgs, artifact, previousContract = PREVIOUS) {
+  return { ...buildEvidence(cliArgs, artifact), previousContract };
+}
+
 function totalsOf(artifact) {
   return measuredTotals({
     workspace: artifact.modes.workspace.recomputed.results,
@@ -240,7 +281,7 @@ describe("rebaseline-island-size-darwin", () => {
     const contract = contractFor(root);
     const artifact = loadDarwinArtifact(root);
     expect(validateDarwinEvidence(contract, artifact, SOURCE_SHA)).toEqual([]);
-    const next = migrateDarwinContract(contract, totalsOf(artifact), buildEvidence(args, artifact));
+    const next = migrateDarwinContract(contract, totalsOf(artifact), evidenceFor(args, artifact));
     expect(next.schemaVersion).toBe(2);
     expect(next.metric).toBe("gzip-identity-normalized");
     expect(next.normalizationVersion).toBe(1);
@@ -275,6 +316,7 @@ describe("rebaseline-island-size-darwin", () => {
       migratedFrom: { schemaVersion: 1, metric: "gzip" },
       originalCheckerResult: { exitCode: 1 },
     });
+    expect(next.baselineEvidence).not.toHaveProperty("repinnedFrom");
     expect(next.platformStatus).toContain("not a native measurement of the current source");
     expect(next.platformStatus).toContain("#4170");
     const readme = darwinReadmeSection(next, contract);
@@ -291,7 +333,7 @@ describe("rebaseline-island-size-darwin", () => {
     expect(bad({ reason: "runtime-identity" })).not.toThrow();
     expect(bad({ reason: "fingerprint-migration" })).not.toThrow();
     expect(bad({ reason: "other" })).toThrow(
-      "--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper",
+      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy$/,
     );
     // The Linux-only consumer-lock reason (#4184) is not a Darwin re-pin reason.
     expect(bad({ reason: "lockfile-provenance" })).toThrow("--reason must be one of");
@@ -316,7 +358,7 @@ describe("rebaseline-island-size-darwin", () => {
     const migrated = migrateDarwinContract(
       contractFor(root),
       totalsOf(artifact),
-      buildEvidence(args, artifact),
+      evidenceFor(args, artifact),
     );
     expect(validateDarwinEvidence(migrated, artifact, SOURCE_SHA)).toContain(
       "contract is not a schemaVersion 1 actual-gzip contract",
@@ -452,7 +494,7 @@ describe("rebaseline-island-size-darwin", () => {
 
     const rawMoved = contractFor(root);
     rawMoved.ceilings.packed.model.raw -= 1;
-    expect(() => migrateDarwinContract(rawMoved, totals, buildEvidence(args, artifact))).toThrow(
+    expect(() => migrateDarwinContract(rawMoved, totals, evidenceFor(args, artifact))).toThrow(
       "raw totals changed (packed/model)",
     );
 
@@ -464,7 +506,7 @@ describe("rebaseline-island-size-darwin", () => {
 
     const grown = contractFor(root);
     grown.ceilings.workspace["show-for"].gzip = totals.workspace["show-for"].gzipNormalized - 1;
-    expect(() => migrateDarwinContract(grown, totals, buildEvidence(args, artifact))).toThrow(
+    expect(() => migrateDarwinContract(grown, totals, evidenceFor(args, artifact))).toThrow(
       "that is a size increase, not a metric migration",
     );
 
@@ -505,7 +547,7 @@ function previousSchema2(root) {
   const migrated = migrateDarwinContract(
     contractFor(root),
     totalsOf(artifact),
-    buildEvidence(args, artifact),
+    evidenceFor(args, artifact),
   );
   migrated.toolchain.packageVersion = "9.9.8";
   migrated.toolchain.pnpmLockSha256 = sha("old-pnpm-lock");
@@ -569,7 +611,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
       const { contract: next, previousVersion } = repinDarwinContract(
         contract,
         totalsOf(artifact),
-        buildEvidence({ ...args, reason }, artifact),
+        evidenceFor({ ...args, reason }, artifact),
         reason,
       );
       expect(previousVersion).toBe("9.9.8");
@@ -587,7 +629,15 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
         event: "ci-artifact",
         runId: 7,
         artifact: { id: 9 },
-        repinnedFrom: { packageVersion: "9.9.8", baselineSourceSha: "b".repeat(40) },
+      });
+      expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+      expect(next.baselineEvidence.repinnedFrom).toEqual({
+        schemaVersion: 2,
+        outcome: contract.outcome,
+        packageVersion: "9.9.8",
+        baselineSourceSha: "b".repeat(40),
+        baselineRunId: contract.baselineEvidence.runId,
+        contract: PREVIOUS,
       });
       const {
         toolchain: a,
@@ -624,7 +674,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
         repinDarwinContract(
           stale,
           totalsOf(artifact),
-          buildEvidence({ ...args, reason }, artifact),
+          evidenceFor({ ...args, reason }, artifact),
           reason,
         ),
       ).toThrow(
@@ -638,6 +688,67 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
       );
     });
   }
+
+  it("re-pins twice: release wording for a version move, same-version wording after", () => {
+    const root = makeArtifact();
+    const artifact = loadDarwinArtifact(root);
+    const previous = previousSchema2(root);
+    const first = repinDarwinContract(
+      previous,
+      totalsOf(artifact),
+      evidenceFor({ ...args, reason: "release-bump" }, artifact),
+      "release-bump",
+    );
+    const release = first.contract;
+    expect(release.outcome).toBe("release-version-stamp");
+    expect(release.platformStatus).toContain(
+      "v" + VERSION + " ceilings on metric gzip-identity-normalized v1, re-pinned (release-bump)",
+    );
+    expect(release.platformStatus).toContain("unchanged from the v9.9.8 contract");
+    expect(release.baselineEvidence.note).toContain("Re-pin (release-bump) from the native");
+    const releaseSection = darwinRepinReadmeSection(
+      release,
+      [],
+      first.previousVersion,
+      "release-bump",
+    );
+    expect(releaseSection).toContain("## Darwin v" + VERSION + " release baseline");
+    expect(releaseSection).toContain("re-pinned (`release-bump`) for v" + VERSION);
+    expect(releaseSection).toContain("unchanged from the v9.9.8 contract");
+
+    // Test fixture: the first result's bytes, cited by digest only.
+    const firstBytes = { sha256: sha(JSON.stringify(release, null, 2) + "\n") };
+    const second = repinDarwinContract(
+      release,
+      totalsOf(artifact),
+      evidenceFor({ ...args, reason: "runtime-identity" }, artifact, firstBytes),
+      "runtime-identity",
+    );
+    const identity = second.contract;
+    expect(Object.keys(identity.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(identity.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 2,
+      outcome: "release-version-stamp",
+      packageVersion: VERSION,
+      baselineSourceSha: SOURCE_SHA,
+      baselineRunId: 7,
+      contract: firstBytes,
+    });
+    expect(JSON.stringify(identity.baselineEvidence.repinnedFrom)).not.toContain("repinnedFrom");
+    expect(identity.outcome).toBe("runtime-identity-repin");
+    expect(identity.platformStatus).toContain("re-pinned (runtime-identity)");
+    expect(identity.platformStatus).toContain("unchanged from the v" + VERSION + " contract");
+    expect(identity.platformStatus).not.toMatch(/release/i);
+    expect(identity.baselineEvidence.note).not.toMatch(/release/i);
+    const identitySection = darwinRepinReadmeSection(
+      identity,
+      [],
+      second.previousVersion,
+      "runtime-identity",
+    );
+    expect(identitySection).toContain("## Darwin v" + VERSION + " runtime-identity re-pin");
+    expect(identitySection).not.toMatch(/release/i);
+  });
 
   it("rewrites the Darwin test pins on a re-pin, idempotently, touching nothing else", () => {
     const repoRoot = join(testDir, "..", "..");
@@ -697,7 +808,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
         repinDarwinContract(
           contract,
           totalsOf(artifact),
-          buildEvidence(args, artifact),
+          evidenceFor(args, artifact),
           "release-bump",
         ),
       ).toThrow("raw totals changed");
@@ -714,7 +825,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
         repinDarwinContract(
           contract,
           totalsOf(artifact),
-          buildEvidence(args, artifact),
+          evidenceFor(args, artifact),
           "runtime-identity",
         ),
       ).toThrow("gzipNormalized totals changed");
@@ -730,7 +841,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
       repinDarwinContract(
         contract,
         totalsOf(artifact),
-        buildEvidence(args, artifact),
+        evidenceFor(args, artifact),
         "release-bump",
       ),
     ).toThrow("fixture set differs");
@@ -802,7 +913,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     expect(validateDarwinEvidence(contract, artifact, SOURCE_SHA, "release-bump")).toContain(
       "workspace: runner hashes differ from the contract",
     );
-    const evidence = buildEvidence(migrationArgs, artifact);
+    const evidence = evidenceFor(migrationArgs, artifact);
     expect(evidence.dependencyFingerprint).toEqual({
       policyVersion: 1,
       sha256: fingerprint.sha256,
@@ -881,7 +992,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     const { contract: v3 } = migrateDarwinFingerprint(
       contract,
       totalsOf(artifact),
-      buildEvidence(migrationArgs, artifact),
+      evidenceFor(migrationArgs, artifact),
       checkout,
     );
     expect(validateDarwinEvidence(v3, artifact, SOURCE_SHA, "fingerprint-migration")).toContain(
@@ -891,7 +1002,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       migrateDarwinFingerprint(
         v3,
         totalsOf(artifact),
-        buildEvidence(migrationArgs, artifact),
+        evidenceFor(migrationArgs, artifact),
         checkout,
       ),
     ).toThrow("needs a schemaVersion 2 contract, found schemaVersion 3");
@@ -918,7 +1029,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
 
   it("refuses totals, version, normalizer, Cargo.lock or fingerprint movement", () => {
     const { artifact, contract } = fixture();
-    const evidence = buildEvidence(migrationArgs, artifact);
+    const evidence = evidenceFor(migrationArgs, artifact);
     const totals = totalsOf(artifact);
     const run =
       (c, e = evidence, k = checkout) =>
@@ -955,12 +1066,12 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       const { contract: v3 } = migrateDarwinFingerprint(
         contract,
         totalsOf(artifact),
-        buildEvidence(migrationArgs, artifact),
+        evidenceFor(migrationArgs, artifact),
         checkout,
       );
       v3.toolchain.packageVersion = "9.9.8";
       expect(validateDarwinEvidence(v3, artifact, SOURCE_SHA, reason)).toEqual([]);
-      const evidence = buildEvidence({ ...args, reason }, artifact);
+      const evidence = evidenceFor({ ...args, reason }, artifact);
       const { contract: next } = repinDarwinContract(
         v3,
         totalsOf(artifact),
@@ -994,6 +1105,22 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       expect(() => repinDarwinContract(v3, totalsOf(artifact), evidence, reason, moved)).toThrow(
         "cannot move the dependency fingerprint (helperSha256 differ",
       );
+      // dependency-graph's allowlisted sha256 stays refused here, naming its reason.
+      const graph = {
+        dependencyFingerprint: { ...fingerprint, sha256: "8".repeat(64) },
+      };
+      expect(() =>
+        repinDarwinContract(
+          v3,
+          totalsOf(artifact),
+          { ...evidence, dependencyFingerprint: { policyVersion: 1, sha256: "8".repeat(64) } },
+          reason,
+          graph,
+        ),
+      ).toThrow(
+        "cannot move the dependency fingerprint (sha256 differ from the contract); a reachable dependency change needs `--reason dependency-graph` (#4218)",
+      );
+      expect(DEPENDENCY_GRAPH_MOVEMENT).toContain("dependencyFingerprint.sha256");
       expect(() =>
         repinDarwinContract(
           v3,
@@ -1036,7 +1163,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     );
   });
 
-  it("runs end-to-end against a disposable checkout", () => {
+  it("runs end-to-end against a disposable checkout", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const repo = makeCheckout(roots);
     const fingerprintOf = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
@@ -1060,7 +1187,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       "--" + k,
       v,
     ]);
-    main(argv, repo.root);
+    await main(argv, repo.root);
     const written = JSON.parse(readFileSync(contractPath, "utf8"));
     expect(written.schemaVersion).toBe(3);
     expect(written.dependencyFingerprint).toEqual(repo.dependencyFingerprint);
@@ -1078,7 +1205,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     );
   });
 
-  it("refuses end-to-end an artifact from another checkout whose graph matches", () => {
+  it("refuses end-to-end an artifact from another checkout whose graph matches", async () => {
     const repo = makeCheckout(roots);
     const fingerprintOf = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
     const other = makeArtifact({
@@ -1101,7 +1228,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       "--" + k,
       v,
     ]);
-    expect(() => main(otherArgv, repo.root)).toThrow(
+    await expect(main(otherArgv, repo.root)).rejects.toThrow(
       "artifact pnpm-lock.yaml hash differs from this checkout's pnpm-lock.yaml",
     );
   });
@@ -1198,7 +1325,8 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     oldText,
     newText,
     added: ADDED,
-    oldLockSource: "old.lock",
+    // Test fixture: the verified git source of the old lock (readCargoLockEvidence).
+    oldLockSource: { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD },
   };
 
   // A schemaVersion-3 contract at the artifact's version and pnpm lock, pinning
@@ -1224,7 +1352,7 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     transitionDarwinCargoLock(
       contract,
       totalsOf(artifact),
-      evidence ?? buildEvidence(cargoArgs, artifact),
+      evidence ?? evidenceFor(cargoArgs, artifact),
       check,
       lock,
     );
@@ -1276,15 +1404,24 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
       event: "ci-artifact",
       runId: 7,
       artifact: { id: 9 },
-      cargoTransition: {
-        oldSha: OLD,
-        newSha: NEW,
-        added: ADDED,
-        changed: [],
-        removed: [],
-        oldLockSource: "old.lock",
-      },
       originalCheckerResult: { exitCode: 1 },
+    });
+    expect(next.baselineEvidence.cargoTransition).toEqual({
+      oldSha: OLD,
+      newSha: NEW,
+      added: ADDED,
+      changed: [],
+      removed: [],
+      oldLockSource: cargoLock.oldLockSource,
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 3,
+      outcome: contract.outcome,
+      packageVersion: VERSION,
+      baselineSourceSha: contract.baselineSourceSha,
+      baselineRunId: contract.baselineEvidence.runId,
+      contract: PREVIOUS,
     });
     for (const key of contractDiffKeys(contract, next)) {
       expect(
@@ -1298,6 +1435,17 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     expect(readme).toContain("## Darwin v" + VERSION + " cargo-producer-lock transition");
     expect(readme).toContain("`" + OLD + "` to `" + NEW + "`");
     expect(readme).toContain("exit code 1");
+    expect(readme).toContain(
+      "proved against `Cargo.lock` at commit `" + "a".repeat(40) + "` (SHA-256 `" + OLD + "`).",
+    );
+    expect(() =>
+      run(contract, artifact, {
+        evidence: { ...evidenceFor(cargoArgs, artifact), previousContract: undefined },
+      }),
+    ).toThrow("a re-pin needs the previous contract reference");
+    expect(() =>
+      run(contract, artifact, { lock: { ...cargoLock, oldLockSource: "old.lock" } }),
+    ).toThrow("the old Cargo.lock source must be its verified git blob");
   });
 
   it("refuses schemaVersion 2, moved totals, version, pnpm lock or fingerprint", () => {
@@ -1354,69 +1502,1471 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     );
   });
 
-  it("takes the four Cargo arguments for cargo-producer-lock alone", () => {
+  it("takes the Cargo arguments for cargo-producer-lock alone", () => {
     const cli = {
       ...cargoArgs,
       "expected-old-cargo-sha": OLD,
       "expected-new-cargo-sha": NEW,
-      "old-cargo-lock": "old.lock",
+      "old-cargo-ref": "main",
       "added-packages": ADDED.join(","),
     };
     const argv = (values) => Object.entries(values).flatMap(([k, v]) => ["--" + k, v]);
     expect(parseArgs(argv(cli))).toMatchObject(cli);
-    const { "added-packages": _a, ...withoutAdded } = cli;
-    expect(() => parseArgs(argv(withoutAdded))).toThrow("required --added-packages");
+    expect(parseArgs(argv({ ...cli, "old-cargo-lock": "old.lock" }))).toMatchObject({
+      "old-cargo-lock": "old.lock",
+    });
+    for (const key of ["added-packages", "old-cargo-ref"]) {
+      const { [key]: _drop, ...without } = cli;
+      expect(() => parseArgs(argv(without))).toThrow("required --" + key);
+    }
+    expect(() => parseArgs(argv({ ...cli, "old-cargo-ref": "main:../Cargo.lock" }))).toThrow(
+      "--old-cargo-ref path must not contain a .. segment",
+    );
+    expect(parseArgs(argv({ ...cli, "previous-contract-ref": "main" }))).toMatchObject({
+      "previous-contract-ref": "main",
+    });
+    expect(() =>
+      parseArgs(
+        argv({ ...args, reason: "fingerprint-migration", "previous-contract-ref": "main" }),
+      ),
+    ).toThrow(
+      "--previous-contract-ref is only for --reason release-bump, runtime-identity, cargo-producer-lock, dependency-graph",
+    );
     expect(() =>
       parseArgs(argv({ ...args, reason: "release-bump", "old-cargo-lock": "old.lock" })),
     ).toThrow("--old-cargo-lock is only for --reason cargo-producer-lock");
   });
+});
 
-  it("runs end to end against a disposable checkout at the new lock", () => {
+// End-to-end CLI runs against one git-backed test-fixture checkout, built once
+// and restored after every case: its only commit holds the OLD Cargo.lock and
+// the contract pinning it (plus a copy for --contract); the working tree
+// carries the NEW lock. The shared refusal logic is also covered on Linux.
+describe("rebaseline-island-size-darwin git-backed provenance (#4219)", () => {
+  const gitRoots = [];
+  const lockDir = join(testDir, "fixtures/cargo-producer-lock");
+  const oldText = readFileSync(join(lockDir, "old.lock"), "utf8");
+  const newText = readFileSync(join(lockDir, "new.lock"), "utf8");
+  const OLD = sha(oldText);
+  const NEW = sha(newText);
+  const ADDED = ["ctor@0.2.9", "zfb-css-node@0.0.0"];
+  const CONTRACT = "research/v3-island-size/decision.json";
+  const COPY = "research/v3-island-size/decision-copy.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const OUTPUTS = [CONTRACT, COPY, TEST, README];
+  let repo;
+  let artifactDir;
+  let pinned;
+  let ambiguous;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const written = (file = CONTRACT) => JSON.parse(read(file).toString("utf8"));
+
+  beforeAll(() => {
+    repo = makeGitCheckout(gitRoots, {
+      oldCargoLock: oldText,
+      newCargoLock: newText,
+      prepare: (checkout) => {
+        artifactDir = makeArtifact({
+          version: checkout.version,
+          tweak: (p) => {
+            p.fixtureSha256 = checkout.fixtureSha256;
+            p.runnerSha256 = checkout.runnerSha256;
+            p.pnpmLockSha256 = checkout.pnpmLockSha256;
+            p.cargoLockSha256 = checkout.cargoLockSha256;
+            p.dependencyFingerprint = {
+              policyVersion: 1,
+              sha256: checkout.dependencyFingerprint.sha256,
+            };
+          },
+        });
+        // Kept for the whole describe, not removed by the per-test cleanup.
+        gitRoots.push(roots.splice(roots.indexOf(artifactDir), 1)[0]);
+        pinned = previousSchema2(artifactDir);
+        pinned.schemaVersion = 3;
+        pinned.dependencyFingerprint = { ...checkout.dependencyFingerprint };
+        pinned.fixtureSha256 = checkout.fixtureSha256;
+        pinned.runnerSha256 = checkout.runnerSha256;
+        pinned.toolchain.packageVersion = checkout.version;
+        pinned.toolchain.pnpmLockSha256 = checkout.pnpmLockSha256;
+        pinned.toolchain.cargoLockSha256 = OLD;
+        for (const file of [CONTRACT, COPY]) {
+          writeFileSync(join(checkout.root, file), JSON.stringify(pinned, null, 2) + "\n");
+        }
+      },
+    });
+    repo.git("branch", "dup");
+    repo.git("tag", "dup");
+    ambiguous = addAmbiguousCommitPrefix(repo.root);
+    saved = Object.fromEntries([...OUTPUTS, "Cargo.lock"].map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    rmSync(at("old.lock"), { force: true });
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of gitRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const cargoArgv = (extra = {}) =>
+    Object.entries({
+      ...args,
+      artifact: artifactDir,
+      reason: "cargo-producer-lock",
+      "expected-old-cargo-sha": OLD,
+      "expected-new-cargo-sha": NEW,
+      "old-cargo-ref": "HEAD",
+      "added-packages": ADDED.join(","),
+      ...extra,
+    }).flatMap(([key, value]) => ["--" + key, value]);
+  const quiet = () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
-    const repo = makeCheckout(roots, { cargoLock: newText });
-    const fingerprintOf = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
-    const root = makeArtifact({
+    return vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const NOTICE =
+    "previous contract bytes are not at HEAD; recorded digest only — no retrievable citation";
+
+  it("records the old lock's git blob and the HEAD citation of the previous contract", async () => {
+    const notices = quiet();
+    writeFileSync(at("notes.txt"), "test fixture: unrelated untracked file\n");
+    try {
+      await main(cargoArgv(), repo.root);
+    } finally {
+      rmSync(at("notes.txt"), { force: true });
+    }
+    const next = written();
+    expect(next.toolchain).toEqual({ ...pinned.toolchain, cargoLockSha256: NEW });
+    expect(next.baselineEvidence.cargoTransition.oldLockSource).toEqual({
+      commit: repo.commit,
+      path: "Cargo.lock",
+      sha256: OLD,
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.baselineEvidence.repinnedFrom).toEqual({
+      schemaVersion: 3,
+      outcome: pinned.outcome,
+      packageVersion: pinned.toolchain.packageVersion,
+      baselineSourceSha: pinned.baselineSourceSha,
+      baselineRunId: pinned.baselineEvidence.runId,
+      contract: { sha256: sha(saved[CONTRACT]), commit: repo.commit, path: CONTRACT },
+    });
+    expect(notices).not.toHaveBeenCalled();
+    expect(read(TEST).toString("utf8")).toContain(JSON.stringify(NEW));
+    const readme = read(README).toString("utf8");
+    expect(readme).toContain("`" + OLD + "` to `" + NEW + "`");
+    expect(readme).toContain(
+      "proved against `Cargo.lock` at commit `" + repo.commit + "` (SHA-256 `" + OLD + "`).",
+    );
+  });
+
+  it("cites a custom --contract path, and only its digest outside the checkout", async () => {
+    const notices = quiet();
+    await main(cargoArgv({ contract: at(COPY) }), repo.root);
+    expect(written(COPY).baselineEvidence.repinnedFrom.contract).toEqual({
+      sha256: sha(saved[COPY]),
+      commit: repo.commit,
+      path: COPY,
+    });
+    expect(read(CONTRACT).equals(saved[CONTRACT])).toBe(true);
+    expect(notices).not.toHaveBeenCalled();
+
+    const outside = join(mkdtempSync(join(tmpdir(), "zfb-darwin-contract-")), "decision.json");
+    gitRoots.push(dirname(outside));
+    writeFileSync(outside, saved[CONTRACT]);
+    for (const file of [CONTRACT, TEST, README]) writeFileSync(at(file), saved[file]);
+    await main(cargoArgv({ contract: outside }), repo.root);
+    expect(
+      JSON.parse(readFileSync(outside, "utf8")).baselineEvidence.repinnedFrom.contract,
+    ).toEqual({ sha256: sha(saved[CONTRACT]) });
+    expect(notices.mock.calls.flat().join("\n")).toContain(NOTICE);
+  });
+
+  // Each refusal leaves the contract, the budget test and the README byte-identical.
+  it.each([
+    ["an option-like ref", { "old-cargo-ref": "-x" }, null, /--old-cargo-ref must name a git ref/],
+    [
+      "an unresolvable ref",
+      { "old-cargo-ref": "no-such-ref" },
+      null,
+      /--old-cargo-ref no-such-ref does not resolve to exactly one commit in /,
+    ],
+    [
+      "an ambiguous short SHA",
+      () => ({ "old-cargo-ref": ambiguous }),
+      null,
+      /short object ID [0-9a-f]{4} is ambiguous/,
+    ],
+    [
+      "an ambiguous branch and tag name",
+      { "old-cargo-ref": "dup" },
+      null,
+      /refname 'dup' is ambiguous/,
+    ],
+    [
+      "a tree ref",
+      { "old-cargo-ref": "HEAD^{tree}" },
+      null,
+      /the object dereferences to tree type/,
+    ],
+    [
+      "a blob ref",
+      () => ({ "old-cargo-ref": repo.git("rev-parse", "HEAD:Cargo.lock") }),
+      null,
+      /the object dereferences to blob type/,
+    ],
+    ["an empty path", { "old-cargo-ref": "HEAD:" }, null, /--old-cargo-ref has an empty path/],
+    [
+      "an absolute path",
+      { "old-cargo-ref": "HEAD:/Cargo.lock" },
+      null,
+      /path must be relative to the repository root/,
+    ],
+    [
+      "a .. path",
+      { "old-cargo-ref": "HEAD:../Cargo.lock" },
+      null,
+      /must not contain a \.\. segment/,
+    ],
+    [
+      "a missing blob",
+      { "old-cargo-ref": "HEAD:no-such.lock" },
+      null,
+      /[0-9a-f]{40}:no-such\.lock does not exist/,
+    ],
+    [
+      "a blob whose hash is not --expected-old-cargo-sha",
+      { "old-cargo-ref": "HEAD:pnpm-lock.yaml" },
+      null,
+      /[0-9a-f]{40}:pnpm-lock\.yaml hashes to [0-9a-f]{64}, not --expected-old-cargo-sha/,
+    ],
+    [
+      "a corroboration file that differs from the blob",
+      () => ({ "old-cargo-lock": at("old.lock") }),
+      () => writeFileSync(at("old.lock"), newText),
+      /--old-cargo-lock differs from [0-9a-f]{40}:Cargo\.lock/,
+    ],
+    [
+      "an explicit --previous-contract-ref that is not the input bytes",
+      { "previous-contract-ref": "HEAD" },
+      () => writeFileSync(at(CONTRACT), JSON.stringify(pinned, null, 4) + "\n"),
+      /--previous-contract-ref HEAD: [0-9a-f]{40}:research\/v3-island-size\/decision\.json is not byte-identical/,
+    ],
+    [
+      "an unresolvable --previous-contract-ref (no HEAD fallback)",
+      { "previous-contract-ref": "no-such-ref" },
+      null,
+      /--previous-contract-ref no-such-ref does not resolve to exactly one commit/,
+    ],
+    [
+      "a missing test-pin anchor",
+      {},
+      () =>
+        writeFileSync(
+          at(TEST),
+          saved[TEST].toString("utf8").replace("records the reviewed Darwin arm64 ceilings", "x"),
+        ),
+      /Darwin ceiling test not found/,
+    ],
+    [
+      "a missing Cargo pin inside the anchored test",
+      {},
+      () =>
+        writeFileSync(
+          at(TEST),
+          saved[TEST]
+            .toString("utf8")
+            .replace("darwinContract.toolchain.cargoLockSha256)", "darwinContract.x)"),
+        ),
+      /missing Darwin .*cargoLockSha256.* pin in /,
+    ],
+  ])("refuses %s and writes nothing", async (_name, extra, setup, message) => {
+    quiet();
+    setup?.();
+    const before = OUTPUTS.map(read);
+    await expect(
+      main(cargoArgv(typeof extra === "function" ? extra() : extra), repo.root),
+    ).rejects.toThrow(message);
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+  });
+
+  it("resolves refs in the supplied linked worktree, at its detached HEAD", async () => {
+    quiet();
+    const dir = mkdtempSync(join(tmpdir(), "zfb-darwin-linked-"));
+    gitRoots.push(dir);
+    const tree = join(dir, "wt");
+    repo.git("worktree", "add", "-q", "--detach", tree, "HEAD");
+    try {
+      const linked = gitIn(tree);
+      writeFileSync(join(tree, "notes.txt"), "test fixture: linked-worktree commit\n");
+      linked("add", "notes.txt");
+      linked("commit", "-qm", "test fixture: linked worktree");
+      const head = linked("rev-parse", "HEAD");
+      expect(head).not.toBe(repo.commit);
+      writeFileSync(join(tree, "Cargo.lock"), newText);
+      await main(cargoArgv(), tree);
+      const next = JSON.parse(readFileSync(join(tree, CONTRACT), "utf8"));
+      expect(next.baselineEvidence.cargoTransition.oldLockSource.commit).toBe(head);
+      expect(next.baselineEvidence.repinnedFrom.contract).toEqual({
+        sha256: sha(saved[CONTRACT]),
+        commit: head,
+        path: CONTRACT,
+      });
+      expect(read(CONTRACT).equals(saved[CONTRACT])).toBe(true);
+    } finally {
+      repo.git("worktree", "remove", "--force", tree);
+    }
+  });
+
+  it("records only the digest, with a notice, for a reformatted contract", async () => {
+    const notices = quiet();
+    const reformatted = JSON.stringify(pinned, null, 4) + "\n";
+    writeFileSync(at(CONTRACT), reformatted);
+    await main(cargoArgv(), repo.root);
+    expect(written().baselineEvidence.repinnedFrom.contract).toEqual({ sha256: sha(reformatted) });
+    expect(notices.mock.calls.flat().join("\n")).toContain(NOTICE);
+  });
+});
+
+// End-to-end CLI runs against one test-fixture checkout — synthetic prior
+// graph, not native evidence: its pnpm-lock.yaml has one reachable snapshot
+// moved, both contracts pin the real lock's (prior) fingerprint, and each
+// platform's artifact was measured at the checkout carrying the new graph.
+// The shared refusal matrix is covered in rebaseline-island-size-linux.test.mjs.
+describe("rebaseline-island-size-darwin dependency-graph and paired staging (#4218)", () => {
+  const graphRoots = [];
+  const DARWIN = "research/v3-island-size/decision.json";
+  const LINUX = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const INVENTORY = "research/v3-island-size/lock-fingerprint-inventory.json";
+  const OUTPUTS = [DARWIN, LINUX, TEST, README, INVENTORY];
+  const LINUX_SOURCE = "b".repeat(40);
+  let repo;
+  let darwinArtifact;
+  let linuxArtifact;
+  let darwinPinned;
+  let linuxPinned;
+  let movedLock;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const contractOf = (file) => JSON.parse(read(file).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+  const tempDir = (prefix) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    graphRoots.push(dir);
+    return dir;
+  };
+
+  // A native Darwin artifact measured at the checkout; `tweak` adjusts provenance.
+  function darwinArtifactAt(tweak) {
+    const dir = makeArtifact({
       version: repo.version,
-      tweak: (p) => {
+      tweak: (p, mode) => {
         p.fixtureSha256 = repo.fixtureSha256;
         p.runnerSha256 = repo.runnerSha256;
         p.pnpmLockSha256 = repo.pnpmLockSha256;
         p.cargoLockSha256 = repo.cargoLockSha256;
-        p.dependencyFingerprint = fingerprintOf;
+        p.dependencyFingerprint = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
+        tweak?.(p, mode);
       },
     });
-    const contract = previousSchema2(root);
-    contract.schemaVersion = 3;
-    contract.dependencyFingerprint = { ...repo.dependencyFingerprint };
-    contract.fixtureSha256 = repo.fixtureSha256;
-    contract.runnerSha256 = repo.runnerSha256;
-    contract.toolchain.packageVersion = repo.version;
-    contract.toolchain.pnpmLockSha256 = repo.pnpmLockSha256;
-    contract.toolchain.cargoLockSha256 = OLD;
-    const contractPath = join(repo.root, "research/v3-island-size/decision.json");
-    writeFileSync(contractPath, JSON.stringify(contract, null, 2) + "\n");
-    const oldPath = join(repo.root, "old.lock");
-    writeFileSync(oldPath, oldText);
-    const argv = Object.entries({
-      ...cargoArgs,
-      artifact: root,
-      "expected-old-cargo-sha": OLD,
-      "expected-new-cargo-sha": NEW,
-      "old-cargo-lock": oldPath,
-      "added-packages": ADDED.join(","),
-    }).flatMap(([k, v]) => ["--" + k, v]);
-    main(argv, repo.root);
-    const written = JSON.parse(readFileSync(contractPath, "utf8"));
-    expect(written.toolchain).toEqual({ ...contract.toolchain, cargoLockSha256: NEW });
-    expect(written.ceilings).toEqual(contract.ceilings);
-    expect(written.baselineEvidence.cargoTransition).toMatchObject({ oldSha: OLD, newSha: NEW });
-    const pins = readFileSync(
-      join(repo.root, "scripts/__tests__/island-size-budget.test.mjs"),
-      "utf8",
+    // Kept for the whole describe, not removed by the per-test cleanup.
+    graphRoots.push(roots.splice(roots.indexOf(dir), 1)[0]);
+    return dir;
+  }
+
+  beforeAll(() => {
+    const version = JSON.parse(
+      readFileSync(join(testDir, "../../packages/zfb/package.json"), "utf8"),
+    ).version;
+    const moved = moveReachableSnapshot(
+      readFileSync(join(testDir, "../../pnpm-lock.yaml"), "utf8"),
+      version,
     );
-    expect(pins).toContain(JSON.stringify(NEW));
-    expect(readFileSync(join(repo.root, "research/v3-island-size/README.md"), "utf8")).toContain(
-      "cargo-producer-lock transition",
+    movedLock = moved.lockText;
+    repo = makeGraphCheckout(graphRoots, { pnpmLock: movedLock });
+    darwinArtifact = darwinArtifactAt();
+    linuxArtifact = tempDir("zfb-graph-linux-artifact-");
+    const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+    writeRuns(linuxArtifact, Object.keys(liveOf(LINUX).ceilings.workspace), (mode) => ({
+      sourceSha: LINUX_SOURCE,
+      mode,
+      platform: { os: "linux", arch: "x64" },
+      fixtureVersion: liveOf(LINUX).fixtureVersion,
+      fixtureSha256: repo.fixtureSha256,
+      runnerSha256: repo.runnerSha256,
+      packageVersion: repo.version,
+      runtimePackageVersion: repo.version,
+      honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
+      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
+      zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
+      compression: liveOf(LINUX).compression,
+      repeats: 2,
+      pnpmLockSha256: repo.pnpmLockSha256,
+      dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
+      cargoLockSha256: repo.cargoLockSha256,
+    }));
+    const pin = (contract, artifactDir) => {
+      contract.ceilings = ceilingsOf(artifactDir);
+      contract.fixtureSha256 = { ...repo.fixtureSha256 };
+      contract.runnerSha256 = { ...repo.runnerSha256 };
+      contract.toolchain.packageVersion = repo.version;
+      contract.toolchain.pnpmLockSha256 = repo.priorPnpmLockSha256;
+      contract.toolchain.cargoLockSha256 = repo.cargoLockSha256;
+      contract.dependencyFingerprint = { ...repo.priorFingerprint };
+      return contract;
+    };
+    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
+    darwinPinned.fixtureVersion = legacy.fixtureVersion;
+    darwinPinned.compression = legacy.compression;
+    darwinPinned.normalizerSha256 = normalizerSha256();
+    for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
+      darwinPinned.toolchain[key] = legacy.toolchain[key];
+    }
+    linuxPinned = pin(liveOf(LINUX), linuxArtifact);
+    writeFileSync(at(DARWIN), contractText(darwinPinned));
+    writeFileSync(at(LINUX), contractText(linuxPinned));
+    saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of graphRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const darwinArgv = (extra = {}) =>
+    Object.entries({
+      ...args,
+      artifact: darwinArtifact,
+      reason: "dependency-graph",
+      stage: join(tempDir("zfb-graph-stage-"), "stage"),
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const linuxArgv = (extra = {}) =>
+    Object.entries({
+      artifact: linuxArtifact,
+      "run-id": "71",
+      "job-id": "72",
+      // Linux measured the PR merge source of the probe head Darwin measured natively.
+      "head-sha": SOURCE_SHA,
+      "source-sha": LINUX_SOURCE,
+      reason: "dependency-graph",
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const unchanged = (before) =>
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+  const live = () => OUTPUTS.map((file) => saved[file]);
+
+  it("re-pins only the fingerprint sha256 end to end and rewrites the Darwin pins", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-stage-"), "stage");
+    await main(darwinArgv({ stage }), repo.root);
+    unchanged(live());
+    landStaged(stage, repo.root);
+    const next = contractOf(DARWIN);
+    const moved = contractDiffKeys(darwinPinned, next);
+    expect(moved.filter((key) => !key.startsWith("baselineEvidence."))).toEqual([
+      "baselineSourceSha",
+      "dependencyFingerprint.sha256",
+      "outcome",
+      "platformStatus",
+      "toolchain.pnpmLockSha256",
+    ]);
+    expect(() =>
+      assertAllowedMovement("dependency-graph", DEPENDENCY_GRAPH_MOVEMENT, darwinPinned, next),
+    ).not.toThrow();
+    expect(next.dependencyFingerprint.sha256).toBe(repo.dependencyFingerprint.sha256);
+    expect(next.toolchain.pnpmLockSha256).toBe(repo.pnpmLockSha256);
+    expect(next.outcome).toBe("dependency-graph-repin");
+    expect(next.baselineSourceSha).toBe(SOURCE_SHA);
+    expect(next.baselineEvidence).toMatchObject({
+      event: "ci-artifact",
+      runId: 7,
+      artifact: { id: 9 },
+      originalCheckerResult: { exitCode: 1 },
+      fingerprintTransition: {
+        policyVersion: 1,
+        oldSha256: repo.priorFingerprint.sha256,
+        newSha256: repo.dependencyFingerprint.sha256,
+      },
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(next.platformStatus).toContain(
+      "equal totals alone do not prove byte-identical product code",
     );
+    expect(read(LINUX).equals(saved[LINUX])).toBe(true);
+    expect(read(INVENTORY).equals(helperExplainBytes(repo.root))).toBe(true);
+    expect(read(TEST).toString("utf8")).toBe(
+      rewriteDarwinTestPins(saved[TEST].toString("utf8"), next),
+    );
+    expect(read(TEST).toString("utf8")).toContain(
+      JSON.stringify(repo.dependencyFingerprint.sha256),
+    );
+    const readme = read(README).toString("utf8");
+    expect(readme.startsWith(saved[README].toString("utf8"))).toBe(true);
+    expect(readme).toContain("Linux x64 moves in the same paired change");
+    expect(readme).toContain("## Darwin v" + repo.version + " dependency-graph re-pin");
+    expect(readme).toContain(
+      "`" + repo.priorFingerprint.sha256 + "` to `" + repo.dependencyFingerprint.sha256 + "`",
+    );
+  });
+
+  it("refuses an unchanged fingerprint and a moved helperSha256 in the pure re-pin", () => {
+    const artifact = loadDarwinArtifact(darwinArtifact);
+    const evidence = evidenceFor({ ...args, reason: "dependency-graph" }, artifact);
+    const checkout = { dependencyFingerprint: repo.dependencyFingerprint };
+    const run =
+      (contract, check = checkout) =>
+      () =>
+        repinDarwinDependencyGraph(contract, totalsOf(artifact), evidence, check);
+    expect(run({ ...darwinPinned, dependencyFingerprint: repo.dependencyFingerprint })).toThrow(
+      "--reason dependency-graph: the contract already pins this fingerprint; nothing to re-pin",
+    );
+    expect(
+      run({
+        ...darwinPinned,
+        dependencyFingerprint: {
+          ...darwinPinned.dependencyFingerprint,
+          helperSha256: "1".repeat(64),
+        },
+      }),
+    ).toThrow(/but helperSha256 differ from the contract; .*`fingerprint-policy` \(#4218\)/);
+    expect(run(asSchemaV2(darwinPinned))).toThrow(
+      "--reason dependency-graph needs a schemaVersion 3 contract, found schemaVersion 2",
+    );
+    expect(run({ ...darwinPinned, allowance: { raw: 0, gzipNormalized: 1 } })).toThrow(
+      "moves only dependencyFingerprint.sha256, but allowance differ",
+    );
+    expect(
+      run(darwinPinned, {
+        dependencyFingerprint: { ...repo.dependencyFingerprint, sha256: "3".repeat(64) },
+      }),
+    ).toThrow("artifact dependency fingerprint sha256 differs from this checkout's");
+  });
+
+  const edit = (file, change) => () => {
+    const contract = structuredClone(file === DARWIN ? darwinPinned : linuxPinned);
+    change(contract);
+    writeFileSync(at(file), contractText(contract));
+  };
+  it.each([
+    [
+      "an unchanged sha256",
+      edit(DARWIN, (c) => (c.dependencyFingerprint = { ...repo.dependencyFingerprint })),
+      {},
+      "the contract already pins this fingerprint; nothing to re-pin",
+    ],
+    [
+      "raw +1",
+      edit(DARWIN, (c) => (c.ceilings.workspace.model.raw -= 1)),
+      {},
+      "raw totals changed (workspace/model)",
+    ],
+    [
+      "gzipNormalized -1",
+      edit(DARWIN, (c) => (c.ceilings.packed.model.gzipNormalized += 1)),
+      {},
+      "gzipNormalized totals changed (packed/model -1)",
+    ],
+    [
+      "a changed Cargo.lock",
+      edit(DARWIN, (c) => (c.toolchain.cargoLockSha256 = "0".repeat(64))),
+      {},
+      "--reason dependency-graph cannot move Cargo.lock",
+    ],
+    [
+      "a changed package version",
+      edit(DARWIN, (c) => (c.toolchain.packageVersion = "0.0.1")),
+      {},
+      "but packageVersion differ from the contract",
+    ],
+    [
+      "a Hono bump",
+      edit(DARWIN, (c) => (c.toolchain.honoVersion = "0.0.0-test")),
+      {},
+      "honoPackageVersion differs from the contract",
+    ],
+    [
+      "a schemaVersion 2 contract",
+      edit(DARWIN, (c) => {
+        delete c.dependencyFingerprint;
+        c.schemaVersion = 2;
+      }),
+      {},
+      "contract is not a schemaVersion 3 gzip-identity-normalized v1 contract",
+    ],
+    [
+      "a sidecar whose results were edited",
+      () => {
+        const path = join(darwinArtifact, "real-packed", NORMALIZED_SIDECAR);
+        const sidecar = JSON.parse(readFileSync(path, "utf8"));
+        sidecar.results.model.shipped.gzipNormalized -= 1;
+        writeFileSync(path, JSON.stringify(sidecar));
+      },
+      {},
+      "real-packed: measurement.normalized.json results disagree with the recomputation from the saved bytes",
+    ],
+    [
+      "a sidecar whose normalizer.sha256 was tampered",
+      () => {
+        const path = join(darwinArtifact, "real-packed", NORMALIZED_SIDECAR);
+        const sidecar = JSON.parse(readFileSync(path, "utf8"));
+        sidecar.normalizer.sha256 = "0".repeat(64);
+        writeFileSync(path, JSON.stringify(sidecar));
+      },
+      {},
+      "real-packed: measurement.normalized.json normalizer.sha256 differs from the current normalizer; refusing",
+    ],
+    [
+      "a --source-sha that is not the artifact's",
+      null,
+      { "source-sha": "d".repeat(40) },
+      "source SHA " + SOURCE_SHA + " is not " + "d".repeat(40),
+    ],
+    [
+      "a cargo-only flag",
+      null,
+      { "old-cargo-ref": "HEAD" },
+      "--old-cargo-ref is only for --reason cargo-producer-lock",
+    ],
+    [
+      "a missing Darwin fingerprint pin",
+      () =>
+        writeFileSync(
+          at(TEST),
+          saved[TEST]
+            .toString("utf8")
+            .replace("darwinContract.dependencyFingerprint.sha256)", "darwinContract.x)"),
+        ),
+      {},
+      /missing Darwin .*dependencyFingerprint.* pin in /,
+    ],
+    [
+      "--contract with --stage",
+      null,
+      { stage: join(tmpdir(), "zfb-unused-stage"), contract: "x.json" },
+      "--stage stages the checkout's own files; remove --contract",
+    ],
+  ])("refuses %s end to end and writes nothing", async (_name, setup, extra, message) => {
+    quiet();
+    const sidecarPath = join(darwinArtifact, "real-packed", NORMALIZED_SIDECAR);
+    const sidecarBytes = readFileSync(sidecarPath);
+    setup?.();
+    const before = OUTPUTS.map(read);
+    try {
+      await expect(main(darwinArgv(extra), repo.root)).rejects.toThrow(message);
+    } finally {
+      writeFileSync(sidecarPath, sidecarBytes);
+    }
+    unchanged(before);
+  });
+
+  it("refuses to run without --stage, in parseArgs, before reading or writing anything", async () => {
+    const message =
+      "--reason dependency-graph re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)";
+    expect(() => parseArgs(darwinArgv({ stage: undefined }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ stage: undefined }), repo.root)).rejects.toThrow(message);
+    await expect(linuxMain(linuxArgv({ stage: undefined }), repo.root)).rejects.toThrow(message);
+    unchanged(before);
+  });
+
+  it("refuses end to end an artifact whose fingerprint is not the checkout's", async () => {
+    quiet();
+    const other = darwinArtifactAt((p) => (p.dependencyFingerprint.sha256 = "0".repeat(64)));
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ artifact: other }), repo.root)).rejects.toThrow(
+      "artifact dependency fingerprint sha256 differs from this checkout's",
+    );
+    unchanged(before);
+  });
+
+  // Stages Linux then Darwin into a fresh directory; returns it.
+  async function stagePair() {
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await main(darwinArgv({ stage }), repo.root);
+    return stage;
+  }
+
+  it("stages both platforms into one directory and applies them in one step", async () => {
+    quiet();
+    const stage = await stagePair();
+    unchanged(live());
+    const staged = (file) => readFileSync(join(stage, file));
+    const linuxNext = JSON.parse(staged(LINUX).toString("utf8"));
+    const darwinNext = JSON.parse(staged(DARWIN).toString("utf8"));
+    expect(linuxNext.dependencyFingerprint.sha256).toBe(repo.dependencyFingerprint.sha256);
+    expect(darwinNext.dependencyFingerprint.sha256).toBe(repo.dependencyFingerprint.sha256);
+    // Both platforms' rewrites survive: Darwin composed on Linux's staged copies.
+    expect(staged(TEST).toString("utf8")).toBe(
+      rewriteDarwinTestPins(rewriteTestPins(saved[TEST].toString("utf8"), linuxNext), darwinNext),
+    );
+    const readme = staged(README).toString("utf8");
+    const linuxAt = readme.indexOf("dependency-graph re-pin\n\nThe Linux contract");
+    const darwinAt = readme.indexOf("## Darwin v" + repo.version + " dependency-graph re-pin");
+    expect(readme.startsWith(saved[README].toString("utf8"))).toBe(true);
+    expect(linuxAt).toBeGreaterThan(0);
+    expect(darwinAt).toBeGreaterThan(linuxAt);
+    expect(staged(INVENTORY).equals(helperExplainBytes(repo.root))).toBe(true);
+    const manifest = JSON.parse(staged("stage-manifest.json").toString("utf8"));
+    expect(manifest.runs.map((run) => run.platform)).toEqual(["linux-x64", "darwin-arm64"]);
+    expect(manifest.runs[1]).toMatchObject({
+      reason: "dependency-graph",
+      platform: "darwin-arm64",
+      sourceSha: SOURCE_SHA,
+      runId: 7,
+      artifactId: 9,
+    });
+    expect(Object.keys(manifest.destinations)).toEqual([...OUTPUTS].sort());
+    for (const file of OUTPUTS) {
+      expect(manifest.destinations[file].live).toBe(sha(saved[file]));
+    }
+
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS) expect(read(file).equals(staged(file))).toBe(true);
+    // A second apply finds every live file moved: nothing is written twice.
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      /moved since staging; nothing was applied/,
+    );
+  });
+
+  // No temporary file is left beside any destination.
+  const noTemps = () => {
+    for (const dir of new Set(OUTPUTS.map((file) => dirname(at(file))))) {
+      expect(readdirSync(dir).filter((name) => name.includes(".apply-"))).toEqual([]);
+    }
+  };
+
+  it("changes nothing when writing a temporary file fails during --apply", async () => {
+    quiet();
+    const stage = await stagePair();
+    let writes = 0;
+    const io = {
+      writeFileSync(path, bytes) {
+        if (++writes === OUTPUTS.length) throw new Error("injected write failure");
+        writeFileSync(path, bytes);
+      },
+      renameSync,
+    };
+    expect(() => applyStage(stage, repo.root, () => {}, io)).toThrow(
+      /could not write a temporary file \(injected write failure\); nothing was applied/,
+    );
+    unchanged(live());
+    noTemps();
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+  });
+
+  it("restores the destinations already renamed when a rename fails during --apply", async () => {
+    quiet();
+    const stage = await stagePair();
+    let renames = 0;
+    const io = {
+      writeFileSync,
+      renameSync(from, to) {
+        if (++renames === 3) throw new Error("injected rename failure");
+        renameSync(from, to);
+      },
+    };
+    expect(() => applyStage(stage, repo.root, () => {}, io)).toThrow(
+      /renaming .* into place failed \(injected rename failure\); restored the 2 destination\(s\) already renamed, so nothing was applied/,
+    );
+    unchanged(live());
+    noTemps();
+  });
+
+  it("refuses --apply when a live destination moved after staging", async () => {
+    quiet();
+    const stage = await stagePair();
+    appendFileSync(at(README), "\nmanual edit after staging\n");
+    const before = OUTPUTS.map(read);
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "research/v3-island-size/README.md moved since staging; nothing was applied",
+    );
+    unchanged(before);
+  });
+
+  it("refuses --apply when a staged file was edited", async () => {
+    quiet();
+    const stage = await stagePair();
+    appendFileSync(join(stage, DARWIN), " ");
+    await expect(linuxMain(["--apply", stage], repo.root)).rejects.toThrow(
+      "the staged research/v3-island-size/decision.json changed after staging; refusing",
+    );
+    unchanged(live());
+    writeFileSync(join(stage, "stray.txt"), "x");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      /changed after staging|unlisted files/,
+    );
+    unchanged(live());
+  });
+
+  it("applies nothing when the Darwin stage is refused after Linux staged", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-half-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await expect(
+      main(darwinArgv({ stage, "source-sha": "d".repeat(40) }), repo.root),
+    ).rejects.toThrow("is not " + "d".repeat(40));
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "--reason dependency-graph is not staged for darwin-arm64",
+    );
+    unchanged(live());
+    // Staging the same platform twice into one directory is refused.
+    await expect(linuxMain(linuxArgv({ stage }), repo.root)).rejects.toThrow(
+      "research/v3-island-size/decision-linux-x64.json is already staged",
+    );
+  });
+
+  // Paired-run consistency (#4245 finding 1): the two runs must describe one
+  // transition and one measured candidate.
+  const manifestOf = (stage) =>
+    JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+
+  it("records each paired run's transition identity and accepts the probe head or the merge source", async () => {
+    quiet();
+    const stage = await stagePair();
+    const [linuxRun, darwinRun] = manifestOf(stage).runs;
+    const transition = {
+      from: {
+        packageVersion: repo.version,
+        cargoLockSha256: repo.cargoLockSha256,
+        dependencyFingerprint: repo.priorFingerprint,
+      },
+      to: {
+        packageVersion: repo.version,
+        cargoLockSha256: repo.cargoLockSha256,
+        pnpmLockSha256: repo.pnpmLockSha256,
+        dependencyFingerprint: {
+          ...repo.priorFingerprint,
+          sha256: repo.dependencyFingerprint.sha256,
+        },
+      },
+    };
+    expect(linuxRun).toEqual({
+      reason: "dependency-graph",
+      platform: "linux-x64",
+      sourceSha: LINUX_SOURCE,
+      headSha: SOURCE_SHA,
+      runId: 71,
+      artifactId: null,
+      previousContract: { sha256: sha(saved[LINUX]) },
+      transition,
+    });
+    expect(darwinRun).toEqual({
+      reason: "dependency-graph",
+      platform: "darwin-arm64",
+      sourceSha: SOURCE_SHA,
+      runId: 7,
+      artifactId: 9,
+      previousContract: { sha256: sha(saved[DARWIN]) },
+      transition,
+    });
+    // Darwin measured the Linux probe head: allowed.
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+  });
+
+  // Rewrites a staged manifest, standing for a stage directory whose runs were
+  // recorded by hand or by an earlier script: --apply must re-check them.
+  const editRuns = (stage, edit) => {
+    const manifest = manifestOf(stage);
+    edit(manifest.runs);
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+  };
+  const disagree = (problem) =>
+    "--reason dependency-graph paired runs disagree: " +
+    problem +
+    "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+
+  const OTHER_HEAD = "c".repeat(40);
+  const sourceProblem = () =>
+    disagree(
+      "darwin-arm64 measured source " +
+        SOURCE_SHA +
+        " is neither the linux-x64 measured source " +
+        LINUX_SOURCE +
+        " nor its probe head " +
+        OTHER_HEAD,
+    );
+
+  it("refuses to stage a Darwin source that is neither the Linux merge source nor its probe head", async () => {
+    quiet();
+    const problem = sourceProblem();
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage, "head-sha": OTHER_HEAD }), repo.root);
+    const half = readdirSync(stage, { recursive: true }).sort();
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(
+      problem + " (nothing was staged)",
+    );
+    expect(readdirSync(stage, { recursive: true }).sort()).toEqual(half);
+    unchanged(live());
+  });
+
+  it("re-checks the recorded sources on --apply: the Linux merge source is allowed, no other", async () => {
+    quiet();
+    const forged = await stagePair();
+    editRuns(forged, (runs) => (runs[0].headSha = OTHER_HEAD));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      sourceProblem() + " (nothing was applied)",
+    );
+    unchanged(live());
+    editRuns(forged, (runs) => (runs[1].sourceSha = LINUX_SOURCE));
+    applyStage(forged, repo.root, () => {});
+    for (const file of OUTPUTS) {
+      expect(read(file).equals(readFileSync(join(forged, file)))).toBe(true);
+    }
+  });
+
+  it("refuses paired runs that staged different prior identities", async () => {
+    quiet();
+    const stale = structuredClone(darwinPinned);
+    stale.dependencyFingerprint.sha256 = "f".repeat(64);
+    const problem = disagree(
+      "transition from.dependencyFingerprint differs (linux-x64 " +
+        JSON.stringify(repo.priorFingerprint) +
+        ", darwin-arm64 " +
+        JSON.stringify({ ...repo.priorFingerprint, sha256: "f".repeat(64) }) +
+        ")",
+    );
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    writeFileSync(at(DARWIN), contractText(stale));
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(
+      problem + " (nothing was staged)",
+    );
+    writeFileSync(at(DARWIN), saved[DARWIN]);
+    const forged = await stagePair();
+    editRuns(
+      forged,
+      (runs) => (runs[1].transition.from.dependencyFingerprint.sha256 = "f".repeat(64)),
+    );
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      problem + " (nothing was applied)",
+    );
+    unchanged(live());
+  });
+
+  it("refuses paired runs staged from checkouts with different Cargo.lock files", async () => {
+    quiet();
+    // A second checkout of the same graph whose Cargo.lock differs; every
+    // destination Linux staged is byte-identical there, so the live hashes agree.
+    const cargoLock = readFileSync(join(repo.root, "Cargo.lock"), "utf8") + "\n";
+    const other = makeGraphCheckout(graphRoots, { pnpmLock: movedLock, cargoLock });
+    for (const file of [LINUX, TEST, README, INVENTORY]) {
+      writeFileSync(join(other.root, file), read(file));
+    }
+    const otherDarwin = structuredClone(darwinPinned);
+    otherDarwin.toolchain.cargoLockSha256 = other.cargoLockSha256;
+    writeFileSync(join(other.root, DARWIN), contractText(otherDarwin));
+    const otherArtifact = darwinArtifactAt((p) => (p.cargoLockSha256 = other.cargoLockSha256));
+    const stage = join(tempDir("zfb-graph-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    const before = OUTPUTS.map((file) => readFileSync(join(other.root, file)));
+    await expect(main(darwinArgv({ stage, artifact: otherArtifact }), other.root)).rejects.toThrow(
+      disagree(
+        "transition from.cargoLockSha256 differs (linux-x64 " +
+          repo.cargoLockSha256 +
+          ", darwin-arm64 " +
+          other.cargoLockSha256 +
+          "); transition to.cargoLockSha256 differs (linux-x64 " +
+          repo.cargoLockSha256 +
+          ", darwin-arm64 " +
+          other.cargoLockSha256 +
+          ")",
+      ) + " (nothing was staged)",
+    );
+    await expect(main(["--apply", stage], other.root)).rejects.toThrow(
+      "--reason dependency-graph is not staged for darwin-arm64",
+    );
+    OUTPUTS.forEach((file, i) =>
+      expect(readFileSync(join(other.root, file)).equals(before[i])).toBe(true),
+    );
+  });
+
+  it("refuses --apply for a stage directory that mixes reasons", async () => {
+    quiet();
+    const stage = await stagePair();
+    const manifest = manifestOf(stage);
+    manifest.runs.push({ ...manifest.runs[0], reason: "release-bump" });
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "the stage directory mixes --reason dependency-graph, release-bump; stage one reason per directory (nothing was applied)",
+    );
+    manifest.runs.pop();
+    manifest.runs[1].reason = "fingerprint-policy";
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "the stage directory mixes --reason dependency-graph, fingerprint-policy",
+    );
+    unchanged(live());
+  });
+
+  it("refuses --apply for a paired run staged without a transition identity", async () => {
+    quiet();
+    const stage = await stagePair();
+    const manifest = manifestOf(stage);
+    delete manifest.runs[1].transition;
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "darwin-arm64 run records no transition identity",
+    );
+    unchanged(live());
+  });
+
+  // Partial staging (#4245 finding 3): a write that fails mid-commit leaves a
+  // partial stage directory, which neither --apply nor a later --stage accepts.
+  const failingStageIo = (failAt) => {
+    let writes = 0;
+    return {
+      mkdirSync,
+      writeFileSync(path, bytes) {
+        if (++writes === failAt) throw new Error("injected stage write failure");
+        writeFileSync(path, bytes);
+      },
+    };
+  };
+  const RECOVERY = "discard the stage directory and stage again from the start";
+  const stagingFailed =
+    "staging failed (injected stage write failure); the stage directory may now hold a partial stage, which --apply and --stage refuse: " +
+    RECOVERY;
+
+  it("refuses a first stage that failed mid-write, before its manifest, and recovers from a fresh one", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-partial-"), "stage");
+    await expect(linuxMain(linuxArgv({ stage }), repo.root, failingStageIo(2))).rejects.toThrow(
+      stagingFailed,
+    );
+    expect(readdirSync(stage, { recursive: true }).sort()).toEqual([
+      "research",
+      "research/v3-island-size",
+      "research/v3-island-size/decision-linux-x64.json",
+      "scripts",
+      "scripts/__tests__",
+    ]);
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "no stage-manifest.json in the stage directory",
+    );
+    const noManifest =
+      "the stage directory is not empty and has no stage-manifest.json; refusing (" +
+      RECOVERY +
+      ")";
+    await expect(linuxMain(linuxArgv({ stage }), repo.root)).rejects.toThrow(noManifest);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(noManifest);
+    unchanged(live());
+    // The recovery the errors name: discard the directory and stage both platforms again.
+    rmSync(stage, { recursive: true, force: true });
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await main(darwinArgv({ stage }), repo.root);
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS)
+      expect(read(file).equals(readFileSync(join(stage, file)))).toBe(true);
+  });
+
+  it("refuses a second stage that failed after writing a new file", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-partial-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await expect(main(darwinArgv({ stage }), repo.root, failingStageIo(2))).rejects.toThrow(
+      stagingFailed,
+    );
+    const unlisted = "unlisted files in the stage directory: " + DARWIN + " (" + RECOVERY + ")";
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(unlisted);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(unlisted);
+    await expect(linuxMain(linuxArgv({ stage }), repo.root)).rejects.toThrow(unlisted);
+    unchanged(live());
+  });
+
+  it("refuses a second stage whose manifest write failed", async () => {
+    quiet();
+    const stage = join(tempDir("zfb-graph-partial-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    // Every output is written; only the manifest naming the Darwin run is not.
+    await expect(main(darwinArgv({ stage }), repo.root, failingStageIo(5))).rejects.toThrow(
+      stagingFailed,
+    );
+    const changed = "the staged " + README + " changed after staging; refusing (" + RECOVERY + ")";
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(changed);
+    await expect(main(darwinArgv({ stage }), repo.root)).rejects.toThrow(changed);
+    unchanged(live());
+  });
+
+  it("refuses --apply combined with any other argument and a stage directory that aliases the checkout", async () => {
+    quiet();
+    expect(() => parseArgs(["--apply", "x", "--reason", "dependency-graph"])).toThrow(
+      "--apply takes no other argument; remove --reason",
+    );
+    await expect(main(darwinArgv({ stage: repo.root }), repo.root)).rejects.toThrow(
+      /resolves to or contains the checkout/,
+    );
+    await expect(main(["--apply", repo.root], repo.root)).rejects.toThrow(
+      /resolves to or contains the checkout/,
+    );
+    unchanged(live());
+  });
+});
+
+// End-to-end CLI runs against one test-fixture checkout — synthetic prior
+// policy, not native evidence: the checkout's COPY of lock-fingerprint.mjs
+// computes policy 2 (the live helper stays at policy 1), both contracts pin
+// the live helper's policy-1 fingerprint of the same lock, and each
+// platform's artifact was measured at the checkout carrying the policy-2
+// helper. The shared refusal matrix is covered in
+// rebaseline-island-size-linux.test.mjs.
+describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
+  const policyRoots = [];
+  const DARWIN = "research/v3-island-size/decision.json";
+  const LINUX = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const INVENTORY = "research/v3-island-size/lock-fingerprint-inventory.json";
+  const POLICY = "research/v3-island-size/LOCK-FINGERPRINT-POLICY.md";
+  const OUTPUTS = [DARWIN, LINUX, TEST, README, INVENTORY, POLICY];
+  const LINUX_SOURCE = "b".repeat(40);
+  let repo;
+  let darwinArtifact;
+  let linuxArtifact;
+  let darwinPinned;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const contractOf = (file) => JSON.parse(read(file).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+  const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+  const policyTempDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), "zfb-policy-stage-"));
+    policyRoots.push(dir);
+    return dir;
+  };
+
+  function darwinArtifactAt(tweak) {
+    const dir = makeArtifact({
+      version: repo.version,
+      tweak: (p, mode) => {
+        p.fixtureSha256 = repo.fixtureSha256;
+        p.runnerSha256 = repo.runnerSha256;
+        p.pnpmLockSha256 = repo.pnpmLockSha256;
+        p.cargoLockSha256 = repo.cargoLockSha256;
+        p.dependencyFingerprint = {
+          policyVersion: repo.dependencyFingerprint.policyVersion,
+          sha256: repo.dependencyFingerprint.sha256,
+        };
+        tweak?.(p, mode);
+      },
+    });
+    // Kept for the whole describe, not removed by the per-test cleanup.
+    policyRoots.push(roots.splice(roots.indexOf(dir), 1)[0]);
+    return dir;
+  }
+
+  beforeAll(() => {
+    repo = makePolicyCheckout(policyRoots, { editHelper: policyHelper.v2 });
+    darwinArtifact = darwinArtifactAt();
+    linuxArtifact = mkdtempSync(join(tmpdir(), "zfb-policy-linux-artifact-"));
+    policyRoots.push(linuxArtifact);
+    const linuxLive = liveOf(LINUX);
+    writeRuns(linuxArtifact, Object.keys(linuxLive.ceilings.workspace), (mode) => ({
+      sourceSha: LINUX_SOURCE,
+      mode,
+      platform: { os: "linux", arch: "x64" },
+      fixtureVersion: linuxLive.fixtureVersion,
+      fixtureSha256: repo.fixtureSha256,
+      runnerSha256: repo.runnerSha256,
+      packageVersion: repo.version,
+      runtimePackageVersion: repo.version,
+      honoPackageVersion: linuxLive.toolchain.honoVersion,
+      esbuildVersion: linuxLive.toolchain.esbuildVersion,
+      nodeVersion: linuxLive.toolchain.nodeVersion,
+      zlibVersion: linuxLive.toolchain.zlibVersion,
+      compression: linuxLive.compression,
+      repeats: 2,
+      pnpmLockSha256: repo.pnpmLockSha256,
+      dependencyFingerprint: {
+        policyVersion: repo.dependencyFingerprint.policyVersion,
+        sha256: repo.dependencyFingerprint.sha256,
+      },
+      cargoLockSha256: repo.cargoLockSha256,
+    }));
+    const pin = (contract, artifactDir) => {
+      contract.ceilings = ceilingsOf(artifactDir);
+      contract.fixtureSha256 = { ...repo.fixtureSha256 };
+      contract.runnerSha256 = { ...repo.runnerSha256 };
+      contract.toolchain.packageVersion = repo.version;
+      contract.toolchain.pnpmLockSha256 = repo.pnpmLockSha256;
+      contract.toolchain.cargoLockSha256 = repo.cargoLockSha256;
+      contract.dependencyFingerprint = { ...repo.priorFingerprint };
+      return contract;
+    };
+    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
+    darwinPinned.fixtureVersion = legacy.fixtureVersion;
+    darwinPinned.compression = legacy.compression;
+    darwinPinned.normalizerSha256 = normalizerSha256();
+    for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
+      darwinPinned.toolchain[key] = legacy.toolchain[key];
+    }
+    writeFileSync(at(DARWIN), contractText(darwinPinned));
+    writeFileSync(at(LINUX), contractText(pin(liveOf(LINUX), linuxArtifact)));
+    saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of policyRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const darwinArgv = (extra = {}) =>
+    Object.entries({
+      ...args,
+      artifact: darwinArtifact,
+      reason: "fingerprint-policy",
+      stage: join(policyTempDir(), "stage"),
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const linuxArgv = (extra = {}) =>
+    Object.entries({
+      artifact: linuxArtifact,
+      "run-id": "71",
+      "job-id": "72",
+      // Linux measured the PR merge source of the probe head Darwin measured natively.
+      "head-sha": SOURCE_SHA,
+      "source-sha": LINUX_SOURCE,
+      reason: "fingerprint-policy",
+      ...extra,
+    }).flatMap(([key, value]) => ["--" + key, value]);
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const unchanged = (before) =>
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+
+  it("re-pins the four fingerprint keys end to end and rewrites the policy identity line", async () => {
+    quiet();
+    const stage = join(policyTempDir(), "stage");
+    await main(darwinArgv({ stage }), repo.root);
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    landStaged(stage, repo.root);
+    const next = contractOf(DARWIN);
+    expect(
+      contractDiffKeys(darwinPinned, next).filter((key) => !key.startsWith("baselineEvidence.")),
+    ).toEqual([
+      "baselineSourceSha",
+      "dependencyFingerprint.helperSha256",
+      "dependencyFingerprint.policyVersion",
+      "dependencyFingerprint.sha256",
+      "outcome",
+      "platformStatus",
+    ]);
+    expect(() =>
+      assertAllowedMovement("fingerprint-policy", FINGERPRINT_POLICY_MOVEMENT, darwinPinned, next),
+    ).not.toThrow();
+    expect(next.dependencyFingerprint).toEqual(repo.dependencyFingerprint);
+    expect(next.outcome).toBe("fingerprint-policy");
+    expect(next.baselineEvidence).toMatchObject({
+      event: "ci-artifact",
+      runId: 7,
+      artifact: { id: 9 },
+      originalCheckerResult: { exitCode: 1 },
+      fingerprintPolicyTransition: { from: repo.priorFingerprint, to: repo.dependencyFingerprint },
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    expect(read(LINUX).equals(saved[LINUX])).toBe(true);
+    expect(read(INVENTORY).equals(helperExplainBytes(repo.root))).toBe(true);
+    expect(read(POLICY).toString("utf8")).toContain(
+      'Policy identity: `policyVersion: 2`, `parser: "yaml@2.9.0"`',
+    );
+    expect(read(TEST).toString("utf8")).toBe(
+      rewriteDarwinTestPins(saved[TEST].toString("utf8"), next),
+    );
+    const readme = read(README).toString("utf8");
+    expect(readme).toContain("## Darwin v" + repo.version + " fingerprint-policy re-pin");
+    expect(readme).toContain("Linux x64 moves in the same paired change");
+  });
+
+  it("refuses the version-step and checkout-helper violations in the pure re-pin", () => {
+    const artifact = loadDarwinArtifact(darwinArtifact);
+    const evidence = evidenceFor({ ...args, reason: "fingerprint-policy" }, artifact);
+    const checkoutHelper = {
+      policyVersion: repo.dependencyFingerprint.policyVersion,
+      parser: repo.dependencyFingerprint.parser,
+      helperSha256: repo.dependencyFingerprint.helperSha256,
+    };
+    const checkout = { dependencyFingerprint: repo.dependencyFingerprint, checkoutHelper };
+    const run =
+      (fingerprint, check = checkout) =>
+      () =>
+        repinDarwinFingerprintPolicy(
+          { ...darwinPinned, dependencyFingerprint: fingerprint },
+          totalsOf(artifact),
+          evidence,
+          check,
+        );
+    expect(run(repo.priorFingerprint)).not.toThrow();
+    expect(run(repo.dependencyFingerprint)).toThrow(
+      "--reason fingerprint-policy: policyVersion did not move; use fingerprint-helper or dependency-graph",
+    );
+    expect(run({ ...repo.priorFingerprint, policyVersion: 0 })).toThrow(
+      "policyVersion must increase by exactly one",
+    );
+    expect(
+      run(repo.priorFingerprint, {
+        ...checkout,
+        checkoutHelper: { ...checkoutHelper, policyVersion: 3 },
+      }),
+    ).toThrow("does not match the helper's exported FINGERPRINT_POLICY_VERSION 3");
+    expect(run({ ...repo.dependencyFingerprint, helperSha256: "1".repeat(64) })).toThrow(
+      "helperSha256 moved without a policyVersion step",
+    );
+    expect(() =>
+      repinDarwinFingerprintPolicy(
+        { ...darwinPinned, allowance: { raw: 0, gzipNormalized: 1 } },
+        totalsOf(artifact),
+        evidence,
+        checkout,
+      ),
+    ).toThrow(
+      "--reason fingerprint-policy moves only the dependency fingerprint, together with a policyVersion step, but allowance differ",
+    );
+  });
+
+  const edit = (change) => () => {
+    const contract = structuredClone(darwinPinned);
+    change(contract);
+    writeFileSync(at(DARWIN), contractText(contract));
+  };
+  it.each([
+    [
+      "+0",
+      edit((c) => (c.dependencyFingerprint = { ...repo.dependencyFingerprint })),
+      {},
+      "policyVersion did not move; use fingerprint-helper or dependency-graph",
+    ],
+    [
+      "-1",
+      edit((c) => (c.dependencyFingerprint.policyVersion = 3)),
+      {},
+      "policyVersion must increase by exactly one",
+    ],
+    [
+      "raw +1",
+      edit((c) => (c.ceilings.workspace.model.raw -= 1)),
+      {},
+      "raw totals changed (workspace/model)",
+    ],
+    [
+      "a changed Cargo.lock",
+      edit((c) => (c.toolchain.cargoLockSha256 = "0".repeat(64))),
+      {},
+      "--reason fingerprint-policy cannot move Cargo.lock",
+    ],
+    [
+      "a Hono bump",
+      edit((c) => (c.toolchain.honoVersion = "0.0.0-test")),
+      {},
+      "honoPackageVersion differs from the contract",
+    ],
+    [
+      "a missing policy identity line",
+      () =>
+        writeFileSync(at(POLICY), saved[POLICY].toString("utf8").replace("Policy identity:", "x:")),
+      {},
+      "policy identity line not found in LOCK-FINGERPRINT-POLICY.md",
+    ],
+    [
+      "a cargo-only flag",
+      null,
+      { "added-packages": "ctor@0.2.9" },
+      "--added-packages is only for --reason cargo-producer-lock",
+    ],
+    [
+      "a --source-sha that is not the artifact's",
+      null,
+      { "source-sha": "d".repeat(40) },
+      "source SHA " + SOURCE_SHA + " is not " + "d".repeat(40),
+    ],
+  ])("refuses %s end to end and writes nothing", async (_name, setup, extra, message) => {
+    quiet();
+    setup?.();
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv(extra), repo.root)).rejects.toThrow(message);
+    unchanged(before);
+  });
+
+  it("refuses to run without --stage, in parseArgs, before reading or writing anything", async () => {
+    const message =
+      "--reason fingerprint-policy re-pins both platforms together and only stages: pass --stage <dir> for Linux x64 and Darwin arm64 into the same directory, then --apply <dir> (nothing was written)";
+    expect(() => parseArgs(darwinArgv({ stage: undefined }))).toThrow(message);
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ stage: undefined }), repo.root)).rejects.toThrow(message);
+    unchanged(before);
+  });
+
+  it("refuses end to end an artifact at policyVersion 1 against the policy-2 checkout", async () => {
+    quiet();
+    const old = darwinArtifactAt((p) => (p.dependencyFingerprint.policyVersion = 1));
+    const before = OUTPUTS.map(read);
+    await expect(main(darwinArgv({ artifact: old }), repo.root)).rejects.toThrow(
+      "artifact dependency fingerprint policyVersion differs from this checkout's",
+    );
+    unchanged(before);
+  });
+
+  it("stages both platforms into one directory, policy document included, and applies them together", async () => {
+    quiet();
+    const stage = join(mkdtempSync(join(tmpdir(), "zfb-policy-pair-")), "stage");
+    policyRoots.push(dirname(stage));
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "--reason fingerprint-policy is not staged for darwin-arm64",
+    );
+    await main(darwinArgv({ stage }), repo.root);
+    unchanged(OUTPUTS.map((file) => saved[file]));
+    const staged = (file) => readFileSync(join(stage, file));
+    const linuxNext = JSON.parse(staged(LINUX).toString("utf8"));
+    const darwinNext = JSON.parse(staged(DARWIN).toString("utf8"));
+    expect(linuxNext.dependencyFingerprint).toEqual(repo.dependencyFingerprint);
+    expect(darwinNext.dependencyFingerprint).toEqual(repo.dependencyFingerprint);
+    expect(staged(POLICY).toString("utf8")).toBe(
+      saved[POLICY]
+        .toString("utf8")
+        .replace(
+          'Policy identity: `policyVersion: 1`, `parser: "yaml@2.9.0"`',
+          'Policy identity: `policyVersion: 2`, `parser: "yaml@2.9.0"`',
+        ),
+    );
+    const readme = staged(README).toString("utf8");
+    expect(
+      readme.indexOf("## Darwin v" + repo.version + " fingerprint-policy re-pin"),
+    ).toBeGreaterThan(readme.indexOf("fingerprint-policy re-pin\n\nThe Linux contract"));
+    const manifest = JSON.parse(staged("stage-manifest.json").toString("utf8"));
+    expect(manifest.runs.map((run) => run.platform + " " + run.reason)).toEqual([
+      "linux-x64 fingerprint-policy",
+      "darwin-arm64 fingerprint-policy",
+    ]);
+    expect(Object.keys(manifest.destinations)).toEqual([...OUTPUTS].sort());
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS) expect(read(file).equals(staged(file))).toBe(true);
   });
 });
