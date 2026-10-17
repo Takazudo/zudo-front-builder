@@ -1468,6 +1468,10 @@ impl KnownPageSources {
 /// shape it folds into.
 #[derive(Debug, Clone)]
 pub struct GranularityPolicy {
+    /// Re-resolve browser identity for every admitted watcher change. The
+    /// CLI enables this because esbuild loaders can consume arbitrary file
+    /// classes; the scanner's raw/worker registry is not the whole graph.
+    pub refresh_browser_graph: bool,
     /// Treat any change under this list of relative roots as triggering
     /// the islands re-bundle. Defaults to `["components", "src"]` —
     /// callers can override with [`GranularityPolicy::with_islands_roots`].
@@ -1498,6 +1502,7 @@ pub struct GranularityPolicy {
 impl Default for GranularityPolicy {
     fn default() -> Self {
         Self {
+            refresh_browser_graph: false,
             islands_roots: vec![PathBuf::from("components"), PathBuf::from("src")],
             content_roots: Vec::new(),
             raw_import_invalidation: RawImportInvalidation::default(),
@@ -1508,6 +1513,12 @@ impl Default for GranularityPolicy {
 }
 
 impl GranularityPolicy {
+    /// Enable conservative client/SSR identity refresh after watcher filtering.
+    pub fn with_browser_graph_refresh(mut self) -> Self {
+        self.refresh_browser_graph = true;
+        self
+    }
+
     /// Override the islands source roots. Used when the project's
     /// `"use client"` components live somewhere non-standard.
     pub fn with_islands_roots<I, P>(mut self, roots: I) -> Self

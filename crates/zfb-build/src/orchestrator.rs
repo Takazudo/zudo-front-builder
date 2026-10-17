@@ -1117,6 +1117,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         while let Some(path) = changes_iter.next() {
             let path: PathBuf = path.clone();
             plan.record_trigger(path.clone());
+            // Files have already passed the watcher admission rules. Do not
+            // predict esbuild's loader/resolution graph from the path class:
+            // JSON, CSS, and arbitrary file-loader inputs can change identity.
+            if self.config.policy.refresh_browser_graph {
+                plan.mark_islands();
+                plan.mark_ssr_reload_needed();
+            }
             // CSS source membership belongs to the consumer. Keep every
             // path, including those claimed by the external override below.
             plan.css_changes.record_upsert(path.clone());
@@ -1711,6 +1718,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // handled. Without this, a deletion-only tick leaves CSS /
         // islands / SSR stale until the next non-removed edit.
         for path in &removed {
+            if self.config.policy.refresh_browser_graph {
+                plan.mark_islands();
+                plan.mark_ssr_reload_needed();
+            }
             // Keep removals separate from upserts: a path can occur in both
             // sets, and a removed directory can contain a recreated file.
             plan.css_changes.record_removal(path.clone());
@@ -4547,6 +4558,59 @@ mod tests {
             plans[0].rerun_islands,
             "removing a script page must remove targets from the next registry"
         );
+    }
+
+    #[test]
+    fn content_edit_and_removal_rebuild_client_identity_with_ssr() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new("/proj", vec![])
+            .with_policy(GranularityPolicy::default().with_browser_graph_refresh());
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        for path in ["/proj/content/post.mdx", "/proj/content/post.md"] {
+            let plan = orch.plan_for_changes([PathBuf::from(path)]);
+            assert!(plan.rerun_islands, "content may affect the browser graph");
+            assert!(plan.ssr_reload_needed);
+        }
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(PathBuf::from("/proj/content/post.mdx"), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert!(plans.last().unwrap().rerun_islands);
+        assert!(plans.last().unwrap().ssr_reload_needed);
+    }
+
+    #[test]
+    fn browser_graph_refresh_covers_data_resources_and_external_inputs() {
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new("/proj", vec![])
+            .with_policy(GranularityPolicy::default().with_browser_graph_refresh());
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        for path in [
+            "/proj/data/value.json",
+            "/proj/public/logo.png",
+            "/proj/lib/value.custom",
+            "/linked/package/value.js",
+            "/proj/styles/theme.css",
+        ] {
+            let plan = orch.plan_for_changes([PathBuf::from(path)]);
+            assert!(plan.rerun_islands && plan.ssr_reload_needed, "{path}");
+        }
+        let dist = tempfile::tempdir().unwrap();
+        orch.tick_with_kinds(
+            vec![(PathBuf::from("/proj/data/value.json"), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let plans = applies.lock().unwrap();
+        assert!(plans.last().unwrap().rerun_islands);
+        assert!(plans.last().unwrap().ssr_reload_needed);
     }
 
     #[test]

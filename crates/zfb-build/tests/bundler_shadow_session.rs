@@ -114,6 +114,7 @@ fn make_input(root: &Path, esbuild: Option<&Path>, outdir_name: &str) -> Bundler
         )],
         css_module_class_maps: css_maps,
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         ..BundlerInput::for_project(
             root.to_path_buf(),
             BundleMode::Development,

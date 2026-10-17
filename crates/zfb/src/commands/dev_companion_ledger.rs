@@ -9,6 +9,8 @@ pub(crate) const RETAINED_CLIENT_SCRIPT_GENERATIONS: usize = 1;
 
 #[derive(Default)]
 pub(crate) struct IslandsCompanionLedger {
+    published_build_token: Option<String>,
+    staged_build_token: Option<String>,
     live: HashSet<String>,
     staged: Option<HashSet<String>>,
     unresolved: HashSet<String>,
@@ -109,6 +111,10 @@ impl ClientScriptCompanionLedger {
 }
 
 impl IslandsCompanionLedger {
+    pub(crate) fn invalidate_build_reuse(&mut self) {
+        self.published_build_token = None;
+    }
+
     pub(crate) fn begin(&mut self) {
         self.baseline_unresolved = self.unresolved.clone();
     }
@@ -119,10 +125,30 @@ impl IslandsCompanionLedger {
 
     pub(crate) fn stage(&mut self, names: HashSet<String>) {
         self.staged = Some(names);
+        self.staged_build_token = None;
+    }
+
+    pub(crate) fn stage_build(&mut self, names: HashSet<String>, token: String) {
+        self.stage(names);
+        self.staged_build_token = Some(token);
+    }
+
+    pub(crate) fn can_reuse_build(
+        &self,
+        token: &str,
+        output_exists: impl Fn(&str) -> bool,
+    ) -> bool {
+        self.staged.is_none()
+            && self.published_build_token.as_deref() == Some(token)
+            && self.live.iter().all(|name| output_exists(name))
     }
 
     pub(crate) fn abort_candidate(&mut self) -> HashSet<String> {
         self.staged = None;
+        self.staged_build_token = None;
+        // The stable entry may already have been overwritten by the aborted
+        // candidate. A retry must repair it even if sources revert to old bytes.
+        self.published_build_token = None;
         let mut protected = self.live.clone();
         protected.extend(self.retained.iter().flatten().cloned());
         let candidates = self
@@ -137,6 +163,7 @@ impl IslandsCompanionLedger {
 
     pub(crate) fn commit(&mut self, preserve_lazy: bool) -> PrunePlan {
         if let Some(next) = self.staged.take() {
+            self.published_build_token = self.staged_build_token.take();
             let previous = std::mem::replace(&mut self.live, next);
             if !previous.is_empty() && previous != self.live {
                 self.retained.push_front(previous);
@@ -193,6 +220,59 @@ mod tests {
         ledger.track_candidate(&values);
         ledger.stage(values, changed);
         ledger.commit()
+    }
+
+    #[test]
+    fn islands_identity_reuse_requires_commit_and_complete_outputs() {
+        let mut ledger = IslandsCompanionLedger::default();
+        ledger.stage_build(names(&["chunk-a.js"]), "first".to_owned());
+        assert!(!ledger.can_reuse_build("first", |_| true));
+        let _ = ledger.commit(false);
+        assert!(ledger.can_reuse_build("first", |_| true));
+        assert!(!ledger.can_reuse_build("second", |_| true));
+        assert!(!ledger.can_reuse_build("first", |_| false));
+
+        ledger.begin();
+        ledger.stage_build(names(&["chunk-b.js"]), "second".to_owned());
+        ledger.abort_candidate();
+        assert!(
+            !ledger.can_reuse_build("first", |_| true),
+            "aborted entry writes must force a repairing publication even after sources revert"
+        );
+        assert!(!ledger.can_reuse_build("second", |_| true));
+    }
+
+    #[test]
+    fn failed_preparation_requires_publication_after_same_identity_recovers() {
+        let mut ledger = IslandsCompanionLedger::default();
+        ledger.stage_build(names(&["chunk-a.js"]), "first".to_owned());
+        let _ = ledger.commit(false);
+        assert!(ledger.can_reuse_build("first", |_| true));
+        ledger.begin();
+        // A registration error may leave the document transaction pending,
+        // without invoking abort_candidate or staging any replacement files.
+        ledger.invalidate_build_reuse();
+        assert!(!ledger.can_reuse_build("first", |_| true));
+        ledger.stage_build(names(&["chunk-a.js"]), "first".to_owned());
+        let _ = ledger.commit(false);
+        assert!(ledger.can_reuse_build("first", |_| true));
+        assert_eq!(ledger.retained_len(), 0);
+    }
+
+    #[test]
+    fn document_only_commit_keeps_reusable_islands_identity_and_retention() {
+        let mut ledger = IslandsCompanionLedger::default();
+        ledger.stage_build(names(&["chunk-a.js"]), "first".to_owned());
+        let _ = ledger.commit(false);
+        ledger.stage_build(names(&["chunk-b.js"]), "second".to_owned());
+        let _ = ledger.commit(false);
+        assert_eq!(ledger.retained_len(), 1);
+        ledger.begin();
+        assert!(ledger.can_reuse_build("second", |_| true));
+        let prune = ledger.commit(false);
+        assert_eq!(ledger.retained_len(), 1);
+        assert!(prune.keep.contains("chunk-a.js"));
+        assert!(ledger.can_reuse_build("second", |_| true));
     }
 
     #[test]
