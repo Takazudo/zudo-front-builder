@@ -9,11 +9,24 @@ the shared service regression tests continue to protect the normal host.
 
 ## Build and config capability gate
 
-Requirements: repository-pinned pnpm, installed Rust toolchain, Python 3, and
+Requirements: repository-pinned pnpm, installed Rust toolchain, **Python >=3.11**, and
 the normal native V8 build prerequisites. Use the repository heavy guard for
 native builds. In this portable managed session its path is
 `/workspace/codex-settings/.portable-profile-home/.codex/scripts/heavy-guard.sh`; on another
 host use that host's published guard, without creating another queue.
+
+On macOS, select a compatible interpreter explicitly; the system `python3` may
+be older. For example, if Python 3.11 is already installed on your PATH:
+
+```sh
+ZFB_DEV_PYTHON="$(command -v python3.11)"
+"$ZFB_DEV_PYTHON" -c 'import sys; assert sys.version_info >= (3, 11); print(sys.executable)'
+"$ZFB_DEV_PYTHON" -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
+```
+
+Use that same interpreter in place of `python3` in the commands below. This is a
+contributor-tooling requirement, not a CLI user or
+production runtime requirement.
 
 From the repository root, prepare the exact baseline ICU data. This fetches a
 checksum-pinned **data archive only**, extracts its known data member, and

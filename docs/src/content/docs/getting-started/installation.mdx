@@ -10,6 +10,8 @@ Choose one of two installation paths: use npm / pnpm for a Node-based project, o
 
 The following prerequisites apply to the npm / pnpm path.
 
+The standalone and npm distributions provide the same CLI and commands; choose how to install it, not a different engine.
+
 ## Prerequisites
 
 You will need:
@@ -80,16 +82,17 @@ For a standalone installation, run `zfb --version` and `zfb --help`. For npm / p
 npx zfb --help
 ```
 
-You should see six subcommands:
+You should see seven subcommands:
 
 - `zfb new` — scaffold a new project
 - `zfb dev` — start the dev server with watcher and live-reload
 - `zfb build` — produce a static build
 - `zfb css` — compile a CSS entrypoint without building the site
+- `zfb wind` — explain and audit zudo-wind candidates and generate manifests
 - `zfb preview` — serve the build output
 - `zfb check` — typecheck the project and validate content collections against their schemas
 
-If `npx zfb --help` prints all six, you're ready to move on to [Your first site](./your-first-site.mdx).
+If `npx zfb --help` prints all seven, you're ready to move on to [Your first site](./your-first-site.mdx).
 
 ## From source (contributors)
 
@@ -291,6 +294,6 @@ collections, and `zfb.config.ts` evaluation — runs Node-free.
 
 ## Upgrading zfb
 
-An in-place `zfb upgrade` command is planned for a future release. For now,
+There is no `zfb upgrade` subcommand. To update,
 re-run the same install command you used initially — it overwrites the
 existing binary with the latest version.

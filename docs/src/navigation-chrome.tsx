@@ -9,7 +9,7 @@ import {
   createSidebarWithDefaults,
   type SidebarWithDefaultsProps,
 } from "@takazudo/zudo-doc/sidebar-with-defaults";
-import { ARCHITECTURE_GROUPS } from "./config/navigation-groups.mjs";
+import { ARCHITECTURE_GROUPS, BUILD_GROUPS, DEPLOY_SLUGS } from "./config/navigation-groups.mjs";
 import type { SidebarsConfig } from "@takazudo/zudo-doc/sidebar-utils";
 import { buildWindEditorialForest, resolveNavigationScope } from "./config/navigation-scope.mjs";
 
@@ -30,6 +30,15 @@ export function createNavigationChrome(baseBindings: ChromeHostBindings) {
     if (existing) return existing;
     const sidebarsConfig: SidebarsConfig = {
       ...baseBindings.sidebarsConfig,
+      "build-with-zfb": [
+        "build-with-zfb",
+        ...BUILD_GROUPS.map((group) => ({
+          type: "category" as const,
+          label: locale === "ja" ? group.titleJa : group.title,
+          items: [group.slug, ...group.members],
+        })),
+      ],
+      "deploy-embed": ["deploy-embed", ...DEPLOY_SLUGS],
       architecture: ARCHITECTURE_GROUPS.map((group) => ({
         type: "category",
         label: locale === "ja" ? group.titleJa : group.title,
@@ -67,8 +76,22 @@ export function createNavigationChrome(baseBindings: ChromeHostBindings) {
     pairs.set(key, created);
     return created;
   }
+  function editorialProps<T extends HeaderWithDefaultsProps | SidebarWithDefaultsProps>(
+    props: T,
+  ): T {
+    const slug = props.currentSlug ?? "";
+    const navSection = DEPLOY_SLUGS.includes(slug)
+      ? "deploy-embed"
+      : BUILD_GROUPS.some((group) => group.members.includes(slug)) &&
+          (slug.startsWith("architecture/") || slug.startsWith("guides/"))
+        ? "build-with-zfb"
+        : props.navSection;
+    return { ...props, navSection };
+  }
   return {
-    Header: (props: HeaderWithDefaultsProps) => pair(props).Header(props),
-    Sidebar: (props: SidebarWithDefaultsProps) => pair(props).Sidebar(props),
+    Header: (props: HeaderWithDefaultsProps) =>
+      pair(editorialProps(props)).Header(editorialProps(props)),
+    Sidebar: (props: SidebarWithDefaultsProps) =>
+      pair(editorialProps(props)).Sidebar(editorialProps(props)),
   };
 }

@@ -120,7 +120,10 @@ explicit expand/collapse choices (`zd-sidebar-scope`, version 2): automatic path
 stored, a deliberate collapse survives hash changes, filtering and same-page reload, the next page
 reveals its own path, Restore clears the selection and choices but keeps the filter, and older
 unversioned expansion is discarded once. `sidebar_initial_expansion: collapsed` on both Wind
-index pages keeps those views compact. Architecture keeps its four category groups via
+index pages keeps those views compact. Build with zfb and Deploy & Embed use explicit native sidebar membership from the same
+editorial data. The chrome factory classifies practical architecture/guide articles by membership
+without moving their URLs; their URL-based breadcrumbs and pagination remain native.
+Architecture keeps its four category groups via
 `sidebarsConfig.architecture`. `tests/docs-navigation-structure/verify.mjs` asserts this contract
 on the served host.
 
@@ -235,7 +238,7 @@ The following keys are set in `zfb.config.ts`'s `zudoDoc({ ... })` call:
 - **imageEnlarge** — Click-to-enlarge for content images
 - **dynamicPageTransition** — Animated page transitions
 - **footer** — footer links + copyright, host-owned chrome content
-- **headerNav** — the top-nav category links (Getting Started, Install, Concepts, …)
+- **headerNav** — the top-nav category links (Getting Started, Build with zfb, zudo-wind, zudo-react, Deploy & Embed, Reference, Recipes; secondary architecture/guides and contributor material)
 - **headerRightItems** — the right-aligned header controls (GitHub link, theme toggle, search, language switcher)
 - **buildDocsSchema** — the host's `docs-schema.ts` wrapper, adding the `tier` frontmatter enum
 - **adapter** — `@takazudo/zfb-adapter-cloudflare`

@@ -118,3 +118,7 @@ pnpm docs:build           # static build into docs/dist/
 ## Release builds and cross-compilation
 
 The per-platform binaries shipped on npm (`linux-x64-gnu`, `linux-arm64-gnu`, `darwin-x64`, `darwin-arm64`, `win32-x64-msvc`) are built by [`.github/workflows/release.yml`](./.github/workflows/release.yml) using cross-compilation targets. That workflow is the source of truth for the full release matrix; `cargo build --workspace` above only targets your host platform.
+
+## Direct V8 developer tooling
+
+The optional [direct-V8 prototype](prototypes/direct-v8/README.md) requires Python >=3.11 for its developer scripts. On macOS, explicitly select an installed compatible interpreter, for example `ZFB_DEV_PYTHON="$(command -v python3.11)"`, and invoke the tools with `"$ZFB_DEV_PYTHON"`. Verify its version before running. This does not add a Python requirement to the production CLI or change the default deno_core-backed V8 path.

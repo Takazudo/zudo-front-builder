@@ -1,0 +1,16 @@
+---
+title: Deploy & Embed
+description: Static hosting, Workers, local servers and embedding.
+sidebar_position: 40
+---
+
+## Choose a destination
+
+- **Static hosting** — upload the output of `zfb build` (default `dist/`) to a static host. Inspect the built output with `zfb preview`. For a subpath, configure `base`, rebuild, and verify links and assets at that prefix.
+- **Cloudflare Workers** — use the Cloudflare adapter and `prerender = false` for request-time routes. Node.js and Wrangler are required. With the adapter configured, preview delegates to Wrangler.
+- **Local server** — see Desktop deployment for an application that spawns the CLI.
+- **Library embedding** — see Embed as library for the host-controlled integration boundary and its limits.
+
+There is no `zfb deploy` command. Use your host’s deployment tools.
+
+<CategoryNav categories={["architecture/three-ways-to-run-zfb","guides/ssr-and-cloudflare-bindings","guides/desktop-deployment","guides/embed-as-library"]} />

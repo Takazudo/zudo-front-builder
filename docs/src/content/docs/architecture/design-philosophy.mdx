@@ -26,12 +26,7 @@ avoids becoming a full application bundler with its own plugin ecosystem for
 every possible transformation, zfb deliberately avoids growing a thick API
 surface to cover every site-building pattern.
 
-The [six engine primitives](./engine-vs-framework.mdx) are the complete
-public contract of zfb v1. Adding a seventh primitive — even a useful one —
-means a new API to design, document, maintain, and version across future
-releases. It means answering "is this possible?" questions about edge cases
-on the new surface. And it means that framework authors building on top of
-zfb must now reason about one more axis.
+The current public surfaces include pages and content, zudo-react JSX and islands, zudo-wind, client scripts, the CLI, plugins and adapters. See [Engine vs Framework](./engine-vs-framework.mdx). Keeping APIs small and composable remains the principle; the six-item v1 list is not the entire current contract.
 
 **The cost of staying narrow** is real: the consumer carries the glue. When
 zfb does not ship sidebar generation or i18n routing or a built-in search
@@ -42,7 +37,7 @@ was genuine.
 
 **The benefit** is the absence of an uncertainty tax. When the surface is
 narrow and stable, the question "does zfb support this?" has a fast answer:
-look at the six primitives. If the feature maps onto them, it works. If it
+consult the documented surfaces. If the feature maps onto them, it works. If it
 does not, it belongs in a framework sitting on top of zfb, not inside the
 engine. There is no thick API to audit, no plugin point that might break in
 the next minor version, and no dependency on the engine team keeping up with
@@ -128,8 +123,8 @@ for the in-tree visitor path.
 
 ## Where to go next
 
-- [Engine vs Framework](./engine-vs-framework.mdx) — the six primitives
-  zfb commits to, and the line between engine and framework concerns.
+- [Engine vs Framework](./engine-vs-framework.mdx) — the current surfaces
+  zfb provides, and the line between engine and framework concerns.
 - [Markdown Features](../markdown-features/index.mdx) — the opt-in extras catalog.
 - [Plugins](./plugins.mdx) — the narrow exception: the five lifecycle hooks
   and what they do and do not cover.
