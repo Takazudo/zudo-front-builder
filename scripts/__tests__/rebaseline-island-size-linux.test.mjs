@@ -96,6 +96,14 @@ const liveContract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
 );
 const contract = asSchemaV2(liveContract);
+// Verbatim released v4.5.3 Linux contract (main d70dd6d9): a genuine contract
+// that predates any cargo-internal-rewire, now that the live one carries one.
+const preRewireContract = JSON.parse(
+  readFileSync(
+    join(root, "scripts/__tests__/fixtures/island-size-linux-x64-v4.5.3-release.json"),
+    "utf8",
+  ),
+);
 // The cases below build their own actual-gzip evidence; start from a contract that
 // has none, whatever the live contract recorded at its last re-pin.
 delete contract.baselineEvidence.actualGzip;
@@ -4281,7 +4289,7 @@ describe("cargo-internal-rewire (#4258)", () => {
       });
       repo.git("tag", "old-lock");
       artifact = linuxArtifact();
-      pinned = structuredClone(liveContract);
+      pinned = structuredClone(preRewireContract);
       pinned.ceilings = ceilingsOf(artifact);
       pinned.fixtureSha256 = { ...repo.fixtureSha256 };
       pinned.runnerSha256 = { ...repo.runnerSha256 };
