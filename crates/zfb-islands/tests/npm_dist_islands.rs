@@ -50,6 +50,23 @@ fn scan_component_names(page: &Path) -> Vec<String> {
 /// reach the same installed source definition through the real resolver.
 #[test]
 fn zfb_alias_and_canonical_subpath_resolve_one_canonical_definition() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_alias_and_canonical_subpath_resolve_one_definition(dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn zfb_alias_and_canonical_subpath_resolve_one_definition_under_symlink_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let physical = dir.path().join("physical");
+    fs::create_dir(&physical).expect("physical project root");
+    let logical = dir.path().join("logical");
+    std::os::unix::fs::symlink(&physical, &logical).expect("symlink project root");
+    assert_ne!(logical, logical.canonicalize().expect("canonical root"));
+    assert_alias_and_canonical_subpath_resolve_one_definition(&logical);
+}
+
+fn assert_alias_and_canonical_subpath_resolve_one_definition(root: &Path) {
     struct RecordingResolver {
         inner: FsResolver,
         demanded: RefCell<Vec<(std::path::PathBuf, String, Option<std::path::PathBuf>)>>,
@@ -78,8 +95,6 @@ fn zfb_alias_and_canonical_subpath_resolve_one_canonical_definition() {
         }
     }
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
     let package = root.join("node_modules/@takazudo/zfb");
     write(
         &package.join("package.json"),
@@ -118,13 +133,20 @@ export default function Home() {
 
     let demanded = resolver.demanded.borrow();
     for importer in [root.join("components/a"), root.join("components/b")] {
-        assert!(demanded
-            .iter()
-            .any(|(resolved_importer, specifier, resolved)| {
-                resolved_importer == &importer
-                    && specifier == "@takazudo/zfb/components/counter"
-                    && resolved.as_deref() == Some(canonical_counter.as_path())
-            }));
+        // Resolved module parents are canonical, including macOS symlinked temp roots.
+        let importer = importer
+            .canonicalize()
+            .expect("canonical importer directory");
+        assert!(
+            demanded
+                .iter()
+                .any(|(resolved_importer, specifier, resolved)| {
+                    resolved_importer == &importer
+                        && specifier == "@takazudo/zfb/components/counter"
+                        && resolved.as_deref() == Some(canonical_counter.as_path())
+                }),
+            "missing canonical demand from {importer:?}; recorded: {demanded:?}"
+        );
     }
     assert_eq!(islands.len(), 1);
     assert_eq!(islands[0].source_path, canonical_counter);

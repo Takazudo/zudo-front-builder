@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Captured, not synthesized: run 39002778546, job 117309019333,
+     artifact 12090092753 (nextest-junit-exam-macos), 2026-10-17.
+     Source SHA: d1c8b2887327f41d452c3646bd6ca34bae10c7bb.
+     ZIP SHA-256: 0cb33258e4ee2c05ed44d00cc132305d3cfb9cce0a2f46b134e4bd16b78062ad
+     Original junit.xml SHA-256: 322458041e74466e48cadb879585e4acb0a1a25c43649951c5e6fad65fbf0cd0
+     The npm_dist_islands suite below is copied verbatim; other suites and
+     the original aggregate attributes were removed. Original report: 4736
+     cases, 1 failure. Job log: 4735 passes, 1 failure, 2094 unrun.
+     This excerpt proves XML shape, not native execution of the repair. -->
+<testsuites>
+    <testsuite name="zfb-islands::npm_dist_islands" tests="13" disabled="0" errors="0" failures="1">
+        <testcase name="bare_import_from_inside_a_package_is_not_followed" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.764+00:00" time="0.062">
+        </testcase>
+        <testcase name="barrel_without_use_client_is_traversed_to_relative_use_client_module" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.826+00:00" time="0.021">
+        </testcase>
+        <testcase name="dist_cross_module_factory_member_target_is_registered" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.847+00:00" time="0.023">
+        </testcase>
+        <testcase name="dist_var_factory_member_target_reports_mutable_binding" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.870+00:00" time="0.016">
+        </testcase>
+        <testcase name="duplicate_marker_name_across_sources_is_a_hard_error" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.886+00:00" time="0.025">
+        </testcase>
+        <testcase name="flat_regular_npm_package_use_client_module_is_registered" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.911+00:00" time="0.021">
+        </testcase>
+        <testcase name="issue_999_theme_toggle_shape_via_subpath_export_is_registered" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.931+00:00" time="0.022">
+        </testcase>
+        <testcase name="package_source_and_compiled_duplicate_is_a_hard_ambiguity" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.953+00:00" time="0.020">
+        </testcase>
+        <testcase name="pnpm_symlinked_regular_package_use_client_module_is_registered" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:53.974+00:00" time="0.026">
+        </testcase>
+        <testcase name="require_only_cjs_package_with_stray_esm_index_stays_inert" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:54.007+00:00" time="0.013">
+        </testcase>
+        <testcase name="regular_npm_package_import_from_island_is_not_a_workspace_package_edge" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:54.000+00:00" time="0.024">
+        </testcase>
+        <testcase name="require_only_cjs_package_yields_no_island" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:54.020+00:00" time="0.014">
+        </testcase>
+        <testcase name="zfb_alias_and_canonical_subpath_resolve_one_canonical_definition" classname="zfb-islands::npm_dist_islands" timestamp="2026-10-17T04:42:54.024+00:00" time="0.026">
+            <failure message="thread &apos;zfb_alias_and_canonical_subpath_resolve_one_canonical_definition&apos; (120094) panicked at crates/zfb-islands/tests/npm_dist_islands.rs:121:9" type="test failure with exit code 101">thread &apos;zfb_alias_and_canonical_subpath_resolve_one_canonical_definition&apos; (120094) panicked at crates/zfb-islands/tests/npm_dist_islands.rs:121:9:
+assertion failed: demanded.iter().any(|(resolved_importer, specifier, resolved)|
+        {
+            resolved_importer == &amp;importer &amp;&amp;
+                    specifier == &quot;@takazudo/zfb/components/counter&quot; &amp;&amp;
+                resolved.as_deref() == Some(canonical_counter.as_path())
+        })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace</failure>
+            <rerunFailure timestamp="2026-10-17T04:42:54.057+00:00" time="0.024" message="thread &apos;zfb_alias_and_canonical_subpath_resolve_one_canonical_definition&apos; (120108) panicked at crates/zfb-islands/tests/npm_dist_islands.rs:121:9" type="test failure with exit code 101">thread &apos;zfb_alias_and_canonical_subpath_resolve_one_canonical_definition&apos; (120108) panicked at crates/zfb-islands/tests/npm_dist_islands.rs:121:9:
+assertion failed: demanded.iter().any(|(resolved_importer, specifier, resolved)|
+        {
+            resolved_importer == &amp;importer &amp;&amp;
+                    specifier == &quot;@takazudo/zfb/components/counter&quot; &amp;&amp;
+                resolved.as_deref() == Some(canonical_counter.as_path())
+        })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+                <system-out>
+running 1 test
+test zfb_alias_and_canonical_subpath_resolve_one_canonical_definition ... FAILED
+
+failures:
+
+failures:
+    zfb_alias_and_canonical_subpath_resolve_one_canonical_definition
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.01s
+
+</system-out>
+                <system-err>
+thread &apos;zfb_alias_and_canonical_subpath_resolve_one_canonical_definition&apos; (120108) panicked at crates/zfb-islands/tests/npm_dist_islands.rs:121:9:
+assertion failed: demanded.iter().any(|(resolved_importer, specifier, resolved)|
+        {
+            resolved_importer == &amp;importer &amp;&amp;
+                    specifier == &quot;@takazudo/zfb/components/counter&quot; &amp;&amp;
+                resolved.as_deref() == Some(canonical_counter.as_path())
+        })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+</system-err>
+            </rerunFailure>
+            <system-out>
+running 1 test
+test zfb_alias_and_canonical_subpath_resolve_one_canonical_definition ... FAILED
+
+failures:
+
+failures:
+    zfb_alias_and_canonical_subpath_resolve_one_canonical_definition
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.02s
+
+</system-out>
+            <system-err>
+thread &apos;zfb_alias_and_canonical_subpath_resolve_one_canonical_definition&apos; (120094) panicked at crates/zfb-islands/tests/npm_dist_islands.rs:121:9:
+assertion failed: demanded.iter().any(|(resolved_importer, specifier, resolved)|
+        {
+            resolved_importer == &amp;importer &amp;&amp;
+                    specifier == &quot;@takazudo/zfb/components/counter&quot; &amp;&amp;
+                resolved.as_deref() == Some(canonical_counter.as_path())
+        })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+</system-err>
+        </testcase>
+    </testsuite>
+</testsuites>
