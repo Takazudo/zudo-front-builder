@@ -36,11 +36,13 @@ for (const width of [1440, 390]) {
       }
       const sidebar = page.locator(width < 1024 ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
       await expect(sidebar.locator(`a[href="${route("build-with-zfb", ja)}"]`)).toBeVisible();
-      if (width < 1024)
-        await page.getByRole("button", { name: /Close sidebar|サイドバーを閉じる/ }).click();
-      const lang = page.locator("header [data-language-switcher]:visible").first();
-      await lang.locator("[data-language-toggle]").click();
-      await lang.locator(`a[lang="${ja ? "en" : "ja"}"]`).click();
+      if (width < 1024) {
+        await sidebar.locator(`a[lang="${ja ? "en" : "ja"}"]`).click();
+      } else {
+        const lang = page.locator("header [data-language-switcher]:visible").first();
+        await lang.locator("[data-language-toggle]").click();
+        await lang.locator(`a[lang="${ja ? "en" : "ja"}"]`).click();
+      }
       await expect(page.locator("html")).toHaveAttribute("lang", ja ? "en" : "ja");
       await expect(page).toHaveURL(new RegExp(`${ja ? "" : "/ja"}/docs/architecture/routing/?$`));
 
