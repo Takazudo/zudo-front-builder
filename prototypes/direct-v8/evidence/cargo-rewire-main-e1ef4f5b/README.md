@@ -1,6 +1,6 @@
 # Cargo internal-rewire inputs against integrated main `e1ef4f5b`
 
-Proposed `--reason cargo-internal-rewire` inputs for this candidate's lock, recorded 2026-10-17 on the owner's native macOS arm64 host (Darwin 25.6.0). **This is not approval:** none of it has been reviewed as an admission. No contract, pin, ceiling, or allowance moved, and no `--stage` or `--apply` ran.
+Proposed `--reason cargo-internal-rewire` inputs for this candidate's lock, prepared 2026-10-17 on the owner's macOS arm64 host (Darwin 25.6.0); the closure receipts' provenance is described below. **This is not approval:** none of it has been reviewed as an admission. No contract, pin, ceiling, or allowance moved, and no `--stage` or `--apply` ran.
 
 | Input | Value |
 | --- | --- |
