@@ -1,0 +1,23 @@
+---
+title: v4.5.3
+sidebar_position: 154
+---
+
+# v4.5.3
+
+Released: 2026-10-16
+
+## Bug Fixes
+
+- MDX: multiline expressions keep their authored whitespace. markdown-rs strips expression indentation before emission, so template literals and other string payloads in attributes, spreads, flow/text expressions, and nested JSX lost meaningful indentation, tabs, and blank lines. The compile boundary now recovers the original source and removes only structural list, blockquote, and GFM footnote prefixes (3a9eb1d3).
+- MDX: a decimal comparison inside an embedded string, such as `` <Preview js={`x<1.5`} /> ``, no longer fails with `Unexpected numeric literal`. The component-name collector now rejects segments that are not valid identifiers, so `<1.5` is no longer treated as a component binding (ca85c800).
+- Build: a real directory at a passthrough file destination now fails the write again instead of being silently deleted during file materialisation (10a7ad01).
+- Windows: dependency roots and dependency directories are staged with unprivileged directory junctions. Before, Windows builds could get an empty shadow `node_modules`, so esbuild could not resolve installed packages. Cleanup removes the links without traversing the installed sources. CSS package-export diagnostics now print portable package-relative paths (e8abcd47).
+- Windows: `zfb check` now runs the native TypeScript launcher (`tsc.cmd` / `.exe` / `.bat`) instead of the extensionless POSIX `tsc` shim beside it, which failed with Windows error 193. PATH directory precedence and the Unix lookup order are unchanged (0b2fba4e).
+- SSR diagnostics print portable file paths on every platform (8b46fcfc).
+- Windows: `.css` files are checked out with LF line endings, so Git `autocrlf` no longer changes embedded or golden CSS bytes. Packed-tarball installs pass npm a relative tarball path, which `npm.cmd` misread when given a canonical verbatim path. Module-label comments in bundles built through a shadow session no longer contain random absolute Windows paths, so their output is byte-deterministic again (02eaca30).
+
+## Other Changes
+
+- Syntax highlighting: avoids re-sorting theme names that are already ordered (95109f60).
+- MDX/Markdown: skips a redundant frontmatter dispatch for plain Markdown inputs (d8295446).

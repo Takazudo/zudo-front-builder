@@ -1,7 +1,7 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { main } from "../rebaseline-island-size-linux.mjs";
+import { main, readGitBlob } from "../rebaseline-island-size-linux.mjs";
 import {
   ceilingsOf,
   makeGitCheckout,
@@ -124,6 +124,56 @@ describe("reviewed producer transition CLI with git provenance", () => {
     expect(readme).toContain("46 changed records");
     expect(readme).toContain("non-additive");
   });
+
+  it("uses the original old-lock bytes when a local replacement blob exists", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const original = repo.git("rev-parse", "HEAD:Cargo.lock");
+    const replacement = repo.git("hash-object", "-w", "Cargo.lock");
+    repo.git("replace", original, replacement);
+    try {
+      expect(repo.git("show", "HEAD:Cargo.lock")).toBe(lock.newText.trim());
+      await main(args(), repo.root);
+      expect(
+        JSON.parse(readFileSync(at(CONTRACT), "utf8")).baselineEvidence.cargoTransition
+          .oldLockSource,
+      ).toEqual({
+        commit: repo.commit,
+        path: "Cargo.lock",
+        sha256: lock.expectedOldSha,
+      });
+    } finally {
+      repo.git("replace", "-d", original);
+    }
+  });
+
+  it.each(["blob", "tree", "commit"])(
+    "ignores %s replacements when reading a cited commit",
+    (kind) => {
+      const isolated = makeGitCheckout(roots, {
+        oldCargoLock: lock.oldText,
+        newCargoLock: lock.newText,
+      });
+      isolated.git("add", "Cargo.lock");
+      const tree = isolated.git("write-tree");
+      const replacementCommit = isolated.git(
+        "commit-tree",
+        tree,
+        "-p",
+        isolated.commit,
+        "-m",
+        "replacement fixture",
+      );
+      const object = (commit) =>
+        kind === "commit"
+          ? commit
+          : isolated.git("rev-parse", commit + (kind === "tree" ? "^{tree}" : ":Cargo.lock"));
+      isolated.git("replace", object(isolated.commit), object(replacementCommit));
+      expect(isolated.git("show", isolated.commit + ":Cargo.lock")).toBe(lock.newText.trim());
+      const blob = readGitBlob(isolated.root, isolated.commit, "Cargo.lock");
+      expect(blob.commit).toBe(isolated.commit);
+      expect(blob.bytes.toString()).toBe(lock.oldText);
+    },
+  );
 
   it("refuses a corrupt reviewed manifest before mutating any outputs", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});

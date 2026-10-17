@@ -10,6 +10,7 @@ pub mod footnotes;
 pub mod frontmatter;
 pub mod heading_registry;
 pub mod hi_roles;
+mod mdx_expression_source;
 pub mod mdx_jsx_emit;
 pub(crate) mod path_norm;
 pub mod pipeline;
