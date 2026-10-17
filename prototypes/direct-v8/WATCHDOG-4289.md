@@ -30,8 +30,9 @@ production seam, deadline increase, or optional base64 field change is involved.
 This proves captured-byte reporting after fixture readiness. It does not prove
 complete recovery of bytes written at the kill boundary, native V8 behavior,
 production readiness, or descendant cleanup. The source production files remain
-unchanged. Native macOS acceptance of these Python tests is still required; no
-native build is necessary.
+unchanged. Native macOS acceptance of the checker tests passed at the pre-stack
+head `e6a71183` ([receipt](https://github.com/Takazudo/zudo-front-builder/issues/4289#issuecomment-6223198443));
+that receipt does not qualify any later combined head. No native build is necessary.
 
 ## Relationship to the Mac diagnosis
 
@@ -82,19 +83,20 @@ change.
 ## Integration boundary
 
 This topic follows `CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
-Its parent is PR #4242 at `dcf0c8a42cf177ff4d334b40f249b4d97465c2e4`;
-the prototype does not exist on main. It does not depend on or absorb #4290's
-separate TMPDIR fix. Codex owns this topic's Python checks, review and CI diagnosis;
-its parent owner owns subsequent integration. Keep the topic draft and unmerged.
-No held parent head, release, runtime default, or budget policy changes here.
+The direct-v8 prototype is on main (#4242 merged). The stack is main → #4290
+(TMPDIR alias fixture repair) → this topic, each integrated by an ordinary merge
+so each PR's diff stays independently reviewable. Keep the topic draft and
+unmerged until the owner's integration decision. The integrating manager owns
+CI diagnosis for the combined head. No release, runtime default, or
+budget policy changes here.
 
 Linux Cloud can validate Python transport tests only. Mac follow-up: at the exact
-new topic head, run the following with default and canonical TMPDIR values:
+combined head named in the PR's latest integration report, run the full suite
+with the default macOS TMPDIR and with `TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"`:
 
 ```sh
-python3 -I -B -m unittest discover -s prototypes/direct-v8 -p 'test_checker*.py'
+python3 -I -B -W error::ResourceWarning -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
 ```
 
-Record Python/OS,
-source SHA, both results and any failure without pass-on-retry relabeling. The
-full suite's existing TMPDIR alias defect remains tracked separately in #4290.
+Record Python/OS, source SHA, both results and any failure without pass-on-retry
+relabeling. Earlier per-PR Mac receipts for #4290 and #4292 are reference only.
