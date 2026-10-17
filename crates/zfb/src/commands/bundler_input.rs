@@ -623,6 +623,23 @@ pub(crate) fn assemble_bundler_input(
         _esbuild_handle = None;
     }
 
+    bundler_input.zudo_react_build =
+        Some(crate::commands::build::derive_default_islands_build_token(
+            project_root,
+            &bundler_input.injected_route_entrypoints,
+            bundle_outdir,
+            config.bundle.as_ref(),
+            if matches!(bundle_mode, BundleMode::Production) {
+                zfb_islands::BundleMode::Production
+            } else {
+                zfb_islands::BundleMode::Development
+            },
+            &crate::commands::build::IslandsPluginConfig {
+                alias_entries: bundler_input.plugin_alias_entries.clone(),
+                virtual_modules: bundler_input.plugin_virtual_modules.clone(),
+            },
+        )?);
+
     Ok(AssembledBundlerInput {
         bundler_input,
         _node_modules_handle,

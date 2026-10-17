@@ -167,6 +167,7 @@ async fn out_of_root_collection_passes_check_snapshot_and_build_materialisation(
     let mut session = ShadowSession::new(&project_root).expect("create shadow session");
     let input = BundlerInput {
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         content_collections: vec![ContentCollectionSpec {
             include: Some(vec!["**/*.mdx".to_string()]),
             ..ContentCollectionSpec::new("posts", PathBuf::from("../shared-content/posts"))

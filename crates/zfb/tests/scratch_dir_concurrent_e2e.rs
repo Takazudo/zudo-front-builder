@@ -18,7 +18,8 @@
 //! 5. Dev serves `A` in SSR and in the island bundle before and after the
 //!    recompile, 404s the prebuilt hashed asset that still sits in `dist/`,
 //!    and its SSR/islands `zudoReactBuild` tokens agree with each other and
-//!    differ from the build's (#3345).
+//!    differ from the build's (#3345). Unrelated MDX leaves client bytes and
+//!    identity stable; a reached MDX raw input changes both in agreement (#4231).
 //! 6. Issue #4233: dev serves the LIVE `public/assets/` file (not the stale
 //!    copy step 1 put in `dist/assets/`), keeps its own `styles.css` (from
 //!    the temp copy's `styles/global.css`) across the concurrent build, and a
@@ -451,6 +452,29 @@ async fn concurrent_scenario() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonicalize root");
     copy_dir(&fixture_dir("scratch-dir-concurrent"), &root).expect("copy fixture");
+    // #4231: a Content-classified input in the actual browser graph. Keep
+    // it outside the posts collection so the alpha edit below remains an
+    // unrelated control. Raw loading deliberately exercises the supported
+    // MDX-as-data path, not discovery of new boundaries inside MDX pages.
+    let island_note = root.join("content/island-note.mdx");
+    fs::write(&island_note, "ISLAND-CONTENT-V1\n").unwrap();
+    let island_data = root.join("data/island-value.json");
+    fs::create_dir_all(island_data.parent().unwrap()).unwrap();
+    fs::write(&island_data, r#"{"label":"ISLAND-DATA-V1"}"#).unwrap();
+    let badge_path = root.join("components/origin-badge.tsx");
+    let badge = read_text(&badge_path);
+    assert!(badge.contains("<span>"));
+    fs::write(
+        badge_path,
+        badge
+            .replace(
+                "\"use client\";",
+                "\"use client\";\nimport islandNote from \"../content/island-note.mdx?raw\";\nimport islandData from \"../data/island-value.json\";",
+            )
+            .replace("<span>", "<span data-island-note={islandNote} data-island-value={islandData.label}>"),
+    )
+    .unwrap();
+
     // Issue #4233 probes, staged in the temp copy only.
     fs::create_dir_all(root.join("styles")).unwrap();
     fs::write(
@@ -461,6 +485,11 @@ async fn concurrent_scenario() {
     let public_probe = root.join("public/assets").join(PUBLIC_PROBE);
     fs::create_dir_all(public_probe.parent().unwrap()).unwrap();
     fs::write(&public_probe, PUBLIC_PROBE_BUILT).unwrap();
+
+    fs::write(
+        root.join("pages/second.tsx"),
+        "import { Island } from '@takazudo/zfb';\nexport function OtherBadge() { return <span>OTHER-ISLAND</span>; }\nexport default function Page() { return <html><body><Island when=\"load\"><OtherBadge /></Island></body></html>; }\n",
+    ).unwrap();
 
     // Step 1: a prebuilt dist/ that carries the WRONG define.
     run_zfb_ok(&root, &esbuild, &["build", "--define", DEFINE_B]);
@@ -669,11 +698,64 @@ async fn concurrent_scenario() {
     // Step 5: still A after the recompile, tokens still agree.
     let after = dev_view(&client, &base, &session).await;
     assert_dev_view(&after, &build_token, "after MDX recompile");
+    assert_eq!(
+        before.ssr_token, after.ssr_token,
+        "unrelated collection MDX edits must preserve browser graph identity"
+    );
+    // Development debug comments and sourcemaps retain temporary staging
+    // paths, so raw-byte stability is asserted by build_reproducibility_e2e
+    // against shipped production artifacts. Dev must preserve identity.
+
+    edit_once_and_wait_for_tick(
+        &session,
+        &island_note,
+        "island-note.mdx",
+        "ISLAND-CONTENT-V2\n",
+    )
+    .await;
+    poll_until_contains(&client, &format!("{base}/"), "ISLAND-CONTENT-V2", &session).await;
+    let relevant = dev_view(&client, &base, &session).await;
+    assert_dev_view(&relevant, &build_token, "after imported MDX raw-input edit");
+    assert_ne!(
+        after.ssr_token, relevant.ssr_token,
+        "a reached Content input must invalidate client and SSR identity"
+    );
+    assert_ne!(after.island_bundle, relevant.island_bundle);
+    assert!(
+        relevant.island_bundle.contains("ISLAND-CONTENT-V2"),
+        "the refreshed client must contain the new raw input"
+    );
     let (status, _) = get(&client, &format!("{base}/assets/{prebuilt_asset}")).await;
     assert_eq!(
         status, 404,
         "dev must 404 the prebuilt asset after recompile"
     );
+
+    // Cache a page whose own island does not import the edited JSON. Its
+    // HTML still carries the same global build token and must be restaled.
+    let (second_status, second_before) = get(&client, &format!("{base}/second")).await;
+    assert_eq!(second_status, 200);
+    assert_eq!(html_build_token(&second_before), relevant.ssr_token);
+
+    edit_once_and_wait_for_tick(
+        &session,
+        &island_data,
+        "island-value.json",
+        r#"{"label":"ISLAND-DATA-V2"}"#,
+    )
+    .await;
+    poll_until_contains(&client, &format!("{base}/"), "ISLAND-DATA-V2", &session).await;
+    let data_edit = dev_view(&client, &base, &session).await;
+    assert_dev_view(&data_edit, &build_token, "after imported JSON edit");
+    assert_ne!(
+        relevant.ssr_token, data_edit.ssr_token,
+        "a reached JSON input must invalidate client and SSR identity"
+    );
+    assert!(data_edit.island_bundle.contains("ISLAND-DATA-V2"));
+    let (second_status, second_after) = get(&client, &format!("{base}/second")).await;
+    assert_eq!(second_status, 200);
+    assert_eq!(html_build_token(&second_after), data_edit.ssr_token,
+        "a previously cached page outside the JSON dependency selection must carry the new client identity");
 
     // Step 6 (#4233): deleting the public file 404s although dist/assets/
     // still holds a copy — no dist-seed fallback under a scratch dir.

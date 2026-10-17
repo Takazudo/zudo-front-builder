@@ -341,6 +341,7 @@ fn build_bundle(
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: Default::default(),
         tsconfig_paths: BTreeMap::new(),

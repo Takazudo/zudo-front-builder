@@ -2294,6 +2294,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .with_backend(watch_backend_from_config(&cfg))
         .with_policy(
             zfb_build::GranularityPolicy::default()
+                .with_browser_graph_refresh()
                 .with_content_roots(content_roots)
                 .with_raw_import_invalidation(raw_import_invalidation.clone())
                 .with_known_content(known_content.clone())
@@ -6352,6 +6353,10 @@ struct DevRenderInner {
     /// update it without `&mut self`.
     #[cfg(feature = "embed_v8")]
     last_successful_skip_key: Mutex<Option<[u8; 32]>>,
+    /// Identity of the successfully published browser/SSR generation. A
+    /// changed identity invalidates every cached document carrying its token.
+    #[cfg(feature = "embed_v8")]
+    browser_build_token: Mutex<Option<String>>,
 
     /// Frontmatter gate cache for content-edit narrowing (issue #958,
     /// fallback G4): SHA-256 of the canonical JSON of each collection
@@ -8228,6 +8233,24 @@ impl DevRenderSession {
         // refresh — including all-lazy ticks with zero eager renders —
         // and never on a Phase-B skip (early return above, #956).
         self.inner.note_table_swap(&vanished_output_paths);
+        let browser_identity_changed = {
+            let mut published = self
+                .inner
+                .browser_build_token
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let changed = *published != bundle_result.browser_build_token;
+            *published = bundle_result.browser_build_token;
+            changed
+        };
+        if browser_identity_changed {
+            // Even a page outside this edit's precise dependency selection
+            // can contain an island stamped with the previous global token.
+            // Reuse request-time stale repair under the publication barrier;
+            // same-identity content edits retain their narrowed fan-out.
+            self.mark_all_routes_stale();
+        }
+
         // S3 (#1231) — re-stale the static injected-route seeds AFTER the
         // swap's generation bump (sharp edge 5). The seed stays in
         // `routes_by_source` across the swap, so the staleness map is the
@@ -8970,6 +8993,7 @@ struct BundleSubTiming {
 #[cfg(feature = "embed_v8")]
 struct AssembledBundleResult {
     output: BundlerOutput,
+    browser_build_token: Option<String>,
     sub_timing: Option<BundleSubTiming>,
     /// The files the content snapshot was built from (issue #3202). The
     /// snapshot is this function's first read, so a read start the caller
@@ -9117,6 +9141,7 @@ fn assemble_and_bundle_dev(
     } else {
         None
     };
+    let browser_build_token = bundler_input.zudo_react_build.clone();
     let bundler_out: BundlerOutput =
         bundle_with_session(bundler_input, shadow_session).context("bundler step failed")?;
     let bundle_ms = bnd_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
@@ -9132,6 +9157,7 @@ fn assemble_and_bundle_dev(
     };
     Ok(AssembledBundleResult {
         output: bundler_out,
+        browser_build_token,
         sub_timing,
         content_files,
     })
@@ -10064,6 +10090,7 @@ fn boot_dev_renderer(
     let mut boot_reconcile_page_sources: Vec<PathBuf> = Vec::new();
     let mut boot_content_reads: Option<ReconcileOnlyReads> = None;
     let mut boot_linked_package_snapshots = None;
+    let mut boot_browser_build_token = None;
     let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
         (
             // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
@@ -10123,6 +10150,7 @@ fn boot_dev_renderer(
             paths: assembled.content_files,
             read_since,
         });
+        boot_browser_build_token = assembled.browser_build_token;
         let bundler_out: BundlerOutput = assembled.output;
         boot_linked_package_snapshots = Some(bundler_out.linked_package_snapshots.clone());
         let (trace_token, trace_wrapper_source) =
@@ -10230,6 +10258,7 @@ fn boot_dev_renderer(
             collection_roots: collection_roots.to_vec(),
             // No successful refresh yet — first tick always runs fully.
             last_successful_skip_key: Mutex::new(None),
+            browser_build_token: Mutex::new(boot_browser_build_token),
             fm_hashes: Mutex::new(fm_hashes),
             shadow_session: Mutex::new(Some(shadow_session)),
             dep_graph: Mutex::new(None),
@@ -11811,6 +11840,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             // Default config carries no collections (#1550).
             collection_roots: Vec::new(),
             last_successful_skip_key: Mutex::new(None),
+            browser_build_token: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
             dep_graph: Mutex::new(None),
@@ -14693,6 +14723,7 @@ mod tests {
             },
             collection_roots,
             last_successful_skip_key: Mutex::new(None),
+            browser_build_token: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
             dep_graph: Mutex::new(None),

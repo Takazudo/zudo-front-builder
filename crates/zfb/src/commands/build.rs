@@ -4636,6 +4636,65 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     Option<AssetEmitterPayload>,
     std::collections::BTreeSet<String>,
 )> {
+    let (payload, names, _) = prepare_default_islands_payload(
+        project_root,
+        user_pages_dir,
+        package_route_entrypoints,
+        outdir,
+        bundle_config,
+        bundle_mode,
+        plugin_config,
+        islands_glob_policy,
+        raw_invalidation,
+        false,
+    )?;
+    Ok((payload, names))
+}
+
+/// Resolve the same browser graph used for emission before evaluating SSR.
+/// No result is cached: every bundle observes fresh input bytes and resolution.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn derive_default_islands_build_token(
+    project_root: &Path,
+    package_route_entrypoints: &[PathBuf],
+    outdir: &Path,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    bundle_mode: zfb_islands::BundleMode,
+    plugin_config: &IslandsPluginConfig,
+) -> Result<String> {
+    let (_, _, token) = prepare_default_islands_payload(
+        project_root,
+        &project_root.join("pages"),
+        package_route_entrypoints,
+        outdir,
+        bundle_config,
+        bundle_mode,
+        plugin_config,
+        IslandsGlobPolicy::HardError,
+        None,
+        true,
+    )?;
+    // No browser graph means there is no client registry to disagree with SSR.
+    Ok(token.unwrap_or_else(|| "0000000000000000".to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_default_islands_payload(
+    project_root: &Path,
+    user_pages_dir: &Path,
+    package_route_entrypoints: &[PathBuf],
+    outdir: &Path,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    bundle_mode: zfb_islands::BundleMode,
+    plugin_config: &IslandsPluginConfig,
+    islands_glob_policy: IslandsGlobPolicy,
+    raw_invalidation: Option<&zfb_build::RawImportInvalidation>,
+    token_only: bool,
+) -> Result<(
+    Option<AssetEmitterPayload>,
+    std::collections::BTreeSet<String>,
+    Option<String>,
+)> {
     // Walk the conventional islands roots. The scanner DFS-walks
     // imports starting from each entry path, so seeding with the
     // pages dir is enough — anything reachable through a
@@ -4683,7 +4742,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         if let Some(invalidation) = raw_invalidation {
             invalidation.replace_islands(Vec::new());
         }
-        return Ok((None, std::collections::BTreeSet::new()));
+        return Ok((None, std::collections::BTreeSet::new(), None));
     }
 
     // Treat each injected package-route entrypoint as honorary project
@@ -4736,16 +4795,19 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                             "{message}. Skipping this islands rebundle; the dev server stays up."
                         ),
                     );
-                    return Ok((None, std::collections::BTreeSet::new()));
+                    return Ok((None, std::collections::BTreeSet::new(), None));
                 }
             }
         }
         Err(e) => {
+            if token_only {
+                return Err(anyhow!("islands identity scan failed: {e}"));
+            }
             warn_build(
                 codes::ISLAND_SCAN,
                 format!("islands scanner failed ({e}); skipping islands asset emission"),
             );
-            return Ok((None, std::collections::BTreeSet::new()));
+            return Ok((None, std::collections::BTreeSet::new(), None));
         }
     };
     // Issue #1404 (full #1385 pt.1 fix): when `import.meta.glob` is reachable
@@ -4839,7 +4901,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                              server stays up — fix the file(s) above and save again."
                             ),
                         );
-                        return Ok((None, std::collections::BTreeSet::new()));
+                        return Ok((None, std::collections::BTreeSet::new(), None));
                     }
                 }
             }
@@ -4914,7 +4976,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 ),
             );
         }
-        return Ok((None, std::collections::BTreeSet::new()));
+        return Ok((None, std::collections::BTreeSet::new(), None));
     }
 
     // Collect the registered marker names now — needed by the build-time
@@ -4997,6 +5059,12 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
         EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
+    esbuild_cfg.original_virtual_modules = plugin_config
+        .virtual_modules
+        .iter()
+        .map(|(specifier, source)| (specifier.clone(), source.as_bytes().to_vec()))
+        .collect();
+
     // Issue #1707: arm the guard (b) stage-escape audit for the islands shadow
     // when the stage widened past project_root (a pnpm-workspace build). The
     // shadow root (`_tempdir`) is the boundary every staged input lives under;
@@ -5149,20 +5217,11 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         &shadow_paths,
         _islands_shadow.as_ref().map(|shadow| &shadow.remap),
     );
-    let bundle_cfg = match bundle_mode {
+    let mut bundle_cfg = match bundle_mode {
         zfb_islands::BundleMode::Production => BundleConfig::production(),
         zfb_islands::BundleMode::Development => BundleConfig::dev(),
     }
     .with_outdir(outdir.to_path_buf())
-    .with_zudo_react_build(Some(
-        zfb_build::bundler::zudo_react_build_token_with_inputs_and_output(
-            project_root,
-            &plugin_config.alias_entries,
-            &plugin_config.virtual_modules,
-            outdir,
-            &bundle_define,
-        )?,
-    ))
     .with_module_labels(module_labels)
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(bundle_loaders)
@@ -5192,6 +5251,16 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         }
         _ => std::borrow::Cow::Borrowed(&islands_set),
     };
+
+    let build_token = bundler.derive_build_token(
+        &bundle_islands,
+        &bundle_cfg,
+        option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+    )?;
+    if token_only {
+        return Ok((None, registered_marker_names, Some(build_token)));
+    }
+    bundle_cfg.zudo_react_build = Some(build_token.clone());
 
     // `_islands_shadow` MUST stay alive across this call — esbuild reads the
     // shadow tree during `bundle()`. It drops at end of function, after the
@@ -5232,16 +5301,17 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                              islands until the file(s) above are fixed and saved."
                         ),
                         );
-                        return Ok((None, std::collections::BTreeSet::new()));
+                        return Ok((None, std::collections::BTreeSet::new(), None));
                     }
                 }
             }
             Ok((
                 Some(production_islands_asset_to_payload(asset)),
                 registered_marker_names,
+                Some(build_token),
             ))
         }
-        None => Ok((None, registered_marker_names)),
+        None => Ok((None, registered_marker_names, Some(build_token))),
     }
 }
 

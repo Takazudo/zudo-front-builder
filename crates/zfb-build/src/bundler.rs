@@ -366,6 +366,9 @@ pub struct BundlerInput {
     /// This is the exact SSR allowlist shared with the client registry; the CLI
     /// checks distinct target bindings for collisions before projecting names.
     pub zudo_react_island_names: Option<Vec<String>>,
+    /// Browser graph identity prepared by the CLI using the actual client
+    /// esbuild pipeline. None retains compatibility for direct bundler callers.
+    pub zudo_react_build: Option<String>,
     /// Operator-authored raw esbuild `--define` substitutions populated from
     /// validated `bundle.define` config. Values are forwarded verbatim; string
     /// expressions must already be quoted JSON. This path is deliberately
@@ -793,6 +796,7 @@ impl BundlerInput {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             zudo_react_island_names: None,
+            zudo_react_build: None,
             define_vars: Default::default(),
             public_env_vars: Default::default(),
             tsconfig_paths: Default::default(),
@@ -5914,6 +5918,9 @@ pub fn bundle_with_session(
         &input.outdir,
         &input.define_vars,
     )?;
+    // Keep the linked-package walk and snapshots for watcher reconciliation;
+    // product identity comes from the browser graph, independently of that walk.
+    let build = input.zudo_react_build.as_deref().unwrap_or(&build);
     let names = input
         .zudo_react_island_names
         .as_ref()
@@ -15697,6 +15704,7 @@ mod tests {
                 esbuild_binary: Some(bin),
                 node_modules_dir: Some(project.join("node_modules")),
                 zudo_react_island_names: Some(vec![]),
+                zudo_react_build: None,
                 ..BundlerInput::for_project(
                     project.clone(),
                     BundleMode::Production,
@@ -15794,6 +15802,7 @@ mod tests {
     fn scan_cache_input(site: &Path) -> BundlerInput {
         BundlerInput {
             zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
             external: vec![
                 "@takazudo/zfb/zudo-react".into(),
                 "@takazudo/zfb-runtime".into(),
@@ -17756,6 +17765,7 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
             define_vars: BTreeMap::new(),
             public_env_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
@@ -21341,6 +21351,7 @@ mod tests {
         let input = BundlerInput {
             esbuild_binary: Some(bin),
             zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
             external: vec![
                 "@takazudo/zfb/zudo-react".into(),
                 "@takazudo/zfb/zudo-react/server".into(),
@@ -23002,6 +23013,7 @@ mod tests {
     fn mock_ssr_input(project_root: &Path) -> BundlerInput {
         BundlerInput {
             zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
             mock_subprocess_output: Some("export default {};\n".to_string()),
             external: vec![
                 "@takazudo/zfb/zudo-react".into(),
@@ -23768,6 +23780,7 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
             define_vars: BTreeMap::from([
                 (
                     "process.env.PUBLIC_COLLISION".to_string(),
@@ -23902,6 +23915,7 @@ mod tests {
         let input = BundlerInput {
             esbuild_binary: Some(bin),
             zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
             external: vec!["@takazudo/zfb/zudo-react".into()],
             node_modules_dir: nm_dir,
             // The override file is discovered at the project root.
