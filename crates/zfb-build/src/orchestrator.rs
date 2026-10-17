@@ -839,11 +839,6 @@ fn is_islands_scan_input(policy: &GranularityPolicy, class: PathClass, path: &Pa
                     .is_some_and(|extension| zfb_types::SCRIPT_PAGE_EXTENSIONS.contains(&extension))
         }
         PathClass::Module => policy.is_islands_candidate(path),
-        // Content can enter the browser graph through transformed MDX or
-        // loader inputs. Re-resolve on these ticks too: the client graph
-        // identity stays stable for unrelated edits, while the existing
-        // publication barrier keeps relevant client and SSR updates together.
-        PathClass::Content => true,
         _ => false,
     }
 }
@@ -4569,7 +4564,9 @@ mod tests {
     fn content_edit_and_removal_rebuild_client_identity_with_ssr() {
         let pipeline = CountingPipeline::default();
         let applies = pipeline.applies.clone();
-        let orch = make_orch(pipeline);
+        let config = OrchestratorConfig::new("/proj", vec![])
+            .with_policy(GranularityPolicy::default().with_browser_graph_refresh());
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
         for path in ["/proj/content/post.mdx", "/proj/content/post.md"] {
             let plan = orch.plan_for_changes([PathBuf::from(path)]);
             assert!(plan.rerun_islands, "content may affect the browser graph");
