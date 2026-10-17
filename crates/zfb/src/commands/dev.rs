@@ -4178,9 +4178,10 @@ fn dev_client_script_urls(url_prefix: &str, output_filenames: &HashSet<String>) 
 /// root, NOT the build-shared `dist/`),
 /// write and stage chunk, module-worker, and resource companions, and rewrite
 /// the shared bundle-URL handle. Returns
-/// `Some(IslandsBundleInfo { changed: true, .. })` when a bundle was produced
-/// (so `outcome_to_events` emits a
-/// `ReloadEvent::Islands`), or `None` when the project has no `"use client"`
+/// `Some(IslandsBundleInfo { changed: true, .. })` when a generation was
+/// published (so `outcome_to_events` emits `ReloadEvent::Islands`), or the
+/// same info with `changed: false` when fresh resolution proves the committed
+/// generation remains current. Returns `None` when the project has no `"use client"`
 /// components this run — in which case the handle and staged companion set
 /// are cleared.
 ///
@@ -4230,8 +4231,8 @@ fn rebundle_islands(
     // again. The shadow TempDir is created and dropped entirely within the
     // call below (esbuild runs synchronously inside it), so no shadow state
     // leaks across dev ticks.
-    let (payload, _marker_names) =
-        crate::commands::build::build_default_islands_payload_with_bundle_options(
+    let (payload, _marker_names, build_token) =
+        crate::commands::build::prepare_default_islands_payload(
             project_root,
             &project_root.join("pages"),
             package_route_entrypoints,
@@ -4241,6 +4242,7 @@ fn rebundle_islands(
             plugin_config,
             crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
             Some(raw_invalidation),
+            false,
         )?;
     let Some(payload) = payload else {
         url_handle
@@ -4258,6 +4260,26 @@ fn rebundle_islands(
     } else {
         format!("{url_prefix}{}", payload.stable_url)
     };
+    let build_token = build_token.context("islands payload missing resolved build identity")?;
+    let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
+    // Re-resolve every graph above; only publication is deduplicated. Dev
+    // debug comments contain random staging paths and cannot identify a new
+    // semantic generation. Keep the existing entry and retained chunks when
+    // its freshly derived identity agrees with the committed generation.
+    let reusable = assets_dir
+        .join(zfb_types::STABLE_ISLANDS_FILENAME)
+        .is_file()
+        && companion_ledger
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .can_reuse_build(&build_token, |name| assets_dir.join(name).is_file());
+    if reusable {
+        return Ok(Some(IslandsBundleInfo {
+            changed: false,
+            bundle_url,
+            components: Vec::new(),
+        }));
+    }
     // Validate and write the complete companion generation before publishing
     // the stable entry. This includes chunks, module workers, and typed
     // file-loader resources in one collision-checked namespace.
@@ -4290,12 +4312,8 @@ fn rebundle_islands(
 
         names
     };
-    // The bundler does not currently surface a "bytes-changed" bit back
-    // through `build_default_islands_payload` — the URL stays stable
-    // (`/assets/islands.js`) on every rebuild, the bytes on disk update in
-    // place. Report `changed = true` so the SSE layer always emits a reload
-    // event after a successful re-bundle; the browser then re-imports the
-    // URL with a cache-busting `?v=…` query that picks up the new bytes.
+    // This generation has a different resolved identity (or repairs missing
+    // output), so publish it and let SSE reload the stable entry URL.
     // `components` is empty because the build-side payload doesn't carry
     // per-island names; the livereload client's empty-component path handles
     // "unknown components" by reloading the whole bundle.
@@ -4307,7 +4325,7 @@ fn rebundle_islands(
     companion_ledger
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .stage(names.clone());
+        .stage_build(names.clone(), build_token);
     url_handle
         .write()
         .unwrap_or_else(|p| p.into_inner())

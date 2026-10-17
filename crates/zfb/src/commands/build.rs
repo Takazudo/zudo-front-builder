@@ -4679,7 +4679,7 @@ pub(crate) fn derive_default_islands_build_token(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_default_islands_payload(
+pub(crate) fn prepare_default_islands_payload(
     project_root: &Path,
     user_pages_dir: &Path,
     package_route_entrypoints: &[PathBuf],

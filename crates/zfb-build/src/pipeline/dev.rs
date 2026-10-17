@@ -1222,10 +1222,10 @@ impl AssetPipeline for DevAssetPipeline {
                     if info.changed {
                         publication.entry_publication_completed();
                     }
-                    outcome.islands_bundle = Some(info);
-                    if dev_timing_enabled() {
+                    if info.changed && dev_timing_enabled() {
                         eprintln!("{}", format_tick_islands_published_line());
                     }
+                    outcome.islands_bundle = Some(info);
                 }
             }
         }

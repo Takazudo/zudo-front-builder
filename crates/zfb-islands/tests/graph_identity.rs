@@ -310,3 +310,24 @@ fn dev_reflection_changes_in_resolved_and_virtual_sources_invalidate_identity() 
     );
     assert_ne!(before.1, after.1);
 }
+
+#[test]
+fn dev_define_spelling_changes_observable_function_source_and_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("counter.ts"), "const first = 3; function meaning(){return __X__} export function Counter(){return meaning.toString()}").unwrap();
+    let configured = |value: &str| {
+        BundleConfig::dev().with_define(BTreeMap::from([("__X__".into(), value.into())]))
+    };
+    let before = snapshot(root, vec![], configured("first"), "browser");
+    let after = snapshot(root, vec![], configured("3"), "browser");
+    assert_ne!(
+        before.0, after.0,
+        "minified-equivalent defines must not share a dev token"
+    );
+    assert_ne!(before.1, after.1);
+    assert_eq!(
+        before.0,
+        snapshot(root, vec![], configured("first"), "browser").0
+    );
+}

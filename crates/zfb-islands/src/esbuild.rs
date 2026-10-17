@@ -1414,6 +1414,18 @@ impl EsbuildSubprocessBundler {
             config.minify as u8,
             config.sourcemap as u8,
         ]);
+        // A minified probe can erase transform differences observable through
+        // Function.prototype.toString in the unminified client. Keep explicit
+        // transform inputs as well as raw resolved source and graph identity.
+        // BTreeMap serialization is deterministic; frames keep fields distinct.
+        hash_identity_part(&mut digest, &serde_json::to_vec(&config.define)?);
+        hash_identity_part(&mut digest, &serde_json::to_vec(&config.loaders)?);
+        // Operator arguments can override defines/loaders or select other
+        // transforms. Preserve order because esbuild's last argument wins.
+        digest.update((self.config.extra_args.len() as u64).to_le_bytes());
+        for argument in &self.config.extra_args {
+            hash_identity_part(&mut digest, argument.as_encoded_bytes());
+        }
         for graph in &output.graph_digests {
             digest.update(graph);
         }
