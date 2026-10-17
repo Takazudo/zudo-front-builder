@@ -735,23 +735,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.5.2");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.5.3");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd");
+    expect(darwinContract.baselineSourceSha).toBe("0fb13d1635b6f78fc58dbfce79dc38f92df7fcd8");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "ci-artifact",
-      runId: 38730893656,
-      jobId: 116408109872,
-      artifact: { id: 11970467336 },
+      runId: 38936818267,
+      jobId: 117094291333,
+      artifact: { id: 12062161089 },
     });
     // pnpmLockSha256 comes from the native v4.4.0 fingerprint migration (#4194);
     // cargoLockSha256 and the ceilings below follow run 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "01972f66763ceaf7c0d526c43c0c0084de64f7cb5cea99b71ef9f79bf2789e0b",
+      "370bf32469ed4f3093a24aed1cab3dd68a28c58051847d425fcbe3d062fc30ee",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37",
@@ -1380,21 +1380,30 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate input of the remaining Darwin producer-lock transition. Constants
-// preserve the assertions in shallow CI; full checkouts also compare git bytes
-// and predecessor metadata below.
+// Exact immediate input of the Darwin v4.5.3 release-bump: the v4.5.2
+// producer-lock contract released on main e1ef4f5b. Constants preserve the
+// assertions in shallow CI; full checkouts also compare git bytes and
+// predecessor metadata below.
 const repinnedFromContracts = [
   {
     file: "decision.json",
-    commit: "42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd",
-    sha256: "46a2782e5fb9d90cfac117e3a88e6cab4f3dd3e707ca91abdf58dfdfaca4eeb1",
-    baselineSourceSha: "57f625a2e3fc4bf69eb526c7bb8ef2103d4669d6",
-    baselineRunId: 38729255517,
+    commit: "e1ef4f5b59a2bba260eac29ee8edfdfbcd928335",
+    sha256: "6d4870765b491f76a90fef112fb51c3ef6327ba79b479b9bd4deca55492461d0",
+    outcome: "cargo-producer-lock-transition",
+    baselineSourceSha: "42b1463f1b1e0f608997ed86e42bb1f0dbfdd8fd",
+    baselineRunId: 38730893656,
   },
 ];
 
 describe("live contracts preserve released evidence and authentic predecessors", () => {
-  for (const { file, commit, sha256, baselineSourceSha, baselineRunId } of repinnedFromContracts) {
+  for (const {
+    file,
+    commit,
+    sha256,
+    outcome,
+    baselineSourceSha,
+    baselineRunId,
+  } of repinnedFromContracts) {
     it(file + " carries a flat repinnedFrom with a verified contract reference", () => {
       const contract = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
       const repinnedFrom = contract.baselineEvidence.repinnedFrom;
@@ -1408,7 +1417,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
       ]);
       expect(repinnedFrom).toMatchObject({
         schemaVersion: 3,
-        outcome: "release-version-stamp",
+        outcome,
         packageVersion: "4.5.2",
         baselineSourceSha,
         baselineRunId,
