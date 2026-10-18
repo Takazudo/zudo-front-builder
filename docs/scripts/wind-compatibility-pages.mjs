@@ -191,8 +191,11 @@ function localizedNote(value, locale, field) {
 // records reachable from zudo-wind (including dev/optional/platform edges) are
 // unchanged versus accepted main b8a2a9d0. The shared-host extraction only moves
 // other workspace lock records; see prototypes/direct-v8/evidence/reconcile-main-2026-10-15/.
+// #4301: all 99 non-lock inputs and all 164 reachable Wind lock records remain
+// unchanged. Only zfb-js-host gains the existing optional deno_core edge.
+// Evidence: prototypes/direct-v8/wind-reconciliation.json; support pin unchanged.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "bbfe6f81ab92f52c9e90e169ea1dd82cd3046b71a41b0588d55e3d30242dc4a2";
+  "ba9e1a7c326b8a8df88e53968bbf495176bfd7eae26d2b20b5a193e60cf940d3";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
