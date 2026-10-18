@@ -1,8 +1,13 @@
+mod test_tasks;
+pub use test_tasks::{with_test_tasks, TestTasks};
+mod http_probe;
+pub use http_probe::{http_get_before, poll_before, HttpBodyReadFailure};
 mod cross_binary_lock;
 mod html_normalize;
 mod module_entry_probe;
 mod sse;
 mod sse_client;
+mod test_phase;
 mod watcher_handshake;
 pub use cross_binary_lock::CrossBinaryE2eLock;
 pub use html_normalize::normalize_html;
@@ -12,6 +17,7 @@ pub use sse::{
     wait_for_subscribers, wait_for_subscribers_polled, SseFrame,
 };
 pub use sse_client::{open_sse, sse_client};
+pub use test_phase::TestPhase;
 pub use watcher_handshake::{watcher_live_handshake, HandshakeOpts, HandshakeResult};
 
 use std::path::{Path, PathBuf};

@@ -3218,6 +3218,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // dead watcher/orchestrator task must take the whole process down, not
     // leave the HTTP listener answering stale 200s forever.
     let mut boot_handle = tokio::spawn(async move {
+        // Test-only bind-before-digest barrier. The test owns a release file
+        // outside the watched project and creates it after observing the hold.
+        // Stay in this async task (before the synchronous boot hook): yielding
+        // lets the existing shutdown/supervision paths abort boot_handle while
+        // the file is absent, without waiting for a test timeout or release.
+        if let Some(release) = std::env::var_os("ZFB_DEV_TEST_DIGEST_RELEASE_FILE") {
+            let release = PathBuf::from(release);
+            eprintln!("deferred digest waiting for test release");
+            while !release.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+
         // Test-only slow-step injection (issue #1166 regression guard):
         // `ZFB_DEV_TEST_SLOW_DIGEST_MS` makes the deferred boot work
         // sleep BEFORE the digest walk, so a test can prove the port
