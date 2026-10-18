@@ -369,7 +369,7 @@ struct AuditOutput {
 /// Discover the build/dev plan the way `zfb build` does — plugin setup,
 /// package routes, sibling mirrors, and plugin virtual modules — without
 /// running lifecycle hooks or writing build output.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 async fn build_audit_plan(
     project_root: &Path,
     config: &crate::config::Config,
@@ -421,7 +421,7 @@ async fn build_audit_plan(
     ))
 }
 
-#[cfg(not(feature = "embed_v8"))]
+#[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
 async fn build_audit_plan(
     _project_root: &Path,
     _config: &crate::config::Config,

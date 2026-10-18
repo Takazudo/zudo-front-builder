@@ -1,35 +1,12 @@
 //! Thread-owned isolate/context and scoped execution primitives.
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use super::diagnostics::{exception_text, NativeError};
 use super::{bootstrap, bridge, diagnostics, modules, platform, services};
 
-thread_local! {
-    static HOST_ACTIVE: Cell<bool> = const { Cell::new(false) };
-}
-
-// rusty_v8 enters an isolate on creation and requires LIFO disposal. The narrow
-// prototype allows exactly one live host on each thread rather than exposing an
-// API where ordinary non-LIFO Rust drops can violate that native precondition.
-struct HostThreadGuard;
-impl HostThreadGuard {
-    fn acquire() -> Result<Self, NativeError> {
-        if HOST_ACTIVE.with(|active| active.replace(true)) {
-            Err(NativeError::Bootstrap(
-                "a native host is already alive on this thread".into(),
-            ))
-        } else {
-            Ok(Self)
-        }
-    }
-}
-impl Drop for HostThreadGuard {
-    fn drop(&mut self) {
-        HOST_ACTIVE.with(|active| active.set(false));
-    }
-}
+use crate::process::HostThreadGuard;
 
 pub struct NativeHost {
     // Rust drops fields in declaration order. Persistent roots must disappear
@@ -59,7 +36,7 @@ impl NativeHost {
         polyfills: &str,
         services: Option<services::Services>,
     ) -> Result<Self, NativeError> {
-        let thread_guard = HostThreadGuard::acquire()?;
+        let thread_guard = HostThreadGuard::acquire().map_err(NativeError::Bootstrap)?;
         bootstrap::initialize().map_err(NativeError::Bootstrap)?;
         let mut isolate = v8::Isolate::new(Default::default());
         let (foreground_key, foreground) = platform::ForegroundQueue::register(&isolate);

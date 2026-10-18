@@ -38,12 +38,15 @@
 //! The other caller contracts (project-root sanity check and
 //! `✓ N pages built in X.XXs` summary) are unchanged.
 
-// V8-off (issue #371, sub-task 4.1a): on the `!feature = "embed_v8"`
+// V8-off (issue #371, sub-task 4.1a): on the `!any(feature = "embed_v8", feature = "direct-v8")`
 // path the `pub async fn run` body and `DefaultRunner` are compiled
 // out. The imports and helper functions they reference then look
 // unused — silence the lints in that configuration so V8-off builds
 // stay warning-clean.
-#![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
+#![cfg_attr(
+    not(any(feature = "embed_v8", feature = "direct-v8")),
+    allow(unused_imports, dead_code)
+)]
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -101,7 +104,7 @@ use zfb_types::build_diagnostics::{codes, BuildDiagnostic, DiagnosticSeverity};
 /// Available only when the `embed_v8` cargo feature is on (issue #371,
 /// sub-task 4.1a). The V8-off counterpart further down in this file
 /// surfaces a clear runtime error.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub async fn run(args: &BuildArgs) -> Result<()> {
     let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
     let started = Instant::now();
@@ -133,7 +136,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     }
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 async fn run_inner(
     args: &BuildArgs,
     sink: &zfb_types::build_diagnostic_sink::BuildDiagnosticSink,
@@ -628,7 +631,7 @@ fn format_build_phase_timing_line(phase: &str, elapsed_ms: u128) -> String {
 /// runtime. Without `embed_v8` none of that wiring exists, so we
 /// surface a clear error at the call site rather than partially
 /// running a doomed pipeline.
-#[cfg(not(feature = "embed_v8"))]
+#[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
 pub async fn run(args: &BuildArgs) -> Result<()> {
     let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
     let error = anyhow!(
@@ -1040,7 +1043,7 @@ pub(crate) struct IslandsPluginConfig {
 /// #371, sub-task 4.1a). The runner's `eval_deferred_paths` impl
 /// constructs `Backend::EmbeddedV8`, which only exists on the V8-on
 /// path.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 struct DefaultRunner {
     timing_enabled: bool,
     /// Pre-fetched plugin setup registries to wire into the islands bundler.
@@ -1055,7 +1058,7 @@ struct DefaultRunner {
     /// into the discovered `*.client.*` set before bundling.
     registered_client_entries: zfb_build::ClientEntryList,
 }
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 impl BuildRunner for DefaultRunner {
     fn timing_enabled(&self) -> bool {
         self.timing_enabled
@@ -18067,7 +18070,7 @@ mod tests {
     // Requires `DefaultRunner` which carries `PluginRegistryHooks` and
     // constructs `Backend::EmbeddedV8` — only available when the
     // `embed_v8` feature is on (issue #371, sub-task 4.1a).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn default_runner_emit_prod_assets_returns_non_empty_css_for_real_project() {
         let tmp = tempdir().unwrap();

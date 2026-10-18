@@ -9,7 +9,7 @@ mod core;
 mod diagnostics;
 mod driver;
 mod modules;
-mod platform;
+pub mod platform;
 mod services;
 mod values;
 mod worker;

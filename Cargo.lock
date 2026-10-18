@@ -7443,6 +7443,7 @@ name = "zfb-js-host"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "deno_core",
  "getrandom 0.3.4",
  "reqwest",
  "serde",

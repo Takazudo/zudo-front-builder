@@ -288,7 +288,9 @@ fn the_ceiling_is_enforced_on_byte_length_not_element_count() {
 /// changes `kind()` and fails here.
 #[test]
 fn the_production_extension_installs_the_os_csprng() {
-    let runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    crate::initialize_v8().unwrap();
+    let _thread_guard = zfb_js_host::process::HostThreadGuard::acquire().unwrap();
+    let runtime = crate::embedded_v8::JsRuntime::new(deno_core::RuntimeOptions {
         extensions: crate::embedded_v8::build_extensions(),
         ..Default::default()
     });
@@ -308,7 +310,9 @@ fn the_production_extension_installs_the_os_csprng() {
 /// fail even though the buffer still came back filled.
 #[test]
 fn driving_the_op_through_a_real_isolate_invokes_the_os_entropy_source() {
-    let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    crate::initialize_v8().unwrap();
+    let _thread_guard = zfb_js_host::process::HostThreadGuard::acquire().unwrap();
+    let mut runtime = crate::embedded_v8::JsRuntime::new(deno_core::RuntimeOptions {
         extensions: crate::embedded_v8::build_extensions(),
         ..Default::default()
     });
@@ -347,7 +351,9 @@ fn driving_the_op_through_a_real_isolate_invokes_the_os_entropy_source() {
 /// real isolate because that is the path #2018 will take.
 #[test]
 fn the_op_rejects_an_over_quota_buffer_at_the_v8_boundary() {
-    let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    crate::initialize_v8().unwrap();
+    let _thread_guard = zfb_js_host::process::HostThreadGuard::acquire().unwrap();
+    let mut runtime = crate::embedded_v8::JsRuntime::new(deno_core::RuntimeOptions {
         extensions: crate::embedded_v8::build_extensions(),
         ..Default::default()
     });
@@ -432,7 +438,9 @@ deno_core::extension!(zfb_crypto_stateless_for_test, ops = [op_zfb_random_bytes]
 /// which a caller cannot distinguish from 32 unlucky random bytes.
 #[test]
 fn an_uninstalled_entropy_source_fails_closed() {
-    let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    crate::initialize_v8().unwrap();
+    let _thread_guard = zfb_js_host::process::HostThreadGuard::acquire().unwrap();
+    let mut runtime = crate::embedded_v8::JsRuntime::new(deno_core::RuntimeOptions {
         extensions: vec![zfb_crypto_stateless_for_test::init()],
         ..Default::default()
     });

@@ -31,13 +31,27 @@ pub use embedded_v8::{
     PluginRegistryHooks, VirtualModuleHook,
 };
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub mod config_eval;
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub use config_eval::{ConfigEvalError, ThreadedConfigEvaluator};
 
 pub use dispatch_mode::DispatchMode;
 pub use error::{RenderError, Result};
 pub use render_host::{ModuleHandle, RenderHost};
 pub use swc_pipeline::{CompileOptions, CompiledModule, SwcPipeline};
+
+#[cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+pub use zfb_js_host::{
+    dispatch::{HttpRequestLike, HttpResponseLike},
+    modules::{AliasHook, BundleModuleLoader, PluginRegistryHooks, VirtualModuleHook},
+    native::NativeHost as EmbeddedV8RenderHost,
+};
+
+/// Call on the process main thread before starting any host threads.
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+pub use zfb_js_host::process::initialize as initialize_v8;
+
+#[cfg(all(feature = "embed_v8", feature = "direct-v8"))]
+mod shared_runtime;

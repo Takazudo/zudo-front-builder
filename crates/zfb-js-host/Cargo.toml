@@ -11,7 +11,9 @@ default = []
 # Existing embedded-host transport, crypto and authorized module reads.
 services = ["dep:serde", "dep:serde_json", "dep:thiserror", "dep:getrandom", "dep:reqwest", "dep:sha1", "dep:sha2", "dep:tokio", "dep:url", "dep:base64"]
 # The experiment uses exactly the baseline engine; never selected by the CLI.
-direct-v8 = ["services", "dep:v8"]
+direct-v8 = ["services", "v8-platform"]
+v8-platform = ["dep:v8"]
+deno-platform = ["v8-platform", "dep:deno_core"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
@@ -30,3 +32,7 @@ v8 = { version = "=147.4.0", optional = true }
 # The native loopback tests drive real TCP sockets; declare what they use
 # instead of relying on reqwest enabling these tokio features transitively.
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
+
+[dependencies.deno_core]
+version = "=0.399.0"
+optional = true

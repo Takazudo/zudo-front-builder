@@ -58,23 +58,26 @@
 //! for the detailed gap analysis. Today the dev renderer reuses the
 //! same plumbing and inherits the same limitations.
 
-// V8-off (issue #371, sub-task 4.1a): on the `!feature = "embed_v8"`
+// V8-off (issue #371, sub-task 4.1a): on the `!any(feature = "embed_v8", feature = "direct-v8")`
 // path the `pub async fn run` body and the V8-bearing helpers below
 // are compiled out. The imports, helper functions, and types they
 // reference then look unused — silence the lints in that
 // configuration so V8-off builds stay warning-clean. The V8-on path
 // continues to surface real unused-item warnings.
-#![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
+#![cfg_attr(
+    not(any(feature = "embed_v8", feature = "direct-v8")),
+    allow(unused_imports, dead_code)
+)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -110,7 +113,7 @@ use crate::render_pipeline::{
     build_prerender_map, build_route_universe, check_runtime_installed,
     eval_deferred_paths_via_worker, expand_dynamic_routes, WorkerDispatch,
 };
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use zfb_render::paths::PathsCache;
 
 /// Default source directories the watcher follows.
@@ -696,7 +699,7 @@ fn reload_redirects(path: &Path) -> Redirects {
 
 /// What [`DevRenderSession::mark_rewrite_target_stale_if_needed`] found
 /// for one `_redirects` 200-rewrite target (issue #2004).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RewriteTargetMark {
     /// Resolved to an SSG route the stale map already holds an entry
@@ -741,7 +744,7 @@ pub(crate) enum RewriteTargetMark {
 ///
 /// Returns the spawned task on the recovery path so a test can await
 /// it; production ignores it (the pass is fire-and-forget by design).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn dispatch_outcome_events(
     recovery: Option<&(RewritePrewarmWiring, RedirectsHandle)>,
     events: Vec<ReloadEvent>,
@@ -768,7 +771,7 @@ fn dispatch_outcome_events(
 /// `_redirects` watch task — carry one value instead of four (issue
 /// #2004, Dev Self Heal epic #1999). See [`crate::dev_rewrite_prewarm`]
 /// for what the pass does and why it lives outside every request path.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Clone)]
 pub(crate) struct RewritePrewarmWiring {
     mode: BootLazyMode,
@@ -784,7 +787,7 @@ pub(crate) struct RewritePrewarmWiring {
     reload_tx: broadcast::Sender<ReloadEvent>,
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 impl RewritePrewarmWiring {
     /// Run one pass and announce its targets through the tick-stale
     /// buffer, for the CALLER to drain.
@@ -973,14 +976,14 @@ impl RewritePrewarmWiring {
 /// paths and the prewarm wiring. `watchPollFallback` selects
 /// [`zfb_watcher::WatchBackend::Poll`] for this targeted `_redirects`
 /// watch too, matching the orchestrator's own dev-loop watcher.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn redirects_watch_options(backend: zfb_watcher::WatchBackend) -> zfb_watcher::WatchOptions {
     zfb_watcher::WatchOptions::default()
         .with_debounce(zfb_watcher::DEFAULT_DEBOUNCE)
         .with_backend(backend)
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn spawn_redirects_watch(
     project_root: &Path,
     public_root: &Path,
@@ -1294,7 +1297,7 @@ fn leave_publication_pending_for_failures(
 /// sub-task 4.1a). The V8-off counterpart lives at the bottom of this
 /// file and surfaces a clear runtime error explaining that this binary
 /// was built without V8 support.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
     let project_root = std::env::current_dir().context("failed to read current working dir")?;
@@ -1662,7 +1665,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // `boot_dev_renderer` returns, so the boot bundle's edges are seeded by the
     // first post-boot refresh; from then on a component edit maps to its
     // consuming route via `dirty_pages`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     if let Some(session) = dev_session.as_ref() {
         session.set_dep_graph(Arc::clone(&graph));
         // Seed the eager boot bundle's Module edges now the graph exists, so a
@@ -2253,13 +2256,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // runs — the window the retired #1284 D4 extras used to cover. The
     // deferred/cold boot publishes from inside the boot hook, which runs
     // before the post-boot registration.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     if let Some(session) = dev_session.as_ref() {
         session.set_ssr_module_dep_registry(raw_import_invalidation.clone());
     }
 
     let known_pages = zfb_build::KnownPageSources::default();
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     if let Some(session) = dev_session.as_ref() {
         session.set_known_page_registry(known_pages.clone());
     }
@@ -4407,7 +4410,7 @@ struct BootRenderResult {
     boundary: BootDocumentBoundary,
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn run_boot_render(
     orchestrator: &BuildOrchestrator<DevAssetPipeline>,
     ctx: &BuildContext,
@@ -4593,7 +4596,7 @@ fn run_boot_render(
 /// host, so we surface a clear error at the call site instead of
 /// compiling a partial pipeline that would silently hand back empty
 /// pages.
-#[cfg(not(feature = "embed_v8"))]
+#[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
 pub async fn run(_args: &DevArgs) -> Result<()> {
     anyhow::bail!(
         "zfb was built without V8 support (`--no-default-features` / \
@@ -5564,7 +5567,7 @@ fn premark_stale_after_deferred_publish_decision(mode: BootLazyMode) -> bool {
 /// contract, unchanged); Off never defers a bundle at all
 /// ([`defer_dev_bundle_decision`] requires an active mode), so it cannot
 /// reach the failure arm.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn arm_cold_bootstrap_recovery_decision(mode: BootLazyMode) -> bool {
     mode == BootLazyMode::Cold
 }
@@ -5583,7 +5586,7 @@ fn arm_cold_bootstrap_recovery_decision(mode: BootLazyMode) -> bool {
 ///
 /// Auto (emitted at warn level): today's seeded wording, unchanged — the
 /// prebuilt `dist/` keeps serving until the next successful rebuild.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn deferred_bundle_failure_message(mode: BootLazyMode, err_chain: &str) -> String {
     match mode {
         BootLazyMode::Cold => format!(
@@ -5792,7 +5795,7 @@ impl DevRenderInner {
     /// still the empty scaffold and no route was ever marked stale. Set
     /// (never swapped) so repeated failures before a recovery are
     /// idempotent, and a failure AFTER a recovery re-arms cleanly.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn arm_cold_bootstrap_recovery(&self) {
         self.cold_bootstrap_pending
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -5803,7 +5806,7 @@ impl DevRenderInner {
     /// single winner even if several successful publishes land in quick
     /// succession, which is what guarantees recovery's stale-marking
     /// runs exactly once.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn take_cold_bootstrap_pending(&self) -> bool {
         self.cold_bootstrap_pending
             .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -5812,7 +5815,7 @@ impl DevRenderInner {
     /// Raise the one-shot "re-run the rewrite pre-warm" flag (issue
     /// #2004). Stored, never swapped, so repeated raisings before a
     /// drain are idempotent — the drain is what makes it one-shot.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn set_rewrite_prewarm_pending(&self) {
         self.rewrite_prewarm_pending
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -5820,7 +5823,7 @@ impl DevRenderInner {
 
     /// Consume the "re-run the rewrite pre-warm" flag (issue #2004):
     /// `true` for exactly ONE caller per raising.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn take_rewrite_prewarm_pending(&self) -> bool {
         self.rewrite_prewarm_pending
             .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -6205,7 +6208,7 @@ struct DevRouteTables {
 ///
 /// Only compiled in on the V8 path — the discovery hook that consumes
 /// these is `embed_v8`-gated like `boot_dev_renderer`.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 struct DevRebuildInputs {
     cfg: config::Config,
     /// SSR bundle output dir (`ScratchLayout::bundle_outdir`).
@@ -6279,7 +6282,7 @@ struct DevRebuildInputs {
     injected_route_entrypoints: Vec<PathBuf>,
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 impl DevRebuildInputs {
     /// Fresh `(specifier, source)` pairs for the main bundler's
     /// `BundlerInput::plugin_virtual_modules` (issue #2168) — read from the
@@ -6340,7 +6343,7 @@ impl DevRebuildInputs {
     }
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Default)]
 struct DiscoveryPublicationState {
     /// Sticky proof that discovery has an unresolved publication transaction.
@@ -6378,7 +6381,7 @@ struct DevRenderInner {
     /// Boot-time bundle inputs for the watch-ADD re-bundle + host reload
     /// (issue #659). `None` would mean "no discovery" but boot always
     /// populates it on the V8 path.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     rebuild_inputs: DevRebuildInputs,
 
     /// Per-collection resolved absolute root (issue #1550), index-aligned
@@ -6388,7 +6391,7 @@ struct DevRenderInner {
     /// by [`derive_tick_candidates`] and [`make_discovery_hook`] so each
     /// site compares against a root form that matches notify's canonical
     /// event paths. Built once from the boot [`ResolvedRoots`] inventory.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     collection_roots: Vec<PathBuf>,
 
     /// Skip key from the last SUCCESSFUL `refresh_bundle_and_routes` call
@@ -6403,11 +6406,11 @@ struct DevRenderInner {
     /// `None` on first tick (cold start) — forces a full refresh.
     /// Wrapped in a `Mutex` so `&self.refresh_bundle_and_routes` can
     /// update it without `&mut self`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     last_successful_skip_key: Mutex<Option<[u8; 32]>>,
     /// Identity of the successfully published browser/SSR generation. A
     /// changed identity invalidates every cached document carrying its token.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     browser_build_token: Mutex<Option<String>>,
 
     /// Frontmatter gate cache for content-edit narrowing (issue #958,
@@ -6418,7 +6421,7 @@ struct DevRenderInner {
     /// candidate Content tick. A missing or differing entry means the
     /// frontmatter may feed cross-page props (sidebar titles, prev/next
     /// labels) — no narrowing that tick.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fm_hashes: Mutex<HashMap<PathBuf, [u8; 32]>>,
 
     /// Persistent dev shadow-tree session (issue #993): the bundler
@@ -6431,7 +6434,7 @@ struct DevRenderInner {
     /// construction). The lock is held only across the P1 bundle step
     /// of [`DevRenderSession::refresh_bundle_and_routes`] — it never
     /// overlaps the renderer mutex, so SSR latency is unaffected.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     shadow_session: Mutex<Option<ShadowSession>>,
 
     /// Dependency graph handle for populating per-route `DepKind::Module`
@@ -6444,13 +6447,13 @@ struct DevRenderInner {
     /// (direct or transitive, incl. symlinked workspace `.tsx`) maps to its
     /// consuming route via `dirty_pages`, instead of falling back to a blunt
     /// whole-site re-render.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     dep_graph: Mutex<Option<Arc<Mutex<DependencyGraph>>>>,
 
     /// Current worker's actual content-read observations (issue #1600).
     /// Reset after every successful bundle/route-table swap; a fresh worker
     /// must not inherit observations captured against an older snapshot.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     content_trace: Mutex<DevContentTraceState>,
 
     /// The dev SSR module-dependency publication (issue #3162): the last
@@ -6459,7 +6462,7 @@ struct DevRenderInner {
     /// [`DevRenderSession::set_ssr_module_dep_registry`]. The eager boot
     /// bundle's set is recorded before the registry exists, so installing
     /// the registry replays it.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     ssr_module_deps: Mutex<SsrModuleDepPublication>,
 
     /// The eager boot bundle's per-route metafile Module deps (#1284/#1287),
@@ -6468,19 +6471,19 @@ struct DevRenderInner {
     /// installing the graph handle, so a component edit maps to its consuming
     /// route from the very first edit tick (not one tick late). Empty on the
     /// deferred-boot path (its `refresh_bundle_and_routes` seeds edges itself).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     boot_route_module_deps: Vec<zfb_build::RouteModuleDeps>,
 
     /// When the eager boot bundle started reading its sources (issue #3190),
     /// published with [`Self::boot_route_module_deps`]. `None` on the
     /// deferred-boot path, which publishes from its own refresh.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     boot_bundle_read_since: Option<std::time::SystemTime>,
 
     /// The eager boot's page sources outside the metafile walk (issue
     /// #3210): see [`reconcile_only_page_sources`]. Published with
     /// [`Self::boot_route_module_deps`]; empty on the deferred-boot path.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     boot_reconcile_page_sources: Vec<PathBuf>,
 
     /// Cross-tick [`PathsCache`] (#994 item B): seeded at boot and
@@ -6496,7 +6499,7 @@ struct DevRenderInner {
     /// the P3 route-table build; the renderer lock for phase-2 eval is
     /// taken inside the build exactly as before, so renderer-mutex
     /// hold time is unchanged.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     paths_cache: Mutex<PathsCache>,
 
     /// Lazy dev render (issue #1025): per-route staleness map + tick
@@ -6537,7 +6540,7 @@ struct DevRenderInner {
     /// then performs the boot seeding the failure skipped (see
     /// [`DevRenderSession::recover_cold_bootstrap_after_publish`]). A
     /// later failure may re-arm it.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     cold_bootstrap_pending: std::sync::atomic::AtomicBool,
 
     /// Discovery publication coordination is one mutex-protected state word
@@ -6545,7 +6548,7 @@ struct DevRenderInner {
     /// discovery raises its gate immediately before waiting on that lock. The
     /// combined transition prevents a false-observation → Begin race without
     /// holding this mutex across a publication-hook call.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     discovery_publication: Mutex<DiscoveryPublicationState>,
 
     /// One-shot flag: a cold-bootstrap recovery just republished the
@@ -6566,7 +6569,7 @@ struct DevRenderInner {
     /// drained by `run`'s `on_outcome` (which holds the pre-warm wiring;
     /// the session deliberately does not, to avoid an `Arc` cycle with
     /// the adapter that holds the session).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     rewrite_prewarm_pending: std::sync::atomic::AtomicBool,
 
     /// One-shot per-tick flag: this session published its live SSR
@@ -6661,7 +6664,10 @@ struct DevRenderInner {
 /// Per-source route filter for one narrowed tick (issue #958): which of a
 /// source's expanded routes [`DevRenderSession::render_one`] should fan
 /// out to this invocation.
-#[cfg_attr(not(feature = "embed_v8"), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "embed_v8", feature = "direct-v8")),
+    allow(dead_code)
+)]
 #[derive(Debug)]
 enum RouteFilter {
     /// Render every entry of the source — today's full behaviour.
@@ -6681,7 +6687,10 @@ impl RouteFilter {
 
 /// The whole tick's narrowing decision, computed once per render-callback
 /// invocation by [`compute_tick_narrowing`] (issue #958).
-#[cfg_attr(not(feature = "embed_v8"), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "embed_v8", feature = "direct-v8")),
+    allow(dead_code)
+)]
 #[derive(Debug)]
 enum TickNarrowing {
     /// No narrowing — every selected page renders its full fan-out.
@@ -6693,7 +6702,7 @@ enum TickNarrowing {
     PerSource(HashMap<PathBuf, RouteFilter>),
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 impl DevRenderInner {
     fn lock_discovery_publication(
         &self,
@@ -6982,7 +6991,7 @@ impl DevRenderSession {
     /// (#1284/#1287). Called by `run` once the graph exists (it is created
     /// after `boot_dev_renderer` returns). Idempotent — a later call replaces
     /// the handle.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn set_dep_graph(&self, graph: Arc<Mutex<DependencyGraph>>) {
         if let Ok(mut slot) = self.inner.dep_graph.lock() {
             *slot = Some(graph);
@@ -6995,7 +7004,7 @@ impl DevRenderSession {
     /// set for [`Self::set_ssr_module_dep_registry`] to replay (#3162).
     /// Effectively a no-op on the deferred-boot path (its deps are empty; the
     /// deferred refresh seeds edges and publishes itself) and idempotent.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn seed_boot_module_edges(&self) {
         let deps = self.inner.boot_route_module_deps.clone();
         // The deferred path has neither, and publishes from its own refresh;
@@ -7012,7 +7021,7 @@ impl DevRenderSession {
 
     /// Attach the normalization registry and replay the live route-table
     /// sources. Deferred boot reuses this same handle at its first publish.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn set_known_page_registry(&self, registry: zfb_build::KnownPageSources) {
         let sources = self
             .inner
@@ -7035,7 +7044,7 @@ impl DevRenderSession {
             .unwrap_or_else(|p| p.into_inner()) = Some(registry);
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn publish_known_page_sources(&self, sources: &HashSet<PathBuf>) {
         if let Some(registry) = self
             .inner
@@ -7061,7 +7070,7 @@ impl DevRenderSession {
     /// post-boot `register_dynamic_dependency_watches` would see an empty
     /// set until the first tick re-bundled. Idempotent — a later call
     /// replaces the handle and replays again.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn set_ssr_module_dep_registry(&self, registry: zfb_build::RawImportInvalidation) {
         let mut publication = self
             .inner
@@ -7083,7 +7092,7 @@ impl DevRenderSession {
         publication.registry = Some(registry);
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn publish_linked_package_snapshots(
         &self,
         snapshots: Vec<zfb_build::bundler::LinkedPackageIgnoreSnapshot>,
@@ -7112,7 +7121,7 @@ impl DevRenderSession {
     /// all, yet its `extra_page_sources` were still read by this pass. On a
     /// degraded metafile that publication names only `extra_page_sources`;
     /// the route entries return with the next good bundle.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn publish_ssr_module_deps(
         &self,
         deps: &[zfb_build::RouteModuleDeps],
@@ -7168,7 +7177,7 @@ impl DevRenderSession {
     /// so the watch-arm reconcile can find an entry edited after the read
     /// but before the watcher covered it. Every snapshot is a publication,
     /// an empty one included.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn publish_content_reads(
         &self,
         paths: std::collections::BTreeSet<PathBuf>,
@@ -7188,7 +7197,7 @@ impl DevRenderSession {
     /// The persisted graph is only a cache. Once the boot graph has been
     /// assembled, discard its Content edges and rebuild them from observations
     /// made by the live worker during the eager boot render.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn clear_boot_content_provenance(&self) {
         if let Ok(mut state) = self.inner.content_trace.lock() {
             state.reads_by_observation.clear();
@@ -7202,7 +7211,7 @@ impl DevRenderSession {
     /// that visit replaces the route's prior read set, including with an empty
     /// set when it no longer reads a collection. Persisted observations are
     /// never used at cold boot.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn begin_content_trace(&self, token: String) {
         if let Ok(mut state) = self.inner.content_trace.lock() {
             state.token = Some(token);
@@ -7211,7 +7220,7 @@ impl DevRenderSession {
 
     /// Enable provenance at the boot publication boundary. Eager boot already
     /// observed every page; lazy boot adds page reads as requests render them.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn complete_boot_content_provenance(&self) -> Result<()> {
         if let Ok(mut state) = self.inner.content_trace.lock() {
             state.boot_complete = true;
@@ -7219,7 +7228,7 @@ impl DevRenderSession {
         self.reconcile_content_provenance()
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn content_graph(&self) -> Option<Arc<Mutex<DependencyGraph>>> {
         self.inner
             .dep_graph
@@ -7230,7 +7239,7 @@ impl DevRenderSession {
 
     /// Remove only Content edges, preserving every other dependency kind and
     /// allowing the planner's unknown-path fallback to select all pages.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn clear_content_edges(&self) {
         let Some(graph) = self.content_graph() else {
             return;
@@ -7243,7 +7252,7 @@ impl DevRenderSession {
         };
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn clear_content_edges_if_current(&self, token: &str) {
         let Ok(state) = self.inner.content_trace.lock() else {
             return;
@@ -7266,7 +7275,7 @@ impl DevRenderSession {
     /// reconcile the graph atomically. Any failure removes Content edges for
     /// this worker generation so the existing unknown-path fallback remains
     /// conservative.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn reconcile_content_provenance(&self) -> Result<()> {
         let token = {
             let state = self
@@ -7418,7 +7427,7 @@ impl DevRenderSession {
     /// warm persisted graph carries stale previous-session edges, and the
     /// edges lack the registry's `node_modules`/shadow filtering and alias
     /// expansion.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn populate_module_edges(
         &self,
         deps: &[zfb_build::RouteModuleDeps],
@@ -7778,7 +7787,7 @@ impl DevRenderSession {
     /// an entry being present IS the stale state, so the adapter's own
     /// claim already succeeds. Announcing the target to livereload is a
     /// separate decision, made per call site by `RewritePrewarmWiring`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     pub(crate) fn rewrite_target_stale_state(&self, request_path: &str) -> RewriteTargetMark {
         let Some(entry) = self.lookup_by_url(request_path) else {
             return RewriteTargetMark::Unresolved;
@@ -7827,7 +7836,7 @@ impl DevRenderSession {
     /// is guaranteed by [`DevRenderInner::take_cold_bootstrap_pending`]'s
     /// atomic swap; re-arming after a later failure is the arm side's
     /// plain store ([`DevRenderInner::arm_cold_bootstrap_recovery`]).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn recover_cold_bootstrap_after_publish(&self) -> Option<usize> {
         if !self.inner.take_cold_bootstrap_pending() {
             return None;
@@ -7875,7 +7884,7 @@ impl DevRenderSession {
         if let Some(state) = lock.take() {
             let _ = shutdown(state);
         }
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         {
             let mut shadow = self.inner.shadow_session.lock().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -7906,7 +7915,7 @@ impl DevRenderSession {
     /// still reports `renderer_reloaded = true` so the tick does not reload
     /// twice, but only the `Refreshed` arm below records a completed document
     /// boundary.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn discover_created(
         &self,
         created: &[PathBuf],
@@ -7973,7 +7982,7 @@ impl DevRenderSession {
     ///
     /// `embed_v8`-gated like `boot_dev_renderer` — the host start +
     /// `paths()` runtime eval need the embedded V8 host.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn refresh_bundle_and_routes(&self) -> Result<BundleRefresh> {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
@@ -8387,7 +8396,7 @@ impl DevRenderSession {
 /// the dev session's internal counterpart of
 /// [`zfb_build::RefreshOutcome`] (issue #956), carrying the extra
 /// `changed` source set the discovery path needs.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 enum BundleRefresh {
     /// Phase-B skip (issue #940): byte-identical bundle + unchanged route
     /// universe (including static `pages/**.html` bodies). The live V8
@@ -8407,7 +8416,7 @@ enum BundleRefresh {
 /// Tear down a renderer that never became live. Taking it out of the private
 /// slot first makes the cleanup idempotent (the state's own `Drop` remains the
 /// final backstop if shutdown itself reports an error).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn shutdown_renderer_candidate(candidate: &Arc<Mutex<Option<RendererState>>>) {
     let state = candidate
         .lock()
@@ -8445,7 +8454,7 @@ fn shutdown_renderer_candidate(candidate: &Arc<Mutex<Option<RendererState>>>) {
 ///   every source in the new table. The diff is GLOBAL on purpose: if
 ///   route A loses /x while route B simultaneously gains /x, /x must NOT
 ///   be considered vanished (#727 two-page swap).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn diff_route_tables(
     old: &HashMap<PathBuf, Vec<DevRouteEntry>>,
     new: &HashMap<PathBuf, Vec<DevRouteEntry>>,
@@ -8491,7 +8500,7 @@ impl Drop for DevRenderInner {
         // (unlock + delete, or keep under `ZFB_KEEP_SHADOW_SESSION`) is
         // the final backstop — a poisoned lock here just means we can't
         // reach `.teardown()`'s tracing, not that the dir leaks.
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         if let Ok(mut g) = self.shadow_session.lock() {
             if let Some(session) = g.take() {
                 session.teardown();
@@ -8509,15 +8518,15 @@ impl Drop for DevRenderInner {
 ///
 /// The generated wrapper rejects requests without the per-bundle nonce, so a
 /// normal browser request cannot read or alter the trace state.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 const DEV_CONTENT_TRACE_ENDPOINT: &str = "/__zfb_internal/content-provenance";
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 const DEV_CONTENT_TRACE_HEADER: &str = "x-zfb-content-provenance-token";
 
 /// Each generated wrapper receives a fresh nonce. It is not a public API or
 /// an authentication mechanism; it prevents an ordinary dev-server request
 /// from reaching the trace drain endpoint.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 static DEV_CONTENT_TRACE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// One route descriptor embedded into the private tracing wrapper.
@@ -8525,7 +8534,7 @@ static DEV_CONTENT_TRACE_NONCE: AtomicU64 = AtomicU64::new(0);
 /// `source` is deliberately project-relative: it is emitted from the router
 /// scan and validated against the live route table before it becomes a graph
 /// consumer. That keeps worker-side strings from becoming graph authority.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone, serde::Serialize)]
 struct DevContentTraceRoute {
     template: String,
@@ -8534,7 +8543,7 @@ struct DevContentTraceRoute {
 }
 
 /// One route visit or tracked read emitted by the generated worker wrapper.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone, serde::Deserialize)]
 struct DevContentTraceEvent {
     source: String,
@@ -8547,7 +8556,7 @@ struct DevContentTraceEvent {
 
 /// Whether a trace event marks a route as having run, or records one
 /// `getCollection()` property access during that route's execution.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum DevContentTraceEventKind {
@@ -8557,7 +8566,7 @@ enum DevContentTraceEventKind {
 }
 
 /// The actual worker seam that performed the read.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum DevContentTracePhase {
@@ -8572,7 +8581,7 @@ enum DevContentTracePhase {
 /// call `getCollection()` while evaluating `paths()` yet make no collection
 /// read during its ordinary render; those two executions must not erase one
 /// another's provenance.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct DevContentTraceObservation {
     consumer: PageId,
@@ -8580,7 +8589,7 @@ struct DevContentTraceObservation {
 }
 
 /// JSON payload returned by [`DEV_CONTENT_TRACE_ENDPOINT`].
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, serde::Deserialize)]
 struct DevContentTracePayload {
     ready: bool,
@@ -8598,7 +8607,7 @@ struct DevContentTracePayload {
 /// new worker. A visit with no tracked read removes that phase's old
 /// provenance; an unvisited phase remains conservative until the new worker
 /// can establish its current behavior.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Default)]
 struct DevContentTraceState {
     token: Option<String>,
@@ -8607,7 +8616,7 @@ struct DevContentTraceState {
 }
 
 /// See [`DevRenderInner::ssr_module_deps`] (issue #3162).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Default)]
 struct SsrModuleDepPublication {
     registry: Option<zfb_build::RawImportInvalidation>,
@@ -8629,7 +8638,7 @@ struct SsrModuleDepPublication {
 /// Files a dev pass read outside esbuild's dependency walk, and when it
 /// started reading them (issue #3202). Published only for the watch-arm
 /// reconcile: see `RawImportInvalidation::replace_page_entries_read_since`.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Clone)]
 struct ReconcileOnlyReads {
     paths: std::collections::BTreeSet<PathBuf>,
@@ -8642,7 +8651,7 @@ struct ReconcileOnlyReads {
 /// unstamped — mirroring the SSR module-dependency set's own
 /// `replace_ssr_module_deps` / `replace_ssr_module_deps_read_since` split —
 /// so `read_since` is optional here too.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Clone)]
 struct PageEntriesPublication {
     paths: std::collections::BTreeSet<PathBuf>,
@@ -8652,7 +8661,7 @@ struct PageEntriesPublication {
 /// The files `snapshot` was built from: each collection entry's
 /// collection-root-relative path joined onto that collection's root, the
 /// same root `build_content_snapshot` handed the snapshot walk (#3202).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn content_snapshot_files(
     project_root: &Path,
     cfg: &config::Config,
@@ -8676,7 +8685,7 @@ fn content_snapshot_files(
 /// entrypoint (the route itself is keyed on its synthesized staging stub,
 /// whose metafile key the walk does not match, so the entrypoint reaches no
 /// route's dependency set).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn reconcile_only_page_sources(
     routes: &[zfb_router::Route],
     injected_route_entrypoints: Vec<PathBuf>,
@@ -8691,7 +8700,7 @@ fn reconcile_only_page_sources(
 
 /// Publish `deps` into the registry, with the bundle's read start when known
 /// (issue #3190).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn publish_ssr_module_deps_into(
     registry: &zfb_build::RawImportInvalidation,
     deps: &std::collections::BTreeSet<PathBuf>,
@@ -8708,7 +8717,7 @@ fn publish_ssr_module_deps_into(
 /// [`publish_ssr_module_deps_into`]'s counterpart for the page-entries set
 /// (issue #3209): publishes the same route entries either way, so the two
 /// sets stay in step on whether a reconcile stamp is live.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn publish_page_entries_into(
     registry: &zfb_build::RawImportInvalidation,
     paths: &std::collections::BTreeSet<PathBuf>,
@@ -8723,7 +8732,7 @@ fn publish_page_entries_into(
 }
 
 /// Generate a fresh opaque nonce for the worker trace-drain endpoint.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn make_dev_content_trace_token(bundle_path: &Path) -> String {
     let serial = DEV_CONTENT_TRACE_NONCE.fetch_add(1, Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
@@ -8760,7 +8769,7 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
 ///
 /// Returns `(token, wrapper_source)`: the opaque trace-drain nonce and the
 /// generated wrapper ESM source.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn wrap_dev_bundle_with_content_trace(
     output: &BundlerOutput,
     routes: &[zfb_router::Route],
@@ -8981,7 +8990,7 @@ fn format_boot_islands_published_line() -> &'static str {
 /// PURE — takes only the number and returns the line. Emission is gated
 /// on [`dev_timing_enabled`] at the call site, so no test needs to (or
 /// may) mutate `ZFB_DEV_TIMING` process-globally.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn format_lazy_plan_pages_line(pages: usize) -> String {
     format!("[zfb-timing] lazy-render plan: pages={pages}")
 }
@@ -9000,7 +9009,7 @@ fn format_lazy_plan_pages_line(pages: usize) -> String {
 /// immediately.
 ///
 /// PURE — see [`format_lazy_plan_pages_line`].
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn format_lazy_route_miss_line(misses: usize, pages: usize) -> String {
     format!("[zfb-timing] lazy-render tick: routes_by_source misses={misses}/{pages}")
 }
@@ -9017,7 +9026,7 @@ fn format_lazy_route_miss_line(misses: usize, pages: usize) -> String {
 /// gate. Reported alongside the existing `tick()` line family.
 ///
 /// PURE — see [`format_lazy_plan_pages_line`].
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn format_pages_stale_drain_line(len: usize) -> String {
     format!("[zfb-timing] stale probe: drained pages_stale={len}")
 }
@@ -9026,7 +9035,7 @@ fn format_pages_stale_drain_line(len: usize) -> String {
 /// [`assemble_and_bundle_dev`] when `ZFB_DEV_TIMING=1`. Only populated when
 /// `timing_enabled` is `true`; the caller always has `Some(...)` in that
 /// case.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 struct BundleSubTiming {
     /// `build_content_snapshot_json` — full content-collection walk.
     snapshot_ms: u128,
@@ -9042,7 +9051,7 @@ struct BundleSubTiming {
 /// Wraps the `BundlerOutput` with an optional timing record that is `Some`
 /// when `ZFB_DEV_TIMING=1` and `None` otherwise (zero allocation on the hot
 /// path).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 struct AssembledBundleResult {
     output: BundlerOutput,
     browser_build_token: Option<String>,
@@ -9072,7 +9081,7 @@ struct AssembledBundleResult {
 /// `timing_enabled` — when `true`, record sub-phase wall-clock durations
 /// into the returned [`BundleSubTiming`]. When `false`, no `Instant::now()`
 /// calls are made (zero overhead on the hot path).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[allow(clippy::too_many_arguments)] // 11 params: #3341 added bundle_outdir, #1518 added empty_user_pages_root, #3021 added injected_route_entrypoints; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
 fn assemble_and_bundle_dev(
     project_root: &Path,
@@ -9246,7 +9255,7 @@ fn assemble_and_bundle_dev(
 /// Returns `None` if the bundle file or any static-HTML source cannot be
 /// read — the caller treats that as a forced full refresh (safe
 /// direction: false-invalidate, never false-reuse).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn compute_bundle_skip_key(
     bundler_out: &BundlerOutput,
     routes: &[zfb_router::Route],
@@ -9328,7 +9337,7 @@ fn compute_bundle_skip_key(
 
 /// `(routes_by_source, ssr_routes, url_index)` — the triple
 /// [`build_dev_route_tables`] produces and [`DevRouteTables`] stores.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 type BuiltRouteTables = (
     HashMap<PathBuf, Vec<DevRouteEntry>>,
     Vec<RouteUniverseEntry>,
@@ -9339,7 +9348,7 @@ type BuiltRouteTables = (
 /// paths_cache_misses)` — the 5-tuple [`build_dev_route_tables_timed`]
 /// returns with PathsCache stats exposed for ZFB_DEV_TIMING instrumentation
 /// (issue #991).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 type TimedRouteTables = (
     HashMap<PathBuf, Vec<DevRouteEntry>>,
     Vec<RouteUniverseEntry>,
@@ -9352,7 +9361,7 @@ type TimedRouteTables = (
 /// the [`PathsCache`] hit and miss DELTAS for this call, for P3 diagnostics
 /// (issue #991). The cache persists across ticks (#994 item B) and its
 /// counters are cumulative, so the inner build reports per-call deltas.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn build_dev_route_tables_timed(
     router: &zfb_router::Router,
     plan: &crate::render_pipeline::RouteUniversePlan,
@@ -9371,7 +9380,7 @@ fn build_dev_route_tables_timed(
 /// `renderer` mutex must already hold a started/reloaded [`RendererState`]
 /// because the dynamic-route `paths()` runtime phase borrows the live
 /// embedded V8 host out of it.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn build_dev_route_tables(
     router: &zfb_router::Router,
     plan: &crate::render_pipeline::RouteUniversePlan,
@@ -9392,7 +9401,7 @@ fn build_dev_route_tables(
 /// complete BEFORE `paths()` runs. `routes_by_source` and `ssr_routes` are
 /// both downstream of route expansion and each drop pages the other keeps —
 /// a page whose `paths()` yields `[]` is in neither.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn collect_page_sources(router: &zfb_router::Router) -> HashSet<PathBuf> {
     router
         .routes()
@@ -9574,7 +9583,7 @@ fn seed_injected_static_routes(
 /// call's PathsCache hit/miss deltas (#991 instrumentation; the cache is
 /// caller-owned and persists across ticks per #994 item B, so the
 /// cumulative counters are differenced here).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn build_dev_route_tables_inner(
     router: &zfb_router::Router,
     plan: &crate::render_pipeline::RouteUniversePlan,
@@ -9827,7 +9836,7 @@ fn build_dev_route_tables_inner(
 /// router/bundler can keep their directory-based contract without creating a
 /// `pages/` directory in the consumer. A project with neither source of routes
 /// retains the historical missing-pages error.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn resolve_dev_user_pages_root(
     project_root: &Path,
     has_surviving_injected_routes: bool,
@@ -9855,7 +9864,7 @@ fn resolve_dev_user_pages_root(
 
 /// Keep the historical empty-project rejection while allowing package routes
 /// to be the sole source of a true zero-pages dev session.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn ensure_dev_routes_available(
     plan: &crate::render_pipeline::RouteUniversePlan,
     injected_route_set: &InjectedRouteSet,
@@ -9880,7 +9889,7 @@ fn ensure_dev_routes_available(
 // `boot_dev_renderer` constructs the long-lived dev RendererState
 // backed by the in-process V8 host. Compiled in only when the
 // `embed_v8` feature is on (issue #371, sub-task 4.1a).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[allow(clippy::too_many_arguments)] // 10 params: #3343 added bundle_outdir; #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); #2168 added plugin_refresh (the shared refresh state stashed onto DevRebuildInputs); a struct would just shuffle the same threaded fields
 fn boot_dev_renderer(
     project_root: &Path,
@@ -10338,7 +10347,7 @@ fn boot_dev_renderer(
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(feature = "embed_v8")]
+            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
             // survivor set, both built from the same survivor list above.
@@ -10365,7 +10374,7 @@ fn boot_dev_renderer(
 /// objects serialize with sorted keys, so the string is canonical: a YAML
 /// reformat that parses to the same value hashes identically and does not
 /// trip the gate. `None` when the file is unreadable or unparseable.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
     let source = std::fs::read_to_string(path).ok()?;
     let uf = zfb_content::frontmatter::extract(path, &source).ok()?;
@@ -10393,7 +10402,7 @@ fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
 /// `collection_roots` comes from the boot [`ResolvedRoots`] inventory, so
 /// out-of-root roots are already canonical and the walked paths compare
 /// equal to the canonical paths `notify` delivers (#1550).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     for (collection, root) in cfg.collections.iter().zip(collection_roots) {
@@ -10430,7 +10439,7 @@ fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]
 /// latter keeps its tolerant historical contract for `KnownContentEntries`;
 /// provenance must instead fail closed when a configured collection cannot be
 /// walked or its filter cannot be compiled.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug, Clone)]
 struct DevContentMembershipSnapshot {
     membership: ContentCollectionMembership,
@@ -10441,7 +10450,7 @@ struct DevContentMembershipSnapshot {
 /// snapshot. A missing collection root is a known empty collection; any other
 /// walk/filter failure makes provenance unavailable so graph callers retain
 /// their conservative `All` fallback.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn collect_content_provenance_membership(
     cfg: &config::Config,
     collection_roots: &[PathBuf],
@@ -10525,7 +10534,7 @@ fn collect_content_provenance_membership(
 /// Route values that can identify a collection entry without guessing from
 /// source text. The collection filter supplies the canonical slug; a valid
 /// frontmatter `slug` override is also an actual runtime path candidate.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn content_entry_slug_candidates(path: &Path, slug: &str) -> BTreeSet<String> {
     let mut candidates = BTreeSet::new();
     add_content_slug_candidate(&mut candidates, slug);
@@ -10543,7 +10552,7 @@ fn content_entry_slug_candidates(path: &Path, slug: &str) -> BTreeSet<String> {
     candidates
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn add_content_slug_candidate(candidates: &mut BTreeSet<String>, value: &str) {
     candidates.insert(value.to_string());
     if let Some(stripped) = value.strip_prefix('/') {
@@ -10565,7 +10574,7 @@ fn add_content_slug_candidate(candidates: &mut BTreeSet<String>, value: &str) {
 /// Tag/pagination routes, subsets, aliases, and ambiguous output all become
 /// aggregate collection reads. This is deliberately narrow: an over-broad
 /// aggregate edge is safe; a guessed direct edge can under-render.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[derive(Debug)]
 struct ClassifiedContentTrace {
     observed: BTreeSet<DevContentTraceObservation>,
@@ -10576,7 +10585,7 @@ struct ClassifiedContentTrace {
 /// reads. A visit is meaningful even when it made no `getCollection()` call:
 /// it is the positive evidence needed to drop that route phase's prior worker
 /// generation observations.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn classify_content_trace_events(
     events: impl IntoIterator<Item = DevContentTraceEvent>,
     routes_by_source: &HashMap<PathBuf, Vec<DevRouteEntry>>,
@@ -10657,7 +10666,7 @@ fn classify_content_trace_events(
 /// moved module that the running worker still traces — is a genuine
 /// inconsistency between the live worker and the live route table, and
 /// stays a hard error so the caller keeps its conservative fallback.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn resolve_content_trace_consumer<'a>(
     raw_source: &str,
     routes_by_source: &'a HashMap<PathBuf, Vec<DevRouteEntry>>,
@@ -10708,7 +10717,7 @@ fn resolve_content_trace_consumer<'a>(
 /// Apply one current-worker drain to the retained observations. Route phases
 /// that the worker actually visited are replaced wholesale; all others remain
 /// as a conservative bridge until this worker has executed them too.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn apply_content_trace_observations(
     reads_by_observation: &mut BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
     observed: impl IntoIterator<Item = DevContentTraceObservation>,
@@ -10726,7 +10735,7 @@ fn apply_content_trace_observations(
 /// Once any entry in a consumer/collection pair leaves the current membership,
 /// its whole mapping is stale. Broaden that pair to one collection read until
 /// the next authoritative `Paths` visit replaces the observation.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn demote_retained_paths_reads(
     reads_by_observation: &mut BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
     current_visits: &BTreeSet<DevContentTraceObservation>,
@@ -10768,7 +10777,7 @@ fn demote_retained_paths_reads(
 
 /// Return a complete direct-entry mapping for one dynamic route source, or
 /// `None` when the route is an aggregate/ambiguous consumer.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn verified_paths_entry_reads(
     entries: &[DevRouteEntry],
     collection: &ContentCollectionId,
@@ -10806,7 +10815,7 @@ fn verified_paths_entry_reads(
 /// groups, preserving all other dependency kinds. This is used for both
 /// persisted-graph cleanup and a fresh worker/table generation; no stale
 /// `Content` edge can survive a failed current derivation.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn replace_content_edges(
     graph: &mut DependencyGraph,
     groups: impl IntoIterator<Item = zfb_build::ContentEdgeGroup>,
@@ -10857,7 +10866,7 @@ fn replace_content_edges(
 /// match the CANONICAL paths `notify` later delivers on an edit (a literal
 /// `project_root.join("../x")` would seed keys that never match, so the
 /// narrowing gate always tripped for out-of-root content).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn seed_frontmatter_hashes(
     cfg: &config::Config,
     collection_roots: &[PathBuf],
@@ -10955,7 +10964,7 @@ fn create_dev_html_session(parent: &Path) -> Result<tempfile::TempDir> {
 /// empty catchall joins to `""`, matching the bare-root-index candidate);
 /// a locale scalar never blocks a slug-array match. Exact byte equality —
 /// no case folding, no percent-decoding.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn params_match(
     p: &crate::render_pipeline::ResolvedRouteParams,
     candidates: &std::collections::BTreeSet<String>,
@@ -10985,7 +10994,7 @@ fn params_match(
 ///   mismatch at table build time),
 /// - S2: zero entries matched the candidate set (aggregate dynamic
 ///   consumers — tags/pagination — whose params are not slug-shaped).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn compute_tick_narrowing(
     session: &DevRenderSession,
     hint: Option<&zfb_build::ContentNarrowing>,
@@ -11030,7 +11039,7 @@ fn compute_tick_narrowing(
 /// Result of [`derive_tick_candidates`] — the tick's slug candidate set
 /// plus whether any of the #958 whole-tick gates tripped while deriving
 /// it.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 struct TickCandidates {
     /// Union of slug candidates across the changed files that passed
     /// their per-file gates.
@@ -11055,7 +11064,7 @@ struct TickCandidates {
 /// remainder. The gate HASH is stored in both modes (store-then-compare)
 /// so the bookkeeping stays warm for whichever mode the next tick runs
 /// in.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn derive_tick_candidates(
     inner: &DevRenderInner,
     hint: &zfb_build::ContentNarrowing,
@@ -11195,7 +11204,7 @@ fn derive_tick_candidates(
 ///   mismatch at table build time),
 /// - S2: zero entries matched the candidate set (aggregate dynamic
 ///   consumers — tags/pagination — whose params are not slug-shaped).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn match_candidate_routes(
     tables: &DevRouteTables,
     candidates: &std::collections::BTreeSet<String>,
@@ -11239,7 +11248,7 @@ fn match_candidate_routes(
 /// `.tsx`/G5/G6/data/discovery ticks —, no candidates, bad globs, or
 /// S1/S2-only sources) means a fully-lazy tick: every selected route is
 /// marked stale and nothing renders eagerly.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn compute_lazy_eager_sets(
     session: &DevRenderSession,
     hint: Option<&zfb_build::ContentNarrowing>,
@@ -11287,7 +11296,7 @@ fn compute_lazy_eager_sets(
 /// staleness map and the route tables (swapped by the reloader earlier
 /// in the tick) already describe the new world — a reloading browser
 /// can always resolve the stale route.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn lazy_render_tick(
     session: &DevRenderSession,
     dist_dir: &Path,
@@ -11430,7 +11439,7 @@ fn make_render_callback(
         // explicit eager boot's FIRST invocation stays eager even when
         // later ticks are lazy. Boot-lazy consumes this flag without an
         // initial build, so its first watcher tick uses the lazy path.
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         if session.inner.lazy_render && !session.inner.take_boot_render_pending() {
             let result = lazy_render_tick(
                 &session,
@@ -11458,9 +11467,9 @@ fn make_render_callback(
         // a non-fan-out-safe tick falls back to the full fan-out exactly as
         // before. (The lazy path above intentionally consumes the hint
         // regardless of `fan_out_safe`.)
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         let tick_narrowing = compute_tick_narrowing(&session, narrowing.filter(|n| n.fan_out_safe));
-        #[cfg(not(feature = "embed_v8"))]
+        #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
         let tick_narrowing = {
             let _ = narrowing;
             TickNarrowing::Off
@@ -11536,7 +11545,7 @@ fn make_render_callback(
                 }
             }
         }
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         if let Err(error) = session.reconcile_content_provenance() {
             output::warn(format!(
                 "content provenance unavailable after render; \
@@ -11573,7 +11582,7 @@ fn make_render_callback(
 /// (issue #804 P2).
 ///
 /// `embed_v8`-gated: discovery needs the embedded V8 host.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn finish_failed_discovery_publication(
     session: &DevRenderSession,
     publication: &zfb_build::pipeline::dev::DocumentPublicationHook,
@@ -11595,7 +11604,7 @@ fn finish_failed_discovery_publication(
     }
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn make_discovery_hook(
     session: DevRenderSession,
     html_root: PathBuf,
@@ -11731,7 +11740,7 @@ fn make_discovery_hook(
 ///
 /// Compiled in only when the `embed_v8` feature is on (issue #371,
 /// sub-task 4.1a) — the SSR adapter requires the V8 host.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRoutesHandle> {
     let session = session?;
     let renderer_handle = session.renderer_handle();
@@ -11748,7 +11757,7 @@ fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRoutesHa
 /// which the request dispatcher treats identically to "no SSR configured."
 /// Called at boot (inside [`build_ssr_route_set`]) and after each tick's
 /// renderer reload to refresh the live handle (issue #807).
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn make_ssr_route_set(
     session: &DevRenderSession,
     dispatcher: Arc<dyn SsrDispatcher>,
@@ -11777,7 +11786,7 @@ fn make_ssr_route_set(
 /// page 404s until a later edit: the discovery refresh marks the renderer
 /// fresh, so the pipeline skips `reload_renderer` and the live handle is
 /// never updated for that tick.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn refresh_live_ssr_routes(session: &DevRenderSession, handle: &SsrRoutesHandle) {
     let fresh_dispatcher = {
         let renderer_handle = session.renderer_handle();
@@ -11844,7 +11853,7 @@ const DEFAULT_DEV_PORT: u16 = 3000;
 /// ([`build_url_index`]), so `lookup_by_url` behaves identically to a
 /// real session. Lives outside `mod tests` because the adapter's test
 /// module (a sibling module of `commands`) needs to call it.
-#[cfg(all(test, feature = "embed_v8"))]
+#[cfg(all(test, any(feature = "embed_v8", feature = "direct-v8")))]
 pub(crate) fn stub_session_for_adapter_tests(
     project_root: PathBuf,
     routes: Vec<(PathBuf, Vec<RouteUniverseEntry>)>,
@@ -11912,7 +11921,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(feature = "embed_v8")]
+            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
             // package routes in the stub universe.
@@ -13114,7 +13123,7 @@ mod tests {
         assert!(!css.contains(".flex"));
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[tokio::test]
     async fn wind_config_ts_priority_and_removal_reload_on_blocking_tick() {
         let dir = tempfile::tempdir().unwrap();
@@ -13313,7 +13322,7 @@ mod tests {
         watcher.shutdown().await;
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[tokio::test]
     async fn wind_config_ts_creation_over_json_native_matches_clean() {
         let temp = tempfile::tempdir().unwrap();
@@ -13741,7 +13750,7 @@ mod tests {
         assert!(!obligations.lock().unwrap().has_eager_failures_inner());
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn blocked_discovery_write_recovers_on_exact_request_without_another_tick() {
         use zfb_build::pipeline::dev::{DocumentPublicationEvent, GuardedWriteOutcome};
@@ -13910,7 +13919,7 @@ mod tests {
         assert!(!session.inner.discovery_lazy_repair_is_pending());
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn inherited_sticky_discovery_error_replays_deferred_request_repair() {
         use zfb_build::pipeline::dev::DocumentPublicationEvent;
@@ -13983,7 +13992,7 @@ mod tests {
         assert!(!session.inner.discovery_lazy_repair_is_pending());
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn request_commit_winning_before_new_discovery_begin_reopens_pending() {
         let session = DevRenderSession {
@@ -14160,7 +14169,7 @@ mod tests {
         assert!(publication.islands_urls_for_response(true).is_empty());
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn complete_stale_snapshot_registers_only_existing_fallbacks_and_drains_exactly() {
         let dir = tempfile::tempdir().unwrap();
@@ -14286,7 +14295,7 @@ mod tests {
 
     /// Constructor-selection site (b): the targeted `_redirects` watch's
     /// own `WatchOptions` construction picks up the poll backend.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn redirects_watch_options_selects_poll_backend_when_configured() {
         let poll_backend = zfb_watcher::WatchBackend::Poll {
@@ -14296,7 +14305,7 @@ mod tests {
         assert_eq!(options.backend, poll_backend);
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn redirects_watch_options_defaults_to_native_backend() {
         let options = redirects_watch_options(zfb_watcher::WatchBackend::Native);
@@ -14644,7 +14653,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn zero_pages_without_injected_routes_keeps_missing_pages_error() {
         let project = tempfile::tempdir().unwrap();
@@ -14660,7 +14669,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn zero_pages_with_surviving_injected_routes_gets_internal_empty_root() {
         let project = tempfile::tempdir().unwrap();
@@ -14685,7 +14694,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn conventional_empty_pages_without_injection_keeps_no_routes_error() {
         let project = tempfile::tempdir().unwrap();
@@ -14721,7 +14730,7 @@ mod tests {
     /// Build a stub [`DevRenderInner`] for the route-plumbing seam tests
     /// (no live V8 host). The discovery (#659) `rebuild_inputs` are filled
     /// with defaults — these tests never call `discover_created`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn stub_dev_inner(
         routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
@@ -14737,7 +14746,7 @@ mod tests {
     /// [`stub_dev_inner`] with an explicit project root + config, for the
     /// content-narrowing tests (issue #958) that need real collection
     /// files on disk.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn stub_dev_inner_at(
         project_root: PathBuf,
         cfg: config::Config,
@@ -14795,7 +14804,7 @@ mod tests {
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(feature = "embed_v8")]
+            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
@@ -14810,7 +14819,7 @@ mod tests {
     /// A project with one in-root dependency outside every default watch root
     /// (`packages/data/`), one out-of-root sibling file, and one third-party
     /// pnpm-store file. Returns `(project, [in_root, out_of_root, store])`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn ssr_dep_fixture(root: &Path) -> (PathBuf, [PathBuf; 3]) {
         let project = root.join("site");
         let in_root = project.join("packages/data/value.json");
@@ -14824,7 +14833,7 @@ mod tests {
         (project, [in_root, out_of_root, store])
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn ssr_dep_session(
         project: &Path,
         boot_deps: Vec<zfb_build::RouteModuleDeps>,
@@ -14841,7 +14850,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn route_deps(deps: &[PathBuf]) -> Vec<zfb_build::RouteModuleDeps> {
         vec![zfb_build::RouteModuleDeps {
             source_path: PathBuf::from("pages/index.tsx"),
@@ -14852,7 +14861,7 @@ mod tests {
     /// `populate_module_edges` publishes both an in-root dependency under a
     /// non-default root and an out-of-root one, never a `node_modules` file,
     /// and a successful refresh with zero dependencies replaces the set.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn populate_module_edges_publishes_ssr_module_deps_3162() {
         let tmp = tempfile::tempdir().unwrap();
@@ -14895,7 +14904,7 @@ mod tests {
 
     /// A refresh that fails before its bundle succeeds never reaches the
     /// publication, so the last good set stays registered (and watched).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn failed_refresh_keeps_last_good_ssr_module_deps_3162() {
         let tmp = tempfile::tempdir().unwrap();
@@ -14932,7 +14941,7 @@ mod tests {
     /// replayed dependency set, so the orchestrator can find an edit made
     /// after that read but before the watcher was armed; a refresh publishes
     /// its own read start the same way.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn eager_boot_replay_carries_the_bundle_read_start_3190() {
         let tmp = tempfile::tempdir().unwrap();
@@ -14982,7 +14991,7 @@ mod tests {
     /// read start, replayed into a registry installed later; an unedited
     /// entry is not reported, and a publication without a read start records
     /// no entries.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn page_entries_publish_logical_paths_with_the_bundle_read_start_3202() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15035,7 +15044,7 @@ mod tests {
     /// (`read_since = None`) must clear the page-entries stamp too, and a
     /// registry installed after that unstamped publish must never replay a
     /// stale one. Stamped publish -> unstamped publish -> registry replay.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn unstamped_publish_clears_page_entry_stamp_and_replay_stays_clear_3209() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15092,7 +15101,7 @@ mod tests {
     }
 
     /// Write `path` and set its mtime.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn write_with_mtime(path: &Path, mtime: std::time::SystemTime) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "x").unwrap();
@@ -15108,7 +15117,7 @@ mod tests {
     /// no metafile routes, so the SSR set is not republished (an empty route
     /// list is not a publication) while the static page sources still reach
     /// the stamped page-entry set, live and on replay.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn static_only_project_publishes_its_html_pages_for_the_reconcile_3210() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15152,7 +15161,7 @@ mod tests {
     /// out-of-project `source_path`), whose metafile key the walk never
     /// matches, so its real entrypoint is in no route's dependency set. The
     /// stub is not published; the materialized entrypoint is.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn injected_route_publishes_its_entrypoint_not_its_staging_stub_3210() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15183,7 +15192,7 @@ mod tests {
     /// Issue #3202 — the content snapshot's files map back onto each
     /// collection's root, and a content publication recorded before the
     /// registry exists (the eager boot's) is replayed into it.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn content_snapshot_files_are_published_for_the_reconcile_3202() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15242,7 +15251,7 @@ mod tests {
     /// creates the registry. Installing the registry replays them, so they
     /// are registered before the first tick; the deferred path (no boot
     /// bundle) replays nothing.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn eager_boot_ssr_module_deps_replay_into_registry_before_first_tick_3162() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15277,7 +15286,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// Every `DepKind::Module` dependency path the graph holds for `page`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn graph_module_deps(
         graph: &Arc<Mutex<DependencyGraph>>,
         page: &Path,
@@ -15298,7 +15307,7 @@ mod tests {
     /// orchestrator registers BEFORE its boot hook — as soon as `run` has
     /// installed the graph, seeded the boot edges, and installed the registry,
     /// i.e. before the orchestrator and its first post-boot tick exist.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn boot_imported_out_of_root_ssr_deps_are_registered_before_first_tick_3179() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15341,7 +15350,7 @@ mod tests {
     /// narrowing refresh (a dropped import leaves both — the retired D4 set
     /// only ever grew) and in the degraded empty-metafile case, where both
     /// keep the last good set.
-    #[cfg(all(feature = "embed_v8", unix))]
+    #[cfg(all(any(feature = "embed_v8", feature = "direct-v8"), unix))]
     #[test]
     fn ssr_module_dep_registry_is_a_filtered_subset_of_graph_module_deps_3179() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15437,7 +15446,7 @@ mod tests {
     /// #1284 D4 channel keyed on — it would have watched it. The registry
     /// drops every `node_modules` path, so it is never watched, while the
     /// graph keeps its Module edge for page selection.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn hoisted_node_modules_dep_of_nested_site_is_not_watched_3179() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15493,7 +15502,7 @@ mod tests {
     /// that call site's own comment), so proving `shutdown_explicit`
     /// itself removes the shadow dir proves the Err-supervision path
     /// does too — there is no separate branch to test.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn shutdown_explicit_removes_the_shadow_session_dir_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15533,7 +15542,7 @@ mod tests {
     /// never called — mirrors a panicking dev loop or an early
     /// `?`-return that skips the normal shutdown path, the exact leak
     /// mechanism this epic closes.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn dev_render_inner_drop_removes_the_shadow_session_dir_without_explicit_teardown() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15559,7 +15568,7 @@ mod tests {
 
     /// V8-off counterpart of [`stub_dev_inner`] — no `rebuild_inputs`
     /// field exists when `embed_v8` is disabled.
-    #[cfg(not(feature = "embed_v8"))]
+    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
     fn stub_dev_inner(
         routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
@@ -15582,7 +15591,7 @@ mod tests {
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(feature = "embed_v8")]
+            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
@@ -15653,7 +15662,7 @@ mod tests {
     /// unchanged `paths()` JSON reports cache hits (delta counters) and
     /// produces identical tables.
     #[test]
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn build_dev_route_tables_shares_paths_cache_across_calls() {
         let dir = tempfile::tempdir().unwrap();
         let pages = dir.path().join("pages");
@@ -16653,7 +16662,7 @@ mod tests {
     /// seams a narrowed tick traverses before the (untouched)
     /// `render_one_with` fan-out — against real collection files in a
     /// tempdir, exactly as the dev render callback composes them.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     mod narrowing {
         use super::*;
         use crate::render_pipeline::ResolvedRouteParams;
@@ -19465,7 +19474,7 @@ mod tests {
     /// watch-ADD refresh, then inspect the dependency graph directly. The
     /// real dev E2E complements them by proving the generated worker wrapper
     /// emits those events in a live V8 process.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     mod content_provenance {
         use super::*;
         use crate::render_pipeline::ResolvedRouteParams;
@@ -19895,7 +19904,7 @@ mod tests {
 
         /// The normalization handle replays the actual scan's page modules,
         /// including the SSR-only root and a dynamic module with zero paths.
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         #[test]
         fn known_page_registry_replays_scan_and_observes_later_publication() {
             let tmp = tempfile::tempdir().unwrap();
@@ -20330,7 +20339,7 @@ mod tests {
     /// then a mid-session discovery adds a `prerender = false` route to the
     /// session's tables. After `refresh_live_ssr_routes` the handle must hold
     /// a populated set whose matcher resolves the new route.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn discovery_refresh_updates_live_ssr_routes_without_edit() {
         // Boot state: no SSR routes → the live handle wraps `None`, exactly
@@ -20376,7 +20385,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn css_only_created_path_does_not_begin_discovery_publication() {
         let tmp = tempfile::tempdir().unwrap();
@@ -21213,7 +21222,7 @@ mod tests {
     // `last_successful_skip_key` seams only exist on the V8 path.
 
     /// Helper: write `bytes` to a temp file and return its path.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn write_temp_bundle(dir: &tempfile::TempDir, bytes: &[u8]) -> PathBuf {
         let p = dir.path().join("bundle.js");
         std::fs::write(&p, bytes).unwrap();
@@ -21221,7 +21230,7 @@ mod tests {
     }
 
     /// Build a minimal `BundlerOutput` pointing at an existing file.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn make_bundler_out(bundle_path: PathBuf) -> BundlerOutput {
         use zfb_build::bundler::BundleManifest;
         BundlerOutput {
@@ -21241,7 +21250,7 @@ mod tests {
     }
 
     /// `compute_bundle_skip_key` returns `Some` for a valid bundle file.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_returns_some_for_readable_bundle() {
         let dir = tempfile::tempdir().unwrap();
@@ -21252,7 +21261,7 @@ mod tests {
 
     /// `compute_bundle_skip_key` returns `None` when the bundle path does not
     /// exist — the caller must treat this as a forced full refresh.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_returns_none_for_missing_bundle() {
         let dir = tempfile::tempdir().unwrap();
@@ -21262,7 +21271,7 @@ mod tests {
     }
 
     /// Same bundle bytes + same routes → identical keys.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_identical_for_same_bundle_and_routes() {
         let dir = tempfile::tempdir().unwrap();
@@ -21273,7 +21282,7 @@ mod tests {
     }
 
     /// Different bundle bytes → different keys (real edit defeats skip).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_changes_on_different_bundle_bytes() {
         let dir = tempfile::tempdir().unwrap();
@@ -21290,7 +21299,7 @@ mod tests {
 
     /// Temporary #4240 producer: export the canonical wrapper around an
     /// already-generated fixture. Never runs a second bundle or a JS engine.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     #[ignore = "verification: #4240 canonical wrapper fixture export; set ZFB_DIRECT_V8_SITE and ZFB_DIRECT_V8_WRAPPER_OUT"]
     fn direct_v8_export_canonical_wrapper() {
@@ -21338,7 +21347,7 @@ mod tests {
     /// nonce can never turn an otherwise-identical refresh into a false
     /// miss — the invariant is now structural (the bundle is never
     /// rewritten) rather than upheld by hashing pre-wrap.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn wrap_dev_bundle_keeps_bundle_bytes_and_skip_key_stable_across_nonces() {
         let dir = tempfile::tempdir().unwrap();
@@ -21382,7 +21391,7 @@ mod tests {
 
     /// A `pages/` route change (different source paths) defeats the skip even
     /// when bundle bytes are identical — satisfies Inv 2 (issue #935 §3).
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_changes_on_route_universe_change() {
         use zfb_router::Route;
@@ -21424,7 +21433,7 @@ mod tests {
     /// Phase B — the first tick after boot must never skip: a fresh
     /// `DevRenderInner` holds no skip key, so `should_skip_refresh` is
     /// false for any computed key.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn fresh_dev_inner_never_skips() {
         let inner = stub_dev_inner(HashMap::new(), Vec::new());
@@ -21438,7 +21447,7 @@ mod tests {
     /// Phase B — a no-op tick skips: after a successful refresh committed
     /// key K, the next tick computing the same K skips host boot +
     /// `paths()` re-expansion. A different key (real edit) does not skip.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn identical_key_skips_after_successful_commit_and_real_edit_does_not() {
         let inner = stub_dev_inner(HashMap::new(), Vec::new());
@@ -21474,7 +21483,7 @@ mod tests {
     /// after bundling (before host start), the failed tick here would
     /// have stored `key_k` and the second `should_skip_refresh(key_k)`
     /// would return true — freezing the stale renderer in place.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn failed_refresh_does_not_poison_skip_key() {
         let inner = stub_dev_inner(HashMap::new(), Vec::new());
@@ -21504,7 +21513,7 @@ mod tests {
 
     /// A route-table failure is candidate-only: the private renderer is shut
     /// down, while the live renderer and its matching skip key stay intact.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn route_rebuild_failure_discards_candidate_and_keeps_live_skip_key() {
         use zfb_build::renderer::{HttpResponseLike, RendererStartInput};
@@ -21558,7 +21567,7 @@ mod tests {
     /// `None` (successful refresh whose bundle could not be hashed) CLEARS
     /// a previously-stored key so a later matching tick cannot skip
     /// against the wrong host state.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn uncomputable_key_never_skips_and_clears_stored_key() {
         let inner = stub_dev_inner(HashMap::new(), Vec::new());
@@ -21589,7 +21598,7 @@ mod tests {
     // `compute_bundle_skip_key` must fold their bodies into the key.
 
     /// Build a `static_html` route pointing at `src`.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     fn make_static_html_route(src: PathBuf) -> zfb_router::Route {
         zfb_router::Route {
             source_path: src,
@@ -21604,7 +21613,7 @@ mod tests {
     /// Editing a static `.html` page's bytes must change the skip key even
     /// when bundle bytes and the route signature are identical — otherwise
     /// the edit would be silently swallowed by the Phase-B skip.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_changes_on_static_html_edit() {
         let dir = tempfile::tempdir().unwrap();
@@ -21631,7 +21640,7 @@ mod tests {
 
     /// Unchanged static `.html` bodies keep the key stable — the skip
     /// still fires for genuine no-op ticks on projects with static pages.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_stable_when_static_html_unchanged() {
         let dir = tempfile::tempdir().unwrap();
@@ -21649,7 +21658,7 @@ mod tests {
 
     /// An unreadable static `.html` source forces `None` (full refresh) —
     /// the safe direction, mirroring the unreadable-bundle case.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn bundle_skip_key_returns_none_for_unreadable_static_html() {
         let dir = tempfile::tempdir().unwrap();
@@ -21952,7 +21961,7 @@ mod tests {
     /// produces an identical entry under the SAME synthetic key, so the diff
     /// is stable — the seed never registers as `changed`/`vanished` on a tick.
     // `diff_route_tables` is part of the V8-gated refresh path.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn injected_static_seed_is_stable_across_reseed() {
         let seed = RouteUniverseEntry {
@@ -22698,7 +22707,7 @@ mod tests {
     // / failure-handling contract of `PluginRefreshState::refresh` itself is
     // covered by `zfb_build::plugin_refresh`'s own tests (real `PluginHost`
     // + Node subprocess), which is the appropriate crate for that.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     fn plugin_refresh_store_update_is_observed_identically_by_all_consumers() {
         let store = zfb_build::PluginVirtualModuleStore::seeded([(

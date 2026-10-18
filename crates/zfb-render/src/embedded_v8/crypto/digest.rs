@@ -155,7 +155,9 @@ mod tests {
     /// registration rather than against this module's own function.
     #[test]
     fn the_op_is_reachable_from_a_real_isolate_and_rejects_md5_with_its_class() {
-        let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+        crate::initialize_v8().unwrap();
+        let _thread_guard = zfb_js_host::process::HostThreadGuard::acquire().unwrap();
+        let mut runtime = crate::embedded_v8::JsRuntime::new(deno_core::RuntimeOptions {
             extensions: crate::embedded_v8::build_extensions(),
             ..Default::default()
         });

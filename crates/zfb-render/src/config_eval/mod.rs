@@ -37,6 +37,10 @@ use std::thread;
 
 use thiserror::Error;
 
+#[cfg(feature = "embed_v8")]
+mod runtime;
+#[cfg(not(feature = "embed_v8"))]
+#[path = "native.rs"]
 mod runtime;
 
 pub use runtime::evaluate_config_bundle;

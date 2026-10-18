@@ -1373,26 +1373,52 @@ async fn a_floating_unauthorised_dispatch_cannot_republish_a_stale_mode() {
 /// The mode nonce has the expected 256-bit hex format and differs per host.
 #[test]
 fn the_mode_nonce_is_256_csprng_bits_and_differs_per_host() {
-    let a = EmbeddedV8RenderHost::new().expect("host boot");
-    let b = EmbeddedV8RenderHost::new().expect("host boot");
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let mut releases = Vec::new();
+    let hosts: Vec<_> = (0..2)
+        .map(|_| {
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            releases.push(release_tx);
+            let ready_tx = ready_tx.clone();
+            std::thread::spawn(move || {
+                let host = EmbeddedV8RenderHost::new();
+                ready_tx
+                    .send(
+                        host.as_ref()
+                            .map(|host| host.mode_nonce.clone())
+                            .map_err(ToString::to_string),
+                    )
+                    .unwrap();
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+            })
+        })
+        .collect();
+    let a = ready_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    let b = ready_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    drop(releases);
+    for host in hosts {
+        host.join().unwrap();
+    }
     assert_eq!(
-        a.mode_nonce.len(),
+        a.len(),
         "zfb-mode-".len() + 64,
         "32 bytes, hex-encoded, behind the fixed prefix"
     );
     assert!(
-        a.mode_nonce
-            .strip_prefix("zfb-mode-")
+        a.strip_prefix("zfb-mode-")
             .expect("the prefix is part of the format")
             .chars()
             .all(|c| c.is_ascii_hexdigit()),
         "the body must be hex, so it carries no structure to reconstruct: {}",
-        a.mode_nonce
+        a
     );
-    assert_ne!(
-        a.mode_nonce, b.mode_nonce,
-        "two hosts must not share a nonce"
-    );
+    assert_ne!(a, b, "two hosts must not share a nonce");
 }
 
 /// The mode nonce is read from the OS CSPRNG, not derived from process state.
