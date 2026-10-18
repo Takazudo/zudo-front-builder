@@ -3660,7 +3660,7 @@ describe("cargo-internal-rewire (#4258)", () => {
       addedDependencies: ["zfb-js-host"],
     });
     for (const [name, edit, message] of [
-      ["a wrong schema", (d) => (d.schemaVersion = 2), /schemaVersion must be 1/],
+      ["a wrong schema", (d) => (d.schemaVersion = 3), /schemaVersion must be 1 or 2/],
       [
         "no producer",
         (d) => delete d.producer,
