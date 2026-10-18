@@ -51,8 +51,15 @@ pub(crate) fn resolved_graph_digest(
 ) -> Result<[u8; 32]> {
     let meta: Metafile = serde_json::from_slice(&std::fs::read(metafile)?)
         .context("invalid esbuild graph identity metafile")?;
-    let absolute = |path: &Path| normalize_path_lexical(&cwd.join(path));
-    let cwd = absolute(cwd);
+    let logical_cwd = normalize_path_lexical(cwd);
+    // esbuild makes metafile paths relative to the process's physical cwd,
+    // including when --preserve-symlinks keeps logical input spellings.
+    let cwd = std::fs::canonicalize(&logical_cwd).unwrap_or_else(|_| logical_cwd.clone());
+    let rebase = |path: PathBuf| match path.strip_prefix(&logical_cwd) {
+        Ok(relative) => cwd.join(relative),
+        Err(_) => path,
+    };
+    let absolute = |path: &Path| normalize_path_lexical(&logical_cwd.join(path));
     let entry = absolute(entry);
     let virtual_paths: BTreeMap<PathBuf, &str> = virtual_paths
         .iter()
@@ -62,23 +69,49 @@ pub(crate) fn resolved_graph_digest(
         .iter()
         .map(|(path, source)| (absolute(path), source))
         .collect();
+    let paths: BTreeMap<&str, PathBuf> = meta
+        .inputs
+        .keys()
+        .map(|key| (key.as_str(), normalize_path_lexical(&cwd.join(key))))
+        .collect();
+    let entry_key = paths
+        .iter()
+        .find(|(key, path)| !non_file_input(key) && **path == entry)
+        .map(|(key, _)| *key);
+    let entry_key = match entry_key {
+        Some(key) => key,
+        None => {
+            let canonical_entry = file_alias(&entry);
+            let mut candidates = paths.iter().filter(|(key, path)| {
+                !non_file_input(key)
+                    && (rebase((*path).clone()) == rebase(entry.clone())
+                        || file_alias(path) == canonical_entry)
+            });
+            let key = candidates
+                .next()
+                .map(|(key, _)| *key)
+                .context("esbuild graph identity metafile does not contain its entry")?;
+            if candidates.next().is_some() {
+                bail!("esbuild graph identity has ambiguous entry aliases");
+            }
+            key
+        }
+    };
     let mut identities = BTreeMap::new();
-    for key in meta.inputs.keys() {
-        let path = normalize_path_lexical(&cwd.join(key));
-        let identity = if path == entry {
+    for (key, path) in &paths {
+        let identity = if *key == entry_key {
             "entry:".to_owned()
-        } else if let Some(specifier) = virtual_paths.get(&path) {
+        } else if let Some(specifier) = if non_file_input(key) {
+            None
+        } else {
+            lookup_owned(&virtual_paths, path)?
+        } {
             format!("virtual:{specifier}")
         } else {
-            input_identity(&path, &cwd)?
+            input_identity(&rebase(path.clone()), &cwd)?
         };
-        identities.insert(key.clone(), identity);
+        identities.insert(*key, identity);
     }
-    let entry_key = identities
-        .iter()
-        .find(|(_, id)| id.as_str() == "entry:")
-        .map(|(key, _)| key.as_str())
-        .context("esbuild graph identity metafile does not contain its entry")?;
     // Canonical traversal distinguishes separate instances of the same package
     // without encoding installation layout. Import order comes from esbuild.
     let mut order = Vec::new();
@@ -137,8 +170,13 @@ pub(crate) fn resolved_graph_digest(
             if (synthetic_entry && key == entry_key) || key.starts_with("(disabled):") {
                 None
             } else {
-                let path = normalize_path_lexical(&cwd.join(key));
-                let bytes = match source_overrides.get(&path) {
+                let path = &paths[key];
+                let source_override = if non_file_input(key) {
+                    None
+                } else {
+                    lookup_owned(&source_overrides, path)?
+                };
+                let bytes = match source_override {
                     Some(source) => (*source).clone(),
                     None => resolved_input_bytes(&cwd, key)?,
                 };
@@ -150,6 +188,44 @@ pub(crate) fn resolved_graph_digest(
     hash.update(b"zfb-esbuild-resolved-graph-v2\0");
     hash.update(serde_json::to_vec(&records)?);
     Ok(hash.finalize().into())
+}
+
+// Alias matching is only for owned file provenance. Graph keys and edges stay
+// distinct, including separate package instances under --preserve-symlinks.
+fn file_alias(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn lookup_owned<'a, T: PartialEq>(
+    records: &'a BTreeMap<PathBuf, T>,
+    path: &Path,
+) -> Result<Option<&'a T>> {
+    if records.is_empty() {
+        return Ok(None);
+    }
+    if let Some(value) = records.get(path) {
+        return Ok(Some(value));
+    }
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for (candidate, value) in records {
+        if std::fs::canonicalize(candidate).ok().as_ref() == Some(&canonical) {
+            if found.is_some_and(|previous| previous != value) {
+                bail!(
+                    "ambiguous esbuild graph source provenance for {}",
+                    path.display()
+                );
+            }
+            found = Some(value);
+        }
+    }
+    Ok(found)
+}
+
+fn non_file_input(key: &str) -> bool {
+    key.starts_with("(disabled):") || (key.starts_with("<data:") && key.ends_with('>'))
 }
 
 /// Interpret esbuild's input record, without performing import resolution.
@@ -252,6 +328,240 @@ mod tests {
         let metafile = root.join("meta.json");
         std::fs::write(&metafile, serde_json::to_vec(&metadata).unwrap()).unwrap();
         resolved_graph_digest(&metafile, root, &entry, &[], true, &BTreeMap::new()).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_metafile_base_and_owned_path_aliases_agree() {
+        let temp = tempfile::tempdir().unwrap();
+        let canonical_temp = temp.path().canonicalize().unwrap();
+        let physical = canonical_temp.join("private/var");
+        std::fs::create_dir_all(&physical).unwrap();
+        let logical = canonical_temp.join("var");
+        std::os::unix::fs::symlink(&physical, &logical).unwrap();
+        let entry = logical.join("entry.js");
+        let source = logical.join("virtual.js");
+        std::fs::write(&entry, "compiler wrapper").unwrap();
+        std::fs::write(&source, "rewritten source").unwrap();
+        let metafile = physical.join("meta.json");
+        let overrides = BTreeMap::from([(source.clone(), b"authored source".to_vec())]);
+        let virtuals = [("virtual:demo".into(), source.to_string_lossy().into_owned())];
+        let mut digests = Vec::new();
+        // Captured esbuild 0.25.12 spellings: physical cwd, with and without
+        // --preserve-symlinks, for var -> private/var at a different depth.
+        for (entry_key, source_key) in [
+            ("entry.js", "virtual.js"),
+            ("../../var/entry.js", "../../var/virtual.js"),
+        ] {
+            let meta = json!({"inputs": {
+                (entry_key): {"imports": [{"path":source_key,"kind":"import-statement"}]},
+                (source_key): {"format":"esm"}
+            }});
+            std::fs::write(&metafile, serde_json::to_vec(&meta).unwrap()).unwrap();
+            for cwd in [&physical, &logical] {
+                digests.push(
+                    resolved_graph_digest(&metafile, cwd, &entry, &virtuals, true, &overrides)
+                        .unwrap(),
+                );
+            }
+        }
+        assert!(digests.iter().all(|digest| *digest == digests[0]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_owned_paths_win_and_ambiguous_alias_provenance_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let canonical_temp = temp.path().canonicalize().unwrap();
+        let root = canonical_temp.as_path();
+        let real = root.join("real.js");
+        let alias = root.join("alias.js");
+        let other = root.join("other.js");
+        std::fs::write(&real, "materialized").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        std::os::unix::fs::symlink(&real, &other).unwrap();
+        let mut records = BTreeMap::from([(real.clone(), b"authored".to_vec())]);
+        assert_eq!(lookup_owned(&records, &alias).unwrap(), records.get(&real));
+        records.insert(alias.clone(), b"different".to_vec());
+        assert_eq!(lookup_owned(&records, &real).unwrap(), records.get(&real));
+        assert_eq!(lookup_owned(&records, &alias).unwrap(), records.get(&alias));
+        assert!(lookup_owned(&records, &other)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        let metafile = root.join("meta.json");
+        std::fs::write(&metafile, br#"{"inputs":{"entry.js":{"imports":[{"path":"real.js","kind":"import-statement"}]},"real.js":{}}}"#).unwrap();
+        let digest = |records: &BTreeMap<PathBuf, Vec<u8>>| {
+            resolved_graph_digest(&metafile, root, &root.join("entry.js"), &[], true, records)
+                .unwrap()
+        };
+        let before = digest(&records);
+        records.insert(alias, b"unreachable change".to_vec());
+        assert_eq!(before, digest(&records));
+        records.insert(real, b"authored change".to_vec());
+        assert_ne!(before, digest(&records));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_entry_alias_keeps_distinct_graph_nodes_and_synthetic_entries_need_no_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let canonical_temp = temp.path().canonicalize().unwrap();
+        let physical = canonical_temp.join("private/var");
+        std::fs::create_dir_all(&physical).unwrap();
+        let logical = canonical_temp.join("var");
+        std::os::unix::fs::symlink(&physical, &logical).unwrap();
+        let metafile = physical.join("meta.json");
+        let entry = physical.join("entry.js");
+        std::fs::write(&entry, "authored self import").unwrap();
+        // Real --preserve-symlinks graph: the physical entry imports its
+        // logical alias, which in turn imports itself as a separate node.
+        let meta = json!({"inputs": {
+            "entry.js":{"imports":[{"path":"../../var/entry.js","kind":"import-statement"}]},
+            "../../var/entry.js":{"imports":[{"path":"../../var/entry.js","kind":"import-statement"}]}
+        }});
+        std::fs::write(&metafile, serde_json::to_vec(&meta).unwrap()).unwrap();
+        resolved_graph_digest(&metafile, &logical, &entry, &[], true, &BTreeMap::new()).unwrap();
+        let third_alias = canonical_temp.join("third.js");
+        std::os::unix::fs::symlink(&entry, &third_alias).unwrap();
+        assert!(resolved_graph_digest(
+            &metafile,
+            &logical,
+            &third_alias,
+            &[],
+            true,
+            &BTreeMap::new()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("ambiguous entry"));
+        std::fs::remove_file(&entry).unwrap();
+        std::fs::write(&metafile, br#"{"inputs":{"entry.js":{}}}"#).unwrap();
+        resolved_graph_digest(
+            &metafile,
+            &logical,
+            &logical.join("entry.js"),
+            &[],
+            true,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(resolved_graph_digest(
+            &metafile,
+            &logical,
+            &logical.join("entry.js"),
+            &[],
+            false,
+            &BTreeMap::new()
+        )
+        .is_err());
+        assert!(resolved_graph_digest(
+            &metafile,
+            &logical,
+            &logical.join("missing.js"),
+            &[],
+            true,
+            &BTreeMap::new()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not contain its entry"));
+    }
+
+    #[test]
+    fn namespaces_resource_suffix_and_missing_provenance_remain_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let canonical_temp = temp.path().canonicalize().unwrap();
+        let cwd = canonical_temp.as_path();
+        let meta = cwd.join("meta.json");
+        let data = "<data:text/javascript,export default 1>";
+        let metadata = json!({"inputs": {
+            "entry.js":{"imports":[
+                {"path":data,"kind":"import-statement"},
+                {"path":"(disabled):fs","kind":"import-statement"},
+                {"path":"asset.bin?url","kind":"import-statement"}
+            ]},
+            (data):{}, "(disabled):fs":{}, "asset.bin?url":{}
+        }});
+        std::fs::write(&meta, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        let digest = || {
+            resolved_graph_digest(
+                &meta,
+                cwd,
+                &cwd.join("entry.js"),
+                &[],
+                true,
+                &BTreeMap::new(),
+            )
+        };
+        assert!(
+            digest().is_err(),
+            "missing input provenance must not be omitted"
+        );
+        std::fs::write(cwd.join("asset.bin"), "resource").unwrap();
+        let _fallback = digest().unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::write(cwd.join("asset.bin?url"), "literal filename").unwrap();
+            let literal = digest().unwrap();
+            assert_ne!(_fallback, literal);
+            std::fs::write(cwd.join("asset.bin"), "irrelevant while literal exists").unwrap();
+            assert_eq!(literal, digest().unwrap());
+        }
+        assert_eq!(resolved_input_bytes(cwd, data).unwrap(), data.as_bytes());
+        std::fs::write(&meta, br#"{"inputs":{"entry.js":{},"orphan.js":{}}}"#).unwrap();
+        assert!(digest().unwrap_err().to_string().contains("disconnected"));
+        std::fs::write(&meta, br#"{"inputs":{"entry.js":{"imports":[{"path":"absent.js","kind":"import-statement"}]}}}"#).unwrap();
+        assert!(digest().unwrap_err().to_string().contains("missing input"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_instances_and_package_less_external_locations_remain_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let canonical_temp = temp.path().canonicalize().unwrap();
+        let cwd = canonical_temp.join("project");
+        let package = canonical_temp.join("package");
+        std::fs::create_dir_all(cwd.join("node_modules")).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"demo","version":"1"}"#,
+        )
+        .unwrap();
+        std::fs::write(package.join("index.js"), "export const value = 1").unwrap();
+        for name in ["one", "two"] {
+            std::os::unix::fs::symlink(&package, cwd.join("node_modules").join(name)).unwrap();
+        }
+        let metafile = cwd.join("meta.json");
+        let graph = |targets: &[&str]| {
+            let mut inputs = serde_json::Map::new();
+            inputs.insert("entry.js".into(), json!({"imports":targets.iter().map(|path| json!({"path":path,"kind":"import-statement"})).collect::<Vec<_>>()}));
+            for path in targets {
+                inputs.insert((*path).into(), json!({}));
+            }
+            std::fs::write(
+                &metafile,
+                serde_json::to_vec(&json!({"inputs":inputs})).unwrap(),
+            )
+            .unwrap();
+            resolved_graph_digest(
+                &metafile,
+                &cwd,
+                &cwd.join("entry.js"),
+                &[],
+                true,
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        };
+        let one = "node_modules/one/index.js";
+        let two = "node_modules/two/index.js";
+        assert_ne!(graph(&[one, one]), graph(&[one, two]));
+        for name in ["outside-a.js", "outside-b.js"] {
+            std::fs::write(canonical_temp.join(name), "export const value = 1").unwrap();
+        }
+        assert_ne!(graph(&["../outside-a.js"]), graph(&["../outside-b.js"]));
     }
 
     #[test]
