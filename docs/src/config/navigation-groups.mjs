@@ -1,3 +1,76 @@
+export const BUILD_GROUPS = [
+  {
+    id: "daily-workflow",
+    slug: "build-with-zfb/daily-workflow",
+    title: "Daily workflow",
+    titleJa: "日々のワークフロー",
+    members: ["getting-started/your-first-site", "api/cli", "guides/troubleshooting"],
+  },
+  {
+    id: "pages-routes",
+    slug: "build-with-zfb/pages-routes",
+    title: "Pages & routes",
+    titleJa: "ページとルーティング",
+    members: [
+      "architecture/routing",
+      "architecture/dynamic-routes",
+      "architecture/md-html-pages",
+      "architecture/non-html-pages",
+    ],
+  },
+  {
+    id: "content-data",
+    slug: "build-with-zfb/content-data",
+    title: "Content & data",
+    titleJa: "コンテンツとデータ",
+    members: [
+      "architecture/frontmatter",
+      "architecture/content-collections",
+      "architecture/data",
+      "markdown-features",
+    ],
+  },
+  {
+    id: "components-interactivity",
+    slug: "build-with-zfb/components-interactivity",
+    title: "Components & interactivity",
+    titleJa: "コンポーネントとインタラクション",
+    members: [
+      "architecture/mdx-components",
+      "architecture/islands",
+      "guides/client-scripts",
+      "architecture/client-side-routing",
+    ],
+  },
+  {
+    id: "styles-assets",
+    slug: "build-with-zfb/styles-assets",
+    title: "Styles & assets",
+    titleJa: "スタイルとアセット",
+    members: ["architecture/styling", "architecture/static-assets", "zudo-wind"],
+  },
+  {
+    id: "extensions-troubleshooting",
+    slug: "build-with-zfb/extensions-troubleshooting",
+    title: "Extensions & troubleshooting",
+    titleJa: "拡張とトラブルシューティング",
+    members: [
+      "architecture/plugins",
+      "architecture/custom-directives",
+      "guides/customizing-markdown",
+      "guides/extending-the-markdown-pipeline",
+      "guides/troubleshooting",
+    ],
+  },
+];
+
+export const DEPLOY_SLUGS = [
+  "architecture/three-ways-to-run-zfb",
+  "guides/ssr-and-cloudflare-bindings",
+  "guides/desktop-deployment",
+  "guides/embed-as-library",
+];
+
 // Shared native navigation membership for issue #4079.
 export const ARCHITECTURE_GROUPS = [
   {
@@ -215,13 +288,15 @@ export const COMPATIBILITY_BUCKETS = [
 
 export const DOCS_CATEGORY_ORDER = [
   "getting-started",
+  "build-with-zfb",
+  "zudo-wind",
+  "zudo-react",
+  "deploy-embed",
+  "api",
+  "recipes",
   "architecture",
   "guides",
   "markdown-features",
-  "zudo-wind",
-  "zudo-react",
-  "api",
-  "recipes",
   "playground",
   "changelog",
   "claude",

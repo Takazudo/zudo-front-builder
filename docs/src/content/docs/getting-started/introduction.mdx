@@ -4,17 +4,13 @@ description: What zfb is, who it is for, the three ways to run it, and how its c
 sidebar_position: 1
 ---
 
-A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
+Almost all everyday frontend development in one CLI. zfb brings together scaffolding, development, type and content checks, builds, and previews. Author TSX, MDX, Markdown or HTML pages; add zudo-wind CSS and zudo-react interactivity as needed. Small, composable engine APIs support static sites, Workers and local apps.
 
-If you can read a `pages/` directory tree and write a TSX component, you already know 90 percent of what zfb requires.
+Start with [Your first site](./your-first-site.mdx), then use [Build with zfb](../build-with-zfb/index.mdx) to find everyday tasks.
 
 ## Who this is for
 
-zfb is built by one developer for the things that developer is making — zudo-doc documentation sites, CCResDoc, and the sites those serve. It is published because someone who thinks the same way may want it: people who want to drop a content engine into a Tauri-style app the way CCResDoc does, and people who want SSG and SSR as small composable parts rather than a whole framework that owns the site — the same Request/Response application, run three ways.
-
-At the start of the project everything felt big. Next.js is big, and Astro is lighter but still pulls in a large ecosystem of external libraries the author did not need. Today many small features can be built with AI assistance quickly and at high quality, so a library is no longer the default answer for each of them — those pieces are better kept under your own control than under someone else's release schedule. A tiny core CLI matched that goal, so zfb ships as one Rust binary with a small set of primitives rather than a plugin ecosystem.
-
-See [Design philosophy](../architecture/design-philosophy.mdx) for the fuller argument, and [Three ways to run zfb](../architecture/three-ways-to-run-zfb.mdx) for how the static build, SSR on Cloudflare Workers, and local content server shapes fit together.
+Use zfb for documentation, blogs and content inside applications when you want small APIs that compose. Read [Design philosophy](../architecture/design-philosophy.mdx) for the rationale and [Deploy & Embed](../deploy-embed/index.mdx) for delivery choices.
 
 ## What zfb provides
 
@@ -23,7 +19,7 @@ For the "why this shape" answer — narrow scope, recipes-over-plugins, no middl
 - **Embedded V8 worker** — pages render through a Rust-embedded V8 runtime. No separate Node process is required at build time.
 - **Atomic writes** — generated files are written atomically per file, so readers never observe a half-written HTML file. `zfb build` wipes the output directory before it starts writing, so a failed build does not guarantee the previous `dist/` remains intact.
 - **Per-page incremental rebuild** — changing a shared layout touches only the pages that import it, not the whole site. Dev-loop latency stays in the tens of milliseconds even on large sites.
-- **Opt-in islands** — components are server-rendered by default. Add `"use client"` to a component file to opt into client-side hydration. Pages with no islands ship zero JavaScript.
+- **Opt-in islands** — a `"use client"` module makes exports eligible as targets; a reachable `<Island>` boundary activates an island. Pages without islands can still load [independent client scripts](../guides/client-scripts.mdx).
 - **Frontmatter and content collections** — Markdown, MDX, and TypeScript data files in a named directory become a typed collection, queryable from pages via `getCollection()`.
 - **Dynamic routes** — `pages/blog/[slug].tsx` exports a `paths()` function; zfb evaluates it at build time to expand the route into one HTML file per slug.
 - **MDX components** — import any TSX component into `.mdx` content and use it as JSX.
@@ -41,11 +37,11 @@ If you come from Astro, the concepts map like this:
 | `.astro` components with a frontmatter fence | TSX page files with a `getStaticProps` export |
 | Content Collections with typed schemas | `getCollection()` + schema declared in `zfb.config.ts` |
 | `<slot />` in layouts | `children` prop — plain TSX composition |
-| `client:load` directive | `"use client"` directive at the top of a component file |
+| `client:load` directive | `"use client"` target inside a reachable `<Island>` boundary |
 | `public/` for static assets | `public/` — same semantics |
 | `astro.config.mjs` | `zfb.config.ts` (TypeScript, loaded directly) |
 
-What is different: zfb has no component syntax of its own — everything is TSX. There is no `.astro` file format to learn. The trade-off is that you lose Astro's per-component fence syntax and gain a single consistent authoring surface for pages, layouts, and components.
+Components use TSX with zudo-react, zfb’s owned JSX runtime. It is not drop-in React or Preact compatibility. Pages also support Markdown, MDX and HTML; see [Markdown and HTML pages](../architecture/md-html-pages.mdx).
 
 ## Familiar from Next.js
 

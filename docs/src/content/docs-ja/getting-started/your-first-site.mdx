@@ -4,6 +4,22 @@ description: zfb プロジェクトをおよそ 5 分でスキャフォールド
 sidebar_position: 3
 ---
 
+## 最短のワークフロー
+
+インストール済み CLI で `node-free` テンプレートを明示して始めます。`dev` は Ctrl+C で停止してから次へ進んでください。
+
+```sh
+zfb new my-site --template node-free
+cd my-site
+zfb dev
+# Stop with Ctrl+C
+zfb check --skip-tsc
+zfb build
+zfb preview
+```
+
+`--skip-tsc` は非 TypeScript チェックのみです。完全な型チェックには Node.js と TypeScript を用意し、`zfb check` を実行します。npm 版でも同じコマンドを `pnpm exec zfb` または `npx zfb` で実行できます。
+
 Basic blog は npm / pnpm を使うブログ、Node-free は Node やパッケージのインストールなしで動くスターターです。[インストール](./installation.mdx)で選んだ方法に合わせて、どちらかのタブで作成・実行・ビルドを進めてください。
 
 <Tabs>

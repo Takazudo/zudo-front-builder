@@ -43,7 +43,7 @@ Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real f
 
 ## What runs today
 
-At `zfb build` / `zfb dev` / `zfb preview`, the Rust orchestrator creates an in-process V8 isolate via `deno_core`. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
+At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate via `deno_core`. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
 
 The same bundle (`export default { fetch }`) deploys unchanged to Cloudflare Workers for runtime SSR of `prerender = false` routes. workerd executes it on request. The production path is unaware of which build-time engine produced the bundle.
 
@@ -112,3 +112,9 @@ pub trait RenderHost {
 ```
 
 That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. The implementation can be swapped without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.
+
+## Current defaults and experiments
+
+The ordinary paths remain deno_core-backed embedded V8 and esbuild. Direct V8 and Rolldown are non-default prototypes, not activated runtime alternatives in the normal CLI.
+
+`zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.
