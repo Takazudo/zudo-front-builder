@@ -27,6 +27,33 @@ Each source PR generated its own compiler digest. The combined checkpoint must r
 with the official `docs/scripts/wind-preview-assets.mjs` and the matching built workspace
 compiler, then run `--check`; neither parent's digest proves the combined sources.
 
+## Local checkpoint evidence
+
+The combined source tree was checked on Linux x86_64 with Rust/Cargo 1.99.1, Node 24.19.0,
+repository-pinned pnpm 12.8.2, and SHA-verified esbuild 0.25.12. The policy Markdown and
+`cargo fmt --all --check` passed. The 19 preview-generator contract tests passed. Focused Rust checks passed: 13 graph unit
+plus 7 graph integration, 65 helper unit plus 11 helper integration, 23 recursive-directory
+watcher and 3 server publication tests. One existing helper doc-test is explicitly ignored;
+none of these executed tests failed or retried.
+The official generator rebuilt all 173 previews with the combined-source CLI and `--check`
+confirmed freshness; only the compiler digest changed, no sample record or generated CSS.
+Compiler source digest: `dbdcdb240a9c3f22e8d3bc5062d515343259104f9d6c1829d8f4e8158738bf4b`.
+
+The scoped `cargo build --locked -p zfb --no-default-features --bin zfb` passed under the
+machine-wide heavy guard. It is a generation tool, not default-V8 acceptance. First attempts
+remain distinct: an inaccessible guard directory caused fail-open behavior, so that process
+was stopped during dependency setup (exit 143); the guarded build then failed on missing
+locked `hono`, and after dependency installation on an esbuild downloader send error.
+Installing frozen workspace dependencies and staging the exact hash-verified esbuild binary
+resolved those prerequisites. No assertion failure was retried. The first commit-hook attempt
+also rejected the host's pnpm 11.19.0; a command-scoped shim to the pinned Corepack pnpm fixed
+it, with both hooks then passing. No global toolchain setting or hook bypass was used.
+
+The automatic integrated Linux batch and its immutable head/PR merge SHA are recorded in the
+aggregation PR. No local full-workspace build/test duplicates that batch. Default-V8 CLI
+regressions and the shared-helper consumer closure remain owed to that integrated CI result;
+source-PR results above do not substitute for it.
+
 ## Trigger audit and external effects
 
 Inspected workflow bodies at parent `21d6807e`; selected topic heads change no workflow.
@@ -58,15 +85,17 @@ The owner reports native PR 4308 verification complete at `92e25ad4da392b0e56632
 13 graph unit tests, 7 integration tests, and both targeted CLI regressions passed; the corrected
 virtual-module command actually executed one test (4.70s), without a skip. Independent review
 found no material issues. The earlier compile timeout, host restart interruption and invalid-PATH
-skip remain separate receipts, not clean passes. The Mac owner is posting its full receipt and
-preparing the minimal PR 4309 recipe. Toolchain/artifact details and that receipt URL have not
-been supplied here: pending, not inferred. None of this qualifies the combined development SHA.
+skip remain separate receipts, not clean passes. The [published receipt](https://github.com/Takazudo/zudo-front-builder/pull/4308#issuecomment-6254981484)
+records Apple A18 Pro / ARM64, 8 GiB, macOS 27.0.1, Rust/Cargo 1.99.1, Node 24.14.0 and
+hash-verified Darwin ARM64 esbuild 0.25.12. It retains full commands, binary hashes and log
+checksums in the owner's local evidence archive; this lane has read the published receipt, not
+those archive bytes. PR 4309 remains separate. None of this qualifies the combined development SHA.
 Do not silently retarget native work to this development branch.
 
 | Qualification record | State and next action |
 | --- | --- |
 | Historical native first run | [Original report](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6251614904): 6,838 passed, 7 failed, 9 timed out, 86 excluded. Preserve raw receipt and first failures; not current-head acceptance |
-| Graph follow-up | Owner reports PASS at frozen `92e25ad4…`: 13 unit + 7 integration + both targeted CLI cases. Full receipt link/toolchain/artifacts pending publication; no integrated-SHA acceptance |
+| Graph follow-up | Owner reports PASS at frozen `92e25ad4…`: 13 unit + 7 integration + both targeted CLI cases. [Published receipt](https://github.com/Takazudo/zudo-front-builder/pull/4308#issuecomment-6254981484), with toolchain and local archive provenance; no integrated-SHA acceptance |
 | Watcher/dev follow-up | [timeout-test-design.md](../crates/zfb-test-utils/timeout-test-design.md): recursive_dirs, watch_add_confirm and two named dev cases, serially, with first phase/cleanup receipts |
 | Mac build controls | Command-scoped `CARGO_BUILD_JOBS=1`, existing heavy guard, reusable caches; no global setting change or cargo clean. Separate compilation logs from test logs |
 | Required receipt | Immutable SHA/tree; OS/CPU; exact rustc/cargo/Node/pnpm/esbuild/engine/ICU; target/profile/features/flags; command and cache identity; lock/input/binary hashes; artifact paths/digests; first exit/result and retries |
