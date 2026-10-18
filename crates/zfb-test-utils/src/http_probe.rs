@@ -53,8 +53,9 @@ mod tests {
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 2048];
-            socket.read(&mut request).await.unwrap();
+            // Only require proof that the request reached this socket.
+            let mut request_byte = [0; 1];
+            socket.read_exact(&mut request_byte).await.unwrap();
             socket.write_all(headers).await.unwrap();
             std::future::pending::<()>().await;
         });
@@ -85,8 +86,9 @@ mod tests {
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 2048];
-            socket.read(&mut request).await.unwrap();
+            // Only require proof that the request reached this socket.
+            let mut request_byte = [0; 1];
+            socket.read_exact(&mut request_byte).await.unwrap();
             socket
                 .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 100\r\n\r\nx")
                 .await
