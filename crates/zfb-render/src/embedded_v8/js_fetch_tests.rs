@@ -1377,7 +1377,7 @@ fn the_mode_nonce_is_256_csprng_bits_and_differs_per_host() {
     let mut releases = Vec::new();
     let hosts: Vec<_> = (0..2)
         .map(|_| {
-            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
             releases.push(release_tx);
             let ready_tx = ready_tx.clone();
             std::thread::spawn(move || {

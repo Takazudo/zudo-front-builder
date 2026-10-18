@@ -10,7 +10,7 @@ description = "Internal shared ZFB host services and opt-in direct-V8 prototype"
 default = []
 # Existing embedded-host transport, crypto and authorized module reads.
 services = ["dep:serde", "dep:serde_json", "dep:thiserror", "dep:getrandom", "dep:reqwest", "dep:sha1", "dep:sha2", "dep:tokio", "dep:url", "dep:base64"]
-# The experiment uses exactly the baseline engine; never selected by the CLI.
+# The internal CLI opt-in uses exactly the baseline engine.
 direct-v8 = ["services", "v8-platform"]
 v8-platform = ["dep:v8"]
 deno-platform = ["v8-platform", "dep:deno_core"]

@@ -146,9 +146,13 @@ impl ThreadedV8Host {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
 
+        #[cfg(test)]
+        let exit_observer = tests::capture_thread_exit();
         let thread_handle = thread::Builder::new()
             .name("zfb-v8-host".into())
             .spawn(move || {
+                #[cfg(test)]
+                let _exit_observer = exit_observer;
                 // Each V8 host needs its own single-thread tokio runtime
                 // because `dispatch_fetch` is async and calls
                 // `with_event_loop_promise`. We use `current_thread` so the
@@ -293,9 +297,13 @@ impl ThreadedV8Host {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
 
+        #[cfg(test)]
+        let exit_observer = tests::capture_thread_exit();
         let thread_handle = thread::Builder::new()
             .name("zfb-v8-host".into())
             .spawn(move || {
+                #[cfg(test)]
+                let _exit_observer = exit_observer;
                 let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -732,6 +740,21 @@ pub fn translate_setup_registries_to_hooks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static THREAD_EXIT: std::cell::RefCell<Option<mpsc::Sender<bool>>> = const { std::cell::RefCell::new(None) };
+    }
+    pub(super) struct ThreadExit(Option<mpsc::Sender<bool>>);
+    impl Drop for ThreadExit {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(!std::thread::panicking());
+            }
+        }
+    }
+    pub(super) fn capture_thread_exit() -> ThreadExit {
+        ThreadExit(THREAD_EXIT.with(|slot| slot.borrow().clone()))
+    }
 
     fn write_bundle(dir: &tempfile::TempDir, source: &str) -> std::path::PathBuf {
         let path = dir.path().join("bundle.mjs");
@@ -1323,13 +1346,19 @@ mod tests {
             boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
             boot_via_dev_content_trace_wrapper,
         ] {
+            let (exit_tx, exit_rx) = mpsc::channel();
+            THREAD_EXIT.with(|slot| *slot.borrow_mut() = Some(exit_tx));
             let mut host = boot(&bundle_path);
+            THREAD_EXIT.with(|slot| *slot.borrow_mut() = None);
             // Exercise the host once so the thread is proven live, then
             // measure how long a clean shutdown takes.
             host.dispatch_fetch("/").expect("dispatch before drop");
             let start = std::time::Instant::now();
             drop(host);
             let elapsed = start.elapsed();
+            assert!(exit_rx.recv_timeout(std::time::Duration::from_secs(1)).expect(
+                "the isolate owner thread must actually exit; a detached join is not clean shutdown"
+            ), "the isolate owner thread panicked during shutdown");
             assert!(
                 elapsed < std::time::Duration::from_secs(5),
                 "Drop must join the V8 thread promptly on a healthy host \
@@ -1624,5 +1653,42 @@ mod tests {
                 .expect("host must survive the recursion failure");
             assert_eq!(ok.body, b"ok");
         }
+    }
+}
+
+#[cfg(test)]
+mod replacement_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_candidate_recovers_updated_source_at_the_same_specifier() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("worker.mjs");
+        std::fs::write(
+            &path,
+            "export default { fetch() { return new Response('old'); } };",
+        )
+        .unwrap();
+        let mut live = ThreadedV8Host::new(&path).unwrap();
+        for invalid in [
+            "export default { fetch: 42 };",
+            "console.log('candidate boot'); throw new Error('bad replacement');",
+            "export default { fetch( {",
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(ThreadedV8Host::new(&path).is_err());
+            assert_eq!(live.dispatch_fetch("/").unwrap().body, b"old");
+        }
+        std::fs::write(
+            &path,
+            "export default { fetch() { return new Response('updated'); } };",
+        )
+        .unwrap();
+        let mut candidate = ThreadedV8Host::new(&path).unwrap();
+        assert_eq!(candidate.dispatch_fetch("/").unwrap().body, b"updated");
+        assert_eq!(live.dispatch_fetch("/").unwrap().body, b"old");
+        let old = std::mem::replace(&mut live, candidate);
+        drop(old);
+        assert_eq!(live.dispatch_fetch("/").unwrap().body, b"updated");
     }
 }
