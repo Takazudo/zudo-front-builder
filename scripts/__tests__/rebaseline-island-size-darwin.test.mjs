@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { localBundleDigest } from "../island-size-local-evidence.mjs";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -3161,6 +3163,122 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     "--reason cargo-internal-rewire paired runs disagree: " +
     problem +
     "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+
+  function localInput() {
+    const source = repo.git("rev-parse", "HEAD").trim();
+    const artifact = realpathSync(darwinArtifactAt((p) => (p.sourceSha = source)));
+    const runner = join(artifact, "runner-provenance.txt");
+    writeFileSync(runner, readFileSync(runner, "utf8").replace(SOURCE_SHA, source));
+    const receipt = {
+      schemaVersion: 1,
+      kind: "local-native-darwin",
+      operator: "fixture owner",
+      collectedAt: "2026-01-01T00:00:00.000Z",
+      source: { commit: source, clean: true },
+      platform: { os: "darwin", arch: "arm64" },
+      commands: [["fixture-collector", "--two-passes"]],
+      bundle: { location: "retained fixture bundle", sha256: localBundleDigest(artifact) },
+    };
+    const receiptPath = join(realpathSync(tempDir("zfb-local-receipt-")), "receipt.json");
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const stage = join(tempDir("zfb-local-stage-"), "stage");
+    const argv = darwinArgv({
+      stage,
+      artifact,
+      "source-sha": source,
+      "run-id": undefined,
+      "job-id": undefined,
+      "artifact-id": undefined,
+      "artifact-expires-at": undefined,
+      "local-receipt": receiptPath,
+      "local-receipt-sha": sha(readFileSync(receiptPath)),
+    });
+    return { source, artifact, receipt, receiptPath, stage, argv };
+  }
+
+  it("stages and applies owner-attested local evidence with the same paired checks", async () => {
+    quiet();
+    const input = localInput();
+    await main(input.argv, repo.root);
+    await linuxMain(linuxArgv({ stage: input.stage, "head-sha": input.source }), repo.root);
+    unchanged(live());
+    const staged = JSON.parse(readFileSync(join(input.stage, DARWIN), "utf8"));
+    expect(staged.baselineEvidence).toMatchObject({
+      event: "local-native",
+      localReceipt: { receipt: input.receipt },
+    });
+    for (const key of ["runId", "jobId", "artifact"])
+      expect(staged.baselineEvidence).not.toHaveProperty(key);
+    expect(staged.ceilings).toEqual(darwinPinned.ceilings);
+    expect(manifestOf(input.stage).runs[0]).toHaveProperty(
+      "localEvidence.sha256",
+      sha(readFileSync(input.receiptPath)),
+    );
+    const localPins = readFileSync(join(input.stage, TEST), "utf8");
+    expect(localPins).toContain('event: "local-native"');
+    expect(localPins).toContain(
+      'localReceipt: { sha256: "' + staged.baselineEvidence.localReceipt.sha256,
+    );
+    expect(rewriteDarwinTestPins(localPins, staged)).toBe(localPins);
+    const backToActions = rewriteDarwinTestPins(localPins, darwinPinned);
+    expect(backToActions).not.toContain('event: "local-native"');
+    expect(backToActions).toContain("artifact: { id: " + darwinPinned.baselineEvidence.artifact.id);
+    applyStage(input.stage, repo.root);
+    expect(JSON.parse(read(DARWIN)).baselineEvidence.event).toBe("local-native");
+    const appended = read(README).toString().slice(saved[README].length);
+    const darwinSection = appended.split("\n## v")[0];
+    expect(darwinSection).toContain("owner-attested local native evidence");
+    expect(darwinSection).not.toContain("actions/runs");
+    expect(appended).toContain("actions/runs/71");
+  });
+
+  it.each(["receipt", "bundle", "binding", "source", "dirty"])(
+    "rejects changed local %s before applying or extending",
+    async (mutation) => {
+      quiet();
+      const input = localInput();
+      await linuxMain(linuxArgv({ stage: input.stage, "head-sha": input.source }), repo.root);
+      await main(input.argv, repo.root);
+      if (mutation === "receipt") writeFileSync(input.receiptPath, "{}");
+      if (mutation === "bundle")
+        writeFileSync(join(input.artifact, "check-budget.log"), "tampered");
+      if (mutation === "binding")
+        editRuns(input.stage, (runs) => {
+          delete runs.find((r) => r.platform === "darwin-arm64").localEvidence;
+        });
+      if (mutation === "source")
+        editRuns(input.stage, (runs) => {
+          runs.find((r) => r.platform === "darwin-arm64").sourceSha = SOURCE_SHA;
+        });
+      if (mutation === "dirty") writeFileSync(at("untracked-local-control"), "dirty");
+      try {
+        expect(() => applyStage(input.stage, repo.root)).toThrow(/local Darwin evidence/);
+        await expect(
+          linuxMain(linuxArgv({ stage: input.stage, "head-sha": input.source }), repo.root),
+        ).rejects.toThrow(/local Darwin evidence/);
+        unchanged(live());
+      } finally {
+        if (mutation === "dirty") rmSync(at("untracked-local-control"));
+      }
+    },
+  );
+
+  it("still rejects incorrect native measurements even with a freshly matching receipt", async () => {
+    quiet();
+    const input = localInput();
+    const runner = join(input.artifact, "runner-provenance.txt");
+    writeFileSync(
+      runner,
+      readFileSync(runner, "utf8").replace("runner=Darwin arm64", "runner=Linux x64"),
+    );
+    input.receipt.bundle.sha256 = localBundleDigest(input.artifact);
+    writeFileSync(input.receiptPath, JSON.stringify(input.receipt));
+    input.argv[input.argv.indexOf("--local-receipt-sha") + 1] = sha(
+      readFileSync(input.receiptPath),
+    );
+    await expect(main(input.argv, repo.root)).rejects.toThrow(/runner/);
+    unchanged(live());
+  });
 
   it("moves only the Cargo hash and its evidence in the pure Darwin transition", () => {
     const artifact = loadDarwinArtifact(darwinArtifact);

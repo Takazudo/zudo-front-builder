@@ -106,6 +106,11 @@
 // Optional --reviewed-cargo-transition uses the same exact non-additive #318
 // proof as Linux. Native Darwin artifact checks and equal-total gates remain.
 
+import {
+  readLocalEvidence,
+  verifyLocalCheckout,
+  verifyLocalStageEvidence,
+} from "./island-size-local-evidence.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -1056,8 +1061,9 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
     evidence.packageVersion +
     " ceilings on metric " +
     metric +
-    ", re-pinned from the native artifact of workflow_dispatch run " +
-    evidence.runId +
+    (evidence.localReceipt
+      ? ", re-pinned from owner-attested local native evidence " + evidence.localReceipt.sha256
+      : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
     " after a reviewed internal Cargo.lock rewire (" +
@@ -1069,26 +1075,32 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
     ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
     "inventories. Other platforms and toolchains are not covered.";
   next.baselineEvidence = {
-    event: "ci-artifact",
-    runId: evidence.runId,
-    jobId: evidence.jobId,
+    ...(evidence.localReceipt
+      ? { event: "local-native", localReceipt: evidence.localReceipt }
+      : {
+          event: "ci-artifact",
+          runId: evidence.runId,
+          jobId: evidence.jobId,
+          artifact: {
+            id: evidence.artifactId,
+            name: "island-size-darwin-arm64-" + evidence.sourceSha,
+            expiresAt: evidence.artifactExpiresAt,
+          },
+        }),
     sourceSha: evidence.sourceSha,
-    artifact: {
-      id: evidence.artifactId,
-      name: "island-size-darwin-arm64-" + evidence.sourceSha,
-      expiresAt: evidence.artifactExpiresAt,
-    },
     nativeRunner: evidence.nativeRunner,
     repinnedFrom,
     cargoRewire: transition,
     originalCheckerResult: evidence.originalCheckerResult,
     actualGzip: actualGzipRows(totals),
     note:
-      "Cargo internal-rewire transition from the native Darwin arm64 artifact of run " +
-      evidence.runId +
-      " (job " +
-      evidence.jobId +
-      ") at source " +
+      (evidence.localReceipt
+        ? "Cargo internal-rewire transition from owner-attested local native Darwin arm64 evidence at source "
+        : "Cargo internal-rewire transition from the native Darwin arm64 artifact of run " +
+          evidence.runId +
+          " (job " +
+          evidence.jobId +
+          ") at source ") +
       evidence.sourceSha +
       ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
       "inventories. Raw and gzipNormalized totals did not change from the v" +
@@ -1113,15 +1125,19 @@ export function darwinCargoRewireReadmeSection(contract, gzipMoves) {
     "\n\n" +
     "The Darwin arm64 contract recorded a reviewed internal `Cargo.lock` rewire at v" +
     contract.toolchain.packageVersion +
-    " from the native artifact " +
-    e.artifact.id +
-    " of [workflow_dispatch run " +
-    e.runId +
-    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
-    e.runId +
-    ") (job " +
-    e.jobId +
-    ") at source `" +
+    (e.event === "local-native"
+      ? " from owner-attested local native evidence (receipt SHA-256 `" +
+        e.localReceipt.sha256 +
+        "`) at source `"
+      : " from the native artifact " +
+        e.artifact.id +
+        " of [workflow_dispatch run " +
+        e.runId +
+        "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+        e.runId +
+        ") (job " +
+        e.jobId +
+        ") at source `") +
     e.sourceSha +
     "`: " +
     cargoRewireMarkdown(e.cargoRewire) +
@@ -1454,9 +1470,29 @@ export function rewriteDarwinTestPins(source, contract) {
       .map(([pattern, value]) => [pattern, JSON.stringify(value)])
       .reduce((text, [pattern, value]) => replacePin(text, pattern, value, pattern.source), block)
       .replace(/(darwinContract\.schemaVersion\)\.toBe\()\d+/, "$1" + contract.schemaVersion)
-      .replace(/(runId: )\d+/, "$1" + e.runId)
-      .replace(/(jobId: )\d+/, "$1" + e.jobId)
-      .replace(/(artifact: \{ id: )\d+/, "$1" + e.artifact.id),
+      .replace(
+        /expect\(darwinContract\.baselineEvidence\)\.toMatchObject\(\{[\s\S]*?\n    \}\);/,
+        () =>
+          e.event === "local-native"
+            ? "expect(darwinContract.baselineEvidence).toMatchObject({\n" +
+              '      event: "local-native",\n' +
+              "      localReceipt: { sha256: " +
+              JSON.stringify(e.localReceipt.sha256) +
+              " },\n" +
+              "    });"
+            : "expect(darwinContract.baselineEvidence).toMatchObject({\n" +
+              '      event: "ci-artifact",\n' +
+              "      runId: " +
+              e.runId +
+              ",\n" +
+              "      jobId: " +
+              e.jobId +
+              ",\n" +
+              "      artifact: { id: " +
+              e.artifact.id +
+              " },\n" +
+              "    });",
+      ),
   );
 }
 
@@ -1624,24 +1660,42 @@ const REQUIRED = [
 
 export function parseArgs(argv) {
   const values = {};
+  const duplicates = [];
   for (let i = 0; i < argv.length; i += 2) {
     if (!argv[i].startsWith("--") || argv[i + 1] === undefined)
       throw new Error("bad argument: " + argv[i]);
+    if (Object.hasOwn(values, argv[i].slice(2))) duplicates.push(argv[i]);
     values[argv[i].slice(2)] = argv[i + 1];
+  }
+  const local =
+    Object.hasOwn(values, "local-receipt") || Object.hasOwn(values, "local-receipt-sha");
+  if (local) {
+    if (duplicates.length)
+      throw new Error("duplicate local-mode argument: " + duplicates.join(", "));
+    if (values.reason !== CARGO_INTERNAL_REWIRE_REASON || Object.hasOwn(values, "apply"))
+      throw new Error("local evidence is only supported for staged cargo-internal-rewire");
+    if (!values["local-receipt"] || !/^[a-f0-9]{64}$/.test(values["local-receipt-sha"] ?? ""))
+      throw new Error("--local-receipt and --local-receipt-sha are required together");
+    if (
+      ["run-id", "job-id", "artifact-id", "artifact-expires-at"].some((key) =>
+        Object.hasOwn(values, key),
+      )
+    )
+      throw new Error("local evidence forbids Actions metadata");
   }
   if (checkApplyArgs(values)) return values;
   if (checkFingerprintHelperArgs(values)) return values;
-  for (const required of REQUIRED) {
+  for (const required of local ? ["artifact", "source-sha", "reason"] : REQUIRED) {
     if (!values[required]) throw new Error("required --" + required);
   }
-  for (const id of ["run-id", "job-id", "artifact-id"]) {
+  for (const id of local ? [] : ["run-id", "job-id", "artifact-id"]) {
     if (!/^[1-9][0-9]*$/.test(values[id]))
       throw new Error("--" + id + " must be a positive integer");
   }
   if (!/^[0-9a-f]{40}$/.test(values["source-sha"])) {
     throw new Error("--source-sha must be a full 40-character commit SHA");
   }
-  if (Number.isNaN(Date.parse(values["artifact-expires-at"]))) {
+  if (!local && Number.isNaN(Date.parse(values["artifact-expires-at"]))) {
     throw new Error("--artifact-expires-at must be an ISO timestamp");
   }
   if (!DARWIN_REASONS.includes(values.reason)) {
@@ -1667,7 +1721,7 @@ function macOsVersion(swVers = "") {
   return field("ProductVersion") + " (" + field("BuildVersion") + ")";
 }
 
-export function buildEvidence(args, artifact) {
+export function buildEvidence(args, artifact, local = null) {
   const p = artifact.modes.packed.measurement.provenance;
   const r = artifact.runner;
   return {
@@ -1679,10 +1733,14 @@ export function buildEvidence(args, artifact) {
     runnerSha256: p.runnerSha256,
     normalizerSha256: normalizerSha256(),
     sourceSha: args["source-sha"],
-    runId: Number(args["run-id"]),
-    jobId: Number(args["job-id"]),
-    artifactId: Number(args["artifact-id"]),
-    artifactExpiresAt: args["artifact-expires-at"],
+    ...(local
+      ? { localReceipt: { sha256: local.sha256, receipt: local.receipt } }
+      : {
+          runId: Number(args["run-id"]),
+          jobId: Number(args["job-id"]),
+          artifactId: Number(args["artifact-id"]),
+          artifactExpiresAt: args["artifact-expires-at"],
+        }),
     nativeRunner: {
       platform: "darwin-arm64",
       macOS: macOsVersion(r.sw_vers),
@@ -1851,6 +1909,15 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
   if (args.reason === FINGERPRINT_HELPER_REASON) {
     return runFingerprintHelperRepin(args["base-ref"], root);
   }
+  const local = args["local-receipt"]
+    ? readLocalEvidence(
+        args["local-receipt"],
+        args.artifact,
+        args["local-receipt-sha"],
+        args["source-sha"],
+      )
+    : null;
+  if (local) verifyLocalCheckout(root, args["source-sha"]);
   const handler = DARWIN_HANDLERS[args.reason];
   const session = openOutputSession(root, args.stage, stageIo);
   const contractPath = args.contract === undefined ? CONTRACT : resolve(args.contract);
@@ -1866,7 +1933,7 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
     workspace: artifact.modes.workspace.recomputed.results,
     packed: artifact.modes.packed.recomputed.results,
   });
-  const evidence = buildEvidence(args, artifact);
+  const evidence = buildEvidence(args, artifact, local);
   let checkout = null;
   let helper = null;
   if (handler.checkout) {
@@ -1924,14 +1991,26 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
         ]
       : []),
   ];
-  session.commit(outputs, {
+  const run = {
     reason: args.reason,
     platform: "darwin-arm64",
     sourceSha: args["source-sha"],
-    runId: Number(args["run-id"]),
-    artifactId: Number(args["artifact-id"]),
+    ...(local
+      ? {
+          localEvidence: {
+            receiptPath: local.receiptPath,
+            bundlePath: local.bundlePath,
+            sha256: local.sha256,
+          },
+        }
+      : {
+          runId: Number(args["run-id"]),
+          artifactId: Number(args["artifact-id"]),
+        }),
     ...stageRunIdentity(args.reason, contract, result.contract),
-  });
+  };
+  verifyLocalStageEvidence(run, result.contract, root);
+  session.commit(outputs, run);
   console.log(
     (args.stage === undefined ? handler.verb : "staged") +
       " Darwin island-size contract to v" +
