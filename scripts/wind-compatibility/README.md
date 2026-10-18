@@ -51,6 +51,17 @@ node --test tests/wind-compatibility/reference/*.test.mjs
 
 Each raw HTTP response is retained as `response-<sha256>` in the explicit cache outside the checkout. The assessment output lists URLs, raw digests, byte counts, content types and cache-relative filenames, with a path-independent `captureIdentity`. It records the package source SHA and tag-to-npm-artifact link as unknown/unverified unless separately established. `ready-for-comparison` means these four upstream snapshots or deltas were actually fetched, parsed and checked; it is **not** a CSS/browser compatibility result or baseline admission.
 
+Reference tag lookup and assessment use `GH_TOKEN`, falling back to `GITHUB_TOKEN`,
+when present. Required Health supplies its existing job token only to the Wind
+evidence step, without changing permissions. Authorization is sent only to the
+HTTPS GitHub API; npm and codeload requests remain anonymous, and redirects are
+rejected. Without a token, local requests remain anonymous. Acquisition failures
+fail closed without automatic retries. HTTP 429, or HTTP 403 with zero remaining
+quota or a numeric Retry-After header, is reported as rate-limited; other 403s
+remain forbidden. Transport/body errors use fixed diagnostics without retaining
+exception details or error response bodies. Authentication does not establish
+the package-to-source link or advance either reference record.
+
 ## Machine contracts
 
 All objects have `schemaVersion: 1`. Unknown versions fail consumers. Paths here are canonical for #3828/#3829/#3838; per-fixture imported provenance belongs with their later fixture manifests, not in the accepted record.

@@ -35,6 +35,7 @@ import {
 import { testedInputIdentity } from "./reference-identity.mjs";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
+import { referenceRequest, referenceBody } from "./reference-http.mjs";
 
 function options(argv) {
   const result = {};
@@ -74,15 +75,15 @@ export async function metadata(version, opts, bootstrap, fetcher = fetch) {
     ? canonicalBootstrapCandidate(bootstrap, resolved)
     : resolved;
 }
-async function pinSource(candidate, bootstrap) {
+export async function pinSource(candidate, bootstrap, fetcher = fetch, env = process.env) {
   if (candidate.version === bootstrap.version) return candidate;
   const tag = `v${candidate.version}`;
-  const response = await fetch(
+  const response = await referenceRequest(
     `https://api.github.com/repos/tailwindlabs/tailwindcss/git/ref/tags/${encodeURIComponent(tag)}`,
-    { headers: { accept: "application/vnd.github+json" } },
+    fetcher,
+    env,
   );
-  if (!response.ok) throw Error(`Git tag HTTP ${response.status}`);
-  const ref = await response.json();
+  const ref = await referenceBody(response, "json");
   if (
     ref.ref !== `refs/tags/${tag}` ||
     ref.object?.type !== "commit" ||

@@ -354,3 +354,91 @@ test("source truncation, wrong blob, missing release page and tag drift remain i
       /offline/,
     );
   }));
+
+test("assessment authenticates GitHub only and preserves unverified provenance", async () =>
+  withCache(async (cache) => {
+    for (const env of [{}, { GITHUB_TOKEN: "assessment-test-token" }]) {
+      const f = fixture();
+      const visited = new Set();
+      const report = await assessUpstream(
+        f.deltaPlan,
+        cache,
+        async (url, options) => {
+          const host = new URL(url).hostname;
+          visited.add(host);
+          assert.equal(
+            options.headers.authorization,
+            host === "api.github.com" && env.GITHUB_TOKEN
+              ? `Bearer ${env.GITHUB_TOKEN}`
+              : undefined,
+          );
+          assert.equal(options.redirect, "error");
+          return f.fetcher(url);
+        },
+        env,
+      );
+      assert.equal(report.status, "ready-for-comparison", report.findings.join(", "));
+      assert.deepEqual([...visited].sort(), [
+        "api.github.com",
+        "codeload.github.com",
+        "registry.npmjs.org",
+      ]);
+      assert.equal(report.tagToNpmArtifactLink, "unverified");
+      assert.equal(report.packageGitSha, null);
+      assert.equal(report.acceptedReferenceAdvanced, false);
+      assert.equal(report.reviewedThroughAdvanced, false);
+      assert.ok(!JSON.stringify(report).includes("assessment-test-token"));
+    }
+  }));
+
+test("failed authenticated assessment stays incomplete with safe diagnostics", async () =>
+  withCache(async (cache) => {
+    for (const failure of ["rate-limit", "forbidden", "network", "body"]) {
+      const f = fixture();
+      const secret = "assessment-test-token";
+      const report = await assessUpstream(
+        f.currentPlan,
+        cache,
+        async (url) => {
+          if (url.startsWith(gh)) {
+            if (failure === "network") throw Error(secret);
+            if (failure === "body")
+              return {
+                ok: true,
+                status: 200,
+                headers: { get: () => "application/json" },
+                arrayBuffer: async () => {
+                  throw Error(secret);
+                },
+              };
+            return {
+              ok: false,
+              status: 403,
+              headers: {
+                get: (name) =>
+                  name === "x-ratelimit-remaining" && failure === "rate-limit" ? "0" : secret,
+              },
+            };
+          }
+          return f.fetcher(url);
+        },
+        { GITHUB_TOKEN: secret },
+      );
+      assert.equal(report.status, "incomplete");
+      assert.match(
+        report.findings[0],
+        failure === "rate-limit"
+          ? /rate-limited/
+          : failure === "forbidden"
+            ? /forbidden/
+            : failure === "body"
+              ? /body read failure/
+              : /network failure/,
+      );
+      assert.equal(report.tagToNpmArtifactLink, "unverified");
+      assert.equal(report.acceptedReferenceAdvanced, false);
+      assert.equal(report.reviewedThroughAdvanced, false);
+      assert.ok(!JSON.stringify(report).includes(secret));
+      await assert.rejects(validateAssessment(report, f.currentPlan, cache));
+    }
+  }));
