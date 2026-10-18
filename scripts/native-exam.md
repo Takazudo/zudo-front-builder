@@ -113,7 +113,7 @@ on `21d6807e442bbed61e578c165a91d64c4a7dc141`; it is not a result measured by th
 ## Cheap regression checks
 
 ```sh
-bash tests/unit/native-exam.sh
+sh tests/unit/native-exam.sh
 bash tests/unit/report-flaky-tests.sh
 bash tests/unit/file-exam-issue.sh
 bash tests/unit/check-exam-ignore-parity.sh

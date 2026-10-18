@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -13,6 +15,23 @@ const setup = parse(
 );
 
 describe("native exam execution boundary", () => {
+  it("executes the evidence suite through health's POSIX sh entrypoint", () => {
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const wrapper = readFileSync(
+      new URL("../../tests/unit/native-exam.sh", import.meta.url),
+      "utf8",
+    );
+    expect(wrapper.split("\n")[0]).toBe("#!/bin/sh");
+    expect(wrapper).not.toMatch(/\bpipefail\b/);
+    const result = spawnSync("sh", ["tests/unit/native-exam.sh"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/Ran [1-9]\d* tests?/);
+    expect(result.stderr).toContain("OK");
+  });
   it("keeps four isolated standard Mac jobs and a separate doctest job", () => {
     expect(workflow.jobs["macos-shards"].strategy).toEqual({
       "fail-fast": false,
