@@ -181,6 +181,7 @@ fn staging_stats(
         content_collections: collections,
         bundle_exclude,
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         ..BundlerInput::for_project(
             site.to_path_buf(),
             BundleMode::Production,

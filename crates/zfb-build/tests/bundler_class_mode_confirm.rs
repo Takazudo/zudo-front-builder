@@ -117,6 +117,7 @@ fn bundler_class_mode_project_ties_emission_and_css_injection() {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         define_vars: BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),

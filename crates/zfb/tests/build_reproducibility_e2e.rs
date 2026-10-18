@@ -769,3 +769,177 @@ fn remapped_island_registration_uses_project_relative_label() {
     assert_island_label(&snapshot, "Counter", ISLAND_LABEL);
     assert_clean_build(&snapshot, &root, None);
 }
+
+/// #4231: HTML-only edits must not change any shipped browser entry/chunk
+/// bytes, while an input imported by the island must invalidate the identity.
+#[test]
+fn unrelated_title_and_markdown_edits_preserve_island_entry_and_chunk_bytes() {
+    let _guard = BUILD_LOCK.lock().unwrap();
+    let Some(esbuild) = toolchain() else { return };
+    let temp = tempfile::tempdir().expect("create graph-identity tempdir");
+    let root = temp.path().join("app");
+    scaffold_project(&root);
+
+    // Keep a genuine dynamic edge so equality covers emitted chunks as well
+    // as the root. The callback is shipped even though this build-output test
+    // does not click the button.
+    let counter_path = root.join("components/counter.tsx");
+    let counter = fs::read_to_string(&counter_path).unwrap();
+    assert!(counter.contains("<button type="));
+    fs::write(
+        &counter_path,
+        counter.replace(
+            "<button type=",
+            "<button on:click={() => import(\"./counter-details\").then(({ detail }) => console.log(detail))} type=",
+        ),
+    ).unwrap();
+    fs::write(
+        root.join("components/counter-details.ts"),
+        "export const detail = 'DYNAMIC-ISLAND-DETAIL';\n",
+    )
+    .unwrap();
+    let markdown_path = root.join("pages/unrelated.md");
+    fs::write(&markdown_path, "# Unrelated page\n\nOriginal prose.\n").unwrap();
+
+    let browser_js = |snapshot: &BuildSnapshot| -> BTreeMap<PathBuf, Vec<u8>> {
+        snapshot
+            .dist
+            .iter()
+            .filter(|(path, _)| {
+                path.starts_with("assets") && path.extension().is_some_and(|ext| ext == "js")
+            })
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect()
+    };
+    let baseline = capture_build(&root, &esbuild, None, None);
+    let original_js = browser_js(&baseline);
+    assert!(
+        original_js.len() >= 2,
+        "fixture must emit an entry and a dynamic chunk: {:?}",
+        original_js.keys()
+    );
+
+    let page_path = root.join("pages/index.tsx");
+    let page = fs::read_to_string(&page_path).unwrap();
+    assert!(page.contains("Bundle reproducibility"));
+    fs::write(
+        &page_path,
+        page.replace("Bundle reproducibility", "Changed page title"),
+    )
+    .unwrap();
+    let title_edit = capture_build(&root, &esbuild, None, None);
+    assert_ne!(
+        baseline.dist.get(Path::new("index.html")),
+        title_edit.dist.get(Path::new("index.html")),
+        "the title edit must reach emitted HTML"
+    );
+    assert_eq!(baseline.build_id, title_edit.build_id);
+    assert_eq!(
+        original_js,
+        browser_js(&title_edit),
+        "unrelated page title changed raw browser bytes or filenames"
+    );
+
+    fs::write(&markdown_path, "# Unrelated page\n\nChanged prose.\n").unwrap();
+    let markdown_edit = capture_build(&root, &esbuild, None, None);
+    assert_ne!(
+        title_edit.dist, markdown_edit.dist,
+        "the Markdown edit must reach emitted output"
+    );
+    assert_eq!(baseline.build_id, markdown_edit.build_id);
+    assert_eq!(
+        original_js,
+        browser_js(&markdown_edit),
+        "unrelated Markdown changed raw browser bytes or filenames"
+    );
+
+    fs::write(
+        root.join("components/counter-note.txt"),
+        "RELEVANT-RAW-INPUT-CHANGED\n",
+    )
+    .unwrap();
+    let relevant_edit = capture_build(&root, &esbuild, None, None);
+    assert_ne!(
+        markdown_edit.build_id, relevant_edit.build_id,
+        "an imported raw input must invalidate SSR/client identity"
+    );
+    assert_ne!(
+        markdown_edit.islands_entry, relevant_edit.islands_entry,
+        "relevant raw input must change shipped root bytes"
+    );
+    assert!(relevant_edit
+        .islands_entry
+        .contains("RELEVANT-RAW-INPUT-CHANGED"));
+    assert_ne!(original_js, browser_js(&relevant_edit));
+    for snapshot in [&baseline, &title_edit, &markdown_edit, &relevant_edit] {
+        assert_clean_build(snapshot, &root, None);
+    }
+}
+
+#[test]
+fn virtual_sibling_raw_import_identity_survives_fresh_preprocessing_shadows() {
+    let _guard = BUILD_LOCK.lock().unwrap();
+    let Some(esbuild) = toolchain() else { return };
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("app");
+    let sibling = temp.path().join("widget");
+    fs::write(
+        temp.path().join("pnpm-workspace.yaml"),
+        "packages:\n  - app\n  - widget\nlinkWorkspacePackages: false\n",
+    )
+    .unwrap();
+    scaffold_project(&root);
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(
+        sibling.join("package.json"),
+        r#"{"name":"virtual-widget","type":"module","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    fs::write(
+        sibling.join("entry.ts"),
+        "import note from './note.txt?raw'; export { note };\n",
+    )
+    .unwrap();
+    fs::write(sibling.join("note.txt"), "VIRTUAL-SIBLING-RAW-ONE\n").unwrap();
+    fs::create_dir_all(root.join("plugins")).unwrap();
+    fs::write(root.join("plugins/virtual.mjs"), r#"
+import path from 'node:path';
+export default {
+  name: 'virtual-sibling-identity',
+  setup({ projectRoot, addVirtualModule }) {
+    const sibling = path.resolve(projectRoot, '../widget/entry.ts');
+    addVirtualModule('virtual:identity-note', () => `export { note } from ${JSON.stringify(sibling)};`);
+  }
+};
+"#).unwrap();
+    let config_path = root.join("zfb.config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["plugins"] = serde_json::json!([{"name":"./plugins/virtual.mjs"}]);
+    fs::write(config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let counter_path = root.join("components/counter.tsx");
+    let counter = fs::read_to_string(&counter_path).unwrap();
+    let old_import = "import note from \"./counter-note.txt?raw\";";
+    assert!(counter.contains(old_import));
+    fs::write(
+        counter_path,
+        counter.replace(old_import, "import { note } from 'virtual:identity-note';"),
+    )
+    .unwrap();
+
+    // Each capture performs independent SSR and client preparations. Their
+    // random shadow paths must never leak into the shared build identity.
+    let first = capture_build(&root, &esbuild, None, None);
+    let second = capture_build(&root, &esbuild, None, None);
+    assert_eq!(first.build_id, second.build_id);
+    assert_dist_equal(
+        &first,
+        &second,
+        "fresh virtual-module preprocessing shadows",
+    );
+    assert!(second.islands_entry.contains("VIRTUAL-SIBLING-RAW-ONE"));
+    fs::write(sibling.join("note.txt"), "VIRTUAL-SIBLING-RAW-TWO\n").unwrap();
+    let changed = capture_build(&root, &esbuild, None, None);
+    assert_ne!(second.build_id, changed.build_id);
+    assert!(changed.islands_entry.contains("VIRTUAL-SIBLING-RAW-TWO"));
+}

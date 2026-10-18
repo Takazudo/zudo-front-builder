@@ -93,6 +93,7 @@ fn make_bundle_input(project: &Path, outdir_name: &str) -> BundlerInput {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         define_vars: BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),

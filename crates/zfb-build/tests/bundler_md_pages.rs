@@ -32,6 +32,7 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         define_vars: std::collections::BTreeMap::new(),
         public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),

@@ -487,6 +487,9 @@ pub struct EsbuildSubprocessConfig {
     /// synthetic tsconfig entry — zero-registration builds are
     /// byte-identical to today.
     pub virtual_modules: Vec<(String, String)>,
+    /// Authored virtual sources before CLI shadow import remapping. These
+    /// bytes identify the source; esbuild still resolves the staged text.
+    pub original_virtual_modules: BTreeMap<String, Vec<u8>>,
 
     /// Optional per-subprocess stage-escape audit policy (issue #1705,
     /// epic #1702's guard (b) wiring wave). When `Some`, every REAL
@@ -555,6 +558,7 @@ impl EsbuildSubprocessConfig {
             env_vars: Vec::new(),
             alias_entries: Vec::new(),
             virtual_modules: Vec::new(),
+            original_virtual_modules: BTreeMap::new(),
             stage_audit: None,
         }
     }
@@ -1316,6 +1320,21 @@ impl EsbuildSubprocessBundler {
         &self.config
     }
 
+    /// Join staging provenance to paths returned by the resolver's own
+    /// materialization. This never predicts import resolution winners.
+    fn identity_source_overrides(
+        &self,
+        virtual_paths: &[(String, String)],
+    ) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut sources = BTreeMap::new();
+        for (specifier, path) in virtual_paths {
+            if let Some(source) = self.config.original_virtual_modules.get(specifier) {
+                sources.insert(PathBuf::from(path), source.clone());
+            }
+        }
+        sources
+    }
+
     /// Reap every recognized in-project `.zfb-*` temp-file class
     /// ([`IN_PROJECT_TEMP_CLASSES`]) stranded in this project by an earlier
     /// zfb process that died without unwinding (issue #1970 / #1976, later
@@ -1362,7 +1381,64 @@ impl EsbuildSubprocessBundler {
         // Shared-bundle path: splitting ON. This is the ONLY path that ships
         // and serves chunks (#806/#808/#809) — `OneEntryOutput::chunks` is
         // threaded into `BundleOutput` here.
-        self.bundle_one_entry(&entry_source, config, true, "shared entry")
+        self.bundle_one_entry(&entry_source, config, true, "shared entry", false)
+    }
+
+    /// Derive compatibility identity from esbuild's resolved executable closure.
+    /// The probe does not ship: the normal pass still owns splitting, filenames
+    /// and sourcemaps. No result is cached across builds or watcher generations.
+    pub fn derive_build_token(
+        &self,
+        islands: &[Island],
+        config: &BundleConfig,
+        compiler_version: &str,
+    ) -> Result<String> {
+        validate_locked_resource_loader_overrides(&config.loaders)?;
+        let mut probe = config.clone();
+        probe.zudo_react_build = Some("0000000000000000".to_string());
+        probe.minify = true;
+        probe.sourcemap = false;
+        let entry = render_shared_bundle_entry_source_with_build(
+            islands,
+            probe.client_router,
+            probe.zudo_react_build.as_deref(),
+            &probe.module_labels,
+        );
+        let output = self.bundle_one_entry(&entry, &probe, true, "identity probe", true)?;
+        let mut digest = Sha256::new();
+        digest.update(b"zfb-islands-resolved-executable/1\n");
+        hash_identity_part(&mut digest, EXPECTED_ESBUILD_VERSION.as_bytes());
+        hash_identity_part(&mut digest, compiler_version.as_bytes());
+        digest.update([
+            config.mode.is_prod() as u8,
+            config.minify as u8,
+            config.sourcemap as u8,
+        ]);
+        // A minified probe can erase transform differences observable through
+        // Function.prototype.toString in the unminified client. Keep explicit
+        // transform inputs as well as raw resolved source and graph identity.
+        // BTreeMap serialization is deterministic; frames keep fields distinct.
+        hash_identity_part(&mut digest, &serde_json::to_vec(&config.define)?);
+        hash_identity_part(&mut digest, &serde_json::to_vec(&config.loaders)?);
+        // Operator arguments can override defines/loaders or select other
+        // transforms. Preserve order because esbuild's last argument wins.
+        digest.update((self.config.extra_args.len() as u64).to_le_bytes());
+        for argument in &self.config.extra_args {
+            hash_identity_part(&mut digest, argument.as_encoded_bytes());
+        }
+        for graph in &output.graph_digests {
+            digest.update(graph);
+        }
+        hash_identity_part(&mut digest, output.js.as_bytes());
+        for chunk in output.chunks.iter().chain(&output.workers) {
+            hash_identity_part(&mut digest, chunk.filename.as_bytes());
+            hash_identity_part(&mut digest, &chunk.bytes);
+        }
+        for resource in &output.resources {
+            hash_identity_part(&mut digest, resource.filename.as_bytes());
+            hash_identity_part(&mut digest, &resource.bytes);
+        }
+        Ok(hex::encode(digest.finalize())[..16].to_string())
     }
 
     /// Internal: bundle a single in-memory entry source. Writes the
@@ -1379,6 +1455,7 @@ impl EsbuildSubprocessBundler {
         config: &BundleConfig,
         splitting: bool,
         job_label: &str,
+        identity_probe: bool,
     ) -> Result<OneEntryOutput> {
         if splitting {
             validate_module_worker_entries(&config.module_workers)?;
@@ -1592,6 +1669,11 @@ impl EsbuildSubprocessBundler {
             cmd.arg(arg);
         }
 
+        if identity_probe {
+            // A single executable closure avoids esbuild chunk hashes derived
+            // from random staging paths. Metafile edges retain module identity.
+            cmd.arg("--splitting=false");
+        }
         #[cfg(feature = "rolldown-prototype")]
         let native = zfb_rolldown_prototype::enabled();
         #[cfg(not(feature = "rolldown-prototype"))]
@@ -1653,6 +1735,18 @@ impl EsbuildSubprocessBundler {
             run_stage_escape_audit(policy, &metafile_path, &self.config.working_dir, job_label)?;
         }
 
+        let mut graph_digests = Vec::new();
+        if identity_probe {
+            graph_digests.push(crate::graph_identity::resolved_graph_digest(
+                &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+                &self.config.working_dir,
+                entry_tmp.path(),
+                &resolver_inputs.paths_entries,
+                true,
+                &self.identity_source_overrides(&resolver_inputs.paths_entries),
+            )?);
+        }
+
         // Issue #1501: esbuild does not discover `new Worker(new URL(...))`
         // as another entry. Run one explicit browser bundle per locked #1500
         // worker entry into the SAME staging outdir as `islands.js`. Each
@@ -1669,8 +1763,14 @@ impl EsbuildSubprocessBundler {
                     &self.config.alias_entries,
                     &self.config.virtual_modules,
                 )?;
-                let worker_stage_audit_metafile =
-                    stage_audit_metafile(self.config.stage_audit.as_ref())?;
+                let worker_stage_audit_metafile = if identity_probe {
+                    Some(
+                        tempfile::NamedTempFile::new()
+                            .context("allocate worker identity metafile")?,
+                    )
+                } else {
+                    stage_audit_metafile(self.config.stage_audit.as_ref())?
+                };
                 let worker_args = build_esbuild_args_with_entry_name(
                     config,
                     &self.config.extra_args,
@@ -1737,6 +1837,22 @@ impl EsbuildSubprocessBundler {
                     ));
                 }
 
+                if identity_probe {
+                    graph_digests.push(crate::graph_identity::resolved_graph_digest(
+                        worker_stage_audit_metafile
+                            .as_ref()
+                            .expect("probe metafile")
+                            .path(),
+                        &self.config.working_dir,
+                        worker.source_path(),
+                        &worker_resolver.resolver_inputs.paths_entries,
+                        false,
+                        &self.identity_source_overrides(
+                            &worker_resolver.resolver_inputs.paths_entries,
+                        ),
+                    )?);
+                }
+
                 if let Some(policy) = &self.config.stage_audit {
                     let metafile_path = worker_stage_audit_metafile.as_ref().expect(
                         "worker_stage_audit_metafile is Some whenever config.stage_audit is Some",
@@ -1757,16 +1873,23 @@ impl EsbuildSubprocessBundler {
         drop(resolver_inputs);
         drop(plugin_tsconfig);
 
-        if splitting {
+        let mut output = if splitting {
             read_back_shared_outdir(
                 out_dir.path(),
                 &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
                 &self.config.working_dir,
-            )
+            )?
         } else {
-            read_back_outdir(out_dir.path())
-        }
+            read_back_outdir(out_dir.path())?
+        };
+        output.graph_digests = graph_digests;
+        Ok(output)
     }
+}
+
+fn hash_identity_part(digest: &mut Sha256, bytes: &[u8]) {
+    digest.update((bytes.len() as u64).to_le_bytes());
+    digest.update(bytes);
 }
 
 /// Validate caller-supplied worker entries before either the real or mock
@@ -1811,6 +1934,7 @@ fn validate_module_worker_entries(entries: &[ModuleWorkerBundleEntry]) -> Result
 /// [`BundleOutput`].
 #[derive(Debug)]
 struct OneEntryOutput {
+    graph_digests: Vec<[u8; 32]>,
     js: String,
     chunks: Vec<BundleChunk>,
     workers: Vec<BundleChunk>,
@@ -1822,6 +1946,7 @@ impl OneEntryOutput {
     /// zero-dynamic-import case).
     fn js_only(js: String) -> Self {
         Self {
+            graph_digests: Vec::new(),
             js,
             chunks: Vec::new(),
             workers: Vec::new(),
@@ -2291,6 +2416,7 @@ fn read_back_outdir_with_resource_oracle(
     resources.sort_by(|a, b| a.filename.cmp(&b.filename));
 
     Ok(OneEntryOutput {
+        graph_digests: Vec::new(),
         js,
         chunks,
         workers,
@@ -2943,6 +3069,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
         self.sweep_stranded_entries();
 
         let OneEntryOutput {
+            graph_digests: _,
             js,
             chunks,
             workers,

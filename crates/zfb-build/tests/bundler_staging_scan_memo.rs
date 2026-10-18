@@ -101,6 +101,7 @@ fn staging_stats(root: &Path, bundle_exclude: Vec<String>) -> NodeModulesStaging
         )]),
         bundle_exclude,
         zudo_react_island_names: Some(vec![]),
+        zudo_react_build: None,
         ..BundlerInput::for_project(
             root.to_path_buf(),
             BundleMode::Production,
