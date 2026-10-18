@@ -28,11 +28,22 @@ export function budgetAllowsRetention(result) {
 
 export function assertCompletePair(directory, contract, sourceSha) {
   if (!/^[a-f0-9]{40}$/.test(sourceSha)) throw new Error("expected exact checkout source SHA");
+  for (const key of ["os", "arch"]) {
+    if (typeof contract.platform?.[key] !== "string" || !contract.platform[key].trim()) {
+      throw new Error("missing or invalid contract platform");
+    }
+  }
   for (const mode of modes) {
     const dir = resolve(directory, "real-" + mode);
     const measurement = JSON.parse(readFileSync(resolve(dir, "measurement.json"), "utf8"));
     if (measurement.provenance.sourceSha !== sourceSha) {
       throw new Error(mode + ": stale measured source SHA");
+    }
+    if (
+      measurement.provenance.platform?.os !== contract.platform.os ||
+      measurement.provenance.platform?.arch !== contract.platform.arch
+    ) {
+      throw new Error(mode + ": measured platform differs from the selected contract");
     }
     const fixtures = Object.keys(contract.ceilings[mode]).sort();
     const expectedEntries = [
