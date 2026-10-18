@@ -35,13 +35,13 @@ const rejection =
   ]
     .map((e) => "- " + e + "\n")
     .join("");
-function savedPair() {
+function savedPair(platform = { os: "linux", arch: "x64" }, platformFor = () => platform) {
   const { root } = makeCheckout(roots);
   const directory = resolve(root, "target/island-size");
-  writeRuns(directory, fixtures, (mode) => ({ sourceSha, mode }));
+  writeRuns(directory, fixtures, (mode) => ({ sourceSha, mode, platform: platformFor(mode) }));
   for (const mode of ["workspace", "packed"])
     write(directory, "real-" + mode + "/report.md", "Synthetic fixture, not native evidence.\n");
-  const contract = { ceilings: ceilingsOf(directory) };
+  const contract = { platform, ceilings: ceilingsOf(directory) };
   write(root, "research/v3-island-size/decision-linux-x64.json", JSON.stringify(contract));
   return { root, directory, contract, output: resolve(root, "github-output") };
 }
@@ -159,6 +159,95 @@ describe("Linux collection orchestration (synthetic outcomes)", () => {
   });
 });
 describe("saved-byte eligibility (synthetic fixtures)", () => {
+  for (const platform of [
+    { os: "linux", arch: "x64" },
+    { os: "darwin", arch: "arm64" },
+  ]) {
+    it("accepts matching " + platform.os + "/" + platform.arch + " provenance", () => {
+      const pair = savedPair(platform);
+      expect(() => assertCompletePair(pair.directory, pair.contract, sourceSha)).not.toThrow();
+    });
+    for (const mode of ["workspace", "packed"]) {
+      for (const other of [
+        { os: platform.os === "linux" ? "darwin" : "linux", arch: platform.arch },
+        { os: platform.os, arch: platform.arch === "x64" ? "arm64" : "x64" },
+        {
+          os: platform.os === "linux" ? "darwin" : "linux",
+          arch: platform.arch === "x64" ? "arm64" : "x64",
+        },
+      ]) {
+        it(
+          "rejects " +
+            mode +
+            " " +
+            other.os +
+            "/" +
+            other.arch +
+            " against " +
+            platform.os +
+            "/" +
+            platform.arch +
+            " despite equal ceilings",
+          () => {
+            const pair = savedPair(platform, (current) => (current === mode ? other : platform));
+            expect(() => assertCompletePair(pair.directory, pair.contract, sourceSha)).toThrow(
+              mode + ": measured platform differs from the selected contract",
+            );
+          },
+        );
+      }
+    }
+  }
+  for (const platform of [
+    undefined,
+    null,
+    {},
+    { os: "linux" },
+    { arch: "x64" },
+    { os: "", arch: "x64" },
+    { os: "linux", arch: 64 },
+  ]) {
+    it("rejects invalid contract platform " + JSON.stringify(platform), () => {
+      const pair = savedPair();
+      pair.contract.platform = platform;
+      expect(() => assertCompletePair(pair.directory, pair.contract, sourceSha)).toThrow(
+        "missing or invalid contract platform",
+      );
+    });
+  }
+  for (const mode of ["workspace", "packed"]) {
+    it("rejects missing " + mode + " platform provenance", () => {
+      const pair = savedPair(undefined, (current) =>
+        current === mode ? undefined : { os: "linux", arch: "x64" },
+      );
+      expect(() => assertCompletePair(pair.directory, pair.contract, sourceSha)).toThrow(
+        mode + ": measured platform differs from the selected contract",
+      );
+    });
+  }
+  for (const status of [0, 1]) {
+    it("withholds mismatched-platform evidence with checker status " + status, () => {
+      const pair = savedPair({ os: "linux", arch: "x64" }, () => ({ os: "darwin", arch: "arm64" }));
+      let diagnostic = "";
+      const result = runBudgetEvidence({
+        ...pair,
+        sourceSha,
+        check: () => ({ status, stderr: status === 1 ? rejection : "" }),
+        log: { write() {} },
+        errors: {
+          write(s) {
+            diagnostic += s;
+          },
+        },
+      });
+      expect(result).toBe(1);
+      expect(existsSync(pair.output)).toBe(false);
+      expect(diagnostic).toContain(
+        "Island size evidence withheld: workspace: measured platform differs from the selected contract",
+      );
+      if (status === 1) expect(diagnostic.startsWith(rejection)).toBe(true);
+    });
+  }
   it("retains exact old-pin rejection and preserves subprocess exit/output", () => {
     const pair = savedPair();
     let diagnostic = "";
