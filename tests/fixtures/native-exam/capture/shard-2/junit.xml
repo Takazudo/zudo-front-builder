@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="4" skipped="0" failures="0" errors="0" uuid="d7d48c8d-ef3b-4dec-9941-0b143a1842be" timestamp="2026-10-18T13:08:48.986+00:00" time="0.015">
+    <testsuite name="native-probe" tests="4" skipped="0" errors="0" failures="0">
+        <testcase name="c" classname="native-probe" timestamp="2026-10-18T13:08:48.986+00:00" time="0.011"/>
+        <testcase name="f" classname="native-probe" timestamp="2026-10-18T13:08:48.986+00:00" time="0.012"/>
+        <testcase name="i" classname="native-probe" timestamp="2026-10-18T13:08:48.986+00:00" time="0.013"/>
+        <testcase name="l" classname="native-probe" timestamp="2026-10-18T13:08:48.987+00:00" time="0.014"/>
+    </testsuite>
+</testsuites>

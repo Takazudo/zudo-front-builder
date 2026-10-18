@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+   Doc-tests native_probe
+
+running 2 tests
+test src/lib.rs - foo (line 4) ... ignored
+test src/lib.rs - foo (line 1) ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.12s
+

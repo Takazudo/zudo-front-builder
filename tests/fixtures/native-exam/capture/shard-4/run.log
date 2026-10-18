@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 80308923-256e-4e8f-bc4f-39887f29b6e5 with nextest profile: ci
+    Starting 5 tests across 1 binary (12 tests skipped)
+        PASS [   0.011s] (1/5) native-probe k
+        PASS [   0.013s] (2/5) native-probe b
+        PASS [   0.013s] (3/5) native-probe a
+        PASS [   0.013s] (4/5) native-probe h
+        PASS [   0.009s] (5/5) native-probe p
+────────────
+     Summary [   0.021s] 5 tests run: 5 passed, 12 skipped
