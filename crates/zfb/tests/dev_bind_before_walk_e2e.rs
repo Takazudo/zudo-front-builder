@@ -957,9 +957,17 @@ async fn eager_request_before_render_serves_controlled_body() {
     let mut saw_pre_render_controlled = false;
     let window_deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
     while tokio::time::Instant::now() < window_deadline {
-        if let Ok((status, body)) =
-            zfb_test_utils::http_get_before(&client, &page_url, window_deadline).await
-        {
+        let response = zfb_test_utils::http_get_before(&client, &page_url, window_deadline).await;
+        if let Err(error) = &response {
+            assert!(
+                error
+                    .downcast_ref::<zfb_test_utils::HttpBodyReadFailure>()
+                    .is_none(),
+                "pre-render response body failed: {error:#}\n{}",
+                session.logs()
+            );
+        }
+        if let Ok((status, body)) = response {
             // NEVER an empty or partial body.
             assert!(
                 !body.is_empty(),

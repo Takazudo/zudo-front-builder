@@ -1,4 +1,15 @@
+use anyhow::Context;
 use std::time::Duration;
+
+/// Distinguish a broken received body from a connection that is not ready yet.
+#[derive(Debug)]
+pub struct HttpBodyReadFailure;
+
+impl std::fmt::Display for HttpBodyReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP response body could not be read completely")
+    }
+}
 
 /// Read headers AND body within the caller's remaining phase budget.
 /// A client timeout alone restarts for each probe and can overrun that budget.
@@ -11,19 +22,20 @@ pub async fn http_get_before(
         tokio::time::Instant::now() < deadline,
         "HTTP phase budget exhausted: {url}"
     );
-    let response = tokio::time::timeout_at(deadline, async {
-        let response = client.get(url).send().await?;
-        let status = response.status().as_u16();
-        let body = response.text().await?;
-        Ok::<_, reqwest::Error>((status, body))
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("HTTP headers/body exceeded phase budget: {url}"))??;
+    let response = tokio::time::timeout_at(deadline, client.get(url).send())
+        .await
+        .map_err(|_| anyhow::anyhow!("HTTP headers exceeded phase budget: {url}"))??;
+    let status = response.status().as_u16();
+    let body = tokio::time::timeout_at(deadline, response.text())
+        .await
+        .map_err(|_| anyhow::anyhow!("HTTP body exceeded phase budget: {url}"))
+        .and_then(|body| body.map_err(anyhow::Error::from))
+        .context(HttpBodyReadFailure)?;
     anyhow::ensure!(
         tokio::time::Instant::now() < deadline,
         "HTTP response arrived after phase budget: {url}"
     );
-    Ok(response)
+    Ok((status, body))
 }
 
 /// Polling cadence never extends an absolute phase budget.
@@ -54,7 +66,7 @@ mod tests {
         .await;
         server.abort();
         let _ = server.await;
-        assert!(result.unwrap_err().to_string().contains("phase budget"));
+        assert!(format!("{:#}", result.unwrap_err()).contains("phase budget"));
     }
 
     #[tokio::test]
@@ -65,6 +77,33 @@ mod tests {
     #[tokio::test]
     async fn stalled_body_fails_within_phase_budget() {
         stalled_response(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nx").await;
+    }
+
+    #[tokio::test]
+    async fn truncated_body_is_distinct_from_connection_not_ready() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 100\r\n\r\nx")
+                .await
+                .unwrap();
+        });
+        let result = http_get_before(
+            &reqwest::Client::new(),
+            &url,
+            tokio::time::Instant::now() + Duration::from_secs(2),
+        )
+        .await;
+        server.await.unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            error.downcast_ref::<HttpBodyReadFailure>().is_some(),
+            "{error:#}"
+        );
     }
 
     #[tokio::test]

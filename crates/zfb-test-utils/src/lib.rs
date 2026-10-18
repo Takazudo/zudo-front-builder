@@ -1,7 +1,7 @@
 mod test_tasks;
 pub use test_tasks::{with_test_tasks, TestTasks};
 mod http_probe;
-pub use http_probe::{http_get_before, poll_before};
+pub use http_probe::{http_get_before, poll_before, HttpBodyReadFailure};
 mod cross_binary_lock;
 mod html_normalize;
 mod module_entry_probe;
