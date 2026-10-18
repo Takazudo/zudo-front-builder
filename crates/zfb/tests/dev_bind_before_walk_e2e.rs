@@ -12,8 +12,7 @@
 //! `dev::run` so the listener binds first and that work runs on a
 //! background task.
 //!
-//! ## Determinism strategy (the authoritative guard — no wall-clock
-//! threshold)
+//! ## Determinism strategy
 //!
 //! The dev binary reads TEST-ONLY env vars (`ZFB_DEV_TEST_SLOW_DIGEST_MS`,
 //! `ZFB_DEV_TEST_SLOW_ISLANDS_MS`) and sleeps that long inside the deferred
@@ -43,6 +42,11 @@
 //! (200 the instant the router is mounted, independent of any render / digest /
 //! islands build) while the slow step is still in flight — belt-and-braces
 //! proof the serve path does not block on the deferred work.
+//!
+//! The eager-body and early-shutdown cases instead use an acknowledged,
+//! cancellable digest hold controlled by a release file outside the watched
+//! fixture. Their pre-render and shutdown observations occur while that hold
+//! is known to be active; the eager case then releases it and requires V1.
 //!
 //! ## Tests
 //!
@@ -150,8 +154,8 @@ static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::
 /// generous for cold V8 + esbuild boot.
 const BANNER_DEADLINE: Duration = Duration::from_secs(90);
 
-/// The injected digest slow-step for the two bind-before-digest guards
-/// (Test 1 + Test 3, issue #1166). Deliberately set LONGER than
+/// The injected digest slow-step for the bind-before-digest guard
+/// (Test 1, issue #1166). Deliberately set LONGER than
 /// `BANNER_DEADLINE`, exactly like `SLOW_ISLANDS_MS` below. The listening banner is
 /// printed immediately after a successful bind, so in the correct (post-bind)
 /// ordering it lands at boot time, far under `BANNER_DEADLINE`. If the digest
@@ -254,22 +258,13 @@ const _: () = assert!(
      belt-and-braces check proves nothing"
 );
 
-/// Test 3 reap budget: after SIGINT (sent while the digest is still sleeping),
-/// the GRACEFUL shutdown must read the still-`None` digest slot, skip the save,
-/// and exit within this window. A shutdown that instead blocked on the
-/// in-flight digest would take ~`SLOW_DIGEST_MS`. Decoupled from
-/// `SLOW_DIGEST_MS` on purpose: now that the digest sleep exceeds
-/// `BANNER_DEADLINE` (issue #1174), keying the reap assertion to it would let
-/// the force-kill fallback below mask a hung shutdown (it would SIGKILL at
-/// `SHUTDOWN_FORCE_KILL_AFTER`, landing the reap under the digest sleep and so
-/// passing a `< SLOW_DIGEST_MS` check even when the shutdown never skipped).
+/// Test 3 product deadline: SIGINT must cancel the unreleased digest hold,
+/// skip saving a graph with no digest, and exit successfully within 12s.
+/// Cold build and startup work are measured outside this deadline.
 const GRACEFUL_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(12);
 
-/// Test 3 force-kill fallback: if SIGINT does not reap the group within this
-/// window, SIGKILL it so a hung process can't hang the test. MUST stay LONGER
-/// than `GRACEFUL_SHUTDOWN_DEADLINE` — otherwise a shutdown that blocked on the
-/// digest would be force-killed early and its reap would fall under the
-/// deadline, masking the regression instead of failing it.
+/// Cleanup allowance for a failed shutdown. Forced termination always fails
+/// the graceful-exit assertion, independently of its elapsed time.
 const SHUTDOWN_FORCE_KILL_AFTER: Duration = Duration::from_secs(20);
 
 const _: () = assert!(
@@ -278,16 +273,8 @@ const _: () = assert!(
      force-kill fallback would mask a shutdown that blocked on the digest"
 );
 
-const _: () = assert!(
-    SHUTDOWN_FORCE_KILL_AFTER.as_secs() * 1000 < SLOW_DIGEST_MS,
-    "SHUTDOWN_FORCE_KILL_AFTER must stay under SLOW_DIGEST_MS — the force-kill must cap a \
-     hung shutdown's reap WELL below the digest sleep so it overshoots \
-     GRACEFUL_SHUTDOWN_DEADLINE and fails; if the force-kill landed at/after the digest \
-     sleep the masking this whole decoupling guards against could re-emerge"
-);
-
-/// Deadline for the eager boot render to populate a route (after the
-/// short / zero slow step). Covers V8 + esbuild boot plus the render.
+/// Deadline after releasing the digest hold for boot work to render V1.
+/// Covers V8 + esbuild boot plus the render, separately from HTTP response time.
 const RENDER_DEADLINE: Duration = Duration::from_secs(90);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -417,6 +404,7 @@ fn spawn_dev_in_root(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) ->
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS")
+        .env_remove("ZFB_DEV_TEST_DIGEST_RELEASE_FILE")
         .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_POST_ISLANDS_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_BUNDLE_MS")
@@ -447,7 +435,13 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
 /// if the binary refused to start for a known-skip reason (no V8 / no
 /// esbuild). Panics on any other premature exit or banner timeout.
 async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
-    let start = Instant::now();
+    wait_for_binding_port_before(session, tokio::time::Instant::now() + BANNER_DEADLINE).await
+}
+
+async fn wait_for_binding_port_before(
+    session: &mut DevSession,
+    deadline: tokio::time::Instant,
+) -> Option<u16> {
     loop {
         if let Some(status) = session.guard.try_exit_status() {
             let combined = format!(
@@ -468,7 +462,13 @@ async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
                 session.logs(),
             );
         }
-        if let Some(port) = parse_binding_port(&read_log(&session.stdout_path)) {
+        let port = parse_binding_port(&read_log(&session.stdout_path));
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "listening banner exceeded startup budget.\n{}",
+            session.logs()
+        );
+        if let Some(port) = port {
             assert_ne!(
                 port,
                 0,
@@ -478,12 +478,42 @@ async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
             return Some(port);
         }
         assert!(
-            start.elapsed() < BANNER_DEADLINE,
+            tokio::time::Instant::now() < deadline,
             "`zfb dev` did not print a parseable listening banner within {}s.\n{}",
             BANNER_DEADLINE.as_secs(),
             session.logs(),
         );
-        tokio::time::sleep(POLL_INTERVAL).await;
+        zfb_test_utils::poll_before(deadline, POLL_INTERVAL).await;
+    }
+}
+
+/// The banner and hold acknowledgement share one startup budget. The release
+/// file lives outside watched fixture roots and is absent until the test acts.
+async fn wait_for_digest_hold(session: &mut DevSession, deadline: tokio::time::Instant) {
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "digest hold was not acknowledged within the startup budget.\n{}",
+            session.logs()
+        );
+        if let Some(status) = session.guard.try_exit_status() {
+            panic!(
+                "dev exited before digest hold acknowledgement: {status:?}\n{}",
+                session.logs()
+            );
+        }
+        if session
+            .logs()
+            .contains("deferred digest waiting for test release")
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "digest hold acknowledgement observed after startup budget.\n{}",
+                session.logs()
+            );
+            return;
+        }
+        zfb_test_utils::poll_before(deadline, POLL_INTERVAL).await;
     }
 }
 
@@ -926,38 +956,42 @@ async fn eager_request_before_render_serves_controlled_body() {
         eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
         return;
     };
-
-    let _phase = zfb_test_utils::TestPhase::new("eager-request-before-render");
     let tmp = tempfile::tempdir().expect("tempdir");
-    // A modest slow step opens a deterministic window where the route is
-    // not yet rendered but the server is already serving.
-    let slow = "3000";
-    let mut session = spawn_dev(
-        &tmp,
+    let release_dir = tempfile::tempdir().expect("digest release tempdir");
+    let release = release_dir.path().join("release");
+    let root = {
+        let _phase = zfb_test_utils::TestPhase::new("fixture-setup");
+        prepare_dev_root(&tmp)
+    };
+    let startup = zfb_test_utils::TestPhase::new("spawn-to-banner-and-digest-hold");
+    let boot_deadline = tokio::time::Instant::now() + BANNER_DEADLINE;
+    let mut session = spawn_dev_in_root(
+        &root,
         &esbuild,
         &[
-            ("ZFB_DEV_TEST_SLOW_DIGEST_MS", slow),
+            (
+                "ZFB_DEV_TEST_DIGEST_RELEASE_FILE",
+                release.to_str().expect("release path"),
+            ),
             ("ZFB_DEV_EAGER", "1"),
         ],
     );
-
-    let Some(port) = wait_for_binding_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port_before(&mut session, boot_deadline).await else {
         return;
     };
-    let base = format!("http://localhost:{port}");
+    wait_for_digest_hold(&mut session, boot_deadline).await;
+    drop(startup);
+    assert!(!release.exists(), "digest release must be test-controlled");
     let client = client();
-    let page_url = format!("{base}/posts/a/");
+    let page_url = format!("http://localhost:{port}/posts/a/");
 
-    // During the pre-render window: the response is a CONTROLLED body —
-    // a complete HTML document, never empty/partial. The status is 404
-    // (no rendered HTML yet, no prebuilt dist seed) and the body is the
-    // dev 404 page (which carries the live-reload script). We do NOT
-    // assert a specific status flip timing; we assert the body is always
-    // well-formed and never a partial/empty page render.
-    let mut saw_pre_render_controlled = false;
-    let window_deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
-    while tokio::time::Instant::now() < window_deadline {
-        let response = zfb_test_utils::http_get_before(&client, &page_url, window_deadline).await;
+    // The acknowledged hold makes the controlled response mandatory, without
+    // a race against an injected sleep or a faster-than-expected renderer.
+    let response_phase = zfb_test_utils::TestPhase::new("held-digest-to-controlled-404");
+    let response_deadline = tokio::time::Instant::now() + FIRST_RESPONSE_DEADLINE;
+    let mut saw_controlled = false;
+    while tokio::time::Instant::now() < response_deadline {
+        let response = zfb_test_utils::http_get_before(&client, &page_url, response_deadline).await;
         if let Err(error) = &response {
             assert!(
                 error
@@ -968,38 +1002,33 @@ async fn eager_request_before_render_serves_controlled_body() {
             );
         }
         if let Ok((status, body)) = response {
-            // NEVER an empty or partial body.
-            assert!(
-                !body.is_empty(),
-                "pre-render response had an EMPTY body — the race contract forbids \
-                 serving a wrong/empty body before the render lands.\n{}",
-                session.logs(),
+            assert_eq!(
+                status,
+                404,
+                "eager route rendered while digest was held.\n{}",
+                session.logs()
             );
             assert!(
-                body.contains("<!doctype html>") || body.contains("<!DOCTYPE html>"),
-                "pre-render response was not a complete HTML document (status \
-                 {status}): {body:?}\n{}",
-                session.logs(),
+                body.starts_with("<!doctype html>")
+                    && body.contains("404 — page not in cache")
+                    && body.ends_with("</body></html>"),
+                "held-digest response must be the complete controlled 404: {body:?}\n{}",
+                session.logs()
             );
-            if status == 404 && body.contains("404") {
-                saw_pre_render_controlled = true;
-                break;
-            }
-            // A 200 here means the render already landed — acceptable;
-            // we just didn't catch the pre-render window. Stop probing.
-            if status == 200 {
-                break;
-            }
+            saw_controlled = true;
+            break;
         }
-        zfb_test_utils::poll_before(window_deadline, POLL_INTERVAL).await;
+        zfb_test_utils::poll_before(response_deadline, POLL_INTERVAL).await;
     }
+    assert!(
+        saw_controlled,
+        "no complete controlled 404 while digest was held.\n{}",
+        session.logs()
+    );
+    drop(response_phase);
 
-    // Either we observed the controlled 404 pre-render body, or the
-    // render landed faster than our probe window — both are acceptable
-    // (the contract is "never a wrong body", not "always observe 404").
-    // Now the authoritative positive: the eager render eventually serves
-    // the real page with 200.
-    let _render_phase = zfb_test_utils::TestPhase::new("eager-render-to-served-V1");
+    let _render_phase = zfb_test_utils::TestPhase::new("digest-release-to-served-V1");
+    fs::write(&release, b"release").expect("release deferred digest");
     let render_deadline = tokio::time::Instant::now() + RENDER_DEADLINE;
     let mut served_page = false;
     while tokio::time::Instant::now() < render_deadline {
@@ -1015,10 +1044,9 @@ async fn eager_request_before_render_serves_controlled_body() {
     }
     assert!(
         served_page,
-        "the eager boot render never served /posts/a/ with its V1 marker within {}s \
-         (pre-render controlled body seen: {saw_pre_render_controlled}).\n{}",
+        "eager render never served V1 within {}s after digest release.\n{}",
         RENDER_DEADLINE.as_secs(),
-        session.logs(),
+        session.logs()
     );
 }
 
@@ -1030,15 +1058,9 @@ async fn eager_request_before_render_serves_controlled_body() {
 /// `.zfb/graph.bin` is written — never a graph tagged with an absent /
 /// wrong digest (issue #1166 graph-cache deferred-state correctness).
 ///
-/// Uses `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) so the bind-before-digest
-/// ordering is itself falsifiable via the banner timeout (issue #1174). The
-/// reap budget is a SEPARATE constant (`GRACEFUL_SHUTDOWN_DEADLINE`, with the
-/// force-kill fallback at `SHUTDOWN_FORCE_KILL_AFTER`) so that bumping the
-/// digest sleep past the banner deadline can't let the force-kill mask a
-/// shutdown that blocked on the digest. (Verified against `dev.rs`: SIGINT
-/// `boot_handle.abort()`s the boot task rather than joining it, so the longer
-/// digest sleep does not slow the graceful reap; the still-`None` digest slot
-/// is what drives the skip-save.)
+/// Waits for the acknowledged digest hold, leaves it unreleased, then sends
+/// SIGINT. Shutdown must cancel that hold and skip saving the still-absent
+/// digest. A successful, unforced exit must satisfy the separate 12s deadline.
 #[tokio::test(flavor = "multi_thread")]
 async fn early_shutdown_before_digest_skips_graph_save() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -1049,47 +1071,50 @@ async fn early_shutdown_before_digest_skips_graph_save() {
     };
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let slow = SLOW_DIGEST_MS.to_string();
-    let spawn_t = Instant::now();
-    let mut session = spawn_dev(
-        &tmp,
+    let release_dir = tempfile::tempdir().expect("digest release tempdir");
+    let release = release_dir.path().join("release");
+    let root = {
+        let _phase = zfb_test_utils::TestPhase::new("fixture-setup");
+        prepare_dev_root(&tmp)
+    };
+    let startup = zfb_test_utils::TestPhase::new("spawn-to-banner-and-digest-hold");
+    let boot_deadline = tokio::time::Instant::now() + BANNER_DEADLINE;
+    let mut session = spawn_dev_in_root(
+        &root,
         &esbuild,
-        &[("ZFB_DEV_TEST_SLOW_DIGEST_MS", slow.as_str())],
+        &[(
+            "ZFB_DEV_TEST_DIGEST_RELEASE_FILE",
+            release.to_str().expect("release path"),
+        )],
     );
-
-    // Bind precedes the digest walk: a pre-bind digest (and its co-located
-    // sleep) would delay the banner past BANNER_DEADLINE and time out
-    // wait_for_binding_port — that timeout IS the bind-before-walk regression
-    // signal (the pre-#1166 ordering).
-    let Some(port) = wait_for_binding_port(&mut session).await else {
+    let Some(port) = wait_for_binding_port_before(&mut session, boot_deadline).await else {
         return;
     };
-    let banner_elapsed = spawn_t.elapsed();
-    assert!(
-        (banner_elapsed.as_millis() as u64) < SLOW_DIGEST_MS,
-        "listening banner appeared {}ms after spawn, but the injected digest slow-step is \
-         {}ms — the digest walk ran BEFORE the bind/banner (bind-before-walk \
-         regression, the pre-#1166 ordering).\n{}",
-        banner_elapsed.as_millis(),
-        SLOW_DIGEST_MS,
-        session.logs(),
-    );
+    wait_for_digest_hold(&mut session, boot_deadline).await;
+    drop(startup);
+    assert!(!release.exists(), "early shutdown must leave digest held");
 
     let base = format!("http://localhost:{port}");
     let client = client();
 
     // Confirm the server is actually serving (so the kill below is a
-    // genuine "killed while the deferred digest is still sleeping", not
+    // genuine "killed while the deferred digest is still held", not
     // a "never booted").
     let url = format!("{base}/{}", ["__zfb", "reload"].join("/"));
     let mut serving = false;
-    let start = Instant::now();
-    while start.elapsed() < FIRST_RESPONSE_DEADLINE {
-        if client.get(&url).send().await.is_ok() {
-            serving = true;
-            break;
+    let response_deadline = tokio::time::Instant::now() + FIRST_RESPONSE_DEADLINE;
+    while tokio::time::Instant::now() < response_deadline {
+        // SSE has an intentionally unending body; this phase proves response
+        // headers only, then drops the subscription before shutdown.
+        if let Ok(Ok(response)) =
+            tokio::time::timeout_at(response_deadline, client.get(&url).send()).await
+        {
+            if response.status().is_success() && tokio::time::Instant::now() < response_deadline {
+                serving = true;
+                break;
+            }
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+        zfb_test_utils::poll_before(response_deadline, POLL_INTERVAL).await;
     }
     assert!(
         serving,
@@ -1098,22 +1123,19 @@ async fn early_shutdown_before_digest_skips_graph_save() {
         session.logs(),
     );
 
-    // The graph cache must not exist yet (the digest is still sleeping).
+    // The graph cache must not exist yet (the digest is still held).
     let graph_path = session.graph_cache_path();
     assert!(
         !graph_path.exists(),
-        "graph cache {} exists while the deferred digest is still sleeping — the \
+        "graph cache {} exists while the deferred digest is still held — the \
          digest/seed must run before any save.\n{}",
         graph_path.display(),
         session.logs(),
     );
 
-    // SIGINT the group NOW (well within SLOW_DIGEST_MS, before the digest
-    // lands). SIGINT is what `zfb dev` listens for via
-    // `tokio::signal::ctrl_c()`, so this runs the GRACEFUL shutdown path
-    // — which reads the (still-`None`) digest slot and must SKIP the
-    // save. (A bare SIGKILL would prove nothing: the process would die
-    // before reaching the save block regardless of the skip logic.)
+    // The digest hold is acknowledged and remains unreleased. SIGINT exercises
+    // graceful cancellation and skip-save; killing the process alone cannot
+    // prove either behavior.
     let _phase = zfb_test_utils::TestPhase::new("SIGINT-to-graceful-exit");
     let pgid = session.guard.pgid;
     let reap_start = Instant::now();
@@ -1150,17 +1172,11 @@ async fn early_shutdown_before_digest_skips_graph_save() {
         session.logs()
     );
 
-    // The graceful shutdown must have skipped fast (read the None digest slot
-    // and exited), NOT blocked on the in-flight digest. A blocked shutdown
-    // would not exit until ~SLOW_DIGEST_MS; the force-kill fallback caps that
-    // at SHUTDOWN_FORCE_KILL_AFTER (> GRACEFUL_SHUTDOWN_DEADLINE), so either
-    // way a non-skipping shutdown overshoots this deadline. Keyed to a
-    // dedicated reap budget — NOT SLOW_DIGEST_MS — precisely so the long digest
-    // sleep can't push the bar above the force-kill window and hide a hang.
+    // Successful, unforced exit must also satisfy the product deadline.
     assert!(
         reap_start.elapsed() < GRACEFUL_SHUTDOWN_DEADLINE,
         "graceful shutdown after SIGINT took {}ms (>= {}s) — the shutdown path did \
-         not skip-and-exit while the digest was still sleeping; this test would not \
+         not skip-and-exit while the digest hold was unreleased; this test would not \
          prove the skip-save path.\n{}",
         reap_start.elapsed().as_millis(),
         GRACEFUL_SHUTDOWN_DEADLINE.as_secs(),
