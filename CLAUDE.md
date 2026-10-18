@@ -19,8 +19,14 @@ Do not copy this entire policy into each issue. The worked example and review ca
 [the planning policy reference](.claude/references/development-planning.md) apply to plans,
 epics, sub-topics, and confirmation topics created by any workflow skill.
 
-Branch names are not safety properties: `main` may be a development integration target.
-Follow the recorded parent/base topology and identify the actual external-impact boundary.
+Branch names are not safety properties. Use a reviewed `base/**` development integration
+branch, after inspecting the actual push, PR, preview and workflow-run triggers at its SHA.
+`main` is a production boundary here: its pushes deploy the showcase, and docs-path pushes
+can deploy docs. Development integration does not authorize pushing or merging to `main`.
+Keep aggregation PRs **draft** to use the existing docs/showcase preview-upload guards;
+a non-draft PR can publish a preview even when its base is `base/**`. CI logs/artifact uploads
+still have external effects. Recheck triggers when workflows change; do not change credentials,
+deployment guards or branch protections to make a route convenient.
 
 | Boundary | Green required before proceeding? | Meaning |
 | --- | --- | --- |
@@ -53,24 +59,23 @@ Confirmation topics collect evidence and missing coverage; they never manufactur
 ### Branches and progression
 
 - Sub-topic branches merge into their epic base; epic PRs merge into the super-epic base; the
-  terminal super-epic PR merges into its recorded parent (normally `main`). Follow the issue's
-  explicit branch markers and dependencies. A standalone epic may target its recorded parent
+  terminal super-epic PR remains a draft against its recorded parent until that boundary is
+  separately authorized. Follow the issue's explicit branch markers and dependencies. A standalone epic may target its recorded parent
   directly; do not reinterpret a bundled epic as an independent main-targeted PR.
 - Run the authorized development chain autonomously (`-a`, plus `-m` for requested merges).
   Continue to the next ready topic or sibling epic in the same session. Do not wait for another
   user prompt at each boundary.
 - **Merge reviewed development work without waiting for CI to turn green**, at sub-topic,
-  epic, and super-epic levels. Pending CI, or a red result already triaged by the manager, is not
+  epic, and super-epic levels **within the approved development branch topology**. Pending CI,
+  or a red result already triaged by the manager, is not
   an automatic stop. Review, a clean committed worktree, dependency ordering, and honest reporting
   still apply. Merge completion means integrated; it does not mean verification passed.
 - Only the manager pushes from the root checkout. Batch topic integration and pushes at useful
   boundaries instead of pushing every intermediate child commit. Keep the existing worktree
   push prohibition and remove clean merged worktrees promptly.
-- If the existing main ruleset requires green checks, use the owner's already-authorized
-  admin bypass for these development merges when available (for example, `gh pr merge --admin`).
-  Do not disable CI, weaken assertions, or rewrite repository rulesets to obtain a green result.
-  If the current actor cannot merge, report the actual restriction and continue safe independent
-  work; never claim the merge succeeded.
+- Respect branch protection and required checks. No admin bypass, hidden skip, weaker timeout,
+  assertion or gate is part of development integration. A denied protected merge stays blocked;
+  continue safe independent work on the approved development branch instead.
 - An explicit user instruction to stop, avoid merging, or wait for particular checks overrides
   this default.
 
@@ -102,7 +107,7 @@ Confirmation topics collect evidence and missing coverage; they never manufactur
   next work does not rely on the broken behavior, and a concrete fix is tracked.
 - Pause the affected dependency chain when the cause is unclear or cross-cutting, the build or
   compiler/runtime foundation is broken, continuing would obscure attribution or compound the
-  defect, or there is a concrete security, data-loss, or deployment hazard. Diagnose, repair,
+  defect, or there is a known security, data-loss, contract-admission or deployment error. Diagnose, repair,
   and run the checks needed to restore confidence before resuming that chain. Unaffected work
   can continue when the manager judges it safe. Record the decision and reasoning.
 - Never ignore a red run, call pass-on-retry clean, weaken a test, or suppress a failure to keep
@@ -110,6 +115,40 @@ Confirmation topics collect evidence and missing coverage; they never manufactur
 - Before declaring the overall development complete, reconcile the CI alerts and run the
   necessary final verification/fixing round on the integrated result. Package publication is
   a separate boundary: the release procedure's verification and publication gates still apply.
+
+### Moving development and frozen qualification
+
+This is the normal workflow, including while slow native Mac qualification is running:
+
+1. Review topics with focused checks, integrate compatible ready heads, then batch broad Linux
+   validation once per useful integrated checkpoint. Do not rerun cold workspace builds for
+   every child. An understood localized failure has a named fixup owner and affected-chain hold;
+   it does not freeze unrelated development. Unknown foundation or contract errors hold their
+   dependents until diagnosed and repaired.
+2. Record the **development head** separately from each **qualification SHA**. Select an immutable
+   commit for native qualification and keep that run on it while development advances. Record
+   OS/architecture, exact Rust/Cargo and engine/ICU/esbuild versions, target/profile/features,
+   commands, lock/input/binary/artifact hashes, log or run/job IDs, first results and retries.
+   Unknown evidence stays unknown; old-SHA success never becomes current-head acceptance.
+3. On a low-memory Mac, keep builds command-scoped and serial (`CARGO_BUILD_JOBS=1 cargo …`),
+   with the existing heavy guard and reusable caches keyed by toolchain/target/profile/features
+   and relevant flags. Record cache identity; rerun Cargo against the selected source, never
+   infer binary identity from a cache hit. Do not change global job settings or weaken tests.
+   Compilation timeout means **build incomplete / tests not run**, not behavioral failure or pass.
+   Test timeouts retain their first logs and classification; skipped tests remain skipped.
+4. When release preparation is authorized, freeze a candidate SHA. Take only relevant reviewed
+   fixes onto that candidate, record each replacement SHA and rerun affected qualification;
+   later topics continue on the development branch. Do not cancel/restart qualification merely
+   to chase every development commit. Sharding can duplicate cold compilation: measure total
+   cost and time, never promise a fourfold speedup from four shards.
+5. Reconcile evidence before declaring qualification complete. Release/publication, production
+   pushes, default-runtime switches and live contract application require separate approval and
+   their existing gates. Never use the release workflow as a test shortcut: its dispatch
+   `dry_run` defaults to false.
+
+Use the [development queue and evidence record](research/development-queue.md) for the current
+checkpoint, qualification owners, holds and next ready topics. The record is a ledger, not a
+second scheduler; use existing workflows/scripts and preserve original receipts.
 
 ### Platform-bound verification on GitHub-hosted runners
 
@@ -278,7 +317,7 @@ The axes are independent. "Too heavy for the PR gate" is a **tier** question, ne
 
 ### Existing branch ruleset on `main`
 
-GitHub separately enforces required checks through a **ruleset** on `main` (id `18452968`, `main-required-status-checks`; created via `scripts/apply-main-ruleset.sh`, checked in for reproducibility — rerun it to recreate/update). It requires only the checks that run on **every** PR unconditionally (no path filters, no tag/workflow_run-only triggers): `health`, `build (no-v8)`, `Build binary (x86_64-unknown-linux-gnu)`, `Build binary (aarch64-unknown-linux-gnu)` (the job's `name:` is keyed on `matrix.platform.target` so each leg has a unique check context), the 4 `Smoke * (local mode)` jobs, `Scaffold E2E (packed tarballs, pre-publish)` (#1345, unconditional on every PR), `pnpm audit (prod)`, and `Docs gate` (#2827). The docs build itself — `Build docs site (docs-checks.yml)` — stays excluded: #1336 made it docs-only and #2827 moved that gate from the workflow trigger to a job-level `changed-files (docs)` detector, so it legitimately does not run on non-docs PRs and a required check that stops running would hang them forever; `Docs gate` is the unconditional job (`if: always()`, fails closed on a failed/cancelled detector or build) that turns its pass/skip/fail into a context safe to require. The two create-zfb showcase jobs (`Showcase deploy (create-zfb, production)`, `Showcase preview (create-zfb, PR)`, #2279) are excluded for the same class of reason — see "The create-zfb showcase" below. A `RepositoryRole` (`admin`, `actor_id: 5`) bypass actor with `bypass_mode: always` keeps `/l-make-release`'s direct version-bump push to `main` working (`required_status_checks` also blocks direct pushes). The development strategy above authorizes the existing owner/admin bypass for development merges; verify the actual merge/push result rather than assuming the current actor has that permission. This document does not change the ruleset or the release procedure.
+GitHub separately enforces required checks through a **ruleset** on `main` (id `18452968`, `main-required-status-checks`; created via `scripts/apply-main-ruleset.sh`, checked in for reproducibility — rerun it to recreate/update). It requires only the checks that run on **every** PR unconditionally (no path filters, no tag/workflow_run-only triggers): `health`, `build (no-v8)`, `Build binary (x86_64-unknown-linux-gnu)`, `Build binary (aarch64-unknown-linux-gnu)` (the job's `name:` is keyed on `matrix.platform.target` so each leg has a unique check context), the 4 `Smoke * (local mode)` jobs, `Scaffold E2E (packed tarballs, pre-publish)` (#1345, unconditional on every PR), `pnpm audit (prod)`, and `Docs gate` (#2827). The docs build itself — `Build docs site (docs-checks.yml)` — stays excluded: #1336 made it docs-only and #2827 moved that gate from the workflow trigger to a job-level `changed-files (docs)` detector, so it legitimately does not run on non-docs PRs and a required check that stops running would hang them forever; `Docs gate` is the unconditional job (`if: always()`, fails closed on a failed/cancelled detector or build) that turns its pass/skip/fail into a context safe to require. The two create-zfb showcase jobs (`Showcase deploy (create-zfb, production)`, `Showcase preview (create-zfb, PR)`, #2279) are excluded for the same class of reason — see "The create-zfb showcase" below. A `RepositoryRole` (`admin`, `actor_id: 5`) bypass actor with `bypass_mode: always` keeps `/l-make-release`'s direct version-bump push to `main` working (`required_status_checks` also blocks direct pushes). The bypass actor exists for separately authorized release procedures; routine development does not authorize using it. Respect protection and keep development on the approved integration branch. This document does not change the ruleset or the release procedure.
 
 **`base/**` epic-PRs run T1 CI too (#2076).** `health.yml` and `pr-checks.yml`'s `on.pull_request.branches` include `"base/**"` alongside `main`, so an `/x-wt-teams` epic-PR (which targets a super-epic `base/**` branch) triggers `health` + the required `pnpm audit (prod)` during its own review window. Deliberately **`pull_request`-only** — `health.yml`'s `push:` trigger stays main-only (a `base/**` push trigger would double-run the suite per commit), and `pr-checks.yml` carries no `push:` trigger. These runs provide regression alerts during integration; they are not a per-epic wait-for-green barrier. The manager batches pushes and carries failures into fixing rounds under the development strategy above. The `main` ruleset is unaffected — it targets only `refs/heads/main`.
 
