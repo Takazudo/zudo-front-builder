@@ -927,6 +927,7 @@ async fn eager_request_before_render_serves_controlled_body() {
         return;
     };
 
+    let _phase = zfb_test_utils::TestPhase::new("eager-request-before-render");
     let tmp = tempfile::tempdir().expect("tempdir");
     // A modest slow step opens a deterministic window where the route is
     // not yet rendered but the server is already serving.
@@ -954,11 +955,11 @@ async fn eager_request_before_render_serves_controlled_body() {
     // assert a specific status flip timing; we assert the body is always
     // well-formed and never a partial/empty page render.
     let mut saw_pre_render_controlled = false;
-    let window_start = Instant::now();
-    while window_start.elapsed() < Duration::from_millis(1500) {
-        if let Ok(resp) = client.get(&page_url).send().await {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+    let window_deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while tokio::time::Instant::now() < window_deadline {
+        if let Ok((status, body)) =
+            zfb_test_utils::http_get_before(&client, &page_url, window_deadline).await
+        {
             // NEVER an empty or partial body.
             assert!(
                 !body.is_empty(),
@@ -982,7 +983,7 @@ async fn eager_request_before_render_serves_controlled_body() {
                 break;
             }
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+        zfb_test_utils::poll_before(window_deadline, POLL_INTERVAL).await;
     }
 
     // Either we observed the controlled 404 pre-render body, or the
@@ -990,19 +991,19 @@ async fn eager_request_before_render_serves_controlled_body() {
     // (the contract is "never a wrong body", not "always observe 404").
     // Now the authoritative positive: the eager render eventually serves
     // the real page with 200.
-    let render_start = Instant::now();
+    let _render_phase = zfb_test_utils::TestPhase::new("eager-render-to-served-V1");
+    let render_deadline = tokio::time::Instant::now() + RENDER_DEADLINE;
     let mut served_page = false;
-    while render_start.elapsed() < RENDER_DEADLINE {
-        if let Ok(resp) = client.get(&page_url).send().await {
-            if resp.status().as_u16() == 200 {
-                let body = resp.text().await.unwrap_or_default();
-                if body.contains("V1-MARKER-A") {
-                    served_page = true;
-                    break;
-                }
+    while tokio::time::Instant::now() < render_deadline {
+        if let Ok((status, body)) =
+            zfb_test_utils::http_get_before(&client, &page_url, render_deadline).await
+        {
+            if status == 200 && body.contains("V1-MARKER-A") {
+                served_page = true;
+                break;
             }
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+        zfb_test_utils::poll_before(render_deadline, POLL_INTERVAL).await;
     }
     assert!(
         served_page,
@@ -1105,28 +1106,41 @@ async fn early_shutdown_before_digest_skips_graph_save() {
     // — which reads the (still-`None`) digest slot and must SKIP the
     // save. (A bare SIGKILL would prove nothing: the process would die
     // before reaching the save block regardless of the skip logic.)
+    let _phase = zfb_test_utils::TestPhase::new("SIGINT-to-graceful-exit");
     let pgid = session.guard.pgid;
-    unsafe {
-        libc::kill(-pgid, libc::SIGINT);
-    }
-    // Wait for the process to actually exit so the shutdown path has run.
     let reap_start = Instant::now();
-    loop {
-        if session.guard.try_exit_status().is_some() {
-            break;
+    assert_eq!(
+        unsafe { libc::kill(-pgid, libc::SIGINT) },
+        0,
+        "send SIGINT: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut forced = false;
+    let status = loop {
+        if let Some(status) = session.guard.try_exit_status() {
+            break status;
         }
         if reap_start.elapsed() > SHUTDOWN_FORCE_KILL_AFTER {
-            // Force kill if SIGINT didn't take; the assertion below still
-            // catches it (a force-kill lands the reap at ~SHUTDOWN_FORCE_KILL_AFTER,
-            // which exceeds GRACEFUL_SHUTDOWN_DEADLINE → fails).
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
-            }
-            let _ = session.guard.child.wait();
-            break;
+            forced = true;
+            assert_eq!(
+                unsafe { libc::kill(-pgid, libc::SIGKILL) },
+                0,
+                "cleanup SIGKILL: {}",
+                std::io::Error::last_os_error()
+            );
+            break session.guard.child.wait().expect("reap forced cleanup");
         }
         tokio::time::sleep(POLL_INTERVAL).await;
-    }
+    };
+    eprintln!(
+        "[test-phase] shutdown status={status:?} forced={forced} elapsed={:?}",
+        reap_start.elapsed()
+    );
+    assert!(
+        !forced && status.success(),
+        "shutdown was not a successful graceful exit: status={status:?}, forced={forced}.\n{}",
+        session.logs()
+    );
 
     // The graceful shutdown must have skipped fast (read the None digest slot
     // and exited), NOT blocked on the in-flight digest. A blocked shutdown

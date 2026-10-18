@@ -86,6 +86,7 @@ use zfb_build::{
 use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
+use zfb_test_utils::{http_get_before, poll_before, with_test_tasks, TestPhase};
 
 /// Serialize the real-watcher tests. Each stands up a live notify watcher
 /// plus an in-process dev server; cargo runs tests in a file concurrently by
@@ -169,15 +170,19 @@ fn seed_graph(project: &Path) -> Arc<Mutex<DependencyGraph>> {
 /// Build the `BuildContext` whose `render_pages` fans out over the shared
 /// route table. `DevAssetPipeline` then writes each rendered page to
 /// `ctx.dist_root/<output_path>` atomically.
-fn make_ctx(html_root: PathBuf, routes: RouteTable) -> BuildContext {
+fn make_ctx(html_root: PathBuf, routes: RouteTable, project: PathBuf) -> BuildContext {
     BuildContext {
         dist_root: html_root,
         render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
+            let _phase = TestPhase::new("render-pages");
+            eprintln!("[watch-add-confirm] render pages={pages:?}");
             let table = routes.lock().unwrap();
             let mut out = Vec::new();
             for p in pages {
                 for output in table.get(p.path()).into_iter().flatten() {
-                    let html = format!("<html><body><p>{output}</p></body></html>");
+                    let content = std::fs::read_to_string(project.join("content/blog/hello.mdx"))?;
+                    let html =
+                        format!("<html><body><p>{output}</p><pre>{content}</pre></body></html>");
                     let output_path =
                         RelDistPath::new(output.clone()).expect("test output is a relative path");
                     out.push(RenderedPage {
@@ -212,7 +217,9 @@ fn make_discovery_hook(
     let slug_src = project.join("pages/blog/[slug].tsx");
     let content_blog = project.join("content/blog");
     Arc::new(move |created: &[PathBuf]| {
+        let _phase = TestPhase::new("discovery-hook");
         invocations.lock().unwrap().push(created.to_vec());
+        eprintln!("[watch-add-confirm] discovery paths={created:?}");
         let mut out = Vec::new();
         for c in created {
             // Normalize both paths for comparison: canonicalize if possible,
@@ -272,7 +279,11 @@ async fn bind_ephemeral() -> (TcpListener, SocketAddr) {
 /// without the V8 rebundle step (not reachable from crate tests).
 #[tokio::test(flavor = "multi_thread")]
 async fn real_watcher_add_content_file_serves_new_route_as_200() {
+    with_test_tasks(|tasks| async move {
+    let admission = TestPhase::new("serial-admission");
     let _serial = SERIAL.lock().await;
+    drop(admission);
+    let _test = TestPhase::new("watch-add-confirm");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     // Canonicalize so notify's FSEvents paths and our prefix checks agree.
@@ -295,7 +306,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     );
 
     let html_root = project.join("dist");
-    let ctx = make_ctx(html_root.clone(), routes.clone());
+    let ctx = make_ctx(html_root.clone(), routes.clone(), project.clone());
 
     // Debounce: 200ms — generous for macOS FSEvents coalescing.
     let debounce = Duration::from_millis(200);
@@ -335,7 +346,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
         render_on_request_hook: None,
         redirects: None,
     };
-    let server = tokio::spawn(async move {
+    let server = tasks.spawn("server", async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
     });
     tokio::task::yield_now().await;
@@ -343,7 +354,16 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     // ----------------------------------------------------------------
     // 2. Spin up the orchestrator run() loop with discovery hook wired.
     // ----------------------------------------------------------------
-    let orch_task = tokio::spawn(async move { orch.run(ctx, Some(discover), |_outcome| {}).await });
+    let orch_task = tasks.spawn("orchestrator", async move {
+        let startup = TestPhase::new("orchestrator-start-to-watch-registered-boot-hook");
+        orch.run_with_boot(ctx, Some(discover),
+            |outcome| eprintln!("[watch-add-confirm] published outcome={outcome:?}"),
+            Some(move |_: &BuildOrchestrator<DevAssetPipeline>, _: &BuildContext| {
+                drop(startup);
+                None
+            }),
+        ).await
+    });
 
     // ----------------------------------------------------------------
     // 2b. Watcher-live handshake (deterministic warmup).
@@ -373,6 +393,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     // regression. Warmup files create `/blog/__warmup_*` routes, never
     // `/blog/foo`, so the baseline 404 assertion below still holds.
     {
+        let _phase = TestPhase::new("marker-to-discovery-hook");
         let hook = hook_invocations.clone();
         let handshake = zfb_test_utils::watcher_live_handshake(
             zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
@@ -395,17 +416,19 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
         .await;
         assert!(
             handshake.live,
-            "watcher never became live: no warmup create reached the discovery hook within \
-             {:?} ({} markers) — the FSEvents stream never started delivering events, a \
-             watcher-layer problem, not a discovery regression",
-            handshake.elapsed, handshake.markers_written,
+            "no warmup create reached the discovery hook within {:?} ({} markers); \
+             orchestrator_finished={} server_finished={}; watcher delivery, classification and discovery remain unattributed",
+            handshake.elapsed, handshake.markers_written, orch_task.is_finished(), server.is_finished(),
         );
     }
 
     // ----------------------------------------------------------------
     // 3. Confirm /blog/foo 404s BEFORE the file is created (baseline).
     // ----------------------------------------------------------------
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
     let before = client
         .get(format!("http://{addr}/blog/foo"))
         .send()
@@ -432,14 +455,14 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     //    Overall deadline: 30s — far longer than the 200ms debounce + tick
     //    lag, short enough to fail fast on a genuine regression.
     // ----------------------------------------------------------------
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let publication = TestPhase::new("mutation-to-served-body");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut got_200 = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        match client.get(format!("http://{addr}/blog/foo")).send().await {
-            Ok(resp) if resp.status().as_u16() == 200 => {
+    while tokio::time::Instant::now() < deadline {
+        poll_before(deadline, Duration::from_millis(100)).await;
+        match http_get_before(&client, &format!("http://{addr}/blog/foo"), deadline).await {
+            Ok((200, body)) => {
                 got_200 = true;
-                let body = resp.text().await.unwrap_or_default();
                 // The render_pages callback embeds the output path in the
                 // body. Check it matches the expected URL.
                 assert!(
@@ -488,11 +511,13 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
          invocations: {invs:?}",
     );
 
+    drop(invs);
+
     // ----------------------------------------------------------------
     // 8. Teardown
     // ----------------------------------------------------------------
-    orch_task.abort();
-    server.abort();
+    drop(publication);
+    }).await;
 }
 
 /// Edit-path regression: editing an EXISTING content file still hot-reloads
@@ -509,7 +534,11 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
 /// the endpoint must return 200 after the edit.
 #[tokio::test(flavor = "multi_thread")]
 async fn real_watcher_edit_existing_file_still_hot_reloads() {
+    with_test_tasks(|tasks| async move {
+    let admission = TestPhase::new("serial-admission");
     let _serial = SERIAL.lock().await;
+    drop(admission);
+    let _test = TestPhase::new("watch-add-confirm");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path().canonicalize().expect("canonicalize project");
@@ -528,7 +557,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     );
 
     let html_root = project.join("dist");
-    let ctx = make_ctx(html_root.clone(), routes.clone());
+    let ctx = make_ctx(html_root.clone(), routes.clone(), project.clone());
     let debounce = Duration::from_millis(200);
 
     let orch = BuildOrchestrator::new(
@@ -577,13 +606,16 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         render_on_request_hook: None,
         redirects: None,
     };
-    let server = tokio::spawn(async move {
+    let server = tasks.spawn("server", async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
     });
     tokio::task::yield_now().await;
 
     // Verify initial 200 before the orchestrator does anything.
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
     let r0 = client
         .get(format!("http://{addr}/blog/hello"))
         .send()
@@ -598,7 +630,16 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     // ----------------------------------------------------------------
     // 2. Spin up orchestrator run() with discovery hook wired.
     // ----------------------------------------------------------------
-    let orch_task = tokio::spawn(async move { orch.run(ctx, Some(discover), |_outcome| {}).await });
+    let orch_task = tasks.spawn("orchestrator", async move {
+        let startup = TestPhase::new("orchestrator-start-to-watch-registered-boot-hook");
+        orch.run_with_boot(ctx, Some(discover),
+            |outcome| eprintln!("[watch-add-confirm] published outcome={outcome:?}"),
+            Some(move |_: &BuildOrchestrator<DevAssetPipeline>, _: &BuildContext| {
+                drop(startup);
+                None
+            }),
+        ).await
+    });
 
     // Watcher-live handshake (same FSEvents dead-window mitigation as the
     // ADD test): write fresh-named warmup files under content/blog until
@@ -607,6 +648,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     // routes are `/blog/__warmup_*`, never `/blog/hello`, so the assertions
     // below are unaffected.
     {
+        let _phase = TestPhase::new("marker-to-discovery-hook");
         let hook = hook_invocations.clone();
         let handshake = zfb_test_utils::watcher_live_handshake(
             zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
@@ -629,9 +671,9 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         .await;
         assert!(
             handshake.live,
-            "watcher never became live: no warmup create reached the discovery hook \
-             within {:?} ({} markers) — a watcher-layer problem, not a discovery regression",
-            handshake.elapsed, handshake.markers_written,
+            "no warmup create reached the discovery hook within {:?} ({} markers); \
+             orchestrator_finished={} server_finished={}; watcher delivery, classification and discovery remain unattributed",
+            handshake.elapsed, handshake.markers_written, orch_task.is_finished(), server.is_finished(),
         );
     }
 
@@ -644,21 +686,21 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         .expect("write updated hello.mdx");
 
     // ----------------------------------------------------------------
-    // 4. Poll until the route returns 200. The exact body doesn't change
-    //    (our stub renderer uses the output path as body, not the source
-    //    content), but the endpoint must not regress to 404 or 500.
+    // 4. Require a fresh rendered body: the old 200 alone could pass
+    //    without the edit ever reaching the orchestrator.
     //    Overall deadline: 30s.
     // ----------------------------------------------------------------
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let publication = TestPhase::new("mutation-to-served-body");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut got_200_after_edit = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        match client.get(format!("http://{addr}/blog/hello")).send().await {
-            Ok(resp) if resp.status().as_u16() == 200 => {
-                // We got 200 — the route still exists and the file was
-                // (re-)written. That's the hot-reload invariant.
-                got_200_after_edit = true;
-                break;
+    while tokio::time::Instant::now() < deadline {
+        poll_before(deadline, Duration::from_millis(100)).await;
+        match http_get_before(&client, &format!("http://{addr}/blog/hello"), deadline).await {
+            Ok((200, body)) => {
+                if body.contains("v2 content") {
+                    got_200_after_edit = true;
+                    break;
+                }
             }
             Ok(_) => {}
             Err(e) => eprintln!("poll error: {e}"),
@@ -667,14 +709,14 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
 
     assert!(
         got_200_after_edit,
-        "GET /blog/hello must return 200 within 30s after editing hello.mdx (hot-reload regression guard)",
+        "GET /blog/hello must return 200 with v2 content within 30s after editing hello.mdx (hot-reload regression guard)",
     );
 
     // ----------------------------------------------------------------
     // 5. Teardown
     // ----------------------------------------------------------------
-    orch_task.abort();
-    server.abort();
+    drop(publication);
+    }).await;
 }
 
 /// Real-watcher confirmation for the per-tick renderer reload
@@ -707,7 +749,11 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
 /// falsifiable encoding of the user-visible bug.
 #[tokio::test]
 async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
+    with_test_tasks(|tasks| async move {
+    let admission = TestPhase::new("serial-admission");
     let _serial = SERIAL.lock().await;
+    drop(admission);
+    let _test = TestPhase::new("watch-add-confirm");
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path().canonicalize().expect("canonicalize project");
@@ -736,6 +782,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         BuildContext {
             dist_root: html_root.clone(),
             render_pages: Arc::new(move |pages: &[PageId], _narrowing| {
+                let _phase = TestPhase::new("render-pages");
                 let table = routes.lock().unwrap();
                 let body = snapshot_for_render.lock().unwrap().clone();
                 let mut out = Vec::new();
@@ -758,6 +805,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
             run_islands: None,
             run_client_scripts: None,
             reload_renderer: Some(Arc::new(move || {
+                let _phase = TestPhase::new("reload-renderer-read-and-swap");
                 let fresh = std::fs::read_to_string(&hello_for_reload)?;
                 *snapshot_for_reload.lock().unwrap() = fresh;
                 reload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -815,12 +863,15 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         render_on_request_hook: None,
         redirects: None,
     };
-    let server = tokio::spawn(async move {
+    let server = tasks.spawn("server", async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
     });
     tokio::task::yield_now().await;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
     let r0 = client
         .get(format!("http://{addr}/blog/hello"))
         .send()
@@ -834,13 +885,23 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
 
     // No discovery hook: the per-tick reload is the only refresh path,
     // exactly the EDIT scenario under test.
-    let orch_task = tokio::spawn(async move { orch.run(ctx, None, |_outcome| {}).await });
+    let orch_task = tasks.spawn("orchestrator", async move {
+        let startup = TestPhase::new("orchestrator-start-to-watch-registered-boot-hook");
+        orch.run_with_boot(ctx, None,
+            |outcome| eprintln!("[watch-add-confirm] published outcome={outcome:?}"),
+            Some(move |_: &BuildOrchestrator<DevAssetPipeline>, _: &BuildContext| {
+                drop(startup);
+                None
+            }),
+        ).await
+    });
 
     // Watcher-live handshake (same FSEvents dead-window mitigation as the
     // ADD test, but probed through the reload counter since there is no
     // discovery hook here): write fresh-named throwaway files under
     // content/blog/ until a tick lands.
     {
+        let _phase = TestPhase::new("marker-to-reload-callback");
         let counter = reload_count.clone();
         let handshake = zfb_test_utils::watcher_live_handshake(
             zfb_test_utils::HandshakeOpts::new(Duration::from_secs(15)),
@@ -856,8 +917,8 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         .await;
         assert!(
             handshake.live,
-            "watcher-live handshake timed out: no tick within {:?} ({} markers)",
-            handshake.elapsed, handshake.markers_written,
+            "no reload callback within {:?} ({} markers); orchestrator_finished={} server_finished={}",
+            handshake.elapsed, handshake.markers_written, orch_task.is_finished(), server.is_finished(),
         );
     }
 
@@ -866,18 +927,17 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         .expect("in-place edit hello.mdx");
 
     // Poll until the SERVED body carries the new content.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let publication = TestPhase::new("mutation-to-served-body");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut served_fresh = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(resp) = client.get(format!("http://{addr}/blog/hello")).send().await {
-            if resp.status().as_u16() == 200 {
-                if let Ok(body) = resp.text().await {
-                    if body.contains("V2-MARKER") {
-                        served_fresh = true;
-                        break;
-                    }
-                }
+    while tokio::time::Instant::now() < deadline {
+        poll_before(deadline, Duration::from_millis(100)).await;
+        if let Ok((200, body)) =
+            http_get_before(&client, &format!("http://{addr}/blog/hello"), deadline).await
+        {
+            if body.contains("V2-MARKER") {
+                served_fresh = true;
+                break;
             }
         }
     }
@@ -889,6 +949,6 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
          body stays at v1 forever)",
     );
 
-    orch_task.abort();
-    server.abort();
+    drop(publication);
+    }).await;
 }
