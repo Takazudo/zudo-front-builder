@@ -31,7 +31,14 @@ fn snapshot(
     config: BundleConfig,
     conditions: &str,
 ) -> (String, BTreeMap<String, Vec<u8>>) {
-    let bundler = bundler(root, virtuals, conditions);
+    snapshot_with_bundler(root, bundler(root, virtuals, conditions), config)
+}
+
+fn snapshot_with_bundler(
+    root: &Path,
+    bundler: EsbuildSubprocessBundler,
+    config: BundleConfig,
+) -> (String, BTreeMap<String, Vec<u8>>) {
     let islands = [Island::new("Counter", root.join("counter.ts"))];
     let token = bundler
         .derive_build_token(&islands, &config, "test-compiler-v1")
@@ -330,4 +337,69 @@ fn dev_define_spelling_changes_observable_function_source_and_identity() {
         before.0,
         snapshot(root, vec![], configured("first"), "browser").0
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn aliased_tmpdir_and_project_root_preserve_graph_tokens_and_raw_outputs() {
+    const CHILD: &str = "ZFB_GRAPH_ALIAS_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let physical = temp.path().join("private/var/tmp");
+        fs::create_dir_all(&physical).unwrap();
+        let logical = temp.path().join("tmp");
+        std::os::unix::fs::symlink(&physical, &logical).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "aliased_tmpdir_and_project_root_preserve_graph_tokens_and_raw_outputs",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("TMPDIR", &logical)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "aliased TMPDIR child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let logical = temp.path();
+    let physical = logical.canonicalize().unwrap();
+    assert_ne!(logical, physical);
+    for preserve in [false, true] {
+        for root in [logical, physical.as_path()] {
+            fixture(root);
+            fs::write(root.join("counter.ts"), "import {value} from 'virtual:demo'; export function Counter(){return value.toString()}").unwrap();
+            let build = |source: &str| {
+                let base = bundler(
+                    root,
+                    vec![("virtual:demo".into(), source.into())],
+                    "browser",
+                );
+                let mut cfg = base.config().clone();
+                if preserve {
+                    cfg.extra_args.push("--preserve-symlinks".into());
+                }
+                snapshot_with_bundler(
+                    root,
+                    EsbuildSubprocessBundler::new(cfg),
+                    BundleConfig::production(),
+                )
+            };
+            let before = build("export function value(){return 1 + 2}");
+            fs::write(root.join("unrelated.md"), "irrelevant edit").unwrap();
+            assert_eq!(before, build("export function value(){return 1 + 2}"));
+            let after = build("export function value(){return 3}");
+            assert_ne!(
+                before.0, after.0,
+                "authored source must invalidate the token"
+            );
+            assert_ne!(before.1, after.1, "raw emitted bytes must change");
+        }
+    }
 }
