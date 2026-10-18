@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { referenceRequest, referenceBody } from "./reference-http.mjs";
 import {
   acquire,
   compareVersion,
@@ -92,23 +93,17 @@ function testPath(path) {
   );
 }
 
-export async function assessUpstream(plan, cacheDir, fetcher = fetch) {
+export async function assessUpstream(plan, cacheDir, fetcher = fetch, env = process.env) {
   const cache = await outsideCheckout(cacheDir);
   await mkdir(cache, { recursive: true });
   await outsideCheckout(cache);
   const captures = [],
     findings = [];
   async function raw(url) {
-    const response = await fetcher(url, {
-      headers: {
-        accept: "application/vnd.github+json, application/json, application/octet-stream",
-      },
-    });
-    if (response.url && response.url !== url) throw Error(`Unexpected redirect for ${url}`);
-    if (!response.ok || response.status !== 200) throw Error(`${url}: HTTP ${response.status}`);
+    const response = await referenceRequest(url, fetcher, env);
     if (!response.headers?.get?.("content-type"))
       throw Error(`${url}: missing response content type`);
-    const bytes = Buffer.from(await response.arrayBuffer());
+    const bytes = Buffer.from(await referenceBody(response, "arrayBuffer"));
     if (!bytes.length || bytes.length > maxResponseBytes)
       throw Error(`${url}: empty or oversized response`);
     const hash = sha256(bytes),

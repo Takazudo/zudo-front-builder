@@ -914,6 +914,8 @@ jobs:
 
       - name: Required Wind comparison and shipping evidence
         if: ${{ steps.wind_route.outputs.relevant == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/wind-compatibility/ci-run.sh '${{ steps.wind_route.outputs.mode }}'
 
       - name: Assert explicit irrelevant Wind no-op
