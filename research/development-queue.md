@@ -10,6 +10,8 @@ Snapshot: 2026-10-19; integration/CI triage owner: the development-checkpoint ma
 - Scope: reviewed graph-path fix from PR [4308](https://github.com/Takazudo/zudo-front-builder/pull/4308),
   bounded watcher/dev tests from PR [4309](https://github.com/Takazudo/zudo-front-builder/pull/4309),
   ICU publication fix from PR [4313](https://github.com/Takazudo/zudo-front-builder/pull/4313),
+  qualification-evidence docs from PR [4316](https://github.com/Takazudo/zudo-front-builder/pull/4316),
+  the per-command nextest evidence helper from PR [4318](https://github.com/Takazudo/zudo-front-builder/pull/4318),
   and this workflow policy. Native acceptance of the combined checkpoint is not claimed.
 - Development head: resolve `git rev-parse origin/base/4294-development-checkpoint` after fetching.
   The aggregation PR records each immutable checkpoint SHA and exact-head CI receipt. A later
@@ -118,7 +120,8 @@ Do not silently retarget native work to this development branch.
 ## Development and qualification matrix
 
 These are development states at the snapshot, not release approval. None of the changes below
-is claimed released. “Included” refers only to checkpoint `b605a4d`, not `main` (`21d6807e`).
+is claimed released. “Included” refers to the development checkpoint branch (heads `b605a4d` and
+later), not to `main` before the checkpoint merge (`21d6807e`).
 Exact source heads remain available through each linked PR; newer heads need new evidence.
 
 | Work / immutable head | Implemented / checkpoint inclusion | Qualification and remaining boundary |
@@ -132,21 +135,54 @@ Exact source heads remain available through each linked PR; newer heads need new
 | [4311](https://github.com/Takazudo/zudo-front-builder/pull/4311), `b596c4d009afe7b0a5d1445680d2ee57438e6261` | Owner-attested evidence capability, stacked on 4310; excluded | Linux checks only; integrity checks do not authenticate native execution; no native collection/application |
 | [4312](https://github.com/Takazudo/zudo-front-builder/pull/4312), `b605a4deb17c387f65cc2d8c81893473c84253b0` | Development checkpoint | Tree-equivalent Linux evidence above; cancelled duplicate runs not passes; combined native qualification open |
 | [4313](https://github.com/Takazudo/zudo-front-builder/pull/4313), `b605a4deb17c387f65cc2d8c81893473c84253b0` | Atomic ICU file publication; merged into checkpoint only | Offline publication checks and Linux batch; no native ICU execution claim |
-| [4314](https://github.com/Takazudo/zudo-front-builder/issues/4314) / [4315](https://github.com/Takazudo/zudo-front-builder/pull/4315), `bda633b3589e201737b02cf2060f7b24d41a45a7` | Security issue / rustls fix candidate; excluded | Admission-blocked: live contracts retain old lock pin. Independent Linux checks passed; broad local compilation exhausted disk before tests. Native evidence/application remain separate |
+| [4314](https://github.com/Takazudo/zudo-front-builder/issues/4314) / [4315](https://github.com/Takazudo/zudo-front-builder/pull/4315), `bda633b3589e201737b02cf2060f7b24d41a45a7` | Security issue / rustls fix candidate; excluded | Admission-blocked: live contracts retain old lock pin. Cloud local compilation exhausted disk before tests; hosted Linux exact-source verification later passed (below). Native evidence/application remain separate |
+| [4316](https://github.com/Takazudo/zudo-front-builder/pull/4316), `2b2d12d897c81791fa46d26032a667bde1d5e220` | Qualification/Cloud capacity docs; included by normal merge | Docs only; no execution claim |
+| [4317](https://github.com/Takazudo/zudo-front-builder/pull/4317), `9e8fbd1487adc6cc922dfd5d4272fbf9e30ec82a` | Hosted Linux exact-source Rust lane, stacked on 4315; excluded | Executed once for source `bda633b` (below); security-branch evidence only |
+| [4318](https://github.com/Takazudo/zudo-front-builder/pull/4318), `048a8f18d1b4d31a24c1760401994c3d875dac45` | Per-command nextest evidence helper; included by normal merge | 15 offline helper tests; owner-reported WSL real capture (below); no native Mac claim |
+| [4319](https://github.com/Takazudo/zudo-front-builder/pull/4319), `02e25b55f4de76152af82483a79c8a6b95cdc599` | Local Darwin security-evidence adapter, stacked on 4315; excluded | Final-head CI passed; no real Darwin size collection or live application yet |
 
 For 4315, the [capacity and check receipt](https://github.com/Takazudo/zudo-front-builder/pull/4315#issuecomment-6266482957)
 records Clippy, 457 md-extras tests, 10 jsx-pragma tests, no-V8 compile and saved Linux artifact
 replay passing. Doctests report 3 passed/7 ignored; compile-only examples are not execution.
-Full nextest and scoped environment-gate builds failed before execution: **zero tests executed**.
-Health's exact workspace-resolved environment filter remains unrun. Saved-byte replay is not
-full original-input replay or Darwin measurement. The security owner separately owns the proposed
-Linux-only workflow option and admission work; this ledger neither delivers nor dispatches it.
+In that Cloud environment, full nextest and scoped environment-gate builds failed before
+execution: **zero tests executed** there; that first result is retained. Saved-byte replay is not
+full original-input replay or Darwin measurement.
+
+The Linux-only option was later implemented in draft (unmerged) PR 4317 and executed once on a standard hosted
+Ubuntu 24.04 runner: [run 39248247275](https://github.com/Takazudo/zudo-front-builder/actions/runs/39248247275),
+workflow/control head `9e8fbd1487adc6cc922dfd5d4272fbf9e30ec82a`, checked-out source
+`bda633b3589e201737b02cf2060f7b24d41a45a7`, Rust 1.99.1, no retries. Every recorded check exited 0:
+build, inventory, Clippy, workspace nextest **6,874 passed / 86 skipped**, doctests 3 passed /
+7 ignored, md-extras 457, md-extras Clippy, no-V8, jsx-pragma no-V8 10 (986 filtered), and the
+environment-gate filter 52 passed / 1,674 skipped. These are separate selections over overlapping
+test sets; do not add them into a unique total. This is evidence for the security branch source
+only, not for this checkpoint or `main`, and it neither evaluates nor applies live admission.
+
+PR 4319 (head `02e25b55f4de76152af82483a79c8a6b95cdc599`, stacked on 4315) passed its final-head
+CI: [local Darwin evidence 39254654825](https://github.com/Takazudo/zudo-front-builder/actions/runs/39254654825)
+(synthetic evidence) and [binary/scaffold 39254654886](https://github.com/Takazudo/zudo-front-builder/actions/runs/39254654886).
+Real Darwin size collection and live application have not happened. The security owner owns
+4315/4317/4319 and admission; none of them is imported into this checkpoint.
+
+## Per-command nextest evidence capture (PR 4318)
+
+PR 4318's helper (`scripts/capture-nextest-evidence.py`) passed its 15 offline tests. The
+[owner-reported WSL capture](https://github.com/Takazudo/zudo-front-builder/pull/4318#issuecomment-6269269513)
+used source `b605a4deb17c387f65cc2d8c81893473c84253b0` and tool head
+`048a8f18d1b4d31a24c1760401994c3d875dac45` with nextest 0.9.140, Python 3.12.3, Rust 1.95.0 on
+WSL2 ext4/inotify: `recursive_dirs` 23 passed and `watch_add_confirm` 3 passed; child and wrapper
+exits were 0 with `status=captured`. The first capture's evidence was byte-unchanged after the
+second; the second `preexisting.xml` matched the first original XML, and the second report had a
+new run UUID. This rests on the owner's report: the raw files stay on the owner's WSL host and
+were not independently retrieved or re-executed from Cloud. It does not recover #4309's lost
+native XML, establish FSEvents/Windows behavior, or qualify a Mac run.
 
 ## Holds, fixups and next topics
 
 | Work | Owner / status | Next permitted action |
 | --- | --- | --- |
-| Combined checkpoint Linux evidence | Checkpoint manager | Integrated batch recorded above; keep tree-equivalent evidence distinct from cancelled duplicate jobs and later-head acceptance |
+| Combined checkpoint Linux evidence | Checkpoint manager | Integrated batch recorded above; keep tree-equivalent evidence distinct from cancelled duplicate jobs and later-head acceptance. Heads after `b605a4d` (4316/4318 merges) carry their own exact-head CI in PR 4312 |
+| PRs 4315/4317/4319 (rustls security chain) | Security owner | Excluded from this checkpoint. Real Darwin size collection, admission resolution and any live application remain open |
 | Native failures from 4294 | Native qualification owner | Complete bounded source-specific follow-ups, preserving idle-host report and unresolved native stalls; Linux does not certify FSEvents |
 | PR 4307 (`e467b9b49283e8177e8fb88053f10d22be4dc252` at intake) | Runtime integration owner; real Cargo admission unresolved | Excluded. Resolve admission and evidence before this affected chain proceeds; no live contract application |
 | PR 4310 (`7ca64ee35e663ee47b59b39796c3b2dcb90b289b` at intake) | Separate admission/local-provenance task | Do not duplicate or integrate its follow-up here; implementation approval is not application approval |

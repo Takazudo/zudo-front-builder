@@ -182,8 +182,9 @@ the manager tracks broad verification, subject to the affected-chain holds above
 
 Use existing supported standard Linux GitHub Actions for broad verification where suitable and
 authorized. At the linked receipt, the separate security owner had only proposed a Linux-only
-Rust verification option; it was not delivered or executed. Use that option only after its
-implementation, review and authorized availability are verified. Existing Linux size measurement
+Rust verification option. It was later implemented in draft (unmerged) [PR 4317](https://github.com/Takazudo/zudo-front-builder/pull/4317)
+and executed for the PR 4315 source only (see `research/development-queue.md`); that result does
+not verify any other SHA. Use the option only where its review and authorized availability hold. Existing Linux size measurement
 is not a Rust test lane, and a workflow that also dispatches Mac is not a Linux-only substitute.
 Record source/control SHAs and first run evidence; never bypass admission gates or call skipped,
 unbuilt or deferred tests passing. The [security issue record](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6266488465)
