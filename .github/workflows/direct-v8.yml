@@ -1,0 +1,168 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to the same SHAs as
+# health.yml; bump them together.
+#
+# Opt-in direct-V8 lane (#4302, #4303 blocker "no direct-v8 CI lane"). It runs
+# only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` for the
+# Rolldown variant) or on manual dispatch, so it is never a required check and
+# never runs on ordinary PRs. It records the Linux x86_64 native row with the
+# same harness as prototypes/direct-v8/PLATFORMS.md; the other shipping rows
+# need their own native hosts and stay NOT RUN here.
+
+name: direct-v8 (opt-in)
+
+on:
+  pull_request:
+    branches: [main, "base/**"]
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      rolldown:
+        description: Also qualify direct-v8,rolldown-prototype
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per added label, so adding an unrelated (or the other) label never cancels a
+  # running row; pushes and dispatches share the `all` group.
+  group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  # Decide which rows were asked for, so an unrequested row is skipped rather
+  # than reported as a green no-op.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      features: ${{ steps.plan.outputs.features }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          INPUT_ROLLDOWN: ${{ inputs.rolldown }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          event, action, label = os.environ["EVENT"], os.environ["ACTION"], os.environ["LABEL"]
+          labels = set(json.loads(os.environ["LABELS"] or "[]") or [])
+          if event == "workflow_dispatch":
+              wanted = ["direct-v8"] + (["direct-v8-rolldown"] if os.environ["INPUT_ROLLDOWN"] == "true" else [])
+          elif action == "labeled":
+              # Only the label just added starts work; an unrelated label never does.
+              wanted = [label] if label in ("direct-v8", "direct-v8-rolldown") else []
+          else:
+              wanted = sorted(labels & {"direct-v8", "direct-v8-rolldown"})
+          features = {"direct-v8": "direct-v8", "direct-v8-rolldown": "direct-v8,rolldown-prototype"}
+          print("features=" + json.dumps([features[name] for name in wanted]))
+          PY
+          cat "$GITHUB_OUTPUT"
+
+  linux-x64:
+    name: direct-v8 (${{ matrix.features }}, linux-x64)
+    needs: plan
+    if: needs.plan.outputs.features != '[]'
+    runs-on: ubuntu-latest
+    # Same budget as health's V8 job; replace with a measured value after the
+    # first runs (debug build with a prebuilt V8 archive, plus a ~7 min observer).
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ${{ fromJSON(needs.plan.outputs.features) }}
+    env:
+      # The PR head, not the merge ref: the harness ties the row to this commit.
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ROLLDOWN: ${{ matrix.features != 'direct-v8' }}
+      ROW_DIR: ${{ github.workspace }}/target/direct-v8-ci
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          # The direct-v8 target tree shares nothing useful with embed_v8/no-v8.
+          prefix-key: "v1-zfb-direct-v8"
+          key: ${{ matrix.features }}
+
+      - name: Cache staged esbuild binary (issue 2385)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
+
+      # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile time.
+      - run: pnpm install --frozen-lockfile
+
+      - name: Offline harness controls
+        run: python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
+
+      - name: Prepare pinned ICU data
+        run: |
+          python3 prototypes/direct-v8/prepare-icu.py
+          echo "ZFB_V8_ICU_DATA=$PWD/target/direct-v8-inputs/icu77/icudtl.dat" >> "$GITHUB_ENV"
+
+      - name: Dependency resolution rows (all shipping targets; no build)
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--extra-feature rolldown-prototype)
+          mkdir -p "$ROW_DIR/graph"
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+                        x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            python3 prototypes/direct-v8/record-graph.py --cli --target "$target" "${extra[@]}" \
+              --output "$ROW_DIR/graph/$target.json"
+          done
+
+      - name: Native row (Linux x86_64, harness build)
+        run: |
+          df -h / | tee "$ROW_DIR/disk-before.txt"
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          status=0
+          python3 prototypes/direct-v8/qualify-target.py --target x86_64-unknown-linux-gnu --build \
+            --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
+          df -h / | tee "$ROW_DIR/disk-after.txt"
+          exit "$status"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### direct-v8 ($MATRIX_FEATURES, linux-x64) at \`$SOURCE_SHA\`"
+            if [ -f "$ROW_DIR/qualify/row.json" ]; then
+              python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("status:", r["status"]); [print(f"- {k}: {v.get(\"passed\")}") for k,v in r["checks"].items()]' "$ROW_DIR/qualify/row.json"
+            else
+              echo "No native row recorded."
+            fi
+            echo
+            echo "Not run in this lane: Linux arm64, Darwin arm64/x64 and Windows native rows, packaging, Rolldown coverage cases."
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_FEATURES: ${{ matrix.features }}
+
+      - name: Upload row evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: direct-v8-linux-x64-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
+          path: ${{ env.ROW_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

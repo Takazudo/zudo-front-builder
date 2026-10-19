@@ -60,6 +60,18 @@ build/dev smoke. The selected Rolldown coverage in #4302 (aliases and virtual
 sources, copied Wasm, source maps, Worker output, hydration/CSS, declared
 workers) still needs its own cases and stays NOT RUN.
 
+## Opt-in CI lane
+
+`.github/workflows/direct-v8.yml` records the Linux x86_64 row on a standard
+GitHub-hosted runner. It runs only for a PR labelled `direct-v8` (and
+`direct-v8-rolldown` for the Rolldown variant), or by manual dispatch once the
+workflow is on the default branch. It is not a required check and never runs on
+an unlabelled PR. Each run executes the offline controls, the five dependency
+resolution rows, and `qualify-target.py --build` against the PR head SHA (not
+the merge ref). It uploads `row.json`, `graph.json`, the build log and the
+lifecycle logs, kept for 14 days. A CI row is evidence for that exact SHA only.
+Linux arm64, Darwin and Windows native rows are not part of this lane.
+
 ## Rolldown findings
 
 Linux x86_64, `direct-v8,rolldown-prototype` CLI built by the harness at
