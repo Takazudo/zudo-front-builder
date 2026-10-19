@@ -4,6 +4,7 @@
 Receipt write failures are injected by the fake Cargo turning the receipt path
 into a directory, which fails for root too and does not depend on chmod.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -100,6 +101,12 @@ class FailureHandlingTests(unittest.TestCase):
         for output, created in [(report, [report]), (self.root / 'reports', [self.root / 'reports']), (report / 'inside', [report])]:
             with self.subTest(output=output):
                 self.assert_refused(self.capture(output, options), created)
+        with self.subTest(case='preflight failure'):
+            self.assert_refused(self.capture(report, options, env={'FAKE_VERSION': '0.9.141'}), [report])
+        lock = report.parent / ('.capture-' + hashlib.sha256(str(report).encode()).hexdigest() + '.lock')
+        for output in (lock, Path(str(lock) + '.started')):
+            with self.subTest(output=output):
+                self.assert_refused(self.capture(output, options), [output])
         report.parent.mkdir(parents=True)
         report.write_bytes(b'prior report')
         self.assert_refused(self.capture(report, options), [])

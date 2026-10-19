@@ -76,12 +76,14 @@ stale, invalid, or source/configuration-mismatched evidence makes the wrapper ex
 Preflight failures exit `2` and record `child_exit: null`, `execution: not_started`.
 
 The destination is checked before anything is created. An existing path, including a
-dangling symlink, is refused and left unchanged. Cargo metadata identifies the workspace
-first; a destination inside it (also through a symlinked parent), equal to the
-nextest report path, an ancestor of it, or below it is refused without creating any
-directory and without starting the command. Those refusals, and a failure of Cargo
-metadata itself, write no receipt and say so on stderr; other preflight failures
-create the validated directory and record a receipt.
+dangling symlink, is refused and left unchanged. Cargo metadata and the nextest
+configuration identify the workspace and report path first; a destination inside the
+workspace (also through a symlinked parent), equal to the report path or its capture
+lock/marker, an ancestor of them, or below them is refused without creating any
+directory and without starting the command. Those refusals, and failures that leave
+the workspace or report path unknown (Cargo metadata, Git, or configuration errors),
+write no receipt and say so on stderr. Later preflight failures (forwarded options,
+Miri, nextest version, disabled JUnit) create the validated directory and record a receipt.
 
 The receipt is written to a temporary name and renamed into place, so `receipt.json`
 exists only when complete. If it cannot be written, stderr prints `receipt not written`
