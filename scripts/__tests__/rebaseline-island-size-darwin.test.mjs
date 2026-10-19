@@ -82,6 +82,12 @@ import {
   writeRewireInputs,
   writeRewireManifests,
 } from "./fixtures/island-size-cargo-rewire.mjs";
+import {
+  externalLocks,
+  externalDeclaration,
+  externalReceipt,
+  writeExternalInputs,
+} from "./fixtures/island-size-external-edge.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -2991,9 +2997,13 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
 // reviewed inputs; a native Darwin artifact and a Linux artifact both measured
 // at the new lock. The shared proof refusals are covered on Linux; this suite
 // proves the Darwin handler, the paired stage/apply protocol and its refusals.
-describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging (#4258)", () => {
+describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema %i", (schema) => {
+  const locksForTest = schema === 1 ? rewireLocks : externalLocks;
+  const declarationForTest = schema === 1 ? rewireDeclaration : externalDeclaration;
+  const receiptForTest = schema === 1 ? closureReceipt : externalReceipt;
+  const writeInputsForTest = schema === 1 ? writeRewireInputs : writeExternalInputs;
   const rewireRoots = [];
-  const { oldText, newText, OLD, NEW } = rewireLocks();
+  const { oldText, newText, OLD, NEW } = locksForTest();
   const DARWIN = "research/v3-island-size/decision.json";
   const LINUX = "research/v3-island-size/decision-linux-x64.json";
   const TEST = "scripts/__tests__/island-size-budget.test.mjs";
@@ -3082,8 +3092,8 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
     linuxPinned = pin(liveOf(LINUX), linuxArtifact);
     writeFileSync(at(DARWIN), contractText(darwinPinned));
     writeFileSync(at(LINUX), contractText(linuxPinned));
-    darwinInputs = writeRewireInputs(at("research/v3-island-size/rewire-darwin"), DARWIN_TARGET);
-    linuxInputs = writeRewireInputs(at("research/v3-island-size/rewire-linux"), LINUX_TARGET);
+    darwinInputs = writeInputsForTest(at("research/v3-island-size/rewire-darwin"), DARWIN_TARGET);
+    linuxInputs = writeInputsForTest(at("research/v3-island-size/rewire-linux"), LINUX_TARGET);
     repo.git("add", "-A");
     repo.git("commit", "-qm", "test fixture: new Cargo.lock, pinned contracts, rewire inputs");
     saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
@@ -3169,11 +3179,11 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
       newText,
       oldLockSource: { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD },
       newLockSource: { sha256: NEW },
-      declaration: rewireDeclaration(),
+      declaration: declarationForTest(),
       declarationSource: { path: "rewire.json", sha256: "1".repeat(64) },
       closures: {
-        old: { receipt: closureReceipt("old", DARWIN_TARGET), sha256: "2".repeat(64) },
-        new: { receipt: closureReceipt("new", DARWIN_TARGET), sha256: "3".repeat(64) },
+        old: { receipt: receiptForTest("old", DARWIN_TARGET), sha256: "2".repeat(64) },
+        new: { receipt: receiptForTest("new", DARWIN_TARGET), sha256: "3".repeat(64) },
       },
       target: DARWIN_TARGET,
       readManifest: (path) => Buffer.from(REWIRE_MANIFESTS_FOR_TEST[path]),
@@ -3198,15 +3208,18 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
     expect(next.baselineEvidence.cargoRewire).toMatchObject({
       oldSha: OLD,
       newSha: NEW,
-      added: [{ id: "zfb-js-host@0.0.0" }],
+      added: schema === 1 ? [{ id: "zfb-js-host@0.0.0" }] : [],
       changed: [
         {
           id: "zfb-render@0.0.0",
-          removedDependencies: ["sha2"],
-          addedDependencies: ["zfb-js-host"],
+          removedDependencies: schema === 1 ? ["sha2"] : [],
+          addedDependencies: schema === 1 ? ["zfb-js-host"] : ["sha2"],
         },
       ],
-      closure: { target: DARWIN_TARGET, rows: { old: 5, new: 6, unchanged: 5 } },
+      closure: {
+        target: DARWIN_TARGET,
+        rows: { old: schema === 1 ? 5 : 6, new: 6, unchanged: schema === 1 ? 5 : 6 },
+      },
     });
     expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
     for (const key of contractDiffKeys(darwinPinned, next)) {
@@ -3224,8 +3237,8 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
       transitionDarwinCargoRewire(darwinPinned, totalsOf(artifact), evidence, checkout, {
         ...rewire,
         closures: {
-          old: { receipt: closureReceipt("old", LINUX_TARGET), sha256: "2".repeat(64) },
-          new: { receipt: closureReceipt("new", LINUX_TARGET), sha256: "3".repeat(64) },
+          old: { receipt: receiptForTest("old", LINUX_TARGET), sha256: "2".repeat(64) },
+          new: { receipt: receiptForTest("new", LINUX_TARGET), sha256: "3".repeat(64) },
         },
       }),
     ).toThrow(
@@ -3260,6 +3273,14 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
     const darwinNext = JSON.parse(staged(DARWIN).toString("utf8"));
     expect(linuxNext.toolchain.cargoLockSha256).toBe(NEW);
     expect(darwinNext.toolchain.cargoLockSha256).toBe(NEW);
+    if (schema === 2) {
+      expect(linuxNext.baselineEvidence.cargoRewire.externalEdges).toEqual(
+        externalDeclaration().externalEdges,
+      );
+      expect(darwinNext.baselineEvidence.cargoRewire.externalEdges).toEqual(
+        externalDeclaration().externalEdges,
+      );
+    }
     expect(darwinNext.baselineEvidence.cargoRewire.closure.target).toBe(DARWIN_TARGET);
     expect(linuxNext.baselineEvidence.cargoRewire.closure.target).toBe(LINUX_TARGET);
     // Platform-specific predecessor contract digests differ; the transition and declaration do not.
@@ -3374,7 +3395,7 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
   it("refuses the second platform and --apply when the declaration digests differ", async () => {
     quiet();
     // Byte-different but structurally equivalent declaration: an extra note key.
-    const other = writeRewireInputs(tempDir("zfb-rewire-other-"), DARWIN_TARGET, {
+    const other = writeInputsForTest(tempDir("zfb-rewire-other-"), DARWIN_TARGET, {
       declaration: (d) => (d.note = "test fixture: a second declaration document"),
     });
     const stage = join(tempDir("zfb-rewire-pair-"), "stage");

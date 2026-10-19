@@ -78,6 +78,12 @@
 // paired, source-bound reason: `--source-sha` and `--stage` are required, and
 // `--apply` lands both platforms together once their transitions and
 // declaration digests agree (pairedRunsProblem).
+// Declaration schema 2 is a separate, narrower shape: existing unpublished
+// internal records only gain explicitly declared edges to already-present,
+// byte-identical external records. Both endpoints must already belong to the
+// default-producer closure; no record/closure additions or edge removals are
+// allowed. External inventory and features remain unchanged. See
+// research/v3-island-size/EXISTING-EXTERNAL-EDGES.md; capability is not activation.
 //
 // `--reason dependency-graph` (#4218, schemaVersion 3) re-pins a reviewed move
 // of the pnpm dependency graph from a fresh artifact measured at a checkout
@@ -1465,6 +1471,9 @@ function rewireError(message) {
 // `added`/`changed` ids are `name@version`; a dependency entry is written as
 // Cargo.lock writes it (`name`, `name version` or `name version (source)`).
 export const REWIRE_DECLARATION_SCHEMA = 1;
+// Explicit opt-in to adding edges to existing external records. This does not
+// broaden schema 1's internal-only rewires or authorize a live transition.
+export const EXISTING_EXTERNAL_EDGE_SCHEMA = 2;
 // The measured CLI package: island sizes are produced by the `zfb` crate's
 // binary, so a declaration and its closure receipts may name no other producer.
 export const PRODUCER_PACKAGE = "zfb";
@@ -1484,8 +1493,12 @@ function sortedUnique(entries) {
 export function checkRewireDeclaration(declaration) {
   const fail = (message) => rewireError("--rewire-declaration " + message);
   if (!isRecord(declaration)) throw fail("must be a JSON object");
-  if (declaration.schemaVersion !== REWIRE_DECLARATION_SCHEMA) {
-    throw fail("schemaVersion must be " + REWIRE_DECLARATION_SCHEMA);
+  const externalMode = declaration.schemaVersion === EXISTING_EXTERNAL_EDGE_SCHEMA;
+  if (declaration.schemaVersion !== REWIRE_DECLARATION_SCHEMA && !externalMode) {
+    throw fail("schemaVersion must be 1 or 2");
+  }
+  if (!externalMode && Object.hasOwn(declaration, "externalEdges")) {
+    throw fail("externalEdges requires schemaVersion 2");
   }
   if (declaration.producer !== PRODUCER_PACKAGE) {
     throw fail(
@@ -1552,8 +1565,46 @@ export function checkRewireDeclaration(declaration) {
   for (const id of [...closure.added, ...closure.changed]) {
     if (!ids.includes(id)) throw fail("closure names " + id + ", which is not declared");
   }
+  let externalEdges;
+  if (externalMode) {
+    if (added.length || closure.added.length || changed.some((e) => e.removedDependencies.length)) {
+      throw fail("schemaVersion 2 permits only added external edges on existing internal records");
+    }
+    externalEdges = declaration.externalEdges;
+    if (!Array.isArray(externalEdges) || externalEdges.length === 0) {
+      throw fail("schemaVersion 2 needs a nonempty externalEdges array");
+    }
+    const seen = new Set();
+    for (const edge of externalEdges) {
+      if (
+        !isRecord(edge) ||
+        !isDeepStrictEqual(Object.keys(edge).sort(), ["dependency", "from", "sha256", "to"]) ||
+        !LOCK_ID.test(edge.from ?? "") ||
+        !LOCK_ID.test(edge.to ?? "") ||
+        typeof edge.dependency !== "string" ||
+        !DEPENDENCY_ENTRY.test(edge.dependency) ||
+        !isSha(edge.sha256)
+      ) {
+        throw fail("externalEdges entries need exactly from, dependency, to and sha256");
+      }
+      const source = changed.find((entry) => entry.id === edge.from);
+      if (!source?.addedDependencies.includes(edge.dependency)) {
+        throw fail("external edge is not an added dependency of declared changed " + edge.from);
+      }
+      const key = JSON.stringify([edge.from, edge.dependency]);
+      if (seen.has(key)) throw fail("repeated external edge " + key);
+      seen.add(key);
+    }
+    for (const entry of changed) {
+      for (const dependency of entry.addedDependencies) {
+        if (!seen.has(JSON.stringify([entry.id, dependency]))) {
+          throw fail("undeclared external edge " + entry.id + " -> " + dependency);
+        }
+      }
+    }
+  }
   return {
-    schemaVersion: REWIRE_DECLARATION_SCHEMA,
+    schemaVersion: declaration.schemaVersion,
     producer: declaration.producer,
     oldCargoLockSha256: declaration.oldCargoLockSha256,
     newCargoLockSha256: declaration.newCargoLockSha256,
@@ -1572,6 +1623,7 @@ export function checkRewireDeclaration(declaration) {
       addedDependencies: sortedUnique(entry.addedDependencies),
     })),
     closure: { added: sortedUnique(closure.added), changed: sortedUnique(closure.changed) },
+    ...(externalMode ? { externalEdges: externalEdges.map((edge) => ({ ...edge })) } : {}),
   };
 }
 
@@ -1913,6 +1965,7 @@ export function proveCargoInternalRewire({
   }
   if (problems.length > 0) throw rewireError(problems.join("; "));
   const declared = checkRewireDeclaration(declaration);
+  const externalMode = declared.schemaVersion === EXISTING_EXTERNAL_EDGE_SCHEMA;
   if (declared.oldCargoLockSha256 !== expectedOldSha) {
     problems.push("the declaration's oldCargoLockSha256 is not --expected-old-cargo-sha");
   }
@@ -2055,6 +2108,9 @@ export function proveCargoInternalRewire({
     }
     const was = record.fields.dependencies ?? [];
     const now = next.fields.dependencies ?? [];
+    if (externalMode && now.length !== new Set(now).size) {
+      problems.push("changed " + entry.id + " repeats a dependency entry");
+    }
     const removedEdges = sortedUnique(was.filter((d) => !now.includes(d)));
     const addedEdges = sortedUnique(now.filter((d) => !was.includes(d)));
     if (!isDeepStrictEqual(removedEdges, entry.removedDependencies)) {
@@ -2075,10 +2131,64 @@ export function proveCargoInternalRewire({
           " differ from addedDependencies",
       );
     }
+    const resolvedAddedTargets = new Set();
     for (const dependency of addedEdges) {
       const { record: targetRecord, problem } = resolveDependencyEntry(dependency, newRecords);
       if (problem) {
         problems.push("changed " + entry.id + ": " + problem);
+      } else if (externalMode) {
+        const edge = declared.externalEdges.find(
+          (e) => e.from === entry.id && e.dependency === dependency,
+        );
+        const previous = oldById.get(targetRecord.id);
+        if (resolvedAddedTargets.has(targetRecord.id)) {
+          problems.push(
+            "changed " +
+              entry.id +
+              " repeats an added external target under different dependency spellings",
+          );
+        }
+        resolvedAddedTargets.add(targetRecord.id);
+        const oldTarget = resolveDependencyEntry(dependency, oldRecords);
+        if (oldTarget.problem || oldTarget.record.id !== targetRecord.id) {
+          problems.push(
+            "external edge " + dependency + " must resolve to the same record in both locks",
+          );
+        }
+        if (
+          was.some(
+            (existing) =>
+              resolveDependencyEntry(existing, oldRecords).record?.id === targetRecord.id,
+          )
+        ) {
+          problems.push(
+            "external edge " +
+              entry.id +
+              " -> " +
+              dependency +
+              " already existed under another dependency spelling",
+          );
+        }
+        if (!edge || edge.to !== targetRecord.id || edge.sha256 !== sha256(targetRecord.body)) {
+          problems.push(
+            "external edge " +
+              entry.id +
+              " -> " +
+              dependency +
+              " target identity or bytes differ from declaration",
+          );
+        }
+        if (
+          !previous ||
+          previous.body !== targetRecord.body ||
+          targetRecord.fields.source === undefined
+        ) {
+          problems.push(
+            "external edge target " +
+              targetRecord.id +
+              " must be an existing byte-identical external record",
+          );
+        }
       } else if (!internalIds.has(targetRecord.id)) {
         problems.push(
           "changed " +
@@ -2110,6 +2220,27 @@ export function proveCargoInternalRewire({
       closureProblems.push(label + " closure receipt is missing or has no sha256");
       return new Map();
     }
+    if (externalMode) {
+      const command = side.receipt?.command;
+      if (
+        !Array.isArray(command) ||
+        typeof command[0] !== "string" ||
+        !command[0] ||
+        /\s[-+]/.test(command[0]) ||
+        !isDeepStrictEqual(command.slice(1), [
+          "metadata",
+          "--locked",
+          "--format-version",
+          "1",
+          "--filter-platform",
+          target,
+        ])
+      ) {
+        closureProblems.push(
+          label + " closure receipt must attest the default-feature metadata command",
+        );
+      }
+    }
     const { problems: found, rows } = readClosureReceipt(side.receipt, {
       label,
       producer: declared.producer,
@@ -2122,6 +2253,32 @@ export function proveCargoInternalRewire({
   };
   const oldRows = closureOf("old", expectedOldSha, oldRecords);
   const newRows = closureOf("new", expectedNewSha, newRecords);
+  if (externalMode) {
+    for (const [label, rows] of [
+      ["old", oldRows],
+      ["new", newRows],
+    ]) {
+      if (
+        ![...rows.values()].some(
+          (row) => row.name === PRODUCER_PACKAGE && row.features.includes("default"),
+        )
+      ) {
+        closureProblems.push(label + " closure must enable the producer's default feature");
+      }
+      const ids = new Set([...rows.values()].map((row) => row.name + "@" + row.version));
+      for (const edge of declared.externalEdges) {
+        if (!ids.has(edge.from) || !ids.has(edge.to)) {
+          closureProblems.push(
+            label +
+              " default-producer closure must already contain both endpoints of " +
+              edge.from +
+              " -> " +
+              edge.to,
+          );
+        }
+      }
+    }
+  }
   const closure = { added: [], changed: [], removed: [], unchanged: 0 };
   if (closureProblems.length === 0) {
     for (const [key, row] of oldRows) {
@@ -2199,6 +2356,7 @@ export function proveCargoInternalRewire({
     added,
     changed,
     removed: [],
+    ...(externalMode ? { externalEdges: declared.externalEdges } : {}),
     closure: {
       target,
       oldSha256: closures.old.sha256,
@@ -2267,7 +2425,27 @@ export function cargoRewireText(transition) {
     transition.closure.added.length +
     " and changes " +
     transition.closure.changed.length +
-    " internal row(s) with no external drift"
+    " internal row(s) with no external drift" +
+    externalEdgesText(transition, (value) => value)
+  );
+}
+
+function externalEdgesText(transition, code) {
+  if (!transition.externalEdges?.length) return "";
+  return (
+    "; declared edges to unchanged external records: " +
+    recordList(
+      transition.externalEdges,
+      (edge) =>
+        code(edge.from) +
+        " " +
+        code(edge.dependency) +
+        " -> " +
+        code(edge.to) +
+        " (SHA-256 " +
+        code(edge.sha256) +
+        ")",
+    )
   );
 }
 
@@ -2318,7 +2496,9 @@ export function cargoRewireMarkdown(transition) {
     transition.closure.oldSha256 +
     "` and `" +
     transition.closure.newSha256 +
-    "`)."
+    "`)" +
+    externalEdgesText(transition, code) +
+    "."
   );
 }
 
