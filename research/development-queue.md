@@ -2,12 +2,103 @@
 
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
-Current snapshot: 2026-10-19 after PR 4322; integration/CI triage owner: the project integration
-manager (one fixed owner). Sections from "Historical checkpoint 4294" onward are the earlier
-checkpoint record, kept verbatim as evidence; where they say "excluded" or "pending", the current
-roadmap below wins.
+Current snapshot: 2026-10-19 20:45 UTC, `main` `013b0ab` after PRs 4323, 4328, 4329 and 4324;
+integration/CI triage owner: the project integration manager (one fixed owner). The "Round record
+at main `21ef7c4`" section and everything from "Historical checkpoint 4294" onward are earlier
+records, kept as evidence; where they say "draft", "candidate" or "pending", the current roadmap
+below wins.
 
-## Current roadmap (main `21ef7c4`, 2026-10-19)
+## Current roadmap (main `013b0ab`, 2026-10-19 20:45 UTC)
+
+### Main integration of 2026-10-19 (owner-approved)
+
+The owner approved this order at 19:26 UTC. Each PR was merged with a normal merge commit, with no
+squash, rebase or force-push, after its latest head showed every required check green. The ruleset
+does not require an up-to-date head, and none of the four PRs touched another one's files.
+
+| Order | PR | Tested head (required CI green) | Merge commit on `main` |
+| --- | --- | --- | --- |
+| 1 | [4323](https://github.com/Takazudo/zudo-front-builder/pull/4323) roadmap ledger | `ccf7363` | `7f58a01607db44c418ec68b08746d806bdc553da` |
+| 2 | [4328](https://github.com/Takazudo/zudo-front-builder/pull/4328) packed-build byte parity (4231) | `732a03de` | `7426913076cf6ef76b948281b2f78a8903e3c668` |
+| 3 | [4329](https://github.com/Takazudo/zudo-front-builder/pull/4329) docs cleanup and v4.5.4 drafts | `ed55aaa` | `695ca660c3b166e5a43bc0370b35c1eb63e7dcd5` |
+| 4 | [4324](https://github.com/Takazudo/zudo-front-builder/pull/4324) nextest 0.9.140 pin | `7aeb31f` | `013b0ab8fe5059e64ac0f7592a6eb938ac476e29` |
+
+Automatic `main` CI, first attempt, no retries or dispatches:
+
+| `main` SHA | health | Binary smoke, scaffold E2E and showcase | Other |
+| --- | --- | --- | --- |
+| `7f58a01` | [39315505385](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315505385) cancelled (superseded) | [39315505689](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315505689) success | — |
+| `7426913` | [39315529982](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315529982) cancelled (superseded) | [39315529777](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315529777) cancelled (superseded) | — |
+| `695ca66` | [39316341673](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316341673) cancelled (superseded) | [39316341725](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316341725) cancelled (superseded) | docs-deploy [39316341746](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316341746) success |
+| `013b0ab` | [39316381257](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381257) in progress at this update: workspace nextest (0.9.140), doctests and md-extras steps passed; the Wind evidence step was still running | [39316381226](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381226) success | actionlint [39316381210](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381210) success |
+
+- Cancelled runs are not passes. `main` runs are superseded by the next push, so the intermediate
+  heads have no complete health result. `013b0ab` contains all four merges, and its run is the
+  integrated evidence.
+- At `013b0ab` the smoke run passed both binary builds, the four local-mode smokes, the Amazon
+  Linux glibc floor, `Scaffold E2E` (now including the 4328 Stage 7 parity check) and the built-site
+  browser smoke. `Showcase deploy (create-zfb, production)` deployed and passed its post-deploy
+  health check (job 118285903814).
+- The docs deploy at `695ca66` published the merged README/installation changes. The v4.5.4
+  drafts live under `research/`, so no version page was published.
+- Still not run at `013b0ab`: `exam.yml` with the 0.9.140 pin (next scheduled Sat 2026-10-24),
+  any native Mac or Windows run, and Security Audit (last red at `21d6807e`, see 4314).
+
+### Owner policy from 20:38 UTC: Claude-led, implementation first
+
+Claude leads and keeps implementing. Release preparation must not stop implementation. When the
+Mac is free, verified changes are gathered into a release checkpoint that downstream projects can
+dogfood. This is release planning, not blanket publish approval. Before any actual release, report
+the exact version, the included changes and the remaining qualification. The owner is away for
+about six hours from 20:33 UTC. Decisions that need new approval are collected below and are not
+inferred. The message did not ask for additional Mac tests.
+
+Two separate tracks, which must not be mixed:
+
+- **4.5.4 patch checkpoint (now; L5).** The version is approved as 4.5.4; the release is not. The
+  candidate is `main` at its latest CI-green head, currently `013b0ab` while its health result is
+  open. The drafts and the bump table are in `research/release-prep-v4.5.4/README.md`. Package-facing
+  content is the two islands fixes (4298, 4308). The rustls 0.23.46 transition is not on `main` and
+  is not in the drafts. L5 is preparing the checkpoint report and a draft bump PR. md-wasm sizes and
+  island-size ceilings come from CI measurement; a red ceiling is recorded, never relaxed.
+- **Deno exit roadmap (future; 4303, not assigned).** Nothing in the current plan removes Deno or
+  switches the default. The remaining blockers are listed in the
+  [4303 comment](https://github.com/Takazudo/zudo-front-builder/issues/4303#issuecomment-6276732610):
+  the Gate A default-switch approval, native qualification on four platforms, lock-admission apply,
+  the deno_core crates still on the default path, a missing direct-V8 CI lane (L2 is drafting an
+  opt-in, non-required one), and a separate Gate B approval for removal. The work that does
+  proceed is opt-in only: 4307 and the 4302 Linux x64 row and harness.
+
+### Awaiting owner approval (held, not inferred)
+
+| Decision | State and evidence |
+| --- | --- |
+| Darwin apply for the rustls lock transition (4314) | Stage attempt 2 matched the recipe's expected values, as checked from Moya's reported values ([L1 verdict](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6276677595)). Apply waits for an independent review of `staged.diff` (SHA-256 `942fd70b…`), which needs that file to be shared first. `--apply` and live admission are not approved |
+| Linux x64 lock transition: artifact, stage, apply (4314) | `decision-linux-x64.json` still pins the old lock, so Darwin alone does not turn the base green (same comment). L1 is writing a Cloud-run recipe with its resource estimate; nothing will be executed |
+| Merge 4317 (hosted Linux exact-source lane) | [PR 4317](https://github.com/Takazudo/zudo-front-builder/pull/4317), draft on `base/4314-security-darwin-evidence`; run 39248247275 passed for source `bda633b` only |
+| Adopt 4305 native sharding (with 4325) | On hold until after the next exam (owner, 19:26 UTC). [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305) and [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) stay draft; 4325 needs `main` merged in after 4324 because of the `exam.yml` install-line conflict |
+| Whether rustls 0.23.46 must be on `main` before the 4.5.4 cut | Prepared security entry and the reasoning: `research/release-prep-v4.5.4/README.md`, section "Security lane: not on `main`, not in these notes". 4314 stays red until the transition lands |
+| Run the 4.5.4 release | Not approved. Before asking, report the exact version, the included changes and the remaining qualification (native Mac at the candidate SHA, the Darwin and Linux applies, 4305 on hold) |
+
+Also still held from earlier rounds: 4268 (noyalib 0.0.58 `render` is over its ceiling), 4289 and
+4293 (drain contract), 4311 (provenance policy), and the 4303 gates above.
+
+### Threads, owners and open draft PRs
+
+| Lane | Owner | Current work | Open PRs |
+| --- | --- | --- | --- |
+| L0 integration, CI triage | roadmap thread | This ledger; `main` CI at `013b0ab` | this ledger PR (draft) |
+| L1 security, Darwin evidence | L1 thread | Review `staged.diff` once shared; ready 4326's tooling for review; Linux lock-transition recipe (not executed) | [4317](https://github.com/Takazudo/zudo-front-builder/pull/4317) (draft, base `base/4314-security-darwin-evidence`) |
+| L2 opt-in direct V8 | L2 thread | Opt-in direct-V8 CI lane (manual or label trigger, not required); 4302 Linux x64 row and harness | [4307](https://github.com/Takazudo/zudo-front-builder/pull/4307) (draft; lock gate red) |
+| L3 native qualification | L3 thread (idle) | Nothing running; 4305 waits for the next exam | [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305), [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) (drafts, on hold) |
+| L4 issue sweep | L4 thread | 4231 chain: 4328 is merged, so the S7 ledger (4252) then closes 4243 and 4241 | — |
+| L5 docs, release prep | L5 thread | 4.5.4 checkpoint report and draft bump PR | (new drafts pending) |
+
+Other open drafts not owned by a running thread: [4306](https://github.com/Takazudo/zudo-front-builder/pull/4306)
+(superseded; contained in 4307) and [4293](https://github.com/Takazudo/zudo-front-builder/pull/4293)
+(HOLD, 4289 drain contract).
+
+## Round record at main `21ef7c4` (before the 2026-10-19 main integration)
 
 ### Cloud round summary (2026-10-19)
 
