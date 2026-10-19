@@ -78,7 +78,12 @@ Two separate tracks, which must not be mixed:
 | Merge 4317 (hosted Linux exact-source lane) | [PR 4317](https://github.com/Takazudo/zudo-front-builder/pull/4317), draft on `base/4314-security-darwin-evidence`; run 39248247275 passed for source `bda633b` only |
 | Adopt 4305 native sharding (with 4325) | On hold until after the next exam (owner, 19:26 UTC). [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305) and [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) stay draft; 4325 needs `main` merged in after 4324 because of the `exam.yml` install-line conflict |
 | Whether rustls 0.23.46 must be on `main` before the 4.5.4 cut | Prepared security entry and the reasoning: `research/release-prep-v4.5.4/README.md`, section "Security lane: not on `main`, not in these notes". 4314 stays red until the transition lands |
+| 4231 item (2): Darwin, Windows and Mac WebKit checks of the 4298 token change | NOT RUN. Item (1) is met by 4328 (`7426913`). Options: run it on the Mac, waive it, or move it to a separate D-class issue. 4231 stays open until then, and 4252, 4243 and 4241 wait on 4231 in that order (L4 comments on each issue; [4231](https://github.com/Takazudo/zudo-front-builder/issues/4231)) |
 | Run the 4.5.4 release | Not approved. Before asking, report the exact version, the included changes and the remaining qualification (native Mac at the candidate SHA, the Darwin and Linux applies, 4305 on hold) |
+
+The 4252 S7 ledger is that issue's own deliverable, so the missing per-PR merge SHAs and CI for
+S0, S1 and S2 and the post-merge `main` CI for `15a76210` (noted by L4 on 4252) are recorded there
+when 4252 is worked, not copied into this roadmap.
 
 Also still held from earlier rounds: 4268 (noyalib 0.0.58 `render` is over its ceiling), 4289 and
 4293 (drain contract), 4311 (provenance policy), and the 4303 gates above.
@@ -91,7 +96,7 @@ Also still held from earlier rounds: 4268 (noyalib 0.0.58 `render` is over its c
 | L1 security, Darwin evidence | L1 thread | Review `staged.diff` once shared; ready 4326's tooling for review; Linux lock-transition recipe (not executed) | [4317](https://github.com/Takazudo/zudo-front-builder/pull/4317) (draft, base `base/4314-security-darwin-evidence`) |
 | L2 opt-in direct V8 | L2 thread | Opt-in direct-V8 CI lane (manual or label trigger, not required); 4302 Linux x64 row and harness | [4307](https://github.com/Takazudo/zudo-front-builder/pull/4307) (draft; lock gate red) |
 | L3 native qualification | L3 thread (idle) | Nothing running; 4305 waits for the next exam | [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305), [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) (drafts, on hold) |
-| L4 issue sweep | L4 thread | 4231 chain: 4328 is merged, so the S7 ledger (4252) then closes 4243 and 4241 | — |
+| L4 issue sweep | L4 thread | 4019 closed with evidence; 4231, 4252, 4243 and 4241 held on 4231 item (2) | — |
 | L5 docs, release prep | L5 thread | 4.5.4 checkpoint report and draft bump PR | (new drafts pending) |
 
 Other open drafts not owned by a running thread: [4306](https://github.com/Takazudo/zudo-front-builder/pull/4306)
