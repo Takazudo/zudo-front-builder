@@ -111,3 +111,20 @@ Stop on any failed check. A stager refusal is a finding: keep the log and exit c
 ## After the stage
 
 Return the stage log and exit code, `stage-manifest.json` and the staged diff with their SHA-256 digests. An independent review compares the staged diff with this expectation. Applying the stage (`--apply`) and any merge to `main` are separate owner decisions. After applying, the generated test comment that attributes `cargoLockSha256` to the cargo-internal-rewire (#4258) is stale. Correct only that comment, by hand, in the same reviewed change; change no assertion.
+
+## After the Darwin apply
+
+This section describes the apply. It does not authorize one.
+
+Both stages write `README.md` and `scripts/__tests__/island-size-budget.test.mjs`, and each records those files' pre-apply hashes. Whichever applies second refuses as "moved since staging". The stage in [stage-evidence/linux-4314](stage-evidence/linux-4314/RESULT.md) was taken at `7e79458`, so it cannot be applied after the Darwin apply. Never edit a stage manifest to get past this.
+
+Once the Darwin apply is merged, re-stage Linux from the same retained artifact. That is possible only while it is downloadable, until `2026-10-26T18:46:58Z`.
+
+- Use the block above with two changes:
+  - `TOOL_SHA` is the merged head.
+  - Drop the two tree-equality checks. Those checks are this recipe's own, not the stager's: the merged tree no longer equals the measured source.
+- The artifact's recorded Cargo.lock must still be the checkout's lock (`56319425…`).
+- Keep every stager argument unchanged.
+- Then `--apply` the new stage from the merged head, in the same change as the hand-pinned test edits.
+
+If the artifact expires first, collect a fresh one as described above.

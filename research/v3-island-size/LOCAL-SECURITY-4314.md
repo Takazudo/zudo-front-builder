@@ -260,3 +260,23 @@ Return the complete original checker log/exit, measurement reports and sidecars,
 The first collection at `TOOL_SHA` `7e79458304878d51bafd29e24ec25e93b84893ca` (2026-10-19) predates the tools install step: its stager exited 1 with `ERR_MODULE_NOT_FOUND: yaml` before reading evidence. The retained bundle and receipt were kept, the tools checkout was installed as above, and only the stage was rerun into a new directory ([#4314](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6276588952)). Never rebuild, remeasure or rewrite the receipt to recover from a stager start-up failure.
 
 Stop at independent review of the stage. No live application, merge, release, default-producer switch, additional platform collection, or final enforced success is authorized by this recipe. A successful stage establishes an auditable candidate only; subsequent application and final enforcement require their own authorization and evidence.
+
+## Where a local-native stage can be applied
+
+This section describes the apply. It does not authorize one.
+
+The stager runs with `--source-root "$SOURCE"`, so every destination's recorded `live` hash is the SOURCE file (`bda633b`). `--apply` takes no other argument and uses the current directory as its root. For a local-native run it re-verifies the retained receipt and bundle, the clean tools checkout, and a clean checkout whose HEAD is the measured source (`verifyLocalStageEvidence`). It then refuses any destination whose current hash differs from `live`.
+
+A Darwin local-native stage is therefore applied only on the collecting Mac, from a clean `bda633b` checkout, and integrated by a regular merge:
+
+```bash
+cd "$SOURCE"   # clean, HEAD = bda633b3589e201737b02cf2060f7b24d41a45a7
+"$ZFB_NODE" "$TOOLS/scripts/rebaseline-island-size-darwin.mjs" --apply "$STAGE"
+git -C "$SOURCE" diff --stat   # exactly the three manifest destinations
+shasum -a 256 research/v3-island-size/README.md research/v3-island-size/decision.json \
+  scripts/__tests__/island-size-budget.test.mjs   # equal to the manifest's staged hashes
+```
+
+It cannot be applied directly onto `base/**` or `main`. There, HEAD is not the measured source and the README has moved (`e4496a7b…` against `1d76d181…`), so the apply refuses before writing. Re-staging cannot change this: the stage root must be the measured source. A stage whose live hashes match a later head needs a new collection measured at that head.
+
+The applied files land on a branch from `bda633b` and reach the integration branch by a regular merge. The hand-pinned predecessor and history tests and the stale `#4258` comment are corrected in the same reviewed change.
