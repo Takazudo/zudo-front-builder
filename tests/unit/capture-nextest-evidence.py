@@ -94,7 +94,7 @@ class CaptureTests(unittest.TestCase):
                 self.assertNotEqual(receipt['cargo_target_directory'], str(self.workspace / 'target'))
 
     def test_symlinked_temp_root_matches_physical_cargo_workspace(self):
-        # macOS TMPDIR lives under /var -> /private/var; real and fake Cargo both report the physical workspace_root.
+        # macOS TMPDIR lives under /var -> /private/var; Cargo discovering the manifest from cwd reports the physical workspace_root.
         physical = tempfile.TemporaryDirectory()
         self.addCleanup(physical.cleanup)
         links = tempfile.TemporaryDirectory()
