@@ -100,6 +100,16 @@ describe("explicit existing-external-edge admission capability (not application)
     },
   );
 
+  it("accepts a cargo program path that contains a space", () => {
+    const result = prove((v) => {
+      for (const side of ["old", "new"]) {
+        v.closures[side].receipt.command[0] = "/Users/a b/.cargo/bin/cargo";
+        v.closures[side].sha256 = sha(JSON.stringify(v.closures[side].receipt));
+      }
+    });
+    expect(result.externalEdges).toHaveLength(1);
+  });
+
   it("names the declared external edges in both transition summaries", () => {
     const result = prove();
     const [edge] = externalDeclaration().externalEdges;
