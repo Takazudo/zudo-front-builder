@@ -90,7 +90,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
-          tool: nextest@0.9.148
+          tool: nextest@0.9.140
 
       # Swatinem/rust-cache derives its actual cache key from prefix-key PLUS
       # github.job by default (verified via run 28696339118's key

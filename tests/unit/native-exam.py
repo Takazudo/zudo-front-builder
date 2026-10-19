@@ -31,7 +31,7 @@ class EvidenceTests(unittest.TestCase):
             self.write(p / "metadata.json", {
                 "schema": 1, "source": SHA, "run_id": "123", "attempt": "1", "retries": 0,
                 "arch": "arm64", "os": "15.7", "rust_verbose": "rustc verbose fixture", "image": "macos15", "image_version": "fixture", "hashes": {"Cargo.lock": "f" * 64},
-                "tools": {"rust": "rustc 1.99.1 (capture)", "node": "v22.22.2", "nextest": "cargo-nextest 0.9.148", "cargo": "cargo 1.99.1", "pnpm": "12.8.2", "npm": "11", "esbuild": "0.25.12"},
+                "tools": {"rust": "rustc 1.99.1 (capture)", "node": "v22.22.2", "nextest": "cargo-nextest 0.9.140", "cargo": "cargo 1.99.1", "pnpm": "12.8.2", "npm": "11", "esbuild": "0.25.12"},
             })
             self.write(p / "result.json", {"lane": lane, "rc": 0, "completed": True})
             self.write(p / "timings.json", {"install_seconds": 1, "build_seconds": 2, "inventory_and_tests_seconds": 3})

@@ -59,7 +59,7 @@ describe("native exam execution boundary", () => {
     const tool = (prefix) => setup.runs.steps.find((step) => step.uses?.startsWith(prefix)).with;
     expect(tool("dtolnay/").toolchain).toBe("1.99.1");
     expect(tool("actions/setup-node")["node-version"]).toBe("22.22.2");
-    expect(tool("taiki-e/").tool).toBe("nextest@0.9.148");
+    expect(tool("taiki-e/").tool).toBe("nextest@0.9.140");
     const preflight = setup.runs.steps.at(-1).run;
     expect(preflight.indexOf("pnpm install --frozen-lockfile")).toBeLessThan(
       preflight.indexOf("cargo build --locked"),

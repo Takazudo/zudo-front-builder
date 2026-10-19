@@ -1,4 +1,4 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
    Doc-tests native_probe
 src/lib.rs - foo (line 1): test
 src/lib.rs - foo (line 4): test

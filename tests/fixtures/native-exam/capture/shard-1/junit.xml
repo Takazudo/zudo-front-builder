@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="nextest-run" tests="3" skipped="0" failures="0" errors="0" uuid="8e3fdd99-766b-477f-bf04-970d2bc99b96" timestamp="2026-10-18T13:08:48.678+00:00" time="0.010">
-    <testsuite name="native-probe" tests="3" skipped="0" errors="0" failures="0">
-        <testcase name="e" classname="native-probe" timestamp="2026-10-18T13:08:48.678+00:00" time="0.009"/>
-        <testcase name="m" classname="native-probe" timestamp="2026-10-18T13:08:48.678+00:00" time="0.009"/>
-        <testcase name="d" classname="native-probe" timestamp="2026-10-18T13:08:48.678+00:00" time="0.010"/>
+<testsuites name="nextest-run" tests="3" failures="0" errors="0" uuid="7b2532ef-e040-4c68-96b6-29af94fced73" timestamp="2026-10-19T18:16:39.769+00:00" time="0.009">
+    <testsuite name="native-probe" tests="3" disabled="0" errors="0" failures="0">
+        <testcase name="e" classname="native-probe" timestamp="2026-10-19T18:16:39.769+00:00" time="0.007">
+        </testcase>
+        <testcase name="m" classname="native-probe" timestamp="2026-10-19T18:16:39.769+00:00" time="0.008">
+        </testcase>
+        <testcase name="d" classname="native-probe" timestamp="2026-10-19T18:16:39.769+00:00" time="0.008">
+        </testcase>
     </testsuite>
 </testsuites>
