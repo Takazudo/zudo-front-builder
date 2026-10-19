@@ -9,6 +9,66 @@ roadmap below wins.
 
 ## Current roadmap (main `21ef7c4`, 2026-10-19)
 
+### Cloud round summary (2026-10-19)
+
+All Cloud-doable work from this round is done. States below use the ledger vocabulary: implemented,
+reviewed, integrated (into which branch) and verified (which evidence, which SHA). Nothing here is
+released, applied to live admission, or merged to `main` beyond PR 4322.
+
+**1. Outcomes by lane**
+
+| Lane | Implemented + reviewed | Integrated | Verified | Not run |
+| --- | --- | --- | --- | --- |
+| L0 roadmap | This ledger (PR 4323), 4235 body refresh | Draft PR to `main` | Docs format check; PR CI green at `b1268ec` | — |
+| L1 security | 4315 (rustls 0.23.46), 4319 + 4311 unified as 4326 | `base/4314-security-darwin-evidence` `7e79458` | Hosted Linux run 39248247275 (source `bda633b`, log and artifact checked separately) | Darwin collection, stage+apply; base health keeps 2 known reds until apply |
+| L2 direct V8 | 4307 refreshed onto main, Wind manifest regenerated, 4302 harness (9 review fixes) | `base/4301-direct-v8` `bea94d1` | Linux x64 native row PASS at `14d984a`; CI red only on unadmitted lock | Other native rows, Windows observer, packaging, Rolldown coverage, frozen acceptance, Chromium, default local build |
+| L3 native | 4324 (nextest 0.9.140 pin, install-action v2.82.10), 4325 (4305 fixtures at 0.9.140) | Drafts only | 4324 CI green, 6,874 passed; health now installs nextest from the tarball with SHA-256 check; Mac helper receipt at `21ef7c4` (graph lane 43/43) | `exam.yml` with the new pin not yet run (next scheduled Sat 2026-10-24); native full workspace at `21ef7c4` |
+| L4 sweep | Classification, closures, 4231 test (4328) | 4328 ready for review | 4328 CI 15 success / 0 failure at `732a03de` | — |
+| L5 docs/release prep | 4329: current-state README, toolchain/Python 3.11 docs, five-lane v4.5.4 drafts, bump proposal | Draft | Docs build passed; health still running at this update | No release, tag or publish |
+
+**2. Issues**
+
+- Closed as completed: 4251, 4219, 4218, 4224, 4223, 4098 (evidence comments on each); 4311 closed as
+  integrated into 4326; probe PR 4327 closed after recording its size result on 4268.
+- Open with next action: 4231/4252/4243/4241 (merge 4328, then S7 ledger, then close in that order);
+  4314 (close after rustls reaches `main` and a Security Audit run is green); 4294 (native full
+  workspace at a selected SHA); 4133 (Mac reproduction); 4301/4302 (lock admission, then native
+  rows); 4268 (owner decision; 0.0.58 over ceiling); 4304 (watch 2026-10-25); 4019 (real supervisor
+  suite on a reaping init); 4289/4293, 4303, 318, 3386, 3372, 3879, 3357, 1373 (owner or upstream
+  triggers as classified above); 4123/4124/4276 (Mac or owner manual); 1492 sticky.
+
+**3. Main candidates and recommended order**
+
+1. **4323** (this ledger; docs-only; conflict-free with the others).
+2. **4328** (packed-build byte comparison for 4231; CI green; ready). Unblocks the 4231 chain.
+3. **4329** (docs and v4.5.4 drafts; drafts live outside the changelog path so a `main` push
+   publishes no version page). Merge after its health finishes green.
+4. **4324** (nextest 0.9.140 pin). Merge before any 4305 work; first `exam.yml` run with it is the
+   2026-10-24 schedule unless the owner dispatches one.
+5. **4305 + 4325** only if the owner adopts sharding: rebase 4325 onto `main` after 4324, because
+   both edit the `exam.yml` nextest install lines (merge-tree conflict confirmed); keep 4324's
+   install-action v2.82.10 pin.
+
+Not candidates now: `base/4314-security-darwin-evidence` (red until stage+apply is approved and
+done; 4317 rides with it) and `base/4301-direct-v8` (waits on lock admission, which depends on L1).
+
+**4. Minimal Mac prompts**
+
+| Prompt | Fixed SHAs | Status |
+| --- | --- | --- |
+| L1 `/mnt/project-files/l1-security-evidence/mac-prompt-4314.md` (stage only, `LOCAL-SECURITY-4314.md`) | SOURCE `bda633b`, TOOL `7e79458` | Waits for the owner to lift the Mac preflight hold |
+| L3 [4294 comment](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6274028064) (new capture helper) | `21ef7c4` | Executed by Moya: [receipt](https://github.com/Takazudo/zudo-front-builder/pull/4322#issuecomment-6274889047) |
+| L2 [4302 native-row handoff](https://github.com/Takazudo/zudo-front-builder/issues/4302#issuecomment-6275155771) (`PLATFORMS.md` "Native row run prompts") | CANDIDATE `14d984a` | Not authorized or run |
+
+**5. Remaining conditions for release and owner decisions to take together**
+
+- Lock admission stage/apply (rustls transition on L1; direct-V8 edge on L2), each needing Darwin evidence first.
+- Whether to adopt 4305 sharding (with 4325).
+- Version: 4.5.4 (L5 recommendation: package-facing changes are two islands fixes) or 4.6.0 (release skill's `feat:` rule).
+- Whether rustls 0.23.46 must be on `main` before the cut (4314 stays red until it is).
+- Native verification before or after the cut (full workspace at the candidate SHA is not run).
+- Whether to merge 4317 (hosted Linux exact-source lane).
+
 ### Main and its CI
 
 - `main` = `21ef7c4678adba115a3607801ededeeaf6e5814e` (merge of PR [4322](https://github.com/Takazudo/zudo-front-builder/pull/4322)).
@@ -39,7 +99,7 @@ integration manager.
 | L0 Integration + CI triage | main, this ledger | `main` `21ef7c4` | this file; `base/**` aggregation branches | — | Create a fresh `base/**` from `main` for the next batch; record exact-head CI per integrated head |
 | L1 Security + Darwin evidence | [4314](https://github.com/Takazudo/zudo-front-builder/issues/4314); 4315, 4319 and unified-module 4326 integrated, 4311 closed as integrated; [4317](https://github.com/Takazudo/zudo-front-builder/pull/4317) open on the new base | `base/4314-security-darwin-evidence` `7e79458` (source `bda633b` unchanged) | `Cargo.lock`; `research/v3-island-size/**`; `scripts/{rustls-security-transition,island-size-local-evidence,rebaseline-island-size-darwin,rebaseline-island-size-linux}.mjs` + tests; `.github/workflows/{island-size-darwin,local-darwin-security-evidence}.yml` | Owner Darwin collection and stage+apply approval | Base health has two known reds (old lock-pin assertions; Linux lock provenance) that stay until stage+apply. Run 39248247275 log and artifact checked separately and recorded on 4317 (zip retained). Mac prompt: `/mnt/project-files/l1-security-evidence/mac-prompt-4314.md` (SOURCE `bda633b`, TOOL `7e79458`) |
 | L2 Opt-in direct V8 | [4301](https://github.com/Takazudo/zudo-front-builder/issues/4301), [4307](https://github.com/Takazudo/zudo-front-builder/pull/4307) (contains 4306 as `322ad117`), [4302](https://github.com/Takazudo/zudo-front-builder/issues/4302) harness | 4307 head `14d984a` (main merged at `bd4feaf`); integrated by normal merge into `base/4301-direct-v8` `bea94d1` (not a main candidate) | `crates/zfb*/**` touched by 4307; `prototypes/direct-v8/**`; `docs/public/wind-examples/manifest.json` (regenerate only) | Lock admission: declaration, receipt and dry proof PASS on both targets; apply waits on Darwin evidence, L1 and owner approval. 4310 capability alone does not admit it | CI on 4307: 25 success / 1 failure / 7 skipped; the failure is only health's unadmitted-lock assertion (main is green); cause, fix owner (L1) and next check in [4307 comment](https://github.com/Takazudo/zudo-front-builder/pull/4307#issuecomment-6275153813). Wind manifest regenerated with the official generator (173 fresh). 4302 harness (`PLATFORMS.md`, `qualify-target.py`; 9 review findings fixed); Linux x64 native row PASS; fixed native-row procedure and minimal Rolldown failing case in [4302 comment](https://github.com/Takazudo/zudo-front-builder/issues/4302#issuecomment-6275155771). NOT RUN: Linux arm64, Darwin arm64/x64 and Windows native rows, Windows observer, packaging harness, Rolldown coverage, frozen producer acceptance at this head, Chromium, default (`embed_v8`) local build |
-| L3 Native qualification | [4294](https://github.com/Takazudo/zudo-front-builder/issues/4294), [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305), [4133](https://github.com/Takazudo/zudo-front-builder/issues/4133); drafts [4324](https://github.com/Takazudo/zudo-front-builder/pull/4324), [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) | 4324 `7aeb31f` (base main); 4325 `9e14d59` (base 4305 branch); 4305 `bd02b8a` | `.github/workflows/{health,exam}.yml` nextest pins; `.github/actions/native-exam-setup/**`, `scripts/native-exam*`, `tests/unit/native-exam.*`, `tests/fixtures/native-exam/**` | Mac owner; 4305 adoption by owner | Decision: unify on nextest 0.9.140 (owner, 2026-10-19). Before it, four versions coexisted (4305 0.9.148; `health.yml` 0.9.138; `exam.yml` 0.9.136 via the `taiki-e/install-action` v2.79.5 pin, seen in run 39002778546; Mac runs and capture helper 0.9.140). 4324 pins health/exam to 0.9.140 (its CI all green, 6,874 passed); 4325 re-takes 4305's fixtures. Checking whether install-action needs a bump. Minimal Mac prompt: [4294 comment](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6274028064) |
+| L3 Native qualification | [4294](https://github.com/Takazudo/zudo-front-builder/issues/4294), [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305), [4133](https://github.com/Takazudo/zudo-front-builder/issues/4133); drafts [4324](https://github.com/Takazudo/zudo-front-builder/pull/4324), [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) | 4324 `7aeb31f` (base main); 4325 `9e14d59` (base 4305 branch); 4305 `bd02b8a` | `.github/workflows/{health,exam}.yml` nextest pins; `.github/actions/native-exam-setup/**`, `scripts/native-exam*`, `tests/unit/native-exam.*`, `tests/fixtures/native-exam/**` | Mac owner; 4305 adoption by owner | Decision: unify on nextest 0.9.140 (owner, 2026-10-19). Before it, four versions coexisted (4305 0.9.148; `health.yml` 0.9.138; `exam.yml` 0.9.136 via the `taiki-e/install-action` v2.79.5 pin, seen in run 39002778546; Mac runs and capture helper 0.9.140). 4324 pins health/exam to 0.9.140 and bumps `taiki-e/install-action` to v2.82.10 (health now installs nextest from the release tarball with a SHA-256 check; CI all green, 6,874 passed; `exam.yml` not yet run with it); 4325 re-takes 4305's fixtures and conflicts with 4324 on the `exam.yml` install lines. Minimal Mac prompt: [4294 comment](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6274028064) |
 | L4 Issue sweep | items listed below | new topic branch per change | issue comments; new test for 4231 | — | Closures done (see sweep); 4231 test in 4328 (main candidate); S7 ledger 4252 after it merges |
 | L5 Docs and release prep | README, CLAUDE.md, changelog drafts | new topic branch | `README.md`, `docs/src/content/docs/**` (not `docs/public/wind-examples/`), `CLAUDE.md` | Lands after L1/L2 decisions for content | Separate current / opt-in / planned features; draft five-lane notes and a version-bump proposal from actual changes; no publication |
 
