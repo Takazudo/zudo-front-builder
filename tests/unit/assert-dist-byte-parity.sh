@@ -11,7 +11,7 @@
 # changed byte, a missing file, an extra file, a renamed file, a file swapped
 # for a symlink, an empty tree, and a --require glob that matches nothing.
 #
-# Requires: sh, bash, mktemp, sha256sum. No network.
+# Requires: sh, bash, mktemp, and sha256sum or shasum. No network.
 #
 # Run:
 #   sh tests/unit/assert-dist-byte-parity.sh

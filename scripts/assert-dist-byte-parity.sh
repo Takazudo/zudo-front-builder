@@ -6,9 +6,10 @@ set -euo pipefail
 # Asserts that two built dist/ trees are byte-identical: the same set of
 # relative file paths, and the same raw SHA-256 for every file. Used by
 # scripts/smoke-packed-clean-room.sh (Stage 7) to prove that a site built
-# against workspace-linked packages and the same site built against packed
-# tarballs emit the same bytes (issue #4231: the islands root must be
-# content-addressable, so consumption mode must not leak into it).
+# against store-installed packed tarballs and the same site built against
+# the same packed contents consumed through symlinked directories emit the
+# same bytes (issue #4231: the islands root must be content-addressable, so
+# package location and install mode must not leak into it).
 #
 # Raw bytes only — never the island-size normalizer, which deliberately
 # erases the build token and so cannot prove token equality.
@@ -54,6 +55,24 @@ for d in "$DIST_A" "$DIST_B"; do
   fi
 done
 
+# sha256sum on Linux, shasum on a stock Mac (b4push runs the unit test there).
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  SHA256=(shasum -a 256)
+else
+  echo "[FAIL] neither sha256sum nor shasum is available" >&2
+  exit 2
+fi
+
+# Exits instead of printing an empty hash, which would let two unreadable
+# files compare equal (a failure inside `$(...)` is invisible to set -e).
+sha256_of() {
+  local out
+  out="$("${SHA256[@]}" "$1")" || { echo "[FAIL] cannot hash $1" >&2; exit 1; }
+  printf '%s\n' "${out%% *}"
+}
+
 # One "<sha256>  <relative path>" line per regular file, sorted bytewise so
 # the manifest order cannot depend on the host locale. Symlinks and other
 # non-regular entries are listed by type so a file-vs-symlink swap is a
@@ -67,7 +86,8 @@ manifest() {
         if [[ -L "$path" ]]; then
           printf 'symlink:%s  %s\n' "$(readlink "$path")" "$rel"
         else
-          printf '%s  %s\n' "$(sha256sum "$path" | cut -d' ' -f1)" "$rel"
+          hash="$(sha256_of "$path")" || exit 1
+          printf '%s  %s\n' "$hash" "$rel"
         fi
       done
   )
@@ -107,4 +127,11 @@ fi
 
 echo "[FAIL] $DIST_A and $DIST_B differ (manifest diff, '<' = first, '>' = second):" >&2
 diff <(printf '%s\n' "$MANIFEST_A") <(printf '%s\n' "$MANIFEST_B") >&2 || true
+# The trees are temporary, so put the zfb build tokens in the log: a diff
+# that is only these 16-hex literals is an island-identity regression.
+for d in "$DIST_A" "$DIST_B"; do
+  tokens="$(grep -rhoE '(data-zfb-build="|build:")[0-9a-f]{16}' "$d" 2>/dev/null |
+    sed -E 's/.*"//' | LC_ALL=C sort | uniq -c | tr -s ' ' | tr '\n' ';' || true)"
+  echo "  build tokens in $d: ${tokens:-<none>}" >&2
+done
 exit 1
