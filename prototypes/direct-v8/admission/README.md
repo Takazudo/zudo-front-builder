@@ -22,6 +22,8 @@ added or removed and no external version, source or checksum moves.
 output (default features, `cargo metadata --locked --filter-platform`) for both
 targets: `old-*` at `21ef7c4`, `new-*` at the commit that adds this directory.
 The Darwin receipt is metadata resolution on Linux, not native Mac evidence.
+Files use the `.receipt` extension so the repository formatter keeps the recorder's
+original bytes.
 
 | Target | Rows old/new | Only change |
 | --- | --- | --- |

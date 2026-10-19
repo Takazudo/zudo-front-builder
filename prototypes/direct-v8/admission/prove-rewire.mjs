@@ -8,7 +8,7 @@
 //
 // Usage (repo root, clean checkout of the candidate):
 //   node prototypes/direct-v8/admission/prove-rewire.mjs --old-ref <commit> \
-//     --receipts <dir with {old,new}-<target>.json>
+//     --receipts <dir with {old,new}-<target>.receipt>
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -50,7 +50,7 @@ for (const [target, contractPath] of Object.entries(TARGETS)) {
   const contract = JSON.parse(readFileSync(contractPath, "utf8"));
   const closures = {};
   for (const side of ["old", "new"]) {
-    const bytes = readFileSync(join(values.receipts, `${side}-${target}.json`));
+    const bytes = readFileSync(join(values.receipts, `${side}-${target}.receipt`));
     closures[side] = { receipt: JSON.parse(bytes), sha256: sha(bytes) };
   }
   try {
