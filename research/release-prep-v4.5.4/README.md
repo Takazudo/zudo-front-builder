@@ -7,6 +7,10 @@ itself is not approved. Nothing here bumps a version, creates a tag, publishes a
 executable procedure stays `.claude/skills/l-make-release/SKILL.md`; it re-reads the range
 and recomputes positions at release time.
 
+The dogfood checkpoint at `main` `013b0ab` (included changes with merge SHAs, remaining
+qualification, downstream steps) is in [CHECKPOINT.md](CHECKPOINT.md). The draft bump probe is
+[PR 4333](https://github.com/Takazudo/zudo-front-builder/pull/4333).
+
 ## Version: patch, v4.5.4 (owner-approved)
 
 | Evidence | Finding |
