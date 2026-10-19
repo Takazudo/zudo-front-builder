@@ -18,11 +18,12 @@ the three intermediate heads (`7f58a01`, `7426913`, `695ca66`) were cancelled or
 
 | Workflow | Run | Result at `013b0ab` |
 | --- | --- | --- |
-| health (`health`, `build (no-v8)`) | [39316381257](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381257) | in progress when this file was written; recorded on the PR when it finishes |
+| health (`health`, `build (no-v8)`) | [39316381257](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381257) | success (first attempt) |
 | Binary smoke, scaffold E2E & showcase | [39316381226](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381226) | success |
 | actionlint | [39316381210](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381210) | success |
 
-This is hosted Linux evidence only. The last fully green `main` before it is `21ef7c4` (health
+This is hosted Linux evidence only. All three are green on the first attempt, so `013b0ab` is
+the candidate. The last fully green `main` before it is `21ef7c4` (health
 [39294618774](https://github.com/Takazudo/zudo-front-builder/actions/runs/39294618774)).
 
 One external effect already happened on the way: merging PR 4329 pushed `docs/**` to `main`, so
@@ -89,7 +90,7 @@ None of these is done at `013b0ab`. Each is an input to the owner's release deci
 | 4305 + 4325 native sharding | On hold until after the next exam (owner, 2026-10-19) | Owner |
 | `exam.yml` with the nextest 0.9.140 pin | Not run yet; next scheduled Sat 2026-10-24 | Schedule |
 | Security Audit | Last run red at `21d6807e` (issue 4314); green only after rustls reaches `main` | L1 |
-| Version-stamped sizes at 4.5.4 | Being measured on draft probe [PR 4333](https://github.com/Takazudo/zudo-front-builder/pull/4333) | L5 |
+| Version-stamped sizes at 4.5.4 | Measured on draft probe [PR 4333](https://github.com/Takazudo/zudo-front-builder/pull/4333) (health run 39321789489, probe head `59310d3`): md-wasm byte-identical to 4.5.3, Linux island raw and `gzipNormalized` totals unchanged, no ceiling moved. Re-pin commit `2e21689` changes two live-lineage assertions in `island-size-budget.test.mjs` and needs a fresh-context review; re-run if the candidate SHA moves | L5; reviewer |
 | Release procedure gates | Focused package/Rust checks, docs check, strict docs build, emitted-HTML validation, `release.yml` | Release run, after approval |
 
 ## Dogfooding the candidate downstream
