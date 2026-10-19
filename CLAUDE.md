@@ -165,6 +165,30 @@ second scheduler; use existing workflows/scripts and preserve original receipts.
   dispatches and purposeless reruns, and keep artifact size and retention to what the evidence needs.
 - Using Actions never implies approval for deployment, release, or broader permissions.
 
+### Codex Cloud disk capacity and broad Rust verification
+
+The saved Codex Cloud environment used for [PR 4315](https://github.com/Takazudo/zudo-front-builder/pull/4315#issuecomment-6266482957)
+exhausted its observed **32 GB filesystem** during full Rust compilation. This is an observed
+host limit, not a guarantee about every Cloud environment or a universal build-size minimum.
+Before a full workspace build, inspect available disk and estimate the build/target footprint
+for the selected profile, features and existing caches. Serialize heavy local work through the
+existing guard; memory admission alone does not establish disk capacity.
+
+Preserve the first resource failure and its logs. A build that fails before test execution means
+**zero tests executed**, not failed test assertions or passing coverage. Do not repeat the same
+resource-exhausting build unchanged. Reclaim only your own disposable outputs; preserve other
+owners' work, caches and evidence. Continue independent development and focused checks while
+the manager tracks broad verification, subject to the affected-chain holds above.
+
+Use existing supported standard Linux GitHub Actions for broad verification where suitable and
+authorized. At the linked receipt, the separate security owner had only proposed a Linux-only
+Rust verification option; it was not delivered or executed. Use that option only after its
+implementation, review and authorized availability are verified. Existing Linux size measurement
+is not a Rust test lane, and a workflow that also dispatches Mac is not a Linux-only substitute.
+Record source/control SHAs and first run evidence; never bypass admission gates or call skipped,
+unbuilt or deferred tests passing. The [security issue record](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6266488465)
+retains the capacity limitation separately from the unresolved lock-admission failure.
+
 ## Worktree push policy (enforced)
 
 This repo uses `/x-wt-teams` for multi-topic development. Child agents work in git worktrees under `worktrees/`. **Pushing from a worktree is forbidden.** Only the manager session — running from the main repo at the repo root — pushes, after merging topic branches into the base branch locally.
