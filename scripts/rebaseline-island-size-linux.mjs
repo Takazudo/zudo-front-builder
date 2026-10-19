@@ -146,6 +146,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { verifyLocalStageEvidence } from "./island-size-local-evidence.mjs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -3795,7 +3796,7 @@ function isSha(value) {
 // Reads and verifies `<dir>/stage-manifest.json`: every listed staged file
 // still hashes to its recorded value and no unlisted file is present. Returns
 // null for a missing or empty directory when the manifest is not required.
-function readStageManifest(dir, label, required) {
+function readStageManifest(dir, label, required, root) {
   const files = existsSync(dir) ? listFiles(dir) : [];
   const path = join(dir, STAGE_MANIFEST);
   if (!existsSync(path)) {
@@ -3860,6 +3861,18 @@ function readStageManifest(dir, label, required) {
         ")",
     );
   }
+  const darwinPath = "research/v3-island-size/decision.json";
+  const darwin = Object.hasOwn(destinations, darwinPath)
+    ? JSON.parse(readFileSync(join(dir, darwinPath), "utf8"))
+    : null;
+  const localRuns = manifest.runs.filter(
+    (run) =>
+      run.localEvidence ||
+      (darwin?.baselineEvidence?.event === "local-native" && run.platform === "darwin-arm64"),
+  );
+  if (darwin?.baselineEvidence?.event === "local-native" && localRuns.length !== 1)
+    throw new Error("local Darwin evidence: missing or duplicate staged run");
+  for (const run of localRuns) verifyLocalStageEvidence(run, darwin, root);
   return manifest;
 }
 
@@ -3884,7 +3897,7 @@ export function openOutputSession(root, stageDir, io = { writeFileSync, mkdirSyn
   }
   const label = "--stage " + stageDir;
   checkStageLocation(root, stageDir, STAGEABLE_FILES, label);
-  const manifest = readStageManifest(stageDir, label, false);
+  const manifest = readStageManifest(stageDir, label, false, root);
   const staged = (path) =>
     manifest !== null &&
     Object.hasOwn(manifest.destinations, path) &&
@@ -3930,6 +3943,9 @@ export function openOutputSession(root, stageDir, io = { writeFileSync, mkdirSyn
             .map((path) => [path, destinations[path]]),
         ),
       };
+      // Recheck retained evidence after asynchronous producer/fingerprint reads,
+      // immediately before extending an existing stage.
+      if (manifest) readStageManifest(stageDir, label, true, root);
       try {
         for (const { path, bytes } of outputs) {
           io.mkdirSync(dirname(join(stageDir, path)), { recursive: true });
@@ -4164,7 +4180,7 @@ export function applyStage(
 ) {
   const label = "--apply " + stageDir;
   checkStageLocation(root, stageDir, STAGEABLE_FILES, label);
-  const manifest = readStageManifest(stageDir, label, true);
+  const manifest = readStageManifest(stageDir, label, true, root);
   const paths = Object.keys(manifest.destinations);
   if (paths.length === 0) throw new Error(label + ": nothing is staged");
   checkStageLocation(root, stageDir, paths, label);
@@ -4323,6 +4339,8 @@ export function parseArgs(argv) {
       throw new Error("bad argument: " + argv[i]);
     values[argv[i].slice(2)] = argv[i + 1];
   }
+  if (Object.hasOwn(values, "local-receipt") || Object.hasOwn(values, "local-receipt-sha"))
+    throw new Error("local evidence is only supported by the Darwin adapter");
   if (checkApplyArgs(values)) return values;
   if (checkFingerprintHelperArgs(values)) return values;
   for (const required of ["artifact", "run-id", "job-id", "head-sha", "reason"]) {

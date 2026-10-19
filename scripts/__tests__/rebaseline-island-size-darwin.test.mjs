@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { realpathSync, symlinkSync, existsSync } from "node:fs";
+import { localBundleDigest } from "../island-size-local-evidence.mjs";
+import { rustlsSecurityLock } from "./fixtures/rustls-security-transition.mjs";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -27,6 +31,7 @@ import {
   FINGERPRINT_HELPER_MOVEMENT,
   FINGERPRINT_POLICY_MOVEMENT,
   applyStage,
+  openOutputSession,
   assertAllowedMovement,
   assertLinuxX64Provenance,
   contractDiffKeys,
@@ -3513,5 +3518,275 @@ describe("rebaseline-island-size-darwin cargo-internal-rewire and paired staging
       /unlisted files in the stage directory/,
     );
     unchanged(live());
+  });
+});
+
+describe("local rustls security evidence with separate tooling", () => {
+  const CONTRACT = "research/v3-island-size/decision.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const localRoots = [];
+  const argv = (values) =>
+    Object.entries(values)
+      .filter(([, v]) => v !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  afterEach(() => {
+    for (const root of localRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+  function setup(tweak = () => {}, changeContract = () => {}) {
+    const lock = rustlsSecurityLock();
+    let pinned;
+    const repo = makeGitCheckout(localRoots, {
+      oldCargoLock: lock.oldText,
+      newCargoLock: lock.newText,
+      prepare(checkout) {
+        const artifact = makeArtifact({
+          version: checkout.version,
+          tweak(p) {
+            p.fixtureSha256 = checkout.fixtureSha256;
+            p.runnerSha256 = checkout.runnerSha256;
+            p.pnpmLockSha256 = checkout.pnpmLockSha256;
+            p.cargoLockSha256 = checkout.cargoLockSha256;
+            p.dependencyFingerprint = {
+              policyVersion: 1,
+              sha256: checkout.dependencyFingerprint.sha256,
+            };
+          },
+        });
+        pinned = previousSchema2(artifact);
+        Object.assign(pinned, {
+          schemaVersion: 3,
+          dependencyFingerprint: checkout.dependencyFingerprint,
+          fixtureSha256: checkout.fixtureSha256,
+          runnerSha256: checkout.runnerSha256,
+        });
+        Object.assign(pinned.toolchain, {
+          packageVersion: checkout.version,
+          pnpmLockSha256: checkout.pnpmLockSha256,
+          cargoLockSha256: lock.expectedOldSha,
+        });
+        changeContract(pinned);
+        write(checkout.root, CONTRACT, JSON.stringify(pinned));
+        write(checkout.root, "review.json", lock.reviewedTransitionText);
+      },
+    });
+    repo.git("add", "Cargo.lock");
+    repo.git("commit", "-qm", "fixture candidate");
+    const source = repo.git("rev-parse", "HEAD").trim();
+    const tools = makeGitCheckout(localRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const artifact = realpathSync(
+      makeArtifact({
+        version: repo.version,
+        tweak(p, mode) {
+          Object.assign(p, {
+            sourceSha: source,
+            fixtureSha256: repo.fixtureSha256,
+            runnerSha256: repo.runnerSha256,
+            pnpmLockSha256: repo.pnpmLockSha256,
+            cargoLockSha256: repo.cargoLockSha256,
+            dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
+          });
+          tweak(p, mode);
+        },
+      }),
+    );
+    const runner = join(artifact, "runner-provenance.txt");
+    writeFileSync(runner, readFileSync(runner, "utf8").replace(SOURCE_SHA, source));
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "zfb-security-receipt-")));
+    localRoots.push(outside);
+    const receiptPath = join(outside, "receipt.json");
+    const receipt = {
+      schemaVersion: 1,
+      kind: "local-native-darwin",
+      operator: "synthetic owner",
+      collectedAt: "2026-01-01T00:00:00.000Z",
+      source: { commit: source, clean: true },
+      platform: { os: "darwin", arch: "arm64" },
+      commands: [["synthetic-collector", "--two-passes"]],
+      bundle: { location: "synthetic retained bytes", sha256: localBundleDigest(artifact) },
+    };
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const values = {
+      artifact,
+      "source-root": repo.root,
+      "source-sha": source,
+      "tool-sha": toolSha,
+      "local-receipt": receiptPath,
+      "local-receipt-sha": sha(readFileSync(receiptPath)),
+      reason: "cargo-producer-lock",
+      stage: join(outside, "stage"),
+      "expected-old-cargo-sha": lock.expectedOldSha,
+      "expected-new-cargo-sha": lock.expectedNewSha,
+      "old-cargo-ref": repo.commit,
+      "added-packages": "rustls@0.23.46",
+      "reviewed-cargo-transition": "review.json",
+      "previous-contract-ref": source,
+    };
+    const before = Object.fromEntries(
+      [CONTRACT, TEST, README].map((f) => [f, readFileSync(join(repo.root, f))]),
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const run = (extra = {}) => main(argv({ ...values, ...extra }), ".", undefined, tools.root);
+    const unchanged = () => {
+      for (const [f, b] of Object.entries(before))
+        expect(readFileSync(join(repo.root, f))).toEqual(b);
+    };
+    return { repo, tools, source, toolSha, pinned, values, artifact, receiptPath, run, unchanged };
+  }
+  it("stages exact security proof without changing measured files, and records both commits", async () => {
+    const f = setup();
+    await f.run();
+    f.unchanged();
+    const staged = JSON.parse(readFileSync(join(f.values.stage, CONTRACT), "utf8"));
+    expect(staged.ceilings).toEqual(f.pinned.ceilings);
+    expect(staged.allowance).toEqual(f.pinned.allowance);
+    expect(staged.baselineSourceSha).toBe(f.source);
+    expect(staged.baselineEvidence).toMatchObject({
+      event: "local-native",
+      stagingTool: { commit: f.toolSha },
+      cargoTransition: { review: { id: "rustls-security-4314" } },
+    });
+    for (const key of ["artifact", "runId", "jobId"])
+      expect(staged.baselineEvidence).not.toHaveProperty(key);
+    const pins = readFileSync(join(f.values.stage, TEST), "utf8");
+    expect(pins).toContain('event: "local-native"');
+    expect(rewriteDarwinTestPins(pins, staged)).toBe(pins);
+    expect(rewriteDarwinTestPins(pins, f.pinned)).toContain('event: "ci-artifact"');
+    const text = readFileSync(join(f.values.stage, README), "utf8");
+    expect(text).toContain("owner-attested local native evidence");
+    expect(text).not.toContain("run undefined");
+    // Opening a stage is read-only and revalidates retained source/tool/evidence.
+    openOutputSession(f.repo.root, f.values.stage);
+    const manifest = JSON.parse(readFileSync(join(f.values.stage, "stage-manifest.json"), "utf8"));
+    expect(manifest.runs).toHaveLength(1); // This reason is not paired.
+    expect(manifest.runs[0].stagingTool).toEqual({ root: f.tools.root, commit: f.toolSha });
+  });
+  it.each([
+    "receipt",
+    "missing-receipt",
+    "source-head",
+    "tool-head",
+    "bundle",
+    "source",
+    "tool",
+    "binding",
+    "source-binding",
+    "tool-binding",
+    "staged",
+  ])("refuses post-stage %s tampering without a live write", async (kind) => {
+    const f = setup();
+    await f.run();
+    if (kind === "missing-receipt") rmSync(f.receiptPath);
+    if (kind === "source-head") {
+      f.repo.git("commit", "--allow-empty", "-qm", "drift");
+    }
+    if (kind === "tool-head") {
+      f.tools.git("commit", "--allow-empty", "-qm", "drift");
+    }
+    if (kind === "receipt") writeFileSync(f.receiptPath, "{}");
+    if (kind === "bundle") writeFileSync(join(f.artifact, "check-budget.log"), "changed");
+    if (kind === "source") writeFileSync(join(f.repo.root, "untracked"), "changed");
+    if (kind === "tool") writeFileSync(join(f.tools.root, "untracked"), "changed");
+    if (kind === "staged") writeFileSync(join(f.values.stage, CONTRACT), "{}");
+    if (kind.endsWith("binding")) {
+      const path = join(f.values.stage, "stage-manifest.json");
+      const m = JSON.parse(readFileSync(path));
+      if (kind === "binding") delete m.runs[0].localEvidence;
+      if (kind === "source-binding") m.runs[0].sourceSha = "f".repeat(40);
+      if (kind === "tool-binding") m.runs[0].stagingTool.commit = "f".repeat(40);
+      writeFileSync(path, JSON.stringify(m));
+    }
+    expect(() => openOutputSession(f.repo.root, f.values.stage)).toThrow();
+    expect(() => applyStage(f.values.stage, f.repo.root)).toThrow();
+    f.unchanged();
+  });
+  it.each([
+    "stage",
+    "mixed",
+    "duplicate",
+    "unknown-review",
+    "changed-source",
+    "tool-sha",
+    "dirty-tool",
+    "symlink",
+  ])("refuses invalid %s before staging", async (kind) => {
+    const f = setup();
+    let extra = {};
+    if (kind === "stage") extra.stage = undefined;
+    if (kind === "mixed") extra["run-id"] = "42";
+    if (kind === "unknown-review") extra["reviewed-cargo-transition"] = undefined;
+    if (kind === "changed-source") extra["source-sha"] = "f".repeat(40);
+    if (kind === "tool-sha") extra["tool-sha"] = "f".repeat(40);
+    if (kind === "dirty-tool") writeFileSync(join(f.tools.root, "untracked"), "changed");
+    if (kind === "symlink") symlinkSync(f.receiptPath, join(f.artifact, "escape"));
+    if (kind === "duplicate")
+      await expect(
+        main([...argv(f.values), "--stage", f.values.stage], ".", undefined, f.tools.root),
+      ).rejects.toThrow(/duplicate/);
+    else await expect(f.run(extra)).rejects.toThrow();
+    f.unchanged();
+    expect(existsSync(f.values.stage)).toBe(false);
+  });
+  it.each(["platform", "cargo", "fixture", "node", "source"])(
+    "refuses altered measured %s",
+    async (kind) => {
+      const f = setup((p) => {
+        if (kind === "platform") p.platform = { os: "linux", arch: "x64" };
+        if (kind === "cargo") p.cargoLockSha256 = "f".repeat(64);
+        if (kind === "fixture") p.fixtureSha256 = {};
+        if (kind === "node") p.nodeVersion = "v24.0.0";
+        if (kind === "source") p.sourceSha = "f".repeat(40);
+      });
+      await expect(f.run()).rejects.toThrow();
+      f.unchanged();
+    },
+  );
+  it.each(["raw", "gzipNormalized"])("refuses changed local %s totals", async (metric) => {
+    const f = setup(
+      () => {},
+      (contract) => {
+        contract.ceilings.workspace.model[metric] += 1;
+      },
+    );
+    await expect(f.run()).rejects.toThrow(/totals changed/);
+    f.unchanged();
+  });
+
+  it("runs the real CLI from a separate committed tooling checkout", () => {
+    const f = setup();
+    const sourceRoot = join(testDir, "../..");
+    for (const name of [
+      "rebaseline-island-size-darwin.mjs",
+      "rebaseline-island-size-linux.mjs",
+      "island-size-local-evidence.mjs",
+      "rustls-security-transition.mjs",
+    ])
+      write(f.tools.root, "scripts/" + name, readFileSync(join(sourceRoot, "scripts", name)));
+    for (const name of readdirSync(join(sourceRoot, "research/v3-island-size")))
+      if (name.endsWith(".mjs"))
+        write(
+          f.tools.root,
+          "research/v3-island-size/" + name,
+          readFileSync(join(sourceRoot, "research/v3-island-size", name)),
+        );
+    f.tools.git("add", ".");
+    f.tools.git("commit", "-qm", "fixture renderer");
+    const toolSha = f.tools.git("rev-parse", "HEAD").trim();
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(f.tools.root, "scripts/rebaseline-island-size-darwin.mjs"),
+        ...argv({ ...f.values, "tool-sha": toolSha }),
+      ],
+      { cwd: f.tools.root, encoding: "utf8" },
+    );
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    f.unchanged();
+    const staged = JSON.parse(readFileSync(join(f.values.stage, CONTRACT)));
+    expect(staged.baselineSourceSha).toBe(f.source);
+    expect(staged.baselineEvidence.stagingTool.commit).toBe(toolSha);
   });
 });
