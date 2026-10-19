@@ -60,11 +60,16 @@ done; 4317 rides with it) and `base/4301-direct-v8` (waits on lock admission, wh
 | L3 [4294 comment](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6274028064) (new capture helper) | `21ef7c4` | Executed by Moya: [receipt](https://github.com/Takazudo/zudo-front-builder/pull/4322#issuecomment-6274889047) |
 | L2 [4302 native-row handoff](https://github.com/Takazudo/zudo-front-builder/issues/4302#issuecomment-6275155771) (`PLATFORMS.md` "Native row run prompts") | CANDIDATE `14d984a` | Not authorized or run |
 
+**Owner decisions recorded 2026-10-19 19:26 UTC:** merge 4323 → 4328 → 4329 → 4324 to `main` after
+each PR's required CI is green; 4305/4325 sharding adoption is on hold until after the next exam;
+Mac security is approved for recipe/resource preflight then stage collection only (no `--apply`, no
+live admission); prepare version 4.5.4 (patch) notes and bump, with the release itself not approved.
+
 **5. Remaining conditions for release and owner decisions to take together**
 
-- Lock admission stage/apply (rustls transition on L1; direct-V8 edge on L2), each needing Darwin evidence first.
-- Whether to adopt 4305 sharding (with 4325).
-- Version: 4.5.4 (L5 recommendation: package-facing changes are two islands fixes) or 4.6.0 (release skill's `feat:` rule).
+- Lock admission apply (rustls transition on L1; direct-V8 edge on L2): Darwin stage collection is approved, `--apply` is not.
+- Whether to adopt 4305 sharding (with 4325): on hold until after the next exam.
+- Version: 4.5.4 patch chosen by the owner; the release itself is not approved.
 - Whether rustls 0.23.46 must be on `main` before the cut (4314 stays red until it is).
 - Native verification before or after the cut (full workspace at the candidate SHA is not run).
 - Whether to merge 4317 (hosted Linux exact-source lane).
