@@ -63,12 +63,29 @@ behavior-preserving; embedded host transport, Web Crypto and module reads moved 
 `zfb-js-host`), the direct-V8 prototype, island-size admission tooling and contracts,
 nextest evidence helpers, CI and docs changes.
 
+## Conditional entry: if the security transition (PR 4315) is on `main` at the cut
+
+Add this to the `zfb` lane only (`changelog/zfb/v4.5.4.mdx`), as a new section above
+`## Bug Fixes`, with the commit hash that lands rustls 0.23.46 on `main`. The other four lanes
+stay "No package-specific changes": `@takazudo/zfb-md-wasm`, the runtime, the adapter and
+`create-zfb` do not link rustls.
+
+```mdx
+## Security
+
+- The CLI's TLS stack, used for downloads and request-time `fetch` in the embedded host, now uses rustls 0.23.46, which fixes the four RustSec advisories that `cargo deny` reported against 0.23.45 (issue 4314). No other dependency version changed (<hash>).
+```
+
+It does not change the bump: a dependency security fix with no API change stays a patch.
+Before using it, re-check the advisory count and the "no other dependency" claim against the
+landed `Cargo.lock` diff, and confirm the rustls consumers listed in PR 4315 still match.
+
 ## What else is on `main` but not in the candidate's notes
 
 | Work | State on `main` `21ef7c4` | Release consequence |
 | --- | --- | --- |
 | Direct V8 (4301/4307) | Prototype crate feature only; the opt-in CLI wiring is in draft PR 4307, not merged; its lock is not admitted | Not released, not mentioned as a feature |
-| Security transition (4314/4315/4319/4326) | Integrated on `base/4314-security-darwin-evidence`, not on `main`; rustls stays 0.23.45 on `main` | If it reaches `main` before the cut, add a `zfb` lane Bug Fixes/Security entry for rustls 0.23.46 and re-check the bump |
+| Security transition (4314/4315/4319/4326) | Integrated on `base/4314-security-darwin-evidence`, not on `main`; rustls stays 0.23.45 on `main` | If it reaches `main` before the cut, use the conditional entry above |
 | nextest 0.9.140 unification (4324/4325) | Draft | CI-only; no note |
 | 4231 store-vs-link acceptance test (4328) | Draft | Test-only; no note |
 
