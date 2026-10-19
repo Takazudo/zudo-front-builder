@@ -56,6 +56,7 @@ class Command(unittest.TestCase):
                                              "--extra-feature", "rolldown-prototype")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("direct-v8,rolldown-prototype", argv)
+        self.assertEqual(argv[argv.index("--color") + 1], "never")
         self.assertEqual(argv[argv.index("--target") + 1], "aarch64-apple-darwin")
         self.assertEqual((report["target"], report["features"]), ("aarch64-apple-darwin", "direct-v8,rolldown-prototype"))
         self.assertIn("aarch64-apple-darwin", report["build_command"])

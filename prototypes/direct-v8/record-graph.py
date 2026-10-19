@@ -43,7 +43,8 @@ def main():
         parser.error("--extra-feature selects zfb CLI features and requires --cli")
     features = ",".join(["direct-v8", *sorted(set(args.extra_feature))])
     selection = ["--locked", "-p", "zfb" if args.cli else "zfb-js-host", "--no-default-features", "--features", features]
-    command = [args.cargo, "tree", *selection, "--target", args.target,
+    # --color never: CARGO_TERM_COLOR=always (set on CI) wraps the " (*)" dedupe marker in escapes.
+    command = [args.cargo, "tree", "--color", "never", *selection, "--target", args.target,
                "--edges", "normal,build", "--prefix", "none", "--format", "{p} features=[{f}]"]
     tree = subprocess.check_output(command, text=True)
     rows = sorted(set(line.removesuffix(" (*)") for line in tree.splitlines()))

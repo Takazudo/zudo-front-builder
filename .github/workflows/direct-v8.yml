@@ -161,7 +161,13 @@ jobs:
           {
             echo "### direct-v8 ($MATRIX_FEATURES, linux-x64) at \`$SOURCE_SHA\`"
             if [ -f "$ROW_DIR/qualify/row.json" ]; then
-              python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("status:", r["status"]); [print(f"- {k}: {v.get(\"passed\")}") for k,v in r["checks"].items()]' "$ROW_DIR/qualify/row.json"
+              python3 - "$ROW_DIR/qualify/row.json" <<'PY'
+          import json, sys
+          row = json.load(open(sys.argv[1]))
+          print("status:", row["status"])
+          for name, check in row["checks"].items():
+              print(f"- {name}: {check.get('passed')}")
+          PY
             else
               echo "No native row recorded."
             fi
