@@ -161,15 +161,16 @@ export function validateLocalReceipt(receipt, sourceSha) {
   return receipt;
 }
 
-export function verifyLocalCheckout(root, sourceSha) {
+export function verifyLocalCheckout(root, sourceSha, label = "measured source") {
   const git = (...args) =>
     execFileSync("git", ["--no-replace-objects", ...args], {
       cwd: root,
       encoding: "utf8",
     }).trim();
   if (git("rev-parse", "HEAD") !== sourceSha)
-    fail("checkout HEAD differs from the measured source");
-  if (git("status", "--porcelain", "--untracked-files=normal")) fail("checkout must be clean");
+    fail(label + " checkout HEAD differs from its recorded commit");
+  if (git("status", "--porcelain", "--untracked-files=normal"))
+    fail(label + " checkout must be clean");
 }
 
 export function readLocalEvidence(receiptPath, bundlePath, expectedSha, sourceSha) {
@@ -250,6 +251,6 @@ export function verifyLocalStageEvidence(run, contract, root) {
     evidence.sourceSha !== run.sourceSha
   )
     fail("staged contract and receipt disagree");
-  verifyLocalCheckout(run.stagingTool.root, run.stagingTool.commit);
-  verifyLocalCheckout(root, run.sourceSha);
+  verifyLocalCheckout(run.stagingTool.root, run.stagingTool.commit, "tooling");
+  verifyLocalCheckout(root, run.sourceSha, "measured source");
 }

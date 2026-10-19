@@ -1,10 +1,11 @@
 # Owner-attested local Darwin evidence
 
-This adapter extends `cargo-internal-rewire`. It accepts retained native Darwin
+This adapter extends `cargo-internal-rewire` and the exact #4314 `cargo-producer-lock`
+transition (see the profile table below). It accepts retained native Darwin
 arm64 bundles through the same measurement, normalization, fingerprint, Cargo
 closure/declaration and paired-stage validators as Actions artifacts. It changes no
 ceiling, allowance, budget pin, default feature, producer or collection command.
-Other reasons still require their existing provenance route.
+Every other reason still requires its existing provenance route.
 
 ## One module, two reviewed profiles
 
@@ -97,7 +98,11 @@ a separate clean tooling checkout; both that checkout (`--tool-sha`) and the
 measured checkout (`--source-sha`) must be clean at their exact commits, and the
 stage records both identities (`stagingTool` names the renderer only; it is not
 approval for a later apply). Without `--source-root`, the measured checkout is
-the current directory.
+the current directory. Relative input file paths (`--old-cargo-lock`,
+`--rewire-declaration`, `--old-closure`, `--new-closure`,
+`--reviewed-cargo-transition`) are read from the measured checkout. For the
+security profile, use [LOCAL-SECURITY-4314.md](LOCAL-SECURITY-4314.md) instead;
+only that profile requires `--reviewed-cargo-transition`.
 
 The old/new Cargo hashes, old git ref, reviewed declaration, target-specific
 closure receipts and predecessor checks remain required. See

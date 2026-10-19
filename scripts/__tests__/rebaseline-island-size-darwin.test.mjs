@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
@@ -3242,6 +3242,23 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     expect(appended).toContain("actions/runs/71");
   });
 
+  it("reads relative rewire inputs from --source-root, not the tooling cwd", async () => {
+    quiet();
+    const input = localInput();
+    const argv = [...input.argv, "--source-root", repo.root];
+    for (const key of ["rewire-declaration", "old-closure", "new-closure"]) {
+      const at = argv.indexOf("--" + key) + 1;
+      argv[at] = relative(repo.root, argv[at]);
+    }
+    // The process cwd is this repository, which has no such fixture files.
+    await main(argv, ".", undefined, input.tools.root);
+    unchanged(live());
+    const staged = JSON.parse(readFileSync(join(input.stage, DARWIN), "utf8"));
+    expect(staged.baselineEvidence.cargoRewire.declaration.path).toBe(
+      "research/v3-island-size/rewire-darwin/declaration.json",
+    );
+  });
+
   it("refuses unstaged or tool-less local rewire evidence without a live write", async () => {
     quiet();
     const input = localInput();
@@ -3253,7 +3270,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     await expect(input.run(without("--stage"))).rejects.toThrow(/requires staged/);
     await expect(input.run(without("--tool-sha"))).rejects.toThrow(/--tool-sha/);
     writeFileSync(join(input.tools.root, "untracked"), "dirty");
-    await expect(input.run()).rejects.toThrow(/checkout must be clean/);
+    await expect(input.run()).rejects.toThrow(/tooling checkout must be clean/);
     unchanged(live());
     expect(existsSync(input.stage)).toBe(false);
   });

@@ -1957,14 +1957,17 @@ export async function main(
       )
     : null;
   if (local) {
-    verifyLocalCheckout(root, args["source-sha"]);
-    verifyLocalCheckout(toolRoot, args["tool-sha"]);
+    verifyLocalCheckout(root, args["source-sha"], "measured source");
+    verifyLocalCheckout(toolRoot, args["tool-sha"], "tooling");
     if (localEvidenceProfile(args.reason).requiresReviewedTransition) {
       if (!args["reviewed-cargo-transition"])
         throw new Error("local evidence requires the exact reviewed security transition");
       args["reviewed-cargo-transition"] = resolve(root, args["reviewed-cargo-transition"]);
     }
-    if (args["old-cargo-lock"]) args["old-cargo-lock"] = resolve(root, args["old-cargo-lock"]);
+    // The CLI may run from the tooling checkout, so every input file path
+    // names bytes in the measured source, never the caller's directory.
+    for (const key of ["old-cargo-lock", "rewire-declaration", "old-closure", "new-closure"])
+      if (args[key]) args[key] = resolve(root, args[key]);
   }
   const handler = DARWIN_HANDLERS[args.reason];
   const session = openOutputSession(root, args.stage, stageIo);
