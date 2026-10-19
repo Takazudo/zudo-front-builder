@@ -217,6 +217,20 @@ JS
 RECEIPT_SHA="$(shasum -a 256 "$RECEIPT" | awk '{print $1}')"
 printf '%s  %s\n' "$RECEIPT_SHA" "$RECEIPT" > "$RETAIN/receipt.sha256"
 
+# The stager imports `yaml` (lock-fingerprint.mjs) from the tools checkout, which
+# the SOURCE install above does not provide. Install the tools checkout's own
+# frozen lockfile, without lifecycle scripts; its log stays outside the bundle.
+test -f "$TOOLS/pnpm-lock.yaml"
+cd "$TOOLS"
+if pnpm install --frozen-lockfile --ignore-scripts > "$RETAIN/tools-install.log" 2>&1; then
+  tools_install_status=0
+else
+  tools_install_status=$?
+fi
+printf '%s\n' "$tools_install_status" > "$RETAIN/tools-install.exit-code"
+test "$tools_install_status" = 0
+test -z "$(git -C "$TOOLS" status --porcelain --untracked-files=normal)"
+
 # Actual CLI from the reviewed tools checkout; selected source remains bda633b.
 # No --apply, Actions identifiers, force switch, or live contract writes.
 cd "$TOOLS"
@@ -242,5 +256,7 @@ test "$stage_status" = 0
 The receipt has exactly the fields shown: schema version, local-native kind, operator, past UTC collection timestamp, exact clean source, Darwin arm64 platform, actual command argv arrays, and retained bundle location plus inventory digest. Its SHA-256 binds the exact JSON bytes. This is operator-provided provenance and integrity, not a signed attestation or an Actions artifact. The stage additionally records both the measured source and `stagingTool` commit/root. `stagingTool` identifies the renderer/stager only; it does not claim the identity of a future apply implementation.
 
 Return the complete original checker log/exit, measurement reports and sidecars, tarball and binary hashes, runner provenance, receipt and SHA, full stage log/exit, stage manifest and staged diffs, both exact commit identities, retained absolute locations, and any first failures or resource adaptations. Verify that both checkouts remain clean and every staged ceiling/allowance is unchanged. Retain originals, not just an archive with broken paths. Changes or disappearance of receipt, bundle, source checkout, tooling checkout, or staged bytes must be reported; the adapter revalidates retained evidence when a stage is extended or consumed.
+
+The first collection at `TOOL_SHA` `7e79458304878d51bafd29e24ec25e93b84893ca` (2026-10-19) predates the tools install step: its stager exited 1 with `ERR_MODULE_NOT_FOUND: yaml` before reading evidence. The retained bundle and receipt were kept, the tools checkout was installed as above, and only the stage was rerun into a new directory ([#4314](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6276588952)). Never rebuild, remeasure or rewrite the receipt to recover from a stager start-up failure.
 
 Stop at independent review of the stage. No live application, merge, release, default-producer switch, additional platform collection, or final enforced success is authorized by this recipe. A successful stage establishes an auditable candidate only; subsequent application and final enforcement require their own authorization and evidence.
