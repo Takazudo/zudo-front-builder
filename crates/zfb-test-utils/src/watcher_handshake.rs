@@ -141,10 +141,11 @@ where
     W: FnMut(u32),
     S: FnMut() -> bool,
 {
+    let _phase = crate::TestPhase::new(format!("watcher-handshake budget={:?}", opts.deadline));
     let start = Instant::now();
 
     // Fast path — the stream may already be live.
-    if signal_seen() {
+    if signal_seen() && start.elapsed() < opts.deadline {
         return HandshakeResult {
             live: true,
             markers_written: 0,
@@ -171,7 +172,7 @@ where
         // of budget.
         let next_marker_at = Instant::now() + opts.marker_interval;
         loop {
-            if signal_seen() {
+            if signal_seen() && start.elapsed() < opts.deadline {
                 return HandshakeResult {
                     live: true,
                     markers_written: markers,
@@ -191,7 +192,8 @@ where
             }
             let nap = next_marker_at
                 .saturating_duration_since(now)
-                .min(opts.poll_interval);
+                .min(opts.poll_interval)
+                .min(opts.deadline.saturating_sub(start.elapsed()));
             tokio::time::sleep(nap).await;
         }
     }
@@ -257,6 +259,50 @@ mod tests {
 
             assert!(res.live);
             assert_eq!(res.markers_written, 0, "fast path writes zero markers");
+        });
+    }
+
+    #[test]
+    fn signal_returned_after_budget_is_not_liveness_proof() {
+        rt().block_on(async {
+            let deadline = Duration::from_millis(10);
+            let res = watcher_live_handshake(
+                HandshakeOpts::new(deadline),
+                |_| {},
+                || {
+                    std::thread::sleep(deadline * 2);
+                    true
+                },
+            )
+            .await;
+            assert!(
+                !res.live,
+                "a blocked predicate must not turn an expired wait green"
+            );
+            assert_eq!(res.markers_written, 0);
+        });
+    }
+
+    #[test]
+    fn late_signal_after_marker_is_not_accepted() {
+        rt().block_on(async {
+            let mut polls = 0;
+            let deadline = Duration::from_millis(10);
+            let res = watcher_live_handshake(
+                HandshakeOpts::new(deadline),
+                |_| {},
+                || {
+                    polls += 1;
+                    if polls == 1 {
+                        return false;
+                    }
+                    std::thread::sleep(deadline * 2);
+                    true
+                },
+            )
+            .await;
+            assert!(!res.live);
+            assert_eq!(res.markers_written, 1);
         });
     }
 
