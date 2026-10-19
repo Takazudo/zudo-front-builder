@@ -75,8 +75,19 @@ A nonzero child exit is returned unchanged (signal termination uses shell status
 stale, invalid, or source/configuration-mismatched evidence makes the wrapper exit `4`.
 Preflight failures exit `2` and record `child_exit: null`, `execution: not_started`.
 
-An existing output directory is refused without overwriting it. Filesystem failure
-can prevent a receipt being written; stderr explains that failure. Always inspect
+The destination is checked before anything is created. An existing path, including a
+dangling symlink, is refused and left unchanged. Cargo metadata identifies the workspace
+first; a destination inside it (also through a symlinked parent), equal to the
+nextest report path, an ancestor of it, or below it is refused without creating any
+directory and without starting the command. Those refusals, and a failure of Cargo
+metadata itself, write no receipt and say so on stderr; other preflight failures
+create the validated directory and record a receipt.
+
+The receipt is written to a temporary name and renamed into place, so `receipt.json`
+exists only when complete. If it cannot be written, stderr prints `receipt not written`
+and the exit status still follows the rules above: `2` before the command starts, the
+child's own status (or 128 + signal) when it failed, and `4` when it succeeded, because
+the evidence is then incomplete. Logs and accepted `junit.xml` already saved are kept. Always inspect
 both the child result and evidence status. Captured XML does not mean tests passed.
 The helper does not parse counts: ignored and `no_run` entries retain their original
 bytes and meanings. No tests are inferred from logs or rewritten as successes.
@@ -95,3 +106,13 @@ configured stores/absolute paths, config precedence, inheritance, sequential
 replacement, missing/stale/replayed/malformed XML, unchanged ignored/no_run bytes,
 source/configuration changes, and nonzero children. No Rust/native suite is run. The shell
 entry is picked up by the existing offline-unit glob, without workflow changes.
+
+```sh
+sh tests/unit/capture-nextest-evidence-failure-handling.sh
+```
+
+The same fake-Cargo approach covers refused destinations (workspace, symlinked
+parent, dangling symlink, report path collisions, existing paths) and receipt write
+failures at preflight, after a successful child, after a nonzero child, and after a
+signal. The fake Cargo turns the receipt path into a directory, so the injected failure
+does not depend on file permissions and also fails for root.
