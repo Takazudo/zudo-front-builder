@@ -1,0 +1,112 @@
+{
+  "rust-build-meta": {
+    "target-directory": "/tmp/native-probe/target",
+    "build-directory": "/tmp/native-probe/target",
+    "base-output-directories": ["debug"],
+    "non-test-binaries": {},
+    "build-script-out-dirs": {},
+    "build-script-info": {},
+    "linked-paths": [],
+    "platforms": {
+      "host": {
+        "platform": { "triple": "x86_64-unknown-linux-gnu", "target-features": "unknown" },
+        "libdir": {
+          "status": "available",
+          "path": "/tmp/native-tools/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+        }
+      },
+      "targets": []
+    },
+    "target-platforms": [{ "triple": "x86_64-unknown-linux-gnu", "target-features": "unknown" }],
+    "target-platform": null
+  },
+  "test-count": 17,
+  "rust-suites": {
+    "native-probe": {
+      "package-name": "native-probe",
+      "binary-id": "native-probe",
+      "binary-name": "native_probe",
+      "package-id": "path+file:///tmp/native-probe#0.1.0",
+      "kind": "lib",
+      "binary-path": "/tmp/native-probe/target/debug/deps/native_probe-cb06eda19a7c6e7c",
+      "build-platform": "target",
+      "cwd": "/tmp/native-probe",
+      "status": "listed",
+      "testcases": {
+        "a": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "b": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "c": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "d": { "kind": "test", "ignored": false, "filter-match": { "status": "matches" } },
+        "e": { "kind": "test", "ignored": false, "filter-match": { "status": "matches" } },
+        "f": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "g": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "h": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "i": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "ignored": {
+          "kind": "test",
+          "ignored": true,
+          "filter-match": { "status": "mismatch", "reason": "ignored" }
+        },
+        "j": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "k": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "l": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "m": { "kind": "test", "ignored": false, "filter-match": { "status": "matches" } },
+        "n": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "o": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        },
+        "p": {
+          "kind": "test",
+          "ignored": false,
+          "filter-match": { "status": "mismatch", "reason": "partition" }
+        }
+      }
+    }
+  }
+}

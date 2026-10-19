@@ -1,0 +1,40 @@
+name: Native exam setup
+description: Pinned tools, frozen dependencies, independent build and dependency preflight
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      with:
+        node-version: 22.22.2
+    - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+      with:
+        toolchain: 1.99.1
+    - uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+      with:
+        tool: nextest@0.9.148
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      with:
+        prefix-key: v2-zfb-macos-exam
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      continue-on-error: true
+      with:
+        path: crates/zfb/binaries/esbuild/esbuild
+        key: zfb-staged-binaries-v1-aarch64-apple-darwin-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
+    - name: Install, build and assert dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p target/native-exam
+        started=$SECONDS
+        pnpm install --frozen-lockfile 2>&1 | tee target/native-exam/install.log
+        installed=$SECONDS
+        cargo build --locked --workspace --all-targets 2>&1 | tee target/native-exam/build.log
+        built=$SECONDS
+        test -x crates/zfb/binaries/esbuild/esbuild
+        node --version
+        npm --version
+        pnpm --version
+        crates/zfb/binaries/esbuild/esbuild --version
+        python3 scripts/native-exam.py metadata target/native-exam/metadata.json
+        printf '{"install_seconds":%s,"build_seconds":%s}\n' "$((installed - started))" "$((built - installed))" > target/native-exam/timings.json
