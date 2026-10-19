@@ -223,6 +223,16 @@ if [[ ! -f "$SITE_DIR/package.json" ]]; then
 fi
 pass "scaffold produced $SITE_DIR"
 
+# Snapshot the pristine scaffold now, before Stage 5 installs and builds it, so
+# Stage 7 can build the exact same source a second time. Taken here rather
+# than copied from SITE_DIR after the build so no install or build output
+# (node_modules, dist, .zfb-build) can leak into the second build.
+LINKED_ROOM_DIR="$(mktemp -d)"
+LINKED_SITE_DIR="$LINKED_ROOM_DIR/$SITE_NAME"
+mkdir -p "$LINKED_SITE_DIR"
+tar -C "$SITE_DIR" --exclude=./node_modules --exclude=./pnpm-lock.yaml -cf - . |
+  tar -C "$LINKED_SITE_DIR" -xf -
+
 # ── Stage 5: install + build the scaffolded project ──────────────────────────
 # `zfb new` already attempted its own best-effort `pnpm install` against the
 # scaffolded package.json's exact-pinned version (which the registry has no
@@ -299,6 +309,112 @@ if ! grep -q "Hello, zfb" "$DIST_INDEX"; then
   fail "dist/index.html does not list the seed post title: Hello, zfb"
 fi
 pass "dist/index.html lists the seed post (Hello, zfb)"
+
+# ── Stage 7: linked-directory consumption emits the same bytes (#4231) ─────
+# Builds the Stage 4 snapshot a second time, consuming the SAME packed
+# package contents through symlinked directories instead of the pnpm store:
+# the zfb, zfb-runtime, zfb-slugify and platform tarballs are extracted into
+# a small pnpm workspace (which installs their own dependencies), and the
+# site `link:`s @takazudo/zfb and @takazudo/zfb-runtime to those directories
+# — the layout a monorepo or `pnpm link` consumer gets. The two dist/ trees
+# must then be byte-identical: the island build token is derived from the
+# resolved island graph, so where the package files live and how they were
+# installed must not leak into the islands root, its chunks, or the HTML
+# that carries the token.
+#
+# Deliberately NOT compared: the repo's own packages/* linked directly. Their
+# workspace manifests export ./src/*.ts (publishConfig swaps in ./dist/*.js
+# only at pack time), so that build compiles different source files and
+# correctly emits different bytes and a different token. The site also stays
+# outside the extracted-packages workspace: a site claimed by a
+# pnpm-workspace.yaml takes the workspace as its first-party root
+# (crates/zfb-types/src/first_party.rs, #1664), which by design changes
+# island module labels.
+LINKED_PKG_WS="$LINKED_ROOM_DIR/packages-ws"
+mkdir -p "$LINKED_PKG_WS"
+for spec in \
+  "zfb:$ZFB_TARBALL" \
+  "zfb-runtime:$ZFB_RUNTIME_TARBALL" \
+  "zfb-slugify:$ZFB_SLUGIFY_TARBALL" \
+  "zfb-linux-x64-gnu:$PLATFORM_TARBALL_PATH"; do
+  name="${spec%%:*}"
+  mkdir -p "$LINKED_PKG_WS/$name"
+  tar -xzf "${spec#*:}" -C "$LINKED_PKG_WS/$name" --strip-components=1
+done
+# Each extracted package must resolve its @takazudo/* siblings to the
+# extracted copies, never the registry, so the workspace links them. pnpm
+# does not link a workspace member's peerDependencies, so zfb-runtime's peer
+# @takazudo/zfb is satisfied the way a monorepo does it: a root dependency in
+# the workspace's top-level node_modules, found by walking up from
+# zfb-runtime's real path.
+cat >"$LINKED_PKG_WS/package.json" <<'JSON'
+{
+  "name": "zfb-linked-packages",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": { "@takazudo/zfb": "workspace:*" }
+}
+JSON
+cat >"$LINKED_PKG_WS/pnpm-workspace.yaml" <<'YAML'
+packages:
+  - "zfb"
+  - "zfb-runtime"
+  - "zfb-slugify"
+  - "zfb-linux-x64-gnu"
+linkWorkspacePackages: true
+minimumReleaseAge: 0
+overrides:
+  "@takazudo/zfb": "workspace:*"
+  "@takazudo/zfb-runtime": "workspace:*"
+  "@takazudo/zfb-slugify": "workspace:*"
+  "@takazudo/zfb-linux-x64-gnu": "workspace:*"
+YAML
+(cd "$LINKED_PKG_WS" && pnpm install --prod)
+
+LINKED_PKG_WS="$LINKED_PKG_WS" LINKED_SITE_DIR="$LINKED_SITE_DIR" node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+const env = process.env;
+const overrides = {
+  "@takazudo/zfb": `link:${path.join(env.LINKED_PKG_WS, "zfb")}`,
+  "@takazudo/zfb-runtime": `link:${path.join(env.LINKED_PKG_WS, "zfb-runtime")}`,
+};
+const workspaceYaml = [
+  "minimumReleaseAge: 0",
+  "overrides:",
+  ...Object.entries(overrides).map(([name, spec]) => `  "${name}": "${spec}"`),
+  "",
+].join("\n");
+fs.writeFileSync(
+  path.join(env.LINKED_SITE_DIR, "pnpm-workspace.yaml"),
+  workspaceYaml,
+);
+'
+
+(cd "$LINKED_SITE_DIR" && pnpm install)
+
+# Non-vacuity: both packages must really be symlinks to the extracted
+# directories, and the extracted zfb must reach the injected binary.
+for name in zfb zfb-runtime; do
+  link_path="$LINKED_SITE_DIR/node_modules/@takazudo/$name"
+  [[ -L "$link_path" ]] || fail "linked site's @takazudo/$name is not a symlink: $link_path"
+  resolved="$(cd "$link_path" && pwd -P)"
+  expected="$(cd "$LINKED_PKG_WS/$name" && pwd -P)"
+  [[ "$resolved" == "$expected" ]] || fail "linked site's @takazudo/$name resolves to $resolved, expected $expected"
+done
+LINKED_BINARY="$(cd "$LINKED_PKG_WS/zfb/node_modules/@takazudo/zfb-linux-x64-gnu" && pwd -P)/zfb"
+cmp -s "$LINKED_BINARY" "$ZFB_LINUX_X64_BINARY" ||
+  fail "linked zfb does not reach the injected binary (got $LINKED_BINARY)"
+pass "linked site consumes the extracted packages through symlinks, with the injected binary"
+
+(cd "$LINKED_SITE_DIR" && pnpm build)
+
+bash scripts/assert-dist-byte-parity.sh \
+  --require 'assets/islands-*.js' \
+  --require 'index.html' \
+  "$SITE_DIR/dist" "$LINKED_SITE_DIR/dist" ||
+  fail "store-installed and linked-directory builds of the same scaffold emitted different dist/ bytes (#4231)"
+pass "store-installed and linked-directory builds emit byte-identical dist/"
 
 echo "All packed-clean-room smoke assertions passed."
 
