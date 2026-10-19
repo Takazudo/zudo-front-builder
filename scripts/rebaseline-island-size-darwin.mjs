@@ -107,8 +107,10 @@
 // proof as Linux. Native Darwin artifact checks and equal-total gates remain.
 
 import {
-  readLocalEvidence,
+  LOCAL_EVIDENCE_PROFILES,
   assertLocalSecurityTransition,
+  localEvidenceProfile,
+  readLocalEvidence,
   verifyLocalCheckout,
   verifyLocalStageEvidence,
 } from "./island-size-local-evidence.mjs";
@@ -1078,8 +1080,9 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
     evidence.packageVersion +
     " ceilings on metric " +
     metric +
-    ", re-pinned from the native artifact of workflow_dispatch run " +
-    evidence.runId +
+    (evidence.localReceipt
+      ? ", re-pinned from owner-attested local native evidence " + evidence.localReceipt.sha256
+      : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
     " after a reviewed internal Cargo.lock rewire (" +
@@ -1091,26 +1094,36 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
     ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
     "inventories. Other platforms and toolchains are not covered.";
   next.baselineEvidence = {
-    event: "ci-artifact",
-    runId: evidence.runId,
-    jobId: evidence.jobId,
+    ...(evidence.localReceipt
+      ? {
+          event: "local-native",
+          localReceipt: evidence.localReceipt,
+          stagingTool: evidence.stagingTool,
+        }
+      : {
+          event: "ci-artifact",
+          runId: evidence.runId,
+          jobId: evidence.jobId,
+          artifact: {
+            id: evidence.artifactId,
+            name: "island-size-darwin-arm64-" + evidence.sourceSha,
+            expiresAt: evidence.artifactExpiresAt,
+          },
+        }),
     sourceSha: evidence.sourceSha,
-    artifact: {
-      id: evidence.artifactId,
-      name: "island-size-darwin-arm64-" + evidence.sourceSha,
-      expiresAt: evidence.artifactExpiresAt,
-    },
     nativeRunner: evidence.nativeRunner,
     repinnedFrom,
     cargoRewire: transition,
     originalCheckerResult: evidence.originalCheckerResult,
     actualGzip: actualGzipRows(totals),
     note:
-      "Cargo internal-rewire transition from the native Darwin arm64 artifact of run " +
-      evidence.runId +
-      " (job " +
-      evidence.jobId +
-      ") at source " +
+      (evidence.localReceipt
+        ? "Cargo internal-rewire transition from owner-attested local native Darwin arm64 evidence at source "
+        : "Cargo internal-rewire transition from the native Darwin arm64 artifact of run " +
+          evidence.runId +
+          " (job " +
+          evidence.jobId +
+          ") at source ") +
       evidence.sourceSha +
       ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
       "inventories. Raw and gzipNormalized totals did not change from the v" +
@@ -1135,15 +1148,19 @@ export function darwinCargoRewireReadmeSection(contract, gzipMoves) {
     "\n\n" +
     "The Darwin arm64 contract recorded a reviewed internal `Cargo.lock` rewire at v" +
     contract.toolchain.packageVersion +
-    " from the native artifact " +
-    e.artifact.id +
-    " of [workflow_dispatch run " +
-    e.runId +
-    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
-    e.runId +
-    ") (job " +
-    e.jobId +
-    ") at source `" +
+    (e.event === "local-native"
+      ? " from owner-attested local native evidence (receipt SHA-256 `" +
+        e.localReceipt.sha256 +
+        "`) at source `"
+      : " from the native artifact " +
+        e.artifact.id +
+        " of [workflow_dispatch run " +
+        e.runId +
+        "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+        e.runId +
+        ") (job " +
+        e.jobId +
+        ") at source `") +
     e.sourceSha +
     "`: " +
     cargoRewireMarkdown(e.cargoRewire) +
@@ -1679,11 +1696,13 @@ export function parseArgs(argv) {
     if (duplicates.length)
       throw new Error("duplicate local-mode argument: " + duplicates.join(", "));
     if (
-      values.reason !== CARGO_PRODUCER_LOCK_REASON ||
+      !Object.hasOwn(LOCAL_EVIDENCE_PROFILES, values.reason) ||
       Object.hasOwn(values, "apply") ||
       !values.stage
     )
-      throw new Error("local evidence requires staged cargo-producer-lock");
+      throw new Error(
+        "local evidence requires staged " + Object.keys(LOCAL_EVIDENCE_PROFILES).join(" or "),
+      );
     if (!/^[a-f0-9]{40}$/.test(values["tool-sha"] ?? ""))
       throw new Error("local evidence requires an exact --tool-sha");
     if (!values["local-receipt"] || !/^[a-f0-9]{64}$/.test(values["local-receipt-sha"] ?? ""))
@@ -1938,12 +1957,17 @@ export async function main(
       )
     : null;
   if (local) {
-    verifyLocalCheckout(root, args["source-sha"]);
-    verifyLocalCheckout(toolRoot, args["tool-sha"]);
-    if (!args["reviewed-cargo-transition"])
-      throw new Error("local evidence requires the exact reviewed security transition");
-    args["reviewed-cargo-transition"] = resolve(root, args["reviewed-cargo-transition"]);
-    if (args["old-cargo-lock"]) args["old-cargo-lock"] = resolve(root, args["old-cargo-lock"]);
+    verifyLocalCheckout(root, args["source-sha"], "measured source");
+    verifyLocalCheckout(toolRoot, args["tool-sha"], "tooling");
+    if (localEvidenceProfile(args.reason).requiresReviewedTransition) {
+      if (!args["reviewed-cargo-transition"])
+        throw new Error("local evidence requires the exact reviewed security transition");
+      args["reviewed-cargo-transition"] = resolve(root, args["reviewed-cargo-transition"]);
+    }
+    // The CLI may run from the tooling checkout, so every input file path
+    // names bytes in the measured source, never the caller's directory.
+    for (const key of ["old-cargo-lock", "rewire-declaration", "old-closure", "new-closure"])
+      if (args[key]) args[key] = resolve(root, args[key]);
   }
   const handler = DARWIN_HANDLERS[args.reason];
   const session = openOutputSession(root, args.stage, stageIo);

@@ -15,6 +15,51 @@ import {
 const fail = (message) => {
   throw new Error("local Darwin evidence: " + message);
 };
+
+export function assertLocalSecurityTransition(transition) {
+  if (
+    transition?.oldSha !== OLD_LOCK_SHA256 ||
+    transition?.newSha !== NEW_LOCK_SHA256 ||
+    transition?.review?.id !== "rustls-security-4314" ||
+    transition?.review?.manifestSha256 !== DECISION_SHA256
+  )
+    fail("only the exact rustls-security-4314 transition supports local evidence");
+}
+
+// The only reasons that may stage owner-attested local evidence, each for its
+// own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire) and
+// the #4314 rustls security lock transition (evidence.cargoTransition). Adding
+// a reason here is a provenance-policy decision, not a refactor.
+export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
+  "cargo-internal-rewire": Object.freeze({
+    transitionKey: "cargoRewire",
+    requiresReviewedTransition: false,
+    assertContract(contract) {
+      if (
+        !contract.baselineEvidence?.cargoRewire ||
+        typeof contract.baselineEvidence.cargoRewire !== "object"
+      )
+        fail("cargo-internal-rewire evidence lacks its rewire proof");
+    },
+  }),
+  "cargo-producer-lock": Object.freeze({
+    transitionKey: "cargoTransition",
+    requiresReviewedTransition: true,
+    assertContract(contract) {
+      assertLocalSecurityTransition(contract.baselineEvidence?.cargoTransition);
+      if (contract.toolchain?.cargoLockSha256 !== NEW_LOCK_SHA256)
+        fail("staged contract has wrong security lock");
+    },
+  }),
+});
+const TRANSITION_KEYS = ["cargoRewire", "cargoTransition"];
+
+export function localEvidenceProfile(reason) {
+  if (typeof reason !== "string" || !Object.hasOwn(LOCAL_EVIDENCE_PROFILES, reason))
+    fail("reason " + JSON.stringify(reason) + " has no local evidence profile");
+  return LOCAL_EVIDENCE_PROFILES[reason];
+}
+
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const digest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const text = (value) =>
@@ -116,12 +161,16 @@ export function validateLocalReceipt(receipt, sourceSha) {
   return receipt;
 }
 
-export function verifyLocalCheckout(root, sourceSha) {
+export function verifyLocalCheckout(root, sourceSha, label = "measured source") {
   const git = (...args) =>
-    execFileSync("git", ["--no-replace-objects", ...args], { cwd: root, encoding: "utf8" }).trim();
+    execFileSync("git", ["--no-replace-objects", ...args], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
   if (git("rev-parse", "HEAD") !== sourceSha)
-    fail("checkout HEAD differs from the measured source");
-  if (git("status", "--porcelain", "--untracked-files=normal")) fail("checkout must be clean");
+    fail(label + " checkout HEAD differs from its recorded commit");
+  if (git("status", "--porcelain", "--untracked-files=normal"))
+    fail(label + " checkout must be clean");
 }
 
 export function readLocalEvidence(receiptPath, bundlePath, expectedSha, sourceSha) {
@@ -134,7 +183,13 @@ export function readLocalEvidence(receiptPath, bundlePath, expectedSha, sourceSh
     fail("receipt must be outside its bundle");
   const bytes = readFileSync(receiptFile);
   if (sha(bytes) !== expectedSha) fail("receipt digest mismatch");
-  const receipt = validateLocalReceipt(JSON.parse(bytes.toString("utf8")), sourceSha);
+  let parsed;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    fail("receipt is not valid JSON");
+  }
+  const receipt = validateLocalReceipt(parsed, sourceSha);
   if (localBundleDigest(bundle) !== receipt.bundle.sha256) fail("bundle digest mismatch");
   return {
     receipt,
@@ -146,12 +201,13 @@ export function readLocalEvidence(receiptPath, bundlePath, expectedSha, sourceSh
 
 // Called again when a stage is extended or applied. Retained evidence must
 // remain available and unchanged; missing local provenance cannot become CI.
+// Profile and shape checks run before any file or git access.
 export function verifyLocalStageEvidence(run, contract, root) {
   const evidence = contract?.baselineEvidence;
   const local = run.localEvidence;
   if (evidence?.event !== "local-native" && !local) return;
   if (
-    run.reason !== "cargo-producer-lock" ||
+    !Object.hasOwn(LOCAL_EVIDENCE_PROFILES, run.reason) ||
     run.platform !== "darwin-arm64" ||
     evidence?.event !== "local-native" ||
     !local ||
@@ -163,12 +219,23 @@ export function verifyLocalStageEvidence(run, contract, root) {
     )
   )
     fail("mixed or missing staged local provenance");
+  const profile = LOCAL_EVIDENCE_PROFILES[run.reason];
+  if (TRANSITION_KEYS.some((key) => key !== profile.transitionKey && Object.hasOwn(evidence, key)))
+    fail("staged evidence carries another profile's transition");
+  profile.assertContract(contract);
   if (
     !keys(local, ["receiptPath", "bundlePath", "sha256"]) ||
     !isAbsolute(local.receiptPath) ||
     !isAbsolute(local.bundlePath)
   )
     fail("invalid staged local binding");
+  if (
+    !keys(run.stagingTool, ["root", "commit"]) ||
+    !isAbsolute(run.stagingTool.root) ||
+    !/^[a-f0-9]{40}$/.test(run.stagingTool.commit ?? "") ||
+    JSON.stringify(evidence.stagingTool) !== JSON.stringify({ commit: run.stagingTool.commit })
+  )
+    fail("missing or inconsistent tooling identity");
   const checked = readLocalEvidence(
     local.receiptPath,
     local.bundlePath,
@@ -184,26 +251,6 @@ export function verifyLocalStageEvidence(run, contract, root) {
     evidence.sourceSha !== run.sourceSha
   )
     fail("staged contract and receipt disagree");
-  assertLocalSecurityTransition(evidence.cargoTransition);
-  if (contract.toolchain.cargoLockSha256 !== NEW_LOCK_SHA256)
-    fail("staged contract has wrong security lock");
-  if (
-    !keys(run.stagingTool, ["root", "commit"]) ||
-    !isAbsolute(run.stagingTool.root) ||
-    !/^[a-f0-9]{40}$/.test(run.stagingTool.commit ?? "") ||
-    JSON.stringify(evidence.stagingTool) !== JSON.stringify({ commit: run.stagingTool.commit })
-  )
-    fail("missing or inconsistent tooling identity");
-  verifyLocalCheckout(run.stagingTool.root, run.stagingTool.commit);
-  verifyLocalCheckout(root, run.sourceSha);
-}
-
-export function assertLocalSecurityTransition(transition) {
-  if (
-    transition?.oldSha !== OLD_LOCK_SHA256 ||
-    transition?.newSha !== NEW_LOCK_SHA256 ||
-    transition?.review?.id !== "rustls-security-4314" ||
-    transition?.review?.manifestSha256 !== DECISION_SHA256
-  )
-    fail("only the exact rustls-security-4314 transition supports local evidence");
+  verifyLocalCheckout(run.stagingTool.root, run.stagingTool.commit, "tooling");
+  verifyLocalCheckout(root, run.sourceSha, "measured source");
 }

@@ -2,7 +2,7 @@ name: Local Darwin security evidence
 
 on:
   pull_request:
-    branches: [fix/4314-rustls-security-transition]
+    branches: ["base/4314-security-darwin-evidence"]
     paths:
       - .github/workflows/local-darwin-security-evidence.yml
       - scripts/island-size-local-evidence.mjs

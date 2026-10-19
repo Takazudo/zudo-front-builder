@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
@@ -3166,6 +3166,173 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     "--reason cargo-internal-rewire paired runs disagree: " +
     problem +
     "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+
+  // #4311 owner-attested local evidence for cargo-internal-rewire. Unified with
+  // the #4319 security profile: staged only, with a separate clean tooling checkout.
+  function localInput() {
+    const source = repo.git("rev-parse", "HEAD").trim();
+    const artifact = realpathSync(darwinArtifactAt((p) => (p.sourceSha = source)));
+    const runner = join(artifact, "runner-provenance.txt");
+    writeFileSync(runner, readFileSync(runner, "utf8").replace(SOURCE_SHA, source));
+    const receipt = {
+      schemaVersion: 1,
+      kind: "local-native-darwin",
+      operator: "fixture owner",
+      collectedAt: "2026-01-01T00:00:00.000Z",
+      source: { commit: source, clean: true },
+      platform: { os: "darwin", arch: "arm64" },
+      commands: [["fixture-collector", "--two-passes"]],
+      bundle: { location: "retained fixture bundle", sha256: localBundleDigest(artifact) },
+    };
+    const receiptPath = join(realpathSync(tempDir("zfb-local-receipt-")), "receipt.json");
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const tools = makeGitCheckout(rewireRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const stage = join(tempDir("zfb-local-stage-"), "stage");
+    const argv = darwinArgv({
+      stage,
+      artifact,
+      "source-sha": source,
+      "run-id": undefined,
+      "job-id": undefined,
+      "artifact-id": undefined,
+      "artifact-expires-at": undefined,
+      "tool-sha": toolSha,
+      "local-receipt": receiptPath,
+      "local-receipt-sha": sha(readFileSync(receiptPath)),
+    });
+    const run = (args = argv) => main(args, repo.root, undefined, tools.root);
+    return { source, artifact, receipt, receiptPath, stage, argv, tools, toolSha, run };
+  }
+
+  it("stages and applies owner-attested local evidence with the same paired checks", async () => {
+    quiet();
+    const input = localInput();
+    await input.run();
+    await linuxMain(linuxArgv({ stage: input.stage, "head-sha": input.source }), repo.root);
+    unchanged(live());
+    const staged = JSON.parse(readFileSync(join(input.stage, DARWIN), "utf8"));
+    expect(staged.baselineEvidence).toMatchObject({
+      event: "local-native",
+      localReceipt: { receipt: input.receipt },
+      stagingTool: { commit: input.toolSha },
+    });
+    expect(staged.baselineEvidence).not.toHaveProperty("cargoTransition");
+    for (const key of ["runId", "jobId", "artifact"])
+      expect(staged.baselineEvidence).not.toHaveProperty(key);
+    expect(staged.ceilings).toEqual(darwinPinned.ceilings);
+    const darwinRun = manifestOf(input.stage).runs.find((r) => r.platform === "darwin-arm64");
+    expect(darwinRun).toHaveProperty("localEvidence.sha256", sha(readFileSync(input.receiptPath)));
+    expect(darwinRun.stagingTool).toEqual({ root: input.tools.root, commit: input.toolSha });
+    const localPins = readFileSync(join(input.stage, TEST), "utf8");
+    expect(localPins).toContain('event: "local-native"');
+    expect(localPins).toContain(
+      'localReceipt: { sha256: "' + staged.baselineEvidence.localReceipt.sha256,
+    );
+    expect(rewriteDarwinTestPins(localPins, staged)).toBe(localPins);
+    const backToActions = rewriteDarwinTestPins(localPins, darwinPinned);
+    expect(backToActions).not.toContain('event: "local-native"');
+    expect(backToActions).toContain("artifact: { id: " + darwinPinned.baselineEvidence.artifact.id);
+    applyStage(input.stage, repo.root);
+    expect(JSON.parse(read(DARWIN)).baselineEvidence.event).toBe("local-native");
+    const appended = read(README).toString().slice(saved[README].length);
+    const darwinSection = appended.split("\n## v")[0];
+    expect(darwinSection).toContain("owner-attested local native evidence");
+    expect(darwinSection).not.toContain("actions/runs");
+    expect(appended).toContain("actions/runs/71");
+  });
+
+  it("reads relative rewire inputs from --source-root, not the tooling cwd", async () => {
+    quiet();
+    const input = localInput();
+    const argv = [...input.argv, "--source-root", repo.root];
+    for (const key of ["rewire-declaration", "old-closure", "new-closure"]) {
+      const at = argv.indexOf("--" + key) + 1;
+      argv[at] = relative(repo.root, argv[at]);
+    }
+    // The process cwd is this repository, which has no such fixture files.
+    await main(argv, ".", undefined, input.tools.root);
+    unchanged(live());
+    const staged = JSON.parse(readFileSync(join(input.stage, DARWIN), "utf8"));
+    expect(staged.baselineEvidence.cargoRewire.declaration.path).toBe(
+      "research/v3-island-size/rewire-darwin/declaration.json",
+    );
+  });
+
+  it("refuses unstaged or tool-less local rewire evidence without a live write", async () => {
+    quiet();
+    const input = localInput();
+    const without = (flag) => {
+      const argv = [...input.argv];
+      argv.splice(argv.indexOf(flag), 2);
+      return argv;
+    };
+    await expect(input.run(without("--stage"))).rejects.toThrow(/requires staged/);
+    await expect(input.run(without("--tool-sha"))).rejects.toThrow(/--tool-sha/);
+    writeFileSync(join(input.tools.root, "untracked"), "dirty");
+    await expect(input.run()).rejects.toThrow(/tooling checkout must be clean/);
+    unchanged(live());
+    expect(existsSync(input.stage)).toBe(false);
+  });
+
+  it.each(["receipt", "bundle", "binding", "source", "dirty", "tool", "tool-binding", "profile"])(
+    "rejects changed local %s before applying or extending",
+    async (mutation) => {
+      quiet();
+      const input = localInput();
+      await linuxMain(linuxArgv({ stage: input.stage, "head-sha": input.source }), repo.root);
+      await input.run();
+      const darwinRun = (runs) => runs.find((r) => r.platform === "darwin-arm64");
+      if (mutation === "receipt") writeFileSync(input.receiptPath, "{}");
+      if (mutation === "bundle")
+        writeFileSync(join(input.artifact, "check-budget.log"), "tampered");
+      if (mutation === "binding")
+        editRuns(input.stage, (runs) => {
+          delete darwinRun(runs).localEvidence;
+        });
+      if (mutation === "source")
+        editRuns(input.stage, (runs) => {
+          darwinRun(runs).sourceSha = SOURCE_SHA;
+        });
+      if (mutation === "tool-binding")
+        editRuns(input.stage, (runs) => {
+          darwinRun(runs).stagingTool.commit = "f".repeat(40);
+        });
+      // A rewire stage relabelled as the security reason must not borrow its profile.
+      if (mutation === "profile")
+        editRuns(input.stage, (runs) => {
+          darwinRun(runs).reason = "cargo-producer-lock";
+        });
+      if (mutation === "dirty") writeFileSync(at("untracked-local-control"), "dirty");
+      if (mutation === "tool") input.tools.git("commit", "--allow-empty", "-qm", "drift");
+      try {
+        expect(() => applyStage(input.stage, repo.root)).toThrow(/local Darwin evidence/);
+        await expect(
+          linuxMain(linuxArgv({ stage: input.stage, "head-sha": input.source }), repo.root),
+        ).rejects.toThrow(/local Darwin evidence/);
+        unchanged(live());
+      } finally {
+        if (mutation === "dirty") rmSync(at("untracked-local-control"));
+      }
+    },
+  );
+
+  it("still rejects incorrect native measurements even with a freshly matching receipt", async () => {
+    quiet();
+    const input = localInput();
+    const runner = join(input.artifact, "runner-provenance.txt");
+    writeFileSync(
+      runner,
+      readFileSync(runner, "utf8").replace("runner=Darwin arm64", "runner=Linux x64"),
+    );
+    input.receipt.bundle.sha256 = localBundleDigest(input.artifact);
+    writeFileSync(input.receiptPath, JSON.stringify(input.receipt));
+    input.argv[input.argv.indexOf("--local-receipt-sha") + 1] = sha(
+      readFileSync(input.receiptPath),
+    );
+    await expect(input.run()).rejects.toThrow(/runner/);
+    unchanged(live());
+  });
 
   it("moves only the Cargo hash and its evidence in the pure Darwin transition", () => {
     const artifact = loadDarwinArtifact(darwinArtifact);
