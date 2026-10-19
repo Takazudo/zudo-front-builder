@@ -36,9 +36,10 @@ and a successful Mac reconciliation at the scheduled SHA.
 ## Execution contract
 
 Tools are Rust **1.99.1**, Node **22.22.2**, repository-pinned pnpm, and nextest
-**0.9.148** in every native job (the exam Linux lane uses the same pins). Nextest's
-[0.9.148 source](https://github.com/nextest-rs/nextest/blob/cargo-nextest-0.9.148/Cargo.toml)
-declares Rust 1.91 minimum. Node 22.22.2 satisfies the repository engine range.
+**0.9.140** in every native job (the exam Linux lane uses the same pins). Nextest's
+[0.9.140 source](https://github.com/nextest-rs/nextest/blob/cargo-nextest-0.9.140/Cargo.toml)
+declares Rust 1.91 minimum. It is the release `scripts/capture-nextest-evidence.py` is audited
+against and the one the owner's native receipts used. Node 22.22.2 satisfies the repository engine range.
 
 Each runner installs with `pnpm install --frozen-lockfile`, independently builds
 `cargo build --locked --workspace --all-targets` using the existing Rust/staged-esbuild
@@ -121,6 +122,6 @@ actionlint .github/workflows/exam.yml
 ```
 
 The native-exam shell entry is automatically included by health's `tests/unit/*.sh`
-loop. Fixtures were captured from a small Linux Rust 1.99.1 / nextest 0.9.148 package;
+loop. Fixtures were captured from a small Linux Rust 1.99.1 / nextest 0.9.140 package;
 they verify parser/protocol behavior and are explicitly **not native Mac evidence**.
 Full native qualification is still required after implementation and review.

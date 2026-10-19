@@ -1,6 +1,6 @@
 # Captured nextest protocol fixture
 
-Captured on Linux x86_64 with Rust 1.99.1 and cargo-nextest 0.9.148 on 2026-10-18.
+Captured on Linux x86_64 with Rust 1.99.1 and cargo-nextest 0.9.140 on 2026-10-19 (first captured with 0.9.148 on 2026-10-18).
 `Cargo.toml`, `lib.rs` and `nextest.toml` are the tiny producer sources. They have no
 external dependencies. Copy them to a temporary package at `src/lib.rs` and
 `.config/nextest.toml` to regenerate. `capture/shard-N` contains actual full/partition

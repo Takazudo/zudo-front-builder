@@ -43,7 +43,7 @@ def metadata(source):
     }.items()}
     require(versions["rust"].startswith("rustc 1.99.1 "), "Rust must be 1.99.1")
     require(versions["node"] == "v22.22.2", "Node must be 22.22.2")
-    require(versions["nextest"].split()[1] == "0.9.148", "nextest must be 0.9.148")
+    require(versions["nextest"].split()[1] == "0.9.140", "nextest must be 0.9.140")
     require("pnpm@" + versions["pnpm"] == read_json("package.json")["packageManager"], "pnpm pin mismatch")
     pins = Path("crates/zfb-toolchain-pins/src/lib.rs").read_text()
     expected = re.search(r'EXPECTED_ESBUILD_VERSION: &str = "([^"]+)"', pins)[1]
@@ -156,7 +156,7 @@ def aggregate(directory, source, run_id, attempt, jobs):
         require(all(isinstance(meta[k], str) and meta[k] for k in ("rust_verbose", "image", "image_version")), "incomplete platform metadata")
         require(meta["schema"] == 1 and meta["retries"] == 0, "invalid evidence schema/retry policy")
         require(meta["arch"] == "arm64" and meta["os"].startswith("15."), "unexpected native platform")
-        require(meta["tools"]["rust"].startswith("rustc 1.99.1 ") and meta["tools"]["node"] == "v22.22.2" and meta["tools"]["nextest"].split()[1] == "0.9.148", "unexpected pinned tools")
+        require(meta["tools"]["rust"].startswith("rustc 1.99.1 ") and meta["tools"]["node"] == "v22.22.2" and meta["tools"]["nextest"].split()[1] == "0.9.140", "unexpected pinned tools")
         require(meta["hashes"] and all(re.fullmatch(r"[0-9a-f]{64}", h) for h in meta["hashes"].values()), "invalid hashes")
         if baseline is None:
             baseline = meta
