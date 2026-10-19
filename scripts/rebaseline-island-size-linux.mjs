@@ -2226,6 +2226,7 @@ export function proveCargoInternalRewire({
         !Array.isArray(command) ||
         typeof command[0] !== "string" ||
         !command[0] ||
+        /\s/.test(command[0]) ||
         !isDeepStrictEqual(command.slice(1), [
           "metadata",
           "--locked",
@@ -2424,7 +2425,27 @@ export function cargoRewireText(transition) {
     transition.closure.added.length +
     " and changes " +
     transition.closure.changed.length +
-    " internal row(s) with no external drift"
+    " internal row(s) with no external drift" +
+    externalEdgesText(transition, (value) => value)
+  );
+}
+
+function externalEdgesText(transition, code) {
+  if (!transition.externalEdges?.length) return "";
+  return (
+    "; declared edges to unchanged external records: " +
+    recordList(
+      transition.externalEdges,
+      (edge) =>
+        code(edge.from) +
+        " " +
+        code(edge.dependency) +
+        " -> " +
+        code(edge.to) +
+        " (SHA-256 " +
+        code(edge.sha256) +
+        ")",
+    )
   );
 }
 
@@ -2475,7 +2496,9 @@ export function cargoRewireMarkdown(transition) {
     transition.closure.oldSha256 +
     "` and `" +
     transition.closure.newSha256 +
-    "`)."
+    "`)" +
+    externalEdgesText(transition, code) +
+    "."
   );
 }
 

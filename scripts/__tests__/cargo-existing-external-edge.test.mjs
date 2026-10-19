@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  cargoRewireMarkdown,
+  cargoRewireText,
   checkRewireDeclaration,
   proveCargoInternalRewire,
 } from "../rebaseline-island-size-linux.mjs";
@@ -97,6 +99,17 @@ describe("explicit existing-external-edge admission capability (not application)
       });
     },
   );
+
+  it("names the declared external edges in both transition summaries", () => {
+    const result = prove();
+    const [edge] = externalDeclaration().externalEdges;
+    for (const summary of [cargoRewireText(result), cargoRewireMarkdown(result)]) {
+      expect(summary).toContain("declared edges to unchanged external records");
+      for (const value of [edge.from, edge.dependency, edge.to, edge.sha256]) {
+        expect(summary).toContain(value);
+      }
+    }
+  });
 
   it("permits an explicitly declared internal feature change while external features stay fixed", () => {
     const result = prove((v) => {
@@ -370,6 +383,13 @@ describe("explicit existing-external-edge admission capability (not application)
     [
       "nondefault feature selection",
       (v) => v.closures.new.receipt.command.push("--no-default-features"),
+      /default-feature metadata command/,
+    ],
+    [
+      "flags folded into the program name",
+      (v) => {
+        v.closures.new.receipt.command[0] = "cargo --no-default-features";
+      },
       /default-feature metadata command/,
     ],
     [
