@@ -2,6 +2,15 @@
 
 Thanks for your interest in `zudo-front-builder`. The full build pipeline is shipping — embedded V8 host, islands bundler, CSS pipeline, content collections, client router, and dev-server are all wired. The toolchain and pre-commit pipeline below are active.
 
+## Development checkpoints and qualification
+
+Follow the [canonical development policy](./CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions):
+focused topic checks and review, manager-batched Linux verification on a non-publishing
+integration checkpoint, and native qualification on a separately selected immutable SHA.
+Keep aggregation PRs draft so the existing preview-upload guards apply. Main pushes are a
+production boundary. Consult the [current evidence/queue](./research/development-queue.md)
+before starting shared-file work; an older green result does not certify a newer head.
+
 ## Toolchain
 
 - **Rust**: stable channel, pinned via `rust-toolchain.toml` at the repo root. With `rustup` installed, the correct toolchain is selected automatically.

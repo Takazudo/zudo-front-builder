@@ -6,15 +6,17 @@ Replace the example ownership and branch names with the actual plan values.
 
 ```text
 Policy: CLAUDE.md — Development strategy: integrate first, use CI to find regressions.
-Integration: topic branches → base/example → recorded parent main.
+Integration: topic branches → reviewed base/example; draft aggregation targets main, no main push/merge.
+External effects: inspect actual triggers; draft suppresses preview uploads, not CI/artifact uploads.
 CI/fixing owner: implementation manager for this epic.
 Checks: child formatting and affected unit checks; manager batches broad CI verification.
-Evidence: exact tested SHA, run URL, job result, unresolved alert and repair owner.
+Evidence: development head separate from frozen qualification SHA/toolchain/artifacts; first results and retries.
+Native: serial command-scoped low-memory builds, reusable identity-keyed caches; no chasing each new head.
 Progression: reviewed, dependency-safe development merges may proceed with CI pending.
 Red CI: continue independent work only when understood/localized and repair is tracked;
         otherwise pause the affected chain and diagnose/repair before dependent work.
 Completion: reconcile required evidence and every alert on the integrated result.
-Publication: follow l-make-release's authoritative verification; no inherited admin bypass.
+Publication: separate approval and authoritative release verification; no branch-protection bypass.
 Exceptions: none (record task-specific deviations and their reasons here).
 ```
 
@@ -48,7 +50,12 @@ Review a proposed plan against each row. Reject or revise it when its action dis
 | Proposed weaker assertions, filters, CI, or rulesets to obtain green | Reject the weakening; repair the failure |
 | Cancelled/skipped/deferred/superseded run or pass-on-retry | Preserve the actual state and original evidence; never label it passed |
 | Older SHA green, newer integrated head unverified | Record the newer head's evidence separately; do not inherit green |
-| Development admin bypass proposed for publication | Reject; authoritative release verification must pass |
+| Admin bypass or main push proposed as routine development | Reject; use approved development topology and respect protection/publication boundaries |
+| Native Mac qualification is slow while independent topics are ready | Continue reviewed development; keep qualification on its selected immutable SHA |
+| Build timeout before test execution | Record build incomplete / tests not run; no behavioral verdict |
+| Release candidate frozen, unrelated new topic ready | Keep topic on development branch; only relevant reviewed fixes enter candidate |
+| Four shards each compile cold | Measure aggregate cost; do not assume fourfold speedup |
+| Non-draft PR targets base branch | Inspect preview triggers; use existing draft suppression where no preview is authorized |
 
 These are text review fixtures, not an executable test suite. For text-only edits, check
 formatting, reference targets, policy coverage, and the diff's scope. Existing CI and release

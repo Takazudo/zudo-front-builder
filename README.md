@@ -83,6 +83,11 @@ ZFB_DEBUG_SNAPSHOT=1 pnpm exec zfb build
 
 ## Contributing
 
+The normal workflow uses reviewed development checkpoints and separately frozen native
+qualification SHAs. Slow Mac qualification does not freeze independent development. See the
+[development policy](./CLAUDE.md#moving-development-and-frozen-qualification) and
+[current queue/evidence](./research/development-queue.md); integration is not release approval.
+
 See [BUILDING.md](./BUILDING.md) for the toolchain, first-build setup, and local development workflow.
 
 This repo uses git worktrees for parallel development. **Pushing from a worktree is forbidden** — child agents commit locally and the manager session merges and pushes from the repo root. See [CLAUDE.md](./CLAUDE.md) for the full worktree-push policy.
