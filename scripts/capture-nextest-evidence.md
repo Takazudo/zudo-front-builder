@@ -72,9 +72,8 @@ editing, clock changes, ignored source inputs, or a deliberately forged report.
 
 A nonzero child exit is returned unchanged (signal termination uses shell status
 128 + signal), whether XML was captured or missing. A successful child with missing,
-stale, invalid, or source/configuration-mismatched evidence makes the wrapper exit
-
-4. Preflight failures exit 2 and record `child_exit: null`, `execution: not_started`.
+stale, invalid, or source/configuration-mismatched evidence makes the wrapper exit `4`.
+Preflight failures exit `2` and record `child_exit: null`, `execution: not_started`.
 
 An existing output directory is refused without overwriting it. Filesystem failure
 can prevent a receipt being written; stderr explains that failure. Always inspect
