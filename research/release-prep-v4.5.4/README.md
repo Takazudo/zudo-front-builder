@@ -1,12 +1,13 @@
-# Release preparation: proposed v4.5.4 (draft, not approved)
+# Release preparation: v4.5.4 (version approved, release not approved)
 
 Prepared 2026-10-19 by the docs/release-prep lane (L5) from `v4.5.3..21ef7c4`
 (`v4.5.3` = 2026-10-16; `main` = `21ef7c4678adba115a3607801ededeeaf6e5814e`).
-Nothing here bumps a version, creates a tag, publishes a package or deploys docs. The
+The owner approved **4.5.4 (patch)** as the version on 2026-10-19 19:26 UTC; the release
+itself is not approved. Nothing here bumps a version, creates a tag, publishes a package or deploys docs. The
 executable procedure stays `.claude/skills/l-make-release/SKILL.md`; it re-reads the range
 and recomputes positions at release time.
 
-## Recommendation: patch, v4.5.4
+## Version: patch, v4.5.4 (owner-approved)
 
 | Evidence | Finding |
 | --- | --- |
@@ -20,7 +21,8 @@ and recomputes positions at release time.
 
 The release skill's mechanical rule (`feat:` ⇒ minor) would propose **4.6.0** from commit
 prefixes alone. The prefixes describe prototype and tooling work that ships nothing new to
-users, so this lane proposes **4.5.4**. The owner chooses; see "Owner decisions" below.
+users, so this lane proposed **4.5.4**, and the owner approved it. A release run must pass
+`stable patch` (or an explicit `4.5.4`) so the no-argument judgment does not pick 4.6.0.
 
 ## Breaking changes
 
@@ -63,7 +65,15 @@ behavior-preserving; embedded host transport, Web Crypto and module reads moved 
 `zfb-js-host`), the direct-V8 prototype, island-size admission tooling and contracts,
 nextest evidence helpers, CI and docs changes.
 
-## Conditional entry: if the security transition (PR 4315) is on `main` at the cut
+## Security lane: not on `main`, not in these notes
+
+Status at `21ef7c4`: the rustls 0.23.45 → 0.23.46 transition (PR 4315, with 4319/4326) is
+integrated on `base/4314-security-darwin-evidence` only, and `main`'s `Cargo.lock` still has
+rustls 0.23.45. The five drafts above therefore contain no security entry. Whether it lands
+before the cut belongs to the security lane and the owner's main-candidate approval, not to
+this lane.
+
+### Prepared entry, used only if PR 4315 is on `main` at the cut
 
 Add this to the `zfb` lane only (`changelog/zfb/v4.5.4.mdx`), as a new section above
 `## Bug Fixes`, with the commit hash that lands rustls 0.23.46 on `main`. The other four lanes
@@ -85,7 +95,7 @@ landed `Cargo.lock` diff, and confirm the rustls consumers listed in PR 4315 sti
 | Work | State on `main` `21ef7c4` | Release consequence |
 | --- | --- | --- |
 | Direct V8 (4301/4307) | Prototype crate feature only; the opt-in CLI wiring is in draft PR 4307, not merged; its lock is not admitted | Not released, not mentioned as a feature |
-| Security transition (4314/4315/4319/4326) | Integrated on `base/4314-security-darwin-evidence`, not on `main`; rustls stays 0.23.45 on `main` | If it reaches `main` before the cut, use the conditional entry above |
+| Security transition (4314/4315/4319/4326) | Integrated on `base/4314-security-darwin-evidence`, not on `main`; rustls stays 0.23.45 on `main` | Security lane; see "Security lane: not on `main`, not in these notes" above |
 | nextest 0.9.140 unification (4324/4325) | Draft | CI-only; no note |
 | 4231 store-vs-link acceptance test (4328) | Draft | Test-only; no note |
 
@@ -101,8 +111,35 @@ These are inputs to the owner's release decision, not lane-L5 actions:
 3. The release procedure's own gates: package/Rust focused checks, docs check, strict docs
    build, emitted-HTML validation, and the `release.yml` publication run.
 
-## Owner decisions
+## Version bump: files and values (proposal only; no bump commit exists)
 
-1. Version: 4.5.4 (recommended) or 4.6.0 (commit-prefix rule).
-2. Whether the security transition (rustls 0.23.46) must be on `main` before cutting.
-3. Whether to cut before or after the native qualification pass at the candidate SHA.
+The release procedure (`l-make-release` Steps 4–6) makes these edits in its single
+`chore(release): bump to v4.5.4` commit. Listed here so the change can be reviewed in advance.
+
+| File | Field | From | To | How |
+| --- | --- | --- | --- | --- |
+| `packages/zfb/package.json` | `version` | `4.5.3` | `4.5.4` | Step 4b |
+| `packages/{zfb-runtime,zfb-adapter-cloudflare,create-zfb,zfb-slugify}/package.json` | `version` | `4.5.3` | `4.5.4` | Step 4c propagation |
+| `packages/zfb-{darwin-arm64,darwin-x64,linux-arm64-gnu,linux-x64-gnu,win32-x64-msvc}/package.json` | `version` | `4.5.3` | `4.5.4` | Step 4c |
+| `crates/zfb-md-wasm/npm/package.json` | `version` | `4.5.3` | `4.5.4` | Step 4c |
+| `packages/zfb/package.json` | `dependencies["@takazudo/zfb-slugify"]` and the five platform `optionalDependencies` | `workspace:4.5.3` | `workspace:4.5.4` | Step 4c |
+| `packages/create-zfb/package.json` | `dependencies["@takazudo/zfb"]` | `workspace:4.5.3` | `workspace:4.5.4` | Step 4c |
+| `pnpm-lock.yaml` | workspace `specifier` lines | `workspace:4.5.3` | `workspace:4.5.4` | Step 4d, `--lockfile-only` |
+| `crates/zfb-md-wasm/shipped-sizes.json` and its synced doc tables | `measuredOnVersion` and the four size rows | `4.5.3` | `4.5.4` plus CI-measured values | Step 4a probe on hosted CI; never from a Mac build |
+| `research/v3-island-size/decision-linux-x64.json`, its README section, `scripts/__tests__/island-size-budget.test.mjs` | `packageVersion` and exact ceilings | `4.5.3` | `4.5.4` plus re-measured ceilings | Step 4a `rebaseline-island-size-linux.mjs` from the CI artifact |
+| `docs/public/wind-examples/manifest.json` | `compiler.sourceSha256` | current | recomputed | Step 4a, official generator |
+| `docs/src/content/docs/changelog/<lane>/v4.5.4.mdx` (5 files) | new pages | — | the drafts above, with `Released:` set | Step 4e |
+
+Not changed: every `Cargo.toml` stays `version = "0.0.0"`, because the binary takes its version
+from `ZFB_RELEASE_VERSION` at release build time. The root `package.json` stays `0.0.0`. The
+size values and ceilings cannot be written in advance: they move with the version stamp and
+come only from the release-version CI probe.
+
+## Owner decisions still open
+
+The version is settled (4.5.4). Still open, and collected by the integration manager for the
+main-candidate approval:
+
+1. Whether the security transition (rustls 0.23.46) must be on `main` before cutting.
+2. Whether to cut before or after the native qualification pass at the candidate SHA.
+3. The release itself.
