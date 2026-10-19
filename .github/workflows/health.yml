@@ -239,9 +239,9 @@ jobs:
       # (retries = 1), per-test timeouts, and JUnit output; the profile,
       # e2e test-group serialization, and timeouts live in .config/nextest.toml.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
         with:
-          tool: nextest@0.9.138
+          tool: nextest@0.9.140
 
       # cargo-machete (issue #2752) — a fast workspace dependency audit. Keep
       # the exact crates.io release pinned through the same checksum-verified
