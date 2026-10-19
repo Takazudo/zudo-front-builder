@@ -1,0 +1,17 @@
+---
+title: v4.5.4
+sidebar_position: 155
+---
+
+# v4.5.4
+
+Released: YYYY-MM-DD
+
+## Bug Fixes
+
+- Islands: an edit outside the browser graph, such as a page title or a Markdown body, no longer changes the shipped islands JavaScript. The build identity embedded in islands is now derived from esbuild's resolved browser graph, so raw production entry and chunk bytes stay identical across unrelated edits and still change when a reached source, virtual module, define, resolution condition, worker or resource changes. `zfb dev` re-resolves that graph on watcher events: a matching identity keeps the published islands and retained chunks, while a changed identity, a missing output or a failed preparation forces a fresh publication (666449e, 9a6d96b, 86998cd, e147a42).
+- Islands: computing the build identity no longer fails with `esbuild graph identity metafile does not contain its entry` when the project is reached through a symlink alias whose depth differs from its physical path, such as a macOS temporary directory under `/var` → `/private/var`. Metafile paths now resolve from esbuild's physical working directory and entries match exact paths before unique aliases (16f0db6).
+
+## Other Changes
+
+- Islands builds run extra esbuild passes to compute the graph identity, and `zfb dev` re-resolves the browser graph after admitted watcher events, so island builds and dev ticks can take longer than in v4.5.3 (666449e).

@@ -103,8 +103,11 @@ The short path:
 ```bash
 git clone https://github.com/Takazudo/zudo-front-builder.git
 cd zudo-front-builder
+pnpm install --frozen-lockfile
 cargo install --path crates/zfb
 ```
+
+`crates/zfb/build.rs` embeds Hono from the workspace pnpm store, so install the workspace's JavaScript dependencies first; without them the build stops and asks for `pnpm install --frozen-lockfile`. The first build compiles V8 and takes 15 to 30 minutes.
 
 <a id="standalone-installation"></a>
 

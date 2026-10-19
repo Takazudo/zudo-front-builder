@@ -190,6 +190,15 @@ Record source/control SHAs and first run evidence; never bypass admission gates 
 unbuilt or deferred tests passing. The [security issue record](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6266488465)
 retains the capacity limitation separately from the unresolved lock-admission failure.
 
+Keep toolchain selection process-local: `rust-toolchain.toml` selects stable in the checkout,
+and a recorded qualification toolchain is named on the command (`cargo +1.99.1 ...` or
+`RUSTUP_TOOLCHAIN=...`). Never run `rustup default`, `rustup override set` or other
+machine-wide toolchain changes; other sessions and worktrees share them. `python3` must be
+3.11+ because the `tests/unit/*.sh` suite (b4push, `health.yml`) runs
+`scripts/capture-nextest-evidence.py`, which imports `tomllib`; on a Mac whose system
+`python3` is older, prefix that command's `PATH` with a 3.11+ interpreter's directory. The contributor-facing
+version of these rules is in [BUILDING.md](./BUILDING.md#selecting-a-toolchain-per-command).
+
 ## Worktree push policy (enforced)
 
 This repo uses `/x-wt-teams` for multi-topic development. Child agents work in git worktrees under `worktrees/`. **Pushing from a worktree is forbidden.** Only the manager session — running from the main repo at the repo root — pushes, after merging topic branches into the base branch locally.
