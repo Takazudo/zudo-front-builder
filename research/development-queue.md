@@ -30,7 +30,7 @@ Automatic `main` CI, first attempt, no retries or dispatches:
 | `7f58a01` | [39315505385](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315505385) cancelled (superseded) | [39315505689](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315505689) success | — |
 | `7426913` | [39315529982](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315529982) cancelled (superseded) | [39315529777](https://github.com/Takazudo/zudo-front-builder/actions/runs/39315529777) cancelled (superseded) | — |
 | `695ca66` | [39316341673](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316341673) cancelled (superseded) | [39316341725](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316341725) cancelled (superseded) | docs-deploy [39316341746](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316341746) success |
-| `013b0ab` | [39316381257](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381257) in progress at this update: workspace nextest (0.9.140), doctests and md-extras steps passed; the Wind evidence step was still running | [39316381226](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381226) success | actionlint [39316381210](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381210) success |
+| `013b0ab` | [39316381257](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381257) success (completed 20:47 UTC; `build (no-v8)`, `health` with workspace nextest on the 0.9.140 pin, and all seven `wasm-md` legs) | [39316381226](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381226) success | actionlint [39316381210](https://github.com/Takazudo/zudo-front-builder/actions/runs/39316381210) success |
 
 - Cancelled runs are not passes. `main` runs are superseded by the next push, so the intermediate
   heads have no complete health result. `013b0ab` contains all four merges, and its run is the
@@ -56,8 +56,7 @@ inferred. The message did not ask for additional Mac tests.
 Two separate tracks, which must not be mixed:
 
 - **4.5.4 patch checkpoint (now; L5).** The version is approved as 4.5.4; the release is not. The
-  candidate is `main` at its latest CI-green head, currently `013b0ab` while its health result is
-  open. The drafts and the bump table are in `research/release-prep-v4.5.4/README.md`. Package-facing
+  candidate is `main` at its latest CI-green head, currently `013b0ab`. The drafts and the bump table are in `research/release-prep-v4.5.4/README.md`. Package-facing
   content is the two islands fixes (4298, 4308). The rustls 0.23.46 transition is not on `main` and
   is not in the drafts. L5 is preparing the checkpoint report and a draft bump PR. md-wasm sizes and
   island-size ceilings come from CI measurement; a red ceiling is recorded, never relaxed.
