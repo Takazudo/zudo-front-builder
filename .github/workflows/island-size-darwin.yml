@@ -31,6 +31,7 @@ on:
           - darwin-arm64
           - linux-x64
           - both
+          - rust-linux
 
 permissions:
   contents: read
@@ -579,10 +580,195 @@ jobs:
   # Independent evidence lane: measure-darwin and measure-linux still run per `platform`,
   # whether or not the CSS carriers are verified.
   css-carriers:
-    if: ${{ inputs.css_carriers }}
+    if: ${{ inputs.css_carriers && inputs.platform != 'rust-linux' }}
     permissions:
       contents: read
     uses: ./.github/workflows/css-carrier-verification.yml
     with:
       source_sha: ${{ inputs.ref }}
       windows_only: ${{ inputs.css_windows_only }}
+
+  rust-linux:
+    if: inputs.platform == 'rust-linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.ref }}
+      RUST_EVIDENCE_DIR: /tmp/zfb-rust-verification-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Require immutable source and Rust-only dispatch
+        env:
+          CSS_CARRIERS: ${{ inputs.css_carriers }}
+          CSS_WINDOWS_ONLY: ${{ inputs.css_windows_only }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CSS_CARRIERS" == false && "$CSS_WINDOWS_ONLY" == false ]]
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Free disk space for V8 build (issue #687)
+        run: |
+          set -euo pipefail
+          threshold_bytes=$((40 * 1000 * 1000 * 1000))
+          available_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          if [[ ! "$available_bytes" =~ ^[0-9]+$ ]]; then
+            echo "Unable to determine available disk space (got: $available_bytes)" >&2
+            exit 1
+          fi
+          available_gb="$(awk -v bytes="$available_bytes" 'BEGIN { printf "%.1f", bytes / 1000000000 }')"
+          echo "Disk available: ${available_bytes} bytes (${available_gb} GB); cleanup threshold: ${threshold_bytes} bytes (40.0 GB)."
+
+          if (( available_bytes >= threshold_bytes )); then
+            echo "Skipping disk cleanup: available space is at or above the 40 GB threshold."
+            exit 0
+          fi
+
+          echo "Available space is below the 40 GB threshold; running fallback cleanup."
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          available_after_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          if [[ ! "$available_after_bytes" =~ ^[0-9]+$ ]]; then
+            echo "Unable to determine available disk space after cleanup (got: $available_after_bytes)" >&2
+            exit 1
+          fi
+          available_after_gb="$(awk -v bytes="$available_after_bytes" 'BEGIN { printf "%.1f", bytes / 1000000000 }')"
+          echo "Disk available after fallback cleanup: ${available_after_bytes} bytes (${available_after_gb} GB); threshold: ${threshold_bytes} bytes (40.0 GB)."
+
+      - name: Record exact source and require disk headroom
+        run: |
+          mkdir -p "$RUST_EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git rev-parse HEAD 'HEAD^{tree}' > "$RUST_EVIDENCE_DIR/source.txt"
+          printf '%s\n' "$GITHUB_WORKFLOW_SHA" > "$RUST_EVIDENCE_DIR/workflow-sha.txt"
+          uname -a > "$RUST_EVIDENCE_DIR/host.txt"
+          df -h / > "$RUST_EVIDENCE_DIR/disk.txt"
+          available_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          test "$available_bytes" -ge 40000000000
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: nextest@0.9.138
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: v2-zfb
+          shared-key: workspace-all-targets
+      - run: pnpm install --frozen-lockfile
+      - name: Record toolchain and lock identities
+        run: |
+          { rustc -Vv; cargo -V; cargo clippy -V; cargo nextest --version; node --version; pnpm --version; } > "$RUST_EVIDENCE_DIR/tools.txt"
+          sha256sum Cargo.lock pnpm-lock.yaml > "$RUST_EVIDENCE_DIR/locks.txt"
+      - name: Build all test targets once
+        run: |
+          available_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          test "$available_bytes" -ge 40000000000
+          set +e
+          cargo build --locked --workspace --all-targets 2>&1 | tee "$RUST_EVIDENCE_DIR/build.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          printf '%s\n' "${statuses[0]}" > "$RUST_EVIDENCE_DIR/build.exit"
+          printf '%s\n' "${statuses[1]}" > "$RUST_EVIDENCE_DIR/build.log-exit"
+          test "${statuses[0]}" = 0 && test "${statuses[1]}" = 0
+      - name: Assert staged esbuild
+        run: |
+          test -x crates/zfb/binaries/esbuild/esbuild
+          crates/zfb/binaries/esbuild/esbuild --version
+          sha256sum crates/zfb/binaries/esbuild/esbuild > "$RUST_EVIDENCE_DIR/esbuild.txt"
+      - name: Independent Rust checks, zero retries
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+          ZFB_DEFAULT_LAYOUT_EVIDENCE_DIR: ${{ runner.temp }}/rust-default-layout
+        run: |
+          failed=0
+          # A restored report must never stand in for this invocation.
+          rm -f target/nextest/ci/junit.xml
+          run_check() {
+            label="$1"; shift
+            printf '%q ' "$@" > "$RUST_EVIDENCE_DIR/$label.command"
+            printf '\n' >> "$RUST_EVIDENCE_DIR/$label.command"
+            set +e
+            "$@" 2>&1 | tee "$RUST_EVIDENCE_DIR/$label.log"
+            statuses=("${PIPESTATUS[@]}")
+            rc=${statuses[0]}
+            set -e
+            printf '%s\n' "$rc" > "$RUST_EVIDENCE_DIR/$label.exit"
+            if [[ "$rc" != 0 || "${statuses[1]}" != 0 ]]; then failed=1; fi
+            printf '%s\n' "${statuses[1]}" > "$RUST_EVIDENCE_DIR/$label.log-exit"
+            case "$label" in
+              workspace|md-extras|env-esbuild)
+                if [[ -s target/nextest/ci/junit.xml ]]; then
+                  mv target/nextest/ci/junit.xml "$RUST_EVIDENCE_DIR/$label.junit.xml"
+                else
+                  echo "Missing fresh JUnit for $label" >&2
+                  failed=1
+                fi
+                ;;
+            esac
+          }
+          run_check inventory cargo nextest list --locked --workspace --message-format json
+          run_check clippy cargo clippy --locked --workspace --all-targets -- -D warnings
+          run_check workspace cargo nextest run --locked --workspace --profile ci --retries 0 --no-tests=fail
+          run_check doctests cargo test --locked --workspace --doc
+          run_check md-extras cargo nextest run --locked -p zfb-md-extras --features test-utils --profile ci --retries 0 --no-tests=fail
+          run_check md-extras-clippy cargo clippy --locked -p zfb-md-extras --features test-utils --all-targets -- -D warnings
+          run_check no-v8 cargo check --locked --no-default-features -p zfb --tests
+          run_check jsx-no-v8 cargo test --locked -p zfb-build --no-default-features --lib jsx_pragma
+          run_check env-esbuild cargo nextest run --locked --workspace --profile ci --retries 0 --no-tests=fail --run-ignored ignored-only -E '(package(zfb-islands) & binary(=integration)) | (package(zfb) & binary(=client_bundling_cross_pipeline)) | (package(zfb-build) & binary(=bundler_dot_path_staging_esbuild_regression)) | (package(zfb-build) & binary(=bundler_workspace_root_alias_esbuild_regression)) | (package(zfb-build) & binary(=bundler_consume_from_source_esbuild_regression)) | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_armed_regression)) | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_disarm_pin)) | (package(zfb-build) & binary(=bundler_root_workspace_loose_file_alias_esbuild_regression)) | (package(zfb) & ( test(=commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded) | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild) | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild) | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected) ))'
+          exit "$failed"
+      - name: Report missing or failed coverage
+        if: always()
+        run: |
+          mkdir -p "$RUST_EVIDENCE_DIR"
+          failed=0
+          {
+            echo 'Independent Linux Rust verification; live admission is not evaluated here.'
+            echo '| Check | Exit (missing means not completed) |'
+            echo '| --- | --- |'
+            for label in build inventory clippy workspace doctests md-extras md-extras-clippy no-v8 jsx-no-v8 env-esbuild; do
+              rc=missing
+              if [[ -f "$RUST_EVIDENCE_DIR/$label.exit" ]]; then
+                rc=$(cat "$RUST_EVIDENCE_DIR/$label.exit")
+              fi
+              printf '| %s | %s |\n' "$label" "$rc"
+              if [[ "$rc" != 0 ]]; then failed=1; fi
+              log_rc=missing
+              if [[ -f "$RUST_EVIDENCE_DIR/$label.log-exit" ]]; then
+                log_rc=$(cat "$RUST_EVIDENCE_DIR/$label.log-exit")
+              fi
+              if [[ "$log_rc" != 0 ]]; then
+                echo "Missing or failed log capture: $label ($log_rc)"
+                failed=1
+              fi
+            done
+            for label in workspace md-extras env-esbuild; do
+              if [[ ! -s "$RUST_EVIDENCE_DIR/$label.junit.xml" ]]; then
+                echo "Missing fresh JUnit: $label"
+                failed=1
+              fi
+            done
+          } > "$RUST_EVIDENCE_DIR/summary.md"
+          cat "$RUST_EVIDENCE_DIR/summary.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
+      - name: Retain first results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-linux-verification-${{ inputs.ref }}
+          path: |
+            ${{ env.RUST_EVIDENCE_DIR }}/
+            ${{ runner.temp }}/rust-default-layout/
+          retention-days: 7

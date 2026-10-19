@@ -49,8 +49,8 @@ describe("island-size native workflow wiring", () => {
     );
   });
 
-  it("declares exactly the two measure jobs and the CSS carrier lane, in order", () => {
-    expect(jobNames).toEqual(["measure-darwin", "measure-linux", "css-carriers"]);
+  it("keeps measure jobs and CSS carriers before independent Rust verification", () => {
+    expect(jobNames).toEqual(["measure-darwin", "measure-linux", "css-carriers", "rust-linux"]);
     expect(linux).not.toContain("css-carrier");
     expect(darwin).not.toContain("css-carrier");
   });
@@ -103,8 +103,7 @@ describe("island-size native workflow wiring", () => {
         ),
       );
     }
-    expect(carriers).toContain("if: ${{ inputs.css_carriers }}");
-    expect(carriers).not.toContain("inputs.platform");
+    expect(carriers).toContain("if: ${{ inputs.css_carriers && inputs.platform != 'rust-linux' }}");
     expect(carriers).toContain("uses: ./.github/workflows/css-carrier-verification.yml");
     expect(carriers).toContain("source_sha: ${{ inputs.ref }}");
     expect(carriers).toContain("windows_only: ${{ inputs.css_windows_only }}");
