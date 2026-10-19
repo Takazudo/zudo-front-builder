@@ -67,6 +67,14 @@ class NativeRefusal(unittest.TestCase):
         self.assertEqual(sorted(qualify.BINARY_FORMATS), sorted(graph.SHIPPING_TARGETS))
 
 
+class DefaultBinary(unittest.TestCase):
+    def test_windows_build_output_has_exe_suffix(self):
+        self.assertEqual(qualify.default_binary("x86_64-pc-windows-msvc").name, "zfb.exe")
+        for target in qualify.NATIVE_HOSTS:
+            if "windows" not in target:
+                self.assertEqual(qualify.default_binary(target).name, "zfb", target)
+
+
 class BinaryHeader(unittest.TestCase):
     def test_each_target_header_is_recognized(self):
         samples = {"x86_64-unknown-linux-gnu": elf(62), "aarch64-unknown-linux-gnu": elf(183),

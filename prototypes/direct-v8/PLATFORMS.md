@@ -62,8 +62,10 @@ workers) still needs its own cases and stays NOT RUN.
 
 ## Opt-in CI lane
 
-`.github/workflows/direct-v8.yml` records the Linux x86_64 row on a standard
-GitHub-hosted runner. Its row job runs only for a PR labelled `direct-v8` (and
+`.github/workflows/direct-v8.yml` records native rows on standard
+GitHub-hosted runners: Linux x86_64 (`ubuntu-latest`), Linux arm64
+(`ubuntu-24.04-arm`) and Windows x64 (`windows-latest`, expected `PARTIAL`
+with only the lifecycle check NOT RUN). Its row jobs run only for a PR labelled `direct-v8` (and
 `direct-v8-rolldown` for the Rolldown variant), or by manual dispatch once the
 workflow is on the default branch. It is not a required check. On other PRs only
 a small `plan` job runs and the row job reports as skipped. Each row run:
@@ -72,14 +74,17 @@ a small `plan` job runs and the row job reports as skipped. Each row run:
 - runs `qualify-target.py --build` against the PR head SHA (not the merge ref);
 - records the native binary's highest GLIBC symbol (not gated: the binary is
   built on the runner, not with the shipping `cross` recipe);
-- builds the CSS addon with `cross` and runs `scripts/smoke-packed-clean-room.sh`
-  around the row's binary (local tarballs, `create-zfb` scaffold, site build).
+- on Linux x86_64, builds the release binary with the shipping `cross` recipe
+  (Amazon Linux 2023 image) and fails if it needs more than GLIBC 2.34, then
+  runs `scripts/smoke-packed-clean-room.sh` with that binary and the
+  `cross`-built CSS addon (local tarballs, `create-zfb` scaffold, site build).
 
 It uploads the graph rows, `row.json`, the build, lifecycle and packed
 clean-room logs, the GLIBC record and disk snapshots, kept for 14 days. The
 runner uses the current stable Rust, so the exact toolchain of a row comes from
 its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
-Linux arm64, Darwin and Windows native rows are not part of this lane.
+Darwin rows need a Mac runner, which is not approved, and are not part of this
+lane; nor is the arm64 shipping `cross` recipe.
 
 ## Rolldown findings
 
