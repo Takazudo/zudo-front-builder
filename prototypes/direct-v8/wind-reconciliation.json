@@ -1,0 +1,8 @@
+{
+  "base": "21d6807e442bbed61e578c165a91d64c4a7dc141",
+  "unchanged_non_lock_inputs": 99,
+  "unchanged_wind_lock_records": 164,
+  "only_lock_change": "zfb-js-host gains existing optional deno_core edge",
+  "source_digest": "ba9e1a7c326b8a8df88e53968bbf495176bfd7eae26d2b20b5a193e60cf940d3",
+  "support_pin_changed": false
+}

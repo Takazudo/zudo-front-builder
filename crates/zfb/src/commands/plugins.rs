@@ -90,7 +90,7 @@ pub async fn maybe_spawn_host_with_diagnostic_sink(
 ///
 /// Gated on `embed_v8` because [`v8_plugin_hooks`] requires the V8 render
 /// host to be compiled in.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub(crate) struct PluginSetupResult {
     /// V8 plugin-registry hooks derived from `setup_registries` +
     /// `virtual_sources`.  Passed to the embedded V8 host so the runtime
@@ -132,7 +132,7 @@ pub(crate) struct PluginSetupResult {
 ///
 /// Gated on `embed_v8` because the returned [`PluginSetupResult::v8_plugin_hooks`]
 /// requires the embedded V8 render host.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub(crate) async fn run_plugin_setup(
     plugin_host: &Option<PluginHost>,
     project_root: &Path,

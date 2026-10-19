@@ -30,6 +30,9 @@ path = "src/lib.rs"
 # Detection / `output` config (sub-task 4.1b, issue #373) layers ON
 # TOP of this feature; that work is out of scope here.
 [features]
+# Internal build-time opt-in; the default remains Deno-backed embed_v8.
+direct-v8 = ["zfb-render/direct-v8", "zfb-build/direct-v8", "zfb-server/direct-v8", "zfb-config-loader/direct-v8"]
+
 rolldown-prototype = ["zfb-build/rolldown-prototype", "zfb-islands/rolldown-prototype"]
 default = ["embed_v8"]
 embed_v8 = [

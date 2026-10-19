@@ -62,7 +62,7 @@ pub(crate) mod embedded_node_modules_cache;
 use anyhow::{Context, Result};
 use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use zfb_build::EmbeddedV8Host;
 use zfb_content::{
     extract_tsx_frontmatter, ssr_request_param_tier, DefaultExportFirstParam, RequestParamTier,
@@ -843,7 +843,7 @@ pub enum WorkerDispatch<'h> {
     /// (issue #371, sub-task 4.1a). On the V8-off path the variant
     /// disappears from the enum entirely so the `EmbeddedV8Host`
     /// trait is not referenced.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     EmbeddedV8 {
         /// Mutable reference to the live host. The caller retains
         /// ownership; this function borrows it only for the duration of
@@ -910,7 +910,7 @@ pub fn eval_deferred_paths_via_worker(
         WorkerDispatch::Http { base_url, .. } => {
             eval_deferred_paths_http(deferred, base_url, cache, timeout)
         }
-        #[cfg(feature = "embed_v8")]
+        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
         WorkerDispatch::EmbeddedV8 { host } => eval_deferred_paths_embedded(deferred, *host, cache),
     }
 }
@@ -983,7 +983,7 @@ fn eval_deferred_paths_http(
 }
 
 /// Embedded V8 path: calls `host.dispatch_fetch` for each route.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn eval_deferred_paths_embedded(
     deferred: &[DeferredDynamicRoute],
     host: &mut dyn EmbeddedV8Host,
@@ -1054,7 +1054,7 @@ fn eval_one_deferred_path_http(
 
 /// Query one route's `paths()` via the embedded V8 host and resolve it.
 /// Returns `(universe_entries, manifest_entries)`, or a one-line reason string on any failure.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn eval_one_deferred_path_embedded(
     host: &mut dyn EmbeddedV8Host,
     route: &DeferredDynamicRoute,
@@ -2795,7 +2795,7 @@ mod tests {
     /// mismatch 404s from `/__paths__/` and silently lands every route in
     /// `expansion.deferred` instead of `expansion.resolved`, which is why
     /// the assertions below print the deferred reasons on failure.
-    #[cfg(feature = "embed_v8")]
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
     #[test]
     #[ignore = "heavy: run with --ignored — boots real esbuild + V8"]
     fn eval_deferred_paths_via_worker_embedded_v8_non_literal_paths() {

@@ -28,7 +28,7 @@ CASES = [
 ]
 
 
-def run(runner, *, timeout=60):
+def run(runner, *, timeout=60, engine=None):
     requests = [{"name": name, "source": "export default " + source + ";"}
                 for name, source, _ in CASES]
     result = protocol.run_receipts(runner, "".join(json.dumps(r) + "\n" for r in requests),
@@ -41,6 +41,8 @@ def run(runner, *, timeout=60):
         if not isinstance(receipt, dict):
             failures.append("missing or invalid receipt")
         else:
+            if engine is not None and receipt.get("engine") != engine:
+                failures.append("compiled engine identity differs")
             if receipt.get("case") != name:
                 failures.append("case name or order differs")
             if isinstance(expected, str):
@@ -52,7 +54,7 @@ def run(runner, *, timeout=60):
                 failures.append("expected error fragments differ")
         rows.append({"name": name, "expected": expected, "passed": not failures,
                      "failures": failures, "receipt": receipt})
-    result.update(observer="normal CLI outer loader (Deno default)",
+    result.update(observer="actual CLI outer loader: " + (engine or "Deno default"),
                   runner_sha256=result["executable_sha256"], requests=requests, rows=rows,
                   passed=result["passed"] and all(row["passed"] for row in rows))
     return result
@@ -62,8 +64,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--engine", choices=["direct v8 147.4.0", "deno_core 0.399.0 / v8 147.4.0"])
     args = parser.parse_args()
-    report = run(args.runner)
+    report = run(args.runner, engine=args.engine)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print("outer config", "PASS" if report["passed"] else "FAIL",
           sum(r["passed"] for r in report["rows"]), "/", len(CASES))

@@ -1,22 +1,96 @@
 //! Fixed bridge values only; this is not a general Rust/V8 serializer.
 use crate::fetch::FetchOutcome;
 
+// This context-owned closure follows deno_core 0.399.0's 00_infra.js
+// registerErrorClass/buildCustomError contract. V8 owns all constructor roots;
+// no Rust Global or isolate-slot teardown hook is needed.
+const ERROR_REGISTRY_SOURCE: &str = r#"(() => {
+    "use strict";
+    const NativeError = Error;
+    const NativeTypeError = TypeError;
+    const captureStackTrace = Error.captureStackTrace;
+    const errors = {};
+    function register(className, errorClass) {
+        if (typeof errors[className] !== "undefined") {
+            throw new NativeTypeError(`Error class for "${className}" already registered`);
+        }
+        errors[className] = message => new errorClass(message);
+    }
+    register("Error", NativeError);
+    register("TypeError", NativeTypeError);
+    register("RangeError", RangeError);
+    register("ReferenceError", ReferenceError);
+    register("SyntaxError", SyntaxError);
+    register("URIError", URIError);
+    function build(className, message) {
+        let error;
+        try {
+            error = errors[className]?.(message);
+        } catch (e) {
+            throw new NativeError(`Unable to build custom error for "${className}"\n  ${e.message}`);
+        }
+        if (typeof error === "object") captureStackTrace(error, build);
+        return error;
+    }
+    return [register, build];
+})()"#;
+
+fn registry_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Private>> {
+    let name = v8::String::new(scope, "zfb.host.errorRegistry")?;
+    Some(v8::Private::for_api(scope, Some(name)))
+}
+
+pub(super) fn install_errors(scope: &mut v8::PinScope) -> Option<()> {
+    let source = v8::String::new(scope, ERROR_REGISTRY_SOURCE)?;
+    let registry = v8::Script::compile(scope, source, None)?.run(scope)?;
+    let key = registry_key(scope)?;
+    let global = scope.get_current_context().global(scope);
+    (global.set_private(scope, key, registry) == Some(true)).then_some(())
+}
+
+fn error_function<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    index: u32,
+) -> Option<v8::Local<'s, v8::Function>> {
+    let key = registry_key(scope)?;
+    let global = scope.get_current_context().global(scope);
+    let registry = global.get_private(scope, key)?;
+    let registry = v8::Local::<v8::Array>::try_from(registry).ok()?;
+    v8::Local::<v8::Function>::try_from(registry.get_index(scope, index)?).ok()
+}
+
+pub(super) fn register_error(
+    scope: &mut v8::PinScope,
+    name: v8::Local<v8::Value>,
+    constructor: v8::Local<v8::Value>,
+) {
+    if let Some(register) = error_function(scope, 0) {
+        let receiver = v8::undefined(scope).into();
+        register.call(scope, receiver, &[name, constructor]);
+    }
+}
+
 pub(super) fn named_error<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     name: &str,
     message: &str,
 ) -> Option<v8::Local<'s, v8::Value>> {
-    let message = v8::String::new(scope, message)?;
-    let error = if name == "TypeError" {
-        v8::Exception::type_error(scope, message)
-    } else {
-        v8::Exception::error(scope, message)
-    };
-    let object = v8::Local::<v8::Object>::try_from(error).ok()?;
-    let key = v8::String::new(scope, "name")?;
-    let name = v8::String::new(scope, name)?;
-    object.create_data_property(scope, key.into(), name.into())?;
-    Some(error)
+    v8::tc_scope!(let tc, scope);
+    let build = error_function(tc, 1)?;
+    let name = v8::String::new(tc, name)?;
+    let message = v8::String::new(tc, message)?;
+    let receiver = v8::undefined(tc).into();
+    match build.call(tc, receiver, &[name.into(), message.into()]) {
+        Some(error) => Some(error),
+        None => {
+            // deno_core 0.399.0 error.rs::to_v8_error discards builder
+            // exceptions and returns the original message string.
+            if tc.has_caught() {
+                tc.reset();
+            }
+            Some(message.into())
+        }
+    }
 }
 
 pub(super) fn throw_named(scope: &mut v8::PinScope, name: &str, message: &str) {
@@ -181,3 +255,7 @@ pub(super) fn json_value<'s>(
     }
     convert(scope, value, &mut Vec::new())
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;
