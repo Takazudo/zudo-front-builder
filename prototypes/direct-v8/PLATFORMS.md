@@ -33,22 +33,29 @@ lane (see the PR comment for the exact commit); Cargo.lock SHA-256
 On the matching host, from a clean checkout of the candidate commit:
 
 ```sh
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"   # prepare-icu.py
-cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
-python3 prototypes/direct-v8/qualify-target.py --target <triple> --binary target/debug/zfb \
+python3 prototypes/direct-v8/prepare-icu.py
+export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+python3 prototypes/direct-v8/qualify-target.py --target <triple> --build \
+  --guard "$HOME/.claude/scripts/heavy-guard.sh" \
   --source-sha "$(git rev-parse HEAD)" --output target/direct-v8-qualify-<triple>
 ```
 
 `qualify-target.py` refuses (exit 3, row `NOT RUN`) when the host is not native
-for the target, including Rosetta. It records source cleanliness, toolchain,
-binary hash/version, ICU hash, dynamic library dependencies, the target's
-dependency closure, the actual CLI build/dev lifecycle observer, and that the
-binary bytes did not change. A check it cannot perform is `NOT RUN`/`PARTIAL`,
-never a pass. Heavy builds still go through the machine-wide heavy guard, and
-the Mac-specific limits in the root `CLAUDE.md` apply.
+for the target: a mismatched host, Rosetta, an arm64 process reporting an x86
+CPU (QEMU user mode, best effort), or a binary header for another
+architecture. `--build` runs the documented cargo build only after the source
+check passes (exact HEAD, no modified or untracked files), so the binary is tied
+to that source; a supplied `--binary` leaves the row PARTIAL at best. The row
+records toolchain, binary hash/header/version, the pinned ICU hash, dynamic
+library dependencies, the target's dependency closure, the actual CLI build/dev
+lifecycle observer with its logs, and that the binary bytes did not change.
+A check it cannot perform or finish is `NOT RUN`/`TIMEOUT` and makes the row
+`PARTIAL`, never `PASS`. On a low-memory Mac set `CARGO_BUILD_JOBS=1` for the
+build, per the root `CLAUDE.md`.
 
-`--rolldown` qualifies a binary built with `direct-v8,rolldown-prototype` and runs
-the lifecycle observer with `ZFB_ROLLDOWN_PROTOTYPE=1`. That observer is a small
+`--rolldown` qualifies `direct-v8,rolldown-prototype`: it builds that selection,
+requires the binary to contain the Rolldown prototype crate (and refuses it
+otherwise), and runs the lifecycle observer with `ZFB_ROLLDOWN_PROTOTYPE=1`. That observer is a small
 build/dev smoke. The selected Rolldown coverage in #4302 (aliases and virtual
 sources, copied Wasm, source maps, Worker output, hydration/CSS, declared
 workers) still needs its own cases and stays NOT RUN.
