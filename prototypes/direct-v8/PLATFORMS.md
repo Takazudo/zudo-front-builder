@@ -63,13 +63,22 @@ workers) still needs its own cases and stays NOT RUN.
 ## Opt-in CI lane
 
 `.github/workflows/direct-v8.yml` records the Linux x86_64 row on a standard
-GitHub-hosted runner. It runs only for a PR labelled `direct-v8` (and
+GitHub-hosted runner. Its row job runs only for a PR labelled `direct-v8` (and
 `direct-v8-rolldown` for the Rolldown variant), or by manual dispatch once the
-workflow is on the default branch. It is not a required check and never runs on
-an unlabelled PR. Each run executes the offline controls, the five dependency
-resolution rows, and `qualify-target.py --build` against the PR head SHA (not
-the merge ref). It uploads `row.json`, `graph.json`, the build log and the
-lifecycle logs, kept for 14 days. A CI row is evidence for that exact SHA only.
+workflow is on the default branch. It is not a required check. On other PRs only
+a small `plan` job runs and the row job reports as skipped. Each row run:
+
+- runs the offline controls and the five dependency resolution rows;
+- runs `qualify-target.py --build` against the PR head SHA (not the merge ref);
+- records the native binary's highest GLIBC symbol (not gated: the binary is
+  built on the runner, not with the shipping `cross` recipe);
+- builds the CSS addon with `cross` and runs `scripts/smoke-packed-clean-room.sh`
+  around the row's binary (local tarballs, `create-zfb` scaffold, site build).
+
+It uploads the graph rows, `row.json`, the build, lifecycle and packed
+clean-room logs, the GLIBC record and disk snapshots, kept for 14 days. The
+runner uses the current stable Rust, so the exact toolchain of a row comes from
+its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
 Linux arm64, Darwin and Windows native rows are not part of this lane.
 
 ## Rolldown findings

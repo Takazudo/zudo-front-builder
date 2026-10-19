@@ -3,8 +3,8 @@
 #
 # Opt-in direct-V8 lane (#4302, #4303 blocker "no direct-v8 CI lane"). It runs
 # only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` for the
-# Rolldown variant) or on manual dispatch, so it is never a required check and
-# never runs on ordinary PRs. It records the Linux x86_64 native row with the
+# Rolldown variant) or on manual dispatch, so it is never a required check. On
+# other PRs only the small `plan` job runs and the row job is skipped. It records the Linux x86_64 native row with the
 # same harness as prototypes/direct-v8/PLATFORMS.md; the other shipping rows
 # need their own native hosts and stay NOT RUN here.
 
@@ -23,12 +23,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  # Per added label, so adding an unrelated (or the other) label never cancels a
-  # running row; pushes and dispatches share the `all` group.
-  group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name || 'all' }}
-  cancel-in-progress: true
 
 jobs:
   # Decide which rows were asked for, so an unrequested row is skipped rather
@@ -67,10 +61,15 @@ jobs:
     name: direct-v8 (${{ matrix.features }}, linux-x64)
     needs: plan
     if: needs.plan.outputs.features != '[]'
+    # Job-level, per feature set: a newer push or label run replaces an older
+    # run of the same row, and an unrelated label (empty plan) cancels nothing.
+    concurrency:
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.features }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
-    # Same budget as health's V8 job; replace with a measured value after the
-    # first runs (debug build with a prebuilt V8 archive, plus a ~7 min observer).
-    timeout-minutes: 90
+    # Measured at f217f4d: 12 min end to end with no Rust cache (the v8 crate
+    # links a prebuilt archive). 45 leaves room for the ~7 min observer budget.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -95,11 +94,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
-        with:
-          # The direct-v8 target tree shares nothing useful with embed_v8/no-v8.
-          prefix-key: "v1-zfb-direct-v8"
-          key: ${{ matrix.features }}
+      # No rust-cache on purpose: a cold build takes about 3 min here, and a
+      # V8-linked target tree would compete with health's caches for the repo's
+      # 10 GB Actions cache budget.
 
       - name: Cache staged esbuild binary (issue 2385)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -140,6 +137,10 @@ jobs:
           python3 prototypes/direct-v8/qualify-target.py --target x86_64-unknown-linux-gnu --build \
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           df -h / | tee "$ROW_DIR/disk-after.txt"
+          if [ -f "$ROW_DIR/qualify/row.json" ]; then
+            python3 -c 'import json,sys; print("ROW_BINARY=" + json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' \
+              "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
+          fi
           exit "$status"
 
       # Installed-consumer check for the same harness-built binary: pack the
@@ -157,17 +158,15 @@ jobs:
       # qualified by this lane.
       - name: Record the native binary's GLIBC requirement
         run: |
-          binary=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' "$ROW_DIR/qualify/row.json")
-          objdump -T "$binary" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 | tee "$ROW_DIR/binary-max-glibc.txt"
+          objdump -T "$ROW_BINARY" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 | tee "$ROW_DIR/binary-max-glibc.txt"
 
       - name: Packed clean-room consumer (Linux x86_64)
         run: |
           bash scripts/build-css-node.sh x86_64-unknown-linux-gnu cross
           pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
-          binary=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' "$ROW_DIR/qualify/row.json")
           addon="$RUNNER_TEMP/zfb-css.node"
           cp packages/zfb-linux-x64-gnu/zfb-css.node "$addon"
-          ZFB_LINUX_X64_BINARY="$binary" ZFB_LINUX_X64_CSS_ADDON="$addon" \
+          ZFB_LINUX_X64_BINARY="$ROW_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
             bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
 
       - name: Summary
