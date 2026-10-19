@@ -2226,7 +2226,7 @@ export function proveCargoInternalRewire({
         !Array.isArray(command) ||
         typeof command[0] !== "string" ||
         !command[0] ||
-        /\s-/.test(command[0]) ||
+        /\s[-+]/.test(command[0]) ||
         !isDeepStrictEqual(command.slice(1), [
           "metadata",
           "--locked",
