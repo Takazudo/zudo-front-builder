@@ -61,13 +61,7 @@ def source_fingerprint(workspace, excluded):
     return result.hexdigest()
 
 
-def resolve(args):
-    if "MIRI_SYSROOT" in os.environ:
-        raise EvidenceError("Miri profile selection is not supported by this capture helper")
-    version = subprocess.check_output([args.cargo, "nextest", "--version"], text=True).strip()
-    # Fail closed if upstream changes store/config semantics; no guessed path fallback.
-    if not re.match(r"^cargo-nextest 0\.9\.140(?:\s|$)", version):
-        raise EvidenceError(f"unsupported nextest version (audited: 0.9.140): {version}")
+def locate(args):
     metadata_args = [args.cargo, "metadata", "--format-version", "1", "--no-deps", "--offline"]
     if args.manifest_path:
         metadata_args += ["--manifest-path", args.manifest_path]
@@ -75,9 +69,56 @@ def resolve(args):
     if args.target_dir:
         env["CARGO_TARGET_DIR"] = args.target_dir
     metadata = checked_json(metadata_args, env)
-    workspace = Path(metadata["workspace_root"])
-    if not workspace.is_absolute() or not Path(metadata["target_directory"]).is_absolute():
+    if not Path(metadata["workspace_root"]).is_absolute() or not Path(metadata["target_directory"]).is_absolute():
         raise EvidenceError("Cargo metadata paths must be absolute")
+    return metadata
+
+
+def capture_paths(report):
+    # Cooperating wrappers serialize by physical report destination, including absolute junit paths.
+    lock_path = report.parent / (".capture-" + digest(str(report.resolve()).encode()) + ".lock")
+    return lock_path, report.parent / (lock_path.name + ".started")
+
+
+def refuse_unsafe_output(output, workspace, report):
+    if output == workspace or workspace in output.parents:
+        raise EvidenceError("evidence directory must be outside the source workspace")
+    if report is not None:
+        for owned in (report, *capture_paths(report)):
+            owned = owned.resolve()
+            if output == owned or output in owned.parents or owned in output.parents:
+                raise EvidenceError("evidence directory must be separate from nextest report destination")
+
+
+def write_receipt(output, receipt, create):
+    partial = output / ".receipt.json.partial"
+    try:
+        if create:
+            output.mkdir(parents=True, exist_ok=False)
+        try:
+            partial.write_text(json.dumps(receipt, indent=2) + "\n")
+            os.replace(partial, output / "receipt.json")
+        except OSError:
+            partial.unlink(missing_ok=True)
+            raise
+    except OSError as error:
+        print(f"receipt not written: {output / 'receipt.json'}: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def check_nextest(args):
+    if "MIRI_SYSROOT" in os.environ:
+        raise EvidenceError("Miri profile selection is not supported by this capture helper")
+    version = subprocess.check_output([args.cargo, "nextest", "--version"], text=True).strip()
+    # Fail closed if upstream changes store/config semantics; no guessed path fallback.
+    if not re.match(r"^cargo-nextest 0\.9\.140(?:\s|$)", version):
+        raise EvidenceError(f"unsupported nextest version (audited: 0.9.140): {version}")
+    return version
+
+
+def resolve(args, metadata):
+    workspace = Path(metadata["workspace_root"])
     source = subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True).strip()
     dirty = subprocess.check_output(["git", "-C", str(workspace), "status", "--porcelain=v1", "-uall"], text=True)
     config = {"store": {"dir": "target/nextest"}, "profile": {"default": {}}}
@@ -110,17 +151,18 @@ def resolve(args):
         if current == "default":
             break
         current = settings.get("inherits", "default")
+    identity = {"source_sha": source, "source_dirty": bool(dirty), "source_status": dirty,
+                "workspace_root": str(workspace), "cargo_target_directory": metadata["target_directory"],
+                "profile": profile, "config_inputs": configs, "junit_destination": None}
     if not isinstance(junit_path, str) or not junit_path:
-        raise EvidenceError(f"JUnit reporting is not enabled for profile {profile}")
+        return None, identity
     store = config["store"]["dir"]
     if not isinstance(store, str) or not store:
         raise EvidenceError("invalid nextest store.dir")
     # Upstream 0.9.140: workspace_root.join(store.dir).join(profile).join(junit.path).
     report = Path(os.path.abspath(workspace / store / profile / junit_path))
-    return report, {"source_sha": source, "source_dirty": bool(dirty), "source_status": dirty,
-                    "workspace_root": str(workspace), "cargo_target_directory": metadata["target_directory"],
-                    "profile": profile, "nextest_version": version, "config_inputs": configs,
-                    "junit_destination": str(report)}
+    identity["junit_destination"] = str(report)
+    return report, identity
 
 
 def capture_report(report, output, marker_ns, started, previous):
@@ -147,8 +189,11 @@ def capture_report(report, output, marker_ns, started, previous):
 
 
 def run(args, forwarded):
-    output = Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    requested = Path(os.path.abspath(args.output))
+    if os.path.lexists(requested):
+        print(f"evidence path already exists, left unchanged: {requested}; no receipt written", file=sys.stderr)
+        return 2
+    output = requested.resolve()
     command = [args.cargo, "nextest", "run"]
     for option in ("profile", "config_file", "manifest_path", "target_dir"):
         value = getattr(args, option)
@@ -160,7 +205,15 @@ def run(args, forwarded):
     receipt = {"schema": 1, "command": command, "cwd": str(Path.cwd()), "child_exit": None,
                "execution": "not_started", "evidence": {"status": "missing"}}
     returned = 2
+    # Nothing is created until the destination is checked against the workspace and report paths.
+    safe = created = False
     try:
+        metadata = locate(args)
+        workspace = Path(metadata["workspace_root"]).resolve()
+        report, identity = resolve(args, metadata)
+        receipt.update(identity)
+        refuse_unsafe_output(output, workspace, report)
+        safe = True
         forbidden = {"--profile", "-P", "--config-file", "--tool-config-file", "--manifest-path", "--target-dir",
                      "--config", "--cargo-metadata", "--binaries-metadata", "--archive-file", "--workspace-remap",
                      "--target-dir-remap", "--extract-to", "--no-run", "--help", "-h", "--version", "-V"}
@@ -168,17 +221,13 @@ def run(args, forwarded):
             key = word.split("=", 1)[0]
             if key in forbidden or word.startswith("-P"):
                 raise EvidenceError(f"unsupported forwarded option {word}; pass resolution options before --; compile separately")
-        report, identity = resolve(args)
-        receipt.update(identity)
-        workspace = Path(identity["workspace_root"]).resolve()
-        if output == workspace or workspace in output.parents:
-            raise EvidenceError("evidence directory must be outside the source workspace")
-        if output == report.resolve() or output in report.resolve().parents:
-            raise EvidenceError("evidence directory must be separate from nextest report destination")
+        identity["nextest_version"] = receipt["nextest_version"] = check_nextest(args)
+        if report is None:
+            raise EvidenceError(f"JUnit reporting is not enabled for profile {identity['profile']}")
+        output.mkdir(parents=True, exist_ok=False)
+        created = True
         report.parent.mkdir(parents=True, exist_ok=True)
-        # Cooperating wrappers serialize by physical report destination, including absolute junit paths.
-        lock_path = report.parent / (".capture-" + digest(str(report.resolve()).encode()) + ".lock")
-        marker = report.parent / (lock_path.name + ".started")
+        lock_path, marker = capture_paths(report)
         excluded = {path.resolve() for path in (report, lock_path, marker)}
         identity["source_fingerprint"] = source_fingerprint(workspace, excluded)
         receipt["source_fingerprint"] = identity["source_fingerprint"]
@@ -234,11 +283,13 @@ def run(args, forwarded):
             returned = (code if code >= 0 else 128 - code) or 4
     finally:
         receipt["wrapper_exit"] = returned
-        try:
-            (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
-        except OSError as error:
-            print(f"cannot write receipt: {error}", file=sys.stderr)
-            return returned if receipt["child_exit"] else 4
+        written = safe and write_receipt(output, receipt, create=not created)
+    if not safe:
+        print(f"evidence directory not created: {receipt['evidence'].get('reason')}; no receipt written", file=sys.stderr)
+        return returned
+    if not written:
+        # A successful child without its receipt is incomplete evidence; failures keep their own status.
+        return returned or 4
     print(f"evidence={receipt['evidence']['status']} child_exit={receipt['child_exit']} receipt={output / 'receipt.json'}", file=sys.stderr)
     return returned
 
