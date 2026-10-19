@@ -403,6 +403,13 @@ describe("explicit existing-external-edge admission capability (not application)
       /default-feature metadata command/,
     ],
     [
+      "toolchain override folded into the program name",
+      (v) => {
+        v.closures.old.receipt.command[0] = "cargo +nightly";
+      },
+      /default-feature metadata command/,
+    ],
+    [
       "missing command attestation",
       (v) => {
         delete v.closures.old.receipt.command;
