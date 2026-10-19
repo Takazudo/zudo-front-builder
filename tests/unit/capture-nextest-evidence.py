@@ -42,7 +42,10 @@ class CaptureTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.build_fixture(self.temp.name)
+
+    def build_fixture(self, base):
+        self.root = Path(base).resolve()
         self.workspace = self.root / 'workspace'
         self.workspace.mkdir()
         subprocess.run(['git', 'init', '-q', str(self.workspace)], check=True)
@@ -89,6 +92,20 @@ class CaptureTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(receipt['junit_destination'], str(self.report))
                 self.assertNotEqual(receipt['cargo_target_directory'], str(self.workspace / 'target'))
+
+    def test_symlinked_temp_root_matches_physical_cargo_workspace(self):
+        # macOS TMPDIR lives under /var -> /private/var; Cargo discovering the manifest from cwd reports the physical workspace_root.
+        physical = tempfile.TemporaryDirectory()
+        self.addCleanup(physical.cleanup)
+        links = tempfile.TemporaryDirectory()
+        self.addCleanup(links.cleanup)
+        alias = Path(links.name) / 'alias'
+        alias.symlink_to(physical.name, target_is_directory=True)
+        self.build_fixture(alias)
+        code, _, receipt = self.capture()
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt['workspace_root'], os.path.realpath(physical.name) + '/workspace')
+        self.assertEqual(receipt['junit_destination'], str(self.report))
 
     def test_custom_store_and_inherited_path(self):
         self.config.write_text('[store]\ndir="reports"\n[profile.parent.junit]\npath="suite.xml"\n[profile.ci]\ninherits="parent"\n')
