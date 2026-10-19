@@ -142,6 +142,19 @@ jobs:
           df -h / | tee "$ROW_DIR/disk-after.txt"
           exit "$status"
 
+      # Installed-consumer check for the same harness-built binary: pack the
+      # local tarballs around it, scaffold with create-zfb and build the site.
+      # Runs after the row so its package-dir edits cannot dirty the source check.
+      - name: Packed clean-room consumer (Linux x86_64)
+        run: |
+          bash scripts/build-css-node.sh x86_64-unknown-linux-gnu
+          pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
+          binary=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' "$ROW_DIR/qualify/row.json")
+          addon="$RUNNER_TEMP/zfb-css.node"
+          cp packages/zfb-linux-x64-gnu/zfb-css.node "$addon"
+          ZFB_LINUX_X64_BINARY="$binary" ZFB_LINUX_X64_CSS_ADDON="$addon" \
+            bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
+
       - name: Summary
         if: always()
         run: |
@@ -153,7 +166,7 @@ jobs:
               echo "No native row recorded."
             fi
             echo
-            echo "Not run in this lane: Linux arm64, Darwin arm64/x64 and Windows native rows, packaging, Rolldown coverage cases."
+            echo "Not run in this lane: Linux arm64, Darwin arm64/x64 and Windows native rows, Rolldown coverage cases."
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MATRIX_FEATURES: ${{ matrix.features }}
