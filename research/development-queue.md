@@ -64,7 +64,14 @@ treated as recovered.
 None of the 16 failures from `21d6807e` reproduced on current main; native Mac passes for them
 were recorded at `92e25ad4`, `a76e4775` and `b605a4de`. The two pre-4321 Mac captures (26 tests:
 23 + 3) used the old helper and are not evidence for the helper now on main. The new helper made a
-real capture on Linux at `21ef7c4` (`recursive_dirs` 23/23); that is not Mac evidence. 4305 merges
+real capture on Linux at `21ef7c4` (`recursive_dirs` 23/23); that is not Mac evidence. A separate,
+limited native Mac receipt now exists at `21ef7c4`
+([receipt](https://github.com/Takazudo/zudo-front-builder/pull/4322#issuecomment-6274889047)):
+the new helper's 25 unique offline tests passed once each under logical and physical TMPDIR, and a
+real capture of `zfb-graph --lib --locked --retries 0` passed 43/43 (cargo-nextest 0.9.140, `ci`
+profile, isolated clean source/target), with JUnit byte identity, SHA-256 and receipt/source
+fingerprints checked. Its scope is this SHA's helper and that graph lane only: it claims nothing
+about the 4315 Darwin producer, V8, the watcher, the full workspace, b4push, live admission or release. 4305 merges
 cleanly into main and its 20 offline harness tests pass, but the native sharded run has never been
 dispatched; adoption waits on the owner (nextest is being unified on 0.9.140). 4133 (eight
 `cargo test -p zfb --lib` Mac hangs) did not reproduce under nextest and remains unverified; 4309
