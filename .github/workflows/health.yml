@@ -241,7 +241,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
-          tool: nextest@0.9.138
+          tool: nextest@0.9.140
 
       # cargo-machete (issue #2752) — a fast workspace dependency audit. Keep
       # the exact crates.io release pinned through the same checksum-verified
