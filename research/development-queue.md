@@ -2,9 +2,167 @@
 
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
-Snapshot: 2026-10-19; integration/CI triage owner: the development-checkpoint manager.
+Current snapshot: 2026-10-19 after PR 4322; integration/CI triage owner: the project integration
+manager (one fixed owner). Sections from "Historical checkpoint 4294" onward are the earlier
+checkpoint record, kept verbatim as evidence; where they say "excluded" or "pending", the current
+roadmap below wins.
 
-## Development checkpoint
+## Current roadmap (main `21ef7c4`, 2026-10-19)
+
+### Cloud round summary (2026-10-19)
+
+All Cloud-doable work from this round is done. States below use the ledger vocabulary: implemented,
+reviewed, integrated (into which branch) and verified (which evidence, which SHA). Nothing here is
+released, applied to live admission, or merged to `main` beyond PR 4322.
+
+**1. Outcomes by lane**
+
+| Lane | Implemented + reviewed | Integrated | Verified | Not run |
+| --- | --- | --- | --- | --- |
+| L0 roadmap | This ledger (PR 4323), 4235 body refresh | Draft PR to `main` | Docs format check; PR CI green at `b1268ec` | — |
+| L1 security | 4315 (rustls 0.23.46), 4319 + 4311 unified as 4326 | `base/4314-security-darwin-evidence` `7e79458` | Hosted Linux run 39248247275 (source `bda633b`, log and artifact checked separately) | Darwin collection, stage+apply; base health keeps 2 known reds until apply |
+| L2 direct V8 | 4307 refreshed onto main, Wind manifest regenerated, 4302 harness (9 review fixes) | `base/4301-direct-v8` `bea94d1` | Linux x64 native row PASS at `14d984a`; CI red only on unadmitted lock | Other native rows, Windows observer, packaging, Rolldown coverage, frozen acceptance, Chromium, default local build |
+| L3 native | 4324 (nextest 0.9.140 pin, install-action v2.82.10), 4325 (4305 fixtures at 0.9.140) | Drafts only | 4324 CI green, 6,874 passed; health now installs nextest from the tarball with SHA-256 check; Mac helper receipt at `21ef7c4` (graph lane 43/43) | `exam.yml` with the new pin not yet run (next scheduled Sat 2026-10-24); native full workspace at `21ef7c4` |
+| L4 sweep | Classification, closures, 4231 test (4328) | 4328 ready for review | 4328 CI 15 success / 0 failure at `732a03de` | — |
+| L5 docs/release prep | 4329: current-state README, toolchain/Python 3.11 docs, five-lane v4.5.4 drafts, bump proposal | Draft | Docs build passed; health still running at this update | No release, tag or publish |
+
+**2. Issues**
+
+- Closed as completed: 4251, 4219, 4218, 4224, 4223, 4098 (evidence comments on each); 4311 closed as
+  integrated into 4326; probe PR 4327 closed after recording its size result on 4268.
+- Open with next action: 4231/4252/4243/4241 (merge 4328, then S7 ledger, then close in that order);
+  4314 (close after rustls reaches `main` and a Security Audit run is green); 4294 (native full
+  workspace at a selected SHA); 4133 (Mac reproduction); 4301/4302 (lock admission, then native
+  rows); 4268 (owner decision; 0.0.58 over ceiling); 4304 (watch 2026-10-25); 4019 (real supervisor
+  suite on a reaping init); 4289/4293, 4303, 318, 3386, 3372, 3879, 3357, 1373 (owner or upstream
+  triggers as classified above); 4123/4124/4276 (Mac or owner manual); 1492 sticky.
+
+**3. Main candidates and recommended order**
+
+1. **4323** (this ledger; docs-only; conflict-free with the others).
+2. **4328** (packed-build byte comparison for 4231; CI green; ready). Unblocks the 4231 chain.
+3. **4329** (docs and v4.5.4 drafts; drafts live outside the changelog path so a `main` push
+   publishes no version page). Merge after its health finishes green.
+4. **4324** (nextest 0.9.140 pin). Merge before any 4305 work; first `exam.yml` run with it is the
+   2026-10-24 schedule unless the owner dispatches one.
+5. **4305 + 4325** only if the owner adopts sharding: rebase 4325 onto `main` after 4324, because
+   both edit the `exam.yml` nextest install lines (merge-tree conflict confirmed); keep 4324's
+   install-action v2.82.10 pin.
+
+Not candidates now: `base/4314-security-darwin-evidence` (red until stage+apply is approved and
+done; 4317 rides with it) and `base/4301-direct-v8` (waits on lock admission, which depends on L1).
+
+**4. Minimal Mac prompts**
+
+| Prompt | Fixed SHAs | Status |
+| --- | --- | --- |
+| L1 `/mnt/project-files/l1-security-evidence/mac-prompt-4314.md` (stage only, `LOCAL-SECURITY-4314.md`) | SOURCE `bda633b`, TOOL `7e79458` | Waits for the owner to lift the Mac preflight hold |
+| L3 [4294 comment](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6274028064) (new capture helper) | `21ef7c4` | Executed by Moya: [receipt](https://github.com/Takazudo/zudo-front-builder/pull/4322#issuecomment-6274889047) |
+| L2 [4302 native-row handoff](https://github.com/Takazudo/zudo-front-builder/issues/4302#issuecomment-6275155771) (`PLATFORMS.md` "Native row run prompts") | CANDIDATE `14d984a` | Not authorized or run |
+
+**Owner decisions recorded 2026-10-19 19:26 UTC:** merge 4323 → 4328 → 4329 → 4324 to `main` after
+each PR's required CI is green; 4305/4325 sharding adoption is on hold until after the next exam;
+Mac security is approved for recipe/resource preflight then stage collection only (no `--apply`, no
+live admission); prepare version 4.5.4 (patch) notes and bump, with the release itself not approved.
+
+**5. Remaining conditions for release and owner decisions to take together**
+
+- Lock admission apply (rustls transition on L1; direct-V8 edge on L2): Darwin stage collection is approved, `--apply` is not.
+- Whether to adopt 4305 sharding (with 4325): on hold until after the next exam.
+- Version: 4.5.4 patch chosen by the owner; the release itself is not approved.
+- Whether rustls 0.23.46 must be on `main` before the cut (4314 stays red until it is).
+- Native verification before or after the cut (full workspace at the candidate SHA is not run).
+- Whether to merge 4317 (hosted Linux exact-source lane).
+
+### Main and its CI
+
+- `main` = `21ef7c4678adba115a3607801ededeeaf6e5814e` (merge of PR [4322](https://github.com/Takazudo/zudo-front-builder/pull/4322)).
+  It contains PR 4312 (checkpoint: 4308, 4309, 4313, 4316, 4318; merge `502d9e6e`), PR 4310
+  (external-edge admission capability, head `28be51b`), PR 4321 (capture failure handling, `ac5eedd`)
+  and PR 4320 (capture TMPDIR fixture, `35f7b86`). Earlier merged work referenced below: 4298
+  (`15a76210`), 4234 (`d28cdd57`), 4259, 4260, 4120 (`8b1fe8b0`).
+- Exact-head automatic CI on `21ef7c4`, first attempt, no retries:
+  [health 39294618774](https://github.com/Takazudo/zudo-front-builder/actions/runs/39294618774) success
+  (`build (no-v8)`, `health`; `wasm-md` skipped by its path gate) and
+  [binary/scaffold/showcase 39294618739](https://github.com/Takazudo/zudo-front-builder/actions/runs/39294618739) success.
+  No docs-deploy or wind-computed-style run was triggered for this head. This is Linux evidence only.
+- Not yet run at `21ef7c4`: any native Mac/Windows execution, the scheduled `exam.yml` (last run
+  39002778546 at `d1c8b288`; next scheduled Sat 2026-10-24), Security Audit (last run 39217854663
+  red at `21d6807e`, see 4314), Supervisor watch (next Sun 2026-10-25), YAML candidate watch (next Thu 2026-10-22).
+- Cloud host at snapshot: 4 vCPU, 15 GiB RAM, about 30 GiB writable disk allowance (`df` shows
+  9.1G used / 30G available). That is the same class of limit that stopped a full Rust build in
+  PR 4315's receipt; do not repeat a cold full workspace build here. Use hosted Linux Actions.
+
+### Lanes, owners and next actions
+
+One owner per lane; files listed are the lane's edit scope. A lane must not edit another lane's
+files without a recorded hand-off. `research/development-queue.md` itself is edited only by the
+integration manager.
+
+| Lane | Items | Branch / head | Edit scope | Depends on | Next action |
+| --- | --- | --- | --- | --- | --- |
+| L0 Integration + CI triage | main, this ledger | `main` `21ef7c4` | this file; `base/**` aggregation branches | — | Create a fresh `base/**` from `main` for the next batch; record exact-head CI per integrated head |
+| L1 Security + Darwin evidence | [4314](https://github.com/Takazudo/zudo-front-builder/issues/4314); 4315, 4319 and unified-module 4326 integrated, 4311 closed as integrated; [4317](https://github.com/Takazudo/zudo-front-builder/pull/4317) open on the new base | `base/4314-security-darwin-evidence` `7e79458` (source `bda633b` unchanged) | `Cargo.lock`; `research/v3-island-size/**`; `scripts/{rustls-security-transition,island-size-local-evidence,rebaseline-island-size-darwin,rebaseline-island-size-linux}.mjs` + tests; `.github/workflows/{island-size-darwin,local-darwin-security-evidence}.yml` | Owner Darwin collection and stage+apply approval | Base health has two known reds (old lock-pin assertions; Linux lock provenance) that stay until stage+apply. Run 39248247275 log and artifact checked separately and recorded on 4317 (zip retained). Mac prompt: `/mnt/project-files/l1-security-evidence/mac-prompt-4314.md` (SOURCE `bda633b`, TOOL `7e79458`) |
+| L2 Opt-in direct V8 | [4301](https://github.com/Takazudo/zudo-front-builder/issues/4301), [4307](https://github.com/Takazudo/zudo-front-builder/pull/4307) (contains 4306 as `322ad117`), [4302](https://github.com/Takazudo/zudo-front-builder/issues/4302) harness | 4307 head `14d984a` (main merged at `bd4feaf`); integrated by normal merge into `base/4301-direct-v8` `bea94d1` (not a main candidate) | `crates/zfb*/**` touched by 4307; `prototypes/direct-v8/**`; `docs/public/wind-examples/manifest.json` (regenerate only) | Lock admission: declaration, receipt and dry proof PASS on both targets; apply waits on Darwin evidence, L1 and owner approval. 4310 capability alone does not admit it | CI on 4307: 25 success / 1 failure / 7 skipped; the failure is only health's unadmitted-lock assertion (main is green); cause, fix owner (L1) and next check in [4307 comment](https://github.com/Takazudo/zudo-front-builder/pull/4307#issuecomment-6275153813). Wind manifest regenerated with the official generator (173 fresh). 4302 harness (`PLATFORMS.md`, `qualify-target.py`; 9 review findings fixed); Linux x64 native row PASS; fixed native-row procedure and minimal Rolldown failing case in [4302 comment](https://github.com/Takazudo/zudo-front-builder/issues/4302#issuecomment-6275155771). NOT RUN: Linux arm64, Darwin arm64/x64 and Windows native rows, Windows observer, packaging harness, Rolldown coverage, frozen producer acceptance at this head, Chromium, default (`embed_v8`) local build |
+| L3 Native qualification | [4294](https://github.com/Takazudo/zudo-front-builder/issues/4294), [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305), [4133](https://github.com/Takazudo/zudo-front-builder/issues/4133); drafts [4324](https://github.com/Takazudo/zudo-front-builder/pull/4324), [4325](https://github.com/Takazudo/zudo-front-builder/pull/4325) | 4324 `7aeb31f` (base main); 4325 `9e14d59` (base 4305 branch); 4305 `bd02b8a` | `.github/workflows/{health,exam}.yml` nextest pins; `.github/actions/native-exam-setup/**`, `scripts/native-exam*`, `tests/unit/native-exam.*`, `tests/fixtures/native-exam/**` | Mac owner; 4305 adoption by owner | Decision: unify on nextest 0.9.140 (owner, 2026-10-19). Before it, four versions coexisted (4305 0.9.148; `health.yml` 0.9.138; `exam.yml` 0.9.136 via the `taiki-e/install-action` v2.79.5 pin, seen in run 39002778546; Mac runs and capture helper 0.9.140). 4324 pins health/exam to 0.9.140 and bumps `taiki-e/install-action` to v2.82.10 (health now installs nextest from the release tarball with a SHA-256 check; CI all green, 6,874 passed; `exam.yml` not yet run with it); 4325 re-takes 4305's fixtures and conflicts with 4324 on the `exam.yml` install lines. Minimal Mac prompt: [4294 comment](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6274028064) |
+| L4 Issue sweep | items listed below | new topic branch per change | issue comments; new test for 4231 | — | Closures done (see sweep); 4231 test in 4328 (main candidate); S7 ledger 4252 after it merges |
+| L5 Docs and release prep | README, CLAUDE.md, changelog drafts | new topic branch | `README.md`, `docs/src/content/docs/**` (not `docs/public/wind-examples/`), `CLAUDE.md` | Lands after L1/L2 decisions for content | Separate current / opt-in / planned features; draft five-lane notes and a version-bump proposal from actual changes; no publication |
+
+Shared-file rules: `Cargo.lock` is L1-only (a 4268 size probe may use a throwaway draft PR that
+is never merged). `docs/public/wind-examples/manifest.json` is regenerated once by whichever lane
+integrates Rust changes, never hand-edited. `crates/zfb/src/commands/dev.rs` belongs to L2 while
+4307 is open, so 4133 work waits or coordinates.
+
+### Native qualification status (4294)
+
+The 2,094 "unrun" figure is superseded. The native first run at `21d6807e` executed 6,854 tests:
+6,838 passed, 7 failed, 9 timed out, 0 unrun; doctests exit 0. Original JUnit is lost and is not
+treated as recovered.
+
+| Group | Tests | Later fixed-SHA evidence | Open |
+| --- | --- | --- | --- |
+| Graph identity (2 failed) | `build_package_routes::virtual_module_only_import_ships_as_island`, `scratch_dir_concurrent_e2e::concurrent_dev_build_check_are_isolated` | Product fix 4308; native PASS at `92e25ad4` (13 + 7 + 1 + 1) | No full-suite run at `21ef7c4` |
+| Watcher (9 timed out at 300 s) | `zfb-watcher::recursive_dirs` (9 cases) | Test redesign 4309; native 23/23 at `a76e4775` | Root cause of the original stalls unexplained; original XML lost |
+| Server watch (3 failed) | `zfb-server::watch_add_confirm` (3 `real_watcher_*`) | 4309; native 3/3 at `a76e4775` | Same |
+| Dev bind (2 failed) | `dev_bind_before_walk_e2e` (2) | 4309; native 2/2 at `a76e4775` | Same; not run natively after `b605a4de` |
+
+None of the 16 failures from `21d6807e` reproduced on current main; native Mac passes for them
+were recorded at `92e25ad4`, `a76e4775` and `b605a4de`. The two pre-4321 Mac captures (26 tests:
+23 + 3) used the old helper and are not evidence for the helper now on main. The new helper made a
+real capture on Linux at `21ef7c4` (`recursive_dirs` 23/23); that is not Mac evidence. A separate,
+limited native Mac receipt now exists at `21ef7c4`
+([receipt](https://github.com/Takazudo/zudo-front-builder/pull/4322#issuecomment-6274889047)):
+the new helper's 25 unique offline tests passed once each under logical and physical TMPDIR, and a
+real capture of `zfb-graph --lib --locked --retries 0` passed 43/43 (cargo-nextest 0.9.140, `ci`
+profile, isolated clean source/target), with JUnit byte identity, SHA-256 and receipt/source
+fingerprints checked. Its scope is this SHA's helper and that graph lane only: it claims nothing
+about the 4315 Darwin producer, V8, the watcher, the full workspace, b4push, live admission or release. 4305 merges
+cleanly into main and its 20 offline harness tests pass, but the native sharded run has never been
+dispatched; adoption waits on the owner (nextest is being unified on 0.9.140). 4133 (eight
+`cargo test -p zfb --lib` Mac hangs) did not reproduce under nextest and remains unverified; 4309
+does not cover it. Evidence links are in the latest comments on 4294, 4305 and 4133.
+
+### Issue sweep classification (executed by L4; closures carry evidence comments)
+
+- **Closed as completed (2026-10-19):** 4251 (via 4298 `15a76210`); 4219, 4218, 4224 and 4223
+  (via 4234 `d28cdd57`); 4098 (4120 merged; remaining work tracked in 318, 4123, 4124, 4133).
+- **Open, waiting on 4231:** 4231 stays open until 4328 merges (it adds the missing comparison of
+  workspace-build and packed-tarball-build bytes); 4252 (S7 ledger), then 4243 and 4241, close after it.
+- **B, superseded:** PR 4306 (contained in 4307).
+- **C, Cloud work:** packed-build byte-comparison test for 4231: [4328](https://github.com/Takazudo/zudo-front-builder/pull/4328) head `732a03de`, CI 15 success / 0 failure, ready for review and a main candidate; 4231's acceptance criteria were replaced to match it; 4252 S7
+  ledger; 4235 body refresh; 4019 (the `tests/process-reaping-diagnostic/diagnose.py` probe passed
+  on the current Cloud init, but that is not the real supervisor suite, so it stays open); 4268
+  size probe done: draft 4327 measured `render` at 1,114,879 B, over the 1,100,000 B ceiling;
+  recorded on 4268 and the probe closed (tarball, npm test and browser legs NOT RUN; pin stays `=0.0.55`).
+- **D, waits on Mac/env:** 4294, 4133, 4123, 4124, 4276, 4315/4319 Darwin collection.
+- **E, owner decision / HOLD / trigger:** 4289 and PR 4293 (HOLD: drain contract); 4303 (default
+  cutover and Deno removal gates); 4302 (after 4301); 4305 (adoption; nextest unified on 0.9.140); 4311
+  (provenance policy); 4317 (merge decision); 4268 (0.0.58: 2.3–2.9x slower and `render` over ceiling);
+  4304 (red only from intentional zudoDoc identity drift; await the 2026-10-25 watch); 1373
+  (upstream triggers; the `deny.toml` bincode reason is current: the lock still shows `deno_core`
+  0.399.0 and `syntect` 5.3.0 on bincode 1.x); 318, 3386, 3372, 3879, 3357; 1492 stays sticky.
+
+## Historical checkpoint 4294 (integrated to main by PR 4312)
 
 - Branch: `base/4294-development-checkpoint`; parent: `21d6807e442bbed61e578c165a91d64c4a7dc141`.
 - Scope: reviewed graph-path fix from PR [4308](https://github.com/Takazudo/zudo-front-builder/pull/4308),
@@ -30,7 +188,7 @@ Each source PR generated its own compiler digest. The combined checkpoint must r
 with the official `docs/scripts/wind-preview-assets.mjs` and the matching built workspace
 compiler, then run `--check`; neither parent's digest proves the combined sources.
 
-## Historical local checkpoint evidence
+### Historical local checkpoint evidence
 
 The combined source tree was checked on Linux x86_64 with Rust/Cargo 1.99.1, Node 24.19.0,
 repository-pinned pnpm 12.8.2, and SHA-verified esbuild 0.25.12. The policy Markdown and
@@ -62,7 +220,7 @@ This is recorded tree-equivalent evidence, not an all-green exact-head rollup: r
 aggregation health/docs/binary runs were cancelled after the tree comparison. Cancelled jobs
 remain cancelled. No local full-workspace run duplicates that batch.
 
-## Trigger audit and external effects
+### Trigger audit and external effects
 
 Inspected workflow bodies at parent `21d6807e`; selected topic heads change no workflow.
 Recheck this table at each checkpoint that changes workflows. Keep the aggregation PR **draft**.
@@ -83,7 +241,7 @@ logs/artifacts, and some checks may report issues. Converting this PR to ready c
 preview publication on subsequent eligible events. No credentials, deployment conditions,
 branch protection, skip markers or runner budgets are changed to suppress checks.
 
-## Native qualification stays on selected source
+### Native qualification stays on selected source
 
 Native verification is separately owned by the existing Mac qualification session under
 [4294](https://github.com/Takazudo/zudo-front-builder/issues/4294). This manager does not operate
@@ -117,7 +275,7 @@ Do not silently retarget native work to this development branch.
 | Classification | Build timeout: incomplete build, tests not run. Behavioral failures/timeouts retain their distinct diagnostics. Skip, cancellation, pending or old-SHA success is never current acceptance |
 | Release candidate | None selected or authorized by this checkpoint. Later approval freezes a SHA; only relevant reviewed fixes enter it, each with a new recorded SHA and affected requalification |
 
-## Development and qualification matrix
+### Development and qualification matrix
 
 These are development states at the snapshot, not release approval. None of the changes below
 is claimed released. “Included” refers to the development checkpoint branch (heads `b605a4d` and
@@ -164,7 +322,7 @@ CI: [local Darwin evidence 39254654825](https://github.com/Takazudo/zudo-front-b
 Real Darwin size collection and live application have not happened. The security owner owns
 4315/4317/4319 and admission; none of them is imported into this checkpoint.
 
-## Per-command nextest evidence capture (PR 4318)
+### Per-command nextest evidence capture (PR 4318)
 
 PR 4318's helper (`scripts/capture-nextest-evidence.py`) passed its 15 offline tests. The
 [owner-reported WSL capture](https://github.com/Takazudo/zudo-front-builder/pull/4318#issuecomment-6269269513)
@@ -177,7 +335,7 @@ new run UUID. This rests on the owner's report: the raw files stay on the owner'
 were not independently retrieved or re-executed from Cloud. It does not recover #4309's lost
 native XML, establish FSEvents/Windows behavior, or qualify a Mac run.
 
-## Holds, fixups and next topics
+### Holds, fixups and next topics
 
 | Work | Owner / status | Next permitted action |
 | --- | --- | --- |
