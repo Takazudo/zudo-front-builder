@@ -72,6 +72,7 @@ Two separate tracks, which must not be mixed:
 
 | Decision | State and evidence |
 | --- | --- |
+| One apply/merge approval request based on the 4314 reconciliation plan | L1 is preparing a reviewed plan covering (1) the README basis/live hash mismatch, (2) the apply order and collisions where Darwin and Linux share the README and test file, and (3) the historical test updates (`repinnedFrom` and others) with fresh-context review. It names exact SHAs/branches, changed files, stage order, verification, stop conditions and rollback, keeps raw evidence private and separates original from derived hashes, without relaxing any gate or admission condition. The owner will decide on one consolidated request, with verified facts and inferences kept apart. Until then Darwin apply, Linux re-stage and apply, the `main` integration and the release all stay unapproved |
 | Darwin apply for the rustls lock transition (4314), which needs a Mac operation | Stage attempt 2 matched the recipe's expected values, as checked from Moya's reported values ([L1 verdict](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6276677595)). Apply waits for an independent review of `staged.diff` (SHA-256 `942fd70b…`), which needs that file to be shared first. `--apply` and live admission are not approved. Apply must also update the two hand-pinned history tests (`repinnedFrom` and the rewire route) and get a fresh-context review. Route settled to one: `--apply` of a local-native stage re-verifies that the measured SOURCE (`bda633b`) is HEAD of a clean checkout (`scripts/island-size-local-evidence.mjs:205-256`), so a direct apply on the base or `main` is impossible by design. The route: on the Mac, apply from a clean `bda633b` checkout; return the three files' bytes and hashes (no push from the Mac); L1 commits them on a branch cut from `bda633b` and merges it into the base normally. Apply plan in [4314 comment](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6277260610); recipe fix in [4332](https://github.com/Takazudo/zudo-front-builder/pull/4332) commit `8bb90031`. Both stages write the same two files (the README and the test file), so after Darwin apply the Linux stage must be re-run from the same artifact (expires 2026-10-26) |
 | Linux x64 lock transition apply (4314) | `decision-linux-x64.json` still pins the old lock, so Darwin alone does not turn the base green (same comment). The Linux stage is done in Cloud by integration-lead decision, within the approved stage-only scope: exit 0 ([4314 comment](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6276966739); evidence in draft [4332](https://github.com/Takazudo/zudo-front-builder/pull/4332) under `stage-evidence/linux-4314/`, manifest `9b2746b9…`, diff `fddf15d5…`). Apply stays held. Apply must also update the two hand-pinned history tests (`repinnedFrom` and the rewire route) and get a fresh-context review |
 | Merge the security base into `main` | `base/4314-security-darwin-evidence` (4315, 4319, 4326) reaches `main` only after both applies, together with the other candidates; not approved |
@@ -81,9 +82,14 @@ Two separate tracks, which must not be mixed:
 | 4231 item (2): Darwin, Windows and Mac WebKit checks of the 4298 token change | NOT RUN. Item (1) is met by 4328 (`7426913`). Options: run it on the Mac, waive it, or move it to a separate D-class issue. 4231 stays open until then, and 4252, 4243 and 4241 wait on 4231 in that order (L4 comments on each issue; [4231](https://github.com/Takazudo/zudo-front-builder/issues/4231)) |
 | Run the 4.5.4 release | Not approved. Before asking, report the exact version, the included changes and the remaining qualification (native Mac at the candidate SHA, the Darwin and Linux applies, 4305 on hold) |
 
-**Decided 2026-10-19 21:02 UTC (owner, decision card in the L1 thread):** the 4314 Darwin
-receipt's local paths and operator string are accepted as published (option (a)); the receipt is
-not reissued.
+**Evidence handling (owner, 2026-10-19 21:05 UTC; supersedes the 21:02 decision-card choice of
+option (a), which is withdrawn):** raw evidence (receipts, bundles, stage originals) stays private
+and unchanged, and embedded personal absolute paths are not published. Option (a) publication is
+not approved. A public version may be a sanitized derived report that states the transformation
+steps, the replaced ranges and its relation to the original, with the original artifact hashes kept
+separate from the derived hashes. A receipt must never be rewritten silently and still claim the
+original hash. If needed, a neutral receipt is created as a new identity, never treated as the
+original. This is not an instruction to reissue the original receipt or to re-stage.
 
 The 4252 S7 ledger is that issue's own deliverable, so the missing per-PR merge SHAs and CI for
 S0, S1 and S2 and the post-merge `main` CI for `15a76210` (noted by L4 on 4252) are recorded there
