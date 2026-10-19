@@ -40,7 +40,7 @@ integration manager.
 | L1 Security + Darwin evidence (one owner; 4311 and 4319 conflict) | [4314](https://github.com/Takazudo/zudo-front-builder/issues/4314), [4315](https://github.com/Takazudo/zudo-front-builder/pull/4315), [4317](https://github.com/Takazudo/zudo-front-builder/pull/4317), [4319](https://github.com/Takazudo/zudo-front-builder/pull/4319), [4311](https://github.com/Takazudo/zudo-front-builder/pull/4311) | 4315 `bda633b` (base `base/4294-development-checkpoint`, now merged); 4317 `9e8fbd1` and 4319 `02e25b5` on 4315; 4311 `b596c4d` (base 4310 branch, merged) | `Cargo.lock`; `research/v3-island-size/**`; `scripts/{rustls-security-transition,island-size-local-evidence,rebaseline-island-size-darwin,rebaseline-island-size-linux}.mjs` + tests; `.github/workflows/{island-size-darwin,local-darwin-security-evidence}.yml` | Owner Mac collection; owner stage/apply approval | Retarget 4315 to a fresh `base/**` off main (clean merge); inspect artifact 12184739387 of run 39248247275 before it expires 2026-10-26; reconcile 4311 vs 4319 (both add `island-size-local-evidence.mjs`; 4 files conflict) keeping their purposes separate; add negative controls (corrupt/swapped/wrong-SHA/wrong-platform bundle); prepare the Mac prompt |
 | L2 Opt-in direct V8 | [4301](https://github.com/Takazudo/zudo-front-builder/issues/4301), [4307](https://github.com/Takazudo/zudo-front-builder/pull/4307) (contains 4306 as `322ad117`), then [4302](https://github.com/Takazudo/zudo-front-builder/issues/4302) | `feat/4301-direct-v8-cli` `e467b9b`, 41 behind main | `crates/zfb*/**` touched by 4307; `prototypes/direct-v8/**`; `docs/public/wind-examples/manifest.json` (regenerate only) | Lock admission needs L1 Darwin evidence + owner apply; 4310 capability alone does not admit it | Merge main into the branch (only conflict: Wind manifest; `dev.rs` auto-merges); regenerate the manifest with `docs/scripts/wind-preview-assets.mjs` + `--check`; rerun focused Linux checks; scope a 4302 harness. Default/no-V8 unchanged |
 | L3 Native qualification | [4294](https://github.com/Takazudo/zudo-front-builder/issues/4294), [4305](https://github.com/Takazudo/zudo-front-builder/pull/4305), [4133](https://github.com/Takazudo/zudo-front-builder/issues/4133) | 4305 `bd02b8a`, 41 behind, clean merge | `.github/workflows/exam.yml`, `.github/actions/native-exam-setup/**`, `scripts/native-exam*`, `tests/unit/native-exam.*`, `tests/fixtures/native-exam/**` | Mac owner; owner choice of nextest version | Map the 7 failures + 9 timeouts to the 4308/4309 fixed-SHA receipts (done below); reconcile nextest pins (4305 requires 0.9.148, `health.yml` 0.9.138, `exam.yml` unpinned, capture helper exactly 0.9.140); prepare a light Mac prompt for the new capture helper only |
-| L4 Issue sweep | closures listed below; `deny.toml` reason text | new topic branch per change | `deny.toml`; issue comments | — | Execute class A/B closures with evidence; packed-consumption check for 4231; S7 ledger 4252 |
+| L4 Issue sweep | items listed below | new topic branch per change | issue comments; new test for 4231 | — | Closures done (see sweep); packed-build byte-comparison test for 4231; S7 ledger 4252 after it |
 | L5 Docs and release prep | README, CLAUDE.md, changelog drafts | new topic branch | `README.md`, `docs/src/content/docs/**` (not `docs/public/wind-examples/`), `CLAUDE.md` | Lands after L1/L2 decisions for content | Separate current / opt-in / planned features; draft five-lane notes and a version-bump proposal from actual changes; no publication |
 
 Shared-file rules: `Cargo.lock` is L1-only (a 4268 size probe may use a throwaway draft PR that
@@ -65,23 +65,24 @@ The two pre-4321 Mac captures (26 tests: 23 + 3) used the old helper and are not
 helper now on main. 4305's sharded run has never been dispatched; CI green on 4305 is harness
 evidence only. 4133 (eight `cargo test -p zfb --lib` Mac hangs) is not covered by 4309.
 
-### Issue sweep classification (proposed; executed by L4 with evidence)
+### Issue sweep classification (executed by L4; closures carry evidence comments)
 
-- **A, close as completed:** 4251 (via 4298 `15a76210`); 4219, 4218, 4224 then 4223 (via 4234
-  `d28cdd57`; record the red health 38998727669 attempt 1 and later green heads); 4098 (4120
-  merged; remaining work in 318, 4123, 4124, 4133). After the 4252 ledger: 4243, then 4241.
-  4231 after the packed-tarball byte-identity check.
+- **Closed as completed (2026-10-19):** 4251 (via 4298 `15a76210`); 4219, 4218, 4224 and 4223
+  (via 4234 `d28cdd57`); 4098 (4120 merged; remaining work tracked in 318, 4123, 4124, 4133).
+- **Open, waiting on 4231:** 4231 itself has no test comparing workspace-build bytes with
+  packed-tarball-build bytes, so it stays open; 4252 (S7 ledger), then 4243 and 4241, close after it.
 - **B, superseded:** PR 4306 (contained in 4307).
-- **C, Cloud work:** 4231 packed-consumption check; 4252 S7 ledger; 1373 stale bincode reason in
-  `deny.toml` (blocker is now syntect, not deno_core); 4235 body refresh; 4019 rerun of
-  `tests/process-reaping-diagnostic/diagnose.py` on the current Cloud init; 4268 CI-measured
-  WASM sizes for noyalib 0.0.58 via an unmerged draft probe (pin stays `=0.0.55`).
+- **C, Cloud work:** packed-build byte-comparison test for 4231 (runs on Linux CI); 4252 S7
+  ledger; 4235 body refresh; 4019 (the `tests/process-reaping-diagnostic/diagnose.py` probe passed
+  on the current Cloud init, but that is not the real supervisor suite, so it stays open); 4268
+  CI-measured WASM sizes for noyalib 0.0.58 via an unmerged draft probe (pin stays `=0.0.55`).
 - **D, waits on Mac/env:** 4294, 4133, 4123, 4124, 4276, 4315/4319 Darwin collection.
 - **E, owner decision / HOLD / trigger:** 4289 and PR 4293 (HOLD: drain contract); 4303 (default
   cutover and Deno removal gates); 4302 (after 4301); 4305 (adoption + nextest version); 4311
   (provenance policy); 4317 (merge decision); 4268 (0.0.58 slowdown 2.3–2.9x; size unmeasured);
   4304 (red only from intentional zudoDoc identity drift; await the 2026-10-25 watch); 1373
-  (upstream syntect/v8/parcel_sourcemap triggers); 318, 3386, 3372, 3879, 3357; 1492 stays sticky.
+  (upstream triggers; the `deny.toml` bincode reason is current: the lock still shows `deno_core`
+  0.399.0 and `syntect` 5.3.0 on bincode 1.x); 318, 3386, 3372, 3879, 3357; 1492 stays sticky.
 
 ## Historical checkpoint 4294 (integrated to main by PR 4312)
 
