@@ -1,10 +1,10 @@
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
 ────────────
- Nextest run ID d7d48c8d-ef3b-4dec-9941-0b143a1842be with nextest profile: ci
+ Nextest run ID 417acac6-e10e-4e3d-a7de-e0076e05c884 with nextest profile: ci
     Starting 4 tests across 1 binary (13 tests skipped)
-        PASS [   0.011s] (1/4) native-probe c
-        PASS [   0.012s] (2/4) native-probe f
-        PASS [   0.013s] (3/4) native-probe i
-        PASS [   0.014s] (4/4) native-probe l
+        PASS [   0.007s] (1/4) native-probe c
+        PASS [   0.008s] (2/4) native-probe i
+        PASS [   0.009s] (3/4) native-probe l
+        PASS [   0.009s] (4/4) native-probe f
 ────────────
-     Summary [   0.015s] 4 tests run: 4 passed, 13 skipped
+     Summary [   0.010s] 4 tests run: 4 passed, 13 skipped

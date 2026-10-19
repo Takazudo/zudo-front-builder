@@ -1,11 +1,11 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
 ────────────
- Nextest run ID 80308923-256e-4e8f-bc4f-39887f29b6e5 with nextest profile: ci
+ Nextest run ID 0075bc14-8757-4383-88d0-aab2fb3140df with nextest profile: ci
     Starting 5 tests across 1 binary (12 tests skipped)
-        PASS [   0.011s] (1/5) native-probe k
-        PASS [   0.013s] (2/5) native-probe b
-        PASS [   0.013s] (3/5) native-probe a
-        PASS [   0.013s] (4/5) native-probe h
-        PASS [   0.009s] (5/5) native-probe p
+        PASS [   0.007s] (1/5) native-probe k
+        PASS [   0.008s] (2/5) native-probe a
+        PASS [   0.008s] (3/5) native-probe b
+        PASS [   0.009s] (4/5) native-probe h
+        PASS [   0.007s] (5/5) native-probe p
 ────────────
-     Summary [   0.021s] 5 tests run: 5 passed, 12 skipped
+     Summary [   0.014s] 5 tests run: 5 passed, 12 skipped
