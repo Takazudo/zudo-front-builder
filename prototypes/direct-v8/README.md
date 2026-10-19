@@ -4,7 +4,9 @@
 > `feat/4301-direct-v8-cli`; see [CLI.md](CLI.md) for selection, ownership and
 > current verification status. The phase-1 observations below remain historical
 > and source-bound; an old hold is neither a current implementation claim nor
-> proof of phase-2 acceptance.
+> proof of phase-2 acceptance. Phase 3 (#4302) platform rows and their
+> recording harness are in [PLATFORMS.md](PLATFORMS.md); every native row there
+> starts NOT RUN.
 
 This opt-in native experiment is tracked by #4235–#4240 and
 [draft PR #4242](https://github.com/Takazudo/zudo-front-builder/pull/4242).
