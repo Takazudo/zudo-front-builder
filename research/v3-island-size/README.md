@@ -299,6 +299,12 @@ Every artifact re-pin except the two migrations (`metric-migration` and `fingerp
 
 ## Cargo internal-rewire transitions (#4258)
 
+Declaration schema 1 below retains the internal-only edge rule. The separately
+bounded [schema-2 existing external edge capability](EXISTING-EXTERNAL-EDGES.md)
+requires explicit edge/record evidence and unchanged external inventory and
+default-producer closures. Capability implementation does not activate a transition
+or change these approved contracts.
+
 `cargo-producer-lock` admits **additions only**: every old `[[package]]` record must survive byte-identical. Extracting shared code into a new unpublished workspace crate ([#4242](https://github.com/Takazudo/zudo-front-builder/pull/4242): `zfb-js-host` takes over `zfb-render`'s direct `sha1`/`sha2` edges) also rewrites the existing `zfb-render` record, which that reason correctly refuses, and `dependency-graph` concerns the pnpm fingerprint and refuses any `Cargo.lock` movement. `--reason cargo-internal-rewire` (schemaVersion 3, either script) is the separate, bounded capability for exactly that shape; it changes no live contract by itself. It is paired and source-bound like `dependency-graph` (`--source-sha`, `--stage`, then `--apply` once both platforms are staged) and moves only `toolchain.cargoLockSha256`, `outcome`, `baselineSourceSha`, `platformStatus` and `baselineEvidence` (which records `cargoRewire`), enforced by the exact-key diff.
 
 The transition is declared up front in a reviewed JSON file and every claim in it is checked against the actual bytes; the declaration is proposed evidence, never approval by itself:

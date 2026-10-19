@@ -26,7 +26,7 @@
 //! 3. **Batch-tail drain** ([`drain_batch_tail`]): emission order
 //!    within one drain batch is arbitrary (HashMap iteration), so a
 //!    same-batch straggler can follow the sentinel; the tail drain
-//!    (consecutive-quiet bounded, not wall-clock-from-start) collects
+//!    (quiet-window plus absolute failure bound) collects
 //!    it before the absence assertion runs.
 //!
 //! Timeouts below are give-up failsafes bounding runtime on a
@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 use tokio::sync::mpsc;
-use zfb_test_utils::{watcher_live_handshake, HandshakeOpts};
+use zfb_test_utils::{watcher_live_handshake, HandshakeOpts, TestPhase};
 use zfb_watcher::{Change, Watcher};
 
 const DEBOUNCE: Duration = Duration::from_millis(50);
@@ -60,6 +60,8 @@ async fn sentinel_round_trip(
     sentinel_dir: &Path,
     label: &str,
 ) -> Vec<Change> {
+    let _phase = TestPhase::new(format!("sentinel:{label}"));
+    let marker = format!("sentinel-{label}-");
     let mut seen = Vec::new();
     let res = watcher_live_handshake(
         HandshakeOpts::new(ROUND_TRIP_DEADLINE),
@@ -70,17 +72,25 @@ async fn sentinel_round_trip(
             )
             .expect("write sentinel file");
         },
-        || loop {
-            match rx.try_recv() {
-                Ok(change) => {
-                    let hit = change.path.starts_with(sentinel_dir);
-                    seen.push(change);
-                    if hit {
-                        break true;
+        || {
+            for _ in 0..256 {
+                match rx.try_recv() {
+                    Ok(change) => {
+                        let hit = change.path.parent() == Some(sentinel_dir)
+                            && change
+                                .path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with(&marker));
+                        seen.push(change);
+                        if hit {
+                            return true;
+                        }
                     }
+                    Err(_) => return false,
                 }
-                Err(_) => break false,
             }
+            false
         },
     )
     .await;
@@ -94,12 +104,43 @@ async fn sentinel_round_trip(
 
 /// Drain the tail of the current flush batch: keep receiving until the
 /// channel has been quiet for a few debounce windows. Bounded by
-/// consecutive silence, not by wall clock from the start, so it always
-/// terminates promptly once the pipeline settles.
+/// consecutive silence, with a separate absolute give-up bound. Continuous
+/// traffic is a failure, never evidence of absence (#4294).
 async fn drain_batch_tail(rx: &mut mpsc::Receiver<Change>) -> Vec<Change> {
+    drain_tail(rx, DEBOUNCE * 4, ROUND_TRIP_DEADLINE).await
+}
+
+async fn drain_tail(
+    rx: &mut mpsc::Receiver<Change>,
+    quiet: Duration,
+    budget: Duration,
+) -> Vec<Change> {
     let mut tail = Vec::new();
-    while let Ok(Some(change)) = tokio::time::timeout(DEBOUNCE * 4, rx.recv()).await {
-        tail.push(change);
+    let _phase = TestPhase::new("drain-batch-tail");
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "batch tail never became quiet within {budget:?}; received {} changes; last={:?}",
+            tail.len(),
+            tail.last()
+        );
+        match tokio::time::timeout_at(deadline, tokio::time::timeout(quiet, rx.recv())).await {
+            Ok(Ok(Some(change))) => tail.push(change),
+            Ok(Err(_)) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "batch tail quiet observed after absolute budget {budget:?}"
+                );
+                break;
+            }
+            Ok(Ok(None)) => panic!("watcher channel closed while draining batch tail"),
+            Err(_) => panic!(
+                "batch tail exceeded {budget:?}; received {} changes; last={:?}",
+                tail.len(),
+                tail.last()
+            ),
+        }
     }
     tail
 }
@@ -128,6 +169,7 @@ fn workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 fn start_watcher(project: &Path) -> (Watcher, mpsc::Receiver<Change>) {
+    let _phase = TestPhase::new("watcher-start");
     Watcher::start_with_debounce(project, std::iter::once("pages"), DEBOUNCE)
         .expect("watcher start")
 }
@@ -139,14 +181,20 @@ async fn synced_root_delivers_nested_allowed_edit_and_reports_new_root() {
     std::fs::create_dir_all(sib.join("src/deep")).expect("sibling dirs");
 
     let (mut watcher, mut rx) = start_watcher(&project);
-    let newly = watcher.sync_recursive_dir_watches([&sib], SKIPS);
+    let newly = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib], SKIPS)
+    };
     assert_eq!(newly, vec![sib.clone()], "a fresh root must report as new");
 
     // The sentinel round trip in the nested dir IS the delivery proof: a
     // deep allowed edit reaches the receiver.
     sentinel_round_trip(&mut rx, &sib.join("src/deep"), "nested-allowed").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -160,7 +208,10 @@ async fn skip_dir_edits_at_any_depth_are_suppressed() {
     std::fs::create_dir_all(deep_skip.join("deep")).expect("deep target dir");
 
     let (mut watcher, mut rx) = start_watcher(&project);
-    watcher.sync_recursive_dir_watches([&sib], SKIPS);
+    {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib], SKIPS)
+    };
 
     // Prove the sibling stream is live BEFORE the doubted writes — without
     // this, suppression is indistinguishable from the FSEvents dead window.
@@ -176,7 +227,10 @@ async fn skip_dir_edits_at_any_depth_are_suppressed() {
     assert_none_under(&seen, &shallow_skip, "skip dir at depth 1");
     assert_none_under(&seen, &deep_skip, "skip dir at depth 3");
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -186,7 +240,10 @@ async fn skip_dir_created_after_registration_stays_suppressed() {
     std::fs::create_dir_all(sib.join("src")).expect("src dir");
 
     let (mut watcher, mut rx) = start_watcher(&project);
-    watcher.sync_recursive_dir_watches([&sib], SKIPS);
+    {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib], SKIPS)
+    };
     sentinel_round_trip(&mut rx, &sib.join("src"), "live").await;
 
     // The skip dir is born AFTER registration: both the directory-create
@@ -200,7 +257,10 @@ async fn skip_dir_created_after_registration_stays_suppressed() {
     seen.extend(drain_batch_tail(&mut rx).await);
     assert_none_under(&seen, &late_dist, "skip dir created after registration");
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -211,7 +271,10 @@ async fn near_name_directories_are_not_suppressed() {
     std::fs::create_dir_all(sib.join("node_module")).expect("node_module dir");
 
     let (mut watcher, mut rx) = start_watcher(&project);
-    watcher.sync_recursive_dir_watches([&sib], SKIPS);
+    {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib], SKIPS)
+    };
 
     // Component matching is exact: `distress` (superstring) and
     // `node_module` (substring) must both deliver. The round trips write
@@ -219,7 +282,10 @@ async fn near_name_directories_are_not_suppressed() {
     sentinel_round_trip(&mut rx, &sib.join("distress"), "distress").await;
     sentinel_round_trip(&mut rx, &sib.join("node_module"), "node-module").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -233,7 +299,10 @@ async fn dependency_parent_root_upgrades_to_recursive() {
     let (mut watcher, mut rx) = start_watcher(&project);
 
     // Baseline: the #1678 file-parent, NON-recursive registration.
-    let dep_parents = watcher.watch_additional_files([&dependency]);
+    let dep_parents = {
+        let _phase = TestPhase::new("watch_additional_files");
+        watcher.watch_additional_files([&dependency])
+    };
     assert_eq!(dep_parents, vec![sib_lib.clone()]);
     sentinel_round_trip(&mut rx, &sib_lib, "baseline-live").await;
 
@@ -245,7 +314,10 @@ async fn dependency_parent_root_upgrades_to_recursive() {
 
     // Upgrade: the same dir as a recursive root. It must NOT be deduped
     // away by the existing non-recursive registration, and must report.
-    let newly = watcher.sync_recursive_dir_watches([&sib_lib], SKIPS);
+    let newly = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib_lib], SKIPS)
+    };
     assert_eq!(
         newly,
         vec![sib_lib.clone()],
@@ -256,7 +328,10 @@ async fn dependency_parent_root_upgrades_to_recursive() {
     // (handshake retries absorb the rebuilt stream's startup dead window).
     sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "post-upgrade").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -279,7 +354,10 @@ async fn overlapping_and_canonical_alias_roots_register_once() {
     let (mut watcher, mut rx) = start_watcher(&project);
 
     // Three spellings of overlapping coverage → exactly ONE registration.
-    let newly = watcher.sync_recursive_dir_watches([&sib, &sib_raw, &sib.join("nested")], SKIPS);
+    let newly = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib, &sib_raw, &sib.join("nested")], SKIPS)
+    };
     assert_eq!(
         newly,
         vec![sib.clone()],
@@ -287,14 +365,20 @@ async fn overlapping_and_canonical_alias_roots_register_once() {
     );
 
     // Idempotent: same desired set again registers nothing.
-    let again = watcher.sync_recursive_dir_watches([&sib, &sib_raw, &sib.join("nested")], SKIPS);
+    let again = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib, &sib_raw, &sib.join("nested")], SKIPS)
+    };
     assert!(
         again.is_empty(),
         "repeat sync must be a no-op, got {again:?}"
     );
 
     // Re-spelled desired set (raw alias only) keeps the registration.
-    let respelled = watcher.sync_recursive_dir_watches([&sib_raw], SKIPS);
+    let respelled = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&sib_raw], SKIPS)
+    };
     assert!(
         respelled.is_empty(),
         "an alias spelling of a kept root must not re-register, got {respelled:?}"
@@ -312,7 +396,10 @@ async fn overlapping_and_canonical_alias_roots_register_once() {
         "skip under alias-kept root",
     );
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -326,9 +413,15 @@ async fn reconciled_away_root_stops_delivering_and_only_new_roots_report() {
     let (mut watcher, mut rx) = start_watcher(&project);
 
     // Growth reporting: the kept root never re-reports.
-    let first = watcher.sync_recursive_dir_watches([&beta], SKIPS);
+    let first = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&beta], SKIPS)
+    };
     assert_eq!(first, vec![beta.clone()]);
-    let second = watcher.sync_recursive_dir_watches([&alpha, &beta], SKIPS);
+    let second = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&alpha, &beta], SKIPS)
+    };
     assert_eq!(
         second,
         vec![alpha.clone()],
@@ -342,7 +435,10 @@ async fn reconciled_away_root_stops_delivering_and_only_new_roots_report() {
     drain_batch_tail(&mut rx).await;
 
     // Replace semantics: alpha falls out of the desired set.
-    let third = watcher.sync_recursive_dir_watches([&beta], SKIPS);
+    let third = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&beta], SKIPS)
+    };
     assert!(
         third.is_empty(),
         "shrinking must report nothing, got {third:?}"
@@ -355,7 +451,10 @@ async fn reconciled_away_root_stops_delivering_and_only_new_roots_report() {
     seen.extend(drain_batch_tail(&mut rx).await);
     assert_none_under(&seen, &alpha, "reconciled-away root");
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -369,7 +468,10 @@ async fn boot_covered_root_registers_nothing_and_boot_delivery_is_unfiltered() {
 
     // Covered by the boot recursive root: nothing to register, nothing to
     // report — and crucially, nothing to filter.
-    let newly = watcher.sync_recursive_dir_watches([&pages_sub], SKIPS);
+    let newly = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([&pages_sub], SKIPS)
+    };
     assert!(
         newly.is_empty(),
         "a boot-covered root must not register, got {newly:?}"
@@ -382,7 +484,10 @@ async fn boot_covered_root_registers_nothing_and_boot_delivery_is_unfiltered() {
     // round trip writes INTO that dir, so arrival is the proof.
     sentinel_round_trip(&mut rx, &pages_sub.join("dist"), "boot-dist-delivers").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -395,14 +500,20 @@ async fn retired_root_that_is_a_dependency_parent_keeps_direct_child_delivery() 
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.watch_additional_files([&dependency]),
+        {
+            let _phase = TestPhase::new("watch_additional_files");
+            watcher.watch_additional_files([&dependency])
+        },
         vec![sib_lib.clone()]
     );
 
     // Upgrade to recursive, prove deep delivery, then settle so straggler
     // deep markers cannot pollute the post-retire absence collection.
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sib_lib], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sib_lib], SKIPS)
+        },
         vec![sib_lib.clone()]
     );
     sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "recursive-live").await;
@@ -411,7 +522,10 @@ async fn retired_root_that_is_a_dependency_parent_keeps_direct_child_delivery() 
     // Retire the root. Because the same dir doubles as a #1678 dependency
     // parent, retirement must DOWNGRADE (not unwatch): direct children keep
     // delivering, recursion stops.
-    let retired = watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS);
+    let retired = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    };
     assert!(
         retired.is_empty(),
         "retiring reports nothing, got {retired:?}"
@@ -426,7 +540,10 @@ async fn retired_root_that_is_a_dependency_parent_keeps_direct_child_delivery() 
     seen.extend(drain_batch_tail(&mut rx).await);
     assert_none_under(&seen, &sib_lib.join("deep"), "retired recursion");
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -443,7 +560,10 @@ async fn shrinking_to_a_nested_root_keeps_nested_coverage_and_drops_the_rest() {
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sib], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sib], SKIPS)
+        },
         vec![sib.clone()]
     );
     sentinel_round_trip(&mut rx, &sub.join("deep"), "outer-live").await;
@@ -452,7 +572,10 @@ async fn shrinking_to_a_nested_root_keeps_nested_coverage_and_drops_the_rest() {
     // Shrink: only the nested root stays desired. It was covered by the
     // outer root before, so it registers (and reports) now.
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sub], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sub], SKIPS)
+        },
         vec![sub.clone()]
     );
 
@@ -465,7 +588,10 @@ async fn shrinking_to_a_nested_root_keeps_nested_coverage_and_drops_the_rest() {
     seen.extend(drain_batch_tail(&mut rx).await);
     assert_none_under(&seen, &sib.join("other"), "retired outer subtree");
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -481,13 +607,19 @@ async fn growing_to_an_outer_root_transfers_nested_coverage_without_unwatch() {
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sub], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sub], SKIPS)
+        },
         vec![sub.clone()]
     );
     sentinel_round_trip(&mut rx, &sub.join("deep"), "nested-live").await;
 
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sib], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sib], SKIPS)
+        },
         vec![sib.clone()]
     );
 
@@ -496,7 +628,10 @@ async fn growing_to_an_outer_root_transfers_nested_coverage_without_unwatch() {
     sentinel_round_trip(&mut rx, &sub.join("deep"), "still-live").await;
     sentinel_round_trip(&mut rx, &sib.join("other"), "outer-live").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -513,17 +648,26 @@ async fn retiring_outer_root_restores_nested_dependency_parent_watch() {
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.watch_additional_files([&dependency]),
+        {
+            let _phase = TestPhase::new("watch_additional_files");
+            watcher.watch_additional_files([&dependency])
+        },
         vec![sib_lib.clone()]
     );
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sib], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sib], SKIPS)
+        },
         vec![sib.clone()]
     );
     sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "recursive-live").await;
     drain_batch_tail(&mut rx).await;
 
-    let retired = watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS);
+    let retired = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    };
     assert!(
         retired.is_empty(),
         "retiring reports nothing, got {retired:?}"
@@ -549,7 +693,10 @@ async fn retiring_outer_root_restores_nested_dependency_parent_watch() {
         "retired outer root must stop delivering, got {seen:#?}",
     );
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -567,19 +714,28 @@ async fn dependency_registration_after_sync_does_not_downgrade_recursion() {
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&sib_lib], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&sib_lib], SKIPS)
+        },
         vec![sib_lib.clone()]
     );
     sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "recursive-live").await;
 
     // The dependency registration must not disturb the recursive watch.
-    watcher.watch_additional_files([&dependency]);
+    {
+        let _phase = TestPhase::new("watch_additional_files");
+        watcher.watch_additional_files([&dependency])
+    };
     sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "still-recursive").await;
     drain_batch_tail(&mut rx).await;
 
     // And the recorded dependency ownership still drives the retire path:
     // direct children keep delivering, recursion stops.
-    let retired = watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS);
+    let retired = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    };
     assert!(
         retired.is_empty(),
         "retiring reports nothing, got {retired:?}"
@@ -590,7 +746,10 @@ async fn dependency_registration_after_sync_does_not_downgrade_recursion() {
     seen.extend(drain_batch_tail(&mut rx).await);
     assert_none_under(&seen, &sib_lib.join("deep"), "retired recursion");
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 /// Like [`sentinel_round_trip`], but matches the sentinel by FILE NAME
@@ -606,6 +765,7 @@ async fn sentinel_round_trip_any_spelling(
     sentinel_write_dir: &Path,
     label: &str,
 ) -> Vec<Change> {
+    let _phase = TestPhase::new(format!("sentinel-any-spelling:{label}"));
     let mut seen = Vec::new();
     let marker = format!("sentinel-{label}-");
     let res = watcher_live_handshake(
@@ -617,21 +777,24 @@ async fn sentinel_round_trip_any_spelling(
             )
             .expect("write sentinel file");
         },
-        || loop {
-            match rx.try_recv() {
-                Ok(change) => {
-                    let hit = change
-                        .path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.starts_with(&marker));
-                    seen.push(change);
-                    if hit {
-                        break true;
+        || {
+            for _ in 0..256 {
+                match rx.try_recv() {
+                    Ok(change) => {
+                        let hit = change
+                            .path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with(&marker));
+                        seen.push(change);
+                        if hit {
+                            return true;
+                        }
                     }
+                    Err(_) => return false,
                 }
-                Err(_) => break false,
             }
+            false
         },
     )
     .await;
@@ -684,11 +847,17 @@ async fn retired_root_repair_rewatches_symlink_aliased_dependency_parent_once() 
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.watch_additional_files([&dependency]),
+        {
+            let _phase = TestPhase::new("watch_additional_files");
+            watcher.watch_additional_files([&dependency])
+        },
         vec![dep_parent.clone()]
     );
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&aa], SKIPS)
+        },
         vec![aa.clone()]
     );
     sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib"), "synced-live").await;
@@ -697,9 +866,11 @@ async fn retired_root_repair_rewatches_symlink_aliased_dependency_parent_once() 
     // Retire the covering root with the call log armed: the collateral
     // repair scan re-registers the nested dependency parent.
     watcher.enable_watch_call_log();
-    assert!(watcher
-        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
-        .is_empty());
+    assert!({
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    }
+    .is_empty());
     let repair_calls = watcher.take_watch_call_log();
     let dep_rewatches: Vec<_> = repair_calls
         .iter()
@@ -741,7 +912,10 @@ async fn retired_root_repair_rewatches_symlink_aliased_dependency_parent_once() 
         );
     }
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 /// Issue #1843 site (b): a BOOT root nested under a retired synced root is
@@ -775,16 +949,21 @@ async fn retired_root_repair_rewatches_symlink_aliased_boot_root_once() {
     .expect("watcher start");
 
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&aa], SKIPS)
+        },
         vec![aa.clone()]
     );
     sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "synced-live").await;
     drain_batch_tail(&mut rx).await;
 
     watcher.enable_watch_call_log();
-    assert!(watcher
-        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
-        .is_empty());
+    assert!({
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    }
+    .is_empty());
     let repair_calls = watcher.take_watch_call_log();
     let boot_rewatches: Vec<_> = repair_calls
         .iter()
@@ -820,7 +999,10 @@ async fn retired_root_repair_rewatches_symlink_aliased_boot_root_once() {
         );
     }
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 /// Issue #1843, codex-review finding: when ONE physical boot directory was
@@ -856,16 +1038,21 @@ async fn duplicate_spelling_boot_roots_repair_to_the_last_registered_spelling() 
     .expect("watcher start");
 
     assert_eq!(
-        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([&aa], SKIPS)
+        },
         vec![aa.clone()]
     );
     sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "synced-live").await;
     drain_batch_tail(&mut rx).await;
 
     watcher.enable_watch_call_log();
-    assert!(watcher
-        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
-        .is_empty());
+    assert!({
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    }
+    .is_empty());
     let repair_calls = watcher.take_watch_call_log();
     let boot_rewatches: Vec<_> = repair_calls
         .iter()
@@ -885,7 +1072,10 @@ async fn duplicate_spelling_boot_roots_repair_to_the_last_registered_spelling() 
     // Boot coverage stays live after the retirement.
     sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "after-retire").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 /// Alias-boundary pin for the second issue #1799 fix (previously unpinned;
@@ -916,22 +1106,30 @@ async fn dependency_dir_spelled_as_retired_root_alias_does_not_resurrect_it() {
 
     let (mut watcher, mut rx) = start_watcher(&project);
     assert_eq!(
-        watcher.watch_additional_files([&dependency]),
+        {
+            let _phase = TestPhase::new("watch_additional_files");
+            watcher.watch_additional_files([&dependency])
+        },
         vec![zz.join("lib")]
     );
     // ...while the synced root covers the SAME dir through the symlink
     // spelling.
     assert_eq!(
-        watcher.sync_recursive_dir_watches([aa.join("lib")], SKIPS),
+        {
+            let _phase = TestPhase::new("sync_recursive_dir_watches");
+            watcher.sync_recursive_dir_watches([aa.join("lib")], SKIPS)
+        },
         vec![aa.join("lib")]
     );
     sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib/deep"), "synced-live").await;
     drain_batch_tail(&mut rx).await;
 
     watcher.enable_watch_call_log();
-    assert!(watcher
-        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
-        .is_empty());
+    assert!({
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+    }
+    .is_empty());
     let repair_calls = watcher.take_watch_call_log();
     assert_eq!(
         repair_calls.len(),
@@ -956,7 +1154,10 @@ async fn dependency_dir_spelled_as_retired_root_alias_does_not_resurrect_it() {
         "retired recursion must not deliver, got {seen:#?}",
     );
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -980,13 +1181,19 @@ async fn symlinked_descendant_and_physical_ancestor_collapse_to_one() {
     let linked_sub = alink.join("sub");
 
     let (mut watcher, mut rx) = start_watcher(&project);
-    let newly = watcher.sync_recursive_dir_watches([linked_sub.clone(), zreal.clone()], SKIPS);
+    let newly = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([linked_sub.clone(), zreal.clone()], SKIPS)
+    };
     assert_eq!(
         newly,
         vec![zreal.clone()],
         "the physical ancestor must be the single registration"
     );
-    let again = watcher.sync_recursive_dir_watches([linked_sub, zreal.clone()], SKIPS);
+    let again = {
+        let _phase = TestPhase::new("sync_recursive_dir_watches");
+        watcher.sync_recursive_dir_watches([linked_sub, zreal.clone()], SKIPS)
+    };
     assert!(
         again.is_empty(),
         "repeat sync must be a no-op, got {again:?}"
@@ -994,5 +1201,103 @@ async fn symlinked_descendant_and_physical_ancestor_collapse_to_one() {
 
     sentinel_round_trip(&mut rx, &zreal.join("sub/deep"), "live").await;
 
-    watcher.shutdown().await;
+    {
+        let _phase = TestPhase::new("watcher-shutdown-including-backend-drop");
+        watcher.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn batch_tail_collects_all_events_before_quiet() {
+    let (tx, mut rx) = mpsc::channel(4);
+    for name in ["first", "last"] {
+        tx.send(Change::new(
+            PathBuf::from(name),
+            zfb_watcher::ChangeKind::Created,
+        ))
+        .await
+        .unwrap();
+    }
+    let tail = drain_tail(&mut rx, Duration::from_millis(10), Duration::from_secs(1)).await;
+    assert_eq!(
+        tail.iter().map(|c| c.path.clone()).collect::<Vec<_>>(),
+        vec![PathBuf::from("first"), PathBuf::from("last")]
+    );
+}
+
+#[tokio::test]
+#[should_panic(expected = "watcher channel closed while draining batch tail")]
+async fn batch_tail_closed_channel_is_not_quiet_proof() {
+    let (tx, mut rx) = mpsc::channel(1);
+    drop(tx);
+    drain_tail(&mut rx, Duration::from_millis(10), Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn batch_tail_continuous_traffic_fails_within_absolute_budget() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let producer = tokio::spawn(async move {
+        while tx
+            .send(Change::new(
+                PathBuf::from("noisy"),
+                zfb_watcher::ChangeKind::Modified,
+            ))
+            .await
+            .is_ok()
+        {}
+    });
+    let drain = tokio::spawn(async move {
+        drain_tail(
+            &mut rx,
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+        )
+        .await
+    });
+    let result = tokio::time::timeout(Duration::from_secs(2), drain).await;
+    producer.abort();
+    let failure = result
+        .expect("drain must not reset its absolute budget")
+        .expect_err("continuous traffic must fail, not prove absence");
+    assert!(failure.is_panic());
+}
+
+#[tokio::test]
+#[should_panic(expected = "budget")]
+async fn batch_tail_late_quiet_is_not_absence_proof() {
+    let (_tx, mut rx) = mpsc::channel(1);
+    tokio::join!(
+        drain_tail(
+            &mut rx,
+            Duration::from_millis(10),
+            Duration::from_millis(20)
+        ),
+        async {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    );
+}
+
+#[tokio::test]
+async fn sentinel_rejects_queued_events_from_an_earlier_phase() {
+    let tmp = tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(2);
+    for name in ["sentinel-old-0.txt", "sentinel-current-0.txt"] {
+        tx.send(Change::new(
+            tmp.path().join(name),
+            zfb_watcher::ChangeKind::Created,
+        ))
+        .await
+        .unwrap();
+    }
+    let seen = sentinel_round_trip(&mut rx, tmp.path(), "current").await;
+    assert_eq!(
+        seen.len(),
+        2,
+        "old-phase traffic cannot satisfy the current sentinel"
+    );
+    assert_eq!(
+        seen.last().unwrap().path,
+        tmp.path().join("sentinel-current-0.txt")
+    );
 }

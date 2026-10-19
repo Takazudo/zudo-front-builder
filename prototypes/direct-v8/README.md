@@ -44,6 +44,26 @@ python3 prototypes/direct-v8/prepare-icu.py
 export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
 ```
 
+Preparation publishes a checksum-verified temporary sibling with atomic replacement,
+so a failed write or replacement preserves any existing destination. Concurrent
+preparers use distinct temporary files; successful writers publish the same pinned
+bytes. A destination symlink is replaced rather than followed. Caught failures clean
+up their temporary file; an uncatchable process kill may leave an ignored `.icudtl-*`
+sibling. This is atomic visibility, not a power-loss durability guarantee. A cleanup
+failure is reported alongside the original error; the final destination is not deleted.
+The output directory is trusted local build state, not an adversarial shared directory.
+
+Run the deterministic offline publication tests without Cargo, V8, network access or
+a native platform build:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 prototypes/direct-v8/test_prepare_icu.py
+```
+
+These injected failures test preparation, not native ICU initialization or platform
+qualification. Both checksum pins, successful bytes and the documented output path
+remain unchanged.
+
 Pass these commands to the selected heavy guard, one at a time:
 
 ```sh
