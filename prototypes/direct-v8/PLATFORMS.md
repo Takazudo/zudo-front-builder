@@ -13,7 +13,7 @@ that is the release recipe, not native qualification evidence for this candidate
 
 | Target | Native host | Dependency resolution (Cloud) | Native build, link, load | CLI lifecycle | Packaging / installed consumer | Size / provenance |
 | --- | --- | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Linux x86_64 | Pass, 491 rows | Pass at `bd4feaf` (harness row, Cloud Linux, Rust 1.97.0); rerun per head | Pass at `bd4feaf` (6 rows); Rolldown variant FAIL (see below) | NOT RUN | Blocked: lock not admitted |
+| `x86_64-unknown-linux-gnu` | Linux x86_64 | Pass, 491 rows | Pass at `bd4feaf` (Cloud Linux, Rust 1.97.0) and at `f217f4d` (opt-in CI lane, Rust 1.99.1); rerun per head | Pass at both (6 rows); Rolldown variant FAIL (see below) | Packed clean-room consumer pass at `f217f4d` (CI lane); shipping GLIBC floor NOT RUN | Blocked: lock not admitted |
 | `aarch64-unknown-linux-gnu` | Linux arm64 | Pass, 489 rows | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | `aarch64-apple-darwin` | Apple Silicon | Pass, 476 rows | NOT RUN | NOT RUN | NOT RUN | Blocked: lock not admitted |
 | `x86_64-apple-darwin` | Intel Mac (not Rosetta) | Pass, 478 rows | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
@@ -60,6 +60,27 @@ build/dev smoke. The selected Rolldown coverage in #4302 (aliases and virtual
 sources, copied Wasm, source maps, Worker output, hydration/CSS, declared
 workers) still needs its own cases and stays NOT RUN.
 
+## Opt-in CI lane
+
+`.github/workflows/direct-v8.yml` records the Linux x86_64 row on a standard
+GitHub-hosted runner. Its row job runs only for a PR labelled `direct-v8` (and
+`direct-v8-rolldown` for the Rolldown variant), or by manual dispatch once the
+workflow is on the default branch. It is not a required check. On other PRs only
+a small `plan` job runs and the row job reports as skipped. Each row run:
+
+- runs the offline controls and the five dependency resolution rows;
+- runs `qualify-target.py --build` against the PR head SHA (not the merge ref);
+- records the native binary's highest GLIBC symbol (not gated: the binary is
+  built on the runner, not with the shipping `cross` recipe);
+- builds the CSS addon with `cross` and runs `scripts/smoke-packed-clean-room.sh`
+  around the row's binary (local tarballs, `create-zfb` scaffold, site build).
+
+It uploads the graph rows, `row.json`, the build, lifecycle and packed
+clean-room logs, the GLIBC record and disk snapshots, kept for 14 days. The
+runner uses the current stable Rust, so the exact toolchain of a row comes from
+its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
+Linux arm64, Darwin and Windows native rows are not part of this lane.
+
 ## Rolldown findings
 
 Linux x86_64, `direct-v8,rolldown-prototype` CLI built by the harness at
@@ -92,9 +113,12 @@ records the case and does not change the bundler.
 
 - Windows: `check-cli-lifecycle.py` relies on POSIX process groups and SIGINT.
   A Windows observer (console Ctrl-Break or job objects) is needed first.
-- Packaging: no harness yet assembles a local carrier package around the opt-in
-  binary and runs the existing launcher in a clean consumer. The existing
-  `scripts/smoke-packed-clean-room.sh` is the starting point.
+- Packaging: the CI lane runs `scripts/smoke-packed-clean-room.sh` around the
+  harness-built Linux x86_64 binary (local tarballs, `create-zfb` scaffold,
+  site build). That binary is built natively on the runner, not with the
+  shipping `cross` recipe, so it needs GLIBC 2.39 at `f217f4d`; the shipping
+  GLIBC 2.34 floor for a direct-v8 binary is not qualified. Other carriers
+  are NOT RUN.
 - Size and provenance: the Cargo.lock delta (`zfb-js-host` adds the external
   `deno_core` edge) is not admitted by the Darwin/Linux contracts. Admission
   belongs to the security/Darwin evidence lane and the owner.
