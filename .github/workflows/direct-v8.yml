@@ -165,10 +165,12 @@ jobs:
       # the floor is gated exactly as in release.yml.
       - name: Shipping-recipe binary (cross, GLIBC 2.34 floor)
         env:
-          # cross drops host env at the container boundary; the ICU path lies
-          # inside the mounted workspace.
-          CROSS_CONTAINER_OPTS: --env ZFB_V8_ICU_DATA=${{ env.ZFB_V8_ICU_DATA }}
+          # cross drops host env and mounts the workspace at /project, so the
+          # host ICU path does not exist in the container; mount its directory.
+          ICU_DIR: ${{ github.workspace }}/target/direct-v8-inputs/icu77
         run: |
+          set -o pipefail
+          export CROSS_CONTAINER_OPTS="-v $ICU_DIR:/direct-v8-icu:ro --env ZFB_V8_ICU_DATA=/direct-v8-icu/icudtl.dat"
           features=direct-v8
           [ "$ROLLDOWN" = true ] && features=direct-v8,rolldown-prototype
           cross build --locked -p zfb --release --no-default-features --features "$features" \
