@@ -40,11 +40,16 @@ def merge(left, right):
     return left
 
 
-def source_fingerprint(workspace):
+def source_fingerprint(workspace, excluded):
     names = subprocess.check_output(["git", "-C", str(workspace), "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+    tracked = subprocess.check_output(["git", "-C", str(workspace), "ls-files", "--cached", "-z"]).split(b"\0")
     result = hashlib.sha256()
     for name in sorted(set(names.split(b"\0")) - {b""}):
         path = workspace / os.fsdecode(name)
+        if path.resolve() in excluded:
+            if name in tracked:
+                raise EvidenceError("report/capture path collides with tracked source")
+            continue
         result.update(name + b"\0")
         if path.is_symlink():
             value = b"symlink:" + os.fsencode(os.readlink(path))
@@ -112,7 +117,7 @@ def resolve(args):
         raise EvidenceError("invalid nextest store.dir")
     # Upstream 0.9.140: workspace_root.join(store.dir).join(profile).join(junit.path).
     report = Path(os.path.abspath(workspace / store / profile / junit_path))
-    return report, {"source_sha": source, "source_dirty": bool(dirty), "source_status": dirty, "source_fingerprint": source_fingerprint(workspace),
+    return report, {"source_sha": source, "source_dirty": bool(dirty), "source_status": dirty,
                     "workspace_root": str(workspace), "cargo_target_directory": metadata["target_directory"],
                     "profile": profile, "nextest_version": version, "config_inputs": configs,
                     "junit_destination": str(report)}
@@ -173,6 +178,10 @@ def run(args, forwarded):
         report.parent.mkdir(parents=True, exist_ok=True)
         # Cooperating wrappers serialize by physical report destination, including absolute junit paths.
         lock_path = report.parent / (".capture-" + digest(str(report.resolve()).encode()) + ".lock")
+        marker = report.parent / (lock_path.name + ".started")
+        excluded = {path.resolve() for path in (report, lock_path, marker)}
+        identity["source_fingerprint"] = source_fingerprint(workspace, excluded)
+        receipt["source_fingerprint"] = identity["source_fingerprint"]
         with lock_path.open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -186,7 +195,6 @@ def run(args, forwarded):
                 (output / "preexisting.xml").write_bytes(raw)
                 previous = digest(raw)
                 report.unlink()
-            marker = report.parent / (lock_path.name + ".started")
             marker.write_bytes(b"")
             marker_ns = marker.stat().st_mtime_ns
             started = time.time()
@@ -202,7 +210,7 @@ def run(args, forwarded):
                     receipt["evidence"] = capture_report(report, output, marker_ns, started, previous)
                     ending_sha = subprocess.check_output(["git", "-C", identity["workspace_root"], "rev-parse", "HEAD"], text=True).strip()
                     receipt["source_sha_after"] = ending_sha
-                    receipt["source_fingerprint_after"] = source_fingerprint(workspace)
+                    receipt["source_fingerprint_after"] = source_fingerprint(workspace, excluded)
                     if receipt["source_fingerprint_after"] != identity["source_fingerprint"]:
                         raise EvidenceError("source files changed during command")
                     if ending_sha != identity["source_sha"]:

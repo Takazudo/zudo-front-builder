@@ -50,7 +50,7 @@ class CaptureTests(unittest.TestCase):
         self.cargo = self.root / 'cargo'
         self.cargo.write_text(FAKE)
         self.cargo.chmod(0o755)
-        (self.workspace / '.gitignore').write_text('target/\nreports/\nfirst/\n')
+        (self.workspace / '.gitignore').write_text('target/\n')
         (self.workspace / 'source.rs').write_text('original')
         subprocess.run(['git', '-C', str(self.workspace), 'add', 'source.rs', '.gitignore'], check=True)
         subprocess.run(['git', '-C', str(self.workspace), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'source fixture'], check=True)
@@ -171,6 +171,15 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(receipt['evidence']['status'], 'missing')
         self.assertIn('changed', receipt['evidence']['reason'])
         self.assertFalse((_ / 'junit.xml').exists())
+
+    def test_tracked_destination_is_refused_without_removing_source(self):
+        self.report = self.workspace / 'source.rs'
+        self.config.write_text('[profile.ci.junit]\npath=' + json.dumps(str(self.report)) + '\n')
+        code, _, receipt = self.capture()
+        self.assertEqual(code, 2)
+        self.assertIn('collides with tracked source', receipt['evidence']['reason'])
+        self.assertEqual(self.report.read_text(), 'original')
+        self.assertFalse((self.workspace / 'target/child-ran').exists())
 
     def test_source_changes_without_head_change_reject_evidence(self):
         code, output, receipt = self.capture(env={'FAKE_CHANGE_SOURCE': '1'})

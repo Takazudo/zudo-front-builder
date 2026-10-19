@@ -62,7 +62,8 @@ Capture requires a new regular report file, a current file timestamp, nextest's
 root UUID and run timestamp, and bytes different from the preceding report. Run
 timestamps allow the producer's millisecond precision. Source HEAD, Git-visible tracked/untracked file bytes and symlink targets, and
 configuration hashes are checked again after execution. Ignored build products are
-excluded from the source fingerprint. A dirty checkout is explicitly recorded;
+excluded from the source fingerprint, as are the exact report, lock, and marker
+paths owned by this capture. A collision with a tracked source path is refused. A dirty checkout is explicitly recorded;
 a SHA alone does not certify its contents. Keep qualification checkouts clean and
 exclusive. This is a local evidence aid, not protection against concurrent source
 editing, clock changes, ignored source inputs, or a deliberately forged report.
