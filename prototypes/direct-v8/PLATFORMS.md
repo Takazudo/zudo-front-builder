@@ -13,7 +13,7 @@ that is the release recipe, not native qualification evidence for this candidate
 
 | Target | Native host | Dependency resolution (Cloud) | Native build, link, load | CLI lifecycle | Packaging / installed consumer | Size / provenance |
 | --- | --- | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Linux x86_64 | Pass, 491 rows | Phase 2 Linux evidence in PR #4307 only; NOT RUN for the merged head | NOT RUN for the merged head | NOT RUN | Blocked: lock not admitted |
+| `x86_64-unknown-linux-gnu` | Linux x86_64 | Pass, 491 rows | Pass at `bd4feaf` (harness row, Cloud Linux, Rust 1.97.0); rerun per head | Pass at `bd4feaf` (6 rows); Rolldown variant FAIL (see below) | NOT RUN | Blocked: lock not admitted |
 | `aarch64-unknown-linux-gnu` | Linux arm64 | Pass, 489 rows | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | `aarch64-apple-darwin` | Apple Silicon | Pass, 476 rows | NOT RUN | NOT RUN | NOT RUN | Blocked: lock not admitted |
 | `x86_64-apple-darwin` | Intel Mac (not Rosetta) | Pass, 478 rows | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
@@ -60,6 +60,34 @@ build/dev smoke. The selected Rolldown coverage in #4302 (aliases and virtual
 sources, copied Wasm, source maps, Worker output, hydration/CSS, declared
 workers) still needs its own cases and stays NOT RUN.
 
+## Rolldown findings
+
+Linux x86_64, `direct-v8,rolldown-prototype` CLI built by the harness at
+`bd4feaf` (SHA-256 `cefba156fc4b2895490553d1211075aad244ab7b9fda7280177442d321b4dfda`,
+prototype crate present), run with `ZFB_ROLLDOWN_PROTOTYPE=1`: lifecycle
+**FAIL**. Typed-config build and initial dev SSR pass; the failed-replacement row
+times out waiting for the page's own error.
+
+Minimal failing case: a page module whose first statement is an unconditional
+top-level `throw` (`throw new Error('X'); export const prerender = false;
+export default function Page() {...}`). Rolldown drops every declaration after
+the throw but still emits them in the export list:
+
+```js
+throw new Error("CLI_REPLACEMENT_REJECTED");
+//#endregion
+export { entry_default as default, routes };
+var entry_default;
+```
+
+`routes` is never declared, so the module fails to link
+(`SyntaxError: Export 'routes' is not defined in module`) before the author's
+error can run. The dev server keeps the previous renderer, so continuity holds,
+but the diagnostic is lost. Any engine rejects this module at link time, so this
+is Rolldown output, not a direct-V8 behavior. The esbuild default is unaffected.
+The fix belongs to the Rolldown bundler owners (#318, #4123, #4124). This lane
+records the case and does not change the bundler.
+
 ## Known gaps before a full row can pass
 
 - Windows: `check-cli-lifecycle.py` relies on POSIX process groups and SIGINT.
@@ -72,3 +100,30 @@ workers) still needs its own cases and stays NOT RUN.
   belongs to the security/Darwin evidence lane and the owner.
 - Phase 2 evidence on the pre-merge head `e467b9b4` is not reused for the merged
   head's native rows.
+
+## Native row run prompts (not authorized here)
+
+Each prompt runs on one owner-approved host. `<CANDIDATE_SHA>` is the exact
+#4307 head named in the #4302 comment that hands this off; never substitute a
+newer head. No Actions dispatch, paid runner, publish or contract change.
+
+Common steps, from a fresh clone at the candidate:
+
+```sh
+git checkout --detach <CANDIDATE_SHA> && git status --porcelain   # must print nothing
+pnpm install --frozen-lockfile
+python3 prototypes/direct-v8/prepare-icu.py
+export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'   # offline controls
+```
+
+| Host | Command | Expected | Stop and report |
+| --- | --- | --- | --- |
+| Linux arm64 (native, not QEMU) | `python3 prototypes/direct-v8/qualify-target.py --target aarch64-unknown-linux-gnu --build --guard <heavy-guard> --source-sha <CANDIDATE_SHA> --output target/direct-v8-qualify-linux-arm64` | exit 0, `PASS`; 10 checks true; lifecycle 6 rows; graph 489 rows | exit 3 (not native), any `false` check, build failure (keep `build.log`) |
+| Apple Silicon Mac | same with `--target aarch64-apple-darwin`, `CARGO_BUILD_JOBS=1` | exit 0, `PASS`; graph 476 rows; `otool -L` lists only system libraries | exit 3, `false` check, compile timeout (= build incomplete, tests not run) |
+| Intel Mac (not Rosetta) | same with `--target x86_64-apple-darwin`, `CARGO_BUILD_JOBS=1` | exit 0, `PASS`; graph 478 rows | exit 3 (Rosetta or arm64 binary), `false` check |
+| Windows x64 | same with `--target x86_64-pc-windows-msvc` | exit 1, `PARTIAL` with lifecycle `NOT RUN` (no Windows observer yet); every other check true; graph 496 rows | any `false` check, build failure |
+
+Return the whole output directory (`row.json`, `graph.json`, `build.log`,
+`lifecycle/`) plus `uname -a`/`sw_vers`/`systeminfo` output. Rerun only with a
+new output directory and keep the first attempt.

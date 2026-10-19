@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "producer": "zfb",
+  "oldCargoLockSha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
+  "newCargoLockSha256": "07fa645050cc0db69ad75f2bc5b824a7cd558dc101f3619089e83d397003e4f9",
+  "added": [],
+  "changed": [
+    {
+      "id": "zfb-js-host@0.0.0",
+      "manifest": "crates/zfb-js-host/Cargo.toml",
+      "oldSha256": "5f02be259fc6ee127ef8ee2da7f179f41c9bc2636f22d036da2b800e32987d3b",
+      "newSha256": "dc29c5474a924913310f10979e35704ade131df30d7db0eab802e6a182899a82",
+      "removedDependencies": [],
+      "addedDependencies": ["deno_core"]
+    }
+  ],
+  "externalEdges": [
+    {
+      "from": "zfb-js-host@0.0.0",
+      "dependency": "deno_core",
+      "to": "deno_core@0.399.0",
+      "sha256": "1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498"
+    }
+  ],
+  "closure": { "added": [], "changed": ["zfb-js-host@0.0.0"] }
+}
