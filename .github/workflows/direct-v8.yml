@@ -145,9 +145,24 @@ jobs:
       # Installed-consumer check for the same harness-built binary: pack the
       # local tarballs around it, scaffold with create-zfb and build the site.
       # Runs after the row so its package-dir edits cannot dirty the source check.
+      # The CSS addon keeps the shipping GLIBC 2.34 ceiling, which only the
+      # cross image provides (as in node-free-smoke.yml).
+      - name: Install cross
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: cross@0.2.5
+
+      # The harness builds natively on the runner, not with the shipping cross
+      # recipe, so this is recorded, not gated: the binary's GLIBC floor is not
+      # qualified by this lane.
+      - name: Record the native binary's GLIBC requirement
+        run: |
+          binary=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' "$ROW_DIR/qualify/row.json")
+          objdump -T "$binary" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 | tee "$ROW_DIR/binary-max-glibc.txt"
+
       - name: Packed clean-room consumer (Linux x86_64)
         run: |
-          bash scripts/build-css-node.sh x86_64-unknown-linux-gnu
+          bash scripts/build-css-node.sh x86_64-unknown-linux-gnu cross
           pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
           binary=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' "$ROW_DIR/qualify/row.json")
           addon="$RUNNER_TEMP/zfb-css.node"
