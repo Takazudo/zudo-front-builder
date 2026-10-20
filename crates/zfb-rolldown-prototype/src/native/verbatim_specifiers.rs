@@ -64,23 +64,23 @@ impl Plugin for VerbatimSpecifiers {
 /// The ordinary spelling Rolldown should resolve, or `None` to leave the
 /// specifier to the other resolvers. Elsewhere `\\?\` is an ordinary name.
 fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> {
-    if !windows {
+    if !windows || !specifier.starts_with(r"\\?\") {
         return Ok(None);
     }
+    // A tsconfig wildcard substitutes the import's subpath with `/`, which
+    // separates components once the prefix is gone; inside the verbatim
+    // spelling it would be a literal name character instead.
+    let specifier = specifier.replace('/', "\\");
     // ZFB's resource contract permits exactly one terminal `?url` suffix.
     let (path, suffix) = specifier
         .strip_suffix("?url")
-        .map_or((specifier, ""), |path| (path, "?url"));
+        .map_or((specifier.as_str(), ""), |path| (path, "?url"));
     if !suffix.is_empty() && path.ends_with('\\') {
         anyhow::bail!(
             "Rolldown prototype cannot resolve a ?url resource on a directory: {specifier}"
         );
     }
-    // A tsconfig wildcard substitutes the import's subpath with `/`, which
-    // separates components once the prefix is gone; inside the verbatim
-    // spelling it would be a literal name character instead.
-    let path = path.replace('/', "\\");
-    Ok(match windows_path::for_rolldown(&path)? {
+    Ok(match windows_path::for_rolldown(path)? {
         Cow::Borrowed(_) => None,
         Cow::Owned(ordinary) => Some(ordinary + suffix),
     })
@@ -126,6 +126,7 @@ mod tests {
         );
         assert!(ordinary_specifier(r"\\?\C:\site\logo.svg?raw", true).is_err());
         assert!(ordinary_specifier(r"\\?\C:\site\?url", true).is_err());
+        assert!(ordinary_specifier(r"\\?\C:\site\assets/?url", true).is_err());
     }
 
     #[test]

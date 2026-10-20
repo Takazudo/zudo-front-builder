@@ -306,8 +306,7 @@ jobs:
 
       # The prototype's own tests are the only ones that see Windows verbatim
       # canonical paths (tsconfig paths, rewritten imports, out-of-cwd inputs).
-      # Expected red on the non-trailing tsconfig `paths` case until those
-      # targets are rewritten too (#4336 ZFB-RD-010).
+      # A red result names the spellings still reaching Rolldown verbatim.
       - name: Rolldown prototype library tests (Windows x64)
         id: prototype_tests
         if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features != 'direct-v8' }}
