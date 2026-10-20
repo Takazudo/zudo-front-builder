@@ -283,6 +283,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Prepare pinned ICU data
+        id: icu
         run: |
           "$PY" prototypes/direct-v8/prepare-icu.py
           "$PY" -c 'import os; print("ZFB_V8_ICU_DATA=" + os.path.abspath("target/direct-v8-inputs/icu77/icudtl.dat"))' >> "$GITHUB_ENV"
@@ -303,12 +304,15 @@ jobs:
           sys.exit(0 if row["status"] == "PASS" else 1)
           PY
 
-      # release.yml builds the Windows carrier natively with cargo, so this is
-      # the shipping recipe (minus the version stamp) for the direct-v8 selection.
+      # release.yml's native cargo build of the Windows carrier, here with the
+      # opt-in direct-v8 selection and pinned ICU, which release.yml does not build.
+      # Runs even when the native row fails, but only once setup has succeeded.
       - name: Packed clean-room consumer (Windows x64, release recipe)
-        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' }}
+        id: packed
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' }}
         run: |
           set -o pipefail
+          mkdir -p "$ROW_DIR"
           cargo build --locked -p zfb --release --no-default-features --features direct-v8 \
             --target "$TARGET" 2>&1 | tee "$ROW_DIR/release-build.log"
           bash scripts/build-css-node.sh "$TARGET" cargo 2>&1 | tee "$ROW_DIR/css-addon-build.log"
@@ -333,9 +337,21 @@ jobs:
             else
               echo "No native row recorded."
             fi
+            if [ -f "$ROW_DIR/packed/report.json" ]; then
+              "$PY" - "$ROW_DIR/packed/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("packed consumer:", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          for row in report["rows"]:
+              print(f"- {row['name']}: {row['passed']}")
+          PY
+            elif [ "$PACKED_OUTCOME" != skipped ]; then
+              echo "packed consumer: no report ($PACKED_OUTCOME)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MATRIX_FEATURES: ${{ matrix.features }}
+          PACKED_OUTCOME: ${{ steps.packed.outcome }}
 
       - name: Upload row evidence
         if: always()

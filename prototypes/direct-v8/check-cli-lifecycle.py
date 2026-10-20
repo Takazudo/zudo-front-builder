@@ -42,8 +42,12 @@ def spawn(command, *, cwd, stdout, stderr, env=None, interruptible=False):
 
 def interrupt(child):
     if WINDOWS:
-        child.stdin.write(b"ctrl-c\n")
-        child.stdin.close()
+        # A helper that already exited has passed on zfb's own exit code; keep that, not the pipe error.
+        try:
+            child.stdin.write(b"ctrl-c\n")
+            child.stdin.close()
+        except OSError:
+            pass
     else:
         child.send_signal(signal.SIGINT)
 

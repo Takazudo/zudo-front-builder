@@ -28,6 +28,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 NON_CARRIER_PACKAGES = ["zfb-slugify", "zfb", "zfb-runtime", "zfb-adapter-cloudflare", "create-zfb"]
+CLEAN_ROOM_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime", "zfb-adapter-cloudflare"]
 CONSUMER_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime"]
 SITE_NAME = "packed-e2e-site"
 
@@ -42,9 +43,11 @@ def tool(name):
 def run(log, command, cwd):
     log.write(f"$ {' '.join(map(str, command))}  (in {cwd})\n")
     log.flush()
-    result = subprocess.run([str(part) for part in command], cwd=cwd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors="replace")
+    # stdout stays separate: callers parse its last line, and npm/pnpm notices go to stderr.
+    result = subprocess.run([str(part) for part in command], cwd=cwd, capture_output=True, text=True,
+                            errors="replace")
     log.write(result.stdout)
+    log.write(result.stderr)
     log.flush()
     assert result.returncode == 0, f"{Path(command[0]).name} {command[1] if len(command) > 1 else ''} exit {result.returncode}"
     return result.stdout
@@ -70,17 +73,18 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     carrier_dir = ROOT / "packages" / f"zfb-{args.carrier}"
-    manifest = json.loads((carrier_dir / "package.json").read_text())
-    carrier_name = manifest["name"]
-    executable = manifest["main"]
-    report = {"carrier": carrier_name, "binary": str(args.binary.resolve()), "rows": [], "passed": False}
-    injected = [carrier_dir / executable, carrier_dir / "zfb-css.node"]
-    # Snapshot pre-existing injected files so cleanup never deletes a caller's own build output.
-    preexisting = {path: path.read_bytes() for path in injected if path.is_file()}
-    workdir = Path(tempfile.mkdtemp(prefix="zfb-packed-consumer-"))
-    npm, pnpm, node = tool("npm"), tool("pnpm"), tool("node")
+    report = {"carrier": args.carrier, "binary": str(args.binary.resolve()), "rows": [], "passed": False}
+    injected, preexisting, workdir = [], {}, None
     with (output / "packed-consumer.log").open("w") as log:
         try:
+            manifest = json.loads((carrier_dir / "package.json").read_text())
+            carrier_name = report["carrier"] = manifest["name"]
+            executable = manifest["main"]
+            injected = [carrier_dir / executable, carrier_dir / "zfb-css.node"]
+            # Snapshot pre-existing injected files so cleanup never deletes a caller's own build output.
+            preexisting = {path: path.read_bytes() for path in injected if path.is_file()}
+            npm, pnpm, node = tool("npm"), tool("pnpm"), tool("node")
+            workdir = Path(tempfile.mkdtemp(prefix="zfb-packed-consumer-"))
             addon = args.css_addon.resolve()
             if addon != (carrier_dir / "zfb-css.node").resolve():
                 shutil.copyfile(addon, carrier_dir / "zfb-css.node")
@@ -116,9 +120,7 @@ def main():
             (room / "package.json").write_text(json.dumps({
                 "name": "zfb-packed-clean-room", "private": True, "version": "0.0.0",
                 "dependencies": {"create-zfb": file_spec(tarballs["create-zfb"])}}, indent=2) + "\n")
-            write_overrides(room, tarballs, [f"@takazudo/{name}" for name in
-                                             ["zfb", "zfb-slugify", "zfb-runtime", "zfb-adapter-cloudflare"]]
-                            + [carrier_name])
+            write_overrides(room, tarballs, [f"@takazudo/{name}" for name in CLEAN_ROOM_OVERRIDES] + [carrier_name])
             run(log, [pnpm, "install"], room)
             installed = list((room / "node_modules").rglob(executable))
             installed = [path for path in installed if path.parent.name == carrier_name.split("/")[1]]
@@ -146,14 +148,15 @@ def main():
             report["rows"].append({"name": "site-build", "passed": True})
             report["passed"] = True
         except Exception as error:
-            report["error"] = str(error)
+            report["error"] = f"{type(error).__name__}: {error}"
         finally:
             for path in injected:
                 if path in preexisting:
                     path.write_bytes(preexisting[path])
                 else:
                     path.unlink(missing_ok=True)
-            shutil.rmtree(workdir, ignore_errors=True)
+            if workdir:
+                shutil.rmtree(workdir, ignore_errors=True)
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     return 0 if report["passed"] else 1

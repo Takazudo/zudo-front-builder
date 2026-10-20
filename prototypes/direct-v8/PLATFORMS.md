@@ -78,7 +78,8 @@ a small `plan` job runs and the row job reports as skipped. Each row run:
   runs `scripts/smoke-packed-clean-room.sh` with that binary and the
   `cross`-built CSS addon (local tarballs, `create-zfb` scaffold, site build);
 - on Windows x64, builds the release binary and CSS addon natively with cargo,
-  as `release.yml` does, and runs `packed-consumer.py` (the cross-platform
+  as `release.yml` does but with the opt-in direct-v8 selection and pinned ICU
+  that `release.yml` does not build, and runs `packed-consumer.py` (the cross-platform
   counterpart of the smoke script, which stays the Linux required check).
 
 On Windows the lifecycle observer stops `zfb dev` with a real console Ctrl-C:

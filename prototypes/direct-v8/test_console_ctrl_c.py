@@ -26,7 +26,7 @@ class ConsoleCtrlC(unittest.TestCase):
     def test_usage_refusal(self):
         self.assertEqual(helper().returncode, 2)
 
-    @unittest.skipIf(sys.platform == "win32", "delivery is the Windows path under test in CI")
+    @unittest.skipIf(sys.platform == "win32", "Windows delivery has no offline control; the CI Windows lifecycle row exercises it")
     def test_request_off_windows_kills_the_child_and_fails(self):
         result = helper(sys.executable, "-c", "import time; time.sleep(30)")
         self.assertNotEqual(result.returncode, 0)
