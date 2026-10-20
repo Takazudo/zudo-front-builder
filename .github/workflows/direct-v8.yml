@@ -250,14 +250,11 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             python: python3
-            expect: PASS
-          # check-cli-lifecycle.py has no Windows observer yet, so the best
-          # honest row is PARTIAL with only the lifecycle check NOT RUN.
+          # The lifecycle observer stops `zfb dev` with a console Ctrl-C here.
           - name: windows-x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
             python: python
-            expect: PARTIAL
     defaults:
       run:
         shell: bash
@@ -268,7 +265,6 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PY: ${{ matrix.host.python }}
       TARGET: ${{ matrix.host.target }}
-      EXPECT: ${{ matrix.host.expect }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -298,18 +294,12 @@ jobs:
           "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build \
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           echo "qualify-target exit $status"
-          "$PY" - "$ROW_DIR/qualify/row.json" "$EXPECT" <<'PY'
+          "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
           import json, sys
           row = json.load(open(sys.argv[1]))
-          expect = sys.argv[2]
           open_checks = [name for name, check in row["checks"].items() if check.get("passed") is not True]
-          print("status:", row["status"], "expected:", expect, "not passing:", open_checks)
-          if expect == "PASS":
-              ok = row["status"] == "PASS"
-          else:
-              ok = (row["status"] == "PARTIAL" and open_checks == ["lifecycle"]
-                    and row["checks"]["lifecycle"].get("status") == "NOT RUN")
-          sys.exit(0 if ok else 1)
+          print("status:", row["status"], "not passing:", open_checks)
+          sys.exit(0 if row["status"] == "PASS" else 1)
           PY
 
       - name: Summary

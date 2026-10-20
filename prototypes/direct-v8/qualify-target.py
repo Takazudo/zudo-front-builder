@@ -4,8 +4,8 @@
 Run on the native host for --target, from a clean checkout of the candidate
 source. It records source/toolchain/binary/ICU identity, the binary's own
 architecture and dynamic library dependencies, the target's resolved
-dependency closure, and (POSIX only) the actual CLI build/dev lifecycle
-observer. It never downloads, dispatches or uploads anything.
+dependency closure, and the actual CLI build/dev lifecycle observer (on
+Windows its shutdown is a console Ctrl-C instead of SIGINT). It never downloads, dispatches or uploads anything.
 
 With --build it runs the documented cargo build itself after the source check,
 so the measured binary is tied to the verified checkout (wrap it in the heavy
@@ -247,19 +247,15 @@ def main():
                  *(["--extra-feature", "rolldown-prototype"] if args.rolldown else []),
                  "--output", output / "graph.json"], cwd=ROOT)
     checks["graph"] = {**graph, "report": "graph.json", "passed": graph.get("exit") == 0}
-    if os.name == "posix":
-        env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}
-        if args.rolldown:
-            env["ZFB_ROLLDOWN_PROTOTYPE"] = "1"
-        lifecycle = run([sys.executable, HERE / "check-cli-lifecycle.py", "--binary", binary, "--sha256", digest,
-                         "--output", output / "lifecycle"], timeout=LIFECYCLE_TIMEOUT, cwd=ROOT, env=env)
-        timed_out = "timeout" in lifecycle
-        checks["lifecycle"] = {**lifecycle, "env": {"ZFB_ROLLDOWN_PROTOTYPE": env.get("ZFB_ROLLDOWN_PROTOTYPE")},
-                               "status": "TIMEOUT (harness limit, not a behavioral result)" if timed_out else None,
-                               "passed": None if timed_out else lifecycle.get("exit") == 0}
-    else:
-        checks["lifecycle"] = {"status": "NOT RUN", "passed": None,
-                               "reason": "check-cli-lifecycle.py uses POSIX process groups/SIGINT; no Windows observer yet"}
+    env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}
+    if args.rolldown:
+        env["ZFB_ROLLDOWN_PROTOTYPE"] = "1"
+    lifecycle = run([sys.executable, HERE / "check-cli-lifecycle.py", "--binary", binary, "--sha256", digest,
+                     "--output", output / "lifecycle"], timeout=LIFECYCLE_TIMEOUT, cwd=ROOT, env=env)
+    timed_out = "timeout" in lifecycle
+    checks["lifecycle"] = {**lifecycle, "env": {"ZFB_ROLLDOWN_PROTOTYPE": env.get("ZFB_ROLLDOWN_PROTOTYPE")},
+                           "status": "TIMEOUT (harness limit, not a behavioral result)" if timed_out else None,
+                           "passed": None if timed_out else lifecycle.get("exit") == 0}
     checks["binary_unchanged"] = {"passed": binary.is_file() and sha256(binary) == digest}
     row["status"] = status_of(checks)
     save()
