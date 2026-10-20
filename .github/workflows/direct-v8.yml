@@ -61,7 +61,8 @@ jobs:
   linux-x64:
     name: direct-v8 (${{ matrix.features }}, linux-x64)
     needs: plan
-    if: needs.plan.outputs.features != '[]'
+    # REPRO-ONLY (drop before merge): this branch records only the Windows leg.
+    if: needs.plan.outputs.features != '[]' && github.head_ref != 'claude/l2-addalias-verbatim-repro'
     # Job-level, per feature set: a newer push or label run replaces an older
     # run of the same row, and an unrelated label (empty plan) cancels nothing.
     concurrency:
@@ -246,11 +247,8 @@ jobs:
       fail-fast: false
       matrix:
         features: ${{ fromJSON(needs.plan.outputs.features) }}
+        # REPRO-ONLY (drop before merge): linux-arm64 removed so only Windows runs.
         host:
-          - name: linux-arm64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            python: python3
           # The lifecycle observer stops `zfb dev` with a console Ctrl-C here.
           - name: windows-x64
             runner: windows-latest
