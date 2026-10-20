@@ -126,7 +126,11 @@ The existing 15 #4293 tests and the #4292 readiness tests cover the remaining gu
 - the full checker suite and independent review at its own SHA;
 - a native Mac acceptance run of that new SHA only.
 
-## 7. Proposed E001-a decision
+## 7. E001-a decision
+
+**Decision record (2026-10-20 20:44Z):** Takazudo replied "all right keep going for it" to the coordinator's recommendation, which listed option A for #4289. This document records that as acceptance of option A. Implementing the adapter is a separate change with its own review, full checker suite and native Mac acceptance. This document does not change #4293's timing values or production code.
+
+The options as proposed:
 
 Choose one:
 
