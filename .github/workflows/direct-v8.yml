@@ -201,15 +201,15 @@ jobs:
       # The same carrier, consumed with the Rolldown prototype switched on for the
       # site build; the clean-room smoke above keeps the default bundler.
       - name: Packed consumer with Rolldown (Linux x86_64)
-        id: packed-rolldown
         if: ${{ !cancelled() && env.ROLLDOWN == 'true' && env.CROSS_BINARY != '' }}
         run: |
           python3 prototypes/direct-v8/packed-consumer.py --carrier linux-x64-gnu --binary "$CROSS_BINARY" \
             --css-addon "$RUNNER_TEMP/zfb-css.node" --output "$ROW_DIR/packed-rolldown" --rolldown
 
       # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      # Runs after a failed row too, as the cases do.
       - name: Install Chromium for the browser cases
-        id: chromium
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
         continue-on-error: true
         run: |
           pnpm exec playwright install --with-deps chromium
@@ -366,8 +366,9 @@ jobs:
             --output "$ROW_DIR/packed"
 
       # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      # Runs after a failed row too, as the cases do.
       - name: Install Chromium for the browser cases
-        id: chromium
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
         continue-on-error: true
         run: |
           deps=()
