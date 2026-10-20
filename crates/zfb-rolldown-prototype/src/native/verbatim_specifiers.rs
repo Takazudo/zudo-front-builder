@@ -9,7 +9,8 @@ use rolldown::plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookUsage, Plugin, PluginContext,
     PluginContextResolveOptions,
 };
-use std::{borrow::Cow, path::PathBuf};
+use rolldown_resolver::ResolveError;
+use std::borrow::Cow;
 
 #[derive(Debug)]
 pub(super) struct VerbatimSpecifiers;
@@ -43,7 +44,12 @@ impl Plugin for VerbatimSpecifiers {
                 }),
             )
             .await?;
-        // Fail closed: no later resolver can handle the verbatim spelling.
+        // A miss stays a miss: TrailingPaths re-resolves tsconfig targets in
+        // order and needs NotFound to try the next one, and no later resolver
+        // can resolve the verbatim spelling it falls back to.
+        if let Err(ResolveError::NotFound(_)) = resolved {
+            return Ok(None);
+        }
         let resolved = resolved.with_context(|| {
             format!(
                 "resolve {ordinary} (rewritten from {}) imported by {}",
@@ -53,15 +59,6 @@ impl Plugin for VerbatimSpecifiers {
         })?;
         Ok(Some(HookResolveIdOutput::from_resolved_id(resolved)))
     }
-}
-
-/// A tsconfig `paths` target in the ordinary spelling, so the ordered target
-/// fallback re-resolves it as an ordinary path and can still try the next one.
-pub(super) fn ordinary_target(target: PathBuf) -> Result<PathBuf> {
-    let Some(text) = target.to_str() else {
-        return Ok(target);
-    };
-    Ok(ordinary_specifier(text, cfg!(windows))?.map_or(target, PathBuf::from))
 }
 
 /// The ordinary spelling Rolldown should resolve, or `None` to leave the
@@ -79,7 +76,11 @@ fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> 
             "Rolldown prototype cannot resolve a ?url resource on a directory: {specifier}"
         );
     }
-    Ok(match windows_path::for_rolldown(path)? {
+    // A tsconfig wildcard substitutes the import's subpath with `/`, which
+    // separates components once the prefix is gone; inside the verbatim
+    // spelling it would be a literal name character instead.
+    let path = path.replace('/', "\\");
+    Ok(match windows_path::for_rolldown(&path)? {
         Cow::Borrowed(_) => None,
         Cow::Owned(ordinary) => Some(ordinary + suffix),
     })
@@ -102,6 +103,17 @@ mod tests {
                 .as_deref(),
             Some(r"\\host\share\site\counter.tsx")
         );
+    }
+
+    #[test]
+    fn a_tsconfig_wildcard_subpath_separates_components() {
+        assert_eq!(
+            ordinary_specifier(r"\\?\C:\shadow\src\components/button\", true)
+                .unwrap()
+                .as_deref(),
+            Some(r"C:\shadow\src\components\button\")
+        );
+        assert!(ordinary_specifier(r"\\?\C:\shadow\src\../x", true).is_err());
     }
 
     #[test]
