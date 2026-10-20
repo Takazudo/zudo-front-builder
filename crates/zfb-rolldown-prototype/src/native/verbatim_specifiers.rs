@@ -9,6 +9,7 @@ use rolldown::plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookUsage, Plugin, PluginContext,
     PluginContextResolveOptions,
 };
+use rolldown_resolver::ResolveError;
 use std::borrow::Cow;
 
 #[derive(Debug)]
@@ -43,7 +44,12 @@ impl Plugin for VerbatimSpecifiers {
                 }),
             )
             .await?;
-        Ok(Some(HookResolveIdOutput::from_resolved_id(resolved?)))
+        match resolved {
+            Ok(resolved) => Ok(Some(HookResolveIdOutput::from_resolved_id(resolved))),
+            // Leave a missing target to the ordinary pipeline's diagnostic.
+            Err(ResolveError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -53,9 +59,13 @@ fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> 
     if !windows {
         return Ok(None);
     }
-    Ok(match windows_path::for_rolldown(specifier)? {
+    // ZFB's resource contract permits exactly one terminal `?url` suffix.
+    let (path, suffix) = specifier
+        .strip_suffix("?url")
+        .map_or((specifier, ""), |path| (path, "?url"));
+    Ok(match windows_path::for_rolldown(path)? {
         Cow::Borrowed(_) => None,
-        Cow::Owned(ordinary) => Some(ordinary),
+        Cow::Owned(ordinary) => Some(ordinary + suffix),
     })
 }
 
@@ -76,6 +86,17 @@ mod tests {
                 .as_deref(),
             Some(r"\\host\share\site\counter.tsx")
         );
+    }
+
+    #[test]
+    fn the_terminal_url_suffix_survives_the_rewrite() {
+        assert_eq!(
+            ordinary_specifier(r"\\?\C:\site\logo.svg?url", true)
+                .unwrap()
+                .as_deref(),
+            Some(r"C:\site\logo.svg?url")
+        );
+        assert!(ordinary_specifier(r"\\?\C:\site\logo.svg?raw", true).is_err());
     }
 
     #[test]

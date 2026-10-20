@@ -105,8 +105,9 @@ fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
     }
 }
 
-#[test]
-fn unminified_top_level_throw_keeps_exported_bindings() {
+/// The lifecycle observer's failed-replacement page: an unconditional
+/// top-level throw in a module whose namespace the entry exports.
+fn top_level_throw_fixture() -> Fixture {
     let fixture = Fixture::new();
     fs::create_dir(fixture.0.join("pages")).unwrap();
     fs::write(
@@ -122,6 +123,12 @@ fn unminified_top_level_throw_keeps_exported_bindings() {
          export default function Page() { return 'CLI_BAD'; }\n",
     )
     .unwrap();
+    fixture
+}
+
+#[test]
+fn unminified_top_level_throw_keeps_exported_bindings() {
+    let fixture = top_level_throw_fixture();
     run_prepared(&fixture.command()).unwrap();
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
     assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
@@ -131,21 +138,7 @@ fn unminified_top_level_throw_keeps_exported_bindings() {
 
 #[test]
 fn minified_top_level_throw_keeps_rolldowns_dce_pass() {
-    let fixture = Fixture::new();
-    fs::create_dir(fixture.0.join("pages")).unwrap();
-    fs::write(
-        fixture.0.join("entry.js"),
-        "import * as page from './pages/index.js';\n\
-         export const routes = { '/': page };\n\
-         export default { fetch() { return routes; } };\n",
-    )
-    .unwrap();
-    fs::write(
-        fixture.0.join("pages/index.js"),
-        "throw new Error('CLI_REPLACEMENT_REJECTED');\n\
-         export default function Page() { return 'CLI_BAD'; }\n",
-    )
-    .unwrap();
+    let fixture = top_level_throw_fixture();
     let mut cmd = fixture.command();
     cmd.arg("--minify");
     run_prepared(&cmd).unwrap();
