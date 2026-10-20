@@ -26,8 +26,9 @@ set -euo pipefail
 #     0755 bit survives into the tarball.
 #
 # Known gap (documented, not fixed here): the 4 platform optionalDependencies
-# NOT relevant to the linux-x64 CI runner (zfb-darwin-arm64, zfb-darwin-x64,
-# zfb-linux-arm64-gnu, zfb-win32-x64-msvc) are left un-overridden. pnpm still
+# NOT relevant to the platform under test (on the linux-x64 CI runner:
+# zfb-darwin-arm64, zfb-darwin-x64, zfb-linux-arm64-gnu, zfb-win32-x64-msvc)
+# are left un-overridden. pnpm still
 # resolves their MANIFEST (a lightweight metadata call, not a tarball
 # download) against the real registry to evaluate the os/cpu match, then
 # skips installing them (they're optionalDependencies — an unresolvable
@@ -42,14 +43,45 @@ set -euo pipefail
 #
 # Usage:
 #   ZFB_LINUX_X64_BINARY=/path/to/zfb scripts/smoke-packed-clean-room.sh
+#   ZFB_SMOKE_PLATFORM=darwin-arm64 ZFB_DARWIN_ARM64_BINARY=/path/to/zfb \
+#     ZFB_DARWIN_ARM64_CSS_ADDON=/path/to/zfb-css.node \
+#     scripts/smoke-packed-clean-room.sh
 #
-# Required env:
-#   ZFB_LINUX_X64_BINARY — path to a freshly built x86_64-unknown-linux-gnu
-#                           release `zfb` binary (from build-binary's staged
-#                           smoke-ctx artifact) to inject into
-#                           packages/zfb-linux-x64-gnu/ before packing.
+# Platform under test (ZFB_SMOKE_PLATFORM, default linux-x64-gnu — the CI
+# runner, so the required Scaffold E2E check is unchanged). It must match the
+# host: the packed platform package is only installed when its os/cpu fields
+# match, so a mismatched host would silently skip it. A darwin-* run is native
+# Darwin evidence only when run on that Darwin architecture (#4231 item 2); a
+# darwin-x64 run on an Apple-silicon Mac under Rosetta is not native arm64.
+#
+#   platform        packed package           binary env                 CSS addon env
+#   linux-x64-gnu   zfb-linux-x64-gnu        ZFB_LINUX_X64_BINARY       ZFB_LINUX_X64_CSS_ADDON
+#   darwin-arm64    zfb-darwin-arm64         ZFB_DARWIN_ARM64_BINARY    ZFB_DARWIN_ARM64_CSS_ADDON
+#   darwin-x64      zfb-darwin-x64           ZFB_DARWIN_X64_BINARY      ZFB_DARWIN_X64_CSS_ADDON
+#
+# Required env: the platform's binary env (path to a freshly built release
+# `zfb` binary to inject into packages/zfb-<platform>/ before packing) and its
+# CSS addon env (a freshly built zfb-css.node).
 
-: "${ZFB_LINUX_X64_BINARY:?ZFB_LINUX_X64_BINARY env var is required (path to the built zfb binary)}"
+ZFB_SMOKE_PLATFORM="${ZFB_SMOKE_PLATFORM:-linux-x64-gnu}"
+case "$ZFB_SMOKE_PLATFORM" in
+  linux-x64-gnu) HOST_OS=Linux; HOST_ARCH=x86_64; BINARY_VAR=ZFB_LINUX_X64_BINARY; ADDON_VAR=ZFB_LINUX_X64_CSS_ADDON ;;
+  darwin-arm64) HOST_OS=Darwin; HOST_ARCH=arm64; BINARY_VAR=ZFB_DARWIN_ARM64_BINARY; ADDON_VAR=ZFB_DARWIN_ARM64_CSS_ADDON ;;
+  darwin-x64) HOST_OS=Darwin; HOST_ARCH=x86_64; BINARY_VAR=ZFB_DARWIN_X64_BINARY; ADDON_VAR=ZFB_DARWIN_X64_CSS_ADDON ;;
+  *)
+    echo "::error::unsupported ZFB_SMOKE_PLATFORM '$ZFB_SMOKE_PLATFORM' (expected linux-x64-gnu, darwin-arm64 or darwin-x64)" >&2
+    exit 2
+    ;;
+esac
+if [[ "$(uname -s)" != "$HOST_OS" || "$(uname -m)" != "$HOST_ARCH" ]]; then
+  echo "::error::ZFB_SMOKE_PLATFORM=$ZFB_SMOKE_PLATFORM needs a $HOST_OS/$HOST_ARCH host, got $(uname -s)/$(uname -m)" >&2
+  exit 2
+fi
+ZFB_SMOKE_BINARY="${!BINARY_VAR:-}"
+ZFB_SMOKE_CSS_ADDON="${!ADDON_VAR:-}"
+[[ -n "$ZFB_SMOKE_BINARY" ]] || { echo "::error::$BINARY_VAR env var is required (path to the built zfb binary)" >&2; exit 2; }
+[[ -n "$ZFB_SMOKE_CSS_ADDON" ]] || { echo "::error::$ADDON_VAR env var is required (freshly built CSS addon)" >&2; exit 2; }
+PLATFORM_PKG="zfb-$ZFB_SMOKE_PLATFORM"
 
 pass() { printf '[PASS] %s\n' "$1"; }
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
@@ -58,19 +90,18 @@ if [[ ! -f packages/zfb/package.json ]]; then
   echo "::error::must be run from the repo root (packages/zfb/package.json not found in $(pwd))"
   exit 2
 fi
-if [[ ! -f "$ZFB_LINUX_X64_BINARY" ]]; then
-  echo "::error::ZFB_LINUX_X64_BINARY does not exist: $ZFB_LINUX_X64_BINARY"
+if [[ ! -f "$ZFB_SMOKE_BINARY" ]]; then
+  echo "::error::$BINARY_VAR does not exist: $ZFB_SMOKE_BINARY"
   exit 2
 fi
 
 # ── Stage 1: inject the freshly built binary, pack it, assert its exec bit ──
 
-PLATFORM_DIR="packages/zfb-linux-x64-gnu"
-: "${ZFB_LINUX_X64_CSS_ADDON:?freshly built CSS addon is required}"
-cp "$ZFB_LINUX_X64_CSS_ADDON" "$PLATFORM_DIR/zfb-css.node"
+PLATFORM_DIR="packages/$PLATFORM_PKG"
+cp "$ZFB_SMOKE_CSS_ADDON" "$PLATFORM_DIR/zfb-css.node"
 chmod 0644 "$PLATFORM_DIR/zfb-css.node"
 node scripts/smoke-css-node.mjs "$PLATFORM_DIR/zfb-css.node"
-cp "$ZFB_LINUX_X64_BINARY" "$PLATFORM_DIR/zfb"
+cp "$ZFB_SMOKE_BINARY" "$PLATFORM_DIR/zfb"
 chmod 0755 "$PLATFORM_DIR/zfb"
 
 TARBALL_DIR="$(mktemp -d)"
@@ -152,6 +183,7 @@ ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 ZFB_ADAPTER_CF_TARBALL="$ZFB_ADAPTER_CF_TARBALL" \
 PLATFORM_TARBALL_PATH="$PLATFORM_TARBALL_PATH" \
+PLATFORM_PKG="$PLATFORM_PKG" \
 CREATE_ZFB_TARBALL="$CREATE_ZFB_TARBALL" \
 CLEAN_ROOM_DIR="$CLEAN_ROOM_DIR" \
 node -e '
@@ -163,7 +195,7 @@ const overrides = {
   "@takazudo/zfb-slugify": `file:${env.ZFB_SLUGIFY_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
   "@takazudo/zfb-adapter-cloudflare": `file:${env.ZFB_ADAPTER_CF_TARBALL}`,
-  "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
+  [`@takazudo/${env.PLATFORM_PKG}`]: `file:${env.PLATFORM_TARBALL_PATH}`,
 };
 const pkg = {
   name: "zfb-packed-clean-room",
@@ -192,20 +224,20 @@ fs.writeFileSync(
 if [[ ! -f "$CLEAN_ROOM_DIR/node_modules/create-zfb/bin/create-zfb.mjs" ]]; then
   fail "create-zfb did not install from its local tarball"
 fi
-# @takazudo/zfb-linux-x64-gnu is a TRANSITIVE (optional) dependency of the
+# The platform package is a TRANSITIVE (optional) dependency of the
 # overridden @takazudo/zfb, not a direct dependency of the clean-room root —
 # pnpm's isolated node_modules only hoists direct deps to the top level, so
 # it lives inside node_modules/.pnpm/... instead. `find` locates it
 # regardless of the exact store layout.
-INSTALLED_BINARY="$(find "$CLEAN_ROOM_DIR/node_modules" -path '*/@takazudo/zfb-linux-x64-gnu/zfb' -type f | head -1)"
+INSTALLED_BINARY="$(find "$CLEAN_ROOM_DIR/node_modules" -path "*/@takazudo/$PLATFORM_PKG/zfb" -type f | head -1)"
 if [[ -z "$INSTALLED_BINARY" ]]; then
-  fail "@takazudo/zfb-linux-x64-gnu (override) did not install the platform binary"
+  fail "@takazudo/$PLATFORM_PKG (override) did not install the platform binary"
 fi
 INSTALLED_BINARY_MODE="$(stat -c '%a' "$INSTALLED_BINARY" 2>/dev/null || stat -f '%Lp' "$INSTALLED_BINARY")"
 if [[ "$INSTALLED_BINARY_MODE" != "755" ]]; then
   fail "installed platform binary is not 0755 (got $INSTALLED_BINARY_MODE) — exec bit lost somewhere between pack and install"
 fi
-pass "create-zfb + @takazudo/zfb-linux-x64-gnu installed from local tarballs (binary mode 0755)"
+pass "create-zfb + @takazudo/$PLATFORM_PKG installed from local tarballs (binary mode 0755)"
 
 # ── Stage 4: scaffold via the packed create-zfb ──────────────────────────────
 # `zfb new` rejects path separators in the project name (validate_project_name
@@ -250,6 +282,7 @@ ZFB_SLUGIFY_TARBALL="$ZFB_SLUGIFY_TARBALL" \
 ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 PLATFORM_TARBALL_PATH="$PLATFORM_TARBALL_PATH" \
+PLATFORM_PKG="$PLATFORM_PKG" \
 SITE_DIR="$SITE_DIR" \
 node -e '
 const fs = require("node:fs");
@@ -259,7 +292,7 @@ const overrides = {
   "@takazudo/zfb": `file:${env.ZFB_TARBALL}`,
   "@takazudo/zfb-slugify": `file:${env.ZFB_SLUGIFY_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
-  "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
+  [`@takazudo/${env.PLATFORM_PKG}`]: `file:${env.PLATFORM_TARBALL_PATH}`,
 };
 const workspaceYaml = [
   "minimumReleaseAge: 0",
@@ -336,7 +369,7 @@ for spec in \
   "zfb:$ZFB_TARBALL" \
   "zfb-runtime:$ZFB_RUNTIME_TARBALL" \
   "zfb-slugify:$ZFB_SLUGIFY_TARBALL" \
-  "zfb-linux-x64-gnu:$PLATFORM_TARBALL_PATH"; do
+  "$PLATFORM_PKG:$PLATFORM_TARBALL_PATH"; do
   name="${spec%%:*}"
   mkdir -p "$LINKED_PKG_WS/$name"
   tar -xzf "${spec#*:}" -C "$LINKED_PKG_WS/$name" --strip-components=1
@@ -355,19 +388,19 @@ cat >"$LINKED_PKG_WS/package.json" <<'JSON'
   "dependencies": { "@takazudo/zfb": "workspace:*" }
 }
 JSON
-cat >"$LINKED_PKG_WS/pnpm-workspace.yaml" <<'YAML'
+cat >"$LINKED_PKG_WS/pnpm-workspace.yaml" <<YAML
 packages:
   - "zfb"
   - "zfb-runtime"
   - "zfb-slugify"
-  - "zfb-linux-x64-gnu"
+  - "$PLATFORM_PKG"
 linkWorkspacePackages: true
 minimumReleaseAge: 0
 overrides:
   "@takazudo/zfb": "workspace:*"
   "@takazudo/zfb-runtime": "workspace:*"
   "@takazudo/zfb-slugify": "workspace:*"
-  "@takazudo/zfb-linux-x64-gnu": "workspace:*"
+  "@takazudo/$PLATFORM_PKG": "workspace:*"
 YAML
 (cd "$LINKED_PKG_WS" && pnpm install --prod)
 
@@ -402,8 +435,8 @@ for name in zfb zfb-runtime; do
   expected="$(cd "$LINKED_PKG_WS/$name" && pwd -P)"
   [[ "$resolved" == "$expected" ]] || fail "linked site's @takazudo/$name resolves to $resolved, expected $expected"
 done
-LINKED_BINARY="$(cd "$LINKED_PKG_WS/zfb/node_modules/@takazudo/zfb-linux-x64-gnu" && pwd -P)/zfb"
-cmp -s "$LINKED_BINARY" "$ZFB_LINUX_X64_BINARY" ||
+LINKED_BINARY="$(cd "$LINKED_PKG_WS/zfb/node_modules/@takazudo/$PLATFORM_PKG" && pwd -P)/zfb"
+cmp -s "$LINKED_BINARY" "$ZFB_SMOKE_BINARY" ||
   fail "linked zfb does not reach the injected binary (got $LINKED_BINARY)"
 pass "linked site consumes the extracted packages through symlinks, with the injected binary"
 
