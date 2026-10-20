@@ -89,9 +89,10 @@ None of these is done at `013b0ab`. Each is an input to the owner's release deci
 | 4133 (eight `cargo test -p zfb --lib` Mac hangs) | Not reproduced under nextest, unverified | L3 |
 | 4305 + 4325 native sharding | On hold until after the next exam (owner, 2026-10-19) | Owner |
 | `exam.yml` with the nextest 0.9.140 pin | Not run yet; next scheduled Sat 2026-10-24 | Schedule |
-| Security Audit | Last run red at `21d6807e` (issue 4314); green only after rustls reaches `main` | L1 |
+| Security Audit | **Red.** Latest run [39217854663](https://github.com/Takazudo/zudo-front-builder/actions/runs/39217854663) (schedule, 2026-10-19) failed at `21d6807e` (issue 4314); no later run. `013b0ab` still has rustls 0.23.45, so it stays red until the rustls transition reaches `main` | L1 |
 | Version-stamped sizes at 4.5.4 | Measured on draft probe [PR 4333](https://github.com/Takazudo/zudo-front-builder/pull/4333) (health run 39321789489, probe head `59310d3`): md-wasm byte-identical to 4.5.3, Linux island raw and `gzipNormalized` totals unchanged, no ceiling moved. Re-pin commit `2e21689` changes two live-lineage assertions in `island-size-budget.test.mjs` and needs a fresh-context review; re-run if the candidate SHA moves | L5; reviewer |
-| Release procedure gates | Focused package/Rust checks, docs check, strict docs build, emitted-HTML validation, `release.yml` | Release run, after approval |
+| Docs preparation checks (2026-10-20) | Scratch worktree at `013b0ab` plus the five drafts copied into `docs/src/content/docs/changelog/<lane>/v4.5.4.mdx`, docs on `@takazudo/zfb` 4.5.2 from npm: `zfb check` passed; `pnpm --filter docs build` failed first with `Exec format error` (a non-executable pnpm stub on this Cloud host's `pnpm run` PATH, not the docs), then the same `zfb build --strict-broken` run directly passed (728 pages); `html-validate` passed over all 869 emitted HTML files, including the five v4.5.4 pages. Hosted CI on probe PR 4333 (`82b7111`) also ran build, check and `check:html` green | L5; recorded on issue 4336 |
+| Release procedure gates still open | Focused package/Rust checks at the bump commit, the canonical docs commands on the release host, `release.yml` | Release run, after approval |
 
 ## Dogfooding the candidate downstream
 
