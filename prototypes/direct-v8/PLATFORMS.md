@@ -13,11 +13,11 @@ that is the release recipe, not native qualification evidence for this candidate
 
 | Target | Native host | Dependency resolution (Cloud) | Native build, link, load | CLI lifecycle | Packaging / installed consumer | Size / provenance |
 | --- | --- | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Linux x86_64 | Pass, 491 rows | Pass at `bd4feaf` (Cloud Linux, Rust 1.97.0) and at `f217f4d` (opt-in CI lane, Rust 1.99.1); rerun per head | Pass at both (6 rows); Rolldown variant FAIL (see below) | Packed clean-room consumer pass at `f217f4d` (CI lane); shipping GLIBC floor NOT RUN | Blocked: lock not admitted |
-| `aarch64-unknown-linux-gnu` | Linux arm64 | Pass, 489 rows | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| `x86_64-unknown-linux-gnu` | Linux x86_64 | Pass, 491 rows | Pass at `bd4feaf` (Cloud Linux, Rust 1.97.0) and at `f217f4d` (opt-in CI lane, Rust 1.99.1); rerun per head | Pass at both (6 rows); Rolldown variant FAIL (see below) | Shipping `cross` release binary needs at most GLIBC 2.34 and passes the packed clean-room consumer at `89f1281` (CI lane) | Blocked: lock not admitted |
+| `aarch64-unknown-linux-gnu` | Linux arm64 | Pass, 489 rows | Pass at `fa1aaf6` and `89f1281` (CI lane, `ubuntu-24.04-arm`, Rust 1.99.1) | Pass at both (6 rows) | NOT RUN | NOT RUN |
 | `aarch64-apple-darwin` | Apple Silicon | Pass, 476 rows | NOT RUN | NOT RUN | NOT RUN | Blocked: lock not admitted |
 | `x86_64-apple-darwin` | Intel Mac (not Rosetta) | Pass, 478 rows | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
-| `x86_64-pc-windows-msvc` | Windows x64 | Pass, 496 rows | NOT RUN | NOT RUN (no Windows observer) | NOT RUN | NOT RUN |
+| `x86_64-pc-windows-msvc` | Windows x64 | Pass, 496 rows (494 resolved on the Windows host) | Pass at `fa1aaf6` and `89f1281` (CI lane, `windows-latest`, Rust 1.99.1); row PARTIAL | NOT RUN (no Windows observer) | NOT RUN | NOT RUN |
 
 Dependency resolution means `record-graph.py --cli --target <triple>` found one
 `v8 v147.4.0` engine and no `deno_*` or `serde_v8` crate in the selected
@@ -62,8 +62,10 @@ workers) still needs its own cases and stays NOT RUN.
 
 ## Opt-in CI lane
 
-`.github/workflows/direct-v8.yml` records the Linux x86_64 row on a standard
-GitHub-hosted runner. Its row job runs only for a PR labelled `direct-v8` (and
+`.github/workflows/direct-v8.yml` records native rows on standard
+GitHub-hosted runners: Linux x86_64 (`ubuntu-latest`), Linux arm64
+(`ubuntu-24.04-arm`) and Windows x64 (`windows-latest`, expected `PARTIAL`
+with only the lifecycle check NOT RUN). Its row jobs run only for a PR labelled `direct-v8` (and
 `direct-v8-rolldown` for the Rolldown variant), or by manual dispatch once the
 workflow is on the default branch. It is not a required check. On other PRs only
 a small `plan` job runs and the row job reports as skipped. Each row run:
@@ -72,14 +74,17 @@ a small `plan` job runs and the row job reports as skipped. Each row run:
 - runs `qualify-target.py --build` against the PR head SHA (not the merge ref);
 - records the native binary's highest GLIBC symbol (not gated: the binary is
   built on the runner, not with the shipping `cross` recipe);
-- builds the CSS addon with `cross` and runs `scripts/smoke-packed-clean-room.sh`
-  around the row's binary (local tarballs, `create-zfb` scaffold, site build).
+- on Linux x86_64, builds the release binary with the shipping `cross` recipe
+  (Amazon Linux 2023 image) and fails if it needs more than GLIBC 2.34, then
+  runs `scripts/smoke-packed-clean-room.sh` with that binary and the
+  `cross`-built CSS addon (local tarballs, `create-zfb` scaffold, site build).
 
 It uploads the graph rows, `row.json`, the build, lifecycle and packed
 clean-room logs, the GLIBC record and disk snapshots, kept for 14 days. The
 runner uses the current stable Rust, so the exact toolchain of a row comes from
 its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
-Linux arm64, Darwin and Windows native rows are not part of this lane.
+Darwin rows need a Mac runner, which is not approved, and are not part of this
+lane; nor is the arm64 shipping `cross` recipe.
 
 ## Rolldown findings
 
@@ -113,12 +118,10 @@ records the case and does not change the bundler.
 
 - Windows: `check-cli-lifecycle.py` relies on POSIX process groups and SIGINT.
   A Windows observer (console Ctrl-Break or job objects) is needed first.
-- Packaging: the CI lane runs `scripts/smoke-packed-clean-room.sh` around the
-  harness-built Linux x86_64 binary (local tarballs, `create-zfb` scaffold,
-  site build). That binary is built natively on the runner, not with the
-  shipping `cross` recipe, so it needs GLIBC 2.39 at `f217f4d`; the shipping
-  GLIBC 2.34 floor for a direct-v8 binary is not qualified. Other carriers
-  are NOT RUN.
+- Packaging: only Linux x86_64 has a packed clean-room consumer row, built
+  with the shipping `cross` recipe (GLIBC 2.34 at `89f1281`; the natively
+  built harness binary needs GLIBC 2.39). The arm64 `cross` recipe (QEMU)
+  and the other carriers are NOT RUN.
 - Size and provenance: the Cargo.lock delta (`zfb-js-host` adds the external
   `deno_core` edge) is not admitted by the Darwin/Linux contracts. Admission
   belongs to the security/Darwin evidence lane and the owner.

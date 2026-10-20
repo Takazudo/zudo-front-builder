@@ -85,6 +85,10 @@ def cpuinfo():
         return None
 
 
+def default_binary(target):
+    return ROOT / "target/debug" / ("zfb.exe" if "windows" in target else "zfb")
+
+
 def host_identity():
     machine = platform.machine().lower()
     system = platform.system()
@@ -135,6 +139,11 @@ def dynamic_dependencies(binary, system):
     for command in tools:
         if shutil.which(command[0]):
             result = run(command)
+            if command[0] == "objdump" and "stdout" in result:
+                # `objdump -p` prints every PE header and import table entry
+                # (145 MB for a debug zfb.exe); the import DLL names are the row.
+                result["stdout"] = "".join(
+                    line.strip() + "\n" for line in result["stdout"].splitlines() if "DLL Name:" in line)
             return {**result, "passed": result.get("exit") == 0}
     return {"status": "NOT RUN", "passed": None, "reason": f"none of {[c[0] for c in tools]} is installed"}
 
@@ -154,7 +163,7 @@ def status_of(checks):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target", required=True, choices=sorted(NATIVE_HOSTS))
-    parser.add_argument("--binary", type=Path, help="Prebuilt CLI; default with --build: target/debug/zfb")
+    parser.add_argument("--binary", type=Path, help="Prebuilt CLI; default with --build: target/debug/zfb (zfb.exe on Windows)")
     parser.add_argument("--build", action="store_true", help="Run the documented cargo build after the source check")
     parser.add_argument("--guard", type=Path, help="heavy-guard.sh wrapping the --build command")
     parser.add_argument("--source-sha", required=True, help="Expected 40-hex candidate source commit")
@@ -170,7 +179,7 @@ def main():
         parser.error(f"--output {output} already exists; every row needs a new directory")
     output.mkdir(parents=True)
     features = "direct-v8,rolldown-prototype" if args.rolldown else "direct-v8"
-    binary = (args.binary or ROOT / "target/debug/zfb").resolve()
+    binary = (args.binary or default_binary(args.target)).resolve()
     host = host_identity()
     build_command = [args.cargo, "build", "--locked", "-p", "zfb", "--no-default-features", "--features", features,
                      "--bin", "zfb"]

@@ -67,6 +67,28 @@ class NativeRefusal(unittest.TestCase):
         self.assertEqual(sorted(qualify.BINARY_FORMATS), sorted(graph.SHIPPING_TARGETS))
 
 
+class DefaultBinary(unittest.TestCase):
+    def test_windows_build_output_has_exe_suffix(self):
+        self.assertEqual(qualify.default_binary("x86_64-pc-windows-msvc").name, "zfb.exe")
+        for target in qualify.NATIVE_HOSTS:
+            if "windows" not in target:
+                self.assertEqual(qualify.default_binary(target).name, "zfb", target)
+
+
+class DynamicDependencies(unittest.TestCase):
+    def test_objdump_fallback_keeps_only_import_dll_names(self):
+        dump = "zfb.exe:     file format pei-x86-64\n\tDLL Name: KERNEL32.dll\n\tvma:  Hint/Ord\n\tDLL Name: ws2_32.dll\n"
+        which, run = qualify.shutil.which, qualify.run
+        qualify.shutil.which = lambda name: name if name == "objdump" else None
+        qualify.run = lambda command: {"command": command, "exit": 0, "stdout": dump, "stderr": ""}
+        try:
+            result = qualify.dynamic_dependencies("zfb.exe", "Windows")
+        finally:
+            qualify.shutil.which, qualify.run = which, run
+        self.assertEqual(result["stdout"], "DLL Name: KERNEL32.dll\nDLL Name: ws2_32.dll\n")
+        self.assertTrue(result["passed"])
+
+
 class BinaryHeader(unittest.TestCase):
     def test_each_target_header_is_recognized(self):
         samples = {"x86_64-unknown-linux-gnu": elf(62), "aarch64-unknown-linux-gnu": elf(183),

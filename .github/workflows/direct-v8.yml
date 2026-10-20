@@ -4,9 +4,10 @@
 # Opt-in direct-V8 lane (#4302, #4303 blocker "no direct-v8 CI lane"). It runs
 # only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` for the
 # Rolldown variant) or on manual dispatch, so it is never a required check. On
-# other PRs only the small `plan` job runs and the row job is skipped. It records the Linux x86_64 native row with the
-# same harness as prototypes/direct-v8/PLATFORMS.md; the other shipping rows
-# need their own native hosts and stay NOT RUN here.
+# other PRs only the small `plan` job runs and the row jobs are skipped. It
+# records native rows with the harness in prototypes/direct-v8/PLATFORMS.md on
+# standard GitHub-hosted runners: Linux x86_64, Linux arm64 and Windows x64.
+# Darwin rows need a Mac runner, which is not approved, and stay NOT RUN.
 
 name: direct-v8 (opt-in)
 
@@ -143,11 +144,9 @@ jobs:
           fi
           exit "$status"
 
-      # Installed-consumer check for the same harness-built binary: pack the
-      # local tarballs around it, scaffold with create-zfb and build the site.
-      # Runs after the row so its package-dir edits cannot dirty the source check.
-      # The CSS addon keeps the shipping GLIBC 2.34 ceiling, which only the
-      # cross image provides (as in node-free-smoke.yml).
+      # Packaging steps run after the row so their package-dir edits cannot
+      # dirty its source check. cross provides the shipping GLIBC 2.34 image
+      # for both the binary and the CSS addon (as in node-free-smoke.yml).
       - name: Install cross
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
@@ -160,13 +159,43 @@ jobs:
         run: |
           objdump -T "$ROW_BINARY" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 | tee "$ROW_DIR/binary-max-glibc.txt"
 
+      # The shipping recipe: release.yml builds the Linux x86_64 binary with
+      # cross in the repo's Amazon Linux 2023 image to hold the GLIBC 2.34
+      # floor (Cross.toml, #3623). Same command with the direct-v8 features;
+      # the floor is gated exactly as in release.yml.
+      - name: Shipping-recipe binary (cross, GLIBC 2.34 floor)
+        env:
+          # cross drops host env and mounts the workspace at /project, so the
+          # host ICU path does not exist in the container; mount its directory.
+          ICU_DIR: ${{ github.workspace }}/target/direct-v8-inputs/icu77
+        run: |
+          set -o pipefail
+          export CROSS_CONTAINER_OPTS="-v $ICU_DIR:/direct-v8-icu:ro --env ZFB_V8_ICU_DATA=/direct-v8-icu/icudtl.dat"
+          features=direct-v8
+          [ "$ROLLDOWN" = true ] && features=direct-v8,rolldown-prototype
+          cross build --locked -p zfb --release --no-default-features --features "$features" \
+            --target x86_64-unknown-linux-gnu 2>&1 | tee "$ROW_DIR/cross-build.log"
+          bin="$PWD/target/x86_64-unknown-linux-gnu/release/zfb"
+          sha256sum "$bin" | tee "$ROW_DIR/cross-binary.sha256"
+          "$bin" -V | tee "$ROW_DIR/cross-binary-version.txt"
+          maximum=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          echo "$maximum" | tee "$ROW_DIR/cross-binary-max-glibc.txt"
+          [ -n "$maximum" ] || { echo "::error::cannot inspect the binary's GLIBC symbols"; exit 1; }
+          if [ "$(printf '%s\n' "$maximum" GLIBC_2.34 | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::direct-v8 shipping-recipe binary requires $maximum, above the GLIBC_2.34 floor"
+            exit 1
+          fi
+          echo "CROSS_BINARY=$bin" >> "$GITHUB_ENV"
+
+      # Uses the shipping-recipe binary, so the carrier matches what release
+      # would pack (cross binary + cross addon).
       - name: Packed clean-room consumer (Linux x86_64)
         run: |
           bash scripts/build-css-node.sh x86_64-unknown-linux-gnu cross
           pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
           addon="$RUNNER_TEMP/zfb-css.node"
           cp packages/zfb-linux-x64-gnu/zfb-css.node "$addon"
-          ZFB_LINUX_X64_BINARY="$ROW_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
+          ZFB_LINUX_X64_BINARY="$CROSS_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
             bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
 
       - name: Summary
@@ -186,7 +215,7 @@ jobs:
               echo "No native row recorded."
             fi
             echo
-            echo "Not run in this lane: Linux arm64, Darwin arm64/x64 and Windows native rows, Rolldown coverage cases."
+            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner), Rolldown coverage cases."
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MATRIX_FEATURES: ${{ matrix.features }}
@@ -196,6 +225,118 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: direct-v8-linux-x64-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
+          path: ${{ env.ROW_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Native rows on the other standard runners. No packaging here: the clean-room
+  # smoke only packs the Linux x86_64 carrier.
+  other-hosts:
+    name: direct-v8 (${{ matrix.features }}, ${{ matrix.host.name }})
+    needs: plan
+    if: needs.plan.outputs.features != '[]'
+    concurrency:
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.host.name }}-${{ matrix.features }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.host.runner }}
+    # First runs set this budget; replace it with a measured value.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ${{ fromJSON(needs.plan.outputs.features) }}
+        host:
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            python: python3
+            expect: PASS
+          # check-cli-lifecycle.py has no Windows observer yet, so the best
+          # honest row is PARTIAL with only the lifecycle check NOT RUN.
+          - name: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            python: python
+            expect: PARTIAL
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ROLLDOWN: ${{ matrix.features != 'direct-v8' }}
+      ROW_DIR: ${{ github.workspace }}/target/direct-v8-ci
+      PYTHONDONTWRITEBYTECODE: "1"
+      PY: ${{ matrix.host.python }}
+      TARGET: ${{ matrix.host.target }}
+      EXPECT: ${{ matrix.host.expect }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare pinned ICU data
+        run: |
+          "$PY" prototypes/direct-v8/prepare-icu.py
+          "$PY" -c 'import os; print("ZFB_V8_ICU_DATA=" + os.path.abspath("target/direct-v8-inputs/icu77/icudtl.dat"))' >> "$GITHUB_ENV"
+
+      - name: Native row (harness build)
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          status=0
+          "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build \
+            --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
+          echo "qualify-target exit $status"
+          "$PY" - "$ROW_DIR/qualify/row.json" "$EXPECT" <<'PY'
+          import json, sys
+          row = json.load(open(sys.argv[1]))
+          expect = sys.argv[2]
+          open_checks = [name for name, check in row["checks"].items() if check.get("passed") is not True]
+          print("status:", row["status"], "expected:", expect, "not passing:", open_checks)
+          if expect == "PASS":
+              ok = row["status"] == "PASS"
+          else:
+              ok = (row["status"] == "PARTIAL" and open_checks == ["lifecycle"]
+                    and row["checks"]["lifecycle"].get("status") == "NOT RUN")
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### direct-v8 ($MATRIX_FEATURES, $TARGET) at \`$SOURCE_SHA\`"
+            if [ -f "$ROW_DIR/qualify/row.json" ]; then
+              "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
+          import json, sys
+          row = json.load(open(sys.argv[1]))
+          print("status:", row["status"])
+          for name, check in row["checks"].items():
+              print(f"- {name}: {check.get('passed')} {check.get('status') or ''}".rstrip())
+          PY
+            else
+              echo "No native row recorded."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_FEATURES: ${{ matrix.features }}
+
+      - name: Upload row evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: direct-v8-${{ matrix.host.name }}-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
           path: ${{ env.ROW_DIR }}
           if-no-files-found: warn
           retention-days: 14
