@@ -86,14 +86,35 @@ by the harness); without one they are listed as NOT RUN, not passed.
 | `dev-ssr-request` | `zfb dev` renders a `prerender = false` page afresh for each request and serves the MDX and Wasm routes, then exits 0 on Ctrl-C/SIGINT |
 
 First run of the original 9 rows at `060cd31` (run 39409736005 default,
-39409734870 Rolldown); the 5 rows added after it are NOT RUN until their first
-lane run:
+39409734870 Rolldown):
 
 | Host | Default bundler | Rolldown (`--rolldown`) |
 | --- | --- | --- |
 | Linux x86_64 | 9/9 PASS (`zfb` `da781dd7…`) | 9/9 PASS (`d5445603…`) |
 | Linux arm64 | 9/9 PASS (`1ddeece7…`) | 9/9 PASS (`2d1bd5aa…`) |
 | Windows x64 | 9/9 PASS (`zfb.exe` `c8f6ea05…`) | 0/9: every build stops on the `\\?\` verbatim path, in the islands entry's import (`UNRESOLVED_IMPORT '\\?\C:\…\components\counter.tsx'`) as well as the SSR entry (`UNRESOLVED_ENTRY //?/C:/…/entry.mjs`); so the missing-export control never reaches its diagnostic and the dev server serves only its 404 page |
+
+All 14 rows at `f01c149` (run 39443278121 default, 39443291442 Rolldown):
+
+| Host | Default bundler | Rolldown (`--rolldown`) |
+| --- | --- | --- |
+| Linux x86_64 | 14/14 PASS (`zfb` `839cf4f8…`, Chromium 149.0.7827.55) | 12/12 PASS (`04a28378…`); both browser rows NOT RUN |
+| Linux arm64 | 14/14 PASS (`c76be595…`, Chromium 149.0.7827.0) | 12/12 PASS (`b90585f9…`); both browser rows NOT RUN |
+| Windows x64 | 11/14 (`zfb.exe` `45ed6528…`): the plugin build fails, so `build-plugin-virtual-module` fails and the two client-script rows, which share that fixture, cannot run their checks; the other 11, `browser-hydration` included, PASS | 0/12, the verbatim path as above; both browser rows NOT RUN |
+
+The Windows plugin failure is the direct-V8 host, not Rolldown: `renderer step
+failed … embedded V8 host: no in-memory source for
+file:///?/C:/…/zfb-bundler-*/.zfb-virtual-*.mjs`. The host was asked for
+the virtual module's file under the `\\?\` verbatim shadow directory, and that
+URL matches neither its in-memory modules nor its alias targets (read from the
+message and `crates/zfb-js-host/src/modules.rs`; not reproduced on a Windows
+host here). The same
+verbatim directory reaches the shipped Windows `bundle.mjs.map`, whose sources
+read `file:////%3F/C:/…/zfb-bundler-*/pages/index.tsx` (positions are still
+right). The browser rows were NOT RUN on the Rolldown legs because the Chromium
+install step was skipped after the failed lifecycle row; that step, and the
+Linux packaging steps the packed consumer with Rolldown needs, now run after a
+failed row too.
 
 Darwin is NOT RUN. On the Rolldown leg the lane also builds the Linux x86_64
 packed carrier's scaffolded site with `packed-consumer.py --rolldown`, which
