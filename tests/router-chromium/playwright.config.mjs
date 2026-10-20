@@ -29,6 +29,17 @@ const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..")
 
 const PORT = 4322;
 
+// ZFB_BROWSER_ENGINE=webkit runs the same specs in WebKit instead of Chromium
+// (#4231 item 2, `pnpm test:webkit-token`). Unset, the project is unchanged.
+const ENGINE = process.env.ZFB_BROWSER_ENGINE ?? "chromium";
+const ENGINE_DEVICES = {
+  chromium: devices["Desktop Chrome"],
+  webkit: devices["Desktop Safari"],
+};
+if (!(ENGINE in ENGINE_DEVICES)) {
+  throw new Error(`unsupported ZFB_BROWSER_ENGINE '${ENGINE}' (expected chromium or webkit)`);
+}
+
 export default defineConfig({
   testDir: "./",
   testMatch: "**/*.chromium.spec.mjs",
@@ -62,8 +73,8 @@ export default defineConfig({
 
   projects: [
     {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      name: ENGINE,
+      use: { ...ENGINE_DEVICES[ENGINE] },
     },
   ],
 
