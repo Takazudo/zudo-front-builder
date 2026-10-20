@@ -7,7 +7,8 @@
  */
 
 // @ts-check
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
+import { engineProject } from "../webkit-token/engine.mjs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -27,12 +28,7 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     trace: "on-first-retry",
   },
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
+  projects: [engineProject],
   webServer: {
     command: `node tests/zudo-react-browser/serve-fixture.mjs ${PORT}`,
     url: `http://localhost:${PORT}`,

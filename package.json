@@ -49,7 +49,8 @@
     "//// === ZUDO-REACT L4 (Chromium, runs in CI) ===": "",
     "test:zudo-react-browser": "node tests/zudo-react-browser/build-fixture.mjs && pnpm exec playwright test --config tests/zudo-react-browser/playwright.config.mjs",
     "//// === LOCAL-HEAVY (T4, Mac only, NOT CI) ===": "",
-    "test:webkit-back": "pnpm -C packages/zfb-runtime build && pnpm exec playwright test --config tests/webkit-back-history/playwright.config.mjs"
+    "test:webkit-back": "pnpm -C packages/zfb-runtime build && pnpm exec playwright test --config tests/webkit-back-history/playwright.config.mjs",
+    "test:webkit-token": "node tests/webkit-token/run.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

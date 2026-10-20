@@ -1,4 +1,5 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
+import { engineProject } from "../webkit-token/engine.mjs";
 import { join } from "node:path";
 
 const REPO_ROOT = process.cwd();
@@ -17,12 +18,7 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: "on-first-retry",
   },
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
+  projects: [engineProject],
   webServer: {
     command: `node tests/scanner-boundary-acceptance/serve-dist.mjs ${PORT}`,
     url: `http://127.0.0.1:${PORT}`,
