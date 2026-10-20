@@ -137,16 +137,42 @@ fn unminified_top_level_throw_keeps_exported_bindings() {
 }
 
 #[test]
-fn minified_top_level_throw_keeps_rolldowns_dce_pass() {
+fn minified_top_level_throw_keeps_exported_bindings() {
     let fixture = top_level_throw_fixture();
+    fs::write(
+        fixture.0.join("entry.js"),
+        "import * as page from './pages/index.js';\n\
+         export const routes = { '/': page };\n\
+         export let count = 1;\n\
+         export class Kept {}\n\
+         export default { fetch() { return routes; } };\n",
+    )
+    .unwrap();
     let mut cmd = fixture.command();
     cmd.arg("--minify");
     run_prepared(&cmd).unwrap();
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
-    // Negative control: --minify keeps Rolldown's DCE, which at the pin still
-    // exports `routes` without declaring it (#4336 ZFB-RD-003/004). A pin
-    // that fixes it upstream fails here; revisit the unminified opt-out then.
     assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
-    assert!(bundle.contains("routes}"), "{bundle}");
-    assert!(!bundle.contains("routes="), "{bundle}");
+    // The compressor still drops everything after the throw, but every
+    // exported local must stay declared or the module fails to link.
+    let (code, exports) = bundle
+        .trim_end()
+        .split_once("export{")
+        .unwrap_or_else(|| panic!("no export clause: {bundle}"));
+    let (exports, tail) = exports.split_once('}').unwrap();
+    let declared: Vec<&str> = code
+        .split("var ")
+        .chain(tail.split("var "))
+        .skip(1)
+        .flat_map(|decl| decl.split(';').next().unwrap().split(','))
+        .map(|binding| binding.split('=').next().unwrap())
+        .collect();
+    let mut exported = Vec::new();
+    for spec in exports.split(',') {
+        let (local, name) = spec.split_once(" as ").unwrap_or((spec, spec));
+        assert!(declared.contains(&local), "{name} is undeclared: {bundle}");
+        exported.push(name);
+    }
+    exported.sort_unstable();
+    assert_eq!(exported, ["Kept", "count", "default", "routes"], "{bundle}");
 }
