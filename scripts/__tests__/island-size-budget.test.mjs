@@ -1574,6 +1574,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
       },
     });
     expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
+    expect(live.toolchain.pnpmLockSha256).toBe(sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))));
+    // actualGzip is transfer-size evidence that a version stamp may move, so only
+    // its fixture coverage is pinned, not its values.
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(rewired));
     // A release bump moves only the version stamp, its lockfile provenance and the evidence.
     const fixed = (contract) => {
       const copy = structuredClone(contract);
