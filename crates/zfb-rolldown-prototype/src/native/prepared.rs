@@ -1,7 +1,7 @@
 //! Private decoder for ZFB's existing prepared esbuild command contract.
 //! Fail closed on unknown options; this remains explicit argv ownership debt.
 use super::windows_path;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rolldown::BundlerOptions;
 use rolldown_common::ModuleType;
 use std::{
@@ -27,13 +27,24 @@ impl Request {
     }
 
     fn decode_for_host(cmd: &Command, windows: bool) -> Result<Self> {
-        let engine_path = |path: PathBuf| engine_path(path, windows);
-        let engine_str = |value: String| engine_str(value, windows);
-        let cwd = engine_path(
-            cmd.get_current_dir()
-                .map(Path::to_path_buf)
-                .unwrap_or(std::env::current_dir()?),
-        )?;
+        let cwd = cmd
+            .get_current_dir()
+            .map(Path::to_path_buf)
+            .unwrap_or(std::env::current_dir()?);
+        let cwd = if windows {
+            let cwd = cwd.into_os_string().into_string().map_err(|cwd| {
+                anyhow!(
+                    "Rolldown prototype requires a UTF-8 working directory: {}",
+                    cwd.to_string_lossy()
+                )
+            })?;
+            PathBuf::from(engine_spelling(cwd, windows)?)
+        } else {
+            cwd
+        };
+        let engine_spelling = |value: String| engine_spelling(value, windows);
+        let engine_join =
+            |value: &str| engine_spelling(cwd.join(value).to_string_lossy().into_owned());
         let mut options = BundlerOptions {
             cwd: Some(cwd.clone()),
             code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
@@ -68,16 +79,16 @@ impl Request {
                 resolve
                     .alias
                     .get_or_insert_default()
-                    .push((k.to_string(), vec![Some(engine_str(v.to_string())?)]));
+                    .push((k.to_string(), vec![Some(engine_spelling(v.to_string())?)]));
             } else if let Some(value) = arg.strip_prefix("--external:") {
                 if value.strip_suffix('*').unwrap_or(value).contains('*') {
                     bail!("Rolldown prototype only supports suffix external wildcards: {value}");
                 }
                 external.push(value.to_string());
             } else if let Some(value) = arg.strip_prefix("--outfile=") {
-                options.file = Some(engine_str(cwd.join(value).to_string_lossy().into_owned())?);
+                options.file = Some(engine_join(value)?);
             } else if let Some(value) = arg.strip_prefix("--outdir=") {
-                options.dir = Some(engine_str(cwd.join(value).to_string_lossy().into_owned())?);
+                options.dir = Some(engine_join(value)?);
             } else if let Some(value) = arg.strip_prefix("--entry-names=") {
                 options.entry_filenames = Some(format!("{value}.js").into());
             } else if let Some(value) = arg.strip_prefix("--chunk-names=") {
@@ -87,9 +98,9 @@ impl Request {
             } else if let Some(value) = arg.strip_prefix("--metafile=") {
                 metafile = Some(cwd.join(value));
             } else if let Some(value) = arg.strip_prefix("--tsconfig=") {
-                options.tsconfig = Some(rolldown_common::TsConfig::Manual(engine_path(
-                    cwd.join(value),
-                )?));
+                options.tsconfig = Some(rolldown_common::TsConfig::Manual(
+                    engine_join(value)?.into(),
+                ));
             } else if let Some(value) = arg.strip_prefix("--target=") {
                 transform.target = Some(rolldown_common::Either::Left(value.to_string()));
             } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
@@ -132,7 +143,7 @@ impl Request {
                         has_jsx = true;
                     }
                     _ if !arg.starts_with('-') && entry.is_none() => {
-                        entry = Some(engine_str(cwd.join(arg).to_string_lossy().into_owned())?)
+                        entry = Some(engine_join(arg)?)
                     }
                     _ => bail!("Rolldown prototype does not implement prepared option {arg:?}"),
                 }
@@ -146,7 +157,7 @@ impl Request {
                         .modules
                         .get_or_insert_with(|| vec!["node_modules".into()]);
                     for path in std::env::split_paths(v) {
-                        modules.push(engine_str(path.to_string_lossy().into_owned())?);
+                        modules.push(engine_spelling(path.to_string_lossy().into_owned())?);
                     }
                 }
             }
@@ -194,21 +205,14 @@ impl Request {
 
 /// Every path Rolldown resolves against must be in the ordinary spelling on
 /// Windows; elsewhere `\\?\` is an ordinary file name and stays untouched.
-fn engine_path(path: PathBuf, windows: bool) -> Result<PathBuf> {
-    match path.to_str() {
-        Some(value) if windows => Ok(match windows_path::for_rolldown(value)? {
-            Cow::Borrowed(_) => path,
-            Cow::Owned(ordinary) => ordinary.into(),
-        }),
-        _ => Ok(path),
-    }
-}
-
-fn engine_str(value: String, windows: bool) -> Result<String> {
+fn engine_spelling(value: String, windows: bool) -> Result<String> {
     if !windows {
         return Ok(value);
     }
-    Ok(windows_path::for_rolldown(&value)?.into_owned())
+    Ok(match windows_path::for_rolldown(&value)? {
+        Cow::Borrowed(_) => value,
+        Cow::Owned(ordinary) => ordinary,
+    })
 }
 
 #[cfg(test)]
@@ -221,7 +225,10 @@ mod tests {
         let mut cmd = Command::new("esbuild");
         cmd.current_dir(cwd)
             .args(["entry.mjs", "--bundle", "--format=esm", "--outdir=out"])
-            .arg(r"--alias:#shadow=\\?\C:\shadow\alias.mjs");
+            .args(["--outfile=out/route.js", "--tsconfig=tsconfig.json"])
+            .arg(r"--alias:#shadow=\\?\C:\shadow\alias.mjs")
+            // A verbatim UNC entry has no ':' or ';', so it splits the same way on every host.
+            .env("NODE_PATH", r"\\?\UNC\host\share\node_modules");
         cmd
     }
 
@@ -236,10 +243,21 @@ mod tests {
             input,
             &Path::new(r"C:\shadow").join("entry.mjs").to_string_lossy()
         );
+        let joined = |rel: &str| Path::new(r"C:\shadow").join(rel);
         assert_eq!(
             options.dir.as_deref(),
-            Some(&*Path::new(r"C:\shadow").join("out").to_string_lossy())
+            Some(&*joined("out").to_string_lossy())
         );
+        assert_eq!(
+            options.file.as_deref(),
+            Some(&*joined("out/route.js").to_string_lossy())
+        );
+        assert!(matches!(
+            &options.tsconfig,
+            Some(rolldown_common::TsConfig::Manual(path)) if *path == joined("tsconfig.json")
+        ));
+        let modules = options.resolve.as_ref().unwrap().modules.as_ref().unwrap();
+        assert!(modules.contains(&r"\\host\share\node_modules".to_string()));
         assert_eq!(
             options.resolve.as_ref().unwrap().alias.as_ref().unwrap()[0].1,
             vec![Some(r"C:\shadow\alias.mjs".to_string())]

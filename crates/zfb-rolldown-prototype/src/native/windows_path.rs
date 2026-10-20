@@ -8,8 +8,10 @@
 //! A verbatim path disables Win32 normalization, so removing the prefix can
 //! change which file it names. Only the two spellings that have an equivalent
 //! ordinary form are rewritten, and only when every component means the same
-//! thing without the prefix (the rules `dunce` applies). Anything else fails
-//! closed with a diagnostic instead of reaching Rolldown as a broken id.
+//! thing without the prefix (the rules `dunce` applies), including MAX_PATH
+//! for the rewritten spelling itself. Anything else fails closed with a
+//! diagnostic instead of reaching Rolldown as a broken id. Relative arguments
+//! joined onto the rewritten cwd keep their ordinary Win32 meaning.
 use anyhow::{bail, Result};
 use std::borrow::Cow;
 
@@ -86,7 +88,7 @@ fn unsafe_component(component: &str) -> Option<&'static str> {
         return Some("contains a character reserved outside verbatim paths");
     }
     let stem = component.split('.').next().unwrap_or_default().trim_end();
-    let reserved = ["CON", "PRN", "AUX", "NUL"]
+    let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
         .iter()
         .any(|name| stem.eq_ignore_ascii_case(name))
         || ["COM", "LPT"].iter().any(|name| {
@@ -194,6 +196,8 @@ mod tests {
             (r"\\?\C:\work\Com1 .txt", "reserved device name"),
             (r"\\?\C:\work\lpt9", "reserved device name"),
             (r"\\?\C:\work\COM²", "reserved device name"),
+            (r"\\?\C:\work\CONIN$\entry.mjs", "reserved device name"),
+            (r"\\?\C:\work\conout$.log", "reserved device name"),
         ] {
             let message = err(path);
             assert!(message.contains(reason), "{path}: {message}");
