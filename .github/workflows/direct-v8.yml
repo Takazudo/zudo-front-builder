@@ -239,8 +239,9 @@ jobs:
       group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.host.name }}-${{ matrix.features }}
       cancel-in-progress: true
     runs-on: ${{ matrix.host.runner }}
-    # First runs set this budget; replace it with a measured value.
-    timeout-minutes: 60
+    # Provisional: the Windows leg adds a release build for the packed consumer;
+    # replace with a measured value after its first runs.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -301,6 +302,20 @@ jobs:
           print("status:", row["status"], "not passing:", open_checks)
           sys.exit(0 if row["status"] == "PASS" else 1)
           PY
+
+      # release.yml builds the Windows carrier natively with cargo, so this is
+      # the shipping recipe (minus the version stamp) for the direct-v8 selection.
+      - name: Packed clean-room consumer (Windows x64, release recipe)
+        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' }}
+        run: |
+          set -o pipefail
+          cargo build --locked -p zfb --release --no-default-features --features direct-v8 \
+            --target "$TARGET" 2>&1 | tee "$ROW_DIR/release-build.log"
+          bash scripts/build-css-node.sh "$TARGET" cargo 2>&1 | tee "$ROW_DIR/css-addon-build.log"
+          pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
+          "$PY" prototypes/direct-v8/packed-consumer.py --carrier win32-x64-msvc \
+            --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
+            --output "$ROW_DIR/packed"
 
       - name: Summary
         if: always()

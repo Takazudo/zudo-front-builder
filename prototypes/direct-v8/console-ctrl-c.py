@@ -34,15 +34,27 @@ def deliver_ctrl_c(child):
     kernel32 = ctypes.windll.kernel32
     # The event reaches every process on this console; this helper ignores it.
     kernel32.SetConsoleCtrlHandler(None, True)
-    if not kernel32.GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0):
+    if kernel32.GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0):
+        print("console-ctrl-c: CTRL_C_EVENT delivered", file=sys.stderr, flush=True)
+    else:
         print(f"console-ctrl-c: GenerateConsoleCtrlEvent failed: {ctypes.GetLastError()}", file=sys.stderr)
         child.kill()
+
+
+def accept_ctrl_c():
+    # The "ignore Ctrl-C" attribute is inherited at process creation, and a CI
+    # runner's process chain may carry it; clear it so the child inherits a
+    # console on which Ctrl-C reaches its handler.
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
 
 
 def main(command):
     if not command:
         print("usage: console-ctrl-c.py <command> [args...]", file=sys.stderr)
         return 2
+    accept_ctrl_c()
     child = subprocess.Popen(command, stdin=subprocess.DEVNULL)
     requested = threading.Event()
 
@@ -55,7 +67,9 @@ def main(command):
         pass
     if child.poll() is None:
         deliver_ctrl_c(child)
-    return child.wait()
+    code = child.wait()
+    print(f"console-ctrl-c: child exited {code}", file=sys.stderr, flush=True)
+    return code
 
 
 if __name__ == "__main__":
