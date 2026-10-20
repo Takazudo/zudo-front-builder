@@ -139,6 +139,11 @@ def dynamic_dependencies(binary, system):
     for command in tools:
         if shutil.which(command[0]):
             result = run(command)
+            if command[0] == "objdump" and "stdout" in result:
+                # `objdump -p` prints every PE header and import table entry
+                # (145 MB for a debug zfb.exe); the import DLL names are the row.
+                result["stdout"] = "".join(
+                    line.strip() + "\n" for line in result["stdout"].splitlines() if "DLL Name:" in line)
             return {**result, "passed": result.get("exit") == 0}
     return {"status": "NOT RUN", "passed": None, "reason": f"none of {[c[0] for c in tools]} is installed"}
 
