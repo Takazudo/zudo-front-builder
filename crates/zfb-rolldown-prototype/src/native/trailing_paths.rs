@@ -64,11 +64,7 @@ impl Plugin for TrailingPaths {
         if !config.references.is_empty() {
             return Ok(None);
         }
-        let targets = config
-            .resolve_path_alias_or_base_url(args.specifier)
-            .into_iter()
-            .map(|target| super::verbatim_specifiers::ordinary_target(target, cfg!(windows)))
-            .collect::<Result<Vec<_>>>()?;
+        let targets = config.resolve_path_alias_or_base_url(args.specifier);
         if !targets.iter().any(|path| trailing_separator(path)) {
             return Ok(None);
         }
@@ -87,6 +83,8 @@ impl Plugin for TrailingPaths {
         // Preserve the selected exact/wildcard mapping's complete target order:
         // an ordinary target before a trailing target must still win.
         for target in targets {
+            // Rewrite only targets actually tried, so an unused one can't fail.
+            let target = super::verbatim_specifiers::ordinary_target(target, cfg!(windows))?;
             if trailing_separator(&target) {
                 // esbuild's Dir/Base split probes dir/basename as a FILE before
                 // package main/index. A normal resolve of dir/basename could

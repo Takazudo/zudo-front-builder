@@ -66,9 +66,17 @@ impl Plugin for VerbatimSpecifiers {
 /// cannot be rewritten fails closed, like a verbatim specifier.
 pub(super) fn ordinary_target(target: PathBuf, windows: bool) -> Result<PathBuf> {
     let Some(text) = target.to_str() else {
+        if windows && target.as_os_str().as_encoded_bytes().starts_with(br"\\?\") {
+            anyhow::bail!(
+                "Rolldown prototype requires a UTF-8 tsconfig target: {}",
+                target.display()
+            );
+        }
         return Ok(target);
     };
-    Ok(ordinary_path(text, windows)?.map_or(target, PathBuf::from))
+    let ordinary =
+        ordinary_path(text, windows).with_context(|| format!("tsconfig target {text}"))?;
+    Ok(ordinary.map_or(target, PathBuf::from))
 }
 
 /// The ordinary spelling Rolldown should resolve, or `None` to leave the
@@ -78,7 +86,9 @@ fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> 
     let (path, suffix) = specifier
         .strip_suffix("?url")
         .map_or((specifier, ""), |path| (path, "?url"));
-    let Some(ordinary) = ordinary_path(path, windows)? else {
+    let Some(ordinary) =
+        ordinary_path(path, windows).with_context(|| format!("import {specifier}"))?
+    else {
         return Ok(None);
     };
     if !suffix.is_empty() && ordinary.ends_with('\\') {
