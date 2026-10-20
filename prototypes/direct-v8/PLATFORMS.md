@@ -64,7 +64,9 @@ build/dev smoke.
 writes itself, one row per case, and records every row even when an earlier one
 fails. The CI lane runs it on every host after the row, under the default
 bundler and, on the Rolldown leg, with `--rolldown` (`ZFB_ROLLDOWN_PROTOTYPE=1`).
-Any failing row turns that step red.
+Any failing row turns that step red. The browser rows need an installed
+Chromium (`--chromium`, installed by the lane with Playwright, never downloaded
+by the harness); without one they are listed as NOT RUN, not passed.
 
 | Row | What it proves |
 | --- | --- |
@@ -73,12 +75,19 @@ Any failing row turns that step red.
 | `build-wasm-ssr` | an SSR page instantiates its imported Wasm module |
 | `build-wasm-copied` | the Wasm module is copied beside `bundle.mjs`, which references it |
 | `build-source-map` | the SSR bundle's linked map names an authored page |
+| `build-source-map-positions` | authored text in the SSR bundle (`CSS module marker`, `Count: `) maps back to its authored file and to a line inside the JSX element holding it |
+| `browser-hydration` | Chromium loads the built site: the Counter island renders `Count: 0`, its CSS module colour applies, a click makes it `Count: 1`, with no page or console errors |
 | `build-tsconfig-alias` | a page import through a tsconfig `paths` alias |
+| `build-plugin-virtual-module` | a `zfb.config.ts` plugin's `addVirtualModule` value reaches both the SSR page and a client script importing it |
+| `build-client-script` | a `*.client.ts` entry outside any island is emitted once as `assets/client/case-<hash>.js` and the page's `clientScript()` URL is rewritten to it |
+| `browser-client-script` | Chromium runs that client script, which writes the virtual module's value into the page |
 | `build-module-worker` | an island's `new URL(..., import.meta.url)` worker is emitted once and referenced with its `?v=` digest |
 | `build-missing-export-rejected` | negative control: a missing export fails the build with a missing-export diagnostic naming it |
 | `dev-ssr-request` | `zfb dev` renders a `prerender = false` page afresh for each request and serves the MDX and Wasm routes, then exits 0 on Ctrl-C/SIGINT |
 
-First run at `060cd31` (run 39409736005 default, 39409734870 Rolldown):
+First run of the original 9 rows at `060cd31` (run 39409736005 default,
+39409734870 Rolldown); the 5 rows added after it are NOT RUN until their first
+lane run:
 
 | Host | Default bundler | Rolldown (`--rolldown`) |
 | --- | --- | --- |
@@ -86,12 +95,14 @@ First run at `060cd31` (run 39409736005 default, 39409734870 Rolldown):
 | Linux arm64 | 9/9 PASS (`1ddeece7…`) | 9/9 PASS (`2d1bd5aa…`) |
 | Windows x64 | 9/9 PASS (`zfb.exe` `c8f6ea05…`) | 0/9: every build stops on the `\\?\` verbatim path, in the islands entry's import (`UNRESOLVED_IMPORT '\\?\C:\…\components\counter.tsx'`) as well as the SSR entry (`UNRESOLVED_ENTRY //?/C:/…/entry.mjs`); so the missing-export control never reaches its diagnostic and the dev server serves only its 404 page |
 
-Darwin is NOT RUN. Still not covered by any actual-CLI case: plugin virtual
-modules, client scripts outside islands, browser hydration (the rows read built
-files; the Chromium check runs only on frozen esbuild output via
-`check-generated.py`), source-map positions, and a packed consumer with
-Rolldown enabled. Failure and replacement under Rolldown are covered only by
-the lifecycle observer, which stops at the known `routes` case below.
+Darwin is NOT RUN. On the Rolldown leg the lane also builds the Linux x86_64
+packed carrier's scaffolded site with `packed-consumer.py --rolldown`, which
+requires the Rolldown backend's own `[zfb-timing] rolldown-prototype:` line as
+proof that Rolldown bundled it. That is not run on Windows, where every Rolldown
+build already stops on the verbatim path above. Still not covered by any
+actual-CLI case: source maps for client or island bundles (production ships
+none), and failure and replacement under Rolldown beyond the lifecycle observer,
+which stops at the known `routes` case below.
 
 ## Opt-in CI lane
 

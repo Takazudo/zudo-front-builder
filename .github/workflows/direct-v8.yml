@@ -198,6 +198,23 @@ jobs:
           ZFB_LINUX_X64_BINARY="$CROSS_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
             bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
 
+      # The same carrier, consumed with the Rolldown prototype switched on for the
+      # site build; the clean-room smoke above keeps the default bundler.
+      - name: Packed consumer with Rolldown (Linux x86_64)
+        id: packed-rolldown
+        if: ${{ !cancelled() && env.ROLLDOWN == 'true' && env.CROSS_BINARY != '' }}
+        run: |
+          python3 prototypes/direct-v8/packed-consumer.py --carrier linux-x64-gnu --binary "$CROSS_BINARY" \
+            --css-addon "$RUNNER_TEMP/zfb-css.node" --output "$ROW_DIR/packed-rolldown" --rolldown
+
+      # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      - name: Install Chromium for the browser cases
+        id: chromium
+        continue-on-error: true
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          echo "CASE_CHROMIUM=$(node -e 'console.log(require("@playwright/test").chromium.executablePath())')" >> "$GITHUB_ENV"
+
       # After the packaging steps so a failing case never hides them. Every case
       # runs and is recorded; any failing row turns the step red, on the Rolldown
       # leg too, where a red row is that case's recorded compatibility result.
@@ -206,6 +223,7 @@ jobs:
         run: |
           extra=()
           [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          [ -n "${CASE_CHROMIUM:-}" ] && extra+=(--chromium "$CASE_CHROMIUM")
           python3 prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
 
       - name: Summary
@@ -223,6 +241,15 @@ jobs:
           PY
             else
               echo "No native row recorded."
+            fi
+            if [ -f "$ROW_DIR/packed-rolldown/report.json" ]; then
+              python3 - "$ROW_DIR/packed-rolldown/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("packed consumer (Rolldown):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          for row in report["rows"]:
+              print(f"- {row['name']}: {row['passed']}")
+          PY
             fi
             if [ -f "$ROW_DIR/cases/report.json" ]; then
               python3 prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
@@ -338,6 +365,16 @@ jobs:
             --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
             --output "$ROW_DIR/packed"
 
+      # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      - name: Install Chromium for the browser cases
+        id: chromium
+        continue-on-error: true
+        run: |
+          deps=()
+          [ "$RUNNER_OS" = Linux ] && deps=(--with-deps)
+          pnpm exec playwright install "${deps[@]}" chromium
+          echo "CASE_CHROMIUM=$(node -e 'console.log(require("@playwright/test").chromium.executablePath())')" >> "$GITHUB_ENV"
+
       # Every case runs and is recorded; any failing row turns the step red, on
       # the Rolldown leg too, where a red row is that case's compatibility result.
       - name: CLI interoperability cases (actual binary)
@@ -345,6 +382,7 @@ jobs:
         run: |
           extra=()
           [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          [ -n "${CASE_CHROMIUM:-}" ] && extra+=(--chromium "$CASE_CHROMIUM")
           "$PY" prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
 
       - name: Summary

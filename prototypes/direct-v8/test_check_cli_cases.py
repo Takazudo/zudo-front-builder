@@ -30,6 +30,29 @@ class Summary(unittest.TestCase):
         self.assertEqual(cases.summary(report),
                          "CLI cases (Rolldown): FAIL\n- a: True\n- b: False AssertionError: x")
 
+    def test_lists_rows_not_run_without_counting_them(self):
+        report = {"rolldown_prototype": None, "passed": True, "rows": [{"name": "a", "passed": True}],
+                  "not_run": [{"name": "browser-hydration", "reason": "no --chromium given"}]}
+        self.assertEqual(cases.summary(report), "CLI cases (default bundler): PASS\n- a: True\n"
+                         "- browser-hydration: NOT RUN (no --chromium given)")
+
+
+class SourceMap(unittest.TestCase):
+    def test_vlq_decodes_signed_values(self):
+        self.assertEqual(cases.vlq("AAgBC"), [0, 0, 16, 1])
+        self.assertEqual(cases.vlq("D"), [-1])
+
+    def test_position_is_the_last_segment_at_or_before_the_column(self):
+        # Line 0: column 0 -> a.ts:1, column 4 -> b.ts:2.
+        source_map = {"sources": ["a.ts", "b.ts"], "mappings": "AAAA,ICCE"}
+        self.assertEqual(cases.original_position(source_map, 0, 2), ("a.ts", 1))
+        self.assertEqual(cases.original_position(source_map, 0, 9), ("b.ts", 2))
+        self.assertIsNone(cases.original_position(source_map, 3, 0))
+
+    def test_element_span_brackets_the_marker(self):
+        authored = "x\n<p\n  class={a}>\n  marker\n</p>\n"
+        self.assertEqual(cases.element_span(authored, "marker", "<p", "</p>"), (2, 5))
+
 
 class Fixture(unittest.TestCase):
     def test_site_copy_drops_expectations_and_adds_case_files(self):
