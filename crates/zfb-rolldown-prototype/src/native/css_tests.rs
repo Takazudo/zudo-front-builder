@@ -104,3 +104,27 @@ fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
         assert!(fixture.0.join("out/meta.json").is_file());
     }
 }
+
+#[test]
+fn unminified_top_level_throw_keeps_exported_bindings() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.0.join("pages")).unwrap();
+    fs::write(
+        fixture.0.join("entry.js"),
+        "import * as page from './pages/index.js';\n\
+         export const routes = { '/': page };\n\
+         export default { fetch() { return routes; } };\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.0.join("pages/index.js"),
+        "throw new Error('CLI_REPLACEMENT_REJECTED');\n\
+         export default function Page() { return 'CLI_BAD'; }\n",
+    )
+    .unwrap();
+    run_prepared(&fixture.command()).unwrap();
+    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
+    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
+    // The pinned DCE-only pass emitted `export { routes }` with no declaration.
+    assert!(bundle.contains("const routes ="), "{bundle}");
+}

@@ -53,6 +53,10 @@ impl Request {
             // contain that delimiter; use the pinned alphanumeric alphabet
             // without changing the existing resource admission contract.
             hash_characters: Some(rolldown_common::HashCharacters::Base36),
+            // Esbuild runs no dead-code pass without --minify. Rolldown's default
+            // DCE-only pass also drops bindings after an unconditional top-level
+            // throw while keeping their export entries (#4336 ZFB-RD-003).
+            minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
             ..Default::default()
         };
         let mut resolve = rolldown::ResolveOptions::default();
