@@ -41,7 +41,10 @@ class Preparation(unittest.TestCase):
     def setUp(self):
         self.room = tempfile.TemporaryDirectory()
         self.addCleanup(self.room.cleanup)
-        self.root = Path(self.room.name)
+        self.build_fixture(self.room.name)
+
+    def build_fixture(self, base):
+        self.root = Path(base).resolve()
         self.destination = self.root / "target/direct-v8-inputs/icu77/icudtl.dat"
         self.destination.parent.mkdir(parents=True)
         self.archive = self.root / "icu.crate"
@@ -62,10 +65,29 @@ class Preparation(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             icu.main()
         self.assertEqual(output.getvalue().strip(), str(self.destination))
+        return output.getvalue().strip()
 
     def test_success_preserves_exact_content_and_path(self):
         self.run_prepare()
         self.assertEqual(self.destination.read_bytes(), DATA)
+
+    def test_symlinked_temp_root_matches_resolved_destination(self):
+        # macOS TMPDIR lives under /var -> /private/var; prepare-icu.py resolves its root, so the fixture must too.
+        physical = tempfile.TemporaryDirectory()
+        self.addCleanup(physical.cleanup)
+        links = tempfile.TemporaryDirectory()
+        self.addCleanup(links.cleanup)
+        alias = Path(links.name) / "alias"
+        try:
+            alias.symlink_to(physical.name, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        self.stack.close()
+        self.build_fixture(alias)
+        printed = self.run_prepare()
+        expected = Path(physical.name).resolve() / "target/direct-v8-inputs/icu77/icudtl.dat"
+        self.assertEqual(printed, str(expected))
+        self.assertEqual(expected.read_bytes(), DATA)
 
     def inject_partial_write(self):
         original = io.open
