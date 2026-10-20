@@ -12516,7 +12516,11 @@ fn project_package_import_map_text(project_root: &Path) -> Option<String> {
 /// directory, and a scan never fails the build. A dir is reached when an
 /// entry root lies inside it, an alias/exact target lies inside it, a scanned
 /// file names it as a path segment, or a glob/template import could expand
-/// into it; a reached dir's own files are scanned in turn.
+/// into it; a reached dir's own files are scanned in turn. A loose source
+/// file directly in `project_root` (`site.config.ts`, imported as
+/// `../site.config` or through a root `@/*` alias) is scanned the same way
+/// once a scanned text or alias target names it; root config files nothing
+/// imports (`vitest.config.ts` naming `tests/`) stay unscanned.
 fn entry_reachable_extra_top_level_dirs(
     project_root: &Path,
     extra_dirs: &[PathBuf],
@@ -12524,6 +12528,24 @@ fn entry_reachable_extra_top_level_dirs(
     alias_targets: &[PathBuf],
     reference_texts: &[String],
 ) -> BTreeSet<PathBuf> {
+    let is_reference_source = |path: &Path| {
+        raw_source_extension(path)
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("css") || extension.eq_ignore_ascii_case("mdx")
+                })
+    };
+    let root_files = fs::read_dir(project_root)
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_reference_source(path))
+        .collect::<Vec<_>>();
+    // Holds reached extra dirs and reached root loose files alike; the files
+    // are dropped before returning.
     let mut reachable = BTreeSet::new();
     let mut pending_dirs = Vec::new();
     let reach = |dir: &PathBuf, reachable: &mut BTreeSet<PathBuf>, pending: &mut Vec<PathBuf>| {
@@ -12550,6 +12572,11 @@ fn entry_reachable_extra_top_level_dirs(
                 reach(dir, &mut reachable, &mut pending_dirs);
             }
         }
+        for file in &root_files {
+            if *file == literal || file.with_extension("") == literal {
+                reach(file, &mut reachable, &mut pending_dirs);
+            }
+        }
     }
     let apply =
         |text: &str, base: &Path, reachable: &mut BTreeSet<PathBuf>, pending: &mut Vec<PathBuf>| {
@@ -12570,19 +12597,18 @@ fn entry_reachable_extra_top_level_dirs(
                     reach(dir, reachable, pending);
                 }
             }
+            for file in &root_files {
+                if file
+                    .file_stem()
+                    .is_some_and(|stem| text_names_path_file(text, &stem.to_string_lossy()))
+                {
+                    reach(file, reachable, pending);
+                }
+            }
         };
     for text in reference_texts {
         apply(text, project_root, &mut reachable, &mut pending_dirs);
     }
-    let is_reference_source = |path: &Path| {
-        raw_source_extension(path)
-            || path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case("css") || extension.eq_ignore_ascii_case("mdx")
-                })
-    };
     let mut scanned = BTreeSet::new();
     let mut scan_tree =
         |root: &Path, reachable: &mut BTreeSet<PathBuf>, pending: &mut Vec<PathBuf>| {
@@ -12592,7 +12618,7 @@ fn entry_reachable_extra_top_level_dirs(
                 .filter_entry(|entry| !is_pruned_infra_dir(entry))
                 .filter_map(std::result::Result::ok)
             {
-                if reachable.len() == extra_dirs.len() {
+                if extra_dirs.iter().all(|dir| reachable.contains(dir)) {
                     return;
                 }
                 let path = entry.path();
@@ -12620,6 +12646,7 @@ fn entry_reachable_extra_top_level_dirs(
     while let Some(dir) = pending_dirs.pop() {
         scan_tree(&dir, &mut reachable, &mut pending_dirs);
     }
+    reachable.retain(|path| extra_dirs.contains(path));
     reachable
 }
 
@@ -12631,6 +12658,16 @@ fn path_segment_has_glob(segment: &str) -> bool {
 /// by a separator, quote, `(` or an alias sigil, and followed by a separator
 /// or a closing quote/paren. A prose mention of the word does not match.
 fn text_names_path_segment(text: &str, name: &str) -> bool {
+    text_names_path(text, name, false)
+}
+
+/// [`text_names_path_segment`] for a root loose file's stem, which an import
+/// may also spell with an extension (`./site.config.js` for `site.config.ts`).
+fn text_names_path_file(text: &str, stem: &str) -> bool {
+    text_names_path(text, stem, true)
+}
+
+fn text_names_path(text: &str, name: &str, allow_extension: bool) -> bool {
     let bytes = text.as_bytes();
     let mut start = 0;
     while let Some(offset) = text[start..].find(name) {
@@ -12640,7 +12677,8 @@ fn text_names_path_segment(text: &str, name: &str) -> bool {
         if matches!(
             before,
             Some(b'/' | b'\\' | b'\'' | b'"' | b'`' | b'(' | b'@' | b'~' | b'#' | b':')
-        ) && matches!(after, Some(b'/' | b'\\' | b'\'' | b'"' | b'`' | b')'))
+        ) && (matches!(after, Some(b'/' | b'\\' | b'\'' | b'"' | b'`' | b')'))
+            || (allow_extension && after == Some(b'.')))
         {
             return true;
         }
@@ -12651,7 +12689,9 @@ fn text_names_path_segment(text: &str, name: &str) -> bool {
 
 /// The pattern literals esbuild expands to every matching file: each string
 /// argument of `import.meta.glob(...)`, and a template literal passed to
-/// `import(`/`require(`, with `${...}` read as `*`.
+/// `import(`/`require(`, with `${...}` read as `*`. A quoted literal followed
+/// by `+` (`import('../' + name + '/meta.ts')`, which esbuild expands as
+/// `../*/meta.ts`) leaves its tail open, so it reads as `<literal>**`.
 fn expanding_import_literals(text: &str) -> Vec<String> {
     let mut literals = Vec::new();
     for (at, call) in text.match_indices("import.meta.glob") {
@@ -12665,6 +12705,15 @@ fn expanding_import_literals(text: &str) -> Vec<String> {
             let rest = text[at + call.len()..].trim_start();
             if rest.starts_with('`') {
                 literals.extend(call_argument_literals(rest, 1));
+            } else if let Some(quote) = rest.chars().next().filter(|ch| matches!(ch, '\'' | '"')) {
+                let body = &rest[1..];
+                if let Some(end) = body.find([quote, '\n']) {
+                    if body[end..].starts_with(quote)
+                        && body[end + 1..].trim_start().starts_with('+')
+                    {
+                        literals.push(format!("{}**", &body[..end]));
+                    }
+                }
             }
         }
     }
@@ -13050,16 +13099,19 @@ fn extend_node_modules_dependency_staging(
                 } else {
                     continue;
                 };
-            let workspace_package = source_dependency.canonicalize().is_ok_and(|canonical| {
-                canonical_workspace_package_logical_path(&canonical, project_root).is_some()
-            });
-            if staging_ineligible && !workspace_package {
-                continue;
-            }
             let pnpm_store_root = allow_pnpm_owner_staging
                 && source_dependency
                     .canonicalize()
                     .is_ok_and(|path| path.components().any(|part| part.as_os_str() == ".pnpm"));
+            // Looked up only where its answer can change the outcome below.
+            let workspace_package = (staging_ineligible
+                || (bundle_exclude.is_empty() && !pnpm_store_root))
+                && source_dependency.canonicalize().is_ok_and(|canonical| {
+                    canonical_workspace_package_logical_path(&canonical, project_root).is_some()
+                });
+            if staging_ineligible && !workspace_package {
+                continue;
+            }
             if bundle_exclude.is_empty() && !pnpm_store_root && !workspace_package {
                 deferred_live_dependencies.push((
                     logical_importer.to_path_buf(),
@@ -16268,6 +16320,71 @@ mod tests {
             !text_names_path_segment(&manifest, "scripts")
                 && !text_names_path_segment(&manifest, "tests"),
             "the manifest's scripts key and commands name no import: {manifest}"
+        );
+    }
+
+    /// #4353 review: root loose files and concatenated dynamic imports.
+    #[test]
+    fn entry_reachable_extra_dirs_follow_root_loose_files_and_concatenation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let dir = |name: &str| project.join(name);
+        let extra = ["lib", "scripts", "tests"].map(dir);
+        let pages = [project.join("pages")];
+        scan_cache_write(&project.join("site.config.ts"), "import './lib/format';\n");
+        scan_cache_write(&project.join("lib/format.ts"), "import 'store-pkg';\n");
+        scan_cache_write(
+            &project.join("vitest.config.ts"),
+            "export default { test: { include: ['tests/**'], setupFiles: ['./scripts/setup.ts'] } };\n",
+        );
+        let reach = |page: &str, alias_targets: &[PathBuf]| {
+            scan_cache_write(&project.join("pages/index.tsx"), page);
+            entry_reachable_extra_top_level_dirs(&project, &extra, &pages, alias_targets, &[])
+        };
+
+        assert_eq!(
+            reach(
+                "import config from '@/site.config';\n",
+                &[project.join("*")]
+            ),
+            BTreeSet::from([dir("lib")]),
+            "a wildcard root alias reaches the root file, which reaches lib/; \
+             the unimported vitest.config.ts is never scanned"
+        );
+        assert_eq!(
+            reach("import config from '../site.config.js';\n", &[]),
+            BTreeSet::from([dir("lib")]),
+            "a relative import of a root file, spelled with any extension"
+        );
+        assert_eq!(
+            reach(
+                "import config from 'config';\n",
+                &[project.join("site.config")]
+            ),
+            BTreeSet::from([dir("lib")]),
+            "an exact alias target naming a root file"
+        );
+        assert_eq!(
+            reach("export default function Index() { return null; }\n", &[]),
+            BTreeSet::new(),
+            "no import of the root file reaches nothing"
+        );
+
+        assert_eq!(
+            reach(
+                "const load = (name) => import('../' + name + '/meta.ts');\n",
+                &[]
+            ),
+            BTreeSet::from(extra.clone()),
+            "a concatenated import with an open top-level segment reaches every extra dir"
+        );
+        assert_eq!(
+            reach(
+                "const load = (name) => require(\"./locale/\" + name);\n",
+                &[]
+            ),
+            BTreeSet::new(),
+            "a concatenated import anchored below pages/ stays local"
         );
     }
 
