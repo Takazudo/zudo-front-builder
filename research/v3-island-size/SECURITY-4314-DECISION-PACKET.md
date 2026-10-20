@@ -8,6 +8,14 @@ This is an inventory and a set of decisions for the owner. It authorizes nothing
 - No local absolute path or operator string is published here.
 - A neutral receipt would be a new identity. It never replaces the original and never carries the original's hash.
 
+## Owner decisions (2026-10-20 20:50 UTC)
+
+- **D1 yes:** the owner attests a neutral receipt N as a new receipt.
+- **D2 yes:** the Linux `actualGzip` assertion becomes the predecessor's values plus exactly the 11 deltas.
+- **D3 no:** the operator string is not published, and N replaces it.
+
+The Mac steps are in [MAC-ATTEMPT3-4314.md](MAC-ATTEMPT3-4314.md). `main` and #4317 stay held.
+
 ## Identities (checked 2026-10-20)
 
 | Role | Value |
