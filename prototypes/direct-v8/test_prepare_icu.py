@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -41,7 +42,10 @@ class Preparation(unittest.TestCase):
     def setUp(self):
         self.room = tempfile.TemporaryDirectory()
         self.addCleanup(self.room.cleanup)
-        self.root = Path(self.room.name)
+        self.build_fixture(self.room.name)
+
+    def build_fixture(self, base):
+        self.root = Path(base).resolve()
         self.destination = self.root / "target/direct-v8-inputs/icu77/icudtl.dat"
         self.destination.parent.mkdir(parents=True)
         self.archive = self.root / "icu.crate"
@@ -65,6 +69,19 @@ class Preparation(unittest.TestCase):
 
     def test_success_preserves_exact_content_and_path(self):
         self.run_prepare()
+        self.assertEqual(self.destination.read_bytes(), DATA)
+
+    def test_symlinked_temp_root_matches_resolved_destination(self):
+        # macOS TMPDIR lives under /var -> /private/var; prepare-icu.py resolves its root, so the fixture must too.
+        physical = tempfile.TemporaryDirectory()
+        self.addCleanup(physical.cleanup)
+        links = tempfile.TemporaryDirectory()
+        self.addCleanup(links.cleanup)
+        alias = Path(links.name) / "alias"
+        alias.symlink_to(physical.name, target_is_directory=True)
+        self.build_fixture(alias)
+        self.run_prepare()
+        self.assertEqual(self.destination, Path(os.path.realpath(physical.name)) / "target/direct-v8-inputs/icu77/icudtl.dat")
         self.assertEqual(self.destination.read_bytes(), DATA)
 
     def inject_partial_write(self):
