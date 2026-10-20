@@ -9,7 +9,6 @@ use rolldown::plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookUsage, Plugin, PluginContext,
     PluginContextResolveOptions,
 };
-use rolldown_resolver::ResolveError;
 use std::borrow::Cow;
 
 #[derive(Debug)]
@@ -44,12 +43,9 @@ impl Plugin for VerbatimSpecifiers {
                 }),
             )
             .await?;
-        match resolved {
-            Ok(resolved) => Ok(Some(HookResolveIdOutput::from_resolved_id(resolved))),
-            // Leave a missing target to the ordinary pipeline's diagnostic.
-            Err(ResolveError::NotFound(_)) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        // Fail closed: no later resolver can handle the verbatim spelling,
+        // and this error names the ordinary path that was actually tried.
+        Ok(Some(HookResolveIdOutput::from_resolved_id(resolved?)))
     }
 }
 
@@ -63,6 +59,11 @@ fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> 
     let (path, suffix) = specifier
         .strip_suffix("?url")
         .map_or((specifier, ""), |path| (path, "?url"));
+    if !suffix.is_empty() && path.ends_with('\\') {
+        anyhow::bail!(
+            "Rolldown prototype cannot resolve a ?url resource on a directory: {specifier}"
+        );
+    }
     Ok(match windows_path::for_rolldown(path)? {
         Cow::Borrowed(_) => None,
         Cow::Owned(ordinary) => Some(ordinary + suffix),
@@ -97,6 +98,7 @@ mod tests {
             Some(r"C:\site\logo.svg?url")
         );
         assert!(ordinary_specifier(r"\\?\C:\site\logo.svg?raw", true).is_err());
+        assert!(ordinary_specifier(r"\\?\C:\site\?url", true).is_err());
     }
 
     #[test]
