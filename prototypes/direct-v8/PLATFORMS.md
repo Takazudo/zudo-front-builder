@@ -81,6 +81,9 @@ a small `plan` job runs and the row job reports as skipped. Each row run:
   as `release.yml` does but with the opt-in direct-v8 selection and pinned ICU
   that `release.yml` does not build, and runs `packed-consumer.py` (the cross-platform
   counterpart of the smoke script, which stays the Linux required check).
+- on Windows x64 Rolldown rows, runs `cargo test -p zfb-rolldown-prototype
+  --features native --lib`, the only tests that see Windows verbatim canonical
+  paths (log: `rolldown-prototype-lib-tests.log`).
 
 On Windows the lifecycle observer stops `zfb dev` with a real console Ctrl-C:
 `console-ctrl-c.py` runs it on a private hidden console, because Windows cannot
@@ -88,7 +91,7 @@ deliver Ctrl-C to a process group and Ctrl-Break would end `zfb dev` without
 its shutdown path.
 
 It uploads the graph rows, `row.json`, the build, lifecycle and packed
-clean-room logs, the GLIBC record and disk snapshots, kept for 14 days. The
+clean-room logs, the Rolldown prototype test log, the GLIBC record and disk snapshots, kept for 14 days. The
 runner uses the current stable Rust, so the exact toolchain of a row comes from
 its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
 Darwin rows need a Mac runner, which is not approved, and are not part of this

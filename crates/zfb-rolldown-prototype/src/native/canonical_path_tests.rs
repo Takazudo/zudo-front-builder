@@ -145,7 +145,7 @@ fn input_outside_cwd_keeps_an_absolute_key_naming_the_file() {
     assert_no_verbatim(&inputs);
     let key = inputs
         .iter()
-        .find(|key| key.ends_with("dep.js") && *key != "entry.js")
+        .find(|key| key.ends_with("dep.js"))
         .unwrap_or_else(|| panic!("no outside input in {inputs:?}"));
     assert!(Path::new(key).is_absolute(), "{key}");
     assert_eq!(fs::canonicalize(key).unwrap(), dep, "{key}");
