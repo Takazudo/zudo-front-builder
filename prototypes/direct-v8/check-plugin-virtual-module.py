@@ -71,7 +71,8 @@ def main():
             assert len(scripts) == 1, f"expected one hashed assets/client/case-*.js, found {len(scripts)}"
             assert "CASE_VIRTUAL_" in scripts[0].read_text(errors="replace"), "client script lacks the value"
             report["client_script"] = scripts[0].name
-            report["passed"] = True
+        # Only after the site directory is cleaned up, so a cleanup error is never a PASS.
+        report["passed"] = True
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
