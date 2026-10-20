@@ -8,8 +8,12 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import time
 import urllib.request
+
+WINDOWS = os.name == "nt"
+CONSOLE_CTRL_C = Path(__file__).with_name("console-ctrl-c.py")
 
 
 def digest(path):
@@ -19,6 +23,40 @@ def digest(path):
 def page(marker, *, ssr=False):
     return ("export const prerender = false;\n" if ssr else "") + (
         "export default function Page() { return <html><body>" + marker + "</body></html>; }\n")
+
+
+def spawn(command, *, cwd, stdout, stderr, env=None, interruptible=False):
+    if not WINDOWS:
+        return subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
+    if not interruptible:
+        return subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
+    # Windows has no process-group SIGINT; the helper owns a private hidden
+    # console and sends the child a real Ctrl-C there (see console-ctrl-c.py).
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = 0
+    return subprocess.Popen([sys.executable, str(CONSOLE_CTRL_C), *command], cwd=cwd, env=env,
+                            stdin=subprocess.PIPE, stdout=stdout, stderr=stderr,
+                            creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup)
+
+
+def interrupt(child):
+    if WINDOWS:
+        # A helper that already exited has passed on zfb's own exit code; keep that, not the pipe error.
+        try:
+            child.stdin.write(b"ctrl-c\n")
+            child.stdin.close()
+        except OSError:
+            pass
+    else:
+        child.send_signal(signal.SIGINT)
+
+
+def kill_tree(child):
+    if WINDOWS:
+        subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
+    else:
+        os.killpg(child.pid, signal.SIGKILL)
 
 
 def main():
@@ -40,8 +78,7 @@ def main():
             (root / "zfb.config.ts").write_text("export default { outDir: 'dist' };\n")
             (root / "pages/index.tsx").write_text(page("CLI_OLD", ssr=name == "dev"))
         with (output / "build.stdout").open("wb") as out, (output / "build.stderr").open("wb") as err:
-            child = subprocess.Popen([str(binary), "build"], cwd=output / "build",
-                                     stdout=out, stderr=err, start_new_session=True)
+            child = spawn([str(binary), "build"], cwd=output / "build", stdout=out, stderr=err)
             code = child.wait(timeout=120)
         assert code == 0, f"build exit {code}"
         assert "CLI_OLD" in (output / "build/dist/index.html").read_text(), "missing built page marker"
@@ -51,8 +88,8 @@ def main():
         stderr = output / "dev.stderr"
         env = {key: value for key, value in os.environ.items() if not key.startswith("ZFB_DEV_")}
         with stdout.open("wb") as out, stderr.open("wb") as err:
-            child = subprocess.Popen([str(binary), "dev", "--port", "0"], cwd=root, env=env,
-                                     stdout=out, stderr=err, start_new_session=True)
+            child = spawn([str(binary), "dev", "--port", "0"], cwd=root, env=env, stdout=out, stderr=err,
+                          interruptible=True)
         def logs():
             return stdout.read_text(errors="replace") + stderr.read_text(errors="replace")
         def wait_for(predicate, label, timeout=60):
@@ -108,11 +145,13 @@ def main():
         report["rows"].append({"name": "start-before-swap-continuity", "passed": True})
         assert not contains("CLI_OLD"), "stale old module survived replacement"
         report["rows"].append({"name": "same-source-path-recovery", "passed": True})
-        child.send_signal(signal.SIGINT)
+        report["shutdown_signal"] = "console CTRL_C_EVENT" if WINDOWS else "SIGINT"
+        interrupt(child)
         code = child.wait(timeout=30)
         report["shutdown_exit"] = code
         assert code == 0, f"finite dev shutdown exit {code}"
-        report["rows"].append({"name": "finite-sigint-clean-exit", "passed": True})
+        report["rows"].append({"name": "finite-console-ctrl-c-clean-exit" if WINDOWS else "finite-sigint-clean-exit",
+                               "passed": True})
         assert digest(binary) == args.sha256, "binary changed during execution"
         report["passed"] = True
     except Exception as error:
@@ -120,7 +159,7 @@ def main():
     finally:
         if child is not None and child.poll() is None:
             report["watchdog_cleanup"] = True
-            os.killpg(child.pid, signal.SIGKILL)
+            kill_tree(child)
             child.wait()
         report["observed_sha256"] = digest(binary) if binary.is_file() else None
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
