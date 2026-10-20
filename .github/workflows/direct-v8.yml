@@ -239,9 +239,9 @@ jobs:
       group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.host.name }}-${{ matrix.features }}
       cancel-in-progress: true
     runs-on: ${{ matrix.host.runner }}
-    # Provisional: the Windows leg adds a release build for the packed consumer;
-    # replace with a measured value after its first runs.
-    timeout-minutes: 90
+    # Measured at 349b112: the Windows leg took 30 min (12.5 min of it the
+    # release build for the packed consumer); about twice that.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
