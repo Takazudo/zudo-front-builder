@@ -73,14 +73,23 @@ case "$ZFB_SMOKE_PLATFORM" in
     exit 2
     ;;
 esac
-if [[ "$(uname -s)" != "$HOST_OS" || "$(uname -m)" != "$HOST_ARCH" ]]; then
-  echo "::error::ZFB_SMOKE_PLATFORM=$ZFB_SMOKE_PLATFORM needs a $HOST_OS/$HOST_ARCH host, got $(uname -s)/$(uname -m)" >&2
+# `uname -m` reports the PROCESS architecture, so under Rosetta an arm64 Mac
+# reports x86_64. On Darwin also require the machine itself to match (arm64
+# hardware answers `sysctl hw.optional.arm64` = 1), so neither platform can be
+# satisfied by a translated process.
+HOST_NATIVE_ARCH="$(uname -m)"
+if [[ "$(uname -s)" == "Darwin" && "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+  HOST_NATIVE_ARCH=arm64
+fi
+if [[ "$(uname -s)" != "$HOST_OS" || "$(uname -m)" != "$HOST_ARCH" || "$HOST_NATIVE_ARCH" != "$HOST_ARCH" ]]; then
+  echo "::error::ZFB_SMOKE_PLATFORM=$ZFB_SMOKE_PLATFORM needs a native $HOST_OS/$HOST_ARCH host, got $(uname -s)/$(uname -m) on $HOST_NATIVE_ARCH hardware (a Rosetta-translated process is not native)" >&2
   exit 2
 fi
 ZFB_SMOKE_BINARY="${!BINARY_VAR:-}"
 ZFB_SMOKE_CSS_ADDON="${!ADDON_VAR:-}"
-[[ -n "$ZFB_SMOKE_BINARY" ]] || { echo "::error::$BINARY_VAR env var is required (path to the built zfb binary)" >&2; exit 2; }
-[[ -n "$ZFB_SMOKE_CSS_ADDON" ]] || { echo "::error::$ADDON_VAR env var is required (freshly built CSS addon)" >&2; exit 2; }
+# Exit 1, as the former `: "${VAR:?}"` expansion did.
+[[ -n "$ZFB_SMOKE_BINARY" ]] || { echo "::error::$BINARY_VAR env var is required (path to the built zfb binary)" >&2; exit 1; }
+[[ -n "$ZFB_SMOKE_CSS_ADDON" ]] || { echo "::error::$ADDON_VAR env var is required (freshly built CSS addon)" >&2; exit 1; }
 PLATFORM_PKG="zfb-$ZFB_SMOKE_PLATFORM"
 
 pass() { printf '[PASS] %s\n' "$1"; }
@@ -388,19 +397,19 @@ cat >"$LINKED_PKG_WS/package.json" <<'JSON'
   "dependencies": { "@takazudo/zfb": "workspace:*" }
 }
 JSON
-cat >"$LINKED_PKG_WS/pnpm-workspace.yaml" <<YAML
+sed "s|@PLATFORM_PKG@|$PLATFORM_PKG|g" >"$LINKED_PKG_WS/pnpm-workspace.yaml" <<'YAML'
 packages:
   - "zfb"
   - "zfb-runtime"
   - "zfb-slugify"
-  - "$PLATFORM_PKG"
+  - "@PLATFORM_PKG@"
 linkWorkspacePackages: true
 minimumReleaseAge: 0
 overrides:
   "@takazudo/zfb": "workspace:*"
   "@takazudo/zfb-runtime": "workspace:*"
   "@takazudo/zfb-slugify": "workspace:*"
-  "@takazudo/$PLATFORM_PKG": "workspace:*"
+  "@takazudo/@PLATFORM_PKG@": "workspace:*"
 YAML
 (cd "$LINKED_PKG_WS" && pnpm install --prod)
 

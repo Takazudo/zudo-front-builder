@@ -59,7 +59,7 @@ case "$HOST" in
   Darwin/arm64) OTHER=linux-x64-gnu; OTHER_BIN=ZFB_LINUX_X64_BINARY; OTHER_ADDON=ZFB_LINUX_X64_CSS_ADDON ;;
   *) OTHER=darwin-arm64; OTHER_BIN=ZFB_DARWIN_ARM64_BINARY; OTHER_ADDON=ZFB_DARWIN_ARM64_CSS_ADDON ;;
 esac
-if run_script 2 "ZFB_SMOKE_PLATFORM=$OTHER needs a" \
+if run_script 2 "ZFB_SMOKE_PLATFORM=$OTHER needs a native" \
   ZFB_SMOKE_PLATFORM="$OTHER" "$OTHER_BIN=/nonexistent" "$OTHER_ADDON=/nonexistent"; then
   pass "a platform that does not match the host ($HOST) is refused with exit 2"
 else
@@ -74,12 +74,12 @@ case "$HOST" in
   *) HOSTP=; BIN=; ADDON= ;;
 esac
 if [ -n "$HOSTP" ]; then
-  if run_script 2 "$BIN env var is required" ZFB_SMOKE_PLATFORM="$HOSTP"; then
+  if run_script 1 "$BIN env var is required" ZFB_SMOKE_PLATFORM="$HOSTP"; then
     pass "$HOSTP requires $BIN"
   else
     fail "$HOSTP requires $BIN"
   fi
-  if run_script 2 "$ADDON env var is required" ZFB_SMOKE_PLATFORM="$HOSTP" "$BIN=/nonexistent"; then
+  if run_script 1 "$ADDON env var is required" ZFB_SMOKE_PLATFORM="$HOSTP" "$BIN=/nonexistent"; then
     pass "$HOSTP requires $ADDON"
   else
     fail "$HOSTP requires $ADDON"
@@ -94,11 +94,31 @@ else
 fi
 
 if [ "$HOST" = "Linux/x86_64" ]; then
-  if run_script 2 "ZFB_LINUX_X64_BINARY env var is required"; then
+  if run_script 1 "ZFB_LINUX_X64_BINARY env var is required"; then
     pass "the default platform is linux-x64-gnu with the legacy ZFB_LINUX_X64_* names"
   else
     fail "the default platform is linux-x64-gnu with the legacy ZFB_LINUX_X64_* names"
   fi
+fi
+
+# Rosetta: an x86_64 process on arm64 hardware must not satisfy darwin-x64
+# (uname/sysctl are stubbed, so this runs on any host).
+STUBS=$(mktemp -d)
+trap 'rm -rf "$STUBS"' EXIT
+cat >"$STUBS/uname" <<'STUB'
+#!/bin/sh
+case "$1" in -s) echo Darwin ;; -m) echo x86_64 ;; *) echo Darwin ;; esac
+STUB
+cat >"$STUBS/sysctl" <<'STUB'
+#!/bin/sh
+echo 1
+STUB
+chmod +x "$STUBS/uname" "$STUBS/sysctl"
+if run_script 2 "a Rosetta-translated process is not native" \
+  PATH="$STUBS:$PATH" ZFB_SMOKE_PLATFORM=darwin-x64 ZFB_DARWIN_X64_BINARY=/nonexistent ZFB_DARWIN_X64_CSS_ADDON=/nonexistent; then
+  pass "darwin-x64 is refused for an x86_64 process on arm64 hardware (Rosetta)"
+else
+  fail "darwin-x64 is refused for an x86_64 process on arm64 hardware (Rosetta)"
 fi
 
 # Static pin: platform package names appear only in the comments and the

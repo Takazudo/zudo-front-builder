@@ -13,8 +13,9 @@
  *   r-a08-mismatch         1 test   zudo-react-browser: a mismatched `data-zfb-build` raises
  *                                   ZR_IDENTITY, preserves the edited DOM and leaves a healthy
  *                                   neighbouring root active
- *   registry (opt-in)      4 tests  scanner-boundary-acceptance: missing/mismatched SSR token
- *                                   rejection against a product build. Needs the artifacts the
+ *   registry (opt-in)      4 tests  scanner-boundary-acceptance: the product-build registry spec,
+ *                                   which includes missing/mismatched SSR token rejection plus
+ *                                   hydration and composition cases. Needs the artifacts the
  *                                   Rust scanner_boundary_acceptance test writes to
  *                                   target/scanner-boundary-acceptance/, so it only runs with
  *                                   ZFB_WEBKIT_TOKEN_REGISTRY=1.
@@ -28,9 +29,10 @@
  * Skip the builds when they are already current: ZFB_WEBKIT_TOKEN_SKIP_BUILD=1.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { webkit } from "@playwright/test";
 
 const ENGINE = process.env.ZFB_BROWSER_ENGINE ?? "webkit";
 const SKIP_BUILD = process.env.ZFB_WEBKIT_TOKEN_SKIP_BUILD === "1";
@@ -41,7 +43,7 @@ const targets = [
   {
     name: "sdk-persist",
     config: "tests/router-chromium/playwright.config.mjs",
-    filter: "sdk-persist",
+    filter: "sdk-persist\\.chromium\\.spec\\.mjs$",
     expected: 1,
     builds: [
       ["pnpm", ["-C", "packages/zfb-slugify", "build"]],
@@ -53,7 +55,7 @@ const targets = [
   {
     name: "r-a08-mismatch",
     config: "tests/zudo-react-browser/playwright.config.mjs",
-    filter: "r-a08-mismatch",
+    filter: "r-a08-mismatch\\.chromium\\.spec\\.mjs$",
     expected: 1,
     builds: [["node", ["tests/zudo-react-browser/build-fixture.mjs"]]],
   },
@@ -62,7 +64,7 @@ if (WITH_REGISTRY) {
   targets.push({
     name: "registry",
     config: "tests/scanner-boundary-acceptance/playwright.config.mjs",
-    filter: "registry",
+    filter: "registry\\.chromium\\.spec\\.mjs$",
     expected: 4,
     builds: [],
     requires: join(REPO_ROOT, "target", "scanner-boundary-acceptance", "acceptance.json"),
@@ -114,6 +116,13 @@ function parseJson(text, what) {
   }
 }
 
+if (ENGINE === "webkit" && !existsSync(webkit.executablePath())) {
+  console.error(
+    "WebKit is not installed for this Playwright version (run `pnpm exec playwright install webkit`); nothing was built or run.",
+  );
+  process.exit(1);
+}
+
 const results = [];
 for (const target of targets) {
   const row = {
@@ -157,16 +166,24 @@ for (const target of targets) {
 
     const outDir = mkdtempSync(join(tmpdir(), "zfb-webkit-token-"));
     const jsonPath = join(outDir, `${target.name}.json`);
-    const ran = playwright(target, ["--reporter=json,list"], {
-      PLAYWRIGHT_JSON_OUTPUT_NAME: jsonPath,
-    });
-    process.stdout.write(ran.stdout);
-    process.stderr.write(ran.stderr);
-    if (!existsSync(jsonPath)) throw new Error(`no JSON report written (exit ${ran.status})`);
-    const report = parseJson(readFileSync(jsonPath, "utf8"), "run report");
+    let report;
+    let ran;
+    try {
+      ran = playwright(target, ["--reporter=json,list"], {
+        PLAYWRIGHT_JSON_OUTPUT_NAME: jsonPath,
+      });
+      process.stdout.write(ran.stdout);
+      process.stderr.write(ran.stderr);
+      if (!existsSync(jsonPath)) throw new Error(`no JSON report written (exit ${ran.status})`);
+      report = parseJson(readFileSync(jsonPath, "utf8"), "run report");
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
     const tests = collectTests(report.suites);
     for (const { test } of tests) {
-      const status = test.status; // expected | unexpected | flaky | skipped
+      // expected | unexpected | flaky | skipped. `flaky` cannot occur while the run
+      // passes --retries=0; it stays counted so dropping that flag cannot hide a retry.
+      const status = test.status;
       if (status === "expected") row.passed += 1;
       else if (status === "skipped") row.skipped += 1;
       else if (status === "flaky") row.flaky += 1;
