@@ -321,6 +321,14 @@ jobs:
             --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
             --output "$ROW_DIR/packed"
 
+      # #4343 regression: a plugin virtual module through the shipping-recipe
+      # binary built above, where the shadow directory is a \\?\ verbatim path.
+      - name: Plugin virtual module build (Windows x64, release recipe)
+        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
+        run: |
+          "$PY" prototypes/direct-v8/check-plugin-virtual-module.py \
+            --binary "target/$TARGET/release/zfb.exe" --output "$ROW_DIR/plugin-virtual-module"
+
       - name: Summary
         if: always()
         run: |
@@ -347,6 +355,13 @@ jobs:
           PY
             elif [ "$PACKED_OUTCOME" != skipped ]; then
               echo "packed consumer: no report ($PACKED_OUTCOME)"
+            fi
+            if [ -f "$ROW_DIR/plugin-virtual-module/report.json" ]; then
+              "$PY" - "$ROW_DIR/plugin-virtual-module/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("plugin virtual module (#4343):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          PY
             fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
