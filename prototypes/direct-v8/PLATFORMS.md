@@ -78,8 +78,15 @@ Any failing row turns that step red.
 | `build-missing-export-rejected` | negative control: a missing export fails the build with a missing-export diagnostic naming it |
 | `dev-ssr-request` | `zfb dev` renders a `prerender = false` page afresh for each request and serves the MDX and Wasm routes, then exits 0 on Ctrl-C/SIGINT |
 
-These rows are pending their first CI run on each host and variant; until then
-they are NOT RUN. Still not covered by any actual-CLI case: plugin virtual
+First run at `060cd31` (run 39409736005 default, 39409734870 Rolldown):
+
+| Host | Default bundler | Rolldown (`--rolldown`) |
+| --- | --- | --- |
+| Linux x86_64 | 9/9 PASS (`zfb` `da781dd7…`) | 9/9 PASS (`d5445603…`) |
+| Linux arm64 | 9/9 PASS (`1ddeece7…`) | 9/9 PASS (`2d1bd5aa…`) |
+| Windows x64 | 9/9 PASS (`zfb.exe` `c8f6ea05…`) | 0/9: every build stops on the `\\?\` verbatim path, in the islands entry's import (`UNRESOLVED_IMPORT '\\?\C:\…\components\counter.tsx'`) as well as the SSR entry (`UNRESOLVED_ENTRY //?/C:/…/entry.mjs`); so the missing-export control never reaches its diagnostic and the dev server serves only its 404 page |
+
+Darwin is NOT RUN. Still not covered by any actual-CLI case: plugin virtual
 modules, client scripts outside islands, browser hydration (the rows read built
 files; the Chromium check runs only on frozen esbuild output via
 `check-generated.py`), source-map positions, and a packed consumer with
