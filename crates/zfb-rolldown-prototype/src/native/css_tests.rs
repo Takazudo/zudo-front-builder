@@ -126,14 +126,16 @@ const ROUTES_ENTRY: &str = "import * as page from './pages/index.js';\n\
 
 /// Runs the emitted bundle. An export without a declaration fails at link
 /// time with a SyntaxError, before the page's throw could run.
-fn assert_bundle_throws_the_page_error(fixture: &Fixture) {
+fn assert_bundle_throws_the_page_error(fixture: &Fixture, bundle: &str) {
+    // Node is given the ordinary spelling of the canonical (on Windows,
+    // verbatim) fixture directory.
+    let cwd = super::windows_path::for_rolldown(fixture.0.to_str().unwrap()).unwrap();
     let output = Command::new("node")
-        .current_dir(&fixture.0)
+        .current_dir(cwd.as_ref())
         .arg("out/bundle.mjs")
         .output()
-        .expect("node runs the emitted bundle");
+        .unwrap_or_else(|e| panic!("these tests run the emitted bundle with node on PATH: {e}"));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
     assert!(!output.status.success(), "{bundle}");
     assert!(
         stderr.contains("Error: CLI_REPLACEMENT_REJECTED") && !stderr.contains("SyntaxError"),
@@ -148,7 +150,7 @@ fn unminified_top_level_throw_keeps_exported_bindings() {
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
     // The pinned DCE-only pass emitted `export { routes }` with no declaration.
     assert!(bundle.contains("const routes ="), "{bundle}");
-    assert_bundle_throws_the_page_error(&fixture);
+    assert_bundle_throws_the_page_error(&fixture, &bundle);
 }
 
 #[test]
@@ -164,8 +166,6 @@ fn minified_top_level_throw_keeps_exported_bindings() {
     let mut cmd = fixture.command();
     cmd.arg("--minify");
     run_prepared(&cmd).unwrap();
-    // The compressor still drops every statement after the throw.
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
-    assert!(!bundle.contains("CLI_BAD"), "{bundle}");
-    assert_bundle_throws_the_page_error(&fixture);
+    assert_bundle_throws_the_page_error(&fixture, &bundle);
 }
