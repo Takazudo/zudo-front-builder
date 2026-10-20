@@ -62,44 +62,46 @@ impl Plugin for VerbatimSpecifiers {
 }
 
 /// A tsconfig target in the ordinary spelling, so the trailing-directory
-/// probes see real components and ids without `\\?\`. A target that cannot be
-/// rewritten is kept as is and fails closed if it is ever resolved.
-pub(super) fn ordinary_target(target: PathBuf, windows: bool) -> PathBuf {
+/// probes see real components and ids without `\\?\`. A verbatim target that
+/// cannot be rewritten fails closed, like a verbatim specifier.
+pub(super) fn ordinary_target(target: PathBuf, windows: bool) -> Result<PathBuf> {
     let Some(text) = target.to_str() else {
-        return target;
+        return Ok(target);
     };
-    if !windows || !text.starts_with(r"\\?\") {
-        return target;
-    }
-    match windows_path::for_rolldown(&text.replace('/', "\\")) {
-        Ok(Cow::Owned(ordinary)) => PathBuf::from(ordinary),
-        _ => target,
-    }
+    Ok(ordinary_path(text, windows)?.map_or(target, PathBuf::from))
 }
 
 /// The ordinary spelling Rolldown should resolve, or `None` to leave the
 /// specifier to the other resolvers. Elsewhere `\\?\` is an ordinary name.
 fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> {
-    if !windows || !specifier.starts_with(r"\\?\") {
-        return Ok(None);
-    }
-    // A tsconfig wildcard substitutes the import's subpath with `/`, which
-    // separates components once the prefix is gone; inside the verbatim
-    // spelling it would be a literal name character instead.
-    let specifier = specifier.replace('/', "\\");
     // ZFB's resource contract permits exactly one terminal `?url` suffix.
     let (path, suffix) = specifier
         .strip_suffix("?url")
-        .map_or((specifier.as_str(), ""), |path| (path, "?url"));
-    if !suffix.is_empty() && path.ends_with('\\') {
+        .map_or((specifier, ""), |path| (path, "?url"));
+    let Some(ordinary) = ordinary_path(path, windows)? else {
+        return Ok(None);
+    };
+    if !suffix.is_empty() && ordinary.ends_with('\\') {
         anyhow::bail!(
             "Rolldown prototype cannot resolve a ?url resource on a directory: {specifier}"
         );
     }
-    Ok(match windows_path::for_rolldown(path)? {
-        Cow::Borrowed(_) => None,
-        Cow::Owned(ordinary) => Some(ordinary + suffix),
-    })
+    Ok(Some(ordinary + suffix))
+}
+
+fn ordinary_path(path: &str, windows: bool) -> Result<Option<String>> {
+    if !windows || !path.starts_with(r"\\?\") {
+        return Ok(None);
+    }
+    // A tsconfig wildcard substitutes the import's subpath with `/`, and ZFB
+    // may re-append a trailing `/`; both separate components once the prefix
+    // is gone, while inside the verbatim spelling they are name characters.
+    Ok(
+        match windows_path::for_rolldown(&path.replace('/', "\\"))? {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(ordinary) => Some(ordinary),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -109,7 +111,7 @@ mod tests {
 
     #[test]
     fn trailing_tsconfig_targets_keep_their_separator_in_the_ordinary_spelling() {
-        let target = |value: &str| ordinary_target(PathBuf::from(value), true);
+        let target = |value: &str| ordinary_target(PathBuf::from(value), true).unwrap();
         assert_eq!(
             target(r"\\?\C:\shadow\choice\"),
             PathBuf::from(r"C:\shadow\choice\")
@@ -123,13 +125,19 @@ mod tests {
             target(r"\\?\C:\shadow\src\a/b"),
             PathBuf::from(r"C:\shadow\src\a\b")
         );
-        // Unrewritable or ordinary targets, and other hosts, are untouched.
-        for kept in [r"\\?\C:\shadow\NUL\", r"C:\shadow\choice\", "/tmp/choice/"] {
+        // Ordinary targets and other hosts are untouched.
+        for kept in [r"C:\shadow\choice\", "/tmp/choice/"] {
             assert_eq!(target(kept), PathBuf::from(kept));
         }
         assert_eq!(
-            ordinary_target(PathBuf::from(r"\\?\C:\shadow\choice\"), false),
+            ordinary_target(PathBuf::from(r"\\?\C:\shadow\choice\"), false).unwrap(),
             PathBuf::from(r"\\?\C:\shadow\choice\")
+        );
+        // A verbatim target that cannot be rewritten fails closed.
+        let error = ordinary_target(PathBuf::from(r"\\?\C:\shadow\NUL\"), true).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("reserved device name"),
+            "{error:#}"
         );
     }
 

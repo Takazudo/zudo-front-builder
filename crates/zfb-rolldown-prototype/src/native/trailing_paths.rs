@@ -64,11 +64,11 @@ impl Plugin for TrailingPaths {
         if !config.references.is_empty() {
             return Ok(None);
         }
-        let targets: Vec<_> = config
+        let targets = config
             .resolve_path_alias_or_base_url(args.specifier)
             .into_iter()
             .map(|target| super::verbatim_specifiers::ordinary_target(target, cfg!(windows)))
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         if !targets.iter().any(|path| trailing_separator(path)) {
             return Ok(None);
         }
