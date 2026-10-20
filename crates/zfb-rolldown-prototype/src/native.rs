@@ -3,6 +3,7 @@ mod copy_reference;
 mod css_tests;
 mod prepared;
 mod trailing_paths;
+mod windows_path;
 use anyhow::{bail, Context, Result};
 use prepared::Request;
 use rolldown::plugin::{
