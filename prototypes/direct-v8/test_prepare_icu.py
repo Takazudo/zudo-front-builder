@@ -5,7 +5,6 @@ import contextlib
 import hashlib
 import importlib.util
 import io
-import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -66,6 +65,7 @@ class Preparation(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             icu.main()
         self.assertEqual(output.getvalue().strip(), str(self.destination))
+        return output.getvalue().strip()
 
     def test_success_preserves_exact_content_and_path(self):
         self.run_prepare()
@@ -78,11 +78,16 @@ class Preparation(unittest.TestCase):
         links = tempfile.TemporaryDirectory()
         self.addCleanup(links.cleanup)
         alias = Path(links.name) / "alias"
-        alias.symlink_to(physical.name, target_is_directory=True)
+        try:
+            alias.symlink_to(physical.name, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        self.stack.close()
         self.build_fixture(alias)
-        self.run_prepare()
-        self.assertEqual(self.destination, Path(os.path.realpath(physical.name)) / "target/direct-v8-inputs/icu77/icudtl.dat")
-        self.assertEqual(self.destination.read_bytes(), DATA)
+        printed = self.run_prepare()
+        expected = Path(physical.name).resolve() / "target/direct-v8-inputs/icu77/icudtl.dat"
+        self.assertEqual(printed, str(expected))
+        self.assertEqual(expected.read_bytes(), DATA)
 
     def inject_partial_write(self):
         original = io.open
