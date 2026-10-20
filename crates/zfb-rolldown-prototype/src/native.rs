@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod canonical_path_tests;
 mod copy_reference;
 #[cfg(test)]
 mod css_tests;
