@@ -83,6 +83,7 @@ impl Plugin for TrailingPaths {
         // Preserve the selected exact/wildcard mapping's complete target order:
         // an ordinary target before a trailing target must still win.
         for target in targets {
+            let target = super::verbatim_specifiers::ordinary_target(target)?;
             if trailing_separator(&target) {
                 // esbuild's Dir/Base split probes dir/basename as a FILE before
                 // package main/index. A normal resolve of dir/basename could

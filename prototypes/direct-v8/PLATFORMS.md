@@ -91,7 +91,8 @@ deliver Ctrl-C to a process group and Ctrl-Break would end `zfb dev` without
 its shutdown path.
 
 It uploads the graph rows, `row.json`, the build, lifecycle and packed
-clean-room logs, the Rolldown prototype test log, the GLIBC record and disk snapshots, kept for 14 days. The
+clean-room logs, the Rolldown prototype test log, the GLIBC record and disk
+snapshots, kept for 14 days. The
 runner uses the current stable Rust, so the exact toolchain of a row comes from
 its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
 Darwin rows need a Mac runner, which is not approved, and are not part of this

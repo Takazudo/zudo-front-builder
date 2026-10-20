@@ -4,12 +4,12 @@
 //! reports as `UNRESOLVED_IMPORT` (#4336 ZFB-L2-006, run 39409734870). Resolve
 //! the ordinary spelling instead, under the same fail-closed rules as argv.
 use super::windows_path;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rolldown::plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookUsage, Plugin, PluginContext,
     PluginContextResolveOptions,
 };
-use std::borrow::Cow;
+use std::{borrow::Cow, path::PathBuf};
 
 #[derive(Debug)]
 pub(super) struct VerbatimSpecifiers;
@@ -43,10 +43,25 @@ impl Plugin for VerbatimSpecifiers {
                 }),
             )
             .await?;
-        // Fail closed: no later resolver can handle the verbatim spelling,
-        // and this error names the ordinary path that was actually tried.
-        Ok(Some(HookResolveIdOutput::from_resolved_id(resolved?)))
+        // Fail closed: no later resolver can handle the verbatim spelling.
+        let resolved = resolved.with_context(|| {
+            format!(
+                "resolve {ordinary} (rewritten from {}) imported by {}",
+                args.specifier,
+                args.importer.unwrap_or("<entry>")
+            )
+        })?;
+        Ok(Some(HookResolveIdOutput::from_resolved_id(resolved)))
     }
+}
+
+/// A tsconfig `paths` target in the ordinary spelling, so the ordered target
+/// fallback re-resolves it as an ordinary path and can still try the next one.
+pub(super) fn ordinary_target(target: PathBuf) -> Result<PathBuf> {
+    let Some(text) = target.to_str() else {
+        return Ok(target);
+    };
+    Ok(ordinary_specifier(text, cfg!(windows))?.map_or(target, PathBuf::from))
 }
 
 /// The ordinary spelling Rolldown should resolve, or `None` to leave the
