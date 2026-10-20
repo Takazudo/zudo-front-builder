@@ -106,17 +106,11 @@ fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
 }
 
 /// The lifecycle observer's failed-replacement page: an unconditional
-/// top-level throw in a module whose namespace the entry exports.
-fn top_level_throw_fixture() -> Fixture {
+/// top-level throw in a module whose namespace `entry` exports.
+fn top_level_throw_fixture(entry: &str) -> Fixture {
     let fixture = Fixture::new();
     fs::create_dir(fixture.0.join("pages")).unwrap();
-    fs::write(
-        fixture.0.join("entry.js"),
-        "import * as page from './pages/index.js';\n\
-         export const routes = { '/': page };\n\
-         export default { fetch() { return routes; } };\n",
-    )
-    .unwrap();
+    fs::write(fixture.0.join("entry.js"), entry).unwrap();
     fs::write(
         fixture.0.join("pages/index.js"),
         "throw new Error('CLI_REPLACEMENT_REJECTED');\n\
@@ -126,53 +120,52 @@ fn top_level_throw_fixture() -> Fixture {
     fixture
 }
 
+const ROUTES_ENTRY: &str = "import * as page from './pages/index.js';\n\
+     export const routes = { '/': page };\n\
+     export default { fetch() { return routes; } };\n";
+
+/// Runs the emitted bundle. An export without a declaration fails at link
+/// time with a SyntaxError, before the page's throw could run.
+fn assert_bundle_throws_the_page_error(fixture: &Fixture) {
+    let output = Command::new("node")
+        .current_dir(&fixture.0)
+        .arg("out/bundle.mjs")
+        .output()
+        .expect("node runs the emitted bundle");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
+    assert!(!output.status.success(), "{bundle}");
+    assert!(
+        stderr.contains("Error: CLI_REPLACEMENT_REJECTED") && !stderr.contains("SyntaxError"),
+        "{stderr}\n{bundle}"
+    );
+}
+
 #[test]
 fn unminified_top_level_throw_keeps_exported_bindings() {
-    let fixture = top_level_throw_fixture();
+    let fixture = top_level_throw_fixture(ROUTES_ENTRY);
     run_prepared(&fixture.command()).unwrap();
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
-    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
     // The pinned DCE-only pass emitted `export { routes }` with no declaration.
     assert!(bundle.contains("const routes ="), "{bundle}");
+    assert_bundle_throws_the_page_error(&fixture);
 }
 
 #[test]
 fn minified_top_level_throw_keeps_exported_bindings() {
-    let fixture = top_level_throw_fixture();
-    fs::write(
-        fixture.0.join("entry.js"),
-        "import * as page from './pages/index.js';\n\
-         export const routes = { '/': page };\n\
+    let fixture = top_level_throw_fixture(&format!(
+        "{ROUTES_ENTRY}\
          export let count = 1;\n\
-         export class Kept {}\n\
-         export default { fetch() { return routes; } };\n",
-    )
-    .unwrap();
+         export class Kept {{}}\n\
+         export function handler() {{ return count; }}\n\
+         export {{ shared }} from './lib.js';\n"
+    ));
+    fs::write(fixture.0.join("lib.js"), "export const shared = 2;\n").unwrap();
     let mut cmd = fixture.command();
     cmd.arg("--minify");
     run_prepared(&cmd).unwrap();
+    // The compressor still drops every statement after the throw.
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
-    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
-    // The compressor still drops everything after the throw, but every
-    // exported local must stay declared or the module fails to link.
-    let (code, exports) = bundle
-        .trim_end()
-        .split_once("export{")
-        .unwrap_or_else(|| panic!("no export clause: {bundle}"));
-    let (exports, tail) = exports.split_once('}').unwrap();
-    let declared: Vec<&str> = code
-        .split("var ")
-        .chain(tail.split("var "))
-        .skip(1)
-        .flat_map(|decl| decl.split(';').next().unwrap().split(','))
-        .map(|binding| binding.split('=').next().unwrap())
-        .collect();
-    let mut exported = Vec::new();
-    for spec in exports.split(',') {
-        let (local, name) = spec.split_once(" as ").unwrap_or((spec, spec));
-        assert!(declared.contains(&local), "{name} is undeclared: {bundle}");
-        exported.push(name);
-    }
-    exported.sort_unstable();
-    assert_eq!(exported, ["Kept", "count", "default", "routes"], "{bundle}");
+    assert!(!bundle.contains("CLI_BAD"), "{bundle}");
+    assert_bundle_throws_the_page_error(&fixture);
 }
