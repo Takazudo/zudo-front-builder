@@ -10,7 +10,7 @@ use rolldown::plugin::{
     PluginContextResolveOptions,
 };
 use rolldown_resolver::ResolveError;
-use std::borrow::Cow;
+use std::{borrow::Cow, path::PathBuf};
 
 #[derive(Debug)]
 pub(super) struct VerbatimSpecifiers;
@@ -61,6 +61,22 @@ impl Plugin for VerbatimSpecifiers {
     }
 }
 
+/// A tsconfig target in the ordinary spelling, so the trailing-directory
+/// probes see real components and ids without `\\?\`. A target that cannot be
+/// rewritten is kept as is and fails closed if it is ever resolved.
+pub(super) fn ordinary_target(target: PathBuf, windows: bool) -> PathBuf {
+    let Some(text) = target.to_str() else {
+        return target;
+    };
+    if !windows || !text.starts_with(r"\\?\") {
+        return target;
+    }
+    match windows_path::for_rolldown(&text.replace('/', "\\")) {
+        Ok(Cow::Owned(ordinary)) => PathBuf::from(ordinary),
+        _ => target,
+    }
+}
+
 /// The ordinary spelling Rolldown should resolve, or `None` to leave the
 /// specifier to the other resolvers. Elsewhere `\\?\` is an ordinary name.
 fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> {
@@ -88,7 +104,34 @@ fn ordinary_specifier(specifier: &str, windows: bool) -> Result<Option<String>> 
 
 #[cfg(test)]
 mod tests {
-    use super::ordinary_specifier;
+    use super::{ordinary_specifier, ordinary_target};
+    use std::path::PathBuf;
+
+    #[test]
+    fn trailing_tsconfig_targets_keep_their_separator_in_the_ordinary_spelling() {
+        let target = |value: &str| ordinary_target(PathBuf::from(value), true);
+        assert_eq!(
+            target(r"\\?\C:\shadow\choice\"),
+            PathBuf::from(r"C:\shadow\choice\")
+        );
+        // ZFB re-appends the original separator, which may be `/`.
+        assert_eq!(
+            target(r"\\?\C:\shadow\choice/"),
+            PathBuf::from(r"C:\shadow\choice\")
+        );
+        assert_eq!(
+            target(r"\\?\C:\shadow\src\a/b"),
+            PathBuf::from(r"C:\shadow\src\a\b")
+        );
+        // Unrewritable or ordinary targets, and other hosts, are untouched.
+        for kept in [r"\\?\C:\shadow\NUL\", r"C:\shadow\choice\", "/tmp/choice/"] {
+            assert_eq!(target(kept), PathBuf::from(kept));
+        }
+        assert_eq!(
+            ordinary_target(PathBuf::from(r"\\?\C:\shadow\choice\"), false),
+            PathBuf::from(r"\\?\C:\shadow\choice\")
+        );
+    }
 
     #[test]
     fn windows_islands_entry_import_resolves_its_ordinary_spelling() {

@@ -64,7 +64,11 @@ impl Plugin for TrailingPaths {
         if !config.references.is_empty() {
             return Ok(None);
         }
-        let targets = config.resolve_path_alias_or_base_url(args.specifier);
+        let targets: Vec<_> = config
+            .resolve_path_alias_or_base_url(args.specifier)
+            .into_iter()
+            .map(|target| super::verbatim_specifiers::ordinary_target(target, cfg!(windows)))
+            .collect();
         if !targets.iter().any(|path| trailing_separator(path)) {
             return Ok(None);
         }
@@ -210,8 +214,14 @@ mod tests {
             fs::write(path, value).unwrap();
         }
 
+        // Like ZFB's prepared tsconfig: on Windows, joining onto a verbatim
+        // root drops a trailing separator, which ZFB writes back.
         fn target(&self, path: &str) -> String {
-            self.0.join(path).to_string_lossy().into_owned()
+            let mut target = self.0.join(path).to_string_lossy().into_owned();
+            if path.ends_with('/') && !trailing_separator(Path::new(&target)) {
+                target.push('/');
+            }
+            target
         }
 
         fn config(&self, paths: Value) {
