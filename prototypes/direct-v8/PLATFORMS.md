@@ -56,9 +56,35 @@ build, per the root `CLAUDE.md`.
 `--rolldown` qualifies `direct-v8,rolldown-prototype`: it builds that selection,
 requires the binary to contain the Rolldown prototype crate (and refuses it
 otherwise), and runs the lifecycle observer with `ZFB_ROLLDOWN_PROTOTYPE=1`. That observer is a small
-build/dev smoke. The selected Rolldown coverage in #4302 (aliases and virtual
-sources, copied Wasm, source maps, Worker output, hydration/CSS, declared
-workers) still needs its own cases and stays NOT RUN.
+build/dev smoke.
+
+## CLI interoperability cases
+
+`check-cli-cases.py` runs the actual binary over `site/` and small fixtures it
+writes itself, one row per case, and records every row even when an earlier one
+fails. The CI lane runs it on every host after the row, under the default
+bundler and, on the Rolldown leg, with `--rolldown` (`ZFB_ROLLDOWN_PROTOTYPE=1`).
+Any failing row turns that step red.
+
+| Row | What it proves |
+| --- | --- |
+| `build-islands-css` | island marker, CSS module class defined in an emitted stylesheet, emitted islands script |
+| `build-mdx-content` | collection route rendered from MDX |
+| `build-wasm-ssr` | an SSR page instantiates its imported Wasm module |
+| `build-wasm-copied` | the Wasm module is copied beside `bundle.mjs`, which references it |
+| `build-source-map` | the SSR bundle's linked map names an authored page |
+| `build-tsconfig-alias` | a page import through a tsconfig `paths` alias |
+| `build-module-worker` | an island's `new URL(..., import.meta.url)` worker is emitted once and referenced with its `?v=` digest |
+| `build-missing-export-rejected` | negative control: a missing export fails the build with a missing-export diagnostic naming it |
+| `dev-ssr-request` | `zfb dev` renders a `prerender = false` page afresh for each request and serves the MDX and Wasm routes, then exits 0 on Ctrl-C/SIGINT |
+
+These rows are pending their first CI run on each host and variant; until then
+they are NOT RUN. Still not covered by any actual-CLI case: plugin virtual
+modules, client scripts outside islands, browser hydration (the rows read built
+files; the Chromium check runs only on frozen esbuild output via
+`check-generated.py`), source-map positions, and a packed consumer with
+Rolldown enabled. Failure and replacement under Rolldown are covered only by
+the lifecycle observer, which stops at the known `routes` case below.
 
 ## Opt-in CI lane
 
@@ -88,7 +114,7 @@ deliver Ctrl-C to a process group and Ctrl-Break would end `zfb dev` without
 its shutdown path.
 
 It uploads the graph rows, `row.json`, the build, lifecycle and packed
-clean-room logs, the GLIBC record and disk snapshots, kept for 14 days. The
+clean-room logs, the CLI case reports and logs, the GLIBC record and disk snapshots, kept for 14 days. The
 runner uses the current stable Rust, so the exact toolchain of a row comes from
 its `row.json`, and a CI row is evidence for that exact SHA and toolchain only.
 Darwin rows need a Mac runner, which is not approved, and are not part of this

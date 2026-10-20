@@ -139,7 +139,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           df -h / | tee "$ROW_DIR/disk-after.txt"
           if [ -f "$ROW_DIR/qualify/row.json" ]; then
-            python3 -c 'import json,sys; print("ROW_BINARY=" + json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' \
+            python3 -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
               "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
           fi
           exit "$status"
@@ -198,6 +198,16 @@ jobs:
           ZFB_LINUX_X64_BINARY="$CROSS_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
             bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
 
+      # After the packaging steps so a failing case never hides them. Every case
+      # runs and is recorded; any failing row turns the step red, on the Rolldown
+      # leg too, where a red row is that case's recorded compatibility result.
+      - name: CLI interoperability cases (actual binary)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          python3 prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
+
       - name: Summary
         if: always()
         run: |
@@ -214,8 +224,11 @@ jobs:
             else
               echo "No native row recorded."
             fi
+            if [ -f "$ROW_DIR/cases/report.json" ]; then
+              python3 prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
+            fi
             echo
-            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner), Rolldown coverage cases."
+            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner)."
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MATRIX_FEATURES: ${{ matrix.features }}
@@ -296,6 +309,10 @@ jobs:
           "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build \
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           echo "qualify-target exit $status"
+          if [ -f "$ROW_DIR/qualify/row.json" ]; then
+            "$PY" -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
+              "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
+          fi
           "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
           import json, sys
           row = json.load(open(sys.argv[1]))
@@ -320,6 +337,15 @@ jobs:
           "$PY" prototypes/direct-v8/packed-consumer.py --carrier win32-x64-msvc \
             --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
             --output "$ROW_DIR/packed"
+
+      # Every case runs and is recorded; any failing row turns the step red, on
+      # the Rolldown leg too, where a red row is that case's compatibility result.
+      - name: CLI interoperability cases (actual binary)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          "$PY" prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
 
       - name: Summary
         if: always()
@@ -347,6 +373,9 @@ jobs:
           PY
             elif [ "$PACKED_OUTCOME" != skipped ]; then
               echo "packed consumer: no report ($PACKED_OUTCOME)"
+            fi
+            if [ -f "$ROW_DIR/cases/report.json" ]; then
+              "$PY" prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
