@@ -3,7 +3,7 @@
   "measured": {
     "root": {
       "finalWasm": 3423411,
-      "gzip9": 1536073,
+      "gzip9": 1536072,
       "glue": 14998,
       "glueGzip9": 4199
     },
