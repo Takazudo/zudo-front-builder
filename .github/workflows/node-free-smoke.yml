@@ -148,12 +148,12 @@ on:
     types: [completed]
 
 jobs:
-  # Docs-only PR detector (#4372), sharing .github/path-filters/docs-only.yml
-  # with health.yml and docs-checks.yml. pull_request only: on every other
-  # event it is skipped, its output is empty, and everything runs.
+  # Docs-only PR detector (#4372), sharing .github/path-filters/ with
+  # health.yml and docs-checks.yml. It runs on every event and reports
+  # docs_only=false off pull_request: a skipped ancestor would make the
+  # implicit success() of showcase-deploy skip the production deploy.
   changes:
     name: changed-files (docs-only)
-    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Job-level `permissions:` REPLACES the workflow default, so contents:read
@@ -221,7 +221,7 @@ jobs:
     # name and branch-protection rulesets couldn't require them independently.
     name: Build binary (${{ matrix.platform.target }})
     # Only run on PR and main push triggers, not on workflow_run.
-    # `!cancelled()` lets it run when `changes` is skipped (push) or failed.
+    # `!cancelled()` lets it run when the `changes` detector failed.
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
     # Docs-only PRs (#4372) keep this matrix job running with every step
@@ -423,7 +423,7 @@ jobs:
     name: Smoke amd64 (local mode)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
@@ -463,7 +463,7 @@ jobs:
     name: Smoke amd64 Amazon Linux 2023 (glibc 2.34 floor)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -525,7 +525,7 @@ jobs:
     name: Scaffold E2E (packed tarballs, pre-publish)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1008,7 +1008,7 @@ jobs:
     name: Built-site browser smoke (L4)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Budgeted the same as router-chromium.yml: the suite itself is a single
@@ -1090,7 +1090,7 @@ jobs:
     name: Smoke arm64 (local mode)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 6
@@ -1119,7 +1119,7 @@ jobs:
     name: Smoke amd64 TS-config (local mode)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
@@ -1148,7 +1148,7 @@ jobs:
     name: Smoke arm64 TS-config (local mode)
     needs: [build-binary, changes]
     # Skipped (read as success by required checks) only for a docs-only PR
-    # (#4372); a failed or skipped detector leaves docs_only empty, so it runs.
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 6

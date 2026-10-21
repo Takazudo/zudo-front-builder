@@ -120,6 +120,9 @@ describe("health.yml docs-only skip", () => {
 
 describe("node-free-smoke.yml docs-only skip", () => {
   it("keeps the matrix build job running so per-target contexts still report", () => {
+    // The detector runs on every event: a skipped ancestor would make
+    // showcase-deploy's implicit success() skip the production deploy.
+    expect(smoke.jobs.changes.if).toBeUndefined();
     const job = smoke.jobs["build-binary"];
     expect(job.needs).toBe("changes");
     expect(bareIf(job)).toMatch(/^!cancelled\(\) && /);
@@ -174,6 +177,21 @@ describe("docs-checks.yml docs-only lane", () => {
       expect(healthRuns).toContain(command);
     }
     for (const run of laneRuns) expect(healthRuns).toContain(run);
+
+    // The other direction: every non-Rust command health runs before its
+    // native build is the JS/format subset, so the lane must carry it too.
+    const healthSteps = health.jobs.health.steps;
+    const nativeBuild = healthSteps.findIndex((step) => step.id === "build_binary");
+    expect(nativeBuild).toBeGreaterThan(0);
+    const healthJsSubset = healthSteps
+      .slice(0, nativeBuild)
+      .filter((step) => step.run && !/\bcargo\b/.test(step.run))
+      // Runner disk cleanup for the V8 build, not a check.
+      .filter((step) => !step.name?.startsWith("Free disk space for V8 build"))
+      .filter((step) => step.id !== "native_prerequisites")
+      .map((step) => step.run);
+    expect(healthJsSubset.length).toBeGreaterThan(5);
+    for (const run of healthJsSubset) expect(laneRuns).toContain(run);
 
     const gate = docsChecks.jobs["docs-gate"];
     expect(gate.needs).toContain("docs-only-checks");
