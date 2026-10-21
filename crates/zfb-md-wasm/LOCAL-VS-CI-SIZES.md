@@ -87,7 +87,13 @@ over-ceiling manifest: it reports a `manifest-over-ceiling` finding and
 writes nothing. It only ever syncs doc tables from a `shipped-sizes.json`
 that is already within its ceilings.
 
-### Ceiling decision: `render-only` stays at 1,100,000 B
+### Ceiling decision: `render-only` raised to 1,125,000 B (#4268)
+
+Adopting noyalib 0.0.58 (#4268) grew CI's `render-only` gzip-9 by about
+15.9 KB, past the old 1,100,000 B ceiling. The owner chose to adopt it on
+2026-10-21, so the ceiling moved to 1,125,000 B to fit that real,
+intentional change measured on CI. The history below explains why it was
+held at 1,100,000 B before that.
 
 The current CI headroom, computed from `shipped-sizes.json`'s committed
 `2.15.0` row: `1,100,000 − 1,091,678 = 8,322 B`. Raising the ceiling to fit

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "noyalib-4268",
+  "sourceSha": "84dc4a842bee059af334a02bfd453d2ce2c74871",
+  "oldSha": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
+  "newSha": "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
+  "added": ["noyalib-serde-yaml@0.0.58", "noyalib@0.0.58"],
+  "changed": [],
+  "removed": ["noyalib-serde-yaml@0.0.55", "noyalib@0.0.55"],
+  "decision": "Owner chose to adopt the exact noyalib / noyalib-serde-yaml 0.0.58 pair on 2026-10-21 (#4268), accepting its WASM size growth and frontmatter slowdown; version and checksum only, no incidental Windows edge changes or other dependency updates. Structural authorization only; no live contract application.",
+  "nativeMeasurement": "required-separately-for-each-platform"
+}
