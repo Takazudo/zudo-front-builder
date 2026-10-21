@@ -1,5 +1,11 @@
 # Live activation checklist and next runtime milestone
 
+> Phase 2 status: the nondefault actual CLI integration is implemented on
+> `feat/4301-direct-v8-cli`; see [CLI.md](CLI.md) for selection, ownership and
+> current verification status. The phase-1 observations below remain historical
+> and source-bound; an old hold is neither a current implementation claim nor
+> proof of phase-2 acceptance.
+
 This checklist tracks the prepared `cargo-internal-rewire` transition for
 [#4258](https://github.com/Takazudo/zudo-front-builder/issues/4258). It is an
 execution procedure for a later authorized activation, not authorization to

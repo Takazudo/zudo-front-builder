@@ -4009,3 +4009,204 @@ describe("local rustls security evidence with separate tooling", () => {
     expect(staged.baselineEvidence.stagingTool.commit).toBe(toolSha);
   });
 });
+
+describe("local provenance re-pin evidence with separate tooling", () => {
+  const CONTRACT = "research/v3-island-size/decision.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const PREVIOUS_VERSION = "9.9.8";
+  const localRoots = [];
+  const argv = (values) =>
+    Object.entries(values)
+      .filter(([, v]) => v !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  afterEach(() => {
+    for (const root of localRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+  function setup(reason, tweak = () => {}, changeContract = () => {}) {
+    let pinned;
+    const repo = makeGitCheckout(localRoots, {
+      prepare(checkout) {
+        const artifact = makeArtifact({ version: checkout.version });
+        pinned = previousSchema2(artifact);
+        Object.assign(pinned, {
+          schemaVersion: 3,
+          dependencyFingerprint: checkout.dependencyFingerprint,
+          fixtureSha256: checkout.fixtureSha256,
+          runnerSha256: checkout.runnerSha256,
+        });
+        Object.assign(pinned.toolchain, {
+          packageVersion: PREVIOUS_VERSION,
+          pnpmLockSha256: checkout.pnpmLockSha256,
+          cargoLockSha256: checkout.cargoLockSha256,
+        });
+        changeContract(pinned);
+        write(checkout.root, CONTRACT, JSON.stringify(pinned));
+      },
+    });
+    const source = repo.git("rev-parse", "HEAD").trim();
+    const tools = makeGitCheckout(localRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const artifact = realpathSync(
+      makeArtifact({
+        version: repo.version,
+        tweak(p, mode) {
+          Object.assign(p, {
+            sourceSha: source,
+            fixtureSha256: repo.fixtureSha256,
+            runnerSha256: repo.runnerSha256,
+            pnpmLockSha256: repo.pnpmLockSha256,
+            cargoLockSha256: repo.cargoLockSha256,
+            dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
+          });
+          tweak(p, mode);
+        },
+      }),
+    );
+    const runner = join(artifact, "runner-provenance.txt");
+    writeFileSync(runner, readFileSync(runner, "utf8").replace(SOURCE_SHA, source));
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "zfb-repin-receipt-")));
+    localRoots.push(outside);
+    const receiptPath = join(outside, "receipt.json");
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "local-native-darwin",
+        operator: "synthetic owner",
+        collectedAt: "2026-01-01T00:00:00.000Z",
+        source: { commit: source, clean: true },
+        platform: { os: "darwin", arch: "arm64" },
+        commands: [["synthetic-collector", "--two-passes"]],
+        bundle: { location: "synthetic retained bytes", sha256: localBundleDigest(artifact) },
+      }),
+    );
+    const values = {
+      artifact,
+      "source-root": repo.root,
+      "source-sha": source,
+      "tool-sha": toolSha,
+      "local-receipt": receiptPath,
+      "local-receipt-sha": sha(readFileSync(receiptPath)),
+      reason,
+      stage: join(outside, "stage"),
+      "previous-contract-ref": source,
+    };
+    const before = Object.fromEntries(
+      [CONTRACT, TEST, README].map((f) => [f, readFileSync(join(repo.root, f))]),
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const run = (extra = {}) => main(argv({ ...values, ...extra }), ".", undefined, tools.root);
+    const unchanged = () => {
+      for (const [f, b] of Object.entries(before))
+        expect(readFileSync(join(repo.root, f))).toEqual(b);
+    };
+    return { repo, tools, source, toolSha, pinned, values, receiptPath, artifact, run, unchanged };
+  }
+
+  for (const [reason, outcome] of [
+    ["release-bump", "release-version-stamp"],
+    ["runtime-identity", "runtime-identity-repin"],
+  ]) {
+    it(reason + " stages and applies owner-attested local evidence", async () => {
+      const f = setup(reason);
+      await f.run();
+      f.unchanged();
+      const staged = JSON.parse(readFileSync(join(f.values.stage, CONTRACT), "utf8"));
+      expect(staged.outcome).toBe(outcome);
+      expect(staged.ceilings).toEqual(f.pinned.ceilings);
+      expect(staged.allowance).toEqual(f.pinned.allowance);
+      expect(staged.toolchain).toEqual({ ...f.pinned.toolchain, packageVersion: f.repo.version });
+      expect(staged.baselineSourceSha).toBe(f.source);
+      expect(staged.baselineEvidence).toMatchObject({
+        event: "local-native",
+        sourceSha: f.source,
+        stagingTool: { commit: f.toolSha },
+        localReceipt: { sha256: f.values["local-receipt-sha"] },
+        repinnedFrom: { packageVersion: PREVIOUS_VERSION },
+      });
+      for (const key of ["artifact", "runId", "jobId", "cargoTransition", "cargoRewire"])
+        expect(staged.baselineEvidence).not.toHaveProperty(key);
+      expect(staged.platformStatus).toContain(
+        "re-pinned (" + reason + ") from owner-attested local native evidence",
+      );
+      expect(staged.baselineEvidence.note).toContain(
+        "Re-pin (" + reason + ") from owner-attested local native Darwin arm64 evidence at source",
+      );
+      for (const text of [staged.platformStatus, staged.baselineEvidence.note])
+        expect(text).not.toContain("undefined");
+      const pins = readFileSync(join(f.values.stage, TEST), "utf8");
+      expect(pins).toContain('event: "local-native"');
+      expect(rewriteDarwinTestPins(pins, staged)).toBe(pins);
+      const section = readFileSync(join(f.values.stage, README), "utf8");
+      expect(section).toContain(
+        "re-pinned (`" + reason + "`) for v" + f.repo.version + " from owner-attested local",
+      );
+      expect(section).not.toContain("undefined");
+      const manifest = JSON.parse(readFileSync(join(f.values.stage, "stage-manifest.json")));
+      expect(manifest.runs).toHaveLength(1);
+      applyStage(f.values.stage, f.repo.root);
+      expect(JSON.parse(readFileSync(join(f.repo.root, CONTRACT), "utf8"))).toEqual(staged);
+    });
+  }
+
+  it.each(["receipt", "bundle", "source-head", "tool"])(
+    "refuses post-stage %s tampering at apply",
+    async (kind) => {
+      const f = setup("release-bump");
+      await f.run();
+      if (kind === "receipt") writeFileSync(f.receiptPath, "{}");
+      if (kind === "bundle") writeFileSync(join(f.artifact, "check-budget.log"), "changed");
+      if (kind === "source-head") f.repo.git("commit", "--allow-empty", "-qm", "drift");
+      if (kind === "tool") writeFileSync(join(f.tools.root, "untracked"), "changed");
+      expect(() => applyStage(f.values.stage, f.repo.root)).toThrow(/local Darwin evidence/);
+      f.unchanged();
+    },
+  );
+
+  it.each([
+    ["stage", { stage: undefined }, "requires staged"],
+    ["mixed", { "run-id": "42" }, "forbids Actions metadata"],
+    [
+      "reviewed-transition",
+      { "reviewed-cargo-transition": "review.json" },
+      "--reviewed-cargo-transition is only for --reason cargo-producer-lock",
+    ],
+  ])("refuses invalid local %s before staging", async (_kind, extra, message) => {
+    const f = setup("release-bump");
+    await expect(f.run(extra)).rejects.toThrow(message);
+    f.unchanged();
+    expect(existsSync(f.values.stage)).toBe(false);
+  });
+
+  it("still refuses a Cargo.lock move under release-bump", async () => {
+    // Artifact and checkout agree; only the contract pins another lock.
+    const f = setup(
+      "release-bump",
+      () => {},
+      (contract) => {
+        contract.toolchain.cargoLockSha256 = "f".repeat(64);
+      },
+    );
+    await expect(f.run()).rejects.toThrow("--reason release-bump cannot move Cargo.lock");
+    f.unchanged();
+    expect(existsSync(f.values.stage)).toBe(false);
+  });
+
+  it.each(["raw", "gzipNormalized"])(
+    "still refuses changed local %s totals under release-bump",
+    async (metric) => {
+      const f = setup(
+        "release-bump",
+        () => {},
+        (contract) => {
+          contract.ceilings.workspace.model[metric] += 1;
+        },
+      );
+      await expect(f.run()).rejects.toThrow(/totals changed/);
+      f.unchanged();
+      expect(existsSync(f.values.stage)).toBe(false);
+    },
+  );
+});

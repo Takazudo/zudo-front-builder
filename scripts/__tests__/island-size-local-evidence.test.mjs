@@ -13,13 +13,17 @@ import {
   verifyLocalStageEvidence,
 } from "../island-size-local-evidence.mjs";
 import { parseArgs } from "../rebaseline-island-size-darwin.mjs";
-import { parseArgs as linuxArgs } from "../rebaseline-island-size-linux.mjs";
+import { REASONS, parseArgs as linuxArgs } from "../rebaseline-island-size-linux.mjs";
 import {
   DECISION_SHA256,
   NEW_LOCK_SHA256,
   OLD_LOCK_SHA256,
 } from "../rustls-security-transition.mjs";
 const source = "a".repeat(40);
+const PROVENANCE_REPINS = [
+  ["release-bump", "release-version-stamp"],
+  ["runtime-identity", "runtime-identity-repin"],
+];
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const roots = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -127,15 +131,18 @@ describe("local CLI scope", () => {
       ).toThrow("forbids Actions");
     },
   );
-  it.each(["release-bump", "runtime-identity", "fingerprint-helper", "fingerprint-policy"])(
-    "rejects %s scope escape",
-    (reason) => {
-      expect(() =>
-        parseArgs(["--reason", reason, "--stage", "/stage", "--tool-sha", source, ...flags]),
-      ).toThrow("requires staged");
-    },
-  );
-  it.each(["cargo-producer-lock", "cargo-internal-rewire"])(
+  it.each([
+    "metric-migration",
+    "fingerprint-migration",
+    "fingerprint-helper",
+    "dependency-graph",
+    "fingerprint-policy",
+  ])("rejects %s scope escape", (reason) => {
+    expect(() =>
+      parseArgs(["--reason", reason, "--stage", "/stage", "--tool-sha", source, ...flags]),
+    ).toThrow("requires staged");
+  });
+  it.each(["cargo-producer-lock", "cargo-internal-rewire", "release-bump", "runtime-identity"])(
     "requires --stage and an exact --tool-sha for %s",
     (reason) => {
       expect(() => parseArgs(["--reason", reason, "--tool-sha", source, ...flags])).toThrow(
@@ -307,6 +314,29 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       cargoRewire: { oldSha: "x", newSha: "y" },
     });
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+    for (const [reason, outcome] of PROVENANCE_REPINS) {
+      s = staged(reason);
+      s.contract.outcome = outcome;
+      expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+    }
+  });
+  it.each(
+    PROVENANCE_REPINS.flatMap(([reason, outcome]) => [
+      [
+        reason + " carrying the security transition",
+        reason,
+        outcome,
+        { cargoTransition: security },
+      ],
+      [reason + " carrying a rewire proof", reason, outcome, { cargoRewire: { oldSha: "x" } }],
+      [reason + " with another reason's outcome", reason, "cargo-producer-lock-transition", {}],
+      [reason + " without an outcome", reason, undefined, {}],
+    ]),
+  )("rejects a provenance re-pin stage: %s", (_label, reason, outcome, evidence) => {
+    const s = staged(reason, evidence);
+    s.contract.outcome = outcome;
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(/local Darwin evidence/);
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).not.toThrow(missing);
   });
   it.each([
     [
@@ -321,7 +351,7 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     ],
     ["rewire stage without its proof", "cargo-internal-rewire", {}],
     ["security stage without its transition", "cargo-producer-lock", {}],
-    ["reason without a profile", "release-bump", { cargoTransition: security }],
+    ["reason without a profile", "dependency-graph", { cargoTransition: security }],
   ])("rejects a swapped profile: %s", (_label, reason, evidence) => {
     const s = staged(reason, evidence);
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(/local Darwin evidence/);
@@ -374,8 +404,11 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
         reason,
         reason === "cargo-producer-lock"
           ? { cargoTransition: security }
-          : { cargoRewire: { oldSha: "x" } },
+          : reason === "cargo-internal-rewire"
+            ? { cargoRewire: { oldSha: "x" } }
+            : {},
       );
+      s.contract.outcome = Object.fromEntries(PROVENANCE_REPINS)[reason];
       mutate(s);
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
         /local Darwin evidence/,
@@ -383,11 +416,15 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).not.toThrow(missing);
     }
   });
-  it("keeps exactly the two reviewed profiles", () => {
+  it("keeps exactly the four reviewed profiles", () => {
     expect(Object.keys(LOCAL_EVIDENCE_PROFILES).sort()).toEqual([
       "cargo-internal-rewire",
       "cargo-producer-lock",
+      "release-bump",
+      "runtime-identity",
     ]);
+    for (const [reason, outcome] of PROVENANCE_REPINS)
+      expect(REASONS[reason].outcome).toBe(outcome);
     expect(Object.isFrozen(LOCAL_EVIDENCE_PROFILES)).toBe(true);
     expect(() => localEvidenceProfile("toString")).toThrow("no local evidence profile");
     expect(() => localEvidenceProfile("__proto__")).toThrow("no local evidence profile");

@@ -9,10 +9,15 @@
 use std::rc::Rc;
 
 use deno_core::{
-    error::ModuleLoaderError, v8, JsRuntime, ModuleLoadOptions, ModuleLoadReferrer,
-    ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
+    error::ModuleLoaderError, v8, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse,
+    ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
     PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
+
+#[cfg(feature = "direct-v8")]
+use crate::shared_runtime::SharedRuntime as JsRuntime;
+#[cfg(not(feature = "direct-v8"))]
+use deno_core::JsRuntime;
 
 use super::{ConfigEvalError, NO_BARE_IMPORTS_ERROR};
 
@@ -36,6 +41,9 @@ pub(super) const MAIN_SPECIFIER: &str = "file:///zfb-config-eval/main.mjs";
 /// - The `default` export is not a plain object
 /// - The source contains non-main-module imports
 pub async fn evaluate_config_bundle(js_source: &str) -> Result<serde_json::Value, ConfigEvalError> {
+    crate::initialize_v8().map_err(ConfigEvalError::Evaluation)?;
+    let _thread_guard =
+        zfb_js_host::process::HostThreadGuard::acquire().map_err(ConfigEvalError::Evaluation)?;
     let main_spec =
         ModuleSpecifier::parse(MAIN_SPECIFIER).expect("MAIN_SPECIFIER is a valid URL; qed");
     let loader = Rc::new(ConfigModuleLoader::new(MAIN_SPECIFIER, js_source));

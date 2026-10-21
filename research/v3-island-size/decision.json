@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-producer-lock-transition",
+  "outcome": "cargo-internal-rewire-transition",
   "selectedOptimizations": [],
-  "baselineSourceSha": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+  "baselineSourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -32,13 +32,13 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "4.5.3",
+    "packageVersion": "4.5.4",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "370bf32469ed4f3093a24aed1cab3dd68a28c58051847d425fcbe3d062fc30ee",
-    "cargoLockSha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd"
+    "pnpmLockSha256": "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
+    "cargoLockSha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,18 +116,18 @@
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml (dispatch-only; the temporary pull_request bootstrap was removed under #4170). Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v4.5.3 ceilings on metric gzip-identity-normalized v1, re-pinned from owner-attested local native evidence 52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431 at source bda633b3589e201737b02cf2060f7b24d41a45a7 after a reviewed non-additive Cargo.lock transition (Cargo.lock 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138 to 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd under reviewed non-additive transition rustls-security-4314 (manifest SHA-256 fe689aca3a29b012ca7fb96a3aad3dc9fc507f117a18be501e379dae2b3f04ff): 1 new identities, 0 changed records and 1 removed identities, proved against 21d6807e442bbed61e578c165a91d64c4a7dc141:Cargo.lock). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. 11 actual gzip totals moved (workspace show-for +3, model -2, blog-theme, json-api and scalar-signal -3; packed json-api +4, multi-island +3, blog-theme +2, model +1, event-only and scalar-signal -1; evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned from owner-attested local native evidence 9ad4eeaa6f254cb46e9a887fb0687d7ef9c64cfecae2d6622f532f56636fdd46 at source c74faf450160b9eec6c995b5223e172209d62b14 after a reviewed internal Cargo.lock rewire (Cargo.lock 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd to 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-js-host@0.0.0 -[] +[\"deno_core\"]); every other [[package]] record and the header are byte-identical, declared in prototypes/direct-v8/admission/rewire-declaration.json (SHA-256 ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba), proved against Cargo.lock at commit f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410 (SHA-256 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd); the zfb producer closure for aarch64-apple-darwin keeps 481 rows unchanged, adds 0 and changes 1 internal row(s) with no external drift; declared edges to unchanged external records: zfb-js-host@0.0.0 deno_core -> deno_core@0.399.0 (SHA-256 1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498)). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "local-native",
     "localReceipt": {
-      "sha256": "52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431",
+      "sha256": "9ad4eeaa6f254cb46e9a887fb0687d7ef9c64cfecae2d6622f532f56636fdd46",
       "receipt": {
         "schemaVersion": 1,
         "kind": "local-native-darwin",
         "operator": "zfb owner, local Darwin arm64 collection",
-        "collectedAt": "2026-10-19T20:22:27.410Z",
+        "collectedAt": "2026-10-21T11:23:56.000Z",
         "source": {
-          "commit": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+          "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
           "clean": true
         },
         "platform": {
@@ -135,18 +135,66 @@
           "arch": "arm64"
         },
         "commands": [
-          ["pnpm", "install", "--frozen-lockfile"],
           [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
+            "pnpm",
+            "install",
+            "--frozen-lockfile"
+          ],
+          [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
+            "bash",
+            "-xc",
+            "provenance"
+          ],
+          ["tee", "<SOURCE>/target/island-size/runner-provenance.txt"],
+          ["tee", "-a", "<SOURCE>/target/island-size/runner-provenance.txt"],
+          [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
             "bash",
             "<HEAVY_GUARD>",
-            "--max-run",
-            "14400",
+            "--label",
+            "p2a-03-cargo-build",
             "--",
             "cargo",
             "build",
             "--locked",
             "-p",
             "zfb"
+          ],
+          [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
+            "bash",
+            "-xc",
+            "build_pack"
+          ],
+          [
+            "mkdir",
+            "-p",
+            "<SOURCE>/target/island-size/pack",
+            "<SOURCE>/target/island-size/packed-package",
+            "<SOURCE>/target/island-size/packed-runtime",
+            "<SOURCE>/target/island-size/packed-slugify"
           ],
           ["pnpm", "-C", "packages/zfb-slugify", "build"],
           ["pnpm", "-C", "packages/zfb", "build"],
@@ -157,129 +205,204 @@
             "packages/zfb-slugify",
             "pack",
             "--pack-destination",
-            "<RETAIN>/bundle/pack"
+            "<SOURCE>/target/island-size/pack"
           ],
-          ["pnpm", "-C", "packages/zfb", "pack", "--pack-destination", "<RETAIN>/bundle/pack"],
+          [
+            "pnpm",
+            "-C",
+            "packages/zfb",
+            "pack",
+            "--pack-destination",
+            "<SOURCE>/target/island-size/pack"
+          ],
           [
             "pnpm",
             "-C",
             "packages/zfb-runtime",
             "pack",
             "--pack-destination",
-            "<RETAIN>/bundle/pack"
+            "<SOURCE>/target/island-size/pack"
           ],
           [
             "tar",
             "-xzf",
-            "<PACKED_ZFB_TARBALL_STEM>-slugify-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-slugify-4.5.4.tgz",
             "-C",
-            "<RETAIN>/bundle/packed-slugify"
+            "<SOURCE>/target/island-size/packed-slugify"
           ],
           [
             "tar",
             "-xzf",
-            "<PACKED_ZFB_TARBALL_STEM>-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-4.5.4.tgz",
             "-C",
-            "<RETAIN>/bundle/packed-package"
+            "<SOURCE>/target/island-size/packed-package"
           ],
           [
             "tar",
             "-xzf",
-            "<PACKED_ZFB_TARBALL_STEM>-runtime-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-runtime-4.5.4.tgz",
             "-C",
-            "<RETAIN>/bundle/packed-runtime"
+            "<SOURCE>/target/island-size/packed-runtime"
           ],
           [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
+            "bash",
+            "-xc",
+            "record_binaries"
+          ],
+          ["shasum", "-a", "256", "target/debug/zfb"],
+          ["tee", "-a", "<SOURCE>/target/island-size/runner-provenance.txt"],
+          ["shasum", "-a", "256", "crates/zfb/binaries/esbuild/esbuild"],
+          ["shasum", "-a", "256", "packages/zfb-runtime/node_modules/hono/package.json"],
+          ["shasum", "-a", "256", "<PACKED_ZFB_TARBALL_STEM>-slugify-4.5.4.tgz"],
+          ["shasum", "-a", "256", "<PACKED_ZFB_TARBALL_STEM>-4.5.4.tgz"],
+          [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
             "bash",
             "<HEAVY_GUARD>",
+            "--label",
+            "p2a-06-measure-workspace",
             "--",
-            "<ZFB_NODE>",
+            "bash",
+            "-xc",
+            "measure workspace"
+          ],
+          [
+            "node",
             "research/v3-island-size/measure-real.mjs",
             "--mode",
             "workspace",
             "--package",
-            "<SOURCE>/packages/zfb",
+            "packages/zfb",
             "--runtime-package",
-            "<SOURCE>/packages/zfb-runtime",
+            "packages/zfb-runtime",
             "--slugify-package",
-            "<SOURCE>/packages/zfb-slugify",
+            "packages/zfb-slugify",
             "--hono-package",
-            "<SOURCE>/packages/zfb-runtime/node_modules/hono",
+            "packages/zfb-runtime/node_modules/hono",
             "--zfb-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-4.5.4.tgz",
             "--runtime-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-runtime-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-runtime-4.5.4.tgz",
             "--zfb",
-            "<TARGET>/debug/zfb",
+            "target/debug/zfb",
             "--esbuild",
-            "<SOURCE>/crates/zfb/binaries/esbuild/esbuild",
+            "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "bda633b3589e201737b02cf2060f7b24d41a45a7",
+            "c74faf450160b9eec6c995b5223e172209d62b14",
             "--out",
-            "<RETAIN>/bundle/real-workspace"
+            "<SOURCE>/target/island-size/real-workspace"
           ],
           [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
             "bash",
             "<HEAVY_GUARD>",
+            "--label",
+            "p2a-07-measure-packed",
             "--",
-            "<ZFB_NODE>",
+            "bash",
+            "-xc",
+            "measure packed"
+          ],
+          [
+            "node",
             "research/v3-island-size/measure-real.mjs",
             "--mode",
             "packed",
             "--package",
-            "<RETAIN>/bundle/packed-package/package",
+            "<SOURCE>/target/island-size/packed-package/package",
             "--runtime-package",
-            "<RETAIN>/bundle/packed-runtime/package",
+            "<SOURCE>/target/island-size/packed-runtime/package",
             "--slugify-package",
-            "<RETAIN>/bundle/packed-slugify/package",
+            "<SOURCE>/target/island-size/packed-slugify/package",
             "--hono-package",
-            "<SOURCE>/packages/zfb-runtime/node_modules/hono",
+            "packages/zfb-runtime/node_modules/hono",
             "--zfb-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-4.5.4.tgz",
             "--runtime-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-runtime-4.5.3.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-runtime-4.5.4.tgz",
             "--zfb",
-            "<TARGET>/debug/zfb",
+            "target/debug/zfb",
             "--esbuild",
-            "<SOURCE>/crates/zfb/binaries/esbuild/esbuild",
+            "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "bda633b3589e201737b02cf2060f7b24d41a45a7",
+            "c74faf450160b9eec6c995b5223e172209d62b14",
             "--out",
-            "<RETAIN>/bundle/real-packed"
+            "<SOURCE>/target/island-size/real-packed"
           ],
           [
-            "<ZFB_NODE>",
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
+            "bash",
+            "-xc",
+            "normalize"
+          ],
+          ["tee", "-a", "<SOURCE>/target/island-size/normalize-identity.log"],
+          [
+            "node",
             "research/v3-island-size/normalize-identity.mjs",
             "--measurement",
-            "<RETAIN>/bundle/real-workspace/measurement.json"
+            "<SOURCE>/target/island-size/real-workspace/measurement.json"
           ],
+          ["tee", "-a", "<SOURCE>/target/island-size/normalize-identity.log"],
+          ["tee", "-a", "<SOURCE>/target/island-size/normalize-identity.log"],
           [
-            "<ZFB_NODE>",
+            "node",
             "research/v3-island-size/normalize-identity.mjs",
             "--measurement",
-            "<RETAIN>/bundle/real-packed/measurement.json"
+            "<SOURCE>/target/island-size/real-packed/measurement.json"
+          ],
+          ["tee", "-a", "<SOURCE>/target/island-size/normalize-identity.log"],
+          [
+            "env",
+            "RUSTUP_TOOLCHAIN=1.99.0",
+            "CARGO_INCREMENTAL=0",
+            "CARGO_BUILD_JOBS=1",
+            "CARGO_TARGET_DIR=<SOURCE>/target",
+            "CI=true",
+            "bash",
+            "-xc",
+            "budget"
           ],
           [
-            "<ZFB_NODE>",
+            "node",
             "research/v3-island-size/check-budget.mjs",
             "--workspace",
-            "<RETAIN>/bundle/real-workspace/measurement.json",
+            "<SOURCE>/target/island-size/real-workspace/measurement.json",
             "--packed",
-            "<RETAIN>/bundle/real-packed/measurement.json",
-            "--contract",
-            "research/v3-island-size/decision.json"
-          ]
+            "<SOURCE>/target/island-size/real-packed/measurement.json"
+          ],
+          ["cat", "<SOURCE>/target/island-size/check-budget.log"]
         ],
         "bundle": {
-          "location": "<RETAIN>/bundle",
-          "sha256": "136395016503fb8062e8a902cfc5e11191461325952e0216f09f6ffe0a03c83e"
+          "location": "<BUNDLE>/island-size (in frozen bundle <BUNDLE>, SHA256SUMS sha256 039dc8c090483e0101e9583019d43e476204b2c5bff827efb6961e9f7b788212)",
+          "sha256": "a145b3cdc58c89aa08dd10e19bdbbb2982f864e466b4a7993817f12519310c38"
         }
       }
     },
     "stagingTool": {
-      "commit": "7e79458304878d51bafd29e24ec25e93b84893ca"
+      "commit": "c74faf450160b9eec6c995b5223e172209d62b14"
     },
-    "sourceSha": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+    "sourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
     "nativeRunner": {
       "platform": "darwin-arm64",
       "macOS": "26.6.2 (25G83)",
@@ -290,39 +413,80 @@
       "pnpm": "12.8.2",
       "esbuild": "0.25.12",
       "hono": "4.12.25",
-      "zfbBinarySha256": "41af55ff18943b8d72bc0bdcfab55b43b5fe736ab660ec524dfb06e17cdbb871",
+      "zfbBinarySha256": "d59ef1dfef3ba2875362a4d09fabe4632945826d2db18d90bdd027d5145a7873",
       "esbuildBinarySha256": "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5",
-      "zfbTarballSha256": "f8810de483e8deaf66d6b8c7227901d0b0f5bbfe80951c5902e7934ecfec5f66",
-      "runtimeTarballSha256": "598e4410688bdb1a6ebcb096e3a70d9e11c1dae31684e94a4efd88246a4162ed",
-      "slugifyTarballSha256": "58b4cf4079c365ba14080eabe9401bf3a7c8b7969d2068f80d0cd7540524332c"
+      "zfbTarballSha256": "a3cbdeda625d815dca5efe29399a41fec5b5e266aed123775686fefe2cbbe399",
+      "runtimeTarballSha256": "00ddb652dcb2b8175325f4f55ff8b472d8fb0c04ed9bef0bccfe4f73da341d34",
+      "slugifyTarballSha256": "f09bed1caa8409385ff626e295eab45ae3339b635a450566464c8f21d1c3fe9e"
     },
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "cargo-internal-rewire-transition",
-      "packageVersion": "4.5.3",
-      "baselineSourceSha": "792c812325310df73540cc20aa590bb8de049d96",
-      "baselineRunId": 39015514836,
+      "outcome": "release-version-stamp",
+      "packageVersion": "4.5.4",
+      "baselineSourceSha": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
       "contract": {
-        "sha256": "cc32aa6d51f4f8f3c95fcf27d4b4f2898288d9c49b1b7a4a4e8a654fcbe88818",
-        "commit": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+        "sha256": "17874673d1a3bd02cda03b543e64eedb1dd7f983ab7c844dbf975727e37f532d",
+        "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
         "path": "research/v3-island-size/decision.json"
       }
     },
-    "cargoTransition": {
-      "oldSha": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
-      "newSha": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
-      "added": ["rustls@0.23.46"],
-      "changed": [],
-      "removed": ["rustls@0.23.45"],
+    "cargoRewire": {
+      "oldSha": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
+      "newSha": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
       "oldLockSource": {
-        "commit": "21d6807e442bbed61e578c165a91d64c4a7dc141",
+        "commit": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
         "path": "Cargo.lock",
-        "sha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138"
+        "sha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd"
       },
-      "review": {
-        "id": "rustls-security-4314",
-        "manifestSha256": "fe689aca3a29b012ca7fb96a3aad3dc9fc507f117a18be501e379dae2b3f04ff",
-        "sourceSha": "21d6807e442bbed61e578c165a91d64c4a7dc141"
+      "newLockSource": {
+        "sha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+        "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
+        "path": "Cargo.lock"
+      },
+      "declaration": {
+        "path": "prototypes/direct-v8/admission/rewire-declaration.json",
+        "sha256": "ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba"
+      },
+      "producer": "zfb",
+      "manifestsAtCommit": "c74faf450160b9eec6c995b5223e172209d62b14",
+      "added": [],
+      "changed": [
+        {
+          "id": "zfb-js-host@0.0.0",
+          "manifest": "crates/zfb-js-host/Cargo.toml",
+          "manifestSha256": "a61b22ad5e1a23732fbefc81f30b30c6bbc39e0968fa7d4467d33646fdfeba2c",
+          "oldSha256": "5f02be259fc6ee127ef8ee2da7f179f41c9bc2636f22d036da2b800e32987d3b",
+          "newSha256": "dc29c5474a924913310f10979e35704ade131df30d7db0eab802e6a182899a82",
+          "removedDependencies": [],
+          "addedDependencies": ["deno_core"]
+        }
+      ],
+      "removed": [],
+      "externalEdges": [
+        {
+          "from": "zfb-js-host@0.0.0",
+          "dependency": "deno_core",
+          "to": "deno_core@0.399.0",
+          "sha256": "1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498"
+        }
+      ],
+      "closure": {
+        "target": "aarch64-apple-darwin",
+        "oldSha256": "60a899139d6c00ab1189227d141e8003a45acf6f97cd5f2973baed36507fba1c",
+        "newSha256": "22709fd3fef9c14c30da0e3bac3c1bf2ebd74e2997e33b0b41908e862f66a3ae",
+        "rows": {
+          "old": 482,
+          "new": 482,
+          "unchanged": 481
+        },
+        "added": [],
+        "changed": [
+          {
+            "id": "zfb-js-host@0.0.0",
+            "from": ["default", "services"],
+            "to": ["default", "deno-platform", "services", "v8-platform"]
+          }
+        ]
       }
     },
     "originalCheckerResult": {
@@ -333,24 +497,24 @@
       "workspace": {
         "blog-theme": 22352,
         "event-only": 22209,
-        "json-api": 22296,
+        "json-api": 22300,
         "model": 22215,
         "multi-island": 22299,
         "no-island": 0,
-        "scalar-signal": 22226,
-        "show-for": 22288
+        "scalar-signal": 22228,
+        "show-for": 22286
       },
       "packed": {
         "blog-theme": 22368,
-        "event-only": 22213,
-        "json-api": 22314,
+        "event-only": 22216,
+        "json-api": 22311,
         "model": 22224,
-        "multi-island": 22309,
+        "multi-island": 22307,
         "no-island": 0,
-        "scalar-signal": 22216,
-        "show-for": 22303
+        "scalar-signal": 22217,
+        "show-for": 22302
       }
     },
-    "note": "Cargo producer-lock transition from owner-attested local native Darwin arm64 evidence at source bda633b3589e201737b02cf2060f7b24d41a45a7. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.3 contract; 11 actual gzip totals moved (workspace show-for +3, model -2, blog-theme, json-api and scalar-signal -3; packed json-api +4, multi-island +3, blog-theme +2, model +1, event-only and scalar-signal -1; evidence only, not a ceiling). The artifact's own check-budget run compared it with the previous Cargo.lock pin and is preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Cargo internal-rewire transition from owner-attested local native Darwin arm64 evidence at source c74faf450160b9eec6c995b5223e172209d62b14. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.4 contract; no actual gzip total moved. The artifact's own check-budget run compared it with the previous Cargo.lock pin and is preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

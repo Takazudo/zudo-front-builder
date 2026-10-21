@@ -720,8 +720,9 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
     metric +
     ", re-pinned (" +
     reason +
-    ") from the native artifact of workflow_dispatch run " +
-    evidence.runId +
+    (evidence.localReceipt
+      ? ") from owner-attested local native evidence " + evidence.localReceipt.sha256
+      : ") from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
     ". Every raw and gzipNormalized total is unchanged from the v" +
@@ -731,15 +732,27 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
     ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
     "inventories. Other platforms and toolchains are not covered.";
   next.baselineEvidence = {
-    event: "ci-artifact",
-    runId: evidence.runId,
-    jobId: evidence.jobId,
+    ...(evidence.localReceipt
+      ? {
+          event: "local-native",
+          localReceipt: evidence.localReceipt,
+          stagingTool: evidence.stagingTool,
+        }
+      : {
+          event: "ci-artifact",
+          runId: evidence.runId,
+          jobId: evidence.jobId,
+        }),
     sourceSha: evidence.sourceSha,
-    artifact: {
-      id: evidence.artifactId,
-      name: "island-size-darwin-arm64-" + evidence.sourceSha,
-      expiresAt: evidence.artifactExpiresAt,
-    },
+    ...(evidence.localReceipt
+      ? {}
+      : {
+          artifact: {
+            id: evidence.artifactId,
+            name: "island-size-darwin-arm64-" + evidence.sourceSha,
+            expiresAt: evidence.artifactExpiresAt,
+          },
+        }),
     nativeRunner: evidence.nativeRunner,
     repinnedFrom,
     originalCheckerResult: evidence.originalCheckerResult,
@@ -747,11 +760,14 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
     note:
       "Re-pin (" +
       reason +
-      ") from the native Darwin arm64 artifact of run " +
-      evidence.runId +
-      " (job " +
-      evidence.jobId +
-      ") at source " +
+      (evidence.localReceipt
+        ? ") from owner-attested local native Darwin arm64 evidence"
+        : ") from the native Darwin arm64 artifact of run " +
+          evidence.runId +
+          " (job " +
+          evidence.jobId +
+          ")") +
+      " at source " +
       evidence.sourceSha +
       ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
       "inventories. Raw and gzipNormalized totals did not change from the v" +
@@ -1532,15 +1548,20 @@ export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, r
     reason +
     "`) for v" +
     version +
-    " from the native artifact " +
-    e.artifact.id +
-    " of [workflow_dispatch run " +
-    e.runId +
-    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
-    e.runId +
-    ") (job " +
-    e.jobId +
-    ") at source `" +
+    (e.event === "local-native"
+      ? " from owner-attested local native evidence (receipt SHA-256 `" +
+        e.localReceipt.sha256 +
+        "`)"
+      : " from the native artifact " +
+        e.artifact.id +
+        " of [workflow_dispatch run " +
+        e.runId +
+        "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+        e.runId +
+        ") (job " +
+        e.jobId +
+        ")") +
+    " at source `" +
     e.sourceSha +
     "`. Every raw and `gzipNormalized` total is unchanged from the v" +
     previousVersion +

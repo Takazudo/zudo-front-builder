@@ -17,11 +17,15 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # only runs the SWC pipeline) can opt out with
 # `--no-default-features`.
 [features]
+# Internal build-time opt-in; the default remains Deno-backed embed_v8.
+direct-v8 = ["zfb-js-host/direct-v8", "dep:tokio"]
+
 default = ["embed_v8", "syntect-onig"]
 embed_v8 = [
     "dep:deno_core",
     "dep:deno_error",
     "zfb-js-host/services",
+    "zfb-js-host/deno-platform",
     "dep:getrandom",
     "dep:reqwest",
     "dep:tokio",
@@ -154,3 +158,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", 
 # orchestrator (`zfb-build`) is what wires the two together in
 # production.
 zfb-router = { path = "../zfb-router" }
+
+[[example]]
+name = "direct_v8_shared"
+required-features = ["embed_v8", "direct-v8"]

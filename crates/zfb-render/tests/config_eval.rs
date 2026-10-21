@@ -16,7 +16,7 @@
 //! - V8 platform double-init: constructing a `ThreadedConfigEvaluator` after
 //!   `EmbeddedV8RenderHost::new()` does not cause a V8 double-init crash.
 
-#![cfg(feature = "embed_v8")]
+#![cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 
 use zfb_render::{config_eval, ConfigEvalError, ThreadedConfigEvaluator};
 
@@ -251,7 +251,9 @@ async fn test_h_no_node_globals_contract_intact() {
 #[tokio::test]
 async fn test_v8_double_init_safety() {
     // Boot the render host (initialises V8 platform).
-    let _render_host = zfb_render::EmbeddedV8RenderHost::new().expect("render host boot");
+    let _render_host =
+        zfb_render::EmbeddedV8RenderHost::with_loader(zfb_render::BundleModuleLoader::new())
+            .expect("render host boot");
 
     // Now evaluate a config bundle — uses a separate JsRuntime but the same
     // V8 platform. Should not double-init or crash.

@@ -1,39 +1,10 @@
 //! Process initialization and the globals that bare V8 does not supply.
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::OnceLock;
 
 use super::diagnostics::throw_error;
 
-// Match deno_core 0.399 runtime/setup.rs's ordinary (non-snapshot,
-// non-expose-natives) flags. Engine upgrades are outside this experiment.
-pub(super) fn initialize() -> Result<(), String> {
-    // Exactly the baseline ICU77 bytes, prepared and checksum-verified by the
-    // prototype setup script. Missing input is a build error, never a fallback.
-    // ICU requires >=8-byte alignment and recommends 16-byte alignment.
-    #[repr(align(16))]
-    struct AlignedIcu<const N: usize>([u8; N]);
-    static ICU: AlignedIcu<{ include_bytes!(env!("ZFB_V8_ICU_DATA")).len() }> =
-        AlignedIcu(*include_bytes!(env!("ZFB_V8_ICU_DATA")));
-    static INITIALIZE: OnceLock<Result<(), String>> = OnceLock::new();
-    INITIALIZE
-        .get_or_init(|| {
-            v8::icu::set_common_data_77(&ICU.0)
-                .map_err(|code| format!("ICU77 data initialization failed: {code}"))?;
-            v8::V8::set_flags_from_string(concat!(
-                "--wasm-test-streaming --no-validate-asm --turbo_fast_api_calls ",
-                "--harmony-temporal --js-float16array --js-explicit-resource-management ",
-                "--js-source-phase-imports"
-            ));
-            let platform =
-                v8::new_custom_platform(0, false, cfg!(test), super::platform::NativePlatform)
-                    .make_shared();
-            v8::V8::initialize_platform(platform);
-            v8::V8::initialize();
-            Ok(())
-        })
-        .clone()
-}
+pub(super) use crate::process::initialize;
 
 pub(super) fn install(scope: &mut v8::PinScope) -> Result<(), String> {
     let global = scope.get_current_context().global(scope);

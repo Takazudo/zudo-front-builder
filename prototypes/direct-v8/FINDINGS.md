@@ -1,5 +1,11 @@
 # Phase 1 execution findings
 
+> Phase 2 status: the nondefault actual CLI integration is implemented on
+> `feat/4301-direct-v8-cli`; see [CLI.md](CLI.md) for selection, ownership and
+> current verification status. The phase-1 observations below remain historical
+> and source-bound; an old hold is neither a current implementation claim nor
+> proof of phase-2 acceptance.
+
 The standalone Linux runtime feasibility gate passes, and was replayed from one
 documented command on a second machine on 2026-10-14 (see "Fresh Linux replay"
 below). Delivery remains blocked by the existing island-size Cargo-lock

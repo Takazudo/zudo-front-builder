@@ -1,8 +1,12 @@
+#[cfg(test)]
+mod canonical_path_tests;
 mod copy_reference;
 #[cfg(test)]
 mod css_tests;
 mod prepared;
 mod trailing_paths;
+mod verbatim_specifiers;
+mod windows_path;
 use anyhow::{bail, Context, Result};
 use prepared::Request;
 use rolldown::plugin::{
@@ -193,6 +197,9 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let mut bundler = Bundler::with_plugins(
         request.options,
         vec![
+            verbatim_specifiers::VerbatimSpecifiers::new_shared(
+                verbatim_specifiers::VerbatimSpecifiers,
+            ),
             trailing_paths::TrailingPaths::new_shared(trailing_paths),
             GraphPlugin::new_shared(plugin),
         ],

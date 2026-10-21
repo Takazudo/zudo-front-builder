@@ -16,13 +16,13 @@ pub mod render_pipeline;
 // dispatch sites in `commands::dev` / `commands::build` /
 // `render_pipeline` fall back to feature-gated stubs that fail loudly
 // if a project unexpectedly hits an SSR-requiring path.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub(crate) mod dev_rewrite_prewarm;
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub(crate) mod lazy_render_adapter;
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub(crate) mod ssr_adapter;
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 pub(crate) mod v8_host_adapter;
 
 // Re-export the public dynamic-route planning types so adapter authors can
