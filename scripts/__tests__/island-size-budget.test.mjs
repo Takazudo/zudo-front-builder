@@ -1383,10 +1383,9 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: for Linux, the
-// webpki-security-4314 producer-lock transition (#4314), introduced at 5b5f2152,
-// cited at v4.6.0 release-probe head f2e157a5 (refs/pull/4377/head, byte-identical
-// blob) and moved by the v4.6.0 release-bump; for Darwin, its paired direct-V8 rewire
+// Exact immediate predecessors of the live contracts: for Linux, the v4.6.0
+// release-bump contract, cited at #4385 head cf92bfa5 (byte-identical to main
+// 84dc4a84) and moved by the noyalib-4268 producer-lock transition; for Darwin, its paired direct-V8 rewire
 // (ZFB-L2-024 step 2), cited at 5b5f2152 and moved by the same webpki transition
 // on owner-attested local evidence.
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
@@ -1396,13 +1395,13 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
-    sha256: "8cfddcedb771c4069f96b81102cc92498798e5a210168f78e040be82fe57cb66",
-    fixture: "fixtures/island-size-linux-x64-v4.5.4-webpki.json",
-    outcome: "cargo-producer-lock-transition",
-    packageVersion: "4.5.4",
-    baselineSourceSha: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
-    baselineRunId: 39609635178,
+    commit: "cf92bfa545410583215a9829bc5c71781463e14b",
+    sha256: "f2c54dc1a953a84938fba2749330856593bea7f3fdf731b7bd9a6340f0d60120",
+    fixture: "fixtures/island-size-linux-x64-v4.6.0.json",
+    outcome: "release-version-stamp",
+    packageVersion: "4.6.0",
+    baselineSourceSha: "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
+    baselineRunId: 39628733086,
   },
   {
     file: "decision.json",
@@ -1951,11 +1950,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
     );
   }
 
-  it("moves the live Linux contract from the frozen webpki bytes only by the v4.6.0 release bump", () => {
+  it("moves the frozen v4.6.0 Linux contract from the frozen webpki bytes only by the v4.6.0 release bump", () => {
     const predecessor = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.4-webpki.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.6.0.json"), "utf8"),
+    );
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("4.6.0");
     expect(live.toolchain.cargoLockSha256).toBe(predecessor.toolchain.cargoLockSha256);
@@ -2024,6 +2025,49 @@ describe("live contracts preserve released evidence and authentic predecessors",
       return copy;
     };
     expect(fixed(live)).toEqual(fixed(predecessor));
+  });
+
+  // The noyalib-4268 transition (#4268): Linux from health run 39661748139 at
+  // merge source ad295e2b (probe head cf92bfa5).
+  it("moves the live Linux contract from the frozen v4.6.0 bytes only by the noyalib-4268 transition", () => {
+    const predecessor = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.6.0.json"), "utf8"),
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("cargo-producer-lock-transition");
+    expect(predecessor.toolchain.cargoLockSha256).toBe(
+      "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
+    );
+    expect(live.toolchain.cargoLockSha256).toBe(
+      "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
+    );
+    expect(live.baselineEvidence.cargoTransition).toEqual({
+      oldSha: predecessor.toolchain.cargoLockSha256,
+      newSha: live.toolchain.cargoLockSha256,
+      added: ["noyalib-serde-yaml@0.0.58", "noyalib@0.0.58"],
+      changed: [],
+      removed: ["noyalib-serde-yaml@0.0.55", "noyalib@0.0.55"],
+      oldLockSource: {
+        commit: "84dc4a842bee059af334a02bfd453d2ce2c74871",
+        path: "Cargo.lock",
+        sha256: predecessor.toolchain.cargoLockSha256,
+      },
+      review: {
+        id: "noyalib-4268",
+        manifestSha256: "5ff33c03ac56e9d494333153d7e5e2cf2e5bf4a2190f0b65fbe145b3c42e1994",
+        sourceSha: "84dc4a842bee059af334a02bfd453d2ce2c74871",
+      },
+    });
+    expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
+    expect(live.baselineSourceSha).toBe("cf92bfa545410583215a9829bc5c71781463e14b");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      sourceSha: "ad295e2beec481e9ad1eb8047b1632c9380e06be",
+      runId: 39661748139,
+      jobId: 119436334916,
+    });
+    expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
   });
 
   it("keeps the dated README corrections", () => {
