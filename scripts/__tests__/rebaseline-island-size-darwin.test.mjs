@@ -90,6 +90,9 @@ import {
 } from "./fixtures/island-size-external-edge.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
+// Synchronous git/helper end-to-end cases peak near 5.3 s on hosted runners (median up to 3.7 s); measured in #4364.
+vi.setConfig({ testTimeout: 15_000 });
+
 const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
   readFileSync(join(testDir, "fixtures/island-size-darwin-actual-gzip-v1.json"), "utf8"),
