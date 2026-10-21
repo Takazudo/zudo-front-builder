@@ -165,6 +165,19 @@ second scheduler; use existing workflows/scripts and preserve original receipts.
   dispatches and purposeless reruns, and keep artifact size and retention to what the evidence needs.
 - Using Actions never implies approval for deployment, release, or broader permissions.
 
+### Windows on CI runners, macOS on the owner's Mac
+
+- **Windows behavior is confirmed on `windows-latest` runners.** This is the basic flow and it has
+  worked well here: `windows-lib-tests.yml` (`zfb-build`/`zfb-content` lib tests, #4371/#4381),
+  the Windows x64 plugin-alias step (#4380) and the `windows-x64` rows of `direct-v8.yml`. Add a
+  Windows reproduction or regression step to such a job instead of asking for a Windows machine.
+- **macOS behavior is confirmed manually on Takazudo's Mac.** Owner decision (2026-10-21): because
+  of GitHub Actions macOS runner cost, CI-side Mac confirmation is the exception, not the flow.
+  Darwin island-size evidence follows the local-evidence policy in
+  [`LOCAL-NATIVE-EVIDENCE.md`](research/v3-island-size/LOCAL-NATIVE-EVIDENCE.md) (#4336). Give
+  Mac-only steps to the owner as paste-ready prompts for a local Claude Code session; existing
+  macOS workflows stay, but do not add new macOS CI legs for routine confirmation.
+
 ### Codex Cloud disk capacity and broad Rust verification
 
 The saved Codex Cloud environment used for [PR 4315](https://github.com/Takazudo/zudo-front-builder/pull/4315#issuecomment-6266482957)
