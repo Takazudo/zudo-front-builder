@@ -148,11 +148,11 @@ def dynamic_dependencies(binary, system):
     return {"status": "NOT RUN", "passed": None, "reason": f"none of {[c[0] for c in tools]} is installed"}
 
 
-def pinned_icu_sha256():
+def icu_module():
     spec = importlib.util.spec_from_file_location("prepare_icu", HERE / "prepare-icu.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.DATA_SHA256
+    return module
 
 
 def status_of(checks):
@@ -235,13 +235,14 @@ def main():
     has_rolldown = any(marker in data for marker in ROLLDOWN_MARKERS)
     checks["feature_markers"] = {"rolldown_prototype_present": has_rolldown, "expected": args.rolldown,
                                  "passed": has_rolldown == args.rolldown}
-    icu = os.environ.get("ZFB_V8_ICU_DATA")
-    pinned = pinned_icu_sha256()
-    if icu and Path(icu).is_file():
+    icu_pin = icu_module()
+    icu = ROOT / icu_pin.VENDORED
+    if icu.is_file():
         actual = sha256(icu)
-        checks["icu"] = {"path": icu, "sha256": actual, "pinned_sha256": pinned, "passed": actual == pinned}
+        checks["icu"] = {"path": str(icu_pin.VENDORED), "sha256": actual, "pinned_sha256": icu_pin.DATA_SHA256,
+                         "passed": actual == icu_pin.DATA_SHA256}
     else:
-        checks["icu"] = {"status": "NOT RECORDED", "passed": None, "reason": "ZFB_V8_ICU_DATA unset or missing"}
+        checks["icu"] = {"status": "NOT RECORDED", "passed": None, "reason": f"{icu_pin.VENDORED} missing"}
     checks["dynamic_dependencies"] = dynamic_dependencies(binary, host["system"])
     graph = run([sys.executable, HERE / "record-graph.py", "--cli", "--target", args.target, "--cargo", args.cargo,
                  *(["--extra-feature", "rolldown-prototype"] if args.rolldown else []),

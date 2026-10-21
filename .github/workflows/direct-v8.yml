@@ -114,10 +114,8 @@ jobs:
       - name: Offline harness controls
         run: python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
 
-      - name: Prepare pinned ICU data
-        run: |
-          python3 prototypes/direct-v8/prepare-icu.py
-          echo "ZFB_V8_ICU_DATA=$PWD/target/direct-v8-inputs/icu77/icudtl.dat" >> "$GITHUB_ENV"
+      - name: Verify vendored ICU data
+        run: python3 prototypes/direct-v8/prepare-icu.py --verify
 
       - name: Dependency resolution rows (all shipping targets; no build)
         run: |
@@ -170,13 +168,8 @@ jobs:
       # the floor is gated exactly as in release.yml.
       - name: Shipping-recipe binary (cross, GLIBC 2.34 floor)
         if: ${{ !cancelled() && env.ROW_BINARY != '' }}
-        env:
-          # cross drops host env and mounts the workspace at /project, so the
-          # host ICU path does not exist in the container; mount its directory.
-          ICU_DIR: ${{ github.workspace }}/target/direct-v8-inputs/icu77
         run: |
           set -o pipefail
-          export CROSS_CONTAINER_OPTS="-v $ICU_DIR:/direct-v8-icu:ro --env ZFB_V8_ICU_DATA=/direct-v8-icu/icudtl.dat"
           features=direct-v8
           [ "$ROLLDOWN" = true ] && features=direct-v8,rolldown-prototype
           cross build --locked -p zfb --release --no-default-features --features "$features" \
@@ -329,11 +322,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Prepare pinned ICU data
+      - name: Verify vendored ICU data
         id: icu
-        run: |
-          "$PY" prototypes/direct-v8/prepare-icu.py
-          "$PY" -c 'import os; print("ZFB_V8_ICU_DATA=" + os.path.abspath("target/direct-v8-inputs/icu77/icudtl.dat"))' >> "$GITHUB_ENV"
+        run: '"$PY" prototypes/direct-v8/prepare-icu.py --verify'
 
       - name: Native row (harness build)
         run: |

@@ -30,7 +30,7 @@ the invoked gates themselves assert. Python only orchestrates and compares.
 
 Usage (from the repository root):
   python3 prototypes/direct-v8/accept.py --output target/direct-v8-accept-1 \
-    [--guard $HOME/.claude/scripts/heavy-guard.sh] [--icu-archive <deno_core_icudata .crate>] \
+    [--guard $HOME/.claude/scripts/heavy-guard.sh] \
     [--generated --esbuild <esbuild 0.25.12> --chromium <browser> [--node <node>] [--rustc <rustc>]]
 """
 import argparse
@@ -74,7 +74,7 @@ ZFB_BUILD = ["cargo", "build", "--locked", "-p", "zfb", "--bin", "zfb"]
 WRAPPER_TEST_BUILD = ["cargo", "test", "--locked", "-p", "zfb", "--lib", "--no-run",
                       "--message-format=json"]
 RECORDED_ENV = ("RUSTUP_TOOLCHAIN", "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_TARGET_DIR",
-                "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG", "ZFB_V8_ICU_DATA",
+                "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG",
                 "ZFB_ESBUILD_BIN", "ZFB_NODE_BIN")
 
 
@@ -257,15 +257,11 @@ class Acceptance:
 
     def prepare_icu(self):
         icu = load_icu_module()
-        argv = [sys.executable, "-I", "-B", HERE / "prepare-icu.py"]
-        if self.args.icu_archive:
-            argv += ["--archive", self.args.icu_archive]
-        proc = self.run("prepare-icu", argv)
+        proc = self.run("prepare-icu", [sys.executable, "-I", "-B", HERE / "prepare-icu.py", "--verify"])
         path = Path(proc.stdout.strip().splitlines()[-1])
         digest = sha(path)
         if digest != icu.DATA_SHA256:
             raise Refusal(f"prepared ICU data {path} hashes to {digest}, not the pinned {icu.DATA_SHA256}")
-        self.env["ZFB_V8_ICU_DATA"] = str(path)
         return {"path": str(path), "sha256": digest, "archive_sha256_pin": icu.ARCHIVE_SHA256}
 
     def environment(self):
@@ -453,7 +449,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="New directory below repository target/")
     parser.add_argument("--guard", type=Path, help="heavy-guard.sh to wrap Rust builds and gates")
-    parser.add_argument("--icu-archive", type=Path, help="Already fetched deno_core_icudata .crate")
     parser.add_argument("--generated", action="store_true", help="Also run the generated-input gate")
     parser.add_argument("--esbuild", type=Path, help="Pinned esbuild binary (generated gate)")
     parser.add_argument("--chromium", type=Path, help="Installed browser executable (generated gate)")

@@ -36,24 +36,23 @@ Use that same interpreter in place of `python3` in the commands below. This is a
 contributor-tooling requirement, not a CLI user or
 production runtime requirement.
 
-From the repository root, prepare the exact baseline ICU data. This fetches a
-checksum-pinned **data archive only**, extracts its known data member, and
-writes it below ignored `target/`. It never builds/imports Deno code. A Cargo
-cache archive can be passed using `--archive /absolute/path/to/archive.crate`.
+Direct-V8 builds embed the vendored ICU 77 data at
+`crates/zfb-js-host/icu/icudtl.dat` (see its `README.md`); no environment
+variable or download is needed. Verify it against the pin, offline:
 
 ```sh
-python3 prototypes/direct-v8/prepare-icu.py
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+python3 prototypes/direct-v8/prepare-icu.py --verify
 ```
 
-Preparation publishes a checksum-verified temporary sibling with atomic replacement,
-so a failed write or replacement preserves any existing destination. Concurrent
-preparers use distinct temporary files; successful writers publish the same pinned
-bytes. A destination symlink is replaced rather than followed. Caught failures clean
-up their temporary file; an uncatchable process kill may leave an ignored `.icudtl-*`
-sibling. This is atomic visibility, not a power-loss durability guarantee. A cleanup
-failure is reported alongside the original error; the final destination is not deleted.
-The output directory is trusted local build state, not an adversarial shared directory.
+Without `--verify`, `prepare-icu.py` refreshes that file from a checksum-pinned
+**data archive only** (a V8/ICU bump). It extracts the known data member and never
+builds/imports Deno code. A Cargo cache archive can be passed using
+`--archive /absolute/path/to/archive.crate`. A refresh publishes a checksum-verified
+temporary sibling with atomic replacement, so a failed write or replacement preserves
+the existing file. A destination symlink is replaced rather than followed. Caught
+failures clean up their temporary file; an uncatchable process kill may leave an
+ignored `.icudtl-*` sibling. This is atomic visibility, not a power-loss durability
+guarantee.
 
 Run the deterministic offline publication tests without Cargo, V8, network access or
 a native platform build:
@@ -115,11 +114,10 @@ refuses anything that is not the intended executable:
 ```sh
 python3 -I -B prototypes/direct-v8/accept.py --output target/direct-v8-accept-<n> \
   --guard <this-host-published-heavy-guard> \
-  --icu-archive <already fetched deno_core_icudata-0.77.0.crate>   # optional; otherwise fetched \
   --generated --esbuild <pinned esbuild 0.25.12> --chromium <installed browser>
 ```
 
-It prepares the checksum-pinned ICU data, builds the baseline and candidate
+It verifies the vendored, checksum-pinned ICU data, builds the baseline and candidate
 runners with their exact feature commands (plus the outer-config example),
 runs the native library tests, hashes both runners and sends each a probe
 request whose receipt must name the right engine and return the right value,

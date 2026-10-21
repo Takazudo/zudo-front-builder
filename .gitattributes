@@ -12,3 +12,6 @@
 # This fixture is an exact byte-for-byte zudo-wind output golden. The CSS
 # pipeline can retain a final blank line at its combine boundary.
 crates/zfb/tests/fixtures/css-determinism/golden.css whitespace=-blank-at-eof
+
+# Vendored binary data (ICU) must never be newline-converted.
+*.dat binary

@@ -33,8 +33,7 @@ lane (see the PR comment for the exact commit); Cargo.lock SHA-256
 On the matching host, from a clean checkout of the candidate commit:
 
 ```sh
-python3 prototypes/direct-v8/prepare-icu.py
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+python3 prototypes/direct-v8/prepare-icu.py --verify
 python3 prototypes/direct-v8/qualify-target.py --target <triple> --build \
   --guard "$HOME/.claude/scripts/heavy-guard.sh" \
   --source-sha "$(git rev-parse HEAD)" --output target/direct-v8-qualify-<triple>
@@ -225,8 +224,7 @@ Common steps, from a fresh clone at the candidate:
 ```sh
 git checkout --detach <CANDIDATE_SHA> && git status --porcelain   # must print nothing
 pnpm install --frozen-lockfile
-python3 prototypes/direct-v8/prepare-icu.py
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+python3 prototypes/direct-v8/prepare-icu.py --verify
 python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'   # offline controls
 ```
 

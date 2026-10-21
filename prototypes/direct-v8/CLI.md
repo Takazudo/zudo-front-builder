@@ -13,11 +13,11 @@ default switch, release, Mac task or workflow dispatch is part of this work.
 
 ## Build selection
 
-Prepare the existing checksum-pinned ICU input with `prepare-icu.py`, then run
+The checksum-pinned ICU input is vendored at `crates/zfb-js-host/icu/icudtl.dat`
+(`prepare-icu.py --verify` checks it). Run
 these commands through the host's published heavy guard:
 
 ```sh
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
 cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
 cargo test --locked -p zfb --no-default-features --features direct-v8 --lib v8_host_adapter
 cargo test --locked -p zfb-render --no-default-features --features direct-v8,syntect-onig --test config_eval
