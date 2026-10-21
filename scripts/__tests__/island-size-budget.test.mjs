@@ -741,19 +741,20 @@ describe("island shipped-size budget", () => {
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("f5c4b48bddd76448b87ef9b347ae45b7e1d94c52");
+    expect(darwinContract.baselineSourceSha).toBe("bda633b3589e201737b02cf2060f7b24d41a45a7");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "ea092f6a58be884d556aad8113ce119fefd2a872909e21763c908e411fe6eb6c" },
+      localReceipt: { sha256: "52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
-    // paired cargo-internal-rewire at f5c4b48 (#4336, owner-attested local
-    // evidence); the ceilings below still follow run 38451538696 (#4203, #4150).
+    // reviewed rustls-security-4314 producer-lock transition at bda633b (#4314,
+    // owner-attested local evidence); the ceilings below still follow run
+    // 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
       "370bf32469ed4f3093a24aed1cab3dd68a28c58051847d425fcbe3d062fc30ee",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "07fa645050cc0db69ad75f2bc5b824a7cd558dc101f3619089e83d397003e4f9",
+      "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
     // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
@@ -800,7 +801,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("4.5.3");
+    expect(linuxContract.toolchain.packageVersion).toBe("4.5.4");
     expect(linuxContract.schemaVersion).toBe(3);
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(linuxContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
@@ -1379,32 +1380,53 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate inputs of the paired v4.5.3 cargo-internal-rewire at f5c4b48
-// (#4336): both contracts as committed by the first paired rewire (#4258,
-// 7b68afda), cited by the tool at 268c3402 (Linux) and f5c4b48 (Darwin), which
-// hold the same bytes. Constants preserve the assertions in shallow CI; full
-// checkouts also compare git bytes, predecessor metadata and that no
+// Exact immediate predecessors of the live contracts, the inputs of the
+// rustls-security-4314 producer-lock transition (#4314): for Linux, the v4.5.4
+// release-bump contract (ea90fe12), cited by the tool at be106cb2, which holds the
+// same bytes; for Darwin, the paired v4.5.3 cargo-internal-rewire (#4258) at
+// bda633b. Each must equal a frozen verbatim fixture, so the metadata check also
+// holds in shallow CI; full checkouts also compare git bytes and that no
 // intermediate contract was skipped.
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "268c34029653c321dd4e73b4b67d8164761b1c24",
-    sha256: "f505520217649c5cd0a614fe68c83cd500f44f4aafd8c599082348a2d6e7cf3a",
-    fixture: "fixtures/island-size-linux-x64-v4.5.3-rewire-268c3402.json",
-    outcome: "cargo-internal-rewire-transition",
-    packageVersion: "4.5.3",
-    baselineSourceSha: "792c812325310df73540cc20aa590bb8de049d96",
-    baselineRunId: 39008132372,
+    commit: "be106cb261fd8bbdd0fbe83d64f64cc1649919e6",
+    sha256: "9f8cfcada57773cfabfea3207a41367825ccf63f7239ed506d7781ab056ad211",
+    fixture: "fixtures/island-size-linux-x64-v4.5.4-release.json",
+    outcome: "release-version-stamp",
+    packageVersion: "4.5.4",
+    baselineSourceSha: "17e69371428fa85d16bd9c9a8fc7781378cc6664",
+    baselineRunId: 39465679017,
+    // The Linux re-measurement on top of v4.5.4 moved no actual gzip total.
+    actualGzipMoved: {},
   },
   {
     file: "decision.json",
-    commit: "f5c4b48bddd76448b87ef9b347ae45b7e1d94c52",
+    commit: "bda633b3589e201737b02cf2060f7b24d41a45a7",
     sha256: "cc32aa6d51f4f8f3c95fcf27d4b4f2898288d9c49b1b7a4a4e8a654fcbe88818",
-    fixture: "fixtures/island-size-darwin-v4.5.3-rewire-268c3402.json",
+    fixture: "fixtures/island-size-darwin-v4.5.3-rewire.json",
     outcome: "cargo-internal-rewire-transition",
     packageVersion: "4.5.3",
     baselineSourceSha: "792c812325310df73540cc20aa590bb8de049d96",
     baselineRunId: 39015514836,
+    // The README records these 11 moved rows (#4314 decision D2).
+    actualGzipMoved: {
+      workspace: {
+        "blog-theme": -3,
+        "json-api": -3,
+        model: -2,
+        "scalar-signal": -3,
+        "show-for": 3,
+      },
+      packed: {
+        "blog-theme": 2,
+        "event-only": -1,
+        "json-api": 4,
+        model: 1,
+        "multi-island": 3,
+        "scalar-signal": -1,
+      },
+    },
   },
 ];
 
@@ -1430,8 +1452,8 @@ function previousDistinctContractSha256(path) {
   return null;
 }
 
-// A contract without the keys a cargo-internal-rewire may move.
-function outsideRewireKeys(contract) {
+// A contract without the keys a reviewed Cargo.lock transition may move.
+function outsideLockTransitionKeys(contract) {
   const copy = structuredClone(contract);
   for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"]) {
     delete copy[key];
@@ -1536,17 +1558,14 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(contract.baselineEvidence).not.toHaveProperty("repinnedFrom");
   });
 
-  it("moves the 268c3402 Linux contract from the released v4.5.3 bytes only by the first paired cargo-internal-rewire", () => {
+  it("moved the v4.5.3 Linux contract from the released bytes only by the paired cargo-internal-rewire", () => {
     const released = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.3-release.json"), "utf8"),
     );
-    // Verbatim decision-linux-x64.json at 268c3402 (committed by 7b68afda).
-    const rewired = JSON.parse(
-      readFileSync(
-        join(testDir, "fixtures/island-size-linux-x64-v4.5.3-rewire-268c3402.json"),
-        "utf8",
-      ),
-    );
+    // Verbatim bytes of decision-linux-x64.json at main 013b0ab8, before the v4.5.4 release bump.
+    const blob = readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.3-rewire.json"));
+    expect(sha(blob)).toBe("f505520217649c5cd0a614fe68c83cd500f44f4aafd8c599082348a2d6e7cf3a");
+    const rewired = JSON.parse(blob.toString("utf8"));
     expect(rewired.outcome).toBe("cargo-internal-rewire-transition");
     expect(rewired.toolchain.cargoLockSha256).toBe(
       "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
@@ -1568,84 +1587,130 @@ describe("live contracts preserve released evidence and authentic predecessors",
       },
     });
     // Everything outside the rewire's movable keys is the released contract.
-    expect(outsideRewireKeys(rewired)).toEqual(outsideRewireKeys(released));
+    expect(outsideLockTransitionKeys(rewired)).toEqual(outsideLockTransitionKeys(released));
     expect(rewired.baselineEvidence.actualGzip).toEqual(released.baselineEvidence.actualGzip);
   });
 
-  for (const { file, fixture } of repinnedFromContracts) {
+  it("moved the v4.5.4 Linux contract from the v4.5.3 rewire bytes only by the release bump", () => {
+    const rewired = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.3-rewire.json"), "utf8"),
+    );
+    // Verbatim decision-linux-x64.json as committed by the v4.5.4 release bump (ea90fe12).
+    const blob = readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.4-release.json"));
+    expect(sha(blob)).toBe("9f8cfcada57773cfabfea3207a41367825ccf63f7239ed506d7781ab056ad211");
+    const live = JSON.parse(blob.toString("utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("4.5.4");
+    expect(live.toolchain.cargoLockSha256).toBe(rewired.toolchain.cargoLockSha256);
+    expect(live.baselineSourceSha).toBe("17e69371428fa85d16bd9c9a8fc7781378cc6664");
+    expect(live.baselineEvidence).toMatchObject({
+      runId: 39465679017,
+      jobId: 118776314238,
+      sourceSha: "bc2cf771538ceb614be212188300402e25275c2e",
+      repinnedFrom: {
+        outcome: "cargo-internal-rewire-transition",
+        packageVersion: "4.5.3",
+        baselineRunId: 39008132372,
+        contract: { sha256: "f505520217649c5cd0a614fe68c83cd500f44f4aafd8c599082348a2d6e7cf3a" },
+      },
+    });
+    expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
+    expect(live.toolchain.pnpmLockSha256).toBe(sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))));
+    // actualGzip is transfer-size evidence that a version stamp may move, so only
+    // its fixture coverage is pinned, not its values.
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(rewired));
+    // A release bump moves only the version stamp, its lockfile provenance and the evidence.
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"]) {
+        delete copy[key];
+      }
+      copy.toolchain.packageVersion = null;
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(rewired));
+  });
+
+  for (const { file, fixture, actualGzipMoved } of repinnedFromContracts) {
     it(
       "moves the live " +
         file +
-        " from its frozen predecessor only by the paired cargo-internal-rewire at f5c4b48",
+        " from its frozen predecessor only by the rustls-security-4314 transition",
       () => {
         const predecessor = JSON.parse(readFileSync(join(testDir, fixture), "utf8"));
         const live = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
-        const source = "f5c4b48bddd76448b87ef9b347ae45b7e1d94c52";
-        expect(live.outcome).toBe(predecessor.outcome);
-        expect(live.toolchain.cargoLockSha256).toBe(
-          "07fa645050cc0db69ad75f2bc5b824a7cd558dc101f3619089e83d397003e4f9",
+        expect(live.outcome).toBe("cargo-producer-lock-transition");
+        expect(predecessor.toolchain.cargoLockSha256).toBe(
+          "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
         );
-        expect(live.baselineSourceSha).toBe(source);
-        expect(live.baselineEvidence).toMatchObject({
-          sourceSha: source,
-          cargoRewire: {
-            oldSha: predecessor.toolchain.cargoLockSha256,
-            newSha: live.toolchain.cargoLockSha256,
-            declaration: {
-              path: "prototypes/direct-v8/admission/rewire-declaration.json",
-              sha256: "972f9c658802f5f51e51d94da6367002a20cb212d13dccee8a982440ee0241d4",
-            },
+        expect(live.toolchain.cargoLockSha256).toBe(
+          "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
+        );
+        expect(live.baselineEvidence.cargoTransition).toEqual({
+          oldSha: predecessor.toolchain.cargoLockSha256,
+          newSha: live.toolchain.cargoLockSha256,
+          added: ["rustls@0.23.46"],
+          changed: [],
+          removed: ["rustls@0.23.45"],
+          oldLockSource: {
+            commit: "21d6807e442bbed61e578c165a91d64c4a7dc141",
+            path: "Cargo.lock",
+            sha256: predecessor.toolchain.cargoLockSha256,
+          },
+          review: {
+            id: "rustls-security-4314",
+            manifestSha256: "fe689aca3a29b012ca7fb96a3aad3dc9fc507f117a18be501e379dae2b3f04ff",
+            sourceSha: "21d6807e442bbed61e578c165a91d64c4a7dc141",
           },
         });
+        expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
         if (file === "decision.json") {
           // Owner-attested local native evidence: no Actions run or artifact.
           expect(predecessor.baselineEvidence.event).toBe("ci-artifact");
+          expect(live.baselineSourceSha).toBe("bda633b3589e201737b02cf2060f7b24d41a45a7");
           expect(live.baselineEvidence).toMatchObject({
             event: "local-native",
+            sourceSha: "bda633b3589e201737b02cf2060f7b24d41a45a7",
             localReceipt: {
-              sha256: "ea092f6a58be884d556aad8113ce119fefd2a872909e21763c908e411fe6eb6c",
+              sha256: "52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431",
             },
           });
           for (const key of ["runId", "jobId", "artifact"]) {
             expect(live.baselineEvidence).not.toHaveProperty(key);
           }
         } else {
+          expect(live.baselineSourceSha).toBe("949f4cccbdd48ed6d8c8208ec51e93c1dee37b08");
           expect(live.baselineEvidence).toMatchObject({
             event: predecessor.baselineEvidence.event,
-            runId: 39459937951,
-            jobId: 118756461642,
+            sourceSha: "60d80bcd5e557a141e3fe021336e1054a34b92b4",
+            runId: 39570410628,
+            jobId: 119122855750,
           });
         }
-        expect(outsideRewireKeys(live)).toEqual(outsideRewireKeys(predecessor));
-        // Actual gzip is transfer-size evidence, not a ceiling; the README
-        // records these 11 moved rows for both platforms.
+        expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
+        // Actual gzip is transfer-size evidence, not a ceiling.
+        expect(Object.keys(live.baselineEvidence.actualGzip)).toEqual(
+          Object.keys(predecessor.baselineEvidence.actualGzip),
+        );
         const moved = {};
         for (const [mode, rows] of Object.entries(live.baselineEvidence.actualGzip)) {
+          expect(Object.keys(rows)).toEqual(
+            Object.keys(predecessor.baselineEvidence.actualGzip[mode]),
+          );
           for (const [fixtureName, bytes] of Object.entries(rows)) {
             const delta = bytes - predecessor.baselineEvidence.actualGzip[mode][fixtureName];
             if (delta !== 0) (moved[mode] ??= {})[fixtureName] = delta;
           }
         }
-        expect(Object.keys(live.baselineEvidence.actualGzip)).toEqual(
-          Object.keys(predecessor.baselineEvidence.actualGzip),
-        );
-        expect(moved).toEqual({
-          workspace: {
-            "show-for": 3,
-            model: -2,
-            "blog-theme": -3,
-            "json-api": -3,
-            "scalar-signal": -3,
-          },
-          packed: {
-            "json-api": 4,
-            "multi-island": 3,
-            "blog-theme": 2,
-            model: 1,
-            "event-only": -1,
-            "scalar-signal": -1,
-          },
-        });
+        expect(moved).toEqual(actualGzipMoved);
       },
     );
   }

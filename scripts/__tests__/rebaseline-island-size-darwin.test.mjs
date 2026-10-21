@@ -102,16 +102,16 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
   readFileSync(join(testDir, "fixtures/island-size-darwin-actual-gzip-v1.json"), "utf8"),
 );
-// Verbatim decision.json and island-size-budget.test.mjs at 268c3402: the last
+// Verbatim decision.json and island-size-budget.test.mjs at bda633b: the last
 // Darwin contract carrying Actions artifact evidence and the test pins that
 // match it. The live contract now records owner-attested local-native evidence
-// (#4336), so cases that start from an artifact-shaped Darwin pin use these.
+// (#4314), so cases that start from an artifact-shaped Darwin pin use these.
 const PRE_LOCAL_DARWIN_CONTRACT = readFileSync(
-  join(testDir, "fixtures/island-size-darwin-v4.5.3-rewire-268c3402.json"),
+  join(testDir, "fixtures/island-size-darwin-v4.5.3-rewire.json"),
   "utf8",
 );
 const PRE_LOCAL_DARWIN_PINS = readFileSync(
-  join(testDir, "fixtures/island-size-budget-test-268c3402.txt"),
+  join(testDir, "fixtures/island-size-budget-test-v4.5.3-rewire.txt"),
   "utf8",
 );
 const preLocalDarwinContract = () => JSON.parse(PRE_LOCAL_DARWIN_CONTRACT);
@@ -801,7 +801,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
       readFileSync(join(repoRoot, "research/v3-island-size/decision.json"), "utf8"),
     );
     expect(rewriteDarwinTestPins(liveSource, liveContract)).toBe(liveSource);
-    // An artifact-shaped re-pin starts from the frozen 268c3402 pair.
+    // An artifact-shaped re-pin starts from the frozen bda633b pair.
     expect(sha(PRE_LOCAL_DARWIN_CONTRACT)).toBe(
       "cc32aa6d51f4f8f3c95fcf27d4b4f2898288d9c49b1b7a4a4e8a654fcbe88818",
     );

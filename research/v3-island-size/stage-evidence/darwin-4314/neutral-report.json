@@ -1,0 +1,17 @@
+{
+  "originalSha256": "cfae5404e8e6a0f61c045eb024369cf28321669c9160bb3a3532108d0131e50c",
+  "neutralSha256": "52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431",
+  "bundleSha256": "136395016503fb8062e8a902cfc5e11191461325952e0216f09f6ffe0a03c83e",
+  "sourceSha": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+  "placeholders": {
+    "<HEAVY_GUARD>": 3,
+    "<PACKED_ZFB_TARBALL_STEM>": 7,
+    "<RETAIN>": 16,
+    "<SOURCE>": 7,
+    "<TARGET>": 2,
+    "<ZFB_NODE>": 5
+  },
+  "changedCommandArgs": 39,
+  "bundleLocationReplaced": true,
+  "operatorReplaced": true
+}
