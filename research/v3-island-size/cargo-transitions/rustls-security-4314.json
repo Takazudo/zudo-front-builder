@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "rustls-security-4314",
+  "sourceSha": "21d6807e442bbed61e578c165a91d64c4a7dc141",
+  "oldSha": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
+  "newSha": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
+  "added": ["rustls@0.23.46"],
+  "changed": [],
+  "removed": ["rustls@0.23.45"],
+  "decision": "Owner approved the exact rustls security replacement on 2026-10-19; no incidental Windows edge changes or other dependency updates. Structural authorization only; no live contract application.",
+  "advisories": [
+    "RUSTSEC-2026-0346",
+    "RUSTSEC-2026-0347",
+    "RUSTSEC-2026-0348",
+    "RUSTSEC-2026-0349"
+  ],
+  "nativeMeasurement": "required-separately-for-each-platform"
+}
