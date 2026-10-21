@@ -139,15 +139,18 @@ jobs:
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           df -h / | tee "$ROW_DIR/disk-after.txt"
           if [ -f "$ROW_DIR/qualify/row.json" ]; then
-            python3 -c 'import json,sys; print("ROW_BINARY=" + json.load(open(sys.argv[1]))["checks"]["binary"]["path"])' \
+            python3 -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
               "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
           fi
           exit "$status"
 
       # Packaging steps run after the row so their package-dir edits cannot
-      # dirty its source check. cross provides the shipping GLIBC 2.34 image
-      # for both the binary and the CSS addon (as in node-free-smoke.yml).
+      # dirty its source check. They also run after a failed row once it has
+      # built a binary (the Rolldown row fails on the known lifecycle case).
+      # cross provides the shipping GLIBC 2.34 image for both the binary and
+      # the CSS addon (as in node-free-smoke.yml).
       - name: Install cross
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
           tool: cross@0.2.5
@@ -156,6 +159,7 @@ jobs:
       # recipe, so this is recorded, not gated: the binary's GLIBC floor is not
       # qualified by this lane.
       - name: Record the native binary's GLIBC requirement
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
         run: |
           objdump -T "$ROW_BINARY" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 | tee "$ROW_DIR/binary-max-glibc.txt"
 
@@ -164,6 +168,7 @@ jobs:
       # floor (Cross.toml, #3623). Same command with the direct-v8 features;
       # the floor is gated exactly as in release.yml.
       - name: Shipping-recipe binary (cross, GLIBC 2.34 floor)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
         env:
           # cross drops host env and mounts the workspace at /project, so the
           # host ICU path does not exist in the container; mount its directory.
@@ -190,6 +195,7 @@ jobs:
       # Uses the shipping-recipe binary, so the carrier matches what release
       # would pack (cross binary + cross addon).
       - name: Packed clean-room consumer (Linux x86_64)
+        if: ${{ !cancelled() && env.CROSS_BINARY != '' }}
         run: |
           bash scripts/build-css-node.sh x86_64-unknown-linux-gnu cross
           pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
@@ -197,6 +203,34 @@ jobs:
           cp packages/zfb-linux-x64-gnu/zfb-css.node "$addon"
           ZFB_LINUX_X64_BINARY="$CROSS_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
             bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
+
+      # The same carrier, consumed with the Rolldown prototype switched on for the
+      # site build; the clean-room smoke above keeps the default bundler.
+      - name: Packed consumer with Rolldown (Linux x86_64)
+        if: ${{ !cancelled() && env.ROLLDOWN == 'true' && env.CROSS_BINARY != '' }}
+        run: |
+          python3 prototypes/direct-v8/packed-consumer.py --carrier linux-x64-gnu --binary "$CROSS_BINARY" \
+            --css-addon "$RUNNER_TEMP/zfb-css.node" --output "$ROW_DIR/packed-rolldown" --rolldown
+
+      # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      # Runs after a failed row too, as the cases do.
+      - name: Install Chromium for the browser cases
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        continue-on-error: true
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          echo "CASE_CHROMIUM=$(node -e 'console.log(require("@playwright/test").chromium.executablePath())')" >> "$GITHUB_ENV"
+
+      # After the packaging steps so a failing case never hides them. Every case
+      # runs and is recorded; any failing row turns the step red, on the Rolldown
+      # leg too, where a red row is that case's recorded compatibility result.
+      - name: CLI interoperability cases (actual binary)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          [ -n "${CASE_CHROMIUM:-}" ] && extra+=(--chromium "$CASE_CHROMIUM")
+          python3 prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
 
       - name: Summary
         if: always()
@@ -214,8 +248,20 @@ jobs:
             else
               echo "No native row recorded."
             fi
+            if [ -f "$ROW_DIR/packed-rolldown/report.json" ]; then
+              python3 - "$ROW_DIR/packed-rolldown/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("packed consumer (Rolldown):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          for row in report["rows"]:
+              print(f"- {row['name']}: {row['passed']}")
+          PY
+            fi
+            if [ -f "$ROW_DIR/cases/report.json" ]; then
+              python3 prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
+            fi
             echo
-            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner), Rolldown coverage cases."
+            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner)."
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MATRIX_FEATURES: ${{ matrix.features }}
@@ -296,6 +342,10 @@ jobs:
           "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build \
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           echo "qualify-target exit $status"
+          if [ -f "$ROW_DIR/qualify/row.json" ]; then
+            "$PY" -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
+              "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
+          fi
           "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
           import json, sys
           row = json.load(open(sys.argv[1]))
@@ -333,6 +383,27 @@ jobs:
             --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
             --output "$ROW_DIR/packed"
 
+      # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      # Runs after a failed row too, as the cases do.
+      - name: Install Chromium for the browser cases
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        continue-on-error: true
+        run: |
+          deps=()
+          [ "$RUNNER_OS" = Linux ] && deps=(--with-deps)
+          pnpm exec playwright install "${deps[@]}" chromium
+          echo "CASE_CHROMIUM=$(node -e 'console.log(require("@playwright/test").chromium.executablePath())')" >> "$GITHUB_ENV"
+
+      # Every case runs and is recorded; any failing row turns the step red, on
+      # the Rolldown leg too, where a red row is that case's compatibility result.
+      - name: CLI interoperability cases (actual binary)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          [ -n "${CASE_CHROMIUM:-}" ] && extra+=(--chromium "$CASE_CHROMIUM")
+          "$PY" prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
+
       - name: Summary
         if: always()
         run: |
@@ -359,6 +430,9 @@ jobs:
           PY
             elif [ "$PACKED_OUTCOME" != skipped ]; then
               echo "packed consumer: no report ($PACKED_OUTCOME)"
+            fi
+            if [ -f "$ROW_DIR/cases/report.json" ]; then
+              "$PY" prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
             fi
             if [ "$PROTOTYPE_TESTS_OUTCOME" != skipped ]; then
               echo "rolldown prototype library tests: $PROTOTYPE_TESTS_OUTCOME"
