@@ -956,6 +956,31 @@ jobs:
           test -z "$(git status --porcelain)" || { echo 'Dirty source before Wind routing' >&2; exit 1; }
           node scripts/wind-compatibility/ci-route.mjs --github-output "$GITHUB_OUTPUT"
 
+      # The start-of-job cleanup above is skipped on a healthy runner, but
+      # the full lane still filled the disk after the V8 build from 92 GB
+      # free at job start (issue #4376). Full mode installs three browser
+      # engines and writes three-engine evidence, so it always reclaims the
+      # preinstalled toolchains this job never uses. Chromium-only PR routes
+      # keep the cheaper path.
+      - name: Free disk space for full Wind lane (issue #4376)
+        if: ${{ steps.wind_route.outputs.mode == 'full' }}
+        run: |
+          set -euo pipefail
+          report() {
+            echo "::group::Disk usage ($1)"
+            df -h / "$RUNNER_TEMP" 2>/dev/null || df -h /
+            sudo du -sh target "$RUNNER_TEMP" "$HOME/.cargo" "$HOME/.cache" 2>/dev/null || true
+            echo "::endgroup::"
+          }
+          report "before full Wind cleanup"
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          report "after full Wind cleanup"
+
       - name: Install profile browser engines
         if: ${{ steps.wind_route.outputs.relevant == 'true' }}
         run: |
@@ -970,6 +995,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/wind-compatibility/ci-run.sh '${{ steps.wind_route.outputs.mode }}'
+
+      - name: Report disk headroom after full Wind lane (issue #4376)
+        if: ${{ always() && steps.wind_route.outputs.mode == 'full' }}
+        run: df -h /
 
       - name: Assert explicit irrelevant Wind no-op
         if: ${{ steps.wind_route.outputs.relevant == 'false' }}
