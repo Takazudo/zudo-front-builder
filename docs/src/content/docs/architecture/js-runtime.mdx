@@ -45,6 +45,8 @@ Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real f
 
 At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate via `deno_core`. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
 
+V8 itself is initialized once per process, on the main thread, before the CLI starts Tokio or any host thread. Both host implementations share that startup code (`zfb-js-host::process::initialize`) and the rule that only one host is alive on a thread at a time.
+
 The same bundle (`export default { fetch }`) deploys unchanged to Cloudflare Workers for runtime SSR of `prerender = false` routes. workerd executes it on request. The production path is unaware of which build-time engine produced the bundle.
 
 ## The need
@@ -66,7 +68,7 @@ A now-removed spike crate implemented the same `RenderHost` trait against three 
 - **`ssr_rs`** — a thin V8 wrapper specialised for Preact / React SSR. Narrower scope, single-bundle entry-point model.
 - **`rquickjs`** — Rust bindings around QuickJS. Small footprint, fast to compile, single-threaded.
 
-Two more were rejected without a measured spike. `rusty_v8` is the same V8 we would get through `deno_core`, only at a lower level — choosing it means re-implementing the loader and isolate plumbing `deno_core` already gives us. `boa` is a pure-Rust ESM implementation; ECMA conformance and source-map fidelity trail V8 by enough that real-world Preact / React SSR hits unsupported corners.
+Two more were rejected without a measured spike. `rusty_v8` is the same V8 we would get through `deno_core`, only at a lower level — choosing it means re-implementing the loader and isolate plumbing `deno_core` already gives us. (That cost was later accepted on purpose for the opt-in direct V8 host described [below](#current-defaults-and-experiments), which talks to the `v8` crate directly.) `boa` is a pure-Rust ESM implementation; ECMA conformance and source-map fidelity trail V8 by enough that real-world Preact / React SSR hits unsupported corners.
 
 ### Trade-off matrix
 
@@ -94,9 +96,9 @@ The ~3 minute figure above is the now-removed spike crate compiling its `deno_co
 
 Two project-level invariants shape the choice.
 
-**Single isolate per render thread.** V8's isolate is pinned to one thread. The renderer treats the host as `!Send` and runs it on a dedicated thread, exchanging work over a channel.
+**Single isolate per render thread.** V8's isolate is pinned to one thread. The renderer treats the host as `!Send` and runs it on a dedicated thread, exchanging work over a channel. A per-thread guard refuses a second live host on the same thread, and config evaluation creates a fresh host for each call.
 
-**The runtime is fixed by the binary, not by config.** `zfb.config.ts` cannot pick its own JS runtime. The runtime is whatever the `zfb` binary you installed was compiled with. That keeps the contract between zfb and user code single-valued — every project built with one binary uses the same runtime. The bootstrap rule lives in `crates/zfb/src/config.rs`.
+**The runtime is fixed by the binary, not by config.** `zfb.config.ts` cannot pick its own JS runtime, and there is no CLI flag for it either. The runtime is whatever the `zfb` binary you installed was compiled with, chosen by Cargo features at build time. That keeps the contract between zfb and user code single-valued — every project built with one binary uses the same runtime. The bootstrap rule lives in `crates/zfb/src/config.rs`.
 
 ## The boundary
 
@@ -113,8 +115,26 @@ pub trait RenderHost {
 
 That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. The implementation can be swapped without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.
 
+The direct V8 host below is swapped in at compile time rather than through a second trait implementation. In a direct-V8-only build, `zfb-render` exports `zfb_js_host::native::NativeHost` under the existing `EmbeddedV8RenderHost` name, so `zfb-build`, the dev server and the CLI's thread adapter compile unchanged against either host.
+
 ## Current defaults and experiments
 
-The ordinary paths remain deno_core-backed embedded V8 and esbuild. Direct V8 and Rolldown are non-default prototypes, not activated runtime alternatives in the normal CLI.
+Every released `zfb` binary, including the npm platform packages and the Homebrew formula, uses the `deno_core`-backed host and esbuild. That is the default `embed_v8` Cargo feature.
+
+A second host, **direct V8**, lives in the `zfb-js-host` crate. It drives the same pinned V8 (`v8` crate 147.4.0) without `deno_core` or `serde_v8`, and it implements the same module loading, Web API services, dispatch and dev-reload behavior. It is a source-build opt-in only:
+
+```sh
+python3 prototypes/direct-v8/prepare-icu.py
+export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
+```
+
+- The ICU data file is a compile-time input: the build fails without `ZFB_V8_ICU_DATA`.
+- Turning off default features is required. If `embed_v8` and `direct-v8` are both enabled, the `deno_core` host still renders and evaluates config; the two only share one V8 platform.
+- With neither feature, the slim build keeps its existing behavior: config is evaluated by a `node` subprocess and SSR paths fail loudly.
+
+Direct V8 is being qualified, not adopted. An opt-in CI lane (`direct-v8.yml`, run by the `direct-v8` or `direct-v8-rolldown` PR label) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows need a Mac and are not run in CI. Whether direct V8 becomes the default and the `deno_core` host is removed is a separate decision ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
+
+Rolldown is a separate non-default bundler prototype (`rolldown-prototype` feature). The `direct-v8-rolldown` lane builds it together with direct V8; esbuild stays the bundler of every released binary.
 
 `zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.

@@ -66,13 +66,13 @@ See [`architecture/choosing-zfb.mdx`](./docs/src/content/docs/architecture/choos
 
 ## What ships, what is experimental, what is planned
 
-**In the current release** (v4.5.3; see the [changelog](https://zfb.takazudomodular.com/docs/changelog/)): the `zfb` commands `new`, `dev`, `check`, `build`, `preview`, `css` and `wind`; the embedded V8 host (deno_core) that loads `zfb.config.ts` and renders pages; TSX, MDX, Markdown and HTML pages; content collections; the islands pipeline with zudo-react; zudo-wind utility CSS; `syntect`-backed syntax highlighting; the client router with view transitions; the dev server; and the Cloudflare Workers adapter.
+**In the current release** (v4.5.4; see the [changelog](https://zfb.takazudomodular.com/docs/changelog/)): the `zfb` commands `new`, `dev`, `check`, `build`, `preview`, `css` and `wind`; the embedded V8 host (deno_core) that loads `zfb.config.ts` and renders pages; TSX, MDX, Markdown and HTML pages; content collections; the islands pipeline with zudo-react, whose shipped bytes stay stable across unrelated edits; zudo-wind utility CSS; `syntect`-backed syntax highlighting; the client router with view transitions; the dev server; and the Cloudflare Workers adapter.
 
-**On `main`, not yet released:** islands build-identity fixes that keep shipped islands bytes stable across unrelated edits. Unreleased work is listed in each pending release's notes, not here.
+**On `main`, not yet released:** unreleased work is listed in each pending release's notes, not here.
 
-**Experimental, not in any release:** a direct V8 host that replaces deno_core behind an opt-in switch ([#4301](https://github.com/Takazudo/zudo-front-builder/issues/4301)). Its CLI wiring is still a draft pull request; the released CLI cannot select it, and the default engine is unchanged.
+**Experimental, source builds only:** a direct V8 host that drives V8 without deno_core ([#4301](https://github.com/Takazudo/zudo-front-builder/issues/4301)). It is wired into the real CLI on `main`, behind the non-default `direct-v8` Cargo feature (`cargo build -p zfb --no-default-features --features direct-v8`, with the pinned ICU data prepared first; see [`prototypes/direct-v8/CLI.md`](prototypes/direct-v8/CLI.md)). No released binary or npm package includes it, there is no runtime switch, and the default engine is unchanged.
 
-**Planned after that experiment:** qualifying the direct host on the five native targets, in the packaged CLI and with Rolldown output ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302)), then deciding whether it becomes the default and the deno_core host is removed ([#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). Each step needs a separate owner decision.
+**In progress:** qualifying the direct host on the five native targets, in the packaged CLI and with Rolldown output ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302)). An opt-in, label-triggered CI lane (`direct-v8.yml`) records Linux x64, Linux arm64 and Windows x64 rows; Darwin rows need a Mac. Deciding whether direct V8 becomes the default and the deno_core host is removed comes after that ([#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). Each step needs a separate owner decision.
 
 ## Docs site
 
