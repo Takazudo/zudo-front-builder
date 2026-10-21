@@ -391,6 +391,14 @@ jobs:
           "$PY" prototypes/direct-v8/check-plugin-virtual-module.py \
             --binary "target/$TARGET/release/zfb.exe" --output "$ROW_DIR/plugin-virtual-module"
 
+      # #4347 regression: plugin addAlias (#3002) from a node_modules importer
+      # through the same binary. Before #4360 esbuild could not resolve the alias here.
+      - name: Plugin alias from node_modules (Windows x64, release recipe)
+        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
+        run: |
+          "$PY" prototypes/direct-v8/check-plugin-alias-node-modules.py \
+            --binary "target/$TARGET/release/zfb.exe" --output "$ROW_DIR/plugin-alias"
+
       # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
       # Runs after a failed row too, as the cases do.
       - name: Install Chromium for the browser cases
@@ -444,6 +452,13 @@ jobs:
           import json, sys
           report = json.load(open(sys.argv[1]))
           print("plugin virtual module (#4343):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          PY
+            fi
+            if [ -f "$ROW_DIR/plugin-alias/report.json" ]; then
+              "$PY" - "$ROW_DIR/plugin-alias/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("plugin alias from node_modules (#4347):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
           PY
             fi
             if [ -f "$ROW_DIR/cases/report.json" ]; then
