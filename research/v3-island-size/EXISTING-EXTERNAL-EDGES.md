@@ -137,10 +137,11 @@ expected until later admission; extra failures or changed totals remain blockers
 
 **Local evidence ingestion is a separate outstanding boundary:** the existing
 Darwin rebaseline CLI requires real Actions run/job/artifact IDs and expiration.
-This extension does not add a local-evidence provenance mode. Local native results
-must remain honestly labeled; never invent those IDs or pass a local run as an
-Actions artifact. A separately reviewed local provenance ingestion route is needed
-before these local results can be used for application through that CLI.
+Local native results must remain honestly labeled; never invent those IDs or pass
+a local run as an Actions artifact. The separately scoped
+[owner-attested local adapter](LOCAL-NATIVE-EVIDENCE.md) adds an explicit receipt
+route for `cargo-internal-rewire`. Its integrity checks do not authenticate native
+execution; real evidence review and application remain separate owner decisions.
 
 Once native evidence and an honest supported provenance route exist, the existing
 [paired staging commands](README.md#cargo-internal-rewire-transitions-4258) take the

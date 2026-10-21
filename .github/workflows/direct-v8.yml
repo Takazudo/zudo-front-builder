@@ -354,6 +354,18 @@ jobs:
           sys.exit(0 if row["status"] == "PASS" else 1)
           PY
 
+      # The prototype's own tests are the only ones that see Windows verbatim
+      # canonical paths (tsconfig paths, rewritten imports, out-of-cwd inputs).
+      # A red result names the spellings still reaching Rolldown verbatim.
+      - name: Rolldown prototype library tests (Windows x64)
+        id: prototype_tests
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features != 'direct-v8' }}
+        run: |
+          set -o pipefail
+          mkdir -p "$ROW_DIR"
+          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 \
+            | tee "$ROW_DIR/rolldown-prototype-lib-tests.log"
+
       # release.yml's native cargo build of the Windows carrier, here with the
       # opt-in direct-v8 selection and pinned ICU, which release.yml does not build.
       # Runs even when the native row fails, but only once setup has succeeded.
@@ -422,10 +434,14 @@ jobs:
             if [ -f "$ROW_DIR/cases/report.json" ]; then
               "$PY" prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
             fi
+            if [ "$PROTOTYPE_TESTS_OUTCOME" != skipped ]; then
+              echo "rolldown prototype library tests: $PROTOTYPE_TESTS_OUTCOME"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           MATRIX_FEATURES: ${{ matrix.features }}
           PACKED_OUTCOME: ${{ steps.packed.outcome }}
+          PROTOTYPE_TESTS_OUTCOME: ${{ steps.prototype_tests.outcome }}
 
       - name: Upload row evidence
         if: always()
