@@ -1,7 +1,7 @@
 # Phase 1 execution findings
 
-> Phase 2 status: the nondefault actual CLI integration is implemented on
-> `feat/4301-direct-v8-cli`; see [CLI.md](CLI.md) for selection, ownership and
+> Phase 2 status: the nondefault actual CLI integration is on `main` (merged by
+> #4368 from `feat/4301-direct-v8-cli`); see [CLI.md](CLI.md) for selection, ownership and
 > current verification status. The phase-1 observations below remain historical
 > and source-bound; an old hold is neither a current implementation claim nor
 > proof of phase-2 acceptance.

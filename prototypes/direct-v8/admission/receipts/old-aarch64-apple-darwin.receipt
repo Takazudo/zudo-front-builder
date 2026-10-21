@@ -3,7 +3,7 @@
   "producer": "zfb",
   "target": "aarch64-apple-darwin",
   "edges": "normal,build",
-  "cargoLockSha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
+  "cargoLockSha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
   "command": [
     "cargo",
     "metadata",
@@ -2649,7 +2649,7 @@
     },
     {
       "name": "rustls",
-      "version": "0.23.45",
+      "version": "0.23.46",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "features": [
         "ring",

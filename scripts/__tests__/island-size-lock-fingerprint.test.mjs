@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   FINGERPRINT_PARSER,
@@ -33,6 +33,9 @@ import {
 } from "../../research/v3-island-size/lock-fingerprint.mjs";
 import { computeWithHelperSource } from "../rebaseline-island-size-linux.mjs";
 import { addPackage, mutate, renameVersion } from "./fixtures/island-size-lock-mutations.mjs";
+
+// Synchronous git/helper end-to-end cases peak near 5.3 s on hosted runners (median up to 3.7 s); measured in #4364.
+vi.setConfig({ testTimeout: 15_000 });
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");

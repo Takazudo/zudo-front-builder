@@ -148,6 +148,71 @@ on:
     types: [completed]
 
 jobs:
+  # Docs-only PR detector (#4372), sharing .github/path-filters/ with
+  # health.yml and docs-checks.yml. It runs on every event and reports
+  # docs_only=false off pull_request: a skipped ancestor would make the
+  # implicit success() of showcase-deploy skip the production deploy.
+  changes:
+    name: changed-files (docs-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level `permissions:` REPLACES the workflow default, so contents:read
+    # is restated. pull-requests:read lets paths-filter list the PR's files.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      # Base commit, only for the shared filter files; paths-filter reads the
+      # PR's changed files through the API.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/path-filters
+          persist-credentials: false
+
+      # Docs-only scope (#4372). Both filter files come from the base-commit
+      # checkout above; a base without them never resolves docs-only.
+      - name: Detect non-docs changes
+        id: code
+        if: ${{ github.event_name == 'pull_request' && hashFiles('.github/path-filters/docs-only.yml') != '' }}
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: .github/path-filters/docs-only.yml
+
+      - name: Detect docs files read by heavy jobs
+        id: inputs
+        if: ${{ github.event_name == 'pull_request' && hashFiles('.github/path-filters/docs-test-inputs.yml') != '' }}
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: .github/path-filters/docs-test-inputs.yml
+
+      # Fail closed: only an explicit docs-only result on a PR into main or
+      # base/** (where docs-checks.yml runs the JS subset) skips anything. The
+      # PR-files API lists at most 3000 files, so a listing that large, or an
+      # empty one, keeps the full lane.
+      - name: Resolve docs-only scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          CODE_CHANGED: ${{ steps.code.outputs.code }}
+          FILE_COUNT: ${{ steps.code.outputs.all_count }}
+          TEST_INPUTS_CHANGED: ${{ steps.inputs.outputs.inputs }}
+        run: |
+          set -euo pipefail
+          docs_only=false
+          if [ "$EVENT_NAME" = "pull_request" ] \
+            && { [ "$BASE_REF" = "main" ] || [[ "$BASE_REF" == base/* ]]; } \
+            && [ "$CODE_CHANGED" = "false" ] && [ "$TEST_INPUTS_CHANGED" = "false" ] \
+            && [[ "$FILE_COUNT" =~ ^[0-9]+$ ]] && [ "$FILE_COUNT" -gt 0 ] && [ "$FILE_COUNT" -lt 3000 ]; then
+            docs_only=true
+          fi
+          echo "docs_only=${docs_only} (event=${EVENT_NAME} base=${BASE_REF:-<unset>} code=${CODE_CHANGED:-<unset>} files=${FILE_COUNT:-<unset>} test_inputs=${TEST_INPUTS_CHANGED:-<unset>})"
+          echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
+
   # ── Linux binary build (one job per platform) ──────────────────────────────
   build-binary:
     # Named after matrix.platform.target (not .runner) so each leg produces a
@@ -156,7 +221,16 @@ jobs:
     # name and branch-protection rulesets couldn't require them independently.
     name: Build binary (${{ matrix.platform.target }})
     # Only run on PR and main push triggers, not on workflow_run.
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    # `!cancelled()` lets it run when the `changes` detector failed.
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
+    # Docs-only PRs (#4372) keep this matrix job running with every step
+    # skipped instead of skipping the job: a job-level skip happens before
+    # matrix expansion, so it would report one unexpanded
+    # "Build binary (${{ matrix.platform.target }})" context and leave the two
+    # required per-target contexts pending forever.
+    env:
+      BUILD_BINARY: ${{ needs.changes.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -182,21 +256,30 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 30
     steps:
+      - name: Docs-only PR, binary build skipped (#4372)
+        if: ${{ env.BUILD_BINARY != 'true' }}
+        run: echo "Every changed file is docs-only; see .github/path-filters/docs-only.yml."
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        if: ${{ env.BUILD_BINARY == 'true' }}
 
       # pnpm version is read from package.json's "packageManager" field.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: ${{ env.BUILD_BINARY == 'true' }}
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: ${{ env.BUILD_BINARY == 'true' }}
         with:
           node-version: "22"
           cache: "pnpm"
 
       # build.rs reads Hono from node_modules at build time.
       - name: Install dependencies
+        if: ${{ env.BUILD_BINARY == 'true' }}
         run: pnpm install --frozen-lockfile
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+        if: ${{ env.BUILD_BINARY == 'true' }}
         with:
           targets: ${{ matrix.platform.target }}
 
@@ -235,6 +318,7 @@ jobs:
       # (built against glibc 2.35 headers) would be relinked unchanged; a fresh
       # family makes the first cross build start cold instead.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        if: ${{ env.BUILD_BINARY == 'true' }}
         with:
           prefix-key: "v3-zfb-smoke-${{ matrix.platform.target }}"
 
@@ -247,6 +331,7 @@ jobs:
       # SHA check skips the download. The x86_64 leg's key matches health.yml
       # so those jobs share one cache entry.
       - name: Cache staged esbuild binary (issue 2385)
+        if: ${{ env.BUILD_BINARY == 'true' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
@@ -265,20 +350,24 @@ jobs:
       # built on the fly from docker/x86_64-unknown-linux-gnu.Dockerfile) fixes
       # the GLIBC ceiling at 2.34.
       - name: Install cross
+        if: ${{ env.BUILD_BINARY == 'true' }}
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
           tool: cross@0.2.5
 
       - name: Build zfb binary (cross)
+        if: ${{ env.BUILD_BINARY == 'true' }}
         run: cross build -p zfb --release --target ${{ matrix.platform.target }}
 
       - name: Build native CSS addon (cross)
+        if: ${{ env.BUILD_BINARY == 'true' }}
         run: bash scripts/build-css-node.sh ${{ matrix.platform.target }} cross
 
       # GLIBC 2.34 = Amazon Linux 2023 / RHEL 9-class (#3623). Keep this value
       # identical to release.yml's step. Lower it only with a measured objdump
       # result; never raise it without an issue.
       - name: Enforce GLIBC 2.34 floor on the built binary
+        if: ${{ env.BUILD_BINARY == 'true' }}
         shell: bash
         run: |
           BIN="target/${{ matrix.platform.target }}/release/zfb"
@@ -301,6 +390,7 @@ jobs:
       # Dockerfile COPY zfb-bin is always resolvable regardless of target triple.
       # One compile, two uploads — JSON variant and TS variant both need the binary.
       - name: Stage binary for smoke containers
+        if: ${{ env.BUILD_BINARY == 'true' }}
         run: |
           cp target/${{ matrix.platform.target }}/release/libzfb_css_node.so tests/smoke/node-free/zfb-css.node
           cp target/${{ matrix.platform.target }}/release/zfb \
@@ -309,6 +399,7 @@ jobs:
              tests/smoke/node-free-ts/zfb-bin
 
       - name: Upload binary artifact (JSON smoke)
+        if: ${{ env.BUILD_BINARY == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.platform.artifact }}
@@ -318,6 +409,7 @@ jobs:
           retention-days: 1
 
       - name: Upload binary artifact (TS smoke)
+        if: ${{ env.BUILD_BINARY == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.platform.artifact }}-ts
@@ -329,7 +421,10 @@ jobs:
   # ── amd64 smoke: runs on ubuntu-latest ─────────────────────────────────────
   smoke-amd64:
     name: Smoke amd64 (local mode)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -366,7 +461,10 @@ jobs:
   # NOT in ruleset 18452968 (see CLAUDE.md); a red run still blocks its author.
   smoke-amd64-al2023:
     name: Smoke amd64 Amazon Linux 2023 (glibc 2.34 floor)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -425,7 +523,10 @@ jobs:
   # packed tarball actually installs and runs.
   scaffold-e2e:
     name: Scaffold E2E (packed tarballs, pre-publish)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -905,7 +1006,10 @@ jobs:
   # unrelated PR.
   built-site-browser-smoke:
     name: Built-site browser smoke (L4)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Budgeted the same as router-chromium.yml: the suite itself is a single
     # short assertion; the timeout mostly covers the pnpm install + Chromium
@@ -984,7 +1088,10 @@ jobs:
   # ── arm64 smoke: runs on ubuntu-24.04-arm (native arm64 runner) ────────────
   smoke-arm64:
     name: Smoke arm64 (local mode)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 6
     steps:
@@ -1010,7 +1117,10 @@ jobs:
   # ── amd64 TS-config smoke: runs on ubuntu-latest ───────────────────────────
   smoke-amd64-ts:
     name: Smoke amd64 TS-config (local mode)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -1036,7 +1146,10 @@ jobs:
   # ── arm64 TS-config smoke: runs on ubuntu-24.04-arm ────────────────────────
   smoke-arm64-ts:
     name: Smoke arm64 TS-config (local mode)
-    needs: build-binary
+    needs: [build-binary, changes]
+    # Skipped (read as success by required checks) only for a docs-only PR
+    # (#4372); a failed detector leaves docs_only empty, so it runs.
+    if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 6
     steps:

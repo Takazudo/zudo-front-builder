@@ -13,9 +13,13 @@ SPEC.loader.exec_module(packed_consumer)
 
 
 def override_blocks(script):
-    """The non-platform package names of each `const overrides = {...}` block, in order."""
+    """The non-platform package names of each tarball (`file:`) `const overrides = {...}` block, in order.
+
+    Stage 7's linked-directory block (`link:`) has no packed-consumer counterpart.
+    """
     return [{name for name in re.findall(r'"(@takazudo/[a-z0-9-]+)":', block) if not name.endswith("-gnu")}
-            for block in re.findall(r"const overrides = \{(.*?)\};", script, re.S)]
+            for block in re.findall(r"const overrides = \{(.*?)\};", script, re.S)
+            if "file:" in block]
 
 
 class SmokeParity(unittest.TestCase):

@@ -8,11 +8,29 @@ This document covers the toolchain and one-time setup needed to build, test, and
 
 | Tool   | Version            | Notes                                             |
 | ------ | ------------------ | ------------------------------------------------- |
-| Rust   | stable             | `rustup install stable && rustup default stable`  |
+| Rust   | stable             | Selected by [`rust-toolchain.toml`](./rust-toolchain.toml) (`channel = "stable"`, with `rustfmt` and `clippy`); `rustup` installs it on first use. Do not change the machine default to build zfb; see [Selecting a toolchain per command](#selecting-a-toolchain-per-command). |
 | Node   | `^22.18.0 \|\| ^24.11.0 \|\| >=26.0.0` | The fetch script and Node-side glue use ESM + `fetch`; `engineStrict: true` is set in `pnpm-workspace.yaml`. The root `engines.node` declares the range Vite+ (`vp test`, the contributor test runner) requires; other versions fail `pnpm install`. |
 | pnpm   | as pinned          | The repo declares `packageManager` in `package.json`; use Corepack (`corepack enable`) or install the matching pnpm version directly. |
+| Python | >=3.11 as `python3` | Not used to build or run the CLI. The offline `tests/unit/*.sh` suite run by `pnpm b4push` and `health.yml` calls `python3` on [`scripts/capture-nextest-evidence.py`](./scripts/capture-nextest-evidence.py), which imports `tomllib` (3.11+). The [direct-V8 prototype](prototypes/direct-v8/README.md) scripts also need 3.11+ (`hashlib.file_digest`). |
 
 CI uses Node 22 (setup-node resolves the newest 22.x; 22.23.3 when #3557 checked) and Rust stable on `ubuntu-latest`.
+
+### Selecting a toolchain per command
+
+Keep toolchain choices scoped to the command or shell that needs them. Do not run
+`rustup default`, `rustup override set`, global `npm`/`pnpm` installs or similar machine-wide
+changes for zfb work; other checkouts and sessions on the same machine share those settings.
+
+- Rust: `rust-toolchain.toml` already selects stable inside the checkout. To reproduce a
+  recorded qualification toolchain, name it on the command: `cargo +1.99.1 test ...` or
+  `RUSTUP_TOOLCHAIN=1.99.1 cargo test ...`.
+- pnpm: the `packageManager` pin is applied per invocation by pnpm itself or Corepack.
+- Python: pass the interpreter explicitly, for example
+  `ZFB_DEV_PYTHON="$(command -v python3.11)"` and then `"$ZFB_DEV_PYTHON" scripts/...`. The
+  system `python3` on macOS can be older than 3.11. The `tests/unit/*.sh` wrappers call bare
+  `python3`, so for `pnpm b4push` put a 3.11+ interpreter first on that command's `PATH`
+  (for example `PATH="/path/to/python3.11/bin:$PATH" pnpm b4push`).
+- Build parallelism on a small machine: `CARGO_BUILD_JOBS=1 cargo ...` for that command only.
 
 ## First build is slow
 
@@ -121,4 +139,44 @@ The per-platform binaries shipped on npm (`linux-x64-gnu`, `linux-arm64-gnu`, `d
 
 ## Direct V8 developer tooling
 
-The optional [direct-V8 prototype](prototypes/direct-v8/README.md) requires Python >=3.11 for its developer scripts. On macOS, explicitly select an installed compatible interpreter, for example `ZFB_DEV_PYTHON="$(command -v python3.11)"`, and invoke the tools with `"$ZFB_DEV_PYTHON"`. Verify its version before running. This does not add a Python requirement to the production CLI or change the default deno_core-backed V8 path.
+The CLI can be built with an opt-in [direct V8 host](prototypes/direct-v8/CLI.md) that drives the pinned `v8` crate without `deno_core`. It is a source-build choice only: there is no runtime config field or CLI switch, and released binaries keep the default `embed_v8` (deno_core) host.
+
+```sh
+python3 prototypes/direct-v8/prepare-icu.py
+export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
+cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
+```
+
+- `ZFB_V8_ICU_DATA` is a compile-time input; without it the build fails. `prepare-icu.py` fetches a checksum-pinned data archive only and writes below the ignored `target/`.
+- Disable default features. With both `embed_v8` and `direct-v8` enabled, the deno_core host still renders and evaluates config; the two only share one V8 platform.
+- A later `cargo build --workspace --all-targets` rebuilds with default features, so rebuild with the command above before testing the direct host.
+- Run these builds through the heavy guard like any other V8 build.
+
+The CI lane [`.github/workflows/direct-v8.yml`](./.github/workflows/direct-v8.yml) runs only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` to add the Rolldown prototype), or on manual dispatch. It records native rows on Linux x64, Linux arm64 and Windows x64 and is never a required check. Darwin rows need a Mac and are not run there.
+
+The developer scripts in [`prototypes/direct-v8/`](prototypes/direct-v8/README.md) require Python >=3.11. On macOS, explicitly select an installed compatible interpreter, for example `ZFB_DEV_PYTHON="$(command -v python3.11)"`, and invoke the tools with `"$ZFB_DEV_PYTHON"`. Verify its version before running. This does not add a Python requirement to the production CLI.
+
+## Constrained hosts (cloud sessions, small disks)
+
+A full `cargo build --workspace` compiles V8 and needs tens of gigabytes of `target/`. A
+cloud session observed with a 32 GB filesystem ran out of disk during a full Rust build, and
+the cloud session of 2026-10-19 had about 30 GB writable and 15 GiB RAM. On such hosts:
+
+- check `df -h .` and the existing `target/` size before any workspace build;
+- prefer scoped commands (`cargo test -p <crate>`) for crates that do not depend on
+  `zfb-render`, which do not compile V8;
+- leave full builds and the full Rust suite to the hosted Linux CI (`health.yml`);
+- a build that stops for lack of disk or memory ran zero tests: record it as not run.
+
+The agent-facing rules for this are in [CLAUDE.md](./CLAUDE.md#codex-cloud-disk-capacity-and-broad-rust-verification).
+
+## Native verification on macOS and Windows
+
+CI runs the Rust suite on Linux on every PR; macOS runs weekly in `exam.yml`, and no CI job
+runs the Rust suite on Windows. A Linux result, an emulated run or a WSL run does not stand in
+for native macOS or Windows. Native runs follow [CLAUDE.md](./CLAUDE.md#moving-development-and-frozen-qualification):
+check out one immutable SHA, keep `CARGO_BUILD_JOBS=1` and the heavy guard on the command,
+run commands serially with zero retries, and record the toolchain, commands and first
+results. Use [`scripts/capture-nextest-evidence.py`](./scripts/capture-nextest-evidence.py)
+(nextest 0.9.140, Python 3.11+) to keep each command's original JUnit report. The current
+native status and pending Mac prompts are in [research/development-queue.md](./research/development-queue.md).

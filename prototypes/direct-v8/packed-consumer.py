@@ -10,6 +10,11 @@ with `pnpm pack`, installs create-zfb from its tarball in a temporary directory
 outside the workspace with every @takazudo package overridden to its local
 tarball, scaffolds the default site, installs and builds it, and checks dist/.
 
+`--rolldown` builds the scaffolded site with ZFB_ROLLDOWN_PROTOTYPE=1 (the binary
+must carry the rolldown-prototype feature) and ZFB_DEV_TIMING=1, and requires the
+backend's own timing line in the build output as proof that Rolldown bundled it;
+without it an inherited ZFB_ROLLDOWN_PROTOTYPE is removed.
+
 The injected files are removed again afterwards. Exit 0 PASS, 1 FAIL.
 
 Usage:
@@ -31,6 +36,8 @@ NON_CARRIER_PACKAGES = ["zfb-slugify", "zfb", "zfb-runtime", "zfb-adapter-cloudf
 CLEAN_ROOM_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime", "zfb-adapter-cloudflare"]
 CONSUMER_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime"]
 SITE_NAME = "packed-e2e-site"
+# Printed by crates/zfb-rolldown-prototype/src/native.rs when ZFB_DEV_TIMING is set.
+ROLLDOWN_TIMING_LINE = "[zfb-timing] rolldown-prototype:"
 
 
 def tool(name):
@@ -40,17 +47,17 @@ def tool(name):
     return found
 
 
-def run(log, command, cwd):
+def run(log, command, cwd, env=None, combined=False):
     log.write(f"$ {' '.join(map(str, command))}  (in {cwd})\n")
     log.flush()
     # stdout stays separate: callers parse its last line, and npm/pnpm notices go to stderr.
-    result = subprocess.run([str(part) for part in command], cwd=cwd, capture_output=True, text=True,
+    result = subprocess.run([str(part) for part in command], cwd=cwd, env=env, capture_output=True, text=True,
                             errors="replace")
     log.write(result.stdout)
     log.write(result.stderr)
     log.flush()
     assert result.returncode == 0, f"{Path(command[0]).name} {command[1] if len(command) > 1 else ''} exit {result.returncode}"
-    return result.stdout
+    return result.stdout + result.stderr if combined else result.stdout
 
 
 def file_spec(path):
@@ -69,11 +76,16 @@ def main():
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--css-addon", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, help="New directory for the report and log")
+    parser.add_argument("--rolldown", action="store_true", help="Build the site with the Rolldown prototype")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     carrier_dir = ROOT / "packages" / f"zfb-{args.carrier}"
-    report = {"carrier": args.carrier, "binary": str(args.binary.resolve()), "rows": [], "passed": False}
+    report = {"carrier": args.carrier, "binary": str(args.binary.resolve()), "rolldown_prototype": args.rolldown,
+              "rows": [], "passed": False}
+    build_env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}
+    if args.rolldown:
+        build_env.update(ZFB_ROLLDOWN_PROTOTYPE="1", ZFB_DEV_TIMING="1")
     injected, preexisting, workdir = [], {}, None
     with (output / "packed-consumer.log").open("w") as log:
         try:
@@ -139,13 +151,16 @@ def main():
             (site / "pnpm-lock.yaml").unlink(missing_ok=True)
             write_overrides(site, tarballs, [f"@takazudo/{name}" for name in CONSUMER_OVERRIDES] + [carrier_name])
             run(log, [pnpm, "install"], site)
-            run(log, [pnpm, "build"], site)
+            build_output = run(log, [pnpm, "build"], site, env=build_env, combined=True)
             index = site / "dist/index.html"
             assert index.is_file(), "dist/index.html not found after build"
             html = index.read_text(errors="replace")
             for marker in ["basic-blog", "Hello, zfb"]:
                 assert marker in html, f"dist/index.html does not contain {marker!r}"
             report["rows"].append({"name": "site-build", "passed": True})
+            if args.rolldown:
+                assert ROLLDOWN_TIMING_LINE in build_output, "the site build printed no Rolldown backend timing line"
+                report["rows"].append({"name": "rolldown-backend-observed", "passed": True})
             report["passed"] = True
         except Exception as error:
             report["error"] = f"{type(error).__name__}: {error}"

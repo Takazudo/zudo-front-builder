@@ -1327,6 +1327,8 @@ fn shadow_parent_dir_with_env(project_root: &Path, env: &ShadowParentEnv) -> Res
     )
 }
 
+mod shadow_parent_path;
+
 fn usable_shadow_parent_candidate(
     project_root: &Path,
     candidate: &Path,
@@ -1358,7 +1360,7 @@ fn usable_shadow_parent_candidate(
                     project_root.display()
                 )
             })?;
-            Ok(Some(canonical))
+            Ok(Some(shadow_parent_path::ordinary_shadow_parent(canonical)))
         }
         Err(error) => {
             rejected.push(format!(
@@ -2241,10 +2243,11 @@ pub fn reap_stale_shadow_sessions(parent: &Path) {
 /// no tempdir name. Linux's `/tmp` is not a symlink, so this is a no-op there
 /// (which is why the divergence is macOS-only).
 ///
-/// Gated to macOS: on Windows `fs::canonicalize` returns `\\?\`-prefixed
-/// verbatim paths, which would newly reach esbuild's entry/outfile args on a
-/// platform no CI runs tests on — and the underlying symlink divergence does
-/// not exist there (`%TEMP%` is not a symlink).
+/// Gated to macOS because the symlink divergence does not exist elsewhere
+/// (`%TEMP%` is not a symlink). The gate does not keep `\\?\` verbatim paths
+/// away from esbuild on Windows: `usable_shadow_parent_candidate` canonicalizes
+/// the shadow parent and returns the ordinary `C:\…` spelling only when it is
+/// safe (#4347); UNC, long and other verbatim parents stay `\\?\…` (#4343).
 #[cfg(target_os = "macos")]
 fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
     fs::canonicalize(work).with_context(|| {
@@ -4236,6 +4239,7 @@ pub fn bundle_with_session(
     let mut exact_target_preprocessing_files = BTreeSet::new();
     let mut root_entry_dependency_seed_files = BTreeSet::new();
     let mut root_entry_dependency_logical_importers = BTreeMap::new();
+    let mut staging_ineligible_seed_files = BTreeSet::new();
     if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
         let virtual_discovery = discover_registered_virtual_preprocessing_with_context(
             &input.project_root,
@@ -4427,20 +4431,30 @@ pub fn bundle_with_session(
             source_graph_roots.push(injected.clone());
             logical_source_roots.push((injected, project_root.join("pages")));
         }
-        source_graph_roots.extend(enumerate_extra_top_level_dirs(
-            &input.project_root,
-            KNOWN_SOURCE_DIRS,
-        ));
+        // Everything seeded so far is an entry root esbuild bundles from. The
+        // extra top-level dirs below are seeded wholesale too (sibling
+        // discovery, #1645/#3160), but may hold scripts and tests no entry
+        // ever reaches (#4353).
+        let mut entry_reachability_roots = source_graph_roots.clone();
+        entry_reachability_roots.extend(
+            collection_seed_roots
+                .iter()
+                .map(|collection| collection.physical_root.clone()),
+        );
+        let extra_top_level_dirs =
+            enumerate_extra_top_level_dirs(&input.project_root, KNOWN_SOURCE_DIRS);
+        source_graph_roots.extend(extra_top_level_dirs.iter().cloned());
         // The dot-path staging allowlist (issue #1840) is staged like an extra
         // source dir, so its files must seed the module graph too —
         // `enumerate_extra_top_level_dirs` above can never see them (hidden +
         // conventionally gitignored), and an import FROM `.zudo-doc/routes-src`
         // would otherwise be missing from the staged-dependency closure.
-        source_graph_roots.extend(
-            enumerate_first_party_staging_dirs(&input.project_root)
-                .into_iter()
-                .map(|(src, _)| src),
-        );
+        let first_party_staging_dirs = enumerate_first_party_staging_dirs(&input.project_root)
+            .into_iter()
+            .map(|(src, _)| src)
+            .collect::<Vec<_>>();
+        source_graph_roots.extend(first_party_staging_dirs.iter().cloned());
+        entry_reachability_roots.extend(first_party_staging_dirs);
         collect_project_source_module_graph_seed_files(
             &source_graph_roots,
             &collection_seed_roots,
@@ -4450,6 +4464,56 @@ pub fn bundle_with_session(
             &mut root_entry_dependency_seed_files,
             &mut root_entry_dependency_logical_importers,
         );
+        // Only an empty exclude defers ordinary candidates, so only there can
+        // an unreachable seed be left out of staging (#4353).
+        if bundle_exclude.is_empty() && !extra_top_level_dirs.is_empty() {
+            entry_reachability_roots.extend(
+                input
+                    .mdx_components_file
+                    .iter()
+                    .chain(input.authored_css_paths.iter())
+                    .chain(input.injected_route_entrypoints.iter())
+                    .map(|path| resolver.resolve(path)),
+            );
+            entry_reachability_roots.extend(
+                plugin_preprocessing_files
+                    .iter()
+                    .chain(exact_target_staging_files.iter())
+                    .chain(exact_target_preprocessing_files.iter())
+                    .cloned(),
+            );
+            let alias_targets = input
+                .tsconfig_paths
+                .values()
+                .flatten()
+                .chain(input.plugin_alias_entries.iter().map(|(_, target)| target))
+                .map(|target| resolver.resolve(Path::new(target)))
+                .chain(exact_target_staging_dirs.iter().cloned())
+                .collect::<Vec<_>>();
+            let reference_texts = input
+                .plugin_virtual_modules
+                .iter()
+                .map(|(_, source)| source.clone())
+                .chain(project_package_import_map_text(&input.project_root))
+                .collect::<Vec<_>>();
+            let reachable = entry_reachable_extra_top_level_dirs(
+                &input.project_root,
+                &extra_top_level_dirs,
+                &entry_reachability_roots,
+                &alias_targets,
+                &reference_texts,
+            );
+            let unreachable = extra_top_level_dirs
+                .iter()
+                .filter(|dir| !reachable.contains(*dir))
+                .collect::<Vec<_>>();
+            staging_ineligible_seed_files.extend(
+                root_entry_dependency_seed_files
+                    .iter()
+                    .filter(|seed| unreachable.iter().any(|dir| seed.starts_with(dir)))
+                    .cloned(),
+            );
+        }
 
         // The server runtime subpath (`createPageRouter`), the framework
         // render-to-string module, and the JSX runtime source appear in NO
@@ -4503,6 +4567,7 @@ pub fn bundle_with_session(
         // staged view; explicit vendored preserve-symlinks keeps its contract.
         esbuild_will_preserve_symlinks(&input) && !input.node_modules_preserve_symlinks,
         &root_entry_dependency_seed_files,
+        &staging_ineligible_seed_files,
         &root_entry_dependency_logical_importers,
         &synthetic_entry_import_specifiers,
         &alias_claimed_specifier_keys,
@@ -12430,6 +12495,310 @@ fn stage_dependency_candidate(
     }
 }
 
+/// The project `package.json`'s `imports`/`exports` maps as text: the only
+/// fields through which a bare `#name` or self-reference reaches a top-level
+/// dir. The rest of the manifest (notably its `"scripts"` key) names no import.
+fn project_package_import_map_text(project_root: &Path) -> Option<String> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(project_root.join("package.json")).ok()?).ok()?;
+    Some(format!(
+        "{} {}",
+        manifest.get("imports").unwrap_or(&serde_json::Value::Null),
+        manifest.get("exports").unwrap_or(&serde_json::Value::Null),
+    ))
+}
+
+/// The extra top-level dirs (see [`enumerate_extra_top_level_dirs`]) that the
+/// entry-reachable first-party graph can reach (#4353). `scripts/`, `tests/`
+/// or `e2e/` are seeded wholesale, yet no entry imports them; staging their
+/// pnpm-store imports copied whole dev-tool closures into the shadow.
+///
+/// Deliberately an over-approximation at directory granularity, read from
+/// source TEXT rather than a parsed graph: MDX imports, CSS `@import`/`url()`,
+/// `?raw`, worker URLs, tsconfig `baseUrl` and alias spellings all name the
+/// directory, and a scan never fails the build. A dir is reached when an
+/// entry root lies inside it, an alias/exact target lies inside it, a scanned
+/// file names it as a path segment, or a glob/template import could expand
+/// into it; a reached dir's own files are scanned in turn. A loose source
+/// file directly in `project_root` (`site.config.ts`, imported as
+/// `../site.config` or through a root `@/*` alias) is scanned the same way
+/// once a scanned text or alias target names it; root config files nothing
+/// imports (`vitest.config.ts` naming `tests/`) stay unscanned.
+fn entry_reachable_extra_top_level_dirs(
+    project_root: &Path,
+    extra_dirs: &[PathBuf],
+    entry_roots: &[PathBuf],
+    alias_targets: &[PathBuf],
+    reference_texts: &[String],
+) -> BTreeSet<PathBuf> {
+    let is_reference_source = |path: &Path| {
+        raw_source_extension(path)
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("css") || extension.eq_ignore_ascii_case("mdx")
+                })
+    };
+    let root_files = fs::read_dir(project_root)
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_reference_source(path))
+        .collect::<Vec<_>>();
+    // Holds reached extra dirs and reached root loose files alike; the files
+    // are dropped before returning.
+    let mut reachable = BTreeSet::new();
+    let mut pending_dirs = Vec::new();
+    let reach = |dir: &PathBuf, reachable: &mut BTreeSet<PathBuf>, pending: &mut Vec<PathBuf>| {
+        if reachable.insert(dir.clone()) {
+            pending.push(dir.clone());
+        }
+    };
+    for root in entry_roots {
+        let root = normalize_path_lexical(root);
+        for dir in extra_dirs {
+            if root.starts_with(dir) || dir.starts_with(&root) {
+                reach(dir, &mut reachable, &mut pending_dirs);
+            }
+        }
+    }
+    for target in alias_targets {
+        let literal = target
+            .components()
+            .take_while(|part| !path_segment_has_glob(&part.as_os_str().to_string_lossy()))
+            .collect::<PathBuf>();
+        let literal = normalize_path_lexical(&literal);
+        for dir in extra_dirs {
+            if literal.starts_with(dir) {
+                reach(dir, &mut reachable, &mut pending_dirs);
+            }
+        }
+        for file in &root_files {
+            if *file == literal || file.with_extension("") == literal {
+                reach(file, &mut reachable, &mut pending_dirs);
+            }
+        }
+    }
+    let apply =
+        |text: &str, base: &Path, reachable: &mut BTreeSet<PathBuf>, pending: &mut Vec<PathBuf>| {
+            if expanding_import_literals(text)
+                .iter()
+                .any(|literal| glob_literal_reaches_all_top_level_dirs(literal, base, project_root))
+            {
+                for dir in extra_dirs {
+                    reach(dir, reachable, pending);
+                }
+                return;
+            }
+            for dir in extra_dirs {
+                if dir
+                    .file_name()
+                    .is_some_and(|name| text_names_path_segment(text, &name.to_string_lossy()))
+                {
+                    reach(dir, reachable, pending);
+                }
+            }
+            for file in &root_files {
+                if file
+                    .file_stem()
+                    .is_some_and(|stem| text_names_path_file(text, &stem.to_string_lossy()))
+                {
+                    reach(file, reachable, pending);
+                }
+            }
+        };
+    for text in reference_texts {
+        apply(text, project_root, &mut reachable, &mut pending_dirs);
+    }
+    let mut scanned = BTreeSet::new();
+    let mut scan_tree =
+        |root: &Path, reachable: &mut BTreeSet<PathBuf>, pending: &mut Vec<PathBuf>| {
+            for entry in WalkDir::new(root)
+                .follow_links(true)
+                .into_iter()
+                .filter_entry(|entry| !is_pruned_infra_dir(entry))
+                .filter_map(std::result::Result::ok)
+            {
+                if extra_dirs.iter().all(|dir| reachable.contains(dir)) {
+                    return;
+                }
+                let path = entry.path();
+                if !entry.file_type().is_file()
+                    || !is_reference_source(path)
+                    || !scanned.insert(path.to_path_buf())
+                {
+                    continue;
+                }
+                let Ok(bytes) = fs::read(path) else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&bytes);
+                apply(
+                    &text,
+                    path.parent().unwrap_or(project_root),
+                    reachable,
+                    pending,
+                );
+            }
+        };
+    for root in entry_roots {
+        scan_tree(root, &mut reachable, &mut pending_dirs);
+    }
+    while let Some(dir) = pending_dirs.pop() {
+        scan_tree(&dir, &mut reachable, &mut pending_dirs);
+    }
+    reachable.retain(|path| extra_dirs.contains(path));
+    reachable
+}
+
+fn path_segment_has_glob(segment: &str) -> bool {
+    segment.contains(['*', '?', '[', '{'])
+}
+
+/// Whether `text` names the top-level dir `name` as a path segment: preceded
+/// by a separator, quote, `(` or an alias sigil, and followed by a separator
+/// or a closing quote/paren. A prose mention of the word does not match.
+fn text_names_path_segment(text: &str, name: &str) -> bool {
+    text_names_path(text, name, false)
+}
+
+/// [`text_names_path_segment`] for a root loose file's stem, which an import
+/// may also spell with an extension (`./site.config.js` for `site.config.ts`).
+fn text_names_path_file(text: &str, stem: &str) -> bool {
+    text_names_path(text, stem, true)
+}
+
+fn text_names_path(text: &str, name: &str, allow_extension: bool) -> bool {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    while let Some(offset) = text[start..].find(name) {
+        let at = start + offset;
+        let before = at.checked_sub(1).map(|index| bytes[index]);
+        let after = bytes.get(at + name.len()).copied();
+        if matches!(
+            before,
+            Some(b'/' | b'\\' | b'\'' | b'"' | b'`' | b'(' | b'@' | b'~' | b'#' | b':')
+        ) && (matches!(after, Some(b'/' | b'\\' | b'\'' | b'"' | b'`' | b')'))
+            || (allow_extension && after == Some(b'.')))
+        {
+            return true;
+        }
+        start = at + name.len();
+    }
+    false
+}
+
+/// The pattern literals esbuild expands to every matching file: each string
+/// argument of `import.meta.glob(...)`, and a template literal passed to
+/// `import(`/`require(`, with `${...}` read as `*`. A quoted literal followed
+/// by `+` (`import('../' + name + '/meta.ts')`, which esbuild expands as
+/// `../*/meta.ts`) leaves its tail open, so it reads as `<literal>**`.
+fn expanding_import_literals(text: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    for (at, call) in text.match_indices("import.meta.glob") {
+        let rest = &text[at + call.len()..];
+        if let Some(open) = rest.find('(') {
+            literals.extend(call_argument_literals(&rest[open + 1..], usize::MAX));
+        }
+    }
+    for call in ["import(", "require("] {
+        for (at, _) in text.match_indices(call) {
+            let rest = text[at + call.len()..].trim_start();
+            if rest.starts_with('`') {
+                literals.extend(call_argument_literals(rest, 1));
+            } else if let Some(quote) = rest.chars().next().filter(|ch| matches!(ch, '\'' | '"')) {
+                let body = &rest[1..];
+                if let Some(end) = body.find([quote, '\n']) {
+                    if body[end..].starts_with(quote)
+                        && body[end + 1..].trim_start().starts_with('+')
+                    {
+                        literals.push(format!("{}**", &body[..end]));
+                    }
+                }
+            }
+        }
+    }
+    literals
+}
+
+/// Up to `limit` quoted literals before the call's closing `)`. Rough by
+/// design: a stray literal can only widen the reachable set.
+fn call_argument_literals(arguments: &str, limit: usize) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut depth = 0usize;
+    let mut chars = arguments.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth > 0 => depth -= 1,
+            ')' => break,
+            '\'' | '"' | '`' => {
+                let mut literal = String::new();
+                while let Some(inner) = chars.next() {
+                    if inner == ch || (inner == '\n' && ch != '`') {
+                        break;
+                    }
+                    if inner == '\\' {
+                        chars.next();
+                    } else if ch == '`' && inner == '$' && chars.clone().next() == Some('{') {
+                        let mut nested = 0usize;
+                        for substitution in chars.by_ref() {
+                            match substitution {
+                                '{' => nested += 1,
+                                '}' if nested <= 1 => break,
+                                '}' => nested -= 1,
+                                _ => {}
+                            }
+                        }
+                        literal.push('*');
+                    } else {
+                        literal.push(inner);
+                    }
+                }
+                literals.push(literal);
+                if literals.len() >= limit {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    literals
+}
+
+/// Whether a glob literal can match a directory directly under
+/// `project_root` without naming it.
+fn glob_literal_reaches_all_top_level_dirs(
+    literal: &str,
+    base: &Path,
+    project_root: &Path,
+) -> bool {
+    let literal = literal.strip_prefix('!').unwrap_or(literal);
+    let segments = literal.split('/').collect::<Vec<_>>();
+    let Some(first_glob) = segments
+        .iter()
+        .position(|segment| path_segment_has_glob(segment))
+    else {
+        return false;
+    };
+    // A lone trailing `*.ts` matches files beside its prefix, never a dir.
+    if first_glob + 1 == segments.len() && !segments[first_glob].contains("**") {
+        return false;
+    }
+    let prefix = segments[..first_glob].join("/");
+    let anchored = if literal.starts_with("./") || literal.starts_with("../") {
+        base.join(&prefix)
+    } else if literal.starts_with('/') {
+        project_root.join(prefix.trim_start_matches('/'))
+    } else {
+        // An alias or bare glob cannot be anchored here.
+        return true;
+    };
+    project_root.starts_with(normalize_path_lexical(&anchored))
+}
+
 /// Collect staged-dependency seed files from the project's materialized module
 /// graph — every page/component/layout/content source (and extra top-level
 /// source dirs) esbuild will bundle. With `bundle.exclude` active the live
@@ -12549,6 +12918,7 @@ fn extend_node_modules_dependency_staging(
     allow_workspace_physical_fallback: bool,
     allow_pnpm_owner_staging: bool,
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
+    staging_ineligible_seed_files: &BTreeSet<PathBuf>,
     root_entry_dependency_logical_importers: &BTreeMap<PathBuf, PathBuf>,
     synthetic_entry_import_specifiers: &BTreeSet<String>,
     alias_claimed_specifier_keys: &BTreeSet<String>,
@@ -12679,6 +13049,10 @@ fn extend_node_modules_dependency_staging(
             // An unused invalid alternate must remain esbuild-contextual.
             continue;
         };
+        // No entry reaches this seed, so esbuild never resolves its imports:
+        // only workspace siblings are still discovered from it (#4353).
+        let staging_ineligible =
+            bundle_exclude.is_empty() && staging_ineligible_seed_files.contains(seed);
         // Overlay pages are physical copies under a per-build temp directory,
         // but their imports retain project-page semantics. Package-route
         // overlays have an exact logical `project/pages/<rel>` importer so
@@ -12732,12 +13106,16 @@ fn extend_node_modules_dependency_staging(
                 && source_dependency
                     .canonicalize()
                     .is_ok_and(|path| path.components().any(|part| part.as_os_str() == ".pnpm"));
-            if bundle_exclude.is_empty()
-                && !pnpm_store_root
-                && !source_dependency.canonicalize().is_ok_and(|canonical| {
+            // Looked up only where its answer can change the outcome below.
+            let workspace_package = (staging_ineligible
+                || (bundle_exclude.is_empty() && !pnpm_store_root))
+                && source_dependency.canonicalize().is_ok_and(|canonical| {
                     canonical_workspace_package_logical_path(&canonical, project_root).is_some()
-                })
-            {
+                });
+            if staging_ineligible && !workspace_package {
+                continue;
+            }
+            if bundle_exclude.is_empty() && !pnpm_store_root && !workspace_package {
                 deferred_live_dependencies.push((
                     logical_importer.to_path_buf(),
                     package_name,
@@ -15645,6 +16023,7 @@ mod tests {
             esbuild_will_preserve_symlinks(&canonical_input)
                 && !canonical_input.node_modules_preserve_symlinks,
             &BTreeSet::from([project.join("pages/index.tsx")]),
+            &BTreeSet::new(),
             &BTreeMap::new(),
             &BTreeSet::from(["@takazudo/zfb-runtime/server".to_string()]),
             &BTreeSet::new(),
@@ -15670,6 +16049,7 @@ mod tests {
             true,
             true,
             &BTreeSet::from([project.join("pages/index.tsx")]),
+            &BTreeSet::new(),
             &BTreeMap::new(),
             &BTreeSet::from(["@takazudo/zfb-runtime/server".to_string()]),
             &BTreeSet::new(),
@@ -15726,6 +16106,289 @@ mod tests {
                 "unrelated root version must not leak into runtime"
             );
         }
+    }
+
+    /// #4353 fixture: a pnpm store (no esbuild) whose generated runtime import
+    /// activates the isolated dependency view (#3473). `pages/index.tsx`
+    /// reaches `lib/x.ts`, which imports the store package `lib-dep`; its own
+    /// `strict-dep@1` must win over the root `strict-dep@2`. With `tooling`,
+    /// `scripts/seed.mjs` and `tests/x.test.ts` import the store package
+    /// `heavy-dev` (with its own transitive `heavy-transitive`), which no page
+    /// reaches.
+    #[cfg(unix)]
+    fn write_pnpm_dev_tooling_fixture(project: &Path, tooling: bool) {
+        use std::os::unix::fs::symlink;
+
+        let store = project.join("node_modules/.pnpm");
+        let runtime = store.join("runtime@1/node_modules/@takazudo/zfb-runtime");
+        let hono = store.join("hono@1/node_modules/hono");
+        scan_cache_write_package(
+            &runtime,
+            "@takazudo/zfb-runtime",
+            "import value from 'hono'; export function createPageRouter() { return { fetch() { return new Response(value); } }; }\n",
+        );
+        scan_cache_write(
+            &runtime.join("package.json"),
+            r#"{"name":"@takazudo/zfb-runtime","version":"1.0.0","type":"module","exports":{"./server":"./index.js"},"dependencies":{"hono":"1.0.0"}}"#,
+        );
+        scan_cache_write_package(&hono, "hono", "export default 'HONO';\n");
+        fs::create_dir_all(store.join("runtime@1/node_modules")).unwrap();
+        symlink(&hono, store.join("runtime@1/node_modules/hono")).unwrap();
+
+        let lib_dep = store.join("lib-dep@1/node_modules/lib-dep");
+        let strict = store.join("strict-dep@1/node_modules/strict-dep");
+        let unrelated = store.join("strict-dep@2/node_modules/strict-dep");
+        scan_cache_write_package(
+            &lib_dep,
+            "lib-dep",
+            "import value from 'strict-dep'; export default value;\n",
+        );
+        scan_cache_write_package(&strict, "strict-dep", "export default 'STRICT_V1';\n");
+        scan_cache_write_package(&unrelated, "strict-dep", "export default 'UNRELATED_V2';\n");
+        symlink(&strict, store.join("lib-dep@1/node_modules/strict-dep")).unwrap();
+
+        let heavy = store.join("heavy-dev@1/node_modules/heavy-dev");
+        let heavy_transitive = store.join("heavy-transitive@1/node_modules/heavy-transitive");
+        scan_cache_write_package(
+            &heavy,
+            "heavy-dev",
+            "import value from 'heavy-transitive'; export default value;\n",
+        );
+        scan_cache_write_package(
+            &heavy_transitive,
+            "heavy-transitive",
+            "export default 'HEAVY';\n",
+        );
+        symlink(
+            &heavy_transitive,
+            store.join("heavy-dev@1/node_modules/heavy-transitive"),
+        )
+        .unwrap();
+
+        fs::create_dir_all(project.join("node_modules/@takazudo")).unwrap();
+        symlink(&runtime, project.join("node_modules/@takazudo/zfb-runtime")).unwrap();
+        symlink(&lib_dep, project.join("node_modules/lib-dep")).unwrap();
+        symlink(&unrelated, project.join("node_modules/strict-dep")).unwrap();
+        symlink(&heavy, project.join("node_modules/heavy-dev")).unwrap();
+
+        scan_cache_write(
+            &project.join("pages/index.tsx"),
+            "import value from '../lib/x';\nexport default function Index() { return value; }\n",
+        );
+        scan_cache_write(
+            &project.join("lib/x.ts"),
+            "import value from 'lib-dep';\nexport default value;\n",
+        );
+        if tooling {
+            scan_cache_write(
+                &project.join("scripts/seed.mjs"),
+                "import heavy from 'heavy-dev';\nconsole.log(heavy);\n",
+            );
+            scan_cache_write(
+                &project.join("tests/x.test.ts"),
+                "import heavy from 'heavy-dev';\nimport value from '../lib/x';\nconsole.log(heavy, value);\n",
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn pnpm_dev_tooling_bundle(project: &Path) -> (ShadowSession, NodeModulesStagingStats) {
+        let mut session = ShadowSession::new(project).unwrap();
+        let input = BundlerInput {
+            zudo_react_island_names: Some(vec![]),
+            zudo_react_build: None,
+            mock_subprocess_output: Some("export default {};\n".to_string()),
+            node_modules_dir: Some(project.join("node_modules")),
+            ..BundlerInput::for_project(
+                project.to_path_buf(),
+                BundleMode::Production,
+                project.join("dist"),
+                None,
+            )
+        };
+        assert!(esbuild_will_preserve_symlinks(&input));
+        let stats = bundle_with_session(input, Some(&mut session))
+            .expect("mock bundle must succeed")
+            .node_modules_staging_stats;
+        (session, stats)
+    }
+
+    /// #4353: a pnpm store package imported only from `scripts/` and `tests/`
+    /// is never staged, while a page-reached store package still stages with
+    /// its own strict transitive version (#3473).
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_store_imports_from_unreached_tooling_dirs_are_not_staged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let with_tooling = root.join("with-tooling/site");
+        let without_tooling = root.join("without-tooling/site");
+        write_pnpm_dev_tooling_fixture(&with_tooling, true);
+        write_pnpm_dev_tooling_fixture(&without_tooling, false);
+
+        let (session, stats) = pnpm_dev_tooling_bundle(&with_tooling);
+        let (_baseline_session, baseline_stats) = pnpm_dev_tooling_bundle(&without_tooling);
+        let staged = session.shadow_root().join("node_modules");
+        assert!(
+            staged.is_dir() && !staged.is_symlink(),
+            "the pnpm owner must switch to the isolated staged view"
+        );
+        assert!(
+            !staged.join("heavy-dev").exists(),
+            "a store package only scripts/ and tests/ import must not be staged"
+        );
+        assert!(
+            !staged.join("heavy-transitive").exists(),
+            "nor may its transitive dependency be"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("lib-dep/node_modules/strict-dep/index.js")).unwrap(),
+            "export default 'STRICT_V1';\n",
+            "the page-reached store package keeps its own strict transitive version"
+        );
+        assert_eq!(
+            stats, baseline_stats,
+            "unreached tooling dirs must not add any staging work"
+        );
+    }
+
+    /// #4353: what counts as an entry reaching an extra top-level dir.
+    #[test]
+    fn entry_reachable_extra_dirs_follow_paths_aliases_and_globs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let dir = |name: &str| project.join(name);
+        let extra = ["lib", "src", "styles", "scripts", "tests"].map(dir);
+        scan_cache_write(
+            &project.join("pages/index.mdx"),
+            "import X from '../lib/x';\n\nThe scripts and tests folders are prose here.\n",
+        );
+        scan_cache_write(&project.join("lib/x.ts"), "import './../styles/a.css';\n");
+        scan_cache_write(&project.join("styles/a.css"), ".a { color: red; }\n");
+        scan_cache_write(&project.join("scripts/seed.mjs"), "import '../src/y';\n");
+        scan_cache_write(&project.join("tests/x.test.ts"), "import '../lib/x';\n");
+        let reached = entry_reachable_extra_top_level_dirs(
+            &project,
+            &extra,
+            &[project.join("pages")],
+            &[project.join("src/*")],
+            &[],
+        );
+        assert_eq!(
+            reached,
+            BTreeSet::from([dir("lib"), dir("src"), dir("styles")]),
+            "relative imports (also from MDX and transitively), alias targets reach; prose does not"
+        );
+
+        scan_cache_write(
+            &project.join("pages/index.mdx"),
+            "export const all = import.meta.glob('../*/meta.ts', { query: '?raw' });\n",
+        );
+        let reached = entry_reachable_extra_top_level_dirs(
+            &project,
+            &extra,
+            &[project.join("pages")],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            reached,
+            BTreeSet::from(extra.clone()),
+            "a glob with a wildcard top-level segment reaches every extra dir"
+        );
+
+        scan_cache_write(
+            &project.join("pages/index.mdx"),
+            "export const posts = import.meta.glob('./posts/**/*.ts');\nconst load = (n) => import(`./locale/${n}.ts`);\n",
+        );
+        let reached = entry_reachable_extra_top_level_dirs(
+            &project,
+            &extra,
+            &[project.join("pages")],
+            &[],
+            &[r##"{"imports":{"#tools/*":"./scripts/*"}}"##.to_string()],
+        );
+        assert_eq!(
+            reached,
+            BTreeSet::from([dir("scripts"), dir("src")]),
+            "page-local globs stay local; package.json names scripts/, which imports src/"
+        );
+
+        scan_cache_write(
+            &project.join("package.json"),
+            r#"{"scripts":{"seed":"node scripts/seed.mjs","test":"vitest tests"}}"#,
+        );
+        let manifest = project_package_import_map_text(&project).unwrap();
+        assert!(
+            !text_names_path_segment(&manifest, "scripts")
+                && !text_names_path_segment(&manifest, "tests"),
+            "the manifest's scripts key and commands name no import: {manifest}"
+        );
+    }
+
+    /// #4353 review: root loose files and concatenated dynamic imports.
+    #[test]
+    fn entry_reachable_extra_dirs_follow_root_loose_files_and_concatenation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().canonicalize().unwrap();
+        let dir = |name: &str| project.join(name);
+        let extra = ["lib", "scripts", "tests"].map(dir);
+        let pages = [project.join("pages")];
+        scan_cache_write(&project.join("site.config.ts"), "import './lib/format';\n");
+        scan_cache_write(&project.join("lib/format.ts"), "import 'store-pkg';\n");
+        scan_cache_write(
+            &project.join("vitest.config.ts"),
+            "export default { test: { include: ['tests/**'], setupFiles: ['./scripts/setup.ts'] } };\n",
+        );
+        let reach = |page: &str, alias_targets: &[PathBuf]| {
+            scan_cache_write(&project.join("pages/index.tsx"), page);
+            entry_reachable_extra_top_level_dirs(&project, &extra, &pages, alias_targets, &[])
+        };
+
+        assert_eq!(
+            reach(
+                "import config from '@/site.config';\n",
+                &[project.join("*")]
+            ),
+            BTreeSet::from([dir("lib")]),
+            "a wildcard root alias reaches the root file, which reaches lib/; \
+             the unimported vitest.config.ts is never scanned"
+        );
+        assert_eq!(
+            reach("import config from '../site.config.js';\n", &[]),
+            BTreeSet::from([dir("lib")]),
+            "a relative import of a root file, spelled with any extension"
+        );
+        assert_eq!(
+            reach(
+                "import config from 'config';\n",
+                &[project.join("site.config")]
+            ),
+            BTreeSet::from([dir("lib")]),
+            "an exact alias target naming a root file"
+        );
+        assert_eq!(
+            reach("export default function Index() { return null; }\n", &[]),
+            BTreeSet::new(),
+            "no import of the root file reaches nothing"
+        );
+
+        assert_eq!(
+            reach(
+                "const load = (name) => import('../' + name + '/meta.ts');\n",
+                &[]
+            ),
+            BTreeSet::from(extra.clone()),
+            "a concatenated import with an open top-level segment reaches every extra dir"
+        );
+        assert_eq!(
+            reach(
+                "const load = (name) => require(\"./locale/\" + name);\n",
+                &[]
+            ),
+            BTreeSet::new(),
+            "a concatenated import anchored below pages/ stays local"
+        );
     }
 
     /// A nested pnpm-workspace host (`<ws>/apps/site`) whose page imports the
@@ -16720,7 +17383,13 @@ mod tests {
             shadow_parent_dir_with_env(&project, &shadow_env(temp_dir.clone(), None, None, None))
                 .unwrap();
 
-        assert_eq!(parent, fs::canonicalize(temp_dir).unwrap());
+        #[cfg(not(windows))]
+        assert_eq!(parent, fs::canonicalize(&temp_dir).unwrap());
+        #[cfg(windows)]
+        assert_eq!(
+            fs::canonicalize(&parent).unwrap(),
+            fs::canonicalize(temp_dir).unwrap()
+        );
     }
 
     #[test]
@@ -16737,7 +17406,13 @@ mod tests {
         )
         .unwrap();
 
+        #[cfg(not(windows))]
         assert_eq!(parent, fs::canonicalize(xdg.join("zfb")).unwrap());
+        #[cfg(windows)]
+        assert_eq!(
+            fs::canonicalize(&parent).unwrap(),
+            fs::canonicalize(xdg.join("zfb")).unwrap()
+        );
         assert!(parent.is_dir(), "selected cache parent must be created");
     }
 
@@ -16782,13 +17457,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            parent,
+            fs::canonicalize(&parent).unwrap(),
             fs::canonicalize(local_app_data.join("zfb")).unwrap()
         );
         assert!(
             parent.is_dir(),
             "selected LOCALAPPDATA cache parent must be created"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shadow_parent_windows_drive_spelling_reaches_created_shadow() {
+        // This drive-path regression requires a short local-drive TEMP, as on
+        // the native Windows acceptance host. UNC/extended-length paths retain
+        // their spelling and are covered by shadow_parent_path's unit tests.
+        use std::path::{Component, Prefix};
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let outside = tmp.path().join("作業 with spaces");
+        fs::create_dir_all(&project).unwrap();
+        let parent =
+            shadow_parent_dir_with_env(&project, &shadow_env(outside.clone(), None, None, None))
+                .unwrap();
+        assert!(
+            matches!(parent.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_))),
+            "{parent:?}"
+        );
+        assert_eq!(
+            fs::canonicalize(&parent).unwrap(),
+            fs::canonicalize(&outside).unwrap()
+        );
+        assert!(!path_is_inside_project(&project, &parent).unwrap());
+        let shadow = tempfile::Builder::new()
+            .prefix("zfb-bundler-")
+            .tempdir_in(&parent)
+            .unwrap();
+        let entry = shadow.path().join("entry.mjs");
+        fs::write(&entry, "export default 42;").unwrap();
+        assert!(!entry.to_string_lossy().replace('\\', "/").starts_with("//"));
+        assert_eq!(fs::read_to_string(entry).unwrap(), "export default 42;");
     }
 
     #[test]

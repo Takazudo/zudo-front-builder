@@ -26,8 +26,9 @@ set -euo pipefail
 #     0755 bit survives into the tarball.
 #
 # Known gap (documented, not fixed here): the 4 platform optionalDependencies
-# NOT relevant to the linux-x64 CI runner (zfb-darwin-arm64, zfb-darwin-x64,
-# zfb-linux-arm64-gnu, zfb-win32-x64-msvc) are left un-overridden. pnpm still
+# NOT relevant to the platform under test (on the linux-x64 CI runner:
+# zfb-darwin-arm64, zfb-darwin-x64, zfb-linux-arm64-gnu, zfb-win32-x64-msvc)
+# are left un-overridden. pnpm still
 # resolves their MANIFEST (a lightweight metadata call, not a tarball
 # download) against the real registry to evaluate the os/cpu match, then
 # skips installing them (they're optionalDependencies — an unresolvable
@@ -42,14 +43,54 @@ set -euo pipefail
 #
 # Usage:
 #   ZFB_LINUX_X64_BINARY=/path/to/zfb scripts/smoke-packed-clean-room.sh
+#   ZFB_SMOKE_PLATFORM=darwin-arm64 ZFB_DARWIN_ARM64_BINARY=/path/to/zfb \
+#     ZFB_DARWIN_ARM64_CSS_ADDON=/path/to/zfb-css.node \
+#     scripts/smoke-packed-clean-room.sh
 #
-# Required env:
-#   ZFB_LINUX_X64_BINARY — path to a freshly built x86_64-unknown-linux-gnu
-#                           release `zfb` binary (from build-binary's staged
-#                           smoke-ctx artifact) to inject into
-#                           packages/zfb-linux-x64-gnu/ before packing.
+# Platform under test (ZFB_SMOKE_PLATFORM, default linux-x64-gnu — the CI
+# runner, so the required Scaffold E2E check is unchanged). It must match the
+# host: the packed platform package is only installed when its os/cpu fields
+# match, so a mismatched host would silently skip it. A darwin-* run is native
+# Darwin evidence only when run on that Darwin architecture (#4231 item 2); a
+# darwin-x64 run on an Apple-silicon Mac under Rosetta is not native arm64.
+#
+#   platform        packed package           binary env                 CSS addon env
+#   linux-x64-gnu   zfb-linux-x64-gnu        ZFB_LINUX_X64_BINARY       ZFB_LINUX_X64_CSS_ADDON
+#   darwin-arm64    zfb-darwin-arm64         ZFB_DARWIN_ARM64_BINARY    ZFB_DARWIN_ARM64_CSS_ADDON
+#   darwin-x64      zfb-darwin-x64           ZFB_DARWIN_X64_BINARY      ZFB_DARWIN_X64_CSS_ADDON
+#
+# Required env: the platform's binary env (path to a freshly built release
+# `zfb` binary to inject into packages/zfb-<platform>/ before packing) and its
+# CSS addon env (a freshly built zfb-css.node).
 
-: "${ZFB_LINUX_X64_BINARY:?ZFB_LINUX_X64_BINARY env var is required (path to the built zfb binary)}"
+ZFB_SMOKE_PLATFORM="${ZFB_SMOKE_PLATFORM:-linux-x64-gnu}"
+case "$ZFB_SMOKE_PLATFORM" in
+  linux-x64-gnu) HOST_OS=Linux; HOST_ARCH=x86_64; BINARY_VAR=ZFB_LINUX_X64_BINARY; ADDON_VAR=ZFB_LINUX_X64_CSS_ADDON ;;
+  darwin-arm64) HOST_OS=Darwin; HOST_ARCH=arm64; BINARY_VAR=ZFB_DARWIN_ARM64_BINARY; ADDON_VAR=ZFB_DARWIN_ARM64_CSS_ADDON ;;
+  darwin-x64) HOST_OS=Darwin; HOST_ARCH=x86_64; BINARY_VAR=ZFB_DARWIN_X64_BINARY; ADDON_VAR=ZFB_DARWIN_X64_CSS_ADDON ;;
+  *)
+    echo "::error::unsupported ZFB_SMOKE_PLATFORM '$ZFB_SMOKE_PLATFORM' (expected linux-x64-gnu, darwin-arm64 or darwin-x64)" >&2
+    exit 2
+    ;;
+esac
+# `uname -m` reports the PROCESS architecture, so under Rosetta an arm64 Mac
+# reports x86_64. On Darwin also require the machine itself to match (arm64
+# hardware answers `sysctl hw.optional.arm64` = 1), so neither platform can be
+# satisfied by a translated process.
+HOST_NATIVE_ARCH="$(uname -m)"
+if [[ "$(uname -s)" == "Darwin" && "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+  HOST_NATIVE_ARCH=arm64
+fi
+if [[ "$(uname -s)" != "$HOST_OS" || "$(uname -m)" != "$HOST_ARCH" || "$HOST_NATIVE_ARCH" != "$HOST_ARCH" ]]; then
+  echo "::error::ZFB_SMOKE_PLATFORM=$ZFB_SMOKE_PLATFORM needs a native $HOST_OS/$HOST_ARCH host, got $(uname -s)/$(uname -m) on $HOST_NATIVE_ARCH hardware (a Rosetta-translated process is not native)" >&2
+  exit 2
+fi
+ZFB_SMOKE_BINARY="${!BINARY_VAR:-}"
+ZFB_SMOKE_CSS_ADDON="${!ADDON_VAR:-}"
+# Exit 1, as the former `: "${VAR:?}"` expansion did.
+[[ -n "$ZFB_SMOKE_BINARY" ]] || { echo "::error::$BINARY_VAR env var is required (path to the built zfb binary)" >&2; exit 1; }
+[[ -n "$ZFB_SMOKE_CSS_ADDON" ]] || { echo "::error::$ADDON_VAR env var is required (freshly built CSS addon)" >&2; exit 1; }
+PLATFORM_PKG="zfb-$ZFB_SMOKE_PLATFORM"
 
 pass() { printf '[PASS] %s\n' "$1"; }
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
@@ -58,19 +99,18 @@ if [[ ! -f packages/zfb/package.json ]]; then
   echo "::error::must be run from the repo root (packages/zfb/package.json not found in $(pwd))"
   exit 2
 fi
-if [[ ! -f "$ZFB_LINUX_X64_BINARY" ]]; then
-  echo "::error::ZFB_LINUX_X64_BINARY does not exist: $ZFB_LINUX_X64_BINARY"
+if [[ ! -f "$ZFB_SMOKE_BINARY" ]]; then
+  echo "::error::$BINARY_VAR does not exist: $ZFB_SMOKE_BINARY"
   exit 2
 fi
 
 # ── Stage 1: inject the freshly built binary, pack it, assert its exec bit ──
 
-PLATFORM_DIR="packages/zfb-linux-x64-gnu"
-: "${ZFB_LINUX_X64_CSS_ADDON:?freshly built CSS addon is required}"
-cp "$ZFB_LINUX_X64_CSS_ADDON" "$PLATFORM_DIR/zfb-css.node"
+PLATFORM_DIR="packages/$PLATFORM_PKG"
+cp "$ZFB_SMOKE_CSS_ADDON" "$PLATFORM_DIR/zfb-css.node"
 chmod 0644 "$PLATFORM_DIR/zfb-css.node"
 node scripts/smoke-css-node.mjs "$PLATFORM_DIR/zfb-css.node"
-cp "$ZFB_LINUX_X64_BINARY" "$PLATFORM_DIR/zfb"
+cp "$ZFB_SMOKE_BINARY" "$PLATFORM_DIR/zfb"
 chmod 0755 "$PLATFORM_DIR/zfb"
 
 TARBALL_DIR="$(mktemp -d)"
@@ -152,6 +192,7 @@ ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 ZFB_ADAPTER_CF_TARBALL="$ZFB_ADAPTER_CF_TARBALL" \
 PLATFORM_TARBALL_PATH="$PLATFORM_TARBALL_PATH" \
+PLATFORM_PKG="$PLATFORM_PKG" \
 CREATE_ZFB_TARBALL="$CREATE_ZFB_TARBALL" \
 CLEAN_ROOM_DIR="$CLEAN_ROOM_DIR" \
 node -e '
@@ -163,7 +204,7 @@ const overrides = {
   "@takazudo/zfb-slugify": `file:${env.ZFB_SLUGIFY_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
   "@takazudo/zfb-adapter-cloudflare": `file:${env.ZFB_ADAPTER_CF_TARBALL}`,
-  "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
+  [`@takazudo/${env.PLATFORM_PKG}`]: `file:${env.PLATFORM_TARBALL_PATH}`,
 };
 const pkg = {
   name: "zfb-packed-clean-room",
@@ -192,20 +233,20 @@ fs.writeFileSync(
 if [[ ! -f "$CLEAN_ROOM_DIR/node_modules/create-zfb/bin/create-zfb.mjs" ]]; then
   fail "create-zfb did not install from its local tarball"
 fi
-# @takazudo/zfb-linux-x64-gnu is a TRANSITIVE (optional) dependency of the
+# The platform package is a TRANSITIVE (optional) dependency of the
 # overridden @takazudo/zfb, not a direct dependency of the clean-room root —
 # pnpm's isolated node_modules only hoists direct deps to the top level, so
 # it lives inside node_modules/.pnpm/... instead. `find` locates it
 # regardless of the exact store layout.
-INSTALLED_BINARY="$(find "$CLEAN_ROOM_DIR/node_modules" -path '*/@takazudo/zfb-linux-x64-gnu/zfb' -type f | head -1)"
+INSTALLED_BINARY="$(find "$CLEAN_ROOM_DIR/node_modules" -path "*/@takazudo/$PLATFORM_PKG/zfb" -type f | head -1)"
 if [[ -z "$INSTALLED_BINARY" ]]; then
-  fail "@takazudo/zfb-linux-x64-gnu (override) did not install the platform binary"
+  fail "@takazudo/$PLATFORM_PKG (override) did not install the platform binary"
 fi
 INSTALLED_BINARY_MODE="$(stat -c '%a' "$INSTALLED_BINARY" 2>/dev/null || stat -f '%Lp' "$INSTALLED_BINARY")"
 if [[ "$INSTALLED_BINARY_MODE" != "755" ]]; then
   fail "installed platform binary is not 0755 (got $INSTALLED_BINARY_MODE) — exec bit lost somewhere between pack and install"
 fi
-pass "create-zfb + @takazudo/zfb-linux-x64-gnu installed from local tarballs (binary mode 0755)"
+pass "create-zfb + @takazudo/$PLATFORM_PKG installed from local tarballs (binary mode 0755)"
 
 # ── Stage 4: scaffold via the packed create-zfb ──────────────────────────────
 # `zfb new` rejects path separators in the project name (validate_project_name
@@ -222,6 +263,16 @@ if [[ ! -f "$SITE_DIR/package.json" ]]; then
   fail "scaffold did not produce $SITE_DIR/package.json"
 fi
 pass "scaffold produced $SITE_DIR"
+
+# Snapshot the pristine scaffold now, before Stage 5 installs and builds it, so
+# Stage 7 can build the exact same source a second time. Taken here rather
+# than copied from SITE_DIR after the build so no install or build output
+# (node_modules, dist, .zfb-build) can leak into the second build.
+LINKED_ROOM_DIR="$(mktemp -d)"
+LINKED_SITE_DIR="$LINKED_ROOM_DIR/$SITE_NAME"
+mkdir -p "$LINKED_SITE_DIR"
+tar -C "$SITE_DIR" --exclude=./node_modules --exclude=./pnpm-lock.yaml -cf - . |
+  tar -C "$LINKED_SITE_DIR" -xf -
 
 # ── Stage 5: install + build the scaffolded project ──────────────────────────
 # `zfb new` already attempted its own best-effort `pnpm install` against the
@@ -240,6 +291,7 @@ ZFB_SLUGIFY_TARBALL="$ZFB_SLUGIFY_TARBALL" \
 ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 PLATFORM_TARBALL_PATH="$PLATFORM_TARBALL_PATH" \
+PLATFORM_PKG="$PLATFORM_PKG" \
 SITE_DIR="$SITE_DIR" \
 node -e '
 const fs = require("node:fs");
@@ -249,7 +301,7 @@ const overrides = {
   "@takazudo/zfb": `file:${env.ZFB_TARBALL}`,
   "@takazudo/zfb-slugify": `file:${env.ZFB_SLUGIFY_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
-  "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
+  [`@takazudo/${env.PLATFORM_PKG}`]: `file:${env.PLATFORM_TARBALL_PATH}`,
 };
 const workspaceYaml = [
   "minimumReleaseAge: 0",
@@ -299,6 +351,112 @@ if ! grep -q "Hello, zfb" "$DIST_INDEX"; then
   fail "dist/index.html does not list the seed post title: Hello, zfb"
 fi
 pass "dist/index.html lists the seed post (Hello, zfb)"
+
+# ── Stage 7: linked-directory consumption emits the same bytes (#4231) ─────
+# Builds the Stage 4 snapshot a second time, consuming the SAME packed
+# package contents through symlinked directories instead of the pnpm store:
+# the zfb, zfb-runtime, zfb-slugify and platform tarballs are extracted into
+# a small pnpm workspace (which installs their own dependencies), and the
+# site `link:`s @takazudo/zfb and @takazudo/zfb-runtime to those directories
+# — the layout a monorepo or `pnpm link` consumer gets. The two dist/ trees
+# must then be byte-identical: the island build token is derived from the
+# resolved island graph, so where the package files live and how they were
+# installed must not leak into the islands root, its chunks, or the HTML
+# that carries the token.
+#
+# Deliberately NOT compared: the repo's own packages/* linked directly. Their
+# workspace manifests export ./src/*.ts (publishConfig swaps in ./dist/*.js
+# only at pack time), so that build compiles different source files and
+# correctly emits different bytes and a different token. The site also stays
+# outside the extracted-packages workspace: a site claimed by a
+# pnpm-workspace.yaml takes the workspace as its first-party root
+# (crates/zfb-types/src/first_party.rs, #1664), which by design changes
+# island module labels.
+LINKED_PKG_WS="$LINKED_ROOM_DIR/packages-ws"
+mkdir -p "$LINKED_PKG_WS"
+for spec in \
+  "zfb:$ZFB_TARBALL" \
+  "zfb-runtime:$ZFB_RUNTIME_TARBALL" \
+  "zfb-slugify:$ZFB_SLUGIFY_TARBALL" \
+  "$PLATFORM_PKG:$PLATFORM_TARBALL_PATH"; do
+  name="${spec%%:*}"
+  mkdir -p "$LINKED_PKG_WS/$name"
+  tar -xzf "${spec#*:}" -C "$LINKED_PKG_WS/$name" --strip-components=1
+done
+# Each extracted package must resolve its @takazudo/* siblings to the
+# extracted copies, never the registry, so the workspace links them. pnpm
+# does not link a workspace member's peerDependencies, so zfb-runtime's peer
+# @takazudo/zfb is satisfied the way a monorepo does it: a root dependency in
+# the workspace's top-level node_modules, found by walking up from
+# zfb-runtime's real path.
+cat >"$LINKED_PKG_WS/package.json" <<'JSON'
+{
+  "name": "zfb-linked-packages",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": { "@takazudo/zfb": "workspace:*" }
+}
+JSON
+sed "s|@PLATFORM_PKG@|$PLATFORM_PKG|g" >"$LINKED_PKG_WS/pnpm-workspace.yaml" <<'YAML'
+packages:
+  - "zfb"
+  - "zfb-runtime"
+  - "zfb-slugify"
+  - "@PLATFORM_PKG@"
+linkWorkspacePackages: true
+minimumReleaseAge: 0
+overrides:
+  "@takazudo/zfb": "workspace:*"
+  "@takazudo/zfb-runtime": "workspace:*"
+  "@takazudo/zfb-slugify": "workspace:*"
+  "@takazudo/@PLATFORM_PKG@": "workspace:*"
+YAML
+(cd "$LINKED_PKG_WS" && pnpm install --prod)
+
+LINKED_PKG_WS="$LINKED_PKG_WS" LINKED_SITE_DIR="$LINKED_SITE_DIR" node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+const env = process.env;
+const overrides = {
+  "@takazudo/zfb": `link:${path.join(env.LINKED_PKG_WS, "zfb")}`,
+  "@takazudo/zfb-runtime": `link:${path.join(env.LINKED_PKG_WS, "zfb-runtime")}`,
+};
+const workspaceYaml = [
+  "minimumReleaseAge: 0",
+  "overrides:",
+  ...Object.entries(overrides).map(([name, spec]) => `  "${name}": "${spec}"`),
+  "",
+].join("\n");
+fs.writeFileSync(
+  path.join(env.LINKED_SITE_DIR, "pnpm-workspace.yaml"),
+  workspaceYaml,
+);
+'
+
+(cd "$LINKED_SITE_DIR" && pnpm install)
+
+# Non-vacuity: both packages must really be symlinks to the extracted
+# directories, and the extracted zfb must reach the injected binary.
+for name in zfb zfb-runtime; do
+  link_path="$LINKED_SITE_DIR/node_modules/@takazudo/$name"
+  [[ -L "$link_path" ]] || fail "linked site's @takazudo/$name is not a symlink: $link_path"
+  resolved="$(cd "$link_path" && pwd -P)"
+  expected="$(cd "$LINKED_PKG_WS/$name" && pwd -P)"
+  [[ "$resolved" == "$expected" ]] || fail "linked site's @takazudo/$name resolves to $resolved, expected $expected"
+done
+LINKED_BINARY="$(cd "$LINKED_PKG_WS/zfb/node_modules/@takazudo/$PLATFORM_PKG" && pwd -P)/zfb"
+cmp -s "$LINKED_BINARY" "$ZFB_SMOKE_BINARY" ||
+  fail "linked zfb does not reach the injected binary (got $LINKED_BINARY)"
+pass "linked site consumes the extracted packages through symlinks, with the injected binary"
+
+(cd "$LINKED_SITE_DIR" && pnpm build)
+
+bash scripts/assert-dist-byte-parity.sh \
+  --require 'assets/islands-*.js' \
+  --require 'index.html' \
+  "$SITE_DIR/dist" "$LINKED_SITE_DIR/dist" ||
+  fail "store-installed and linked-directory builds of the same scaffold emitted different dist/ bytes (#4231)"
+pass "store-installed and linked-directory builds emit byte-identical dist/"
 
 echo "All packed-clean-room smoke assertions passed."
 

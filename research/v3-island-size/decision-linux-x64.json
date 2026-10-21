@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-internal-rewire-transition",
+  "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "792c812325310df73540cc20aa590bb8de049d96",
+  "baselineSourceSha": "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -32,13 +32,13 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "4.5.3",
+    "packageVersion": "4.6.0",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "370bf32469ed4f3093a24aed1cab3dd68a28c58051847d425fcbe3d062fc30ee",
-    "cargoLockSha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138"
+    "pnpmLockSha256": "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
+    "cargoLockSha256": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,116 +116,46 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.5.3 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 39008132372 at PR merge source e2e78eb78c631c351422a66bebf07fbaa00973e2 (probe head 792c812325310df73540cc20aa590bb8de049d96) after a reviewed internal Cargo.lock rewire (Cargo.lock 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37 to 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138 adds 1 internal record(s) (zfb-js-host@0.0.0) and rewires 1 internal record(s) (zfb-render@0.0.0 -[\"sha1\",\"sha2\"] +[\"zfb-js-host\"]); every other [[package]] record and the header are byte-identical, declared in prototypes/direct-v8/evidence/cargo-rewire-main-e1ef4f5b/declaration.json (SHA-256 204a8fa17f043503e652a0a8811d07e3143966cfb4ce490ac4429ed0104a369b), proved against Cargo.lock at commit e1ef4f5b59a2bba260eac29ee8edfdfbcd928335 (SHA-256 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37); the zfb producer closure for x86_64-unknown-linux-gnu keeps 497 rows unchanged, adds 1 and changes 0 internal row(s) with no external drift). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.6.0 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 39628733086 at PR merge source 30e1806d3f0863f4b6726cb36d92ef759084783e (probe head f2e157a5bcb0416c8fa8bc302389fb371994fc67). Every raw and gzipNormalized total is unchanged from the v4.5.4 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 9 actual gzip totals moved by -5 to +3 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 39008132372,
-    "jobId": 117324703148,
-    "sourceSha": "e2e78eb78c631c351422a66bebf07fbaa00973e2",
+    "runId": 39628733086,
+    "jobId": 119320940279,
+    "sourceSha": "30e1806d3f0863f4b6726cb36d92ef759084783e",
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "release-version-stamp",
-      "packageVersion": "4.5.3",
-      "baselineSourceSha": "37b40de3a49fa019d30f414328a42b45e4672d4a",
-      "baselineRunId": 38887632282,
+      "outcome": "cargo-producer-lock-transition",
+      "packageVersion": "4.5.4",
+      "baselineSourceSha": "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+      "baselineRunId": 39609635178,
       "contract": {
-        "sha256": "08abd3ff01c2927e90121e6bdb98697a62626516d1763e48c13b4f25031ba9cd",
-        "commit": "d70dd6d94ab1b89a65fee9ed7727747d1de860f2",
+        "sha256": "8cfddcedb771c4069f96b81102cc92498798e5a210168f78e040be82fe57cb66",
+        "commit": "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
         "path": "research/v3-island-size/decision-linux-x64.json"
-      }
-    },
-    "cargoRewire": {
-      "oldSha": "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37",
-      "newSha": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
-      "oldLockSource": {
-        "commit": "e1ef4f5b59a2bba260eac29ee8edfdfbcd928335",
-        "path": "Cargo.lock",
-        "sha256": "13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37"
-      },
-      "newLockSource": {
-        "sha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
-        "commit": "792c812325310df73540cc20aa590bb8de049d96",
-        "path": "Cargo.lock"
-      },
-      "declaration": {
-        "path": "prototypes/direct-v8/evidence/cargo-rewire-main-e1ef4f5b/declaration.json",
-        "sha256": "204a8fa17f043503e652a0a8811d07e3143966cfb4ce490ac4429ed0104a369b"
-      },
-      "producer": "zfb",
-      "manifestsAtCommit": "792c812325310df73540cc20aa590bb8de049d96",
-      "added": [
-        {
-          "id": "zfb-js-host@0.0.0",
-          "manifest": "crates/zfb-js-host/Cargo.toml",
-          "manifestSha256": "c0ddb808a53113215a6e4bd11891c6a75404ab944676d23805e82dfac8dd8480",
-          "sha256": "5f02be259fc6ee127ef8ee2da7f179f41c9bc2636f22d036da2b800e32987d3b",
-          "dependencies": [
-            "base64 0.22.1",
-            "getrandom 0.3.4",
-            "reqwest",
-            "serde",
-            "serde_json",
-            "sha1",
-            "sha2",
-            "thiserror",
-            "tokio",
-            "url",
-            "v8"
-          ]
-        }
-      ],
-      "changed": [
-        {
-          "id": "zfb-render@0.0.0",
-          "manifest": "crates/zfb-render/Cargo.toml",
-          "manifestSha256": "b4a6e02611270daf9e5e64e480630255b9f8ddc1a560fbe801a5da7981aadc92",
-          "oldSha256": "fe8968d7ef6e23a8ba5ef4feeca4a2e207406015c1a7110b9cb8e5a45a67fe8e",
-          "newSha256": "ac163abe391c942887f03553960d104837c874d5d3ca33cbe26b71829d92ed67",
-          "removedDependencies": ["sha1", "sha2"],
-          "addedDependencies": ["zfb-js-host"]
-        }
-      ],
-      "removed": [],
-      "closure": {
-        "target": "x86_64-unknown-linux-gnu",
-        "oldSha256": "7199b062e10511bd49f2cb926927692da478a4b4c48eaa318cb92d3c62ac7e2c",
-        "newSha256": "a579c8aca5794daf1264d7deda8acf7cf5ccce95a70210255cc600a9b2af2485",
-        "rows": {
-          "old": 497,
-          "new": 498,
-          "unchanged": 497
-        },
-        "added": [
-          {
-            "id": "zfb-js-host@0.0.0",
-            "features": ["default", "services"]
-          }
-        ],
-        "changed": []
       }
     },
     "actualGzip": {
       "workspace": {
-        "blog-theme": 22355,
-        "event-only": 22209,
-        "json-api": 22299,
-        "model": 22217,
-        "multi-island": 22299,
+        "blog-theme": 22352,
+        "event-only": 22210,
+        "json-api": 22295,
+        "model": 22215,
+        "multi-island": 22301,
         "no-island": 0,
-        "scalar-signal": 22229,
-        "show-for": 22285
+        "scalar-signal": 22228,
+        "show-for": 22288
       },
       "packed": {
-        "blog-theme": 22366,
-        "event-only": 22214,
-        "json-api": 22310,
+        "blog-theme": 22364,
+        "event-only": 22215,
+        "json-api": 22314,
         "model": 22223,
-        "multi-island": 22306,
+        "multi-island": 22307,
         "no-island": 0,
         "scalar-signal": 22217,
-        "show-for": 22303
+        "show-for": 22298
       }
     },
-    "note": "Cargo internal-rewire transition run at v4.5.3 at PR merge source e2e78eb78c631c351422a66bebf07fbaa00973e2 (probe head 792c812325310df73540cc20aa590bb8de049d96). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed internal Cargo.lock rewire at unchanged v4.5.3 (Cargo.lock 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37 to 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138 adds 1 internal record(s) (zfb-js-host@0.0.0) and rewires 1 internal record(s) (zfb-render@0.0.0 -[\"sha1\",\"sha2\"] +[\"zfb-js-host\"]); every other [[package]] record and the header are byte-identical, declared in prototypes/direct-v8/evidence/cargo-rewire-main-e1ef4f5b/declaration.json (SHA-256 204a8fa17f043503e652a0a8811d07e3143966cfb4ce490ac4429ed0104a369b), proved against Cargo.lock at commit e1ef4f5b59a2bba260eac29ee8edfdfbcd928335 (SHA-256 13956cf2b75baea8b68442c750174714b9591d6ab7ba9f923a800c5653e1ac37); the zfb producer closure for x86_64-unknown-linux-gnu keeps 497 rows unchanged, adds 1 and changes 0 internal row(s) with no external drift); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Release probe PR #4377 run for v4.6.0 at PR merge source 30e1806d3f0863f4b6726cb36d92ef759084783e (probe head f2e157a5bcb0416c8fa8bc302389fb371994fc67). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.4 contract; 9 actual gzip totals moved by -5 to +3 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

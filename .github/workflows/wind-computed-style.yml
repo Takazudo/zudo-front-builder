@@ -29,6 +29,12 @@ on:
       - "rust-toolchain.toml"
       - "pnpm-lock.yaml"
       - "package.json"
+      # PR-only prose that docs-only.yml also lists (#4372); negations go last
+      # so they win over the broader crates/** and packages/* entries. The
+      # push trigger keeps them, so main still runs on every crate change.
+      - "!crates/*.md"
+      - "!crates/*/README.md"
+      - "!packages/*/README.md"
   push:
     branches:
       - main

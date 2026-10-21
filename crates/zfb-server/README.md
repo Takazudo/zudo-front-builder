@@ -175,7 +175,7 @@ and must not pull in `zfb-server`.
 
 ### Feature gate
 
-`zfb-server` carries the `embed_v8` feature to propagate the V8 gate to `zfb-build`. Its
+`zfb-server` carries the `embed_v8` and `direct-v8` features to propagate the V8 gate to `zfb-build` and `zfb-config-loader`. Its
 own default features are off so workspace-wide feature unification does not force V8 on for
 all consumers. The top-level `zfb` crate is the single place that decides V8 inclusion.
 

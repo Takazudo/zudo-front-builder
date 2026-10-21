@@ -426,7 +426,11 @@ export default function Header() {
 
 各プラットフォームとモードで各ケースを 2 回ビルドし、出力された dist 全体のファイル一覧を比較しました。記録された島ありケースはそれぞれ entry が 1 つで、後続チャンクはありませんでした。分割が発生した場合、サイズ契約では entry、shared、lazy のすべての JavaScript ファイルを数えます。raw は全ファイルのバイト数の合計です。gzip は各ファイルに node:zlib gzipSync を level 9、mtime 0 で個別に適用してから合計します。HTTP 転送時の圧縮サイズは異なることがあります。
 
-両契約は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を固定しています。Darwin のベースラインソースは 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux x64 のプローブは GitHub Actions health run 36831966429 の PR merge ref afa523768b3de897859521e1bf940179191f50ab（PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40）で行われ、Darwin の歴史的コミットでの再実行ではありません。Linux の raw 合計は Darwin と一致しましたが gzip 合計は異なり、実際に生成した islands JavaScript の全ファイルで SHA-256 が異なります。これはプラットフォームごとのサイズベースラインであり、プラットフォーム間のバイト一致や意味的同等性を示すものではありません。Linux の結果は固定ツールチェーンを使った x64 GitHub Actions の 1 回の実行に基づきます。他の Linux アーキテクチャや将来のツールチェーンについては確認していません。
+調査時は @takazudo/zfb 3.0.0、Node v24.14.0、zlib 1.3.1-e00f703、esbuild 0.25.12、lockfile の Hono 4.12.25 を固定しています。Darwin のベースラインソースは 897f288c013e24ff4fde01483a55d8a1945fc964 です。Linux x64 のプローブは GitHub Actions health run 36831966429 の PR merge ref afa523768b3de897859521e1bf940179191f50ab（PR head 99726c74a48df1a0658cd6d9f5c494d06d4f2d40）で行われ、Darwin の歴史的コミットでの再実行ではありません。Linux の raw 合計は Darwin と一致しましたが gzip 合計は異なり、実際に生成した islands JavaScript の全ファイルで SHA-256 が異なります。これはプラットフォームごとのサイズベースラインであり、プラットフォーム間のバイト一致や意味的同等性を示すものではありません。Linux の結果は固定ツールチェーンを使った x64 GitHub Actions の 1 回の実行に基づきます。他の Linux アーキテクチャや将来のツールチェーンについては確認していません。
+
+現在の契約は調査時から更新されています。いまは @takazudo/zfb 4.5.4 と同じ Node・zlib・esbuild・Hono のバージョンを固定しており、正確な上限値は `research/v3-island-size/decision.json`（Darwin arm64）と `decision-linux-x64.json`（Linux x64）にあります。たとえば島 1 つのイベントのみのページは、両プラットフォームともワークスペースモードで raw 64,535 / gzip 22,195 バイトが上限です。許容増加量は引き続き 0 です。
+
+契約はレビュー済みの遷移を通してのみ変わります。契約が承認していない形で `Cargo.lock` が変わると、`health.yml` の island-size チェックは失敗し続けます。新しいネイティブ証拠を集め、影響する契約を再固定（`--stage` のあと `--apply`）するまで解消しません。Linux x64 の証拠は GitHub Actions のアーティファクトから取ります。Darwin arm64 の証拠はネイティブの `island-size-darwin.yml` ワークフローから取るか、オーナーが手元の Mac で実行して証明したものを使います。後者は `scripts/island-size-local-evidence.mjs` が、内部の Cargo 再配線と rustls セキュリティのロック遷移という 2 つのレビュー済みの理由に限って受け付けます。どちらの経路も、それだけで上限値や許容量を変えることはありません。
 
 2 つの実測マトリクスを再現するコマンドは、リポジトリの[測定と再実行の README](https://github.com/Takazudo/zudo-front-builder/blob/main/research/v3-island-size/README.md)を参照してください。ガードは Darwin arm64 では `decision.json`、Linux x64 では `decision-linux-x64.json` を選び、未対応ホストや異なるプラットフォームの測定結果を拒否します。両方の実行後、保存したファイルを選択された契約と照合します。
 
