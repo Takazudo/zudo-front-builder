@@ -12567,7 +12567,12 @@ fn entry_reachable_extra_top_level_dirs(
     for target in alias_targets {
         let literal = target
             .components()
-            .take_while(|part| !path_segment_has_glob(&part.as_os_str().to_string_lossy()))
+            // Only a normal segment can hold a glob: the `?` of a Windows
+            // verbatim `\\?\C:` prefix is part of the path (#4371).
+            .take_while(|part| {
+                !matches!(part, Component::Normal(segment)
+                    if path_segment_has_glob(&segment.to_string_lossy()))
+            })
             .collect::<PathBuf>();
         let literal = normalize_path_lexical(&literal);
         for dir in extra_dirs {
@@ -28056,12 +28061,20 @@ mod tests {
     /// performs exactly the pre-#993 fs operations. Leaked (`Box::leak`)
     /// so `default_mat_ctx` can hand out a `'static` borrow without
     /// changing its many call sites; the struct is a few words, leaked
-    /// once per test call. Rooted at `/` because these call sites stage
-    /// into arbitrary tempdirs: the containment guard (#3185) is exercised
-    /// by the dedicated `shadow_writer_containment_*` tests instead.
+    /// once per test call. Rooted at the temp dir's filesystem root because
+    /// these call sites stage into arbitrary tempdirs: the containment guard
+    /// (#3185) is exercised by the dedicated `shadow_writer_containment_*`
+    /// tests instead. Not `/`: on Windows that is the current directory's
+    /// drive, which need not hold `%TEMP%` (a GitHub runner checks out on
+    /// `D:` with `%TEMP%` on `C:`, #4371).
     fn leaked_passthrough_writer() -> &'static ShadowWriter<'static> {
+        let temp_root = std::env::temp_dir()
+            .ancestors()
+            .last()
+            .expect("a path has at least one ancestor")
+            .to_path_buf();
         Box::leak(Box::new(
-            ShadowWriter::new(PathBuf::from("/"), None, false, None)
+            ShadowWriter::new(temp_root, None, false, None)
                 .expect("passthrough writer construction is infallible"),
         ))
     }
