@@ -802,6 +802,9 @@ describe("island shipped-size budget", () => {
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
     expect(linuxContract.toolchain.packageVersion).toBe("4.6.0");
+    expect(linuxContract.toolchain.pnpmLockSha256).toBe(
+      sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
+    );
     expect(linuxContract.schemaVersion).toBe(3);
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(linuxContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
@@ -1380,11 +1383,12 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: for Linux, the paired
-// direct-V8 cargo-internal-rewire (ZFB-L2-024 step 2), cited at 9a316700 and moved
-// by the webpki-security-4314 producer-lock transition (#4314); for Darwin, its
-// paired rewire, cited at 5b5f2152 and moved by the same webpki transition on
-// owner-attested local evidence.
+// Exact immediate predecessors of the live contracts: for Linux, the
+// webpki-security-4314 producer-lock transition (#4314), introduced at 5b5f2152,
+// cited at v4.6.0 release-probe head f2e157a5 (refs/pull/4377/head, byte-identical
+// blob) and moved by the v4.6.0 release-bump; for Darwin, its paired direct-V8 rewire
+// (ZFB-L2-024 step 2), cited at 5b5f2152 and moved by the same webpki transition
+// on owner-attested local evidence.
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -1392,13 +1396,13 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
-    sha256: "2625ccc8c12b7aa398421f4c1ed822ce35fbb7d8873df27206c21e2a601d7197",
-    fixture: "fixtures/island-size-linux-x64-v4.5.4-v8rewire.json",
-    outcome: "cargo-internal-rewire-transition",
+    commit: "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
+    sha256: "8cfddcedb771c4069f96b81102cc92498798e5a210168f78e040be82fe57cb66",
+    fixture: "fixtures/island-size-linux-x64-v4.5.4-webpki.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "4.5.4",
-    baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
-    baselineRunId: 39589800240,
+    baselineSourceSha: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+    baselineRunId: 39609635178,
   },
   {
     file: "decision.json",
@@ -1633,7 +1637,10 @@ describe("live contracts preserve released evidence and authentic predecessors",
       },
     });
     expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
-    expect(live.toolchain.pnpmLockSha256).toBe(sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))));
+    // The v4.5.4 pnpm-lock.yaml the release bump measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
+    );
     // actualGzip is transfer-size evidence that a version stamp may move, so only
     // its fixture coverage is pinned, not its values.
     const gzipShape = (contract) =>
@@ -1859,11 +1866,25 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The webpki-security-4314 transition (#4314): Linux from health run
   // 39609635178 at merge source dbf93a6c (probe head 9a316700); Darwin from
-  // owner-attested local evidence at 5b5f2152.
-  for (const { file, before, evidence } of [
+  // owner-attested local evidence at 5b5f2152. The Linux after-contract is frozen
+  // because the v4.6.0 release-bump replaced it.
+  for (const { file, before, after, repinnedFrom, evidence } of [
     {
       file: "decision-linux-x64.json",
       before: "fixtures/island-size-linux-x64-v4.5.4-v8rewire.json",
+      after: "fixtures/island-size-linux-x64-v4.5.4-webpki.json",
+      repinnedFrom: {
+        schemaVersion: 3,
+        outcome: "cargo-internal-rewire-transition",
+        packageVersion: "4.5.4",
+        baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
+        baselineRunId: 39589800240,
+        contract: {
+          sha256: "2625ccc8c12b7aa398421f4c1ed822ce35fbb7d8873df27206c21e2a601d7197",
+          commit: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+          path: "research/v3-island-size/decision-linux-x64.json",
+        },
+      },
       evidence: {
         baselineSourceSha: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
         event: "ci",
@@ -1887,12 +1908,14 @@ describe("live contracts preserve released evidence and authentic predecessors",
     },
   ]) {
     it(
-      "moves the live " +
-        file +
+      "moves the " +
+        (after ? "frozen " + after : "live " + file) +
         " from its frozen predecessor only by the webpki-security-4314 transition",
       () => {
         const predecessor = JSON.parse(readFileSync(join(testDir, before), "utf8"));
-        const live = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
+        const live = JSON.parse(
+          readFileSync(after ? join(testDir, after) : join(sizeDir, file), "utf8"),
+        );
         expect(live.outcome).toBe("cargo-producer-lock-transition");
         expect(predecessor.toolchain.cargoLockSha256).toBe(
           "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
@@ -1921,11 +1944,87 @@ describe("live contracts preserve released evidence and authentic predecessors",
         const { baselineSourceSha, ...identity } = evidence;
         expect(live.baselineSourceSha).toBe(baselineSourceSha);
         expect(live.baselineEvidence).toMatchObject(identity);
+        if (repinnedFrom) expect(live.baselineEvidence.repinnedFrom).toEqual(repinnedFrom);
         expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
         expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
       },
     );
   }
+
+  it("moves the live Linux contract from the frozen webpki bytes only by the v4.6.0 release bump", () => {
+    const predecessor = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.4-webpki.json"), "utf8"),
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("4.6.0");
+    expect(live.toolchain.cargoLockSha256).toBe(predecessor.toolchain.cargoLockSha256);
+    expect(live.baselineSourceSha).toBe("f2e157a5bcb0416c8fa8bc302389fb371994fc67");
+    expect(live.baselineEvidence).toMatchObject({
+      runId: 39628733086,
+      jobId: 119320940279,
+      sourceSha: "30e1806d3f0863f4b6726cb36d92ef759084783e",
+      repinnedFrom: {
+        outcome: "cargo-producer-lock-transition",
+        packageVersion: "4.5.4",
+        baselineRunId: 39609635178,
+        contract: { sha256: "8cfddcedb771c4069f96b81102cc92498798e5a210168f78e040be82fe57cb66" },
+      },
+    });
+    for (const key of ["cargoRewire", "cargoTransition"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The v4.6.0 pnpm-lock.yaml the release probe measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
+    );
+    // The cited probe head f2e157a5 is off main; the same blob entered main at
+    // 5b5f2152, so a full checkout anchors the citation there.
+    const mainlineCommit = "5b5f21523818634f8982e0dd3d7fc14885141f2c";
+    let mainlineAvailable = false;
+    try {
+      execFileSync("git", ["cat-file", "-e", mainlineCommit + "^{commit}"], {
+        cwd: repoRoot,
+        stdio: "ignore",
+      });
+      mainlineAvailable = true;
+    } catch {
+      // Shallow checkout: the frozen fixture digest above remains mandatory.
+    }
+    if (mainlineAvailable) {
+      execFileSync("git", ["merge-base", "--is-ancestor", mainlineCommit, "HEAD"], {
+        cwd: repoRoot,
+        stdio: "ignore",
+      });
+      const blob = execFileSync(
+        "git",
+        ["show", mainlineCommit + ":research/v3-island-size/decision-linux-x64.json"],
+        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
+      );
+      expect(sha(blob)).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
+    }
+    // actualGzip is transfer-size evidence that a version stamp may move, so only
+    // its fixture coverage is pinned, not its values.
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(predecessor));
+    // A release bump moves only the version stamp, its lockfile provenance and the evidence.
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"]) {
+        delete copy[key];
+      }
+      copy.toolchain.packageVersion = null;
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(predecessor));
+  });
 
   it("keeps the dated README corrections", () => {
     const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
