@@ -115,6 +115,26 @@ _None currently recorded in this document. Update this section whenever a non-ga
 finding or warning-only Rust finding is observed, with the advisory ID, affected package or
 crate, severity, and the tracking issue number._
 
+## Accepted cargo-deny exceptions
+
+`deny.toml` ignores three Rust advisories. Takazudo accepted them as documented exceptions on
+2026-10-21 ([#1373](https://github.com/Takazudo/zudo-front-builder/issues/1373)). None has a
+fix reachable through the dependencies that pull it in, so each waits on an upstream release.
+The reverse paths below were re-checked on 2026-10-21 with
+`cargo tree --locked --target all -i <crate@version>`.
+
+| Advisory | Crate | Reached via | Lift when |
+| --- | --- | --- | --- |
+| RUSTSEC-2025-0141 (unmaintained) | bincode 1.3.3 | `deno_core` 0.399.0, and `syntect` 5.3.0's `dump-load` feature behind `default-syntaxes`/`default-themes` | [syntect](https://github.com/trishume/syntect) releases without bincode 1. Removing `deno_core` (#4303) only narrows the path. |
+| RUSTSEC-2024-0436 (unmaintained) | paste 1.0.15 | `v8` 147.4.0, through `deno_core`/`serde_v8` and directly through `zfb-js-host`. Every released `v8` up to 152.2.0 requires it. | [rusty_v8](https://github.com/denoland/rusty_v8) releases without paste. Removing Deno does not clear it. |
+| RUSTSEC-2026-0235 (vulnerability) | rkyv 0.7.46 | `parcel_sourcemap` 2.1.1, through `lightningcss` 1.0.0-alpha.71's `sourcemap` feature, which `zfb-css`'s own `Bundler` use and `minify-html` 0.18.1's default features both require | [parcel_sourcemap](https://github.com/parcel-bundler/source-map) moves to rkyv ≥0.8.17, or lightningcss stops requiring it. The advisory needs a forged archive to be deserialized, and no identified zfb code path deserializes attacker-supplied rkyv archives through parcel_sourcemap. |
+
+Do not bump crates or edit `Cargo.lock` just to chase these entries: a lock change needs its own
+admission evidence. When an upstream trigger fires, remove the entry in the same change that
+moves the dependency, and confirm `cargo deny check advisories` stays green. cargo-deny warns
+`advisory-not-detected` when an ignore no longer matches anything, so a stale entry is visible
+in the weekly Security Audit run.
+
 ## Before adding a runtime dep
 
 - [ ] Can a Node built-in (≥ 22) do this?

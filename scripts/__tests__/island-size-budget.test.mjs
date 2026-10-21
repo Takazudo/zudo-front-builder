@@ -735,23 +735,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.5.4");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.6.0");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("5b5f21523818634f8982e0dd3d7fc14885141f2c");
+    expect(darwinContract.baselineSourceSha).toBe("febb20e74833db11d69df7d6d07a8c7df4089aa9");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "fdffd9ed251d0ecbb72e38fc7ce6bbcb216f6824bd37cc3d7404299af6950547" },
+      localReceipt: { sha256: "c241d66006fec18a676eea6b35e00be7f691ff351917caecc9472f49f98ff60c" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed webpki-security-4314 producer-lock transition at 5b5f2152 (#4314,
     // owner-attested local evidence); the ceilings below still follow run
     // 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
+      "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
@@ -1385,9 +1385,9 @@ describe("island shipped-size budget", () => {
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // Exact immediate predecessors of the live contracts: for Linux, the v4.6.0
 // release-bump contract, cited at #4385 head cf92bfa5 (byte-identical to main
-// 84dc4a84) and moved by the noyalib-4268 producer-lock transition; for Darwin, its paired direct-V8 rewire
-// (ZFB-L2-024 step 2), cited at 5b5f2152 and moved by the same webpki transition
-// on owner-attested local evidence.
+// 84dc4a84) and moved by the noyalib-4268 producer-lock transition; for Darwin,
+// the webpki transition on owner-attested local evidence at 5b5f2152, cited at
+// v4.6.0 (febb20e7) and moved by the Darwin v4.6.0 release-bump (ZFB-R003).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -1405,12 +1405,12 @@ const repinnedFromContracts = [
   },
   {
     file: "decision.json",
-    commit: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
-    sha256: "7de9bdfea2a7642aa931f060a8c2764bcece479fa61dcbed4ede98025393b41e",
-    fixture: "fixtures/island-size-darwin-v4.5.4-v8rewire.json",
-    outcome: "cargo-internal-rewire-transition",
+    commit: "febb20e74833db11d69df7d6d07a8c7df4089aa9",
+    sha256: "13917ec06e6bc4f2981fa020b632acb4dffe0cd8abb4d9a43ce3c1db5e03aec0",
+    fixture: "fixtures/island-size-darwin-v4.5.4-webpki.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "4.5.4",
-    baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
+    baselineSourceSha: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
     baselineRunId: undefined,
   },
 ];
@@ -1865,8 +1865,8 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The webpki-security-4314 transition (#4314): Linux from health run
   // 39609635178 at merge source dbf93a6c (probe head 9a316700); Darwin from
-  // owner-attested local evidence at 5b5f2152. The Linux after-contract is frozen
-  // because the v4.6.0 release-bump replaced it.
+  // owner-attested local evidence at 5b5f2152. Both after-contracts are frozen:
+  // the v4.6.0 release-bump replaced Linux and replaces Darwin next.
   for (const { file, before, after, repinnedFrom, evidence } of [
     {
       file: "decision-linux-x64.json",
@@ -1895,6 +1895,18 @@ describe("live contracts preserve released evidence and authentic predecessors",
     {
       file: "decision.json",
       before: "fixtures/island-size-darwin-v4.5.4-v8rewire.json",
+      after: "fixtures/island-size-darwin-v4.5.4-webpki.json",
+      repinnedFrom: {
+        schemaVersion: 3,
+        outcome: "cargo-internal-rewire-transition",
+        packageVersion: "4.5.4",
+        baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
+        contract: {
+          sha256: "7de9bdfea2a7642aa931f060a8c2764bcece479fa61dcbed4ede98025393b41e",
+          commit: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
+          path: "research/v3-island-size/decision.json",
+        },
+      },
       evidence: {
         baselineSourceSha: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
         event: "local-native",
