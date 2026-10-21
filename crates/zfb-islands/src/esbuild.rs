@@ -2179,7 +2179,7 @@ fn sweep_orphaned_in_project_temp_files(working_dir: &Path) {
         else {
             continue;
         };
-        if candidate.try_lock().is_ok() {
+        if zfb_plugin_resolver::exclusive_lock_on_file_at_path(&candidate, &path) {
             let _ = std::fs::remove_file(&path);
         }
     }
