@@ -27,9 +27,20 @@ export function assertLocalSecurityTransition(transition) {
 }
 
 // The only reasons that may stage owner-attested local evidence, each for its
-// own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire) and
-// the #4314 rustls security lock transition (evidence.cargoTransition). Adding
-// a reason here is a provenance-policy decision, not a refactor.
+// own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire),
+// the #4314 rustls security lock transition (evidence.cargoTransition), and the
+// provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
+// transition (owner decision 2026-10-21: Darwin re-pins must not require a
+// hosted Mac runner). Adding a reason here is a provenance-policy decision, not
+// a refactor.
+const provenanceRepin = (reason, outcome) =>
+  Object.freeze({
+    transitionKey: null,
+    requiresReviewedTransition: false,
+    assertContract(contract) {
+      if (contract.outcome !== outcome) fail(reason + " evidence must record outcome " + outcome);
+    },
+  });
 export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
   "cargo-internal-rewire": Object.freeze({
     transitionKey: "cargoRewire",
@@ -51,6 +62,8 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
         fail("staged contract has wrong security lock");
     },
   }),
+  "release-bump": provenanceRepin("release-bump", "release-version-stamp"),
+  "runtime-identity": provenanceRepin("runtime-identity", "runtime-identity-repin"),
 });
 const TRANSITION_KEYS = ["cargoRewire", "cargoTransition"];
 
