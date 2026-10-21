@@ -104,3 +104,49 @@ fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
         assert!(fixture.0.join("out/meta.json").is_file());
     }
 }
+
+/// The lifecycle observer's failed-replacement page: an unconditional
+/// top-level throw in a module whose namespace the entry exports.
+fn top_level_throw_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.0.join("pages")).unwrap();
+    fs::write(
+        fixture.0.join("entry.js"),
+        "import * as page from './pages/index.js';\n\
+         export const routes = { '/': page };\n\
+         export default { fetch() { return routes; } };\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.0.join("pages/index.js"),
+        "throw new Error('CLI_REPLACEMENT_REJECTED');\n\
+         export default function Page() { return 'CLI_BAD'; }\n",
+    )
+    .unwrap();
+    fixture
+}
+
+#[test]
+fn unminified_top_level_throw_keeps_exported_bindings() {
+    let fixture = top_level_throw_fixture();
+    run_prepared(&fixture.command()).unwrap();
+    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
+    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
+    // The pinned DCE-only pass emitted `export { routes }` with no declaration.
+    assert!(bundle.contains("const routes ="), "{bundle}");
+}
+
+#[test]
+fn minified_top_level_throw_keeps_rolldowns_dce_pass() {
+    let fixture = top_level_throw_fixture();
+    let mut cmd = fixture.command();
+    cmd.arg("--minify");
+    run_prepared(&cmd).unwrap();
+    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
+    // Negative control: --minify keeps Rolldown's DCE, which at the pin still
+    // exports `routes` without declaring it (#4336 ZFB-RD-003/004). A pin
+    // that fixes it upstream fails here; revisit the unminified opt-out then.
+    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
+    assert!(bundle.contains("routes}"), "{bundle}");
+    assert!(!bundle.contains("routes="), "{bundle}");
+}
