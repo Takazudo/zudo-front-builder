@@ -175,6 +175,17 @@ before execution; the recorded corpus hash binds the bytes actually loaded,
 both engines receive those same loaded inputs, and later corpus mutation fails
 the overall checker even if both individual engine results passed.
 
+On POSIX, `run_receipts` uses the bounded drain in `watchdog-drain.py` (#4289,
+option A): 60 seconds of communication after spawn, then one shared second to
+kill, drain and reap the direct child. Bytes written before the kill are kept
+when the drain finishes in that second; `watchdog_cleanup.drain_complete` says
+whether it did. A child that cannot be reaped is recorded in the report's
+`released_children` and fails the check instead of being waited for. A
+cancelled check still writes a failed report before it propagates. Descendants
+of the runner are not cleaned up. Windows keeps the `subprocess.run` path.
+`test_watchdog_drain.py` covers the drain and these ownership paths; see
+`WATCHDOG-OWNERSHIP-4350.md`.
+
 To run only the checker protocol suite:
 
 ```sh

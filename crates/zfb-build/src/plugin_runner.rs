@@ -4670,11 +4670,13 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
         // on macOS `std::env::temp_dir()` sits under `/var`, a symlink to
         // `/private/var`, and Node's ESM loader canonicalizes module paths
         // (`fs.realpath`) when computing `import.meta.url` — a platform
-        // quirk of the test's tempdir, unrelated to bundling.
+        // quirk of the test's tempdir, unrelated to bundling. Canonicalize
+        // Node's side too: on Windows Rust spells the canonical root with a
+        // `\\?\` verbatim prefix that Node never produces (#4371).
         let canonical_root = std::fs::canonicalize(root).unwrap();
         assert_eq!(
-            parsed["dir"].as_str().unwrap(),
-            canonical_root.to_string_lossy(),
+            std::fs::canonicalize(parsed["dir"].as_str().unwrap()).unwrap(),
+            canonical_root,
             "dirname(fileURLToPath(import.meta.url)) must be the plugin's ORIGINAL directory: {written}"
         );
         assert!(

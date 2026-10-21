@@ -45,18 +45,26 @@ use std::path::{Component, Path};
 ///   source-map `HashMap<PathBuf, _>` distinguishes them the same way,
 ///   so the cache keying must as well (see module docs);
 /// - a Windows drive/UNC prefix is preserved verbatim ahead of the
-///   normalised remainder.
+///   normalised remainder;
+/// - under a Windows verbatim prefix (`\\?\C:\…`, what `canonicalize`
+///   returns there) the separator stays `\`: Win32 does not treat `/` as a
+///   separator in a verbatim path, so a `/`-joined rendering names a
+///   different, nonexistent file and every re-probe of it fails (#4371).
 ///
 /// Non-UTF-8 components are converted lossily — content paths in zfb
 /// projects are UTF-8 in practice, and the surrounding code (`display`,
 /// `to_str`) already assumes as much.
 pub(crate) fn normalize_path_lexically(path: &Path) -> String {
     let mut prefix: Option<String> = None;
+    let mut separator = "/";
     let mut absolute = false;
     let mut parts: Vec<String> = Vec::new();
     for component in path.components() {
         match component {
             Component::Prefix(p) => {
+                if p.kind().is_verbatim() {
+                    separator = "\\";
+                }
                 prefix = Some(p.as_os_str().to_string_lossy().into_owned());
             }
             Component::RootDir => absolute = true,
@@ -70,9 +78,9 @@ pub(crate) fn normalize_path_lexically(path: &Path) -> String {
     }
     let mut out = prefix.unwrap_or_default();
     if absolute {
-        out.push('/');
+        out.push_str(separator);
     }
-    out.push_str(&parts.join("/"));
+    out.push_str(&parts.join(separator));
     out
 }
 
@@ -140,6 +148,26 @@ mod tests {
         assert_ne!(norm("/a/b"), norm("a/b"));
         assert_ne!(norm("/a"), norm("/a/b"));
         assert_ne!(norm(""), norm("."));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_paths_keep_backslash_separators_and_stay_probeable() {
+        assert_eq!(
+            norm(r"\\?\C:\Users\a\snippet.md"),
+            r"\\?\C:\Users\a\snippet.md"
+        );
+        assert_eq!(norm(r"C:\Users\a\snippet.md"), "C:/Users/a/snippet.md");
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("snippet.md");
+        std::fs::write(&file, "v1").unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let rendered = normalize_path_lexically(&canonical);
+        assert!(
+            Path::new(&rendered).is_file(),
+            "the rendering of a canonical path must name the same file: {rendered}"
+        );
     }
 
     #[test]

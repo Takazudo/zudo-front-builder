@@ -1,10 +1,17 @@
 # Watchdog cleanup ownership and missing tests (#4350, for #4289 E001-a)
 
+**Implemented (#4289, option A).** The minimal adapter in section 5 now lives
+in `watchdog-drain.py` (the prototype's successor, with the U1 spawn guard and
+`PendingRegistry`), `runner-protocol.py`, `check-config.py` and
+`check-outer-config.py`. The drafts moved into `test_watchdog_drain.py`, which
+`test_*.py` discovers; U1 and U7 are plain passes there. The sections below are
+the design record as written; their line numbers refer to main `ea90fe12`.
+
 This is design, static review and test drafts only. It does not change #4293,
 adopt a timing contract, implement a production adapter, or rerun the original
 Mac race fixed by #4292. Production references are main `ea90fe12`; the
-prototype is #4293 `509113ae` (`watchdog-drain-prototype.py`). Test drafts are in
-`draft_watchdog_ownership_4350.py` (not discovered by `test_*.py`).
+prototype is #4293 `509113ae` (`watchdog-drain-prototype.py`). Test drafts were
+in `draft_watchdog_ownership_4350.py`, now replaced by `test_watchdog_drain.py`.
 
 Evidence labels: **static** = read from source; **draft run** = the drafts ran
 once on Linux x86_64 (Python 3.13.16) against the prototype, with no Mac run.
