@@ -735,23 +735,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.5.3");
+    expect(darwinContract.toolchain.packageVersion).toBe("4.5.4");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("bda633b3589e201737b02cf2060f7b24d41a45a7");
+    expect(darwinContract.baselineSourceSha).toBe("f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431" },
+      localReceipt: { sha256: "c5d7f3ced4116cf26265f1c7508be2da221265d429f1f1ab1738ee396197bced" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed rustls-security-4314 producer-lock transition at bda633b (#4314,
     // owner-attested local evidence); the ceilings below still follow run
     // 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "370bf32469ed4f3093a24aed1cab3dd68a28c58051847d425fcbe3d062fc30ee",
+      "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
