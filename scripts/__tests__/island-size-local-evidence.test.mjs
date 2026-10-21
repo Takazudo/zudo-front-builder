@@ -19,6 +19,7 @@ import {
   NEW_LOCK_SHA256,
   OLD_LOCK_SHA256,
 } from "../rustls-security-transition.mjs";
+import { WEBPKI_SECURITY_TRANSITION } from "../security-lock-transitions.mjs";
 const source = "a".repeat(40);
 const PROVENANCE_REPINS = [
   ["release-bump", "release-version-stamp"],
@@ -377,7 +378,39 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     ["old/new swap", { ...security, oldSha: NEW_LOCK_SHA256, newSha: OLD_LOCK_SHA256 }],
   ])("rejects a wrong security %s SHA", (_label, transition) => {
     const s = staged("cargo-producer-lock", { cargoTransition: transition });
-    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact rustls");
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
+  });
+  const webpki = {
+    oldSha: WEBPKI_SECURITY_TRANSITION.oldLockSha256,
+    newSha: WEBPKI_SECURITY_TRANSITION.newLockSha256,
+    review: {
+      id: WEBPKI_SECURITY_TRANSITION.id,
+      manifestSha256: WEBPKI_SECURITY_TRANSITION.decisionSha256,
+    },
+  };
+  it("accepts the webpki security transition as far as the retained-file read", () => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: webpki },
+      { cargoLockSha256: webpki.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+  });
+  it.each([
+    ["rustls id on webpki locks", { ...webpki, review: security.review }],
+    ["webpki id on rustls locks", { ...security, review: webpki.review }],
+    ["rustls old lock with webpki new lock", { ...webpki, oldSha: OLD_LOCK_SHA256 }],
+  ])("rejects a mixed security decision: %s", (_label, transition) => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: transition },
+      { cargoLockSha256: transition.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
+  });
+  it("rejects the webpki profile pinning the rustls lock", () => {
+    const s = staged("cargo-producer-lock", { cargoTransition: webpki });
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("wrong security lock");
   });
   it("rejects the security profile with the old lock still pinned", () => {
     const s = staged(

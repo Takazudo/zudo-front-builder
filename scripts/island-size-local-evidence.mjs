@@ -6,29 +6,27 @@ import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import {
-  DECISION_SHA256,
-  OLD_LOCK_SHA256,
-  NEW_LOCK_SHA256,
-} from "./rustls-security-transition.mjs";
+import { SECURITY_LOCK_TRANSITIONS } from "./security-lock-transitions.mjs";
 
 const fail = (message) => {
   throw new Error("local Darwin evidence: " + message);
 };
 
 export function assertLocalSecurityTransition(transition) {
-  if (
-    transition?.oldSha !== OLD_LOCK_SHA256 ||
-    transition?.newSha !== NEW_LOCK_SHA256 ||
-    transition?.review?.id !== "rustls-security-4314" ||
-    transition?.review?.manifestSha256 !== DECISION_SHA256
-  )
-    fail("only the exact rustls-security-4314 transition supports local evidence");
+  const approved = SECURITY_LOCK_TRANSITIONS.find(
+    (entry) =>
+      transition?.oldSha === entry.oldLockSha256 &&
+      transition?.newSha === entry.newLockSha256 &&
+      transition?.review?.id === entry.id &&
+      transition?.review?.manifestSha256 === entry.decisionSha256,
+  );
+  if (!approved) fail("only an exact approved #4314 security transition supports local evidence");
+  return approved;
 }
 
 // The only reasons that may stage owner-attested local evidence, each for its
 // own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire),
-// the #4314 rustls security lock transition (evidence.cargoTransition), and the
+// the exact #4314 security lock transitions (evidence.cargoTransition), and the
 // provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
 // transition (owner decision 2026-10-21: Darwin re-pins must not require a
 // hosted Mac runner). Adding a reason here is a provenance-policy decision, not
@@ -57,8 +55,8 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
     transitionKey: "cargoTransition",
     requiresReviewedTransition: true,
     assertContract(contract) {
-      assertLocalSecurityTransition(contract.baselineEvidence?.cargoTransition);
-      if (contract.toolchain?.cargoLockSha256 !== NEW_LOCK_SHA256)
+      const approved = assertLocalSecurityTransition(contract.baselineEvidence?.cargoTransition);
+      if (contract.toolchain?.cargoLockSha256 !== approved.newLockSha256)
         fail("staged contract has wrong security lock");
     },
   }),

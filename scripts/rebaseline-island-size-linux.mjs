@@ -135,10 +135,10 @@
 // into place, restoring already-renamed files if a rename fails. There is no
 // force or ignore-provenance option of any kind.
 // Optional --reviewed-cargo-transition recognizes only the separately reviewed
-// #318 non-additive lock pair, or the exact #4314 rustls security replacement. It does not
+// #318 non-additive lock pair, or an exact #4314 security replacement. It does not
 // bypass artifact, platform, identity or unchanged-total validation.
 
-import { proveRustlsSecurityTransition } from "./rustls-security-transition.mjs";
+import { securityLockTransitionById } from "./security-lock-transitions.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -1150,9 +1150,8 @@ export function proveReviewedCargoTransition(reviewText, oldText, newText) {
   } catch {
     throw cargoError("invalid reviewed Cargo transition JSON");
   }
-  if (review?.id === "rustls-security-4314") {
-    return proveRustlsSecurityTransition(reviewText, oldText, newText);
-  }
+  const security = securityLockTransitionById(review?.id);
+  if (security) return security.prove(reviewText, oldText, newText);
   const keys = (value, expected) =>
     value &&
     typeof value === "object" &&

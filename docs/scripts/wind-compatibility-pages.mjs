@@ -193,8 +193,10 @@ function localizedNote(value, locale, field) {
 // other workspace lock records; see prototypes/direct-v8/evidence/reconcile-main-2026-10-15/.
 // #4301 + #4314 combined: all 164 Wind lock records remain unchanged; the lock differs
 // from main's reviewed rustls lock only in zfb-js-host's deno_core edge (#4301).
+// #4314 webpki replacement: rustls-webpki and webpki-roots are unreachable from
+// zudo-wind (normal/build/dev, all targets); only their two lock records move.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "fb1c48895deedaa7d3aef4be29ca8fe144b7494c61d1672952e751b798a8b63e";
+  "5ba3f40fbcefdf8739c64b7e4ab871e8e3c7ee6645b251ff7603438085a5600d";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

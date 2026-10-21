@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "webpki-security-4314",
+  "sourceSha": "0cb911138a4153d759c61fec85ec67ca6789aac2",
+  "oldSha": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+  "newSha": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
+  "added": ["rustls-webpki@0.103.16", "webpki-roots@1.0.10"],
+  "changed": [],
+  "removed": ["rustls-webpki@0.103.15", "webpki-roots@1.0.7"],
+  "decision": "Exact rustls-webpki and webpki-roots security replacement, chosen by the owner on 2026-10-21 (fix before the next release) and approved under POLICY-02; version and checksum only, no incidental Windows edge changes or other dependency updates. Structural authorization only; no live contract application.",
+  "advisories": ["RUSTSEC-2026-0381", "RUSTSEC-2026-0382"],
+  "nativeMeasurement": "required-separately-for-each-platform"
+}
