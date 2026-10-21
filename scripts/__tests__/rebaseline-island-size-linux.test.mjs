@@ -91,6 +91,9 @@ import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs
 import { FINGERPRINT_POLICY_VERSION as LIVE_POLICY_VERSION } from "../../research/v3-island-size/lock-fingerprint.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
 
+// Synchronous git/helper end-to-end cases peak near 5.3 s on hosted runners (median up to 3.7 s); measured in #4364.
+vi.setConfig({ testTimeout: 15_000 });
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const liveContract = JSON.parse(
   readFileSync(join(root, "research/v3-island-size/decision-linux-x64.json"), "utf8"),
