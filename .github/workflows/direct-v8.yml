@@ -7,7 +7,8 @@
 # other PRs only the small `plan` job runs and the row jobs are skipped. It
 # records native rows with the harness in prototypes/direct-v8/PLATFORMS.md on
 # standard GitHub-hosted runners: Linux x86_64, Linux arm64 and Windows x64.
-# Darwin rows need a Mac runner, which is not approved, and stay NOT RUN.
+# Darwin rows need a Mac runner, which is not approved, and stay NOT RUN. The
+# `harness-macos` job runs only the offline Python harness on macos-latest.
 
 name: direct-v8 (opt-in)
 
@@ -466,3 +467,36 @@ jobs:
           path: ${{ env.ROW_DIR }}
           if-no-files-found: warn
           retention-days: 14
+
+  # Offline Python harness only: no Rust build and no native row. It covers the
+  # macOS watchdog and TMPDIR alias behavior (#4289, #4290) that Linux cannot show.
+  harness-macos:
+    name: direct-v8 offline harness (macos)
+    needs: plan
+    if: needs.plan.outputs.features != '[]'
+    concurrency:
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-harness-macos
+      cancel-in-progress: true
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      # hashlib.file_digest needs 3.11+; the system /usr/bin/python3 is older.
+      - name: Python version
+        run: |
+          python3 -c 'import platform, sys; print(sys.executable, platform.python_version(), platform.machine()); assert sys.version_info >= (3, 11)'
+          sw_vers
+
+      - name: Offline harness, default TMPDIR (/var symlink)
+        run: python3 -I -B -W error::ResourceWarning -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
+
+      - name: Offline harness, canonical TMPDIR
+        run: |
+          TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" \
+            python3 -I -B -W error::ResourceWarning -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
