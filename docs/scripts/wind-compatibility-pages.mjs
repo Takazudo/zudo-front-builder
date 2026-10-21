@@ -195,8 +195,10 @@ function localizedNote(value, locale, field) {
 // from main's reviewed rustls lock only in zfb-js-host's deno_core edge (#4301).
 // #4314 webpki replacement: rustls-webpki and webpki-roots are unreachable from
 // zudo-wind (normal/build/dev, all targets); only their two lock records move.
+// #4367: only zfb-plugin-resolver's lock record gains same-file and sha2 edges;
+// zfb-plugin-resolver is unreachable from zudo-wind.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "5ba3f40fbcefdf8739c64b7e4ab871e8e3c7ee6645b251ff7603438085a5600d";
+  "47daec5834f70966dd2874744ddc646786efd32b0a0b0d90802d3133a6e39771";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
