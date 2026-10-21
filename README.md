@@ -64,7 +64,15 @@ At the start of the project everything felt big. Next.js is big, and Astro is li
 
 See [`architecture/choosing-zfb.mdx`](./docs/src/content/docs/architecture/choosing-zfb.mdx) for the longer answer on which shape fits.
 
-The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
+## What ships, what is experimental, what is planned
+
+**In the current release** (v4.5.3; see the [changelog](https://zfb.takazudomodular.com/docs/changelog/)): the `zfb` commands `new`, `dev`, `check`, `build`, `preview`, `css` and `wind`; the embedded V8 host (deno_core) that loads `zfb.config.ts` and renders pages; TSX, MDX, Markdown and HTML pages; content collections; the islands pipeline with zudo-react; zudo-wind utility CSS; `syntect`-backed syntax highlighting; the client router with view transitions; the dev server; and the Cloudflare Workers adapter.
+
+**On `main`, not yet released:** islands build-identity fixes that keep shipped islands bytes stable across unrelated edits. Unreleased work is listed in each pending release's notes, not here.
+
+**Experimental, not in any release:** a direct V8 host that replaces deno_core behind an opt-in switch ([#4301](https://github.com/Takazudo/zudo-front-builder/issues/4301)). Its CLI wiring is still a draft pull request; the released CLI cannot select it, and the default engine is unchanged.
+
+**Planned after that experiment:** qualifying the direct host on the five native targets, in the packaged CLI and with Rolldown output ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302)), then deciding whether it becomes the default and the deno_core host is removed ([#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). Each step needs a separate owner decision.
 
 ## Docs site
 
