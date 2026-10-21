@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "release-version-stamp",
+  "outcome": "cargo-internal-rewire-transition",
   "selectedOptimizations": [],
-  "baselineSourceSha": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+  "baselineSourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -38,7 +38,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
-    "cargoLockSha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd"
+    "cargoLockSha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,18 +116,18 @@
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml (dispatch-only; the temporary pull_request bootstrap was removed under #4170). Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned (release-bump) from owner-attested local native evidence c5d7f3ced4116cf26265f1c7508be2da221265d429f1f1ab1738ee396197bced at source f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410. Every raw and gzipNormalized total is unchanged from the v4.5.3 contract; equal totals alone do not prove byte-identical product code. 8 actual gzip totals moved (workspace json-api +4, scalar-signal +2, show-for -2; packed event-only +3, scalar-signal +1, show-for -1, multi-island -2, json-api -3; evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned from owner-attested local native evidence 9ad4eeaa6f254cb46e9a887fb0687d7ef9c64cfecae2d6622f532f56636fdd46 at source c74faf450160b9eec6c995b5223e172209d62b14 after a reviewed internal Cargo.lock rewire (Cargo.lock 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd to 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-js-host@0.0.0 -[] +[\"deno_core\"]); every other [[package]] record and the header are byte-identical, declared in prototypes/direct-v8/admission/rewire-declaration.json (SHA-256 ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba), proved against Cargo.lock at commit f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410 (SHA-256 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd); the zfb producer closure for aarch64-apple-darwin keeps 481 rows unchanged, adds 0 and changes 1 internal row(s) with no external drift; declared edges to unchanged external records: zfb-js-host@0.0.0 deno_core -> deno_core@0.399.0 (SHA-256 1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498)). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "local-native",
     "localReceipt": {
-      "sha256": "c5d7f3ced4116cf26265f1c7508be2da221265d429f1f1ab1738ee396197bced",
+      "sha256": "9ad4eeaa6f254cb46e9a887fb0687d7ef9c64cfecae2d6622f532f56636fdd46",
       "receipt": {
         "schemaVersion": 1,
         "kind": "local-native-darwin",
         "operator": "zfb owner, local Darwin arm64 collection",
-        "collectedAt": "2026-10-21T10:49:57.000Z",
+        "collectedAt": "2026-10-21T11:23:56.000Z",
         "source": {
-          "commit": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+          "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
           "clean": true
         },
         "platform": {
@@ -259,6 +259,8 @@
           ["tee", "-a", "<SOURCE>/target/island-size/runner-provenance.txt"],
           ["shasum", "-a", "256", "crates/zfb/binaries/esbuild/esbuild"],
           ["shasum", "-a", "256", "packages/zfb-runtime/node_modules/hono/package.json"],
+          ["shasum", "-a", "256", "<PACKED_ZFB_TARBALL_STEM>-slugify-4.5.4.tgz"],
+          ["shasum", "-a", "256", "<PACKED_ZFB_TARBALL_STEM>-4.5.4.tgz"],
           [
             "env",
             "RUSTUP_TOOLCHAIN=1.99.0",
@@ -297,7 +299,7 @@
             "--esbuild",
             "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+            "c74faf450160b9eec6c995b5223e172209d62b14",
             "--out",
             "<SOURCE>/target/island-size/real-workspace"
           ],
@@ -339,7 +341,7 @@
             "--esbuild",
             "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+            "c74faf450160b9eec6c995b5223e172209d62b14",
             "--out",
             "<SOURCE>/target/island-size/real-packed"
           ],
@@ -392,15 +394,15 @@
           ["cat", "<SOURCE>/target/island-size/check-budget.log"]
         ],
         "bundle": {
-          "location": "<BUNDLE>/island-size (in frozen bundle <BUNDLE>, SHA256SUMS sha256 df9ece6a0a76713717f0aca9497ee105844f8b87f1dcc54123097a44772ff8d1)",
-          "sha256": "390567757502ddb3258ca5fd157b4b09a2cae16aede3d7b1bd1ab6abaa666c10"
+          "location": "<BUNDLE>/island-size (in frozen bundle <BUNDLE>, SHA256SUMS sha256 039dc8c090483e0101e9583019d43e476204b2c5bff827efb6961e9f7b788212)",
+          "sha256": "a145b3cdc58c89aa08dd10e19bdbbb2982f864e466b4a7993817f12519310c38"
         }
       }
     },
     "stagingTool": {
-      "commit": "3bb16322942eed2f8a49844840c1304ade40187b"
+      "commit": "c74faf450160b9eec6c995b5223e172209d62b14"
     },
-    "sourceSha": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+    "sourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
     "nativeRunner": {
       "platform": "darwin-arm64",
       "macOS": "26.6.2 (25G83)",
@@ -411,7 +413,7 @@
       "pnpm": "12.8.2",
       "esbuild": "0.25.12",
       "hono": "4.12.25",
-      "zfbBinarySha256": "123e574147ce8b06f864ceedbba295a2a98a95b3032c0ab701856d7d1325dcbe",
+      "zfbBinarySha256": "d59ef1dfef3ba2875362a4d09fabe4632945826d2db18d90bdd027d5145a7873",
       "esbuildBinarySha256": "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5",
       "zfbTarballSha256": "a3cbdeda625d815dca5efe29399a41fec5b5e266aed123775686fefe2cbbe399",
       "runtimeTarballSha256": "00ddb652dcb2b8175325f4f55ff8b472d8fb0c04ed9bef0bccfe4f73da341d34",
@@ -419,18 +421,77 @@
     },
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "cargo-producer-lock-transition",
-      "packageVersion": "4.5.3",
-      "baselineSourceSha": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+      "outcome": "release-version-stamp",
+      "packageVersion": "4.5.4",
+      "baselineSourceSha": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
       "contract": {
-        "sha256": "8e270bc846be9a4f5140cca1fd4c22d10c58378f9bf1bf7c73b755c702bb8b27",
-        "commit": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+        "sha256": "17874673d1a3bd02cda03b543e64eedb1dd7f983ab7c844dbf975727e37f532d",
+        "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
         "path": "research/v3-island-size/decision.json"
       }
     },
+    "cargoRewire": {
+      "oldSha": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
+      "newSha": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+      "oldLockSource": {
+        "commit": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+        "path": "Cargo.lock",
+        "sha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd"
+      },
+      "newLockSource": {
+        "sha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+        "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
+        "path": "Cargo.lock"
+      },
+      "declaration": {
+        "path": "prototypes/direct-v8/admission/rewire-declaration.json",
+        "sha256": "ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba"
+      },
+      "producer": "zfb",
+      "manifestsAtCommit": "c74faf450160b9eec6c995b5223e172209d62b14",
+      "added": [],
+      "changed": [
+        {
+          "id": "zfb-js-host@0.0.0",
+          "manifest": "crates/zfb-js-host/Cargo.toml",
+          "manifestSha256": "a61b22ad5e1a23732fbefc81f30b30c6bbc39e0968fa7d4467d33646fdfeba2c",
+          "oldSha256": "5f02be259fc6ee127ef8ee2da7f179f41c9bc2636f22d036da2b800e32987d3b",
+          "newSha256": "dc29c5474a924913310f10979e35704ade131df30d7db0eab802e6a182899a82",
+          "removedDependencies": [],
+          "addedDependencies": ["deno_core"]
+        }
+      ],
+      "removed": [],
+      "externalEdges": [
+        {
+          "from": "zfb-js-host@0.0.0",
+          "dependency": "deno_core",
+          "to": "deno_core@0.399.0",
+          "sha256": "1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498"
+        }
+      ],
+      "closure": {
+        "target": "aarch64-apple-darwin",
+        "oldSha256": "60a899139d6c00ab1189227d141e8003a45acf6f97cd5f2973baed36507fba1c",
+        "newSha256": "22709fd3fef9c14c30da0e3bac3c1bf2ebd74e2997e33b0b41908e862f66a3ae",
+        "rows": {
+          "old": 482,
+          "new": 482,
+          "unchanged": 481
+        },
+        "added": [],
+        "changed": [
+          {
+            "id": "zfb-js-host@0.0.0",
+            "from": ["default", "services"],
+            "to": ["default", "deno-platform", "services", "v8-platform"]
+          }
+        ]
+      }
+    },
     "originalCheckerResult": {
-      "exitCode": 0,
-      "logSha256": "71ba52c34ed08c877a909c62a8414b57a9b5ee0b3dcdc9cb9af80fd987b91c88"
+      "exitCode": 1,
+      "logSha256": "1baf392543d207586494ad559b34791638ef5291c705b70a725b9912c8346ab8"
     },
     "actualGzip": {
       "workspace": {
@@ -454,6 +515,6 @@
         "show-for": 22302
       }
     },
-    "note": "Re-pin (release-bump) from owner-attested local native Darwin arm64 evidence at source f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.3 contract; 8 actual gzip totals moved (workspace json-api +4, scalar-signal +2, show-for -2; packed event-only +3, scalar-signal +1, show-for -1, multi-island -2, json-api -3; evidence only, not a ceiling). Only package version, the pnpm-lock.yaml hash and the normalizer digest were re-pinned; Cargo.lock is unchanged. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Cargo internal-rewire transition from owner-attested local native Darwin arm64 evidence at source c74faf450160b9eec6c995b5223e172209d62b14. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.4 contract; no actual gzip total moved. The artifact's own check-budget run compared it with the previous Cargo.lock pin and is preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
