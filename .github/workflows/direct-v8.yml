@@ -8,9 +8,10 @@
 # check. On other PRs only the small `plan` job runs and the row jobs are
 # skipped. It records native rows with the harness in
 # prototypes/direct-v8/PLATFORMS.md on standard GitHub-hosted runners (free for
-# this public repo): Linux x86_64, Linux arm64, Windows x64, Darwin arm64
-# (macos-latest) and Darwin x64 (macos-15-intel, the label release.yml uses).
-# The `harness-macos` job runs only the offline Python harness on macos-latest.
+# this public repo): Linux x86_64, Linux arm64 and Windows x64. Darwin rows are
+# NOT run on Actions (macOS runner cost); the owner qualifies them locally on a
+# Mac, see PLATFORMS.md. The `harness-macos` job runs only the offline Python
+# harness on macos-latest.
 
 name: direct-v8 (opt-in)
 
@@ -292,8 +293,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Native rows on the other standard runners. Windows and Darwin also build the
-  # release binary and CSS addon natively (as release.yml does) and run the packed
+  # Native rows on the other standard runners. Windows also builds the release
+  # binary and CSS addon natively (as release.yml does) and runs the packed
   # clean-room consumer; Linux arm64 has no packaging row (its shipping recipe is
   # cross under QEMU).
   other-hosts:
@@ -305,9 +306,8 @@ jobs:
       cancel-in-progress: true
     runs-on: ${{ matrix.host.runner }}
     # Measured at 349b112: the Windows leg took 30 min (12.5 min of it the
-    # release build for the packed consumer); about twice that. The Darwin legs
-    # have no measurement yet and get more headroom.
-    timeout-minutes: ${{ matrix.host.timeout }}
+    # release build for the packed consumer); about twice that.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -317,33 +317,11 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             python: python3
-            timeout: 60
-            carrier: ""
-            binary: zfb
           # The lifecycle observer stops `zfb dev` with a console Ctrl-C here.
           - name: windows-x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
             python: python
-            timeout: 60
-            carrier: win32-x64-msvc
-            binary: zfb.exe
-          # Runner labels as in release.yml's build matrix; macos-15-intel is
-          # the x86_64 image (macos-13 was retired).
-          - name: darwin-arm64
-            runner: macos-latest
-            target: aarch64-apple-darwin
-            python: python3
-            timeout: 90
-            carrier: darwin-arm64
-            binary: zfb
-          - name: darwin-x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            python: python3
-            timeout: 90
-            carrier: darwin-x64
-            binary: zfb
     defaults:
       run:
         shell: bash
@@ -357,8 +335,6 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PY: ${{ matrix.host.python }}
       TARGET: ${{ matrix.host.target }}
-      CARRIER: ${{ matrix.host.carrier }}
-      BINARY_NAME: ${{ matrix.host.binary }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -374,11 +350,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
       - run: pnpm install --frozen-lockfile
-
-      # hashlib.file_digest needs 3.11+; a macOS system python3 can be older.
-      - name: Python version
-        run: |
-          "$PY" -c 'import platform, sys; print(sys.executable, platform.python_version(), platform.machine()); assert sys.version_info >= (3, 11)'
 
       - name: Verify vendored ICU data
         id: icu
@@ -429,14 +400,14 @@ jobs:
           cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 \
             | tee "$ROW_DIR/rolldown-prototype-lib-tests.log"
 
-      # release.yml's native cargo build and CSS addon of the Windows and Darwin
-      # carriers, here with the row's selection (no feature flags for the default
-      # selection, as release.yml builds today; the opt-in direct-v8 features
-      # otherwise). Runs even when the native row fails, but only once setup has
-      # succeeded. Not run on the Rolldown row (its carrier smoke is Linux x64).
-      - name: Packed clean-room consumer (release recipe)
+      # release.yml's native cargo build of the Windows carrier, here with the
+      # row's selection (no feature flags for the default selection, as
+      # release.yml builds today; the opt-in direct-v8 features otherwise).
+      # Runs even when the native row fails, but only once setup has succeeded.
+      # Not run on the Rolldown row (its carrier smoke is Linux x64).
+      - name: Packed clean-room consumer (Windows x64, release recipe)
         id: packed
-        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.carrier != '' && !matrix.row.rolldown }}
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && !matrix.row.rolldown }}
         run: |
           set -o pipefail
           mkdir -p "$ROW_DIR"
@@ -445,21 +416,9 @@ jobs:
             --target "$TARGET" 2>&1 | tee "$ROW_DIR/release-build.log"
           bash scripts/build-css-node.sh "$TARGET" cargo 2>&1 | tee "$ROW_DIR/css-addon-build.log"
           pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
-          "$PY" prototypes/direct-v8/packed-consumer.py --carrier "$CARRIER" \
-            --binary "target/$TARGET/release/$BINARY_NAME" --css-addon "packages/zfb-$CARRIER/zfb-css.node" \
+          "$PY" prototypes/direct-v8/packed-consumer.py --carrier win32-x64-msvc \
+            --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
             --output "$ROW_DIR/packed"
-
-      # Mach-O dependencies of the harness binary and of the release binary the
-      # packed consumer ships; only system libraries are expected.
-      - name: Linked libraries (otool -L)
-        if: ${{ !cancelled() && runner.os == 'macOS' && steps.icu.outcome == 'success' }}
-        run: |
-          mkdir -p "$ROW_DIR"
-          {
-            if [ -n "${ROW_BINARY:-}" ]; then echo "== harness binary $ROW_BINARY"; otool -L "$ROW_BINARY"; fi
-            release="target/$TARGET/release/zfb"
-            if [ -f "$release" ]; then echo "== release binary $release"; otool -L "$release"; fi
-          } 2>&1 | tee "$ROW_DIR/otool-L.txt"
 
       # #4343 regression: a plugin virtual module through the shipping-recipe
       # binary built above, where the shadow directory is a \\?\ verbatim path.
