@@ -1,0 +1,33 @@
+{
+  "stageVersion": 1,
+  "runs": [
+    {
+      "reason": "cargo-producer-lock",
+      "platform": "darwin-arm64",
+      "sourceSha": "bda633b3589e201737b02cf2060f7b24d41a45a7",
+      "stagingTool": {
+        "root": "<TOOLS>",
+        "commit": "7e79458304878d51bafd29e24ec25e93b84893ca"
+      },
+      "localEvidence": {
+        "receiptPath": "<NEW>/receipt-neutral.json",
+        "bundlePath": "<RETAIN>/bundle",
+        "sha256": "52cfabf929b2b9f26c70633daef30d24f135aa8eeef61d6da3e5d65fcd168431"
+      }
+    }
+  ],
+  "destinations": {
+    "research/v3-island-size/README.md": {
+      "live": "1d76d1813309e28e57240df5dd96c73b3b15f556843910ac991a221dca454fd5",
+      "staged": "a5f540f395f127b668232a6d92ea6ae3e59557738b5e4a60e762aef43406e355"
+    },
+    "research/v3-island-size/decision.json": {
+      "live": "cc32aa6d51f4f8f3c95fcf27d4b4f2898288d9c49b1b7a4a4e8a654fcbe88818",
+      "staged": "01ddb9d6b911d28432df4ad8101d09198c83706107be7fb06b8d9314b4cac2db"
+    },
+    "scripts/__tests__/island-size-budget.test.mjs": {
+      "live": "63f2072fa630274b675b984a6e27b23adcfe6399e8454e1e2b16707f50265d59",
+      "staged": "08064f4da0f4f829a12207f356c35bb9a06113b52aed4ab87b14339f23c970f7"
+    }
+  }
+}
