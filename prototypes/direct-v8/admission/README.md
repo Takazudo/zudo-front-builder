@@ -1,4 +1,4 @@
-# Proposed Cargo.lock admission for #4307 (stage preparation only)
+# Proposed Cargo.lock admission for #4301 on main's rustls lock (stage preparation only)
 
 Status: **proposal, not approved, not staged, not applied.** Admission is a live
 contract change that needs owner approval and the native Darwin evidence owned by
@@ -9,8 +9,12 @@ contracts, ceilings, allowances or transition records.
 
 | | Whole-lock SHA-256 | Records |
 | --- | --- | ---: |
-| Approved (main `21ef7c4`) | `230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138` | 697 |
-| #4307 | `07fa645050cc0db69ad75f2bc5b824a7cd558dc101f3619089e83d397003e4f9` | 697 |
+| Approved (main `f9dd1f5`, #4369 rustls) | `563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd` | 697 |
+| #4301 integration (`base/4301-direct-v8` + main) | `0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2` | 697 |
+
+The original #4307 proposal (`230f0acb…` → `07fa6450…` against main `21ef7c4`) was
+superseded when #4314's rustls transition landed on main first. The declared delta
+is the same single record, re-declared against main's new approved lock.
 
 One record changes: unpublished `zfb-js-host@0.0.0` gains the existing external
 edge `deno_core` → `deno_core@0.399.0` (record bytes unchanged). No record is
@@ -20,7 +24,7 @@ added or removed and no external version, source or checksum moves.
 
 `receipts/` holds `scripts/record-cargo-producer-closure.mjs --producer zfb`
 output (default features, `cargo metadata --locked --filter-platform`) for both
-targets: `old-*` at `21ef7c4`, `new-*` at the commit that adds this directory.
+targets: `old-*` at `f9dd1f5`, `new-*` at the integration head that carries this README.
 The Darwin receipt is metadata resolution on Linux, not native Mac evidence.
 Files use the `.receipt` extension so the repository formatter keeps the recorder's
 original bytes.
@@ -47,18 +51,19 @@ structural rule only, never measured sizes.
 
 ```sh
 node prototypes/direct-v8/admission/prove-rewire.mjs \
-  --old-ref 21ef7c4678adba115a3607801ededeeaf6e5814e \
+  --old-ref f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410 \
   --receipts prototypes/direct-v8/admission/receipts
 ```
 
-Both targets pass at the commit that adds this directory. With the `bd4feaf`
+Both targets pass on the integration head (declaration SHA-256
+`ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba`). With the `bd4feaf`
 receipts the same command fails on the `v8` feature drift (negative control).
 
 ## Remaining before stage/apply
 
 1. Darwin arm64 native workspace/packed measurements at the candidate SHA, plus
    a reviewed local-provenance ingestion route (see
-   `research/v3-island-size/EXISTING-EXTERNAL-EDGES.md`). Owned by L1 and the owner.
+   `research/v3-island-size/EXISTING-EXTERNAL-EDGES.md`). Run on the owner's Mac.
 2. The Linux `island-size-linux-x64` health artifact for the same candidate SHA
    (the ordinary health job retains it with its expected lock rejection).
 3. Owner approval for the paired `--stage`, review, then `--apply`.
