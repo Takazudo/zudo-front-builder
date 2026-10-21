@@ -417,7 +417,7 @@ test("missing artifact fails freshness", () => {
 
 test("required Docs gate fails closed for preview failures, cancellation and unexplained skips", () => {
   const workflow = readFileSync(join(REPO_ROOT, ".github/workflows/docs-checks.yml"), "utf8");
-  assert.match(workflow, /needs: \[changed-files, build, wind-previews\]/);
+  assert.match(workflow, /needs: \[changed-files, build, wind-previews, docs-only-checks\]/);
   assert.match(workflow, /wind-previews:[\s\S]*?--compiler "\$PWD\/target\/debug\/zfb" --check/);
   const gate = workflow.split("      - name: Report gate verdict")[1];
   assert.ok(gate);
@@ -436,11 +436,14 @@ test("required Docs gate fails closed for preview failures, cancellation and une
         BUILD_RESULT: "skipped",
         WIND_CHANGED: "true",
         WIND_RESULT: "success",
+        DOCS_ONLY: "false",
+        DOCS_ONLY_RESULT: "skipped",
         ...overrides,
       },
     }).status;
   assert.equal(evaluate({}), 0);
   assert.equal(evaluate({ WIND_CHANGED: "false", WIND_RESULT: "skipped" }), 0);
+  assert.equal(evaluate({ DOCS_ONLY: "true", DOCS_ONLY_RESULT: "success" }), 0);
   for (const overrides of [
     { WIND_RESULT: "failure" },
     { WIND_RESULT: "cancelled" },
@@ -450,6 +453,10 @@ test("required Docs gate fails closed for preview failures, cancellation and une
     { DETECTOR_RESULT: "cancelled" },
     { BUILD_RESULT: "failure" },
     { BUILD_RESULT: "cancelled" },
+    { DOCS_ONLY: "true", DOCS_ONLY_RESULT: "failure" },
+    { DOCS_ONLY: "true", DOCS_ONLY_RESULT: "cancelled" },
+    { DOCS_ONLY: "true", DOCS_ONLY_RESULT: "skipped" },
+    { DOCS_ONLY: "", DOCS_ONLY_RESULT: "skipped" },
   ])
     assert.equal(evaluate(overrides), 1, JSON.stringify(overrides));
 });

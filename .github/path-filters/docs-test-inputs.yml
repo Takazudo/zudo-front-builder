@@ -1,0 +1,7 @@
+# Prose files inside docs-only.yml's paths that a job skipped on docs-only PRs
+# still reads (#4372). Any change here keeps the full lane. Read from the PR's
+# base commit with paths-filter's default (`some`) quantifier.
+inputs:
+  # tests/sdk-alias-consumer/run.mjs (health.yml) builds this page's fenced
+  # tsx recipes in a packed consumer.
+  - "docs/src/content/docs/architecture/mdx-components.mdx"
