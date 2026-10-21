@@ -51,10 +51,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use tempfile::NamedTempFile;
 use zfb_types::path_to_posix_string;
 
 mod raw_alias;
+mod virtual_file;
+
+pub use virtual_file::{exclusive_lock_on_file_at_path, VirtualModuleFile};
 
 pub use raw_alias::{
     is_relative_specifier, resolve_raw_target, resolve_raw_target_with_aliases,
@@ -190,7 +192,7 @@ pub struct ResolverInputs {
     /// Public so callers can extend the lifetime explicitly; the field
     /// itself is otherwise opaque — the caller does not need to read
     /// it. Underscore prefix discourages incidental use.
-    pub _temp_files: Vec<NamedTempFile>,
+    pub _temp_files: Vec<VirtualModuleFile>,
 }
 
 impl ResolverInputs {
@@ -295,7 +297,7 @@ pub fn build_resolver_inputs(
     let mut paths_entries: Vec<(String, String)> = Vec::new();
     let mut virtual_module_alias_args: Vec<(String, String)> = Vec::new();
     let mut plugin_alias_args: Vec<(String, String)> = Vec::new();
-    let mut temp_files: Vec<NamedTempFile> = Vec::new();
+    let mut temp_files: Vec<VirtualModuleFile> = Vec::new();
 
     // Plugin aliases first. The target string already came from the
     // plugin registry as an absolute filesystem path (resolved against
@@ -352,62 +354,45 @@ pub fn build_resolver_inputs(
     // (unit-test environment, missing path), fall back to the system
     // temp dir — the islands path does the same.
     for (specifier, source) in virtual_modules {
-        let tmp = if working_dir.is_dir() {
-            tempfile::Builder::new()
-                .prefix(VIRTUAL_MODULE_TEMP_PREFIX)
-                .suffix(VIRTUAL_MODULE_TEMP_SUFFIX)
-                .tempfile_in(working_dir)
-                .with_context(|| {
-                    format!(
-                        "zfb-plugin-resolver: failed to allocate virtual-module \
-                         temp file for `{specifier}` inside `{}`",
-                        working_dir.display()
-                    )
-                })?
-        } else {
-            // Deliberately separate, undotted prefix — see
-            // `VIRTUAL_MODULE_TEMP_PREFIX`'s doc comment. This branch only
-            // ever runs against the system tempdir (no real `working_dir`),
-            // so it is out of scope for the shared const and for the
-            // in-project temp sweeper (#2106).
-            tempfile::Builder::new()
-                .prefix("zfb-virtual-")
-                .suffix(VIRTUAL_MODULE_TEMP_SUFFIX)
-                .tempfile()
-                .with_context(|| {
-                    format!(
-                        "zfb-plugin-resolver: failed to allocate virtual-module \
-                         temp file for `{specifier}`"
-                    )
-                })?
-        };
-        std::fs::write(tmp.path(), source.as_bytes()).with_context(|| {
-            format!(
-                "zfb-plugin-resolver: failed to write virtual-module source \
-                 for specifier `{specifier}` to `{}`",
-                tmp.path().display()
-            )
-        })?;
-        // Shared (not exclusive) lock, same #1976 ownership protocol as
-        // `zfb-islands`'s `allocate_locked_entry_tmp`: the write above must
-        // happen BEFORE the lock (a shared Windows `LockFileEx` byte-range
-        // lock denies writes to the locked range), and shared rather than
-        // exclusive because esbuild only ever reads this file. It lets a
-        // future sweeper prove the file is still owned by a live process
-        // rather than inferring liveness from age alone. Best-effort: a
-        // filesystem without lock support just falls back to the sweeper's
-        // age gate.
+        // The file name is content-addressed rather than random: esbuild
+        // hashes input paths into chunk names, so a random name renamed the
+        // chunk holding this module on every build (#4367). Held under a
+        // shared lock (the #1976 ownership protocol `zfb-islands`'s
+        // `allocate_locked_entry_tmp` also uses) so the in-project sweeper
+        // and other holders of the same file can prove it is still owned.
         //
-        // This benefits BOTH callers of this shared allocation function for
-        // free — `zfb-islands` (passes the real project root) AND
-        // `zfb-build`'s SSR bundler (passes a `shadow` dir inside a
-        // `zfb-shadow-session-*` `TempDir`) — since the lock sits in this one
-        // shared function. However, the eventual SWEEP (a later sub of
-        // epic #2106) stays PROJECT-ROOT-ONLY: the shadow-session case is
-        // already covered by a separate, pre-existing stale-shadow sweep, so
-        // its own leak surface is deliberately left untouched here — not an
-        // oversight.
-        let _ = tmp.as_file().lock_shared();
+        // If `working_dir` is not a real dir (unit-test environment, missing
+        // path), fall back to the system temp dir under a deliberately
+        // separate, undotted prefix — see `VIRTUAL_MODULE_TEMP_PREFIX`'s doc
+        // comment. That fallback is out of scope for the in-project temp
+        // sweeper (#2106).
+        let tmp = if working_dir.is_dir() {
+            VirtualModuleFile::acquire(
+                working_dir,
+                VIRTUAL_MODULE_TEMP_PREFIX,
+                VIRTUAL_MODULE_TEMP_SUFFIX,
+                specifier,
+                source,
+            )
+            .with_context(|| {
+                format!(
+                    "zfb-plugin-resolver: failed to materialize virtual module \
+                     `{specifier}` inside `{}`",
+                    working_dir.display()
+                )
+            })?
+        } else {
+            VirtualModuleFile::acquire(
+                &std::env::temp_dir(),
+                "zfb-virtual-",
+                VIRTUAL_MODULE_TEMP_SUFFIX,
+                specifier,
+                source,
+            )
+            .with_context(|| {
+                format!("zfb-plugin-resolver: failed to materialize virtual module `{specifier}`")
+            })?
+        };
         let posix_target = esbuild_target_spelling(tmp.path());
         if user_claims_specifier(user_tsconfig_paths, specifier) {
             // The user's own `compilerOptions.paths` already claims this
@@ -1413,6 +1398,114 @@ mod tests {
             "the exclusive try_lock() must succeed once the production owner's \
              lock is released"
         );
+    }
+
+    /// The materialized path is content-addressed (#4367): esbuild hashes
+    /// input paths into chunk names, so identical input must land at an
+    /// identical path on every build.
+    #[test]
+    fn virtual_module_path_is_identical_across_rebuilds_of_identical_input() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![("virtual:meta".to_string(), "export default 1;".to_string())];
+        let first = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        let first_path = first._temp_files[0].path().to_path_buf();
+        drop(first);
+        assert!(!first_path.exists(), "the last holder removes the file");
+
+        let second = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert_eq!(second._temp_files[0].path(), first_path);
+        assert_eq!(
+            second.virtual_module_alias_flags(),
+            vec![format!(
+                "--alias:virtual:meta={}",
+                path_to_posix_string(&first_path)
+            )]
+        );
+
+        let other_source = vec![("virtual:meta".to_string(), "export default 2;".to_string())];
+        let changed =
+            build_resolver_inputs(&[], &other_source, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert_ne!(changed._temp_files[0].path(), first_path);
+    }
+
+    /// Two specifiers with the same source stay two modules, so neither
+    /// import observes the other's module instance.
+    #[test]
+    fn virtual_modules_with_equal_source_get_distinct_files() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![
+            ("virtual:a".to_string(), "export default {};".to_string()),
+            ("virtual:b".to_string(), "export default {};".to_string()),
+        ];
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert_ne!(r._temp_files[0].path(), r._temp_files[1].path());
+    }
+
+    /// Concurrent builds of one project share the content-addressed file.
+    /// It must outlive every holder but the last, and stay shared-locked
+    /// while any holder is alive.
+    #[test]
+    fn shared_virtual_module_file_survives_until_its_last_holder_drops() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![("virtual:meta".to_string(), "export default 1;".to_string())];
+        let first = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        let second = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        let path = first._temp_files[0].path().to_path_buf();
+        assert_eq!(second._temp_files[0].path(), path);
+
+        drop(first);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "export default 1;",
+            "dropping one holder must not remove a file another holder still reads"
+        );
+        let probe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(!exclusive_lock_on_file_at_path(&probe, &path));
+        drop(probe);
+
+        drop(second);
+        assert!(!path.exists(), "the last holder removes the file");
+    }
+
+    /// A file stranded at the content-addressed path by a killed process is
+    /// adopted, and removed when its new holder drops.
+    #[test]
+    fn stranded_virtual_module_file_is_adopted_then_removed() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![("virtual:meta".to_string(), "export default 1;".to_string())];
+        let path = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[])
+            .unwrap()
+            ._temp_files[0]
+            .path()
+            .to_path_buf();
+        std::fs::write(&path, "export default 1;").unwrap();
+
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new(), &[]).unwrap();
+        assert_eq!(r._temp_files[0].path(), path);
+        drop(r);
+        assert!(!path.exists());
+    }
+
+    /// A probe holding an exclusive lock on a file that no longer stands at
+    /// its path must not report it as removable: removing the path would
+    /// delete a newer holder's file.
+    #[test]
+    fn exclusive_lock_on_a_replaced_file_does_not_authorize_removal() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".zfb-virtual-replaced.mjs");
+        std::fs::write(&path, "old").unwrap();
+        let probe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "new").unwrap();
+        assert!(!exclusive_lock_on_file_at_path(&probe, &path));
     }
 
     /// `virtual_module_alias_flags` formats each pair as

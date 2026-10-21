@@ -799,6 +799,76 @@ fn splitting_emits_chunk_for_dynamic_import() {
     );
 }
 
+/// Regression (#4367): a chunk holding a plugin virtual module keeps its
+/// content-hashed name across identical rebuilds of one project. esbuild
+/// hashes input paths into chunk names, and the virtual module used to be
+/// materialized under a random temp-file name, so the chunk (and the entry's
+/// import of it) was renamed on every build.
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn virtual_module_chunk_name_is_stable_across_identical_rebuilds() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    stage_minimal_node_modules(root);
+    std::fs::write(
+        root.join("heavy.js"),
+        "import { STUB_MARKER } from \"virtual:zdtp-loader\";\n\
+         export const HEAVY = () => STUB_MARKER;\n",
+    )
+    .expect("write heavy");
+    let island_src = root.join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "export default function Island() {\n  \
+         return import(\"./heavy.js\").then((m) => m.HEAVY());\n}\n",
+    )
+    .expect("write island");
+
+    let build = || {
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default()
+                .with_working_dir(root)
+                .with_virtual_modules(vec![(
+                    "virtual:zdtp-loader".to_string(),
+                    "export const STUB_MARKER = \"zfb_virtual_stub_marker\";\n".to_string(),
+                )]),
+        );
+        let cfg = BundleConfig::production()
+            .with_zudo_react_build(Some(TEST_BUILD_TOKEN.to_string()))
+            .with_outdir(root.join("dist"));
+        bundler
+            .bundle(&[Island::new("Island", island_src.clone())], &cfg)
+            .expect("real esbuild splitting bundle")
+    };
+    let first = build();
+    let second = build();
+
+    let stub_chunk = first
+        .chunks
+        .iter()
+        .find(|chunk| String::from_utf8_lossy(&chunk.bytes).contains("zfb_virtual_stub_marker"))
+        .expect("the virtual module must land in a split chunk");
+    let names = |out: &zfb_islands::BundleOutput| {
+        let mut names: Vec<String> = out.chunks.iter().map(|c| c.filename.clone()).collect();
+        names.sort_unstable();
+        names
+    };
+    assert!(
+        names(&second).contains(&stub_chunk.filename),
+        "the chunk holding the virtual module was renamed across identical rebuilds: \
+         {:?} then {:?}",
+        names(&first),
+        names(&second)
+    );
+    assert_eq!(names(&first), names(&second));
+    assert_eq!(
+        first.bytes, second.bytes,
+        "the islands entry must stay byte-identical across identical rebuilds"
+    );
+}
+
 /// Acceptance (#806): an islands set with NO dynamic imports must produce
 /// exactly one output file — the entry, zero chunks — so non-splitting
 /// projects carry zero new complexity.
