@@ -2241,10 +2241,10 @@ pub fn reap_stale_shadow_sessions(parent: &Path) {
 /// no tempdir name. Linux's `/tmp` is not a symlink, so this is a no-op there
 /// (which is why the divergence is macOS-only).
 ///
-/// Gated to macOS: on Windows `fs::canonicalize` returns `\\?\`-prefixed
-/// verbatim paths, which would newly reach esbuild's entry/outfile args on a
-/// platform no CI runs tests on — and the underlying symlink divergence does
-/// not exist there (`%TEMP%` is not a symlink).
+/// Gated to macOS because the symlink divergence does not exist elsewhere
+/// (`%TEMP%` is not a symlink). The gate does not keep `\\?\` verbatim paths
+/// away from esbuild on Windows: `usable_shadow_parent_candidate` already
+/// canonicalizes the shadow parent, so Windows shadows are `\\?\C:\…` (#4343).
 #[cfg(target_os = "macos")]
 fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
     fs::canonicalize(work).with_context(|| {
