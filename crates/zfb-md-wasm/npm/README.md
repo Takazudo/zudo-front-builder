@@ -31,7 +31,7 @@ migration. `./highlight` is also backward-compatible. New `./render` and
 `zfb-render` but intentionally retain `zfb-content` and `syntect-fancy`.
 `./parse` is not syntect-free.
 
-| Entry | gzip-9 wasm (4.5.3) | Exact runtime values | Exact exported types |
+| Entry | gzip-9 wasm (4.5.4) | Exact runtime values | Exact exported types |
 | ------------- | -------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.` | 1,521,731 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile/render/parse/raw-mdast/highlight surface |
 | `./highlight` | 821,788 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
@@ -743,7 +743,7 @@ three-step repair sequence:
    they are compressor output (CI prints a warning inside the band), while
    final wasm and glue remain byte-exact.
 
-These are the shipped **4.5.3** artifact rows — optimized final wasm after
+These are the shipped **4.5.4** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
@@ -759,7 +759,7 @@ The #2447 decision snapshot measured the split package at 3,638,607 B versus
 root 1,600,000 B, highlight 880,000 B, render 1,100,000 B, and parse
 325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
 inside their ceilings, with 78,269 B (root), 58,212 B (highlight), 1,018 B
-(render), and 39,691 B (parse) of headroom. These are 4.5.3 measurements, not
+(render), and 39,691 B (parse) of headroom. These are 4.5.4 measurements, not
 permanent promises — re-measure against the version you actually install.
 The clean four-step production ceiling is 210 seconds; the selected #2447
 median was 155.015 s [153.496, 165.977].

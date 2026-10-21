@@ -103,8 +103,11 @@ zfb 本体にコントリビュートしていて CLI をソースからビル�
 ```bash
 git clone https://github.com/Takazudo/zudo-front-builder.git
 cd zudo-front-builder
+pnpm install --frozen-lockfile
 cargo install --path crates/zfb
 ```
+
+`crates/zfb/build.rs` はワークスペースの pnpm store から Hono を埋め込むため、先に JavaScript の依存関係をインストールしてください。インストールしていないとビルドが停止し、`pnpm install --frozen-lockfile` の実行を求めます。初回ビルドは V8 のコンパイルを含み、15〜30 分かかります。
 
 <a id="standalone-installation"></a>
 

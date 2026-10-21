@@ -4678,6 +4678,12 @@ pub(crate) fn derive_default_islands_build_token(
     Ok(token.unwrap_or_else(|| "0000000000000000".to_string()))
 }
 
+/// The identity-only pass (`token_only`) runs ahead of the emission pass on
+/// the same inputs, so only the emission pass may report diagnostics.
+fn island_pass_emits_diagnostics(token_only: bool) -> bool {
+    !token_only
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_default_islands_payload(
     project_root: &Path,
@@ -4952,10 +4958,12 @@ pub(crate) fn prepare_default_islands_payload(
         // (`near_miss_candidates == 0`), the verify-hint is permanent
         // noise, so we demote to a quiet info note with no hint.
         if scan_meta.near_miss_candidates == 0 {
-            output::info(
-                "no SDK Island boundary targets found; skipping islands bundle \
-                 (no islands asset will be emitted)",
-            );
+            if island_pass_emits_diagnostics(token_only) {
+                output::info(
+                    "no SDK Island boundary targets found; skipping islands bundle \
+                     (no islands asset will be emitted)",
+                );
+            }
         } else {
             // Issue #122 / #117: this branch used to be silent, which made
             // pnpm-workspace consumers with boundary targets inside a
@@ -4963,18 +4971,20 @@ pub(crate) fn prepare_default_islands_payload(
             // runtime. Surface it loudly so authoring problems (a missing
             // malformed directive, or a target route that needs authoring
             // attention) become discoverable.
-            warn_build(
-                codes::NO_ISLAND_TARGETS,
-                format!(
-                    "scanned {} page entr{} but found no SDK Island boundary targets; \
-                 no islands asset will be emitted. \
-                 Check the malformed \"use client\" directive and pass one \
-                 exported function from a client module as the single child \
-                 of a reachable SDK Island boundary.",
-                    entries.len(),
-                    if entries.len() == 1 { "y" } else { "ies" }
-                ),
-            );
+            if island_pass_emits_diagnostics(token_only) {
+                warn_build(
+                    codes::NO_ISLAND_TARGETS,
+                    format!(
+                        "scanned {} page entr{} but found no SDK Island boundary targets; \
+                     no islands asset will be emitted. \
+                     Check the malformed \"use client\" directive and pass one \
+                     exported function from a client module as the single child \
+                     of a reachable SDK Island boundary.",
+                        entries.len(),
+                        if entries.len() == 1 { "y" } else { "ies" }
+                    ),
+                );
+            }
         }
         return Ok((None, std::collections::BTreeSet::new(), None));
     }
@@ -5097,13 +5107,15 @@ pub(crate) fn prepare_default_islands_payload(
                 _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
-                warn_build(
-                    codes::EMBEDDED_TOOL_FALLBACK,
-                    format!(
-                        "could not extract embedded @takazudo packages for islands bundler ({e}); \
-                     falling back to project_root node_modules walk"
-                    ),
-                );
+                if island_pass_emits_diagnostics(token_only) {
+                    warn_build(
+                        codes::EMBEDDED_TOOL_FALLBACK,
+                        format!(
+                            "could not extract embedded @takazudo packages for islands bundler ({e}); \
+                         falling back to project_root node_modules walk"
+                        ),
+                    );
+                }
                 _embedded_nm_handle = None;
             }
         }
@@ -5115,13 +5127,15 @@ pub(crate) fn prepare_default_islands_payload(
                 _embedded_esbuild_handle = Some(handle);
             }
             Err(e) => {
-                warn_build(
-                    codes::EMBEDDED_TOOL_FALLBACK,
-                    format!(
-                        "could not extract embedded esbuild for islands bundler ({e}); \
-                     falling back to default slot resolver"
-                    ),
-                );
+                if island_pass_emits_diagnostics(token_only) {
+                    warn_build(
+                        codes::EMBEDDED_TOOL_FALLBACK,
+                        format!(
+                            "could not extract embedded esbuild for islands bundler ({e}); \
+                         falling back to default slot resolver"
+                        ),
+                    );
+                }
                 _embedded_esbuild_handle = None;
             }
         }
@@ -8701,6 +8715,12 @@ fn copy_redirects_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_only_islands_pass_suppresses_diagnostics() {
+        assert!(!island_pass_emits_diagnostics(true));
+        assert!(island_pass_emits_diagnostics(false));
+    }
 
     #[test]
     fn build_maps_transition_timing_and_utility_placement_through_the_shared_mapper() {

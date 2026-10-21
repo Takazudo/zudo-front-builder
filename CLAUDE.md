@@ -190,6 +190,15 @@ Record source/control SHAs and first run evidence; never bypass admission gates 
 unbuilt or deferred tests passing. The [security issue record](https://github.com/Takazudo/zudo-front-builder/issues/4314#issuecomment-6266488465)
 retains the capacity limitation separately from the unresolved lock-admission failure.
 
+Keep toolchain selection process-local: `rust-toolchain.toml` selects stable in the checkout,
+and a recorded qualification toolchain is named on the command (`cargo +1.99.1 ...` or
+`RUSTUP_TOOLCHAIN=...`). Never run `rustup default`, `rustup override set` or other
+machine-wide toolchain changes; other sessions and worktrees share them. `python3` must be
+3.11+ because the `tests/unit/*.sh` suite (b4push, `health.yml`) runs
+`scripts/capture-nextest-evidence.py`, which imports `tomllib`; on a Mac whose system
+`python3` is older, prefix that command's `PATH` with a 3.11+ interpreter's directory. The contributor-facing
+version of these rules is in [BUILDING.md](./BUILDING.md#selecting-a-toolchain-per-command).
+
 ## Worktree push policy (enforced)
 
 This repo uses `/x-wt-teams` for multi-topic development. Child agents work in git worktrees under `worktrees/`. **Pushing from a worktree is forbidden.** Only the manager session — running from the main repo at the repo root — pushes, after merging topic branches into the base branch locally.
@@ -323,7 +332,7 @@ The axes are independent. "Too heavy for the PR gate" is a **tier** question, ne
 | 1 — Unit/logic | pure functions, transforms | `cargo test` unit tests; vitest unit tests |
 | 2 — DOM component | DOM structure, no CSS engine | `zfb-runtime` happy-dom vitest (the client router) |
 | 3 — Build output | emitted files **and emitted code that runs** | reading built `dist/`; the *dynamic-import-the-emitted-`_worker.js`* pattern in `zfb-adapter-cloudflare` (zfb is a code generator — string-equality proves the template was written, executing the artifact proves it threads `env`/`ctx`) |
-| 4 — E2E browser | real process / browser | `crates/zfb/tests/dev_serve_e2e.rs` (dev server, Rust process-level e2e); `pnpm test:router-chromium` (`tests/router-chromium/`, real Chromium via Playwright — CI-gated by `.github/workflows/router-chromium.yml`, path-filtered to `packages/zfb-runtime/**` + `packages/zfb/src/runtime.ts` (the islands runtime — #1399) so it is NOT a required check); `pnpm test:webkit-back` (`tests/webkit-back-history/`, real WebKit back/forward-cache nav via Playwright — T4 local-heavy, Mac only, never runs in CI; see the release-day hook in RELEASE_DAY_CHECKLIST.md) |
+| 4 — E2E browser | real process / browser | `crates/zfb/tests/dev_serve_e2e.rs` (dev server, Rust process-level e2e); `pnpm test:router-chromium` (`tests/router-chromium/`, real Chromium via Playwright — CI-gated by `.github/workflows/router-chromium.yml`, path-filtered to `packages/zfb-runtime/**` + `packages/zfb/src/runtime.ts` (the islands runtime — #1399) so it is NOT a required check); `pnpm test:webkit-back` (`tests/webkit-back-history/`, real WebKit back/forward-cache nav via Playwright — T4 local-heavy, Mac only, never runs in CI; see the release-day hook in RELEASE_DAY_CHECKLIST.md); `pnpm test:webkit-token` (`tests/webkit-token/`, the island build-token specs `sdk-persist` and `r-a08-mismatch` re-run unchanged in WebKit via `ZFB_BROWSER_ENGINE=webkit`; same T4 Mac-only status, exact selected counts enforced, 0 selected is a failure; #4231 item 2) |
 | 5 — Visual | computed styles + pixels | the docs site / any UI — use `/verify-ui` + `/headless-browser` |
 | 6 — AI-based | final resort, **not for CI** | not used; only for canvas/zoom surfaces L4+L5 cannot reach |
 

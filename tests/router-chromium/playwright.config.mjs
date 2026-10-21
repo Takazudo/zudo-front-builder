@@ -19,7 +19,8 @@
  */
 
 // @ts-check
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig } from "@playwright/test";
+import { engineProject } from "../webkit-token/engine.mjs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -60,12 +61,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
 
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
+  projects: [engineProject],
 
   // Start the static fixture server before the tests. `reuseExistingServer:
   // false` guarantees a fresh server each run (important for the local 20x

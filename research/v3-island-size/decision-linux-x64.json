@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-producer-lock-transition",
+  "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "0355ad78a4f8d2c240844d2b48da7c2769f6de25",
+  "baselineSourceSha": "17e69371428fa85d16bd9c9a8fc7781378cc6664",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -32,13 +32,13 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "4.5.3",
+    "packageVersion": "4.5.4",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "370bf32469ed4f3093a24aed1cab3dd68a28c58051847d425fcbe3d062fc30ee",
-    "cargoLockSha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd"
+    "pnpmLockSha256": "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
+    "cargoLockSha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,12 +116,12 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.5.3 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 39302891207 at PR merge source e397161c609e780a79ec4273c907168355518aab (probe head 0355ad78a4f8d2c240844d2b48da7c2769f6de25) after a reviewed non-additive Cargo.lock transition (Cargo.lock 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138 to 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd under reviewed non-additive transition rustls-security-4314 (manifest SHA-256 fe689aca3a29b012ca7fb96a3aad3dc9fc507f117a18be501e379dae2b3f04ff): 1 new identities, 0 changed records and 1 removed identities, proved against 21d6807e442bbed61e578c165a91d64c4a7dc141:Cargo.lock). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. 11 actual gzip totals moved by -3 to +4 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 39465679017 at PR merge source bc2cf771538ceb614be212188300402e25275c2e (probe head 17e69371428fa85d16bd9c9a8fc7781378cc6664). Every raw and gzipNormalized total is unchanged from the v4.5.3 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 11 actual gzip totals moved by -3 to +2 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 39302891207,
-    "jobId": 118232731946,
-    "sourceSha": "e397161c609e780a79ec4273c907168355518aab",
+    "runId": 39465679017,
+    "jobId": 118776314238,
+    "sourceSha": "bc2cf771538ceb614be212188300402e25275c2e",
     "repinnedFrom": {
       "schemaVersion": 3,
       "outcome": "cargo-internal-rewire-transition",
@@ -130,49 +130,32 @@
       "baselineRunId": 39008132372,
       "contract": {
         "sha256": "f505520217649c5cd0a614fe68c83cd500f44f4aafd8c599082348a2d6e7cf3a",
-        "commit": "83f5517e5d589d2f818a992625baf0032f2b77b2",
+        "commit": "7b68afda48c7825201fd8811ea287cda5a5cb8c9",
         "path": "research/v3-island-size/decision-linux-x64.json"
-      }
-    },
-    "cargoTransition": {
-      "oldSha": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
-      "newSha": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
-      "added": ["rustls@0.23.46"],
-      "changed": [],
-      "removed": ["rustls@0.23.45"],
-      "oldLockSource": {
-        "commit": "21d6807e442bbed61e578c165a91d64c4a7dc141",
-        "path": "Cargo.lock",
-        "sha256": "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138"
-      },
-      "review": {
-        "id": "rustls-security-4314",
-        "manifestSha256": "fe689aca3a29b012ca7fb96a3aad3dc9fc507f117a18be501e379dae2b3f04ff",
-        "sourceSha": "21d6807e442bbed61e578c165a91d64c4a7dc141"
       }
     },
     "actualGzip": {
       "workspace": {
         "blog-theme": 22352,
         "event-only": 22209,
-        "json-api": 22296,
+        "json-api": 22300,
         "model": 22215,
         "multi-island": 22299,
         "no-island": 0,
-        "scalar-signal": 22226,
-        "show-for": 22288
+        "scalar-signal": 22228,
+        "show-for": 22286
       },
       "packed": {
         "blog-theme": 22368,
-        "event-only": 22213,
-        "json-api": 22314,
+        "event-only": 22216,
+        "json-api": 22311,
         "model": 22224,
-        "multi-island": 22309,
+        "multi-island": 22307,
         "no-island": 0,
-        "scalar-signal": 22216,
-        "show-for": 22303
+        "scalar-signal": 22217,
+        "show-for": 22302
       }
     },
-    "note": "Cargo producer-lock transition run at v4.5.3 at PR merge source e397161c609e780a79ec4273c907168355518aab (probe head 0355ad78a4f8d2c240844d2b48da7c2769f6de25). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed non-additive Cargo.lock transition at unchanged v4.5.3 (Cargo.lock 230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138 to 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd under reviewed non-additive transition rustls-security-4314 (manifest SHA-256 fe689aca3a29b012ca7fb96a3aad3dc9fc507f117a18be501e379dae2b3f04ff): 1 new identities, 0 changed records and 1 removed identities, proved against 21d6807e442bbed61e578c165a91d64c4a7dc141:Cargo.lock); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; 11 actual gzip totals moved by -3 to +4 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Release probe PR #4348 run for v4.5.4 at PR merge source bc2cf771538ceb614be212188300402e25275c2e (probe head 17e69371428fa85d16bd9c9a8fc7781378cc6664). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.3 contract; 11 actual gzip totals moved by -3 to +2 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
