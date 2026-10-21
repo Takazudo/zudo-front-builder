@@ -1,0 +1,23 @@
+# Shared definition of a "docs-only" pull request (#4372; see
+# CLAUDE.md "Docs-only pull requests"). Read by the changed-files detectors in
+# health.yml, node-free-smoke.yml and docs-checks.yml with
+# `predicate-quantifier: every`, so a changed file counts as `code` only when
+# it matches `**` AND none of the negated docs paths below. A PR is docs-only
+# when no changed file is `code`.
+#
+# Keep this list to prose that no Rust test, smoke or binary build reads.
+# Markdown that IS a test input stays `code`: crate fixtures
+# (crates/*/tests/**), scaffold templates (crates/zfb/templates/**, embedded
+# into the binary), and research/** (research/3242-zudo-wind-v1-spec.md is an
+# include_str! input of crates/zudo-wind/tests/goldens.rs). Docs-only PRs still
+# run the JS/format subset of health in docs-checks.yml, because scripts and
+# docs tests read several of these files.
+code:
+  - "**"
+  - "!docs/**"
+  - "!*.md"
+  - "!crates/*.md"
+  - "!crates/*/README.md"
+  - "!packages/*/README.md"
+  - "!prototypes/**/*.md"
+  - "!.claude/**/*.md"

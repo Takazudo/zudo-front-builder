@@ -32,9 +32,10 @@ concurrency:
 
 jobs:
   # Keep this workflow unfiltered so the required `health` and
-  # `build (no-v8)` contexts always report. This detector feeds only the two
-  # optional md-wasm jobs below; a workflow-level `paths:` filter would leave
-  # the required contexts pending on an unrelated PR.
+  # `build (no-v8)` contexts always report. This detector feeds the two
+  # optional md-wasm jobs below and the docs-only skip (#4372); a
+  # workflow-level `paths:` filter would leave the required contexts pending
+  # on an unrelated PR.
   # Historical measurements put these six matrix legs plus browser at ~11.5
   # billed runner-minutes per irrelevant PR; this saves runner cost without
   # changing required-gate latency because `health` remains unfiltered.
@@ -46,6 +47,7 @@ jobs:
       pull-requests: read
     outputs:
       wasm_md: ${{ steps.filter.outputs.wasm_md }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
       # The push form of paths-filter compares the current long-lived branch
       # with the previous push, so retain the history it needs. On PRs the
@@ -125,7 +127,38 @@ jobs:
               - 'Cross.toml'
               - '.github/workflows/health.yml'
 
+      # Docs-only PRs (#4372): `code` is false only when every changed file is
+      # in the shared docs-only list. Their JS/format subset of this workflow
+      # runs in docs-checks.yml behind the required `Docs gate` instead.
+      - name: Detect non-docs changes
+        id: code
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: .github/path-filters/docs-only.yml
+
+      # Fail closed: anything but an explicit `code == false` on a PR keeps the
+      # full lane. push and workflow_dispatch always run everything.
+      - name: Resolve docs-only scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CODE_CHANGED: ${{ steps.code.outputs.code }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$CODE_CHANGED" = "false" ]; then
+            docs_only=true
+          else
+            docs_only=false
+          fi
+          echo "docs_only=${docs_only} (event=${EVENT_NAME}, code=${CODE_CHANGED:-<unset>})"
+          echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
+
   health:
+    # Skipped (which a required check reads as success) only for a docs-only
+    # PR (#4372). `!cancelled()` keeps a failed detector from skipping it.
+    needs: changed-files
+    if: ${{ !cancelled() && needs.changed-files.outputs.docs_only != 'true' }}
     # Profile 1.5 admits the exact Ubuntu 24.04 x64 browser matrix.
     runs-on: ubuntu-24.04
     # Job-level permissions override (issue #1341): the "Detect and report
@@ -1049,6 +1082,9 @@ jobs:
   # EXECUTES the no-v8 fallback code paths, not just compiles them.
   build-no-v8:
     name: build (no-v8)
+    # Same docs-only skip as `health` (#4372).
+    needs: changed-files
+    if: ${{ !cancelled() && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # No V8 to compile, so this job is fast — but we keep a generous
     # budget while the cache primes on the first run.
@@ -1139,7 +1175,7 @@ jobs:
   wasm-md:
     name: wasm-md
     needs: changed-files
-    if: ${{ needs.changed-files.outputs.wasm_md == 'true' }}
+    if: ${{ needs.changed-files.outputs.wasm_md == 'true' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Keep this exact timeout: the four clean production passes plus setup,
     # package tests, and pack have ample headroom under the locked 35 minutes.
@@ -1339,7 +1375,7 @@ jobs:
     # artifact download, rather than waiting for or failing on a missing
     # zfb-md-wasm tarball.
     needs: [health, wasm-md, changed-files]
-    if: ${{ needs.changed-files.outputs.wasm_md == 'true' }}
+    if: ${{ needs.changed-files.outputs.wasm_md == 'true' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

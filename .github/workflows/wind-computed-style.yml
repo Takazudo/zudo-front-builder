@@ -19,6 +19,9 @@ on:
     paths:
       - "crates/**"
       - "!crates/zfb-md-wasm/**"
+      # Crate READMEs and crates/*.md are prose (#4372).
+      - "!crates/*.md"
+      - "!crates/*/README.md"
       - "packages/zfb/**"
       - "packages/zfb-slugify/**"
       - "packages/zfb-runtime/**"
@@ -36,6 +39,9 @@ on:
     paths:
       - "crates/**"
       - "!crates/zfb-md-wasm/**"
+      # Crate READMEs and crates/*.md are prose (#4372).
+      - "!crates/*.md"
+      - "!crates/*/README.md"
       - "packages/zfb/**"
       - "packages/zfb-slugify/**"
       - "packages/zfb-runtime/**"

@@ -18,6 +18,9 @@ name: Docs Checks
 #   changed-files  — always runs (~5s, API only, no checkout); decides whether
 #                    the docs closure changed.
 #   build          — the strict docs build; runs only when it did.
+#   docs-only-checks — health.yml's JS/format subset, run only on a docs-only
+#                    PR (#4372), where health.yml and the binary smokes skip
+#                    their heavy jobs.
 #   docs-gate      — ALWAYS reports. This is the ONE context from this
 #                    workflow that the `main` ruleset requires
 #                    (scripts/apply-main-ruleset.sh, CLAUDE.md "Branch ruleset
@@ -78,11 +81,18 @@ jobs:
     outputs:
       docs: ${{ steps.filter.outputs.docs }}
       wind_previews: ${{ steps.filter.outputs.wind_previews }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
       # pull_request-only workflow: paths-filter compares against the PR base
-      # through the API, so no checkout is needed (its README: "For pull
-      # requests it's not necessary to checkout the code"). health.yml's copy
-      # checks out with fetch-depth 0 only because it also runs on push.
+      # through the API (its README: "For pull requests it's not necessary to
+      # checkout the code"). The sparse checkout only provides the shared
+      # docs-only filter file. health.yml's copy checks out with fetch-depth 0
+      # because it also runs on push.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          sparse-checkout: .github/path-filters
+          persist-credentials: false
+
       - name: Detect docs-affecting changes
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -115,6 +125,23 @@ jobs:
               - 'package.json'
               - '.npmrc'
               - '.github/workflows/docs-checks.yml'
+
+      # Same shared definition as health.yml and node-free-smoke.yml (#4372).
+      - name: Detect non-docs changes
+        id: code
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: .github/path-filters/docs-only.yml
+
+      - name: Resolve docs-only scope
+        id: scope
+        env:
+          CODE_CHANGED: ${{ steps.code.outputs.code }}
+        run: |
+          if [ "$CODE_CHANGED" = "false" ]; then docs_only=true; else docs_only=false; fi
+          echo "docs_only=${docs_only} (code=${CODE_CHANGED:-<unset>})"
+          echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
 
   build:
     # Named after this workflow file on purpose: docs-pr-preview.yml and
@@ -250,11 +277,73 @@ jobs:
       - name: Check genuine compiled preview freshness
         run: node docs/scripts/wind-preview-assets.mjs --compiler "$PWD/target/debug/zfb" --check
 
+  # health.yml's JS/format subset for a docs-only PR (#4372). health.yml
+  # skips its jobs on such a PR, but scripts and docs tests read the Markdown
+  # it may touch, so the same commands still run here and `docs-gate` fails
+  # unless they pass. Keep these steps in step with health.yml's `health` job.
+  docs-only-checks:
+    name: Docs-only checks (health JS subset)
+    needs: changed-files
+    if: ${{ needs.changed-files.outputs.docs_only == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Shell script syntax check
+        run: |
+          for f in install.sh scripts/*.sh tests/unit/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Run offline shell unit tests
+        run: |
+          for t in tests/unit/*.sh; do
+            echo "+ sh $t"
+            sh "$t"
+          done
+
+      # Some scripts suites shell out to cargo (metadata only); match health.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck:workspace
+
+      - run: pnpm test:workspace
+
+      - run: pnpm format:check
+
+      - name: Wind policy, inventory, accounting and mutation contracts
+        run: |
+          node scripts/wind-compatibility/inventory-cli.mjs validate
+          node --test tests/wind-compatibility/*.test.mjs tests/wind-compatibility/reference/*.test.mjs tests/wind-compatibility/empty-token/*.test.mjs tests/wind-compatibility/corpus/*.test.mjs
+
+      - name: Assert md-wasm documentation matches shipped sizes
+        run: node scripts/assert-md-wasm-size-docs.mjs
+
+      - name: Check SSE endpoint literal ownership
+        run: node scripts/check-sse-endpoint.mjs
+
   # The required context. `if: always()` and the explicit fail-closed verdict
   # below are load-bearing — see invariant 2 in the header.
   docs-gate:
     name: Docs gate
-    needs: [changed-files, build, wind-previews]
+    needs: [changed-files, build, wind-previews, docs-only-checks]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -266,6 +355,8 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           WIND_CHANGED: ${{ needs.changed-files.outputs.wind_previews }}
           WIND_RESULT: ${{ needs.wind-previews.result }}
+          DOCS_ONLY: ${{ needs.changed-files.outputs.docs_only }}
+          DOCS_ONLY_RESULT: ${{ needs.docs-only-checks.result }}
         run: |
           set -euo pipefail
           echo "changed-files (docs): result=${DETECTOR_RESULT} docs_changed=${DOCS_CHANGED:-<unset>}"
@@ -306,6 +397,24 @@ jobs:
               ;;
             *)
               echo "::error::Docs gate: wind preview check ended '${WIND_RESULT}'."
+              exit 1
+              ;;
+          esac
+
+          # On a docs-only PR (#4372) health.yml and the binary smokes skip, so
+          # this lane is the only run of health's JS/format subset.
+          case "${DOCS_ONLY_RESULT}" in
+            success)
+              echo "Docs gate: docs-only checks passed."
+              ;;
+            skipped)
+              if [ "${DOCS_ONLY}" != "false" ]; then
+                echo "::error::Docs gate: docs-only checks skipped but docs_only='${DOCS_ONLY:-<unset>}' (expected 'false'); failing closed."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Docs gate: docs-only checks ended '${DOCS_ONLY_RESULT}'."
               exit 1
               ;;
           esac

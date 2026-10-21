@@ -355,6 +355,15 @@ GitHub separately enforces required checks through a **ruleset** on `main` (id `
 
 **`base/**` epic-PRs run T1 CI too (#2076).** `health.yml` and `pr-checks.yml`'s `on.pull_request.branches` include `"base/**"` alongside `main`, so an `/x-wt-teams` epic-PR (which targets a super-epic `base/**` branch) triggers `health` + the required `pnpm audit (prod)` during its own review window. Deliberately **`pull_request`-only** — `health.yml`'s `push:` trigger stays main-only (a `base/**` push trigger would double-run the suite per commit), and `pr-checks.yml` carries no `push:` trigger. These runs provide regression alerts during integration; they are not a per-epic wait-for-green barrier. The manager batches pushes and carries failures into fixing rounds under the development strategy above. The `main` ruleset is unaffected — it targets only `refs/heads/main`.
 
+### Docs-only pull requests (#4372)
+
+A PR whose every changed file is in `.github/path-filters/docs-only.yml` (`docs/**`, root and `crates/*.md`, `crates/*/README.md`, `packages/*/README.md`, `prototypes/**/*.md`, `.claude/**/*.md`) skips the heavy PR lanes: `health`, `build (no-v8)`, the `wasm-md` jobs, the binary smokes, `Scaffold E2E` and the built-site browser smoke. `health.yml`, `node-free-smoke.yml` and `docs-checks.yml` each read that one file through `dorny/paths-filter` with `predicate-quantifier: every`.
+
+- **Required contexts still resolve.** A job skipped by its own `if:` reports success to the ruleset. The matrix `Build binary (<target>)` legs are the exception: a job-level skip happens before matrix expansion and would leave both per-target contexts pending, so those legs keep running with every step skipped.
+- **Fail closed.** The skip needs an explicit `docs_only == 'true'` from a `pull_request` detector. A failed or missing detector, a `push` to `main` and `workflow_dispatch` all run everything, so `main` keeps full post-merge verification.
+- **The JS/format subset still runs.** Scripts and docs tests read Markdown, so a docs-only PR runs health's typecheck, `test:workspace`, `format:check`, Wind contract, md-wasm size-doc, SSE-literal and shell unit checks in `docs-checks.yml`'s `Docs-only checks (health JS subset)`, and the required `Docs gate` fails unless it passed. `scripts/__tests__/docs-only-ci-gate.test.mjs` keeps those commands in step with `health.yml`.
+- **Keep test inputs out of the list.** Markdown that a test or the binary reads stays non-docs: crate fixtures, `crates/zfb/templates/**` and `research/**` (`research/3242-zudo-wind-v1-spec.md` is an `include_str!` input).
+
 ### The create-zfb showcase (#2279)
 
 `create-zfb` is otherwise invisible — the only way to see what `npm create zfb@latest my-site` produces is to run it. Two jobs in `node-free-smoke.yml` fix that by deploying the **real** scaffold output to an assets-only Cloudflare Worker (`zfb-showcase`) at **`create-zfb.takazudomodular.com`**. Config lives in `create-zfb-showcase/` (deploy config only — no `package.json`, deliberately not a pnpm workspace member).
