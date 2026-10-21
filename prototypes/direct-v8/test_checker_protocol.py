@@ -356,7 +356,7 @@ class CheckerProtocolTest(unittest.TestCase):
         # Test-only communication seam, not production readiness. Feed the
         # bounded fixture input before waiting for its acknowledgment, retaining
         # the original stdin -> output -> timeout sequence. Real communicate
-        # still owns capture/expiry, and subprocess.run owns kill/wait.
+        # still owns capture/expiry, and the watchdog drain owns kill/drain/reap.
         reader, writer = socket.socketpair()
         with reader, writer:
             runner = self.root / "ready-runner"
@@ -380,6 +380,10 @@ class CheckerProtocolTest(unittest.TestCase):
                     writer.close()
 
                 def communicate(self, input=None, timeout=None):
+                    if self.stdin is None:
+                        # The post-kill drain never resends input.
+                        testcase.assertIsNone(input)
+                        return super().communicate(timeout=timeout)
                     # At most PIPE_BUF bytes fit atomically in the empty pipe,
                     # even if the cold interpreter has not started reading.
                     testcase.assertIsNotNone(input)
