@@ -1056,8 +1056,14 @@ mod tests {
                 assert_eq!(second_plugin, "a");
                 // resolve_against_root joins verbatim, so the `./` prefix is
                 // preserved in the resolved path.
-                assert_eq!(first_entrypoint, "/proj/./scripts/a.ts");
-                assert_eq!(second_entrypoint, "/proj/./scripts/b.ts");
+                assert_eq!(
+                    first_entrypoint,
+                    root.join("./scripts/a.ts").display().to_string()
+                );
+                assert_eq!(
+                    second_entrypoint,
+                    root.join("./scripts/b.ts").display().to_string()
+                );
             }
             other => panic!("wrong error: {other:?}"),
         }

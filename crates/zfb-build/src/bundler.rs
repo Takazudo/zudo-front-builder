@@ -15802,6 +15802,21 @@ mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
 
+    /// `base` joined with `rel` in one `Path::join`, the way the tsconfig
+    /// rebase builds staged targets (Windows keeps `rel`'s `/` spelling).
+    fn joined(base: &str, rel: &str) -> String {
+        Path::new(base).join(rel).to_string_lossy().into_owned()
+    }
+
+    /// `base` joined segment by segment, the platform-native spelling of a
+    /// project path the friendly esbuild error reports (#4371).
+    fn native_path(base: &str, rel: &str) -> String {
+        rel.split('/')
+            .fold(PathBuf::from(base), |path, segment| path.join(segment))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[test]
     fn bundler_timing_start_line_is_named_and_default_off() {
         assert_eq!(
@@ -17565,7 +17580,21 @@ mod tests {
     /// opened with `O_WRONLY` on Unix, but `set_modified`'s underlying
     /// `futimens` needs only an open handle, not a writable one).
     fn backdate_dir_mtime(dir: &Path, age: std::time::Duration) {
-        let file = fs::File::open(dir).expect("open dir for mtime backdate");
+        #[cfg(not(windows))]
+        let file = fs::File::open(dir);
+        // CreateFileW opens a directory only with FILE_FLAG_BACKUP_SEMANTICS,
+        // and SetFileTime needs FILE_WRITE_ATTRIBUTES (#4371).
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(dir)
+        };
+        let file = file.expect("open dir for mtime backdate");
         file.set_modified(std::time::SystemTime::now() - age)
             .expect("backdate dir mtime");
     }
@@ -17773,14 +17802,14 @@ mod tests {
         assert_eq!(
             out["@lib/*"],
             vec![
-                "/tmp/shadowX/src/lib/*".to_string(),
+                format!("{}/*", joined("/tmp/shadowX", "src/lib")),
                 "/proj/src/lib/*".to_string()
             ]
         );
         assert_eq!(
             out["msw"],
             vec![
-                "/tmp/shadowX/src/mocks/msw.ts".to_string(),
+                joined("/tmp/shadowX", "src/mocks/msw.ts"),
                 "/proj/src/mocks/msw.ts".to_string()
             ]
         );
@@ -17926,16 +17955,19 @@ mod tests {
         );
         assert_eq!(
             out["secret"],
-            vec!["/tmp/shadowSwitch/src/secret.ts".to_string()],
+            vec![joined("/tmp/shadowSwitch", "src/secret.ts")],
             "the excluded exact target is shadow-only — no live-real fallback"
         );
         assert_eq!(
             out["unrelated/*"],
-            vec!["/tmp/shadowSwitch/unmirrored/*".to_string()],
+            vec![format!("{}/*", joined("/tmp/shadowSwitch", "unmirrored"))],
             "an unrelated wildcard also loses its real fallback under exclusions \
              (the provably-disjoint carve-out is deleted)"
         );
-        assert_eq!(out["dir"], vec!["/tmp/shadowSwitch/pkg/".to_string()]);
+        assert_eq!(
+            out["dir"],
+            vec![format!("{}/", joined("/tmp/shadowSwitch", "pkg"))]
+        );
         assert_eq!(
             out["@ext/*"],
             vec!["/other/pkg/*".to_string()],
@@ -17980,14 +18012,14 @@ mod tests {
         assert_eq!(
             out["@/*"],
             vec![
-                "/work/sub-packages/host/src/*".to_string(),
+                format!("{}/*", joined("/work/sub-packages/host", "src")),
                 "/ws/sub-packages/host/src/*".to_string(),
             ]
         );
         assert_eq!(
             out["@shared/*"],
             vec![
-                "/work/lib/shared/*".to_string(),
+                format!("{}/*", joined("/work", "lib/shared")),
                 "/ws/lib/shared/*".to_string(),
             ],
             "a workspace-sibling alias rebases work-mirror-first with a real fallback"
@@ -18007,11 +18039,11 @@ mod tests {
         );
         assert_eq!(
             out["@/*"],
-            vec!["/work/sub-packages/host/src/*".to_string()]
+            vec![format!("{}/*", joined("/work/sub-packages/host", "src"))]
         );
         assert_eq!(
             out["@shared/*"],
-            vec!["/work/lib/shared/*".to_string()],
+            vec![format!("{}/*", joined("/work", "lib/shared"))],
             "under exclusions a workspace-sibling alias is work-mirror-only (no live-real fallback)"
         );
         assert_eq!(out["@ext/*"], vec!["/elsewhere/pkg/*".to_string()]);
@@ -18120,7 +18152,7 @@ mod tests {
 
         // Names the REAL source path, not a tempdir.
         assert!(
-            friendly.contains("/Users/dev/my-project/pages/foo.tsx"),
+            friendly.contains(&native_path("/Users/dev/my-project", "pages/foo.tsx")),
             "should name the real project path: {friendly}"
         );
         // States the boundary rule.
@@ -18190,7 +18222,7 @@ mod tests {
         // Names the sibling's REAL live-tree path (mapped through
         // `first_party_root`), not the ephemeral `work_root` tempdir.
         assert!(
-            friendly.contains("/workspace/lib/shared/helper.ts"),
+            friendly.contains(&native_path("/workspace", "lib/shared/helper.ts")),
             "should name the real workspace-sibling path: {friendly}"
         );
         assert!(
@@ -18228,7 +18260,10 @@ mod tests {
             friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
 
         assert!(
-            friendly.contains("/workspace/./sub-packages/host/pages/foo.tsx"),
+            friendly.contains(&native_path(
+                "/workspace/./sub-packages/host",
+                "pages/foo.tsx"
+            )),
             "should map through the more specific `shadow` prefix (using \
              the caller's own `project_root` spelling) rather than the \
              wider `work_root` prefix (which would derive \
@@ -18262,7 +18297,10 @@ mod tests {
             friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
 
         assert!(
-            friendly.contains("/workspace/sub-packages/host/pages/foo.tsx"),
+            friendly.contains(&native_path(
+                "/workspace/sub-packages/host",
+                "pages/foo.tsx"
+            )),
             "should still name the real project importer path: {friendly}"
         );
         assert!(
@@ -18286,12 +18324,12 @@ mod tests {
 
         assert!(
             friendly.contains("../../outside/one.ts")
-                && friendly.contains("/Users/dev/my-project/pages/one.tsx"),
+                && friendly.contains(&native_path("/Users/dev/my-project", "pages/one.tsx")),
             "first offender must be named: {friendly}"
         );
         assert!(
             friendly.contains("../../outside/two.ts")
-                && friendly.contains("/Users/dev/my-project/pages/two.tsx"),
+                && friendly.contains(&native_path("/Users/dev/my-project", "pages/two.tsx")),
             "second offender must ALSO be named, not truncated: {friendly}"
         );
     }
@@ -27553,14 +27591,15 @@ mod tests {
         let project = normalize_path_lexical(tmp.path());
         let root_wildcard = BTreeMap::from([(
             "@/*".to_string(),
-            vec![project.join("*").to_string_lossy().into_owned()],
+            // `resolve_tsconfig_path_target` always appends a `/*` suffix.
+            vec![format!("{}/*", project.display())],
         )]);
         assert!(has_wildcard_root_alias(&project, &root_wildcard, &[]));
 
         // A wildcard into a SUBDIR (not the root) does not arm the root pass.
         let subdir_wildcard = BTreeMap::from([(
             "@/*".to_string(),
-            vec![project.join("src/*").to_string_lossy().into_owned()],
+            vec![format!("{}/*", project.join("src").display())],
         )]);
         assert!(!has_wildcard_root_alias(&project, &subdir_wildcard, &[]));
 
