@@ -66,8 +66,17 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--engine", choices=["direct v8 147.4.0", "deno_core 0.399.0 / v8 147.4.0"])
     args = parser.parse_args()
-    report = run(args.runner, engine=args.engine)
+    interrupt = None
+    try:
+        report = run(args.runner, engine=args.engine)
+    except BaseException as error:
+        # A cancelled check still leaves a failed report, then propagates (#4289 U7).
+        interrupt = error
+        report = {"passed": False}
+    protocol.finish_report(report, interrupt)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
+    if interrupt is not None:
+        raise interrupt
     print("outer config", "PASS" if report["passed"] else "FAIL",
           sum(r["passed"] for r in report["rows"]), "/", len(CASES))
     return 0 if report["passed"] else 1

@@ -1944,6 +1944,23 @@ fn remap_virtual_module_imports_to_shadow_inner(
     remapped
 }
 
+/// Split an absolute virtual-module import specifier into its path and its
+/// `?query`/`#fragment` suffix. The `?` inside a Windows verbatim prefix
+/// (`\\?\C:\…`, the spelling `canonicalize` returns there) belongs to the
+/// path, so the search for a suffix starts after it (#4371).
+fn split_specifier_query_suffix(specifier: &str) -> (&str, &str) {
+    const VERBATIM_PREFIX: &str = r"\\?\";
+    let body_start = if specifier.starts_with(VERBATIM_PREFIX) {
+        VERBATIM_PREFIX.len()
+    } else {
+        0
+    };
+    match specifier[body_start..].find(['?', '#']) {
+        Some(index) => specifier.split_at(body_start + index),
+        None => (specifier, ""),
+    }
+}
+
 /// Workspace-sibling tier for `remap_virtual_module_project_imports_to_shadow`
 /// (issue #1700): an absolute import that resolves under `first_party_root`
 /// but OUTSIDE `project_root` is rewritten to its staged absolute spelling
@@ -1967,10 +1984,7 @@ fn workspace_sibling_virtual_specifier(
     if first_party_root == project_root {
         return None;
     }
-    let (path_part, suffix) = specifier
-        .find(['?', '#'])
-        .map(|index| (&specifier[..index], &specifier[index..]))
-        .unwrap_or((specifier, ""));
+    let (path_part, suffix) = split_specifier_query_suffix(specifier);
     let specifier_path = Path::new(path_part);
     if !specifier_path.is_absolute() {
         return None;
@@ -2009,7 +2023,7 @@ fn stable_workspace_virtual_cache_specifier(
     specifier: &str,
     project_root: &Path,
 ) -> Option<String> {
-    if specifier.contains('?') || specifier.contains('#') {
+    if !split_specifier_query_suffix(specifier).1.is_empty() {
         return None;
     }
     let specifier_path = Path::new(specifier);
@@ -2061,7 +2075,7 @@ pub(crate) fn canonical_project_relative_target(
     specifier: &str,
     project_root: &Path,
 ) -> Option<PathBuf> {
-    if specifier.contains('?') || specifier.contains('#') {
+    if !split_specifier_query_suffix(specifier).1.is_empty() {
         return None;
     }
     let specifier_path = Path::new(specifier);
@@ -3801,6 +3815,26 @@ mod tests {
     }
 
     #[test]
+    fn split_specifier_query_suffix_skips_the_verbatim_prefix_question_mark() {
+        assert_eq!(
+            split_specifier_query_suffix(r"\\?\C:\proj\a.ts"),
+            (r"\\?\C:\proj\a.ts", "")
+        );
+        assert_eq!(
+            split_specifier_query_suffix(r"\\?\C:\proj\a.txt?raw"),
+            (r"\\?\C:\proj\a.txt", "?raw")
+        );
+        assert_eq!(
+            split_specifier_query_suffix("/proj/a.txt#frag"),
+            ("/proj/a.txt", "#frag")
+        );
+        assert_eq!(
+            split_specifier_query_suffix("/proj/a.ts"),
+            ("/proj/a.ts", "")
+        );
+    }
+
+    #[test]
     fn workspace_sibling_virtual_import_is_remapped_to_work_root() {
         let workspace = tempfile::tempdir().unwrap();
         let project_root = workspace.path().join("packages/app");
@@ -3821,7 +3855,7 @@ mod tests {
         )
         .unwrap();
 
-        let expected = work_root.join("packages/shared/util.ts");
+        let expected = work_root.join("packages").join("shared").join("util.ts");
         let expected_specifier = serde_json::to_string(&expected.to_string_lossy()).unwrap();
         assert!(
             remapped.contains(&format!("export {{ util }} from {expected_specifier};")),
@@ -3853,7 +3887,9 @@ mod tests {
         let expected_raw = format!(
             "{}?raw",
             work_root
-                .join("packages/shared/payload.txt")
+                .join("packages")
+                .join("shared")
+                .join("payload.txt")
                 .to_string_lossy()
         );
         assert!(
@@ -3876,7 +3912,9 @@ mod tests {
         let expected_frag = format!(
             "{}#frag",
             work_root
-                .join("packages/shared/payload.txt")
+                .join("packages")
+                .join("shared")
+                .join("payload.txt")
                 .to_string_lossy()
         );
         assert!(
@@ -3896,7 +3934,10 @@ mod tests {
             &work_root,
         )
         .unwrap();
-        let expected_bare = work_root.join("packages/shared/payload.txt");
+        let expected_bare = work_root
+            .join("packages")
+            .join("shared")
+            .join("payload.txt");
         assert!(
             bare_remapped
                 .contains(&serde_json::to_string(&expected_bare.to_string_lossy()).unwrap()),

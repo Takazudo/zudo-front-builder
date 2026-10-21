@@ -2220,6 +2220,17 @@ pub(crate) fn accepted_enrolment_set_at_path(
 mod tests {
     use super::*;
 
+    /// A metafile naming one input. Serialized, not spliced, so a Windows
+    /// path's backslashes are JSON-escaped (#4371).
+    fn single_input_metafile(input: &Path) -> String {
+        let mut inputs = serde_json::Map::new();
+        inputs.insert(
+            input.display().to_string(),
+            serde_json::json!({ "imports": [] }),
+        );
+        serde_json::json!({ "inputs": inputs }).to_string()
+    }
+
     const PLAIN_CSS_INPUTS_METAFILE: &[u8] =
         include_bytes!("../tests/fixtures/metafile-plain-css-inputs.json");
     const ZERO_BYTE_CSS_INPUT_METAFILE: &[u8] =
@@ -3668,10 +3679,7 @@ mod tests {
         );
         write(&vendored, "src/internal.ts", "internal");
 
-        let metafile = format!(
-            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
-            vendored.join("src/internal.ts").display()
-        );
+        let metafile = single_input_metafile(&vendored.join("src/internal.ts"));
 
         let result =
             audit_metafile_stage_escape(metafile.as_bytes(), &stage, &[&stage], &first_party);
@@ -3884,10 +3892,7 @@ mod tests {
         let real_file = first_party.join("pages/other.tsx");
         write(&first_party, "pages/other.tsx", "other");
 
-        let metafile = format!(
-            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
-            real_file.display()
-        );
+        let metafile = single_input_metafile(&real_file);
 
         let result =
             audit_metafile_stage_escape(metafile.as_bytes(), &stage, &[&stage], &first_party);
@@ -4180,23 +4185,26 @@ mod tests {
         let first_party = base.join("workspace");
         std::fs::create_dir_all(&first_party).unwrap();
 
-        let ghost = first_party.join("ghost/dir/file.tsx"); // never created
+        let ghost = first_party.join("ghost").join("dir").join("file.tsx"); // never created
         assert!(
             std::fs::canonicalize(ghost.parent().unwrap()).is_err(),
             "precondition: the logical parent must NOT canonicalise"
         );
 
-        let metafile = format!(
-            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
-            ghost.display()
-        );
+        let metafile = single_input_metafile(&ghost);
 
         let result =
             audit_metafile_stage_escape(metafile.as_bytes(), &stage, &[&stage], &first_party);
         let err =
             result.expect_err("an unprovable first-party spelling must be retained as an offender");
         assert!(
-            err.to_string().contains("ghost/dir/file.tsx"),
+            err.to_string().contains(
+                &Path::new("ghost")
+                    .join("dir")
+                    .join("file.tsx")
+                    .display()
+                    .to_string()
+            ),
             "error must name the offender; got {err}"
         );
     }
@@ -4265,10 +4273,7 @@ mod tests {
         let real_file = stage_b.join("pages/mirrored.tsx");
         write(&stage_b, "pages/mirrored.tsx", "mirrored");
 
-        let metafile = format!(
-            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
-            real_file.display()
-        );
+        let metafile = single_input_metafile(&real_file);
 
         let allowed = audit_metafile_stage_escape(
             metafile.as_bytes(),

@@ -105,6 +105,7 @@ def main():
     args = parser.parse_args()
     corpus = args.cases or Path(__file__).with_name("config-cases.json")
     report = {"passed": False, "results": []}
+    interrupt = None
     try:
         corpus_bytes = corpus.read_bytes()
         report["corpus_sha256"] = hashlib.sha256(corpus_bytes).hexdigest()
@@ -117,9 +118,16 @@ def main():
         if report["corpus_sha256_after"] != report["corpus_sha256"]:
             raise ValueError("config corpus bytes changed during execution")
         report["passed"] = all(result["passed"] for result in report["results"])
-    except (OSError, ValueError) as error:
-        report["error"] = f"{type(error).__name__}: {error}"
+    except BaseException as error:
+        if isinstance(error, (OSError, ValueError)) and not hasattr(error, "watchdog_cleanup"):
+            report["error"] = f"{type(error).__name__}: {error}"
+        else:
+            # A cancelled check still leaves a failed report, then propagates (#4289 U7).
+            interrupt = error
+    protocol.finish_report(report, interrupt)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
+    if interrupt is not None:
+        raise interrupt
     for result in report["results"]:
         print(result["engine"], "PASS" if result["passed"] else "FAIL",
               sum(row["passed"] for row in result.get("rows", [])), "/", result["expected_count"])

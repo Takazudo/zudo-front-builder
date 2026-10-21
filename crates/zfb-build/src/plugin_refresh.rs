@@ -444,6 +444,13 @@ mod tests {
         registry
     }
 
+    fn alias_set<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> BTreeSet<PathBuf> {
+        paths
+            .into_iter()
+            .flat_map(|path| RawImportInvalidation::path_aliases(path))
+            .collect()
+    }
+
     #[test]
     fn ownership_map_is_empty_when_no_loader_declares_watch_files() {
         let registry = registry_with(vec![("virtual:a", "p", vec![])]);
@@ -461,7 +468,10 @@ mod tests {
         let b = PathBuf::from("/proj/data/b.json");
         let registry = registry_with(vec![("virtual:data", "p", vec![a.clone(), b.clone()])]);
         let ownership = PluginWatchOwnership::from_registry(&registry);
-        assert_eq!(ownership.watched_paths().len(), 2);
+        // Each file registers its lexical and canonical aliases; on Windows
+        // a root-relative `/proj/...` canonicalizes to a distinct `\\?\C:\...`
+        // spelling, so compare against the alias union instead of a count.
+        assert_eq!(ownership.watched_paths(), alias_set([&a, &b]));
 
         let via_a = ownership.affected(std::slice::from_ref(&a));
         assert_eq!(via_a.len(), 1);
@@ -486,7 +496,7 @@ mod tests {
             ("virtual:b", "plugin-b", vec![shared.clone()]),
         ]);
         let ownership = PluginWatchOwnership::from_registry(&registry);
-        assert_eq!(ownership.watched_paths(), BTreeSet::from([shared.clone()]));
+        assert_eq!(ownership.watched_paths(), alias_set([&shared]));
 
         let affected = ownership.affected(&[shared]);
         let specifiers: BTreeSet<&str> = affected.iter().map(|(s, _)| s.as_str()).collect();
