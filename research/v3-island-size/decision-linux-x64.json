@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-producer-lock-transition",
+  "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+  "baselineSourceSha": "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -32,12 +32,12 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "4.5.4",
+    "packageVersion": "4.6.0",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
+    "pnpmLockSha256": "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
     "cargoLockSha256": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -116,63 +116,46 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 39609635178 at PR merge source dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c (probe head 9a31670040818ab5019dc0fdb2f7f5d1cc45313e) after a reviewed non-additive Cargo.lock transition (Cargo.lock 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 to d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d under reviewed non-additive transition webpki-security-4314 (manifest SHA-256 f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021): 2 new identities, 0 changed records and 2 removed identities, proved against 0cb911138a4153d759c61fec85ec67ca6789aac2:Cargo.lock). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.6.0 ceilings on metric gzip-identity-normalized v1, re-pinned from health run 39628733086 at PR merge source 30e1806d3f0863f4b6726cb36d92ef759084783e (probe head f2e157a5bcb0416c8fa8bc302389fb371994fc67). Every raw and gzipNormalized total is unchanged from the v4.5.4 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 9 actual gzip totals moved by -5 to +3 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 39609635178,
-    "jobId": 119254853191,
-    "sourceSha": "dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c",
+    "runId": 39628733086,
+    "jobId": 119320940279,
+    "sourceSha": "30e1806d3f0863f4b6726cb36d92ef759084783e",
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "cargo-internal-rewire-transition",
+      "outcome": "cargo-producer-lock-transition",
       "packageVersion": "4.5.4",
-      "baselineSourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
-      "baselineRunId": 39589800240,
+      "baselineSourceSha": "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+      "baselineRunId": 39609635178,
       "contract": {
-        "sha256": "2625ccc8c12b7aa398421f4c1ed822ce35fbb7d8873df27206c21e2a601d7197",
-        "commit": "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+        "sha256": "8cfddcedb771c4069f96b81102cc92498798e5a210168f78e040be82fe57cb66",
+        "commit": "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
         "path": "research/v3-island-size/decision-linux-x64.json"
-      }
-    },
-    "cargoTransition": {
-      "oldSha": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
-      "newSha": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
-      "added": ["rustls-webpki@0.103.16", "webpki-roots@1.0.10"],
-      "changed": [],
-      "removed": ["rustls-webpki@0.103.15", "webpki-roots@1.0.7"],
-      "oldLockSource": {
-        "commit": "0cb911138a4153d759c61fec85ec67ca6789aac2",
-        "path": "Cargo.lock",
-        "sha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2"
-      },
-      "review": {
-        "id": "webpki-security-4314",
-        "manifestSha256": "f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021",
-        "sourceSha": "0cb911138a4153d759c61fec85ec67ca6789aac2"
       }
     },
     "actualGzip": {
       "workspace": {
         "blog-theme": 22352,
-        "event-only": 22209,
-        "json-api": 22300,
+        "event-only": 22210,
+        "json-api": 22295,
         "model": 22215,
-        "multi-island": 22299,
+        "multi-island": 22301,
         "no-island": 0,
         "scalar-signal": 22228,
-        "show-for": 22286
+        "show-for": 22288
       },
       "packed": {
-        "blog-theme": 22368,
-        "event-only": 22216,
-        "json-api": 22311,
-        "model": 22224,
+        "blog-theme": 22364,
+        "event-only": 22215,
+        "json-api": 22314,
+        "model": 22223,
         "multi-island": 22307,
         "no-island": 0,
         "scalar-signal": 22217,
-        "show-for": 22302
+        "show-for": 22298
       }
     },
-    "note": "Cargo producer-lock transition run at v4.5.4 at PR merge source dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c (probe head 9a31670040818ab5019dc0fdb2f7f5d1cc45313e). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed non-additive Cargo.lock transition at unchanged v4.5.4 (Cargo.lock 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 to d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d under reviewed non-additive transition webpki-security-4314 (manifest SHA-256 f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021): 2 new identities, 0 changed records and 2 removed identities, proved against 0cb911138a4153d759c61fec85ec67ca6789aac2:Cargo.lock); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Release probe PR #4377 run for v4.6.0 at PR merge source 30e1806d3f0863f4b6726cb36d92ef759084783e (probe head f2e157a5bcb0416c8fa8bc302389fb371994fc67). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.5.4 contract; 9 actual gzip totals moved by -5 to +3 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

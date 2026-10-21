@@ -1,0 +1,16 @@
+---
+title: v4.6.0
+sidebar_position: 156
+---
+
+# v4.6.0
+
+Released: 2026-10-22
+
+## Bug Fixes
+
+- Build: an island-free site prints the `no SDK Island boundary targets found; skipping islands bundle` info line once per build again, instead of twice since v4.5.4. Island diagnostics now come only from the emission pass, not from the build-identity pass (7eacab4).
+- Build: pnpm store packages are staged into the shadow only for importers that a page, component, layout or other entry can reach. Before, imports in unrelated top-level directories such as `scripts/`, `tests/` or `e2e/` copied their whole dependency closures into the shadow. Reachability also covers a root source file imported as `../site.config` or through a wildcard root alias (`@/*` → `./*`), and a dynamic `import('<literal>' + x)` (f5487d2, 564d02a).
+- Windows: the SSR shadow parent uses the ordinary drive spelling (`C:\…`) instead of a `\\?\` verbatim path, which esbuild read as a protocol-relative URL in its POSIX form (a62d1a6).
+- Windows: plugin virtual modules no longer fail with `no in-memory source for file:///?/C:/…/.zfb-virtual-*.mjs`. esbuild now receives the ordinary drive spelling of the virtual module target (809d3d7).
+- Security: updates `rustls` to 0.23.46, `rustls-webpki` to 0.103.16 (RUSTSEC-2026-0382) and `webpki-roots` to 1.0.10 (RUSTSEC-2026-0381) in the CLI's HTTPS client (bda633b, 9a31670).
