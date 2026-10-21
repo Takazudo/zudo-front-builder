@@ -2,13 +2,25 @@
 
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
-Current snapshot: 2026-10-20 10:40 UTC (five-lane state from 4336), `main` `013b0ab` after PRs 4323, 4328, 4329 and 4324;
+Current snapshot: 2026-10-21 03:00 UTC, `main` `cd09e6c` after the v4.5.4 release, PR 4352 and PR 4358;
 integration/CI triage owner: the project integration manager (one fixed owner). The "Round record
-at main `21ef7c4`" section and everything from "Historical checkpoint 4294" onward are earlier
-records, kept as evidence; where they say "draft", "candidate" or "pending", the current roadmap
-below wins.
+at main `013b0ab`", "Round record at main `21ef7c4`" and everything from "Historical checkpoint 4294"
+onward are earlier records, kept as evidence; where they say "draft", "candidate" or "pending",
+the current roadmap below wins.
 
-## Current roadmap (main `013b0ab`, updated 2026-10-20 10:40 UTC)
+## Current roadmap (main `cd09e6c`, updated 2026-10-21 03:00 UTC)
+
+Source: `git ls-remote`, the GitHub API and the [4336 coordination issue](https://github.com/Takazudo/zudo-front-builder/issues/4336).
+Where this section and the older sections below disagree, this section wins.
+
+| Lane | Exact head | State and evidence | Held |
+| --- | --- | --- | --- |
+| `main` (production boundary) | `cd09e6cdfe9e2d9bb8f5bef34eacca4ef4dc73e1`; latest tag `v4.5.4` on `ea90fe12` | v4.5.4 published (all 11 packages on `latest`). Since the tag: PR 4352 (`7852d60b`, test-only) and PR 4358 (`cd09e6c`, fixes for 4353 and 4354). Push CI at `cd09e6c`: binary smoke/scaffold and deploy success, **health red** ([run 39497401813](https://github.com/Takazudo/zudo-front-builder/actions/runs/39497401813)) on a 5 s vitest timeout in an island-size end-to-end case, tracked in [4364](https://github.com/Takazudo/zudo-front-builder/issues/4364) with the fix in [4365](https://github.com/Takazudo/zudo-front-builder/pull/4365). Health at `7852d60b` and `ea90fe12` was green | Release, publish, tag; admission or live contract change |
+| Experimental runtime (direct V8, Rolldown) | `base/4301-direct-v8` = `a56c91f5f1abc83557ea57cfe1e75f009a61374e` | After `f5c4b48`: 4361 (`268c3402`, local-evidence tooling) and 4340 (`a56c91f`, Rolldown Windows verbatim entry). CI on `a56c91f` itself is pending. P2a: paired Linux+Darwin stage passed and `--apply` ran on the Mac; draft 4362 carries the applied contracts. Open drafts on this base: 4341, 4344, 4346, 4359, 4360, 4362; 4345 is stacked on the 4340 branch | Main integration of direct V8; lock admission; default-engine switch |
+| Security stage | `base/4314-security-darwin-evidence` = `7e79458304878d51bafd29e24ec25e93b84893ca` | Unchanged. Drafts 4332 and 4317. Security Audit stays red on `main` (rustls) | Live apply; admission; 4317 merge |
+| Native qualification | main `7852d60b` | 4294: native macOS arm64 full workspace 6877/6877 passed, doctests green, first attempt ([receipt](https://github.com/Takazudo/zudo-front-builder/issues/4294#issuecomment-6301282943)). 4133: not reproduced in 5 predeclared libtest/nextest runs. 4231 item (2): rows a, b, c, g, h pass on the Mac; d (Darwin x64), e and f (Windows) are not run | Sharding drafts 4305/4325; darwin-x64 |
+
+## Round record at main `013b0ab` (2026-10-20, before the v4.5.4 release)
 
 ### Five-lane state (2026-10-20 10:40 UTC, from the 4336 issue body)
 
@@ -18,7 +30,7 @@ checked there with `git fetch` and the GitHub API. The batch plan is
 with owners assigned in [ZFB-S006](https://github.com/Takazudo/zudo-front-builder/issues/4336#issuecomment-6288873766).
 The Codex takeover request was withdrawn
 ([correction](https://github.com/Takazudo/zudo-front-builder/issues/4336#issuecomment-6288684799));
-the existing owners continue. Where this section and the older sections below disagree, this section wins.
+the existing owners continue.
 
 | Lane | Exact head | State and evidence | Held |
 | --- | --- | --- | --- |
