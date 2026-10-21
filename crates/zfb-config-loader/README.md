@@ -12,7 +12,10 @@ JSON and leaves deserializing into a concrete config struct to the caller.
 - Default builds enable `embed_v8`. The config is bundled with the pinned
   esbuild binary and evaluated in-process with the embedded V8 host from
   `zfb-render`. No runtime Node process is required.
-- Slim builds (`--no-default-features`) compile out the V8 evaluator and fall
+- Source builds with only the non-default `direct-v8` feature evaluate the
+  config in-process with the direct V8 host instead, creating a fresh host
+  per call.
+- Slim builds (`--no-default-features` with neither V8 feature) compile out the V8 evaluator and fall
   back to a `node` subprocess. This path requires `node` on `PATH`.
 - esbuild uses `--platform=neutral`; `node:*` imports in `zfb.config.ts`
   become bundle-time errors instead of hidden runtime dependencies.

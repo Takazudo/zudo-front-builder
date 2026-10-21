@@ -19,8 +19,9 @@ The orchestrator ([`render`](src/render.rs)) is intentionally thin: it owns a `M
 - **Loader** — `read_to_string`, `ResolverError`
 - **Render orchestrator** — `Renderer<H>`, `RenderRequest`
 - **Runtime host trait** — `RenderHost`, `ModuleHandle`
-- **Embedded V8 host** (`embed_v8` feature, default-on) — `EmbeddedV8RenderHost`, `BundleModuleLoader`, `AliasHook`, `VirtualModuleHook`, `PluginRegistryHooks`, `HttpRequestLike`, `HttpResponseLike`
-- **Config evaluator** (`embed_v8` feature) — `ThreadedConfigEvaluator`, `ConfigEvalError`
+- **Embedded V8 host** (`embed_v8` feature, default-on; with only `direct-v8`, the same names re-export the direct host from `zfb-js-host`) — `EmbeddedV8RenderHost`, `BundleModuleLoader`, `AliasHook`, `VirtualModuleHook`, `PluginRegistryHooks`, `HttpRequestLike`, `HttpResponseLike`
+- **Config evaluator** (`embed_v8` or `direct-v8` feature) — `ThreadedConfigEvaluator`, `ConfigEvalError`
+- **Process startup** (`embed_v8` or `direct-v8` feature) — `initialize_v8`, to call on the main thread before any host thread starts
 
 Additional public modules: [`paths`](src/paths.rs) (`paths()` runtime resolver), [`paths_extract`](src/paths_extract.rs) (static literal extractor), [`sourcemap`](src/sourcemap.rs) (V8 frame → original TSX line re-projection). SSR uses the owned `@takazudo/zfb/zudo-react` runtime.
 
@@ -82,6 +83,7 @@ What `fetch` and Web Crypto are allowed to do inside this host — and how build
 | Feature | Default | Effect |
 | --- | --- | --- |
 | `embed_v8` | yes | Pulls in `deno_core 0.399` + `tokio`; enables `EmbeddedV8RenderHost` and `ThreadedConfigEvaluator`. |
+| `direct-v8` | no | Uses the direct V8 host from `zfb-js-host` (`v8` 147.4.0, no `deno_core`). Requires `ZFB_V8_ICU_DATA` at compile time. When combined with `embed_v8`, the `deno_core` host still renders; both share one V8 platform. |
 | *(no feature)* | — | Keeps only the SWC pipeline + loader + trait. Useful for CI images that only need the compile step. |
 
 `deno_core` is pinned to `=0.399.0` and acts as a compatibility anchor tied to the workspace's `rust-toolchain.toml`. Bumping is a coordinated change — update the pin in lock-step with the toolchain.

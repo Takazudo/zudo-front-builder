@@ -46,6 +46,8 @@ The V8 engine is gated behind a **default-on** cargo feature called `embed_v8` o
 - `cargo build --workspace` compiles everything including V8 exactly once and caches the result.
 - If you want to build or test workspace members that don't touch rendering, use `-p <crate>` to avoid pulling in the V8 dependency graph unnecessarily.
 
+A second, non-default feature, `direct-v8`, selects the opt-in direct V8 host in `zfb-js-host` instead of `deno_core`. Build it with `--no-default-features --features direct-v8` and a prepared `ZFB_V8_ICU_DATA`; see [BUILDING.md](./BUILDING.md#direct-v8-developer-tooling). Code gated on V8 availability uses `cfg(any(feature = "embed_v8", feature = "direct-v8"))`, so check both features when you touch such a gate.
+
 ### Speeding up local builds with sccache
 
 [sccache](https://github.com/mozilla/sccache) is a compiler cache that wraps `rustc` and stores compilation artefacts in a local (or remote S3/GCS) cache. For zfb development its biggest win is the V8 layer: once V8 is in the sccache store, switching branches or cleaning `target/` no longer triggers a V8 recompile.
