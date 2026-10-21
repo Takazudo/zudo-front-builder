@@ -1380,10 +1380,11 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts, both cited at c74faf45 and
-// moved by the paired direct-V8 cargo-internal-rewire (ZFB-L2-024 step 2): for
-// Linux, the rustls-security-4314 producer-lock transition (#4314); for Darwin,
-// the owner-attested local v4.5.4 release-bump (ZFB-L2-022).
+// Exact immediate predecessors of the live contracts: for Linux, the paired
+// direct-V8 cargo-internal-rewire (ZFB-L2-024 step 2), cited at 9a316700 and moved
+// by the webpki-security-4314 producer-lock transition (#4314); for Darwin, the
+// owner-attested local v4.5.4 release-bump (ZFB-L2-022), cited at c74faf45 and
+// moved by that paired rewire.
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -1391,13 +1392,13 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "c74faf450160b9eec6c995b5223e172209d62b14",
-    sha256: "386bf4ab65cf4e909eb1e741e670fade4c60e141d325cb626350397a8eeb2191",
-    fixture: "fixtures/island-size-linux-x64-v4.5.4-rustls.json",
-    outcome: "cargo-producer-lock-transition",
+    commit: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+    sha256: "2625ccc8c12b7aa398421f4c1ed822ce35fbb7d8873df27206c21e2a601d7197",
+    fixture: "fixtures/island-size-linux-x64-v4.5.4-v8rewire.json",
+    outcome: "cargo-internal-rewire-transition",
     packageVersion: "4.5.4",
-    baselineSourceSha: "949f4cccbdd48ed6d8c8208ec51e93c1dee37b08",
-    baselineRunId: 39570410628,
+    baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
+    baselineRunId: 39589800240,
   },
   {
     file: "decision.json",
@@ -1771,25 +1772,32 @@ describe("live contracts preserve released evidence and authentic predecessors",
   // The paired direct-V8 rewire (ZFB-L2-024 step 2): Linux from health run
   // 39589800240 at merge source 69192eda, Darwin from owner-attested local receipt
   // 9ad4eeaa, both measured at #4368 head c74faf45 with no actual gzip change.
-  for (const { file, predecessorFixture, closure } of [
+  // Each rewired contract is frozen verbatim, as committed at 9a316700.
+  for (const { file, predecessorFixture, rewiredFixture, rewiredSha256, closure } of [
     {
       file: "decision-linux-x64.json",
       predecessorFixture: "fixtures/island-size-linux-x64-v4.5.4-rustls.json",
+      rewiredFixture: "fixtures/island-size-linux-x64-v4.5.4-v8rewire.json",
+      rewiredSha256: "2625ccc8c12b7aa398421f4c1ed822ce35fbb7d8873df27206c21e2a601d7197",
       closure: "x86_64-unknown-linux-gnu",
     },
     {
       file: "decision.json",
       predecessorFixture: "fixtures/island-size-darwin-v4.5.4-release.json",
+      rewiredFixture: "fixtures/island-size-darwin-v4.5.4-v8rewire.json",
+      rewiredSha256: "7de9bdfea2a7642aa931f060a8c2764bcece479fa61dcbed4ede98025393b41e",
       closure: "aarch64-apple-darwin",
     },
   ]) {
     it(
-      "moves the live " +
+      "moved the " +
         file +
-        " from its frozen predecessor only by the direct-V8 cargo-internal-rewire",
+        " contract from its frozen predecessor only by the direct-V8 cargo-internal-rewire",
       () => {
         const predecessor = JSON.parse(readFileSync(join(testDir, predecessorFixture), "utf8"));
-        const live = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
+        const blob = readFileSync(join(testDir, rewiredFixture));
+        expect(sha(blob)).toBe(rewiredSha256);
+        const live = JSON.parse(blob.toString("utf8"));
         expect(live.outcome).toBe("cargo-internal-rewire-transition");
         expect(predecessor.toolchain.cargoLockSha256).toBe(
           "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
@@ -1843,6 +1851,62 @@ describe("live contracts preserve released evidence and authentic predecessors",
             sourceSha: "69192eda2f298444be1043da02d7bc70a8c035d4",
           });
         }
+        expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
+        expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+      },
+    );
+  }
+
+  // The webpki-security-4314 transition (#4314): Linux from health run
+  // 39609635178 at merge source dbf93a6c (probe head 9a316700).
+  for (const { file, before, evidence } of [
+    {
+      file: "decision-linux-x64.json",
+      before: "fixtures/island-size-linux-x64-v4.5.4-v8rewire.json",
+      evidence: {
+        baselineSourceSha: "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
+        event: "ci",
+        sourceSha: "dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c",
+        runId: 39609635178,
+        jobId: 119254853191,
+      },
+    },
+  ]) {
+    it(
+      "moves the live " +
+        file +
+        " from its frozen predecessor only by the webpki-security-4314 transition",
+      () => {
+        const predecessor = JSON.parse(readFileSync(join(testDir, before), "utf8"));
+        const live = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
+        expect(live.outcome).toBe("cargo-producer-lock-transition");
+        expect(predecessor.toolchain.cargoLockSha256).toBe(
+          "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+        );
+        expect(live.toolchain.cargoLockSha256).toBe(
+          "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
+        );
+        expect(live.baselineEvidence.cargoTransition).toEqual({
+          oldSha: predecessor.toolchain.cargoLockSha256,
+          newSha: live.toolchain.cargoLockSha256,
+          added: ["rustls-webpki@0.103.16", "webpki-roots@1.0.10"],
+          changed: [],
+          removed: ["rustls-webpki@0.103.15", "webpki-roots@1.0.7"],
+          oldLockSource: {
+            commit: "0cb911138a4153d759c61fec85ec67ca6789aac2",
+            path: "Cargo.lock",
+            sha256: predecessor.toolchain.cargoLockSha256,
+          },
+          review: {
+            id: "webpki-security-4314",
+            manifestSha256: "f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021",
+            sourceSha: "0cb911138a4153d759c61fec85ec67ca6789aac2",
+          },
+        });
+        expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
+        const { baselineSourceSha, ...identity } = evidence;
+        expect(live.baselineSourceSha).toBe(baselineSourceSha);
+        expect(live.baselineEvidence).toMatchObject(identity);
         expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
         expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
       },

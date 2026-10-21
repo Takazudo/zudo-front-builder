@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-internal-rewire-transition",
+  "outcome": "cargo-producer-lock-transition",
   "selectedOptimizations": [],
-  "baselineSourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
+  "baselineSourceSha": "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -38,7 +38,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
-    "cargoLockSha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2"
+    "cargoLockSha256": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,81 +116,39 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 39589800240 at PR merge source 69192eda2f298444be1043da02d7bc70a8c035d4 (probe head c74faf450160b9eec6c995b5223e172209d62b14) after a reviewed internal Cargo.lock rewire (Cargo.lock 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd to 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-js-host@0.0.0 -[] +[\"deno_core\"]); every other [[package]] record and the header are byte-identical, declared in prototypes/direct-v8/admission/rewire-declaration.json (SHA-256 ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba), proved against Cargo.lock at commit f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410 (SHA-256 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd); the zfb producer closure for x86_64-unknown-linux-gnu keeps 497 rows unchanged, adds 0 and changes 1 internal row(s) with no external drift; declared edges to unchanged external records: zfb-js-host@0.0.0 deno_core -> deno_core@0.399.0 (SHA-256 1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498)). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.5.4 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 39609635178 at PR merge source dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c (probe head 9a31670040818ab5019dc0fdb2f7f5d1cc45313e) after a reviewed non-additive Cargo.lock transition (Cargo.lock 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 to d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d under reviewed non-additive transition webpki-security-4314 (manifest SHA-256 f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021): 2 new identities, 0 changed records and 2 removed identities, proved against 0cb911138a4153d759c61fec85ec67ca6789aac2:Cargo.lock). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 39589800240,
-    "jobId": 119187618804,
-    "sourceSha": "69192eda2f298444be1043da02d7bc70a8c035d4",
+    "runId": 39609635178,
+    "jobId": 119254853191,
+    "sourceSha": "dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c",
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "cargo-producer-lock-transition",
+      "outcome": "cargo-internal-rewire-transition",
       "packageVersion": "4.5.4",
-      "baselineSourceSha": "949f4cccbdd48ed6d8c8208ec51e93c1dee37b08",
-      "baselineRunId": 39570410628,
+      "baselineSourceSha": "c74faf450160b9eec6c995b5223e172209d62b14",
+      "baselineRunId": 39589800240,
       "contract": {
-        "sha256": "386bf4ab65cf4e909eb1e741e670fade4c60e141d325cb626350397a8eeb2191",
-        "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
+        "sha256": "2625ccc8c12b7aa398421f4c1ed822ce35fbb7d8873df27206c21e2a601d7197",
+        "commit": "9a31670040818ab5019dc0fdb2f7f5d1cc45313e",
         "path": "research/v3-island-size/decision-linux-x64.json"
       }
     },
-    "cargoRewire": {
-      "oldSha": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
-      "newSha": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+    "cargoTransition": {
+      "oldSha": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+      "newSha": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
+      "added": ["rustls-webpki@0.103.16", "webpki-roots@1.0.10"],
+      "changed": [],
+      "removed": ["rustls-webpki@0.103.15", "webpki-roots@1.0.7"],
       "oldLockSource": {
-        "commit": "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+        "commit": "0cb911138a4153d759c61fec85ec67ca6789aac2",
         "path": "Cargo.lock",
-        "sha256": "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd"
+        "sha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2"
       },
-      "newLockSource": {
-        "sha256": "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
-        "commit": "c74faf450160b9eec6c995b5223e172209d62b14",
-        "path": "Cargo.lock"
-      },
-      "declaration": {
-        "path": "prototypes/direct-v8/admission/rewire-declaration.json",
-        "sha256": "ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba"
-      },
-      "producer": "zfb",
-      "manifestsAtCommit": "c74faf450160b9eec6c995b5223e172209d62b14",
-      "added": [],
-      "changed": [
-        {
-          "id": "zfb-js-host@0.0.0",
-          "manifest": "crates/zfb-js-host/Cargo.toml",
-          "manifestSha256": "a61b22ad5e1a23732fbefc81f30b30c6bbc39e0968fa7d4467d33646fdfeba2c",
-          "oldSha256": "5f02be259fc6ee127ef8ee2da7f179f41c9bc2636f22d036da2b800e32987d3b",
-          "newSha256": "dc29c5474a924913310f10979e35704ade131df30d7db0eab802e6a182899a82",
-          "removedDependencies": [],
-          "addedDependencies": ["deno_core"]
-        }
-      ],
-      "removed": [],
-      "externalEdges": [
-        {
-          "from": "zfb-js-host@0.0.0",
-          "dependency": "deno_core",
-          "to": "deno_core@0.399.0",
-          "sha256": "1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498"
-        }
-      ],
-      "closure": {
-        "target": "x86_64-unknown-linux-gnu",
-        "oldSha256": "01d504e431cc263d3dc1f7528982aad2b80d3c9d37c5285b40fb399b2e73c278",
-        "newSha256": "4383f6184c5047538276f20caab7283e302efac43401401070499e027797a276",
-        "rows": {
-          "old": 498,
-          "new": 498,
-          "unchanged": 497
-        },
-        "added": [],
-        "changed": [
-          {
-            "id": "zfb-js-host@0.0.0",
-            "from": ["default", "services"],
-            "to": ["default", "deno-platform", "services", "v8-platform"]
-          }
-        ]
+      "review": {
+        "id": "webpki-security-4314",
+        "manifestSha256": "f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021",
+        "sourceSha": "0cb911138a4153d759c61fec85ec67ca6789aac2"
       }
     },
     "actualGzip": {
@@ -215,6 +173,6 @@
         "show-for": 22302
       }
     },
-    "note": "Cargo internal-rewire transition run at v4.5.4 at PR merge source 69192eda2f298444be1043da02d7bc70a8c035d4 (probe head c74faf450160b9eec6c995b5223e172209d62b14). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed internal Cargo.lock rewire at unchanged v4.5.4 (Cargo.lock 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd to 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-js-host@0.0.0 -[] +[\"deno_core\"]); every other [[package]] record and the header are byte-identical, declared in prototypes/direct-v8/admission/rewire-declaration.json (SHA-256 ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba), proved against Cargo.lock at commit f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410 (SHA-256 563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd); the zfb producer closure for x86_64-unknown-linux-gnu keeps 497 rows unchanged, adds 0 and changes 1 internal row(s) with no external drift; declared edges to unchanged external records: zfb-js-host@0.0.0 deno_core -> deno_core@0.399.0 (SHA-256 1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498)); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Cargo producer-lock transition run at v4.5.4 at PR merge source dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c (probe head 9a31670040818ab5019dc0fdb2f7f5d1cc45313e). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed non-additive Cargo.lock transition at unchanged v4.5.4 (Cargo.lock 0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2 to d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d under reviewed non-additive transition webpki-security-4314 (manifest SHA-256 f7be894d377eb9224871eaefc73bf4fdb774318e144000e5d96145d090508021): 2 new identities, 0 changed records and 2 removed identities, proved against 0cb911138a4153d759c61fec85ec67ca6789aac2:Cargo.lock); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
