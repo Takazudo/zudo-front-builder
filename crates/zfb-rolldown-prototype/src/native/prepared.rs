@@ -136,7 +136,13 @@ impl Request {
                     }
                     "--keep-names" => options.keep_names = Some(true),
                     "--minify" => {
-                        options.minify = Some(rolldown_common::RawMinifyOptions::Bool(true))
+                        options.minify = Some(rolldown_common::RawMinifyOptions::Bool(true));
+                        // Rolldown's compressor drops statements after an unconditional
+                        // top-level throw, re-hoisting only var bindings while keeping the
+                        // export entries, so an exported const loses its declaration
+                        // (#4336 ZFB-RD-015). Esbuild bundles top-level let/const/class as
+                        // var in every mode; only this mode runs the compressor.
+                        options.top_level_var = Some(true);
                     }
                     "--sourcemap=linked" => {
                         options.sourcemap = Some(rolldown_common::SourceMapType::File)

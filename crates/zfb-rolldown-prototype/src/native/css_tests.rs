@@ -106,17 +106,11 @@ fn css_explicitly_loaded_as_text_or_file_remains_a_resource() {
 }
 
 /// The lifecycle observer's failed-replacement page: an unconditional
-/// top-level throw in a module whose namespace the entry exports.
-fn top_level_throw_fixture() -> Fixture {
+/// top-level throw in a module whose namespace `entry` exports.
+fn top_level_throw_fixture(entry: &str) -> Fixture {
     let fixture = Fixture::new();
     fs::create_dir(fixture.0.join("pages")).unwrap();
-    fs::write(
-        fixture.0.join("entry.js"),
-        "import * as page from './pages/index.js';\n\
-         export const routes = { '/': page };\n\
-         export default { fetch() { return routes; } };\n",
-    )
-    .unwrap();
+    fs::write(fixture.0.join("entry.js"), entry).unwrap();
     fs::write(
         fixture.0.join("pages/index.js"),
         "throw new Error('CLI_REPLACEMENT_REJECTED');\n\
@@ -126,27 +120,52 @@ fn top_level_throw_fixture() -> Fixture {
     fixture
 }
 
-#[test]
-fn unminified_top_level_throw_keeps_exported_bindings() {
-    let fixture = top_level_throw_fixture();
-    run_prepared(&fixture.command()).unwrap();
-    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
-    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
-    // The pinned DCE-only pass emitted `export { routes }` with no declaration.
-    assert!(bundle.contains("const routes ="), "{bundle}");
+const ROUTES_ENTRY: &str = "import * as page from './pages/index.js';\n\
+     export const routes = { '/': page };\n\
+     export default { fetch() { return routes; } };\n";
+
+/// Runs the emitted bundle. An export without a declaration fails at link
+/// time with a SyntaxError, before the page's throw could run.
+fn assert_bundle_throws_the_page_error(fixture: &Fixture, bundle: &str) {
+    // Node is given the ordinary spelling of the canonical (on Windows,
+    // verbatim) fixture directory.
+    let cwd = super::windows_path::for_rolldown(fixture.0.to_str().unwrap()).unwrap();
+    let output = Command::new("node")
+        .current_dir(cwd.as_ref())
+        .arg("out/bundle.mjs")
+        .output()
+        .unwrap_or_else(|e| panic!("these tests run the emitted bundle with node on PATH: {e}"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{bundle}");
+    assert!(
+        stderr.contains("Error: CLI_REPLACEMENT_REJECTED") && !stderr.contains("SyntaxError"),
+        "{stderr}\n{bundle}"
+    );
 }
 
 #[test]
-fn minified_top_level_throw_keeps_rolldowns_dce_pass() {
-    let fixture = top_level_throw_fixture();
+fn unminified_top_level_throw_keeps_exported_bindings() {
+    let fixture = top_level_throw_fixture(ROUTES_ENTRY);
+    run_prepared(&fixture.command()).unwrap();
+    let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
+    // The pinned DCE-only pass emitted `export { routes }` with no declaration.
+    assert!(bundle.contains("const routes ="), "{bundle}");
+    assert_bundle_throws_the_page_error(&fixture, &bundle);
+}
+
+#[test]
+fn minified_top_level_throw_keeps_exported_bindings() {
+    let fixture = top_level_throw_fixture(&format!(
+        "{ROUTES_ENTRY}\
+         export let count = 1;\n\
+         export class Kept {{}}\n\
+         export function handler() {{ return count; }}\n\
+         export {{ shared }} from './lib.js';\n"
+    ));
+    fs::write(fixture.0.join("lib.js"), "export const shared = 2;\n").unwrap();
     let mut cmd = fixture.command();
     cmd.arg("--minify");
     run_prepared(&cmd).unwrap();
     let bundle = fs::read_to_string(fixture.0.join("out/bundle.mjs")).unwrap();
-    // Negative control: --minify keeps Rolldown's DCE, which at the pin still
-    // exports `routes` without declaring it (#4336 ZFB-RD-003/004). A pin
-    // that fixes it upstream fails here; revisit the unminified opt-out then.
-    assert!(bundle.contains("CLI_REPLACEMENT_REJECTED"), "{bundle}");
-    assert!(bundle.contains("routes}"), "{bundle}");
-    assert!(!bundle.contains("routes="), "{bundle}");
+    assert_bundle_throws_the_page_error(&fixture, &bundle);
 }
