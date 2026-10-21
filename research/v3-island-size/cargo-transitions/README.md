@@ -116,3 +116,7 @@ node -e 'console.log(require("./research/v3-island-size/cargo-transitions/rolldo
 `--added-packages` lists new identities only for this reviewed mode; changed and removed records are bound separately by the exact manifest. The default invocation remains additive-only. The rebaseline scripts still recompute saved bytes, require unchanged raw and gzipNormalized totals and fixture set, match source/tool/platform/dependency identities, and allow only the existing Cargo hash/evidence keys to move. Neither ceilings nor allowances may move. Each platform remains independently pending until its own native evidence passes. No Linux-only command in this task repins Darwin.
 
 The commands above now use the immutable `--old-cargo-ref` input from #4219. The original native runs used the tracked file as recorded in their historical contracts; those receipts are unchanged. `--old-cargo-lock` is optional byte-for-byte corroboration, and cannot replace the immutable source reference.
+
+## Exact rustls security replacement (#4314)
+
+[RUSTLS-4314.md](RUSTLS-4314.md) records the separately approved rustls 0.23.45 → 0.23.46 lock pair. Its own exact-byte decision checker is selected through the same reviewed-transition entry point. It does not broaden this historical #318 authorization or apply either live platform contract.
