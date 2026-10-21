@@ -85,6 +85,22 @@
 // allowed. External inventory and features remain unchanged. See
 // research/v3-island-size/EXISTING-EXTERNAL-EDGES.md; capability is not activation.
 //
+// `--reason cargo-removal` (#4388, schemaVersion 3) records one reviewed
+// Cargo.lock move that only removes: `[[package]]` records leave the lock and
+// existing unpublished workspace records lose dependency edges; nothing is
+// added and no external record changes (not even a dependency-spelling
+// rewrite such as `"x 1.2"` -> `"x"`). It is declared up front
+// (`--removal-declaration`, REMOVAL_DECLARATION_SCHEMA below) with every removed
+// record's exact bytes and every changed record's before/after bytes and
+// removed edges, and proven by proveCargoRemoval against the old lock's blob,
+// the checkout's new lock, the same internal-manifest rules as
+// cargo-internal-rewire and two default-feature producer closure receipts that
+// must be identical apart from an explicitly declared (possibly empty) set of
+// internal rows leaving. It reuses the cargo-internal-rewire machinery (old
+// lock from `--old-cargo-ref`, `--new-cargo-ref`, closure receipts, paired
+// `--stage` / `--apply` with a bound declaration digest) and writes only
+// CARGO_REMOVAL_MOVEMENT.
+//
 // `--reason dependency-graph` (#4218, schemaVersion 3) re-pins a reviewed move
 // of the pnpm dependency graph from a fresh artifact measured at a checkout
 // that already carries the new graph: the artifact's fingerprint must equal the
@@ -231,6 +247,12 @@ export const REASONS = Object.freeze({
     requires: 3,
     accepts: [3],
   },
+  "cargo-removal": {
+    outcome: "cargo-removal-transition",
+    heading: "cargo-removal transition",
+    requires: 3,
+    accepts: [3],
+  },
 });
 
 export const FINGERPRINT_HELPER_REASON = "fingerprint-helper";
@@ -239,6 +261,16 @@ export const CARGO_INTERNAL_REWIRE_REASON = "cargo-internal-rewire";
 // The only keys a cargo-internal-rewire transition may write; baselineEvidence
 // is replaced as a whole and carries the `cargoRewire` transition record.
 export const CARGO_INTERNAL_REWIRE_MOVEMENT = Object.freeze([
+  "toolchain.cargoLockSha256",
+  "outcome",
+  "baselineSourceSha",
+  "platformStatus",
+  "baselineEvidence",
+]);
+export const CARGO_REMOVAL_REASON = "cargo-removal";
+// The only keys a cargo-removal transition may write; baselineEvidence is
+// replaced as a whole and carries the `cargoRemoval` transition record.
+export const CARGO_REMOVAL_MOVEMENT = Object.freeze([
   "toolchain.cargoLockSha256",
   "outcome",
   "baselineSourceSha",
@@ -276,12 +308,14 @@ export const SOURCE_BOUND_REASONS = Object.freeze([
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
+  CARGO_REMOVAL_REASON,
 ]);
 // Reasons that are applied only once both platforms are staged.
 export const PAIRED_REASONS = Object.freeze([
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
+  CARGO_REMOVAL_REASON,
 ]);
 // Reasons that regenerate lock-fingerprint-inventory.json from the checkout helper.
 export const INVENTORY_REASONS = Object.freeze([
@@ -922,6 +956,19 @@ export const REWIRE_ARGS = Object.freeze([
   "new-closure",
   "new-cargo-ref",
 ]);
+// cargo-removal's arguments: its own declaration plus the closure receipts and
+// new-lock citation it shares with cargo-internal-rewire.
+export const REMOVAL_ARGS = Object.freeze([
+  "removal-declaration",
+  "old-closure",
+  "new-closure",
+  "new-cargo-ref",
+]);
+// The declaration-bound Cargo reasons and the arguments each one owns.
+const DECLARED_CARGO_ARGS = Object.freeze({
+  [CARGO_INTERNAL_REWIRE_REASON]: REWIRE_ARGS,
+  [CARGO_REMOVAL_REASON]: REMOVAL_ARGS,
+});
 // Corroboration only: the old lock's source of truth is `--old-cargo-ref`.
 export const OPTIONAL_CARGO_ARGS = Object.freeze(["old-cargo-lock", "reviewed-cargo-transition"]);
 // Optional: cites the commit storing the new lock; the checkout's bytes are the input.
@@ -930,6 +977,7 @@ export const OLD_CARGO_LOCK_PATH = "Cargo.lock";
 const LOCK_MOVING_REASONS = Object.freeze([
   CARGO_PRODUCER_LOCK_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
+  CARGO_REMOVAL_REASON,
 ]);
 // The only keys a cargo-producer-lock transition may write; baselineEvidence is
 // replaced as a whole.
@@ -1005,30 +1053,35 @@ function checkSharedCargoArgs(values) {
   parseOldCargoRef(values["old-cargo-ref"]);
 }
 
-// cargo-internal-rewire takes the shared Cargo arguments plus REWIRE_ARGS
-// (all but OPTIONAL_REWIRE_ARGS required); REWIRE_ARGS belong to it alone.
+// The declaration-bound reasons (cargo-internal-rewire, cargo-removal) take the
+// shared Cargo arguments plus their own DECLARED_CARGO_ARGS (all but
+// OPTIONAL_REWIRE_ARGS required); those arguments belong to their owners alone.
 export function checkCargoInternalRewireArgs(values) {
-  if (values.reason !== CARGO_INTERNAL_REWIRE_REASON) {
-    const stray = REWIRE_ARGS.filter((key) => Object.hasOwn(values, key));
-    if (stray.length > 0) {
-      throw new Error("--" + stray[0] + " is only for --reason " + CARGO_INTERNAL_REWIRE_REASON);
-    }
-    return;
+  const own = DECLARED_CARGO_ARGS[values.reason] ?? [];
+  for (const key of new Set(Object.values(DECLARED_CARGO_ARGS).flat())) {
+    if (!Object.hasOwn(values, key) || own.includes(key)) continue;
+    const owners = Object.keys(DECLARED_CARGO_ARGS).filter((reason) =>
+      DECLARED_CARGO_ARGS[reason].includes(key),
+    );
+    throw new Error("--" + key + " is only for --reason " + owners.join(", "));
   }
-  for (const key of [...SHARED_CARGO_ARGS, ...REWIRE_ARGS]) {
+  if (own.length === 0) return;
+  for (const key of [...SHARED_CARGO_ARGS, ...own]) {
     if (OPTIONAL_CARGO_ARGS.includes(key) || OPTIONAL_REWIRE_ARGS.includes(key)) continue;
     if (!values[key]) throw new Error("required --" + key);
   }
   checkSharedCargoArgs(values);
-  if (Object.hasOwn(values, "new-cargo-ref")) parseNewCargoRef(values["new-cargo-ref"]);
+  if (Object.hasOwn(values, "new-cargo-ref")) {
+    parseNewCargoRef(values["new-cargo-ref"], declaredCargoError(values.reason));
+  }
 }
 
 // `<ref>[:<path>]` for the commit that stores the new Cargo.lock bytes.
-export function parseNewCargoRef(text) {
+export function parseNewCargoRef(text, fail = rewireError) {
   try {
     return parseRefSpec(text, OLD_CARGO_LOCK_PATH, "--new-cargo-ref");
   } catch (error) {
-    throw rewireError(error.message);
+    throw fail(error.message);
   }
 }
 
@@ -1052,6 +1105,7 @@ export const REPINNED_FROM_REASONS = Object.freeze([
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
+  CARGO_REMOVAL_REASON,
 ]);
 
 export function checkPreviousContractRefArgs(values, reasons = REPINNED_FROM_REASONS) {
@@ -1384,7 +1438,15 @@ export function proveCargoProducerLock({
         ")",
     );
   }
-  if (diff.removed.length > 0) problems.push("removed records " + diff.removed.join(", "));
+  if (diff.removed.length > 0) {
+    problems.push(
+      "removed records " +
+        diff.removed.join(", ") +
+        " (a reviewed removal-only transition needs --reason " +
+        CARGO_REMOVAL_REASON +
+        ")",
+    );
+  }
   if (diff.duplicates.length > 0) {
     problems.push("duplicate package identities " + diff.duplicates.join(", "));
   }
@@ -1441,6 +1503,15 @@ function assertCargoOnlyMovement(contract, evidence, reason = CARGO_PRODUCER_LOC
 
 function rewireError(message) {
   return new Error("--reason " + CARGO_INTERNAL_REWIRE_REASON + ": " + message);
+}
+
+function removalError(message) {
+  return new Error("--reason " + CARGO_REMOVAL_REASON + ": " + message);
+}
+
+// The error constructor of a declaration-bound Cargo reason.
+function declaredCargoError(reason) {
+  return reason === CARGO_REMOVAL_REASON ? removalError : rewireError;
 }
 
 // The reviewed transition declaration `--rewire-declaration` points at. Every
@@ -1667,11 +1738,11 @@ export function parseLockRecord(body, label) {
   return { dependencies, rest, source, checksum };
 }
 
-// Which record of `records` (the parsed new lock's packages) a Cargo.lock
-// dependency entry names, or a problem string: `name` alone must be unique,
-// `name version` must match exactly one version, and `name version (source)`
-// exactly one source.
-export function resolveDependencyEntry(entry, records) {
+// Which record of `records` (the parsed packages of the `lock` Cargo.lock,
+// "new" unless named) a Cargo.lock dependency entry names, or a problem
+// string: `name` alone must be unique, `name version` must match exactly one
+// version, and `name version (source)` exactly one source.
+export function resolveDependencyEntry(entry, records, lock = "new") {
   const match = DEPENDENCY_ENTRY.exec(entry);
   if (!match) return { problem: "dependency entry " + JSON.stringify(entry) + " is malformed" };
   const [, name, version, source] = match;
@@ -1686,7 +1757,9 @@ export function resolveDependencyEntry(entry, records) {
       "dependency entry " +
       JSON.stringify(entry) +
       (candidates.length === 0 ? " names no record" : " is ambiguous") +
-      " in the new Cargo.lock",
+      " in the " +
+      lock +
+      " Cargo.lock",
   };
 }
 
@@ -1884,14 +1957,37 @@ function readClosureReceipt(receipt, { label, producer, target, lockSha, lockRec
   return { problems, rows };
 }
 
-// Proves one reviewed internal Cargo.lock rewire and returns the `cargoRewire`
-// evidence, or throws naming every failed check. Inputs mirror
-// proveCargoProducerLock, plus the parsed `declaration` and its verified
-// `declarationSource` {path, sha256}, the new lock's reference
-// `newLockSource` {sha256[, commit, path]}, the two closure receipts
-// (`closures.old`/`closures.new` as {receipt, sha256}), `target`, and
-// `readManifest(path)` returning the checkout's bytes for a repository path.
-export function proveCargoInternalRewire({
+// Why a closure receipt does not attest the default-feature producer metadata
+// command for `target`, or null: `<cargo> metadata --locked --format-version 1
+// --filter-platform <target>` with no feature flags, so the receipt describes
+// the default build of the producer.
+function defaultMetadataCommandProblem(receipt, target) {
+  const command = receipt?.command;
+  if (
+    Array.isArray(command) &&
+    typeof command[0] === "string" &&
+    command[0] &&
+    !/\s[-+]/.test(command[0]) &&
+    isDeepStrictEqual(command.slice(1), [
+      "metadata",
+      "--locked",
+      "--format-version",
+      "1",
+      "--filter-platform",
+      target,
+    ])
+  ) {
+    return null;
+  }
+  return "closure receipt must attest the default-feature metadata command";
+}
+
+// The input checks every declaration-bound Cargo proof (cargo-internal-rewire,
+// cargo-removal) shares: the expected hashes, the old lock's verified git blob
+// {commit, path, sha256}, the new lock's reference {sha256[, commit, path]},
+// the artifact's measured lock and the declaration's recorded digest. Returns
+// the collected problems plus the normalized old and new lock sources.
+function declaredLockMoveProblems({
   contractSha,
   artifactSha,
   expectedOldSha,
@@ -1900,12 +1996,8 @@ export function proveCargoInternalRewire({
   newText,
   oldLockSource,
   newLockSource,
-  declaration,
   declarationSource,
-  closures,
-  target,
-  readManifest,
-  manifestCommit = null,
+  manifestCommit,
 }) {
   const problems = [];
   if (manifestCommit !== null && !/^[0-9a-f]{40}$/.test(manifestCommit)) {
@@ -1967,6 +2059,91 @@ export function proveCargoInternalRewire({
   if (!isRecord(declarationSource) || !isSha(declarationSource.sha256)) {
     problems.push("the declaration source must record its path and sha256");
   }
+  return { problems, source, newSource };
+}
+
+// Parses both locks for a declaration-bound proof into records carrying their
+// name, version and fields (parseLockRecord), keyed by `name@version`. A header
+// or non-package section difference and a duplicate identity are appended to
+// `problems`; an unparseable lock throws through `fail`.
+function pairLockRecords(oldText, newText, problems, fail) {
+  let before;
+  let after;
+  try {
+    before = parseCargoLock(decodeLock(oldText), "old Cargo.lock");
+    after = parseCargoLock(decodeLock(newText), "new Cargo.lock");
+  } catch (error) {
+    throw fail(error.message);
+  }
+  if (before.header !== after.header) problems.push("the header differs");
+  if (!isDeepStrictEqual(before.other, after.other)) problems.push("a non-package section differs");
+  const withFields = (lock, label) =>
+    lock.packages.map((record) => {
+      const [name, version] = record.id.split("@");
+      return { ...record, name, version, fields: parseLockRecord(record.body, label) };
+    });
+  let oldRecords;
+  let newRecords;
+  try {
+    oldRecords = withFields(before, "old");
+    newRecords = withFields(after, "new");
+  } catch (error) {
+    throw fail(error.message.replace(/^--reason [^:]+: /, ""));
+  }
+  for (const [label, records] of [
+    ["old", oldRecords],
+    ["new", newRecords],
+  ]) {
+    const seen = new Set();
+    for (const { id } of records) {
+      if (seen.has(id))
+        problems.push("duplicate package identity " + id + " in the " + label + " Cargo.lock");
+      seen.add(id);
+    }
+  }
+  return {
+    oldRecords,
+    newRecords,
+    oldById: new Map(oldRecords.map((record) => [record.id, record])),
+    newById: new Map(newRecords.map((record) => [record.id, record])),
+  };
+}
+
+// Proves one reviewed internal Cargo.lock rewire and returns the `cargoRewire`
+// evidence, or throws naming every failed check. Inputs mirror
+// proveCargoProducerLock, plus the parsed `declaration` and its verified
+// `declarationSource` {path, sha256}, the new lock's reference
+// `newLockSource` {sha256[, commit, path]}, the two closure receipts
+// (`closures.old`/`closures.new` as {receipt, sha256}), `target`, and
+// `readManifest(path)` returning the checkout's bytes for a repository path.
+export function proveCargoInternalRewire({
+  contractSha,
+  artifactSha,
+  expectedOldSha,
+  expectedNewSha,
+  oldText,
+  newText,
+  oldLockSource,
+  newLockSource,
+  declaration,
+  declarationSource,
+  closures,
+  target,
+  readManifest,
+  manifestCommit = null,
+}) {
+  const { problems, source, newSource } = declaredLockMoveProblems({
+    contractSha,
+    artifactSha,
+    expectedOldSha,
+    expectedNewSha,
+    oldText,
+    newText,
+    oldLockSource,
+    newLockSource,
+    declarationSource,
+    manifestCommit,
+  });
   if (problems.length > 0) throw rewireError(problems.join("; "));
   const declared = checkRewireDeclaration(declaration);
   const externalMode = declared.schemaVersion === EXISTING_EXTERNAL_EDGE_SCHEMA;
@@ -1980,36 +2157,12 @@ export function proveCargoInternalRewire({
 
   // Whole-lockfile accounting: header and non-package sections equal, every
   // record paired by identity, every difference declared.
-  let before;
-  let after;
-  try {
-    before = parseCargoLock(decodeLock(oldText), "old Cargo.lock");
-    after = parseCargoLock(decodeLock(newText), "new Cargo.lock");
-  } catch (error) {
-    throw rewireError(error.message);
-  }
-  if (before.header !== after.header) problems.push("the header differs");
-  if (!isDeepStrictEqual(before.other, after.other)) problems.push("a non-package section differs");
-  const withFields = (lock, label) =>
-    lock.packages.map((record) => {
-      const [name, version] = record.id.split("@");
-      return { ...record, name, version, fields: parseLockRecord(record.body, label) };
-    });
-  const oldRecords = withFields(before, "old");
-  const newRecords = withFields(after, "new");
-  for (const [label, records] of [
-    ["old", oldRecords],
-    ["new", newRecords],
-  ]) {
-    const seen = new Set();
-    for (const { id } of records) {
-      if (seen.has(id))
-        problems.push("duplicate package identity " + id + " in the " + label + " Cargo.lock");
-      seen.add(id);
-    }
-  }
-  const oldById = new Map(oldRecords.map((record) => [record.id, record]));
-  const newById = new Map(newRecords.map((record) => [record.id, record]));
+  const { oldRecords, newRecords, oldById, newById } = pairLockRecords(
+    oldText,
+    newText,
+    problems,
+    rewireError,
+  );
   const declaredAdded = new Map(declared.added.map((entry) => [entry.id, entry]));
   const declaredChanged = new Map(declared.changed.map((entry) => [entry.id, entry]));
   const unexplainedChanged = [];
@@ -2225,25 +2378,8 @@ export function proveCargoInternalRewire({
       return new Map();
     }
     if (externalMode) {
-      const command = side.receipt?.command;
-      if (
-        !Array.isArray(command) ||
-        typeof command[0] !== "string" ||
-        !command[0] ||
-        /\s[-+]/.test(command[0]) ||
-        !isDeepStrictEqual(command.slice(1), [
-          "metadata",
-          "--locked",
-          "--format-version",
-          "1",
-          "--filter-platform",
-          target,
-        ])
-      ) {
-        closureProblems.push(
-          label + " closure receipt must attest the default-feature metadata command",
-        );
-      }
+      const commandProblem = defaultMetadataCommandProblem(side.receipt, target);
+      if (commandProblem) closureProblems.push(label + " " + commandProblem);
     }
     const { problems: found, rows } = readClosureReceipt(side.receipt, {
       label,
@@ -2503,6 +2639,547 @@ export function cargoRewireMarkdown(transition) {
     "`)" +
     externalEdgesText(transition, code) +
     "."
+  );
+}
+
+// The reviewed removal declaration `--removal-declaration` points at. Every
+// field is checked against the actual blobs; a declaration never admits a move
+// by itself, and its keys are exact (no `added`, no `addedDependencies`).
+//
+//   {
+//     "schemaVersion": 1,
+//     "producer": "zfb",                       // the measured CLI package
+//     "oldCargoLockSha256": "<64 hex>",        // == --expected-old-cargo-sha
+//     "newCargoLockSha256": "<64 hex>",        // == --expected-new-cargo-sha
+//     "removed": [{                            // [[package]] records that leave
+//       "id": "deno_core@0.399.0",
+//       "sha256": "<64 hex of the exact old record bytes>"
+//     }],
+//     "changed": [{                            // internal records losing edges
+//       "id": "zfb-render@0.0.0",
+//       "manifest": "crates/zfb-render/Cargo.toml",
+//       "oldSha256": "<64 hex of the old record bytes>",
+//       "newSha256": "<64 hex of the new record bytes>",
+//       "removedDependencies": ["deno_core", "deno_error"]
+//     }],
+//     "closure": { "removed": [] }             // internal producer-closure rows that leave
+//   }
+//
+// Ids are `name@version`; a dependency entry is written as Cargo.lock writes
+// it (`name`, `name version` or `name version (source)`).
+export const REMOVAL_DECLARATION_SCHEMA = 1;
+
+function exactKeys(value, expected) {
+  return isRecord(value) && isDeepStrictEqual(Object.keys(value).sort(), [...expected].sort());
+}
+
+const REMOVAL_DECLARATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "producer",
+  "oldCargoLockSha256",
+  "newCargoLockSha256",
+  "removed",
+  "changed",
+  "closure",
+]);
+const REMOVAL_CHANGED_KEYS = Object.freeze([
+  "id",
+  "manifest",
+  "oldSha256",
+  "newSha256",
+  "removedDependencies",
+]);
+
+function repeatedEntries(entries) {
+  return sortedUnique(entries.filter((entry, i) => entries.indexOf(entry) !== i));
+}
+
+// Structural check of a parsed removal declaration; returns it normalized
+// (sorted edge and closure lists).
+export function checkRemovalDeclaration(declaration) {
+  const fail = (message) => removalError("--removal-declaration " + message);
+  if (!isRecord(declaration)) throw fail("must be a JSON object");
+  if (declaration.schemaVersion !== REMOVAL_DECLARATION_SCHEMA) {
+    throw fail("schemaVersion must be " + REMOVAL_DECLARATION_SCHEMA);
+  }
+  if (!exactKeys(declaration, REMOVAL_DECLARATION_KEYS)) {
+    throw fail("must carry exactly " + REMOVAL_DECLARATION_KEYS.join(", "));
+  }
+  if (declaration.producer !== PRODUCER_PACKAGE) {
+    throw fail(
+      "producer must be " +
+        PRODUCER_PACKAGE +
+        ", the measured CLI package, not " +
+        JSON.stringify(declaration.producer),
+    );
+  }
+  for (const key of ["oldCargoLockSha256", "newCargoLockSha256"]) {
+    if (!isSha(declaration[key])) throw fail(key + " must be a 64-character SHA-256");
+  }
+  if (declaration.oldCargoLockSha256 === declaration.newCargoLockSha256) {
+    throw fail("oldCargoLockSha256 equals newCargoLockSha256; no Cargo.lock move");
+  }
+  const { removed, changed, closure } = declaration;
+  if (!Array.isArray(removed) || !Array.isArray(changed)) {
+    throw fail("removed and changed must be arrays");
+  }
+  if (removed.length === 0) throw fail("declares no removed record");
+  for (const entry of removed) {
+    if (!exactKeys(entry, ["id", "sha256"]) || !LOCK_ID.test(entry.id) || !isSha(entry.sha256)) {
+      throw fail("removed entries need exactly an id of the form name@version and a sha256");
+    }
+  }
+  for (const entry of changed) {
+    if (!exactKeys(entry, REMOVAL_CHANGED_KEYS) || typeof entry.id !== "string") {
+      throw fail("changed entries need exactly " + REMOVAL_CHANGED_KEYS.join(", "));
+    }
+    if (!LOCK_ID.test(entry.id)) throw fail("changed entries need an id of the form name@version");
+    try {
+      checkGitPath(entry.manifest, "changed " + entry.id + " manifest");
+    } catch (error) {
+      throw fail(error.message);
+    }
+    if (basename(entry.manifest) !== "Cargo.toml") {
+      throw fail("changed " + entry.id + " manifest must be a Cargo.toml path");
+    }
+    for (const key of ["oldSha256", "newSha256"]) {
+      if (!isSha(entry[key])) throw fail("changed " + entry.id + " needs " + key);
+    }
+    if (entry.oldSha256 === entry.newSha256) {
+      throw fail("changed " + entry.id + " declares identical old and new bytes");
+    }
+    const edges = entry.removedDependencies;
+    if (!isStringArray(edges) || edges.length === 0) {
+      throw fail("changed " + entry.id + " needs a nonempty removedDependencies array");
+    }
+    if (edges.some((edge) => !DEPENDENCY_ENTRY.test(edge))) {
+      throw fail("changed " + entry.id + " has a malformed removedDependencies entry");
+    }
+    if (repeatedEntries(edges).length > 0) {
+      throw fail("changed " + entry.id + " repeats " + repeatedEntries(edges).join(", "));
+    }
+  }
+  const ids = [...removed, ...changed].map((entry) => entry.id);
+  if (repeatedEntries(ids).length > 0) throw fail("repeats " + repeatedEntries(ids).join(", "));
+  if (
+    !exactKeys(closure, ["removed"]) ||
+    !isStringArray(closure.removed) ||
+    closure.removed.some((id) => !LOCK_ID.test(id))
+  ) {
+    throw fail("closure must carry exactly a removed array of name@version ids");
+  }
+  if (repeatedEntries(closure.removed).length > 0) {
+    throw fail("closure repeats " + repeatedEntries(closure.removed).join(", "));
+  }
+  return {
+    schemaVersion: declaration.schemaVersion,
+    producer: declaration.producer,
+    oldCargoLockSha256: declaration.oldCargoLockSha256,
+    newCargoLockSha256: declaration.newCargoLockSha256,
+    removed: removed.map((entry) => ({ id: entry.id, sha256: entry.sha256 })),
+    changed: changed.map((entry) => ({
+      id: entry.id,
+      manifest: entry.manifest,
+      oldSha256: entry.oldSha256,
+      newSha256: entry.newSha256,
+      removedDependencies: sortedUnique(entry.removedDependencies),
+    })),
+    closure: { removed: sortedUnique(closure.removed) },
+  };
+}
+
+function isExternalRecord(record) {
+  return record.fields.source !== undefined || record.fields.checksum !== undefined;
+}
+
+// Proves one reviewed removal-only Cargo.lock move and returns the
+// `cargoRemoval` evidence, or throws naming every failed check. Inputs are
+// proveCargoInternalRewire's, with the parsed removal `declaration`. It admits
+// exactly: the declared removed records (byte hash), declared internal
+// workspace records whose only delta is the removal of declared dependency
+// edges, no added record, no changed external record (a dependency-spelling
+// rewrite included), an unchanged header and other sections, and identical
+// default-feature producer closures apart from the declared internal rows
+// leaving.
+export function proveCargoRemoval({
+  contractSha,
+  artifactSha,
+  expectedOldSha,
+  expectedNewSha,
+  oldText,
+  newText,
+  oldLockSource,
+  newLockSource,
+  declaration,
+  declarationSource,
+  closures,
+  target,
+  readManifest,
+  manifestCommit = null,
+}) {
+  const { problems, source, newSource } = declaredLockMoveProblems({
+    contractSha,
+    artifactSha,
+    expectedOldSha,
+    expectedNewSha,
+    oldText,
+    newText,
+    oldLockSource,
+    newLockSource,
+    declarationSource,
+    manifestCommit,
+  });
+  if (problems.length > 0) throw removalError(problems.join("; "));
+  const declared = checkRemovalDeclaration(declaration);
+  if (declared.oldCargoLockSha256 !== expectedOldSha) {
+    problems.push("the declaration's oldCargoLockSha256 is not --expected-old-cargo-sha");
+  }
+  if (declared.newCargoLockSha256 !== expectedNewSha) {
+    problems.push("the declaration's newCargoLockSha256 is not --expected-new-cargo-sha");
+  }
+  if (problems.length > 0) throw removalError(problems.join("; "));
+
+  // Whole-lockfile accounting: header and non-package sections equal, nothing
+  // added, every removal and every changed record declared.
+  const { oldRecords, newRecords, oldById, newById } = pairLockRecords(
+    oldText,
+    newText,
+    problems,
+    removalError,
+  );
+  const declaredRemoved = new Map(declared.removed.map((entry) => [entry.id, entry]));
+  const declaredChanged = new Map(declared.changed.map((entry) => [entry.id, entry]));
+  const addedIds = newRecords.filter((record) => !oldById.has(record.id)).map((r) => r.id);
+  const undeclaredRemoved = [];
+  const changedExternal = [];
+  const undeclaredChanged = [];
+  for (const record of oldRecords) {
+    const next = newById.get(record.id);
+    if (!next) {
+      if (!declaredRemoved.has(record.id)) undeclaredRemoved.push(record.id);
+      continue;
+    }
+    if (next.body === record.body || declaredChanged.has(record.id)) continue;
+    if (isExternalRecord(record) || isExternalRecord(next)) changedExternal.push(record.id);
+    else undeclaredChanged.push(record.id);
+  }
+  if (addedIds.length > 0) {
+    problems.push("added records " + addedIds.join(", ") + " (cargo-removal admits no addition)");
+  }
+  if (undeclaredRemoved.length > 0) {
+    problems.push("undeclared removed records " + undeclaredRemoved.join(", "));
+  }
+  if (changedExternal.length > 0) {
+    problems.push(
+      "changed external records " +
+        changedExternal.join(", ") +
+        " (an external record may not change, not even its dependency spelling)",
+    );
+  }
+  if (undeclaredChanged.length > 0) {
+    problems.push("undeclared changed records " + undeclaredChanged.join(", "));
+  }
+
+  const removed = [];
+  for (const entry of declared.removed) {
+    const record = oldById.get(entry.id);
+    if (!record) {
+      problems.push("declared removed " + entry.id + " is not in the old Cargo.lock");
+      continue;
+    }
+    if (newById.has(entry.id)) {
+      problems.push("declared removed " + entry.id + " is still in the new Cargo.lock");
+    }
+    if (sha256(record.body) !== entry.sha256) {
+      problems.push(
+        "declared removed " +
+          entry.id +
+          " bytes hash to " +
+          sha256(record.body) +
+          ", not its sha256",
+      );
+    }
+    removed.push({
+      id: entry.id,
+      sha256: entry.sha256,
+      source: lockSourceValue(record.fields.source),
+    });
+  }
+  const changed = [];
+  for (const entry of declared.changed) {
+    const record = oldById.get(entry.id);
+    const next = newById.get(entry.id);
+    if (!record || !next) {
+      problems.push("declared changed " + entry.id + " is not in both Cargo.lock files");
+      continue;
+    }
+    if (record.body === next.body) {
+      problems.push("declared changed " + entry.id + " is byte-identical in both Cargo.lock files");
+      continue;
+    }
+    if (sha256(record.body) !== entry.oldSha256) {
+      problems.push(
+        "declared changed " +
+          entry.id +
+          " old bytes hash to " +
+          sha256(record.body) +
+          ", not its oldSha256",
+      );
+    }
+    if (sha256(next.body) !== entry.newSha256) {
+      problems.push(
+        "declared changed " +
+          entry.id +
+          " new bytes hash to " +
+          sha256(next.body) +
+          ", not its newSha256",
+      );
+    }
+    if (!isDeepStrictEqual(record.fields.rest, next.fields.rest)) {
+      problems.push("declared changed " + entry.id + " moved a field other than dependencies");
+    }
+    if (isExternalRecord(record) || isExternalRecord(next)) {
+      problems.push(
+        "declared changed " + entry.id + " has a source or checksum; not an internal record",
+      );
+    }
+    const was = record.fields.dependencies ?? [];
+    const now = next.fields.dependencies ?? [];
+    if (repeatedEntries(was).length > 0 || repeatedEntries(now).length > 0) {
+      problems.push("changed " + entry.id + " repeats a dependency entry");
+    }
+    const addedEdges = sortedUnique(now.filter((d) => !was.includes(d)));
+    const removedEdges = sortedUnique(was.filter((d) => !now.includes(d)));
+    if (addedEdges.length > 0) {
+      problems.push(
+        "declared changed " +
+          entry.id +
+          " adds edges " +
+          JSON.stringify(addedEdges) +
+          " (cargo-removal admits only removed edges; a dependency-spelling rewrite is an added edge)",
+      );
+    }
+    if (!isDeepStrictEqual(removedEdges, entry.removedDependencies)) {
+      problems.push(
+        "declared changed " +
+          entry.id +
+          " removed edges " +
+          JSON.stringify(removedEdges) +
+          " differ from removedDependencies",
+      );
+    } else if (
+      addedEdges.length === 0 &&
+      !isDeepStrictEqual(
+        now,
+        was.filter((d) => !entry.removedDependencies.includes(d)),
+      )
+    ) {
+      problems.push("declared changed " + entry.id + " reorders its remaining dependency edges");
+    }
+    for (const dependency of entry.removedDependencies) {
+      const { problem } = resolveDependencyEntry(dependency, oldRecords, "old");
+      if (problem) problems.push("changed " + entry.id + ": " + problem);
+    }
+    const manifest = internalManifest(entry.id, entry.manifest, readManifest);
+    if (manifest.problem) problems.push(manifest.problem);
+    changed.push({
+      id: entry.id,
+      manifest: entry.manifest,
+      manifestSha256: manifest.sha256 ?? null,
+      oldSha256: entry.oldSha256,
+      newSha256: entry.newSha256,
+      removedDependencies: removedEdges,
+    });
+  }
+  // No surviving edge may point at a removed record or become ambiguous.
+  for (const record of newRecords) {
+    for (const dependency of record.fields.dependencies ?? []) {
+      const { problem } = resolveDependencyEntry(dependency, newRecords);
+      if (problem) problems.push(record.id + ": " + problem);
+    }
+  }
+
+  // Producer closures: identical apart from the declared internal rows leaving.
+  const closureProblems = [];
+  const closureOf = (label, lockSha, lockRecords) => {
+    const side = closures?.[label];
+    if (!isRecord(side) || !isSha(side.sha256)) {
+      closureProblems.push(label + " closure receipt is missing or has no sha256");
+      return new Map();
+    }
+    const commandProblem = defaultMetadataCommandProblem(side.receipt, target);
+    if (commandProblem) closureProblems.push(label + " " + commandProblem);
+    const { problems: found, rows } = readClosureReceipt(side.receipt, {
+      label,
+      producer: declared.producer,
+      target,
+      lockSha,
+      lockRecords,
+    });
+    closureProblems.push(...found);
+    if (
+      found.length === 0 &&
+      ![...rows.values()].some(
+        (row) => row.name === PRODUCER_PACKAGE && row.features.includes("default"),
+      )
+    ) {
+      closureProblems.push(label + " closure must enable the producer's default feature");
+    }
+    return rows;
+  };
+  const oldRows = closureOf("old", expectedOldSha, oldRecords);
+  const newRows = closureOf("new", expectedNewSha, newRecords);
+  let unchanged = 0;
+  const left = [];
+  if (closureProblems.length === 0) {
+    const joined = [...newRows.keys()].filter((key) => !oldRows.has(key));
+    if (joined.length > 0) {
+      closureProblems.push("rows joined the producer closure: " + joined.join(", "));
+    }
+    const moved = [];
+    for (const [key, row] of oldRows) {
+      const next = newRows.get(key);
+      if (!next) left.push({ key, ...row });
+      else if (isDeepStrictEqual(row.features, next.features)) unchanged += 1;
+      else
+        moved.push(
+          key + " " + JSON.stringify(row.features) + " -> " + JSON.stringify(next.features),
+        );
+    }
+    if (moved.length > 0) {
+      closureProblems.push("feature movement in the producer closure: " + moved.join(", "));
+    }
+    const externalLeft = left.filter((row) => !row.source.startsWith("path+"));
+    if (externalLeft.length > 0) {
+      closureProblems.push(
+        "external rows left the producer closure: " + externalLeft.map((row) => row.key).join(", "),
+      );
+    }
+    const leftIds = sortedUnique(left.map((row) => row.name + "@" + row.version));
+    if (!isDeepStrictEqual(leftIds, declared.closure.removed)) {
+      closureProblems.push(
+        "closure rows removed " +
+          JSON.stringify(leftIds) +
+          " differ from the declaration's closure.removed",
+      );
+    }
+  }
+  problems.push(...closureProblems);
+  if (problems.length > 0) {
+    throw removalError(
+      "the Cargo.lock move is not the declared removal (" + problems.join("; ") + ")",
+    );
+  }
+  return {
+    oldSha: expectedOldSha,
+    newSha: expectedNewSha,
+    oldLockSource: source,
+    newLockSource: newSource,
+    declaration: { path: declarationSource.path, sha256: declarationSource.sha256 },
+    producer: declared.producer,
+    // As for cargoRewire: the --new-cargo-ref (or HEAD) commit the manifests
+    // were proven byte-identical to, or null when only the working tree was read.
+    manifestsAtCommit: manifestCommit,
+    added: [],
+    removed,
+    changed,
+    closure: {
+      target,
+      oldSha256: closures.old.sha256,
+      newSha256: closures.new.sha256,
+      rows: { old: oldRows.size, new: newRows.size, unchanged },
+      removed: sortedUnique(left.map((row) => row.name + "@" + row.version)),
+    },
+  };
+}
+
+// Refuses a cargo-removal rewrite that moved any key outside
+// CARGO_REMOVAL_MOVEMENT.
+export function assertCargoRemovalMovement(before, after) {
+  assertAllowedMovement(CARGO_REMOVAL_REASON, CARGO_REMOVAL_MOVEMENT, before, after);
+}
+
+export function cargoRemovalText(transition) {
+  return (
+    "Cargo.lock " +
+    transition.oldSha +
+    " to " +
+    transition.newSha +
+    " removes " +
+    transition.removed.length +
+    " record(s) (" +
+    recordList(transition.removed, (r) => r.id) +
+    ") and drops dependency edges from " +
+    transition.changed.length +
+    " internal record(s) (" +
+    recordList(transition.changed, (r) => r.id + " -" + JSON.stringify(r.removedDependencies)) +
+    "); no record is added and every other [[package]] record and the header are byte-identical, declared in " +
+    transition.declaration.path +
+    " (SHA-256 " +
+    transition.declaration.sha256 +
+    "), proved against " +
+    transition.oldLockSource.path +
+    " at commit " +
+    transition.oldLockSource.commit +
+    " (SHA-256 " +
+    transition.oldLockSource.sha256 +
+    "); the " +
+    transition.producer +
+    " producer closure for " +
+    transition.closure.target +
+    " keeps " +
+    transition.closure.rows.unchanged +
+    " rows unchanged and loses " +
+    transition.closure.removed.length +
+    " declared internal row(s) (" +
+    recordList(transition.closure.removed, (id) => id) +
+    ") with no row joining and no feature movement"
+  );
+}
+
+export function cargoRemovalMarkdown(transition) {
+  const code = (value) => "`" + value + "`";
+  return (
+    "`Cargo.lock` moved from `" +
+    transition.oldSha +
+    "` to `" +
+    transition.newSha +
+    "` by removing " +
+    transition.removed.length +
+    " record(s) (" +
+    recordList(transition.removed, (r) => code(r.id)) +
+    ") and dropping dependency edges from " +
+    transition.changed.length +
+    " internal record(s) (" +
+    recordList(
+      transition.changed,
+      (r) => code(r.id) + " drops " + recordList(r.removedDependencies, code),
+    ) +
+    "); no record is added and every other `[[package]]` record and the header are byte-identical, as declared in `" +
+    transition.declaration.path +
+    "` (SHA-256 `" +
+    transition.declaration.sha256 +
+    "`) and proved against `" +
+    transition.oldLockSource.path +
+    "` at commit `" +
+    transition.oldLockSource.commit +
+    "` (SHA-256 `" +
+    transition.oldLockSource.sha256 +
+    "`). The `" +
+    transition.producer +
+    "` producer closure for `" +
+    transition.closure.target +
+    "` keeps " +
+    transition.closure.rows.unchanged +
+    " rows unchanged and loses " +
+    transition.closure.removed.length +
+    " declared internal row(s) (" +
+    recordList(transition.closure.removed, code) +
+    ") with no row joining and no feature movement (receipts `" +
+    transition.closure.oldSha256 +
+    "` and `" +
+    transition.closure.newSha256 +
+    "`)."
   );
 }
 
@@ -2844,6 +3521,19 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       artifactSha: evidence.identity.cargoLockSha256,
     });
   }
+  const cargoRemovalReason = reason === CARGO_REMOVAL_REASON;
+  let cargoRemoval = null;
+  if (cargoRemovalReason) {
+    assertCargoOnlyMovement(contract, evidence, CARGO_REMOVAL_REASON);
+    if (!evidence.cargoRemoval) {
+      throw removalError("needs the declared Cargo.lock removal evidence");
+    }
+    cargoRemoval = proveCargoRemoval({
+      ...evidence.cargoRemoval,
+      contractSha: contract.toolchain.cargoLockSha256,
+      artifactSha: evidence.identity.cargoLockSha256,
+    });
+  }
   const previousVersion = contract.toolchain.packageVersion;
   const gzipEvidence = actualGzipEvidence(contract, totals);
   const next = structuredClone(contract);
@@ -2882,6 +3572,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   next.normalizerSha256 = evidence.normalizerSha256;
   if (cargoTransition) next.toolchain.cargoLockSha256 = cargoTransition.newSha;
   if (cargoRewire) next.toolchain.cargoLockSha256 = cargoRewire.newSha;
+  if (cargoRemoval) next.toolchain.cargoLockSha256 = cargoRemoval.newSha;
   if (fingerprintTransition) next.dependencyFingerprint.sha256 = fingerprintTransition.newSha256;
   if (fingerprintPolicyTransition) {
     next.dependencyFingerprint = { ...fingerprintPolicyTransition.to };
@@ -2996,6 +3687,22 @@ export function rebaselineContract(contract, totals, evidence, reason) {
       gzipSummary +
       "." +
       matrices;
+  } else if (cargoRemovalReason) {
+    next.platformStatus =
+      "Linux x64 has exact zero-allowance v" +
+      evidence.version +
+      " ceilings on metric " +
+      metricText() +
+      ", re-pinned from workflow run " +
+      evidence.runId +
+      " at " +
+      sourceText(evidence.sourceSha, evidence.headSha) +
+      " after a reviewed removal-only Cargo.lock transition (" +
+      cargoRemovalText(cargoRemoval) +
+      "). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. " +
+      gzipSummary +
+      "." +
+      matrices;
   } else if (dependencyGraph) {
     next.platformStatus =
       "Linux x64 has exact zero-allowance v" +
@@ -3061,6 +3768,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
     ...(repinnedFrom ? { repinnedFrom } : {}),
     ...(cargoTransition ? { cargoTransition } : {}),
     ...(cargoRewire ? { cargoRewire } : {}),
+    ...(cargoRemoval ? { cargoRemoval } : {}),
     ...(fingerprintTransition ? { fingerprintTransition } : {}),
     ...(fingerprintPolicyTransition ? { fingerprintPolicyTransition } : {}),
     actualGzip: actualGzipRows(totals),
@@ -3112,27 +3820,35 @@ export function rebaselineContract(contract, totals, evidence, reason) {
                   "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
                   gzipSummary +
                   "."
-                : dependencyGraph
-                  ? "Reviewed dependency-graph re-pin at unchanged v" +
+                : cargoRemovalReason
+                  ? "Reviewed removal-only Cargo.lock transition at unchanged v" +
                     previousVersion +
                     " (" +
-                    fingerprintTransitionText(fingerprintTransition) +
-                    "): the new fingerprint was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                    cargoRemovalText(cargoRemoval) +
+                    "); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; " +
                     gzipSummary +
                     "."
-                  : fingerprintPolicy
-                    ? "Reviewed fingerprint-policy re-pin at unchanged v" +
+                  : dependencyGraph
+                    ? "Reviewed dependency-graph re-pin at unchanged v" +
                       previousVersion +
                       " (" +
-                      fingerprintPolicyTransitionText(fingerprintPolicyTransition) +
-                      "): policyVersion stepped by exactly one to the checkout helper's exported FINGERPRINT_POLICY_VERSION; the new policyVersion and sha256 equal the artifact's, and parser and helperSha256 are the checkout helper's own; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                      fingerprintTransitionText(fingerprintTransition) +
+                      "): the new fingerprint was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
                       gzipSummary +
                       "."
-                    : "Raw and gzipNormalized totals did not change from the v" +
-                      previousVersion +
-                      " contract; " +
-                      gzipSummary +
-                      ".") +
+                    : fingerprintPolicy
+                      ? "Reviewed fingerprint-policy re-pin at unchanged v" +
+                        previousVersion +
+                        " (" +
+                        fingerprintPolicyTransitionText(fingerprintPolicyTransition) +
+                        "): policyVersion stepped by exactly one to the checkout helper's exported FINGERPRINT_POLICY_VERSION; the new policyVersion and sha256 equal the artifact's, and parser and helperSha256 are the checkout helper's own; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; " +
+                        gzipSummary +
+                        "."
+                      : "Raw and gzipNormalized totals did not change from the v" +
+                        previousVersion +
+                        " contract; " +
+                        gzipSummary +
+                        ".") +
       " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   for (const mode of MODES) {
@@ -3145,6 +3861,7 @@ export function rebaselineContract(contract, totals, evidence, reason) {
   }
   if (cargoTransition) assertCargoProducerLockMovement(contract, next);
   if (cargoRewire) assertCargoInternalRewireMovement(contract, next);
+  if (cargoRemoval) assertCargoRemovalMovement(contract, next);
   if (dependencyGraph) {
     assertAllowedMovement(DEPENDENCY_GRAPH_REASON, DEPENDENCY_GRAPH_MOVEMENT, contract, next);
   }
@@ -3241,6 +3958,7 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
     DEPENDENCY_GRAPH_REASON,
     FINGERPRINT_POLICY_REASON,
     CARGO_INTERNAL_REWIRE_REASON,
+    CARGO_REMOVAL_REASON,
   ].includes(reason)
     ? "workflow run "
     : "health run ";
@@ -3361,6 +4079,20 @@ export function readmeSection(contract, gzipEvidence, previousVersion, reason) {
       run +
       ": " +
       cargoRewireMarkdown(contract.baselineEvidence.cargoRewire) +
+      " The producer version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, " +
+      "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
+      "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
+      "byte-identical product code. " +
+      evidence +
+      closing;
+  } else if (reason === CARGO_REMOVAL_REASON) {
+    body =
+      "The Linux contract recorded a reviewed removal-only `Cargo.lock` transition at v" +
+      version +
+      " from " +
+      run +
+      ": " +
+      cargoRemovalMarkdown(contract.baselineEvidence.cargoRemoval) +
       " The producer version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, " +
       "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
       "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
@@ -4170,20 +4902,35 @@ export function pairedTransition(previous, next) {
 // What a paired reason's stage run records beyond its measured source: the
 // previous contract reference (per platform, never compared: the two contracts
 // are different files) and the transition both runs must share; {} otherwise.
+// The declaration-bound Cargo reasons: the stage-run key that binds both
+// platforms to one declaration and lock pair, and the baselineEvidence record
+// it is read from.
+const DECLARATION_BINDINGS = Object.freeze({
+  [CARGO_INTERNAL_REWIRE_REASON]: Object.freeze({ runKey: "rewire", evidenceKey: "cargoRewire" }),
+  [CARGO_REMOVAL_REASON]: Object.freeze({ runKey: "removal", evidenceKey: "cargoRemoval" }),
+});
+const DECLARATION_BINDING_KEYS = Object.freeze([
+  "declarationSha256",
+  "oldLockSha256",
+  "newLockSha256",
+]);
+
 export function stageRunIdentity(reason, previous, next) {
   if (!PAIRED_REASONS.includes(reason)) return {};
-  const rewire = next.baselineEvidence.cargoRewire;
+  const binding = DECLARATION_BINDINGS[reason];
+  const declared = binding && next.baselineEvidence[binding.evidenceKey];
   return {
     previousContract: next.baselineEvidence.repinnedFrom.contract,
     transition: pairedTransition(previous, next),
-    // A rewire additionally binds both platforms to one reviewed declaration
-    // and one old/new lock pair (pairedRunsProblem compares it).
-    ...(reason === CARGO_INTERNAL_REWIRE_REASON
+    // A declaration-bound reason additionally binds both platforms to one
+    // reviewed declaration and one old/new lock pair (pairedRunsProblem
+    // compares it).
+    ...(binding
       ? {
-          rewire: {
-            declarationSha256: rewire.declaration.sha256,
-            oldLockSha256: rewire.oldSha,
-            newLockSha256: rewire.newSha,
+          [binding.runKey]: {
+            declarationSha256: declared.declaration.sha256,
+            oldLockSha256: declared.oldSha,
+            newLockSha256: declared.newSha,
           },
         }
       : {}),
@@ -4226,20 +4973,25 @@ function pairedRunsProblem(reason, linux, darwin) {
       }
     }
   }
-  if (reason === CARGO_INTERNAL_REWIRE_REASON) {
+  const binding = DECLARATION_BINDINGS[reason];
+  if (binding) {
+    const { runKey } = binding;
     for (const run of [linux, darwin]) {
-      if (!isRecord(run.rewire)) problems.push(run.platform + " run records no rewire identity");
+      if (!isRecord(run[runKey])) {
+        problems.push(run.platform + " run records no " + runKey + " identity");
+      }
     }
-    if (isRecord(linux.rewire) && isRecord(darwin.rewire)) {
-      for (const key of ["declarationSha256", "oldLockSha256", "newLockSha256"]) {
-        if (linux.rewire[key] !== darwin.rewire[key]) {
+    if (isRecord(linux[runKey]) && isRecord(darwin[runKey])) {
+      for (const key of DECLARATION_BINDING_KEYS) {
+        if (linux[runKey][key] !== darwin[runKey][key]) {
           problems.push(
-            "rewire " +
+            runKey +
+              " " +
               key +
               " differs (linux-x64 " +
-              identityText(linux.rewire[key]) +
+              identityText(linux[runKey][key]) +
               ", darwin-arm64 " +
-              identityText(darwin.rewire[key]) +
+              identityText(darwin[runKey][key]) +
               ")",
           );
         }
@@ -4597,18 +5349,24 @@ export const LINUX_PRODUCER_TARGET = "x86_64-unknown-linux-gnu";
 // at `root`: always their SHA-256; `commit` and `path` when `--new-cargo-ref`
 // (which must be byte-identical, never falling back) or, without it, HEAD
 // stores exactly those bytes.
-export function newLockReference(root, bytes, ref, notify = (message) => console.error(message)) {
+export function newLockReference(
+  root,
+  bytes,
+  ref,
+  notify = (message) => console.error(message),
+  fail = rewireError,
+) {
   const reference = { sha256: sha256(bytes) };
   if (ref !== undefined) {
-    const spec = parseNewCargoRef(ref);
+    const spec = parseNewCargoRef(ref, fail);
     let blob;
     try {
       blob = readGitBlob(root, spec.ref, spec.path, "--new-cargo-ref");
     } catch (error) {
-      throw rewireError(error.message);
+      throw fail(error.message);
     }
     if (!blob.bytes.equals(Buffer.from(bytes))) {
-      throw rewireError(
+      throw fail(
         "--new-cargo-ref " +
           ref +
           ": " +
@@ -4634,18 +5392,18 @@ export function newLockReference(root, bytes, ref, notify = (message) => console
   return reference;
 }
 
-function readJsonFile(path, label) {
+function readJsonFile(path, label, fail = rewireError) {
   let bytes;
   try {
     bytes = readFileSync(path);
   } catch (error) {
-    throw rewireError(label + " " + path + " cannot be read: " + error.message);
+    throw fail(label + " " + path + " cannot be read: " + error.message);
   }
   let value;
   try {
     value = JSON.parse(bytes.toString("utf8"));
   } catch (error) {
-    throw rewireError(label + " " + path + " is not JSON: " + error.message);
+    throw fail(label + " " + path + " is not JSON: " + error.message);
   }
   return { bytes, value, sha256: sha256(bytes) };
 }
@@ -4656,26 +5414,44 @@ function readJsonFile(path, label) {
 // receipts with their digests, this platform's producer `target`, and a
 // manifest reader rooted at the checkout.
 export function readCargoRewireEvidence(args, root, target = LINUX_PRODUCER_TARGET) {
+  return readDeclaredCargoEvidence(args, root, target, "rewire-declaration", rewireError);
+}
+
+// The cargo-removal evidence a CLI run passes to proveCargoRemoval: the same
+// inputs as readCargoRewireEvidence, with the `--removal-declaration`.
+export function readCargoRemovalEvidence(args, root, target = LINUX_PRODUCER_TARGET) {
+  return readDeclaredCargoEvidence(args, root, target, "removal-declaration", removalError);
+}
+
+// Shared reader of the declaration-bound Cargo reasons; `declarationArg` names
+// the argument holding the declaration and `fail` builds the reason's errors.
+function readDeclaredCargoEvidence(args, root, target, declarationArg, fail) {
   const { ref, path } = parseOldCargoRef(args["old-cargo-ref"]);
   let blob;
   try {
     blob = readGitBlob(root, ref, path, "--old-cargo-ref");
   } catch (error) {
-    throw rewireError(error.message);
+    throw fail(error.message);
   }
   if (Object.hasOwn(args, "old-cargo-lock")) {
     if (!readFileSync(args["old-cargo-lock"]).equals(blob.bytes)) {
-      throw rewireError("--old-cargo-lock differs from " + blob.commit + ":" + blob.path);
+      throw fail("--old-cargo-lock differs from " + blob.commit + ":" + blob.path);
     }
   }
   const newText = readFileSync(join(root, OLD_CARGO_LOCK_PATH));
-  const declaration = readJsonFile(args["rewire-declaration"], "--rewire-declaration");
-  const declarationPath = repositoryPath(root, args["rewire-declaration"]);
+  const declaration = readJsonFile(args[declarationArg], "--" + declarationArg, fail);
+  const declarationPath = repositoryPath(root, args[declarationArg]);
   const closures = {
-    old: readJsonFile(args["old-closure"], "--old-closure"),
-    new: readJsonFile(args["new-closure"], "--new-closure"),
+    old: readJsonFile(args["old-closure"], "--old-closure", fail),
+    new: readJsonFile(args["new-closure"], "--new-closure", fail),
   };
-  const newLockSource = newLockReference(root, newText, args["new-cargo-ref"]);
+  const newLockSource = newLockReference(
+    root,
+    newText,
+    args["new-cargo-ref"],
+    (message) => console.error(message),
+    fail,
+  );
   return {
     expectedOldSha: args["expected-old-cargo-sha"],
     expectedNewSha: args["expected-new-cargo-sha"],
@@ -4687,7 +5463,7 @@ export function readCargoRewireEvidence(args, root, target = LINUX_PRODUCER_TARG
     // The declaration is cited by its repository path when it lives in the
     // checkout, otherwise by the path given; its digest is always recorded.
     declarationSource: {
-      path: declarationPath ?? args["rewire-declaration"],
+      path: declarationPath ?? args[declarationArg],
       sha256: declaration.sha256,
     },
     closures: {
@@ -4706,10 +5482,10 @@ export function readCargoRewireEvidence(args, root, target = LINUX_PRODUCER_TARG
         try {
           blob = readGitBlob(root, newLockSource.commit, manifest, "--new-cargo-ref manifest");
         } catch (error) {
-          throw rewireError(error.message);
+          throw fail(error.message);
         }
         if (!blob.bytes.equals(bytes)) {
-          throw rewireError(
+          throw fail(
             manifest +
               " in the working tree differs from " +
               blob.commit +
@@ -4789,6 +5565,7 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
     "dependency-graph": "Dependency-graph re-pin run at v" + version,
     "fingerprint-policy": "Fingerprint-policy re-pin run at v" + version,
     "cargo-internal-rewire": "Cargo internal-rewire transition run at v" + version,
+    "cargo-removal": "Cargo removal transition run at v" + version,
   }[args.reason];
   const result = rebaselineContract(
     contract,
@@ -4812,6 +5589,9 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
         : {}),
       ...(args.reason === CARGO_INTERNAL_REWIRE_REASON
         ? { cargoRewire: readCargoRewireEvidence(args, root, LINUX_PRODUCER_TARGET) }
+        : {}),
+      ...(args.reason === CARGO_REMOVAL_REASON
+        ? { cargoRemoval: readCargoRemovalEvidence(args, root, LINUX_PRODUCER_TARGET) }
         : {}),
       ...(REPINNED_FROM_REASONS.includes(args.reason)
         ? {

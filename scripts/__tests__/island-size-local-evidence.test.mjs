@@ -143,28 +143,23 @@ describe("local CLI scope", () => {
       parseArgs(["--reason", reason, "--stage", "/stage", "--tool-sha", source, ...flags]),
     ).toThrow("requires staged");
   });
-  it.each(["cargo-producer-lock", "cargo-internal-rewire", "release-bump", "runtime-identity"])(
-    "requires --stage and an exact --tool-sha for %s",
-    (reason) => {
-      expect(() => parseArgs(["--reason", reason, "--tool-sha", source, ...flags])).toThrow(
-        "requires staged",
-      );
-      expect(() => parseArgs(["--reason", reason, "--stage", "/stage", ...flags])).toThrow(
-        "--tool-sha",
-      );
-      expect(() =>
-        parseArgs([
-          "--reason",
-          reason,
-          "--stage",
-          "/stage",
-          "--tool-sha",
-          "A".repeat(40),
-          ...flags,
-        ]),
-      ).toThrow("--tool-sha");
-    },
-  );
+  it.each([
+    "cargo-producer-lock",
+    "cargo-internal-rewire",
+    "cargo-removal",
+    "release-bump",
+    "runtime-identity",
+  ])("requires --stage and an exact --tool-sha for %s", (reason) => {
+    expect(() => parseArgs(["--reason", reason, "--tool-sha", source, ...flags])).toThrow(
+      "requires staged",
+    );
+    expect(() => parseArgs(["--reason", reason, "--stage", "/stage", ...flags])).toThrow(
+      "--tool-sha",
+    );
+    expect(() =>
+      parseArgs(["--reason", reason, "--stage", "/stage", "--tool-sha", "A".repeat(40), ...flags]),
+    ).toThrow("--tool-sha");
+  });
   it("rejects partial receipt arguments, duplicate flags, apply and Linux scope escapes", () => {
     expect(() =>
       parseArgs([
@@ -315,6 +310,9 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       cargoRewire: { oldSha: "x", newSha: "y" },
     });
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+    s = staged("cargo-removal", { cargoRemoval: { oldSha: "x", newSha: "y" } });
+    s.contract.outcome = "cargo-removal-transition";
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
     for (const [reason, outcome] of PROVENANCE_REPINS) {
       s = staged(reason);
       s.contract.outcome = outcome;
@@ -330,6 +328,7 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
         { cargoTransition: security },
       ],
       [reason + " carrying a rewire proof", reason, outcome, { cargoRewire: { oldSha: "x" } }],
+      [reason + " carrying a removal proof", reason, outcome, { cargoRemoval: { oldSha: "x" } }],
       [reason + " with another reason's outcome", reason, "cargo-producer-lock-transition", {}],
       [reason + " without an outcome", reason, undefined, {}],
     ]),
@@ -351,6 +350,17 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       { cargoTransition: security, cargoRewire: { oldSha: "x" } },
     ],
     ["rewire stage without its proof", "cargo-internal-rewire", {}],
+    [
+      "removal stage carrying a rewire proof",
+      "cargo-removal",
+      { cargoRemoval: { oldSha: "x" }, cargoRewire: { oldSha: "x" } },
+    ],
+    [
+      "rewire stage carrying a removal proof",
+      "cargo-internal-rewire",
+      { cargoRewire: { oldSha: "x" }, cargoRemoval: { oldSha: "x" } },
+    ],
+    ["removal stage without its proof", "cargo-removal", {}],
     ["security stage without its transition", "cargo-producer-lock", {}],
     ["reason without a profile", "dependency-graph", { cargoTransition: security }],
   ])("rejects a swapped profile: %s", (_label, reason, evidence) => {
@@ -439,9 +449,14 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
           ? { cargoTransition: security }
           : reason === "cargo-internal-rewire"
             ? { cargoRewire: { oldSha: "x" } }
-            : {},
+            : reason === "cargo-removal"
+              ? { cargoRemoval: { oldSha: "x" } }
+              : {},
       );
-      s.contract.outcome = Object.fromEntries(PROVENANCE_REPINS)[reason];
+      s.contract.outcome =
+        reason === "cargo-removal"
+          ? "cargo-removal-transition"
+          : Object.fromEntries(PROVENANCE_REPINS)[reason];
       mutate(s);
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
         /local Darwin evidence/,
@@ -449,10 +464,18 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).not.toThrow(missing);
     }
   });
-  it("keeps exactly the four reviewed profiles", () => {
+  it("rejects a removal stage that records another outcome", () => {
+    const s = staged("cargo-removal", { cargoRemoval: { oldSha: "x" } });
+    s.contract.outcome = "cargo-internal-rewire-transition";
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
+      "cargo-removal evidence must record outcome cargo-removal-transition",
+    );
+  });
+  it("keeps exactly the five reviewed profiles", () => {
     expect(Object.keys(LOCAL_EVIDENCE_PROFILES).sort()).toEqual([
       "cargo-internal-rewire",
       "cargo-producer-lock",
+      "cargo-removal",
       "release-bump",
       "runtime-identity",
     ]);

@@ -382,6 +382,7 @@ describe("rebaseline-island-size-linux", () => {
       "dependency-graph",
       "fingerprint-policy",
       "cargo-internal-rewire",
+      "cargo-removal",
     ]);
   });
 
@@ -436,7 +437,7 @@ describe("rebaseline-island-size-linux", () => {
       /--head-sha must be/,
     );
     expect(() => parseArgs(ok.map((v) => (v === "release-bump" ? "gzip-shift" : v)))).toThrow(
-      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire$/,
+      /--reason must be one of release-bump, metric-migration, runtime-identity, lockfile-provenance, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire, cargo-removal$/,
     );
     expect(() => parseArgs(["--artifact"])).toThrow(/bad argument/);
   });

@@ -1,6 +1,6 @@
 # Owner-attested local Darwin evidence
 
-This adapter extends `cargo-internal-rewire`, the exact #4314 `cargo-producer-lock`
+This adapter extends `cargo-internal-rewire`, `cargo-removal`, the exact #4314 `cargo-producer-lock`
 transition and the provenance-only `release-bump` and `runtime-identity` re-pins
 (see the profile table below). It accepts retained native Darwin
 arm64 bundles through the same measurement, normalization, fingerprint, Cargo
@@ -8,14 +8,15 @@ closure/declaration and paired-stage validators as Actions artifacts. It changes
 ceiling, allowance, budget pin, default feature, producer or collection command.
 Every other reason still requires its existing provenance route.
 
-## One module, four reviewed profiles
+## One module, five reviewed profiles
 
-`scripts/island-size-local-evidence.mjs` holds exactly four local-evidence
+`scripts/island-size-local-evidence.mjs` holds exactly five local-evidence
 profiles in `LOCAL_EVIDENCE_PROFILES`, each for its own purpose:
 
 | Reason | Purpose | Transition binding | Lock binding |
 | --- | --- | --- | --- |
 | `cargo-internal-rewire` | #4311 internal Cargo rewires and existing external edges | `baselineEvidence.cargoRewire` from the existing rewire validators | Whatever those validators admit; no extra pin |
+| `cargo-removal` | #4388 removal-only Cargo transitions (the Deno exit) | `baselineEvidence.cargoRemoval` from the removal validators; `outcome` must be `cargo-removal-transition` | Whatever those validators admit; no extra pin |
 | `cargo-producer-lock` | #4314 rustls security transition ([recipe](LOCAL-SECURITY-4314.md)) | `baselineEvidence.cargoTransition` equal to the exact `rustls-security-4314` decision | Exact old/new `Cargo.lock` SHA-256 of that decision |
 | `release-bump` | Darwin package-version re-pin after a release (owner decision 2026-10-21) | None; `outcome` must be `release-version-stamp` | `Cargo.lock` must not move (the re-pin's own refusal) |
 | `runtime-identity` | Darwin runtime-identity re-pin (same decision) | None; `outcome` must be `runtime-identity-repin` | `Cargo.lock` must not move (the re-pin's own refusal) |
@@ -88,7 +89,7 @@ Retain both the receipt and bundle unchanged through staging and application.
 
 ## Staging interface
 
-Use the existing Darwin `cargo-internal-rewire` arguments and paired procedure,
+Use the existing Darwin `cargo-internal-rewire` (or `cargo-removal`) arguments and paired procedure,
 substituting these local arguments for **all four** Actions fields (`--run-id`,
 `--job-id`, `--artifact-id`, `--artifact-expires-at`):
 
@@ -109,7 +110,7 @@ measured checkout (`--source-sha`) must be clean at their exact commits, and the
 stage records both identities (`stagingTool` names the renderer only; it is not
 approval for a later apply). Without `--source-root`, the measured checkout is
 the current directory. Relative input file paths (`--old-cargo-lock`,
-`--rewire-declaration`, `--old-closure`, `--new-closure`,
+`--rewire-declaration`, `--removal-declaration`, `--old-closure`, `--new-closure`,
 `--reviewed-cargo-transition`) are read from the measured checkout. For the
 security profile, use [LOCAL-SECURITY-4314.md](LOCAL-SECURITY-4314.md) instead;
 only that profile requires `--reviewed-cargo-transition`.

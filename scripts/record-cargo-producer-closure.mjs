@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Records the selected dependency closure of one producer package for one
-// target as a receipt that `--reason cargo-internal-rewire` consumes
-// (scripts/rebaseline-island-size-{linux,darwin}.mjs, #4258).
+// target as a receipt that `--reason cargo-internal-rewire` (#4258) and
+// `--reason cargo-removal` (#4388) consume
+// (scripts/rebaseline-island-size-{linux,darwin}.mjs).
 //
 // The closure is what `cargo metadata --locked --filter-platform <target>`
 // resolves for the producer: every package reachable over normal and build
