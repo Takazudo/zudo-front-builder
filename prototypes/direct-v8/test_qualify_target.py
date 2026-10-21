@@ -102,6 +102,23 @@ class BinaryHeader(unittest.TestCase):
             self.assertNotIn(qualify.binary_architecture(data), qualify.BINARY_FORMATS.values(), data[:8])
 
 
+class Selection(unittest.TestCase):
+    def test_cargo_args_per_selection(self):
+        self.assertEqual(qualify.selection_args("default"), ([], "default"))
+        self.assertEqual(qualify.selection_args("direct-v8"),
+                         (["--no-default-features", "--features", "direct-v8"], "direct-v8"))
+        self.assertEqual(qualify.selection_args("direct-v8", ["rolldown-prototype"])[1], "direct-v8,rolldown-prototype")
+
+    def test_selections_match_graph_script(self):
+        graph_spec = importlib.util.spec_from_file_location("record_graph", SCRIPT.with_name("record-graph.py"))
+        graph = importlib.util.module_from_spec(graph_spec)
+        graph_spec.loader.exec_module(graph)
+        self.assertEqual(qualify.SELECTIONS, graph.SELECTIONS)
+        for selection in qualify.SELECTIONS:
+            self.assertEqual(qualify.selection_args(selection, ["rolldown-prototype"] if selection != "default" else []),
+                             graph.selection_args(selection, ["rolldown-prototype"] if selection != "default" else []))
+
+
 class Verdict(unittest.TestCase):
     def test_unperformed_checks_make_partial_never_pass(self):
         self.assertEqual(qualify.status_of({"a": {"passed": True}, "b": {"passed": None}}), "PARTIAL")
@@ -155,6 +172,36 @@ class Command(unittest.TestCase):
             self.assertEqual(row["checks"]["build"]["status"], "NOT RUN")
             self.assertNotIn("command", row["checks"]["build"])
             self.assertFalse((Path(tmp) / "row/build.log").exists())
+
+    @unittest.skipIf(NATIVE_TARGET is None or sys.platform == "win32", "needs a POSIX shipping host")
+    def test_row_records_selection_and_exact_build_command(self):
+        for selection, flags in (("default", False), ("direct-v8", True), (None, True)):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as tmp:
+                cargo, _ = self.fake(tmp, "cargo")
+                extra = ["--selection", selection] if selection else []
+                result = self.run_script(tmp, "--target", NATIVE_TARGET, "--build", "--cargo", cargo, *extra,
+                                         "--source-sha", "0" * 40, "--output", Path(tmp) / "row")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                row = json.loads((Path(tmp) / "row/row.json").read_text())
+                self.assertEqual(row["selection"], selection or "direct-v8")
+                self.assertEqual(row["features"], selection if selection == "default" else "direct-v8")
+                self.assertEqual("--no-default-features" in row["build_command"], flags)
+                self.assertEqual("--features" in row["build_command"], flags)
+                self.assertNotIn("command", row["checks"]["build"])
+
+    def test_default_selection_cannot_combine_with_rolldown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_script(tmp, "--target", "x86_64-unknown-linux-gnu", "--binary", "missing", "--rolldown",
+                                     "--selection", "default", "--source-sha", "0" * 40, "--output", Path(tmp) / "row")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--rolldown", result.stderr)
+            self.assertFalse((Path(tmp) / "row").exists())
+
+    def test_unknown_selection_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_script(tmp, "--target", "x86_64-unknown-linux-gnu", "--binary", "missing",
+                                     "--selection", "deno", "--source-sha", "0" * 40, "--output", Path(tmp) / "row")
+            self.assertEqual(result.returncode, 2)
 
     def test_existing_output_is_a_usage_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:

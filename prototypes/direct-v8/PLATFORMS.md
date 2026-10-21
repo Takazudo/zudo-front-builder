@@ -52,6 +52,17 @@ A check it cannot perform or finish is `NOT RUN`/`TIMEOUT` and makes the row
 `PARTIAL`, never `PASS`. On a low-memory Mac set `CARGO_BUILD_JOBS=1` for the
 build, per the root `CLAUDE.md`.
 
+`--selection` picks the build the row qualifies and is recorded as `selection` in
+`row.json`: `direct-v8` (default) is `--no-default-features --features direct-v8`,
+`default` is the CLI's default features with no flags. The exact cargo arguments
+go to the build and to `record-graph.py`, which resolves the same selection. For
+`--cli` its forbidden set is only `deno_*` and `serde_v8`: the CLI legitimately
+depends on `zfb-render`/`zfb-build`, which only the standalone js-host graph
+forbids. Until the default engine flips, `--selection default` resolves the
+Deno-backed default, so its graph check (and the row) reports FAIL on `deno_core`;
+that is the honest result, not a harness fault. `--rolldown` cannot combine with
+`--selection default`.
+
 `--rolldown` qualifies `direct-v8,rolldown-prototype`: it builds that selection,
 requires the binary to contain the Rolldown prototype crate (and refuses it
 otherwise), and runs the lifecycle observer with `ZFB_ROLLDOWN_PROTOTYPE=1`. That observer is a small
@@ -115,7 +126,7 @@ install step was skipped after the failed lifecycle row; that step, and the
 Linux packaging steps the packed consumer with Rolldown needs, now run after a
 failed row too.
 
-Darwin is NOT RUN. On the Rolldown leg the lane also builds the Linux x86_64
+No Darwin CI row is recorded in these results yet. On the Rolldown leg the lane also builds the Linux x86_64
 packed carrier's scaffolded site with `packed-consumer.py --rolldown`, which
 requires the Rolldown backend's own `[zfb-timing] rolldown-prototype:` line as
 proof that Rolldown bundled it. That is not run on Windows, where every Rolldown
@@ -127,24 +138,49 @@ which stops at the known `routes` case below.
 ## Opt-in CI lane
 
 `.github/workflows/direct-v8.yml` records native rows on standard
-GitHub-hosted runners: Linux x86_64 (`ubuntu-latest`), Linux arm64
-(`ubuntu-24.04-arm`) and Windows x64 (`windows-latest`). Its row jobs run only for a PR labelled `direct-v8` (and
-`direct-v8-rolldown` for the Rolldown variant), or by manual dispatch once the
-workflow is on the default branch. It is not a required check. On other PRs only
-a small `plan` job runs and the row job reports as skipped. Each row run:
+GitHub-hosted runners (free for this public repo): Linux x86_64
+(`ubuntu-latest`), Linux arm64 (`ubuntu-24.04-arm`), Windows x64
+(`windows-latest`), Darwin arm64 (`macos-latest`) and Darwin x64
+(`macos-15-intel`, the label `release.yml` uses). Five rows, one per shipping
+target. Its row jobs run only for a labelled PR or by manual dispatch once the
+workflow is on the default branch; it is not a required check. On other PRs only
+a small `plan` job runs and the row jobs report as skipped, never as a green
+no-op.
 
-- runs the offline controls and the five dependency resolution rows;
-- runs `qualify-target.py --build` against the PR head SHA (not the merge ref);
+| Request | Row label | Selection | Cargo features |
+| --- | --- | --- | --- |
+| PR label `direct-v8`; dispatch `selection=direct-v8` (default) | `direct-v8` | `direct-v8` | `--no-default-features --features direct-v8` |
+| PR label `native-default`; dispatch `selection=default` | `native-default` | `default` | none (the default build) |
+| PR label `direct-v8-rolldown`; dispatch `rolldown=true` (added to the chosen selection) | `direct-v8-rolldown` | `direct-v8` | `--no-default-features --features direct-v8,rolldown-prototype` |
+
+Recipe for a five-target run at a PR head: dispatch the workflow on the PR's
+branch (`gh workflow run direct-v8.yml --ref <branch> -f selection=direct-v8`),
+or add the label; read each of the five rows' `row.json` (artifacts
+`direct-v8-<host>-<direct|default|rolldown>`, `host` one of `linux-x64`,
+`linux-arm64`, `windows-x64`, `darwin-arm64`, `darwin-x64`) and record the run,
+job and artifact IDs and the first result of each row. A failing row needs a
+named cause and an owner issue. Run it again with `selection=default` to qualify
+the default build; before the default flip its graph check fails on `deno_core`.
+Each row run:
+
+- runs the offline controls and the five dependency resolution rows for the
+  selection (on the non-Linux-x64 hosts, that host's own target);
+- runs `qualify-target.py --build --selection <selection>` against the PR head
+  SHA (not the merge ref);
 - records the native binary's highest GLIBC symbol (not gated: the binary is
   built on the runner, not with the shipping `cross` recipe);
 - on Linux x86_64, builds the release binary with the shipping `cross` recipe
   (Amazon Linux 2023 image) and fails if it needs more than GLIBC 2.34, then
   runs `scripts/smoke-packed-clean-room.sh` with that binary and the
   `cross`-built CSS addon (local tarballs, `create-zfb` scaffold, site build);
-- on Windows x64, builds the release binary and CSS addon natively with cargo,
-  as `release.yml` does but with the opt-in direct-v8 selection and pinned ICU
-  that `release.yml` does not build, and runs `packed-consumer.py` (the cross-platform
-  counterpart of the smoke script, which stays the Linux required check).
+- on Windows x64 and on both Darwin hosts, builds the release binary and CSS
+  addon natively with cargo (`scripts/build-css-node.sh`), as `release.yml`
+  does but with the row's selection (no feature flags for `native-default`), and
+  runs `packed-consumer.py` for the `win32-x64-msvc`, `darwin-arm64` or
+  `darwin-x64` carrier (the cross-platform counterpart of the smoke script,
+  which stays the Linux required check);
+- on both Darwin hosts, records `otool -L` of the harness and release binaries
+  (`otool-L.txt`; `row.json` also holds the harness binary's);
 - on Windows x64 Rolldown rows, runs `cargo test -p zfb-rolldown-prototype
   --features native --lib`, the only tests that see Windows verbatim canonical
   paths (log: `rolldown-prototype-lib-tests.log`).
@@ -159,8 +195,10 @@ clean-room logs, the CLI case reports and logs, the Rolldown prototype test log,
 the GLIBC record and disk snapshots, kept for 14 days. The runner uses the
 current stable Rust, so the exact toolchain of a row comes from its `row.json`,
 and a CI row is evidence for that exact SHA and toolchain only.
-Darwin rows need a Mac runner, which is not approved, and are not part of this
-lane; nor is the arm64 shipping `cross` recipe.
+The arm64 shipping `cross` recipe (QEMU) is not part of this lane. The Darwin
+rows are NOT RUN in the table above until a dispatch records them; a Darwin
+arm64 pass on the owner's Mac at `f5c4b48` predates this lane and is not a CI
+row. The separate `harness-macos` job runs only the offline Python harness.
 
 ## Rolldown findings
 
@@ -205,8 +243,8 @@ request decoder; it belongs to the same owners and is not applied here.
 
 - Packaging: Linux x86_64 (shipping `cross` recipe, GLIBC 2.34 at `89f1281`)
   and Windows x64 (native release recipe at `349b112`) have packed clean-room
-  consumer rows. The arm64 `cross` recipe (QEMU) and the Darwin carriers are
-  NOT RUN.
+  consumer rows. The Darwin carriers have a row in the CI lane but no recorded
+  result yet (NOT RUN until dispatched); the arm64 `cross` recipe (QEMU) is NOT RUN.
 - Size and provenance: the Cargo.lock delta (`zfb-js-host` adds the external
   `deno_core` edge) is not admitted by the Darwin/Linux contracts. Admission
   belongs to the security/Darwin evidence lane and the owner.
