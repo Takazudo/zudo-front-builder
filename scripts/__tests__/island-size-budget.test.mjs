@@ -1380,22 +1380,25 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: for Linux, the v4.5.3
-// cargo-internal-rewire contract (#4258, 7b68afda) that the v4.5.4 release-bump
-// replaced; for Darwin, the same paired rewire at bda633b, the input of the
-// rustls-security-4314 producer-lock transition (#4314). Each must equal a
-// frozen verbatim fixture, so the metadata check also holds in shallow CI; full
-// checkouts also compare git bytes and that no intermediate contract was skipped.
+// Exact immediate predecessors of the live contracts, the inputs of the
+// rustls-security-4314 producer-lock transition (#4314): for Linux, the v4.5.4
+// release-bump contract (ea90fe12), cited by the tool at be106cb2, which holds the
+// same bytes; for Darwin, the paired v4.5.3 cargo-internal-rewire (#4258) at
+// bda633b. Each must equal a frozen verbatim fixture, so the metadata check also
+// holds in shallow CI; full checkouts also compare git bytes and that no
+// intermediate contract was skipped.
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "7b68afda48c7825201fd8811ea287cda5a5cb8c9",
-    sha256: "f505520217649c5cd0a614fe68c83cd500f44f4aafd8c599082348a2d6e7cf3a",
-    fixture: "fixtures/island-size-linux-x64-v4.5.3-rewire.json",
-    outcome: "cargo-internal-rewire-transition",
-    packageVersion: "4.5.3",
-    baselineSourceSha: "792c812325310df73540cc20aa590bb8de049d96",
-    baselineRunId: 39008132372,
+    commit: "be106cb261fd8bbdd0fbe83d64f64cc1649919e6",
+    sha256: "9f8cfcada57773cfabfea3207a41367825ccf63f7239ed506d7781ab056ad211",
+    fixture: "fixtures/island-size-linux-x64-v4.5.4-release.json",
+    outcome: "release-version-stamp",
+    packageVersion: "4.5.4",
+    baselineSourceSha: "17e69371428fa85d16bd9c9a8fc7781378cc6664",
+    baselineRunId: 39465679017,
+    // The Linux re-measurement on top of v4.5.4 moved no actual gzip total.
+    actualGzipMoved: {},
   },
   {
     file: "decision.json",
@@ -1406,6 +1409,24 @@ const repinnedFromContracts = [
     packageVersion: "4.5.3",
     baselineSourceSha: "792c812325310df73540cc20aa590bb8de049d96",
     baselineRunId: 39015514836,
+    // The README records these 11 moved rows (#4314 decision D2).
+    actualGzipMoved: {
+      workspace: {
+        "blog-theme": -3,
+        "json-api": -3,
+        model: -2,
+        "scalar-signal": -3,
+        "show-for": 3,
+      },
+      packed: {
+        "blog-theme": 2,
+        "event-only": -1,
+        "json-api": 4,
+        model: 1,
+        "multi-island": 3,
+        "scalar-signal": -1,
+      },
+    },
   },
 ];
 
@@ -1570,11 +1591,14 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(rewired.baselineEvidence.actualGzip).toEqual(released.baselineEvidence.actualGzip);
   });
 
-  it("moves the live Linux contract from the v4.5.3 rewire bytes only by the v4.5.4 release bump", () => {
+  it("moved the v4.5.4 Linux contract from the v4.5.3 rewire bytes only by the release bump", () => {
     const rewired = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.3-rewire.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    // Verbatim decision-linux-x64.json as committed by the v4.5.4 release bump (ea90fe12).
+    const blob = readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.5.4-release.json"));
+    expect(sha(blob)).toBe("9f8cfcada57773cfabfea3207a41367825ccf63f7239ed506d7781ab056ad211");
+    const live = JSON.parse(blob.toString("utf8"));
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("4.5.4");
     expect(live.toolchain.cargoLockSha256).toBe(rewired.toolchain.cargoLockSha256);
@@ -1615,7 +1639,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(fixed(live)).toEqual(fixed(rewired));
   });
 
-  for (const { file, fixture } of repinnedFromContracts) {
+  for (const { file, fixture, actualGzipMoved } of repinnedFromContracts) {
     it(
       "moves the live " +
         file +
@@ -1663,17 +1687,16 @@ describe("live contracts preserve released evidence and authentic predecessors",
             expect(live.baselineEvidence).not.toHaveProperty(key);
           }
         } else {
-          expect(live.baselineSourceSha).toBe("0355ad78a4f8d2c240844d2b48da7c2769f6de25");
+          expect(live.baselineSourceSha).toBe("949f4cccbdd48ed6d8c8208ec51e93c1dee37b08");
           expect(live.baselineEvidence).toMatchObject({
             event: predecessor.baselineEvidence.event,
-            sourceSha: "e397161c609e780a79ec4273c907168355518aab",
-            runId: 39302891207,
-            jobId: 118232731946,
+            sourceSha: "60d80bcd5e557a141e3fe021336e1054a34b92b4",
+            runId: 39570410628,
+            jobId: 119122855750,
           });
         }
         expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
-        // Actual gzip is transfer-size evidence, not a ceiling; the README
-        // records these 11 moved rows for both platforms (#4314 decision D2).
+        // Actual gzip is transfer-size evidence, not a ceiling.
         expect(Object.keys(live.baselineEvidence.actualGzip)).toEqual(
           Object.keys(predecessor.baselineEvidence.actualGzip),
         );
@@ -1687,23 +1710,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
             if (delta !== 0) (moved[mode] ??= {})[fixtureName] = delta;
           }
         }
-        expect(moved).toEqual({
-          workspace: {
-            "blog-theme": -3,
-            "json-api": -3,
-            model: -2,
-            "scalar-signal": -3,
-            "show-for": 3,
-          },
-          packed: {
-            "blog-theme": 2,
-            "event-only": -1,
-            "json-api": 4,
-            model: 1,
-            "multi-island": 3,
-            "scalar-signal": -1,
-          },
-        });
+        expect(moved).toEqual(actualGzipMoved);
       },
     );
   }
