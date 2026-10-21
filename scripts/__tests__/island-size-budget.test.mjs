@@ -1380,11 +1380,10 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: for Linux, the v4.5.4
-// release-bump contract (ea90fe12), cited by the tool at be106cb2, which holds the
-// same bytes, and moved by the rustls-security-4314 producer-lock transition
-// (#4314); for Darwin, that transition's own v4.5.3 output (bda633b, cited at main
-// f9dd1f5f), moved by the owner-attested local v4.5.4 release-bump (ZFB-L2-022).
+// Exact immediate predecessors of the live contracts, both cited at c74faf45 and
+// moved by the paired direct-V8 cargo-internal-rewire (ZFB-L2-024 step 2): for
+// Linux, the rustls-security-4314 producer-lock transition (#4314); for Darwin,
+// the owner-attested local v4.5.4 release-bump (ZFB-L2-022).
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -1392,34 +1391,34 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "be106cb261fd8bbdd0fbe83d64f64cc1649919e6",
-    sha256: "9f8cfcada57773cfabfea3207a41367825ccf63f7239ed506d7781ab056ad211",
-    fixture: "fixtures/island-size-linux-x64-v4.5.4-release.json",
-    outcome: "release-version-stamp",
+    commit: "c74faf450160b9eec6c995b5223e172209d62b14",
+    sha256: "386bf4ab65cf4e909eb1e741e670fade4c60e141d325cb626350397a8eeb2191",
+    fixture: "fixtures/island-size-linux-x64-v4.5.4-rustls.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "4.5.4",
-    baselineSourceSha: "17e69371428fa85d16bd9c9a8fc7781378cc6664",
-    baselineRunId: 39465679017,
+    baselineSourceSha: "949f4cccbdd48ed6d8c8208ec51e93c1dee37b08",
+    baselineRunId: 39570410628,
   },
   {
     file: "decision.json",
-    commit: "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
-    sha256: "8e270bc846be9a4f5140cca1fd4c22d10c58378f9bf1bf7c73b755c702bb8b27",
-    fixture: "fixtures/island-size-darwin-v4.5.3-rustls.json",
-    outcome: "cargo-producer-lock-transition",
-    packageVersion: "4.5.3",
-    baselineSourceSha: "bda633b3589e201737b02cf2060f7b24d41a45a7",
+    commit: "c74faf450160b9eec6c995b5223e172209d62b14",
+    sha256: "17874673d1a3bd02cda03b543e64eedb1dd7f983ab7c844dbf975727e37f532d",
+    fixture: "fixtures/island-size-darwin-v4.5.4-release.json",
+    outcome: "release-version-stamp",
+    packageVersion: "4.5.4",
+    baselineSourceSha: "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
     baselineRunId: undefined,
   },
 ];
 
 // The rustls-security-4314 transition (#4314), each platform's before and after
-// contract: Linux's after is still live; Darwin's is the frozen predecessor of
-// its v4.5.4 release-bump.
+// contract, both frozen: Linux's after is the predecessor of the direct-V8
+// rewire; Darwin's is the predecessor of its v4.5.4 release-bump.
 const rustlsTransitions = [
   {
     file: "decision-linux-x64.json",
     before: "fixtures/island-size-linux-x64-v4.5.4-release.json",
-    after: null,
+    after: "fixtures/island-size-linux-x64-v4.5.4-rustls.json",
     // The Linux re-measurement on top of v4.5.4 moved no actual gzip total.
     actualGzipMoved: {},
   },
@@ -1659,14 +1658,12 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   for (const { file, before, after, actualGzipMoved } of rustlsTransitions) {
     it(
-      "moves " +
-        (after ? "the frozen " + after : "the live " + file) +
+      "moves the frozen " +
+        after +
         " from its frozen predecessor only by the rustls-security-4314 transition",
       () => {
         const predecessor = JSON.parse(readFileSync(join(testDir, before), "utf8"));
-        const live = JSON.parse(
-          readFileSync(after ? join(testDir, after) : join(sizeDir, file), "utf8"),
-        );
+        const live = JSON.parse(readFileSync(join(testDir, after), "utf8"));
         expect(live.outcome).toBe("cargo-producer-lock-transition");
         expect(predecessor.toolchain.cargoLockSha256).toBe(
           "230f0acb80e141c66dc5cfe50d028a840103ea8fcce5ff88250b7b0668e1b138",
@@ -1735,11 +1732,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
     );
   }
 
-  it("moves the live decision.json from the frozen rustls contract only by the local v4.5.4 release-bump", () => {
+  it("moves the frozen Darwin v4.5.4 release contract from the frozen rustls contract only by the local release-bump", () => {
     const predecessor = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-darwin-v4.5.3-rustls.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    const live = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-darwin-v4.5.4-release.json"), "utf8"),
+    );
     expect(live.outcome).toBe("release-version-stamp");
     expect(predecessor.toolchain.packageVersion).toBe("4.5.3");
     expect(live.toolchain.packageVersion).toBe("4.5.4");
@@ -1768,6 +1767,87 @@ describe("live contracts preserve released evidence and authentic predecessors",
     };
     expect(fixed(live)).toEqual(fixed(predecessor));
   });
+
+  // The paired direct-V8 rewire (ZFB-L2-024 step 2): Linux from health run
+  // 39589800240 at merge source 69192eda, Darwin from owner-attested local receipt
+  // 9ad4eeaa, both measured at #4368 head c74faf45 with no actual gzip change.
+  for (const { file, predecessorFixture, closure } of [
+    {
+      file: "decision-linux-x64.json",
+      predecessorFixture: "fixtures/island-size-linux-x64-v4.5.4-rustls.json",
+      closure: "x86_64-unknown-linux-gnu",
+    },
+    {
+      file: "decision.json",
+      predecessorFixture: "fixtures/island-size-darwin-v4.5.4-release.json",
+      closure: "aarch64-apple-darwin",
+    },
+  ]) {
+    it(
+      "moves the live " +
+        file +
+        " from its frozen predecessor only by the direct-V8 cargo-internal-rewire",
+      () => {
+        const predecessor = JSON.parse(readFileSync(join(testDir, predecessorFixture), "utf8"));
+        const live = JSON.parse(readFileSync(join(sizeDir, file), "utf8"));
+        expect(live.outcome).toBe("cargo-internal-rewire-transition");
+        expect(predecessor.toolchain.cargoLockSha256).toBe(
+          "563194257102ac98a57ba6561fc0084c35518aaf83e21f68106d07e0c604f5bd",
+        );
+        expect(live.toolchain.cargoLockSha256).toBe(
+          "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+        );
+        expect(live.baselineEvidence.cargoRewire).toMatchObject({
+          oldSha: predecessor.toolchain.cargoLockSha256,
+          newSha: live.toolchain.cargoLockSha256,
+          oldLockSource: {
+            commit: "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+            path: "Cargo.lock",
+            sha256: predecessor.toolchain.cargoLockSha256,
+          },
+          newLockSource: {
+            commit: "c74faf450160b9eec6c995b5223e172209d62b14",
+            path: "Cargo.lock",
+            sha256: live.toolchain.cargoLockSha256,
+          },
+          declaration: {
+            path: "prototypes/direct-v8/admission/rewire-declaration.json",
+            sha256: "ce15e6cb5f9eff48902b859b2d35060e617bee639d8500440deafb0e751f1dba",
+          },
+          added: [],
+          removed: [],
+          closure: { target: closure, added: [] },
+        });
+        expect(live.baselineEvidence.cargoRewire.changed.map((row) => row.id)).toEqual([
+          "zfb-js-host@0.0.0",
+        ]);
+        expect(live.baselineEvidence).not.toHaveProperty("cargoTransition");
+        if (file === "decision.json") {
+          expect(live.baselineSourceSha).toBe("c74faf450160b9eec6c995b5223e172209d62b14");
+          expect(live.baselineEvidence).toMatchObject({
+            event: "local-native",
+            sourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
+            stagingTool: { commit: "c74faf450160b9eec6c995b5223e172209d62b14" },
+            localReceipt: {
+              sha256: "9ad4eeaa6f254cb46e9a887fb0687d7ef9c64cfecae2d6622f532f56636fdd46",
+            },
+          });
+          for (const key of ["runId", "jobId", "artifact"]) {
+            expect(live.baselineEvidence).not.toHaveProperty(key);
+          }
+        } else {
+          expect(live.baselineEvidence).toMatchObject({
+            event: "ci",
+            runId: 39589800240,
+            jobId: 119187618804,
+            sourceSha: "69192eda2f298444be1043da02d7bc70a8c035d4",
+          });
+        }
+        expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
+        expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+      },
+    );
+  }
 
   it("keeps the dated README corrections", () => {
     const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
