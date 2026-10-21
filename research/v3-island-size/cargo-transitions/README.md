@@ -120,3 +120,7 @@ The commands above now use the immutable `--old-cargo-ref` input from #4219. The
 ## Exact rustls security replacement (#4314)
 
 [RUSTLS-4314.md](RUSTLS-4314.md) records the separately approved rustls 0.23.45 → 0.23.46 lock pair. Its own exact-byte decision checker is selected through the same reviewed-transition entry point. It does not broaden this historical #318 authorization or apply either live platform contract.
+
+## Exact noyalib 0.0.58 adoption (#4268)
+
+[NOYALIB-4268.md](NOYALIB-4268.md) records the owner-approved noyalib / noyalib-serde-yaml 0.0.55 → 0.0.58 lock pair. It uses the same exact-byte checker and reviewed-transition entry point as the #4314 replacements, and does not broaden this historical #318 authorization.

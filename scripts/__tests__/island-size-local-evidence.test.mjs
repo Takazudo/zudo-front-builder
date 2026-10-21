@@ -19,7 +19,10 @@ import {
   NEW_LOCK_SHA256,
   OLD_LOCK_SHA256,
 } from "../rustls-security-transition.mjs";
-import { WEBPKI_SECURITY_TRANSITION } from "../security-lock-transitions.mjs";
+import {
+  NOYALIB_LOCK_TRANSITION,
+  WEBPKI_SECURITY_TRANSITION,
+} from "../security-lock-transitions.mjs";
 const source = "a".repeat(40);
 const PROVENANCE_REPINS = [
   ["release-bump", "release-version-stamp"],
@@ -401,6 +404,34 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     ["webpki id on rustls locks", { ...security, review: webpki.review }],
     ["rustls old lock with webpki new lock", { ...webpki, oldSha: OLD_LOCK_SHA256 }],
   ])("rejects a mixed security decision: %s", (_label, transition) => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: transition },
+      { cargoLockSha256: transition.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
+  });
+  const noyalib = {
+    oldSha: NOYALIB_LOCK_TRANSITION.oldLockSha256,
+    newSha: NOYALIB_LOCK_TRANSITION.newLockSha256,
+    review: {
+      id: NOYALIB_LOCK_TRANSITION.id,
+      manifestSha256: NOYALIB_LOCK_TRANSITION.decisionSha256,
+    },
+  };
+  it("accepts the noyalib 0.0.58 transition as far as the retained-file read", () => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: noyalib },
+      { cargoLockSha256: noyalib.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+  });
+  it.each([
+    ["webpki id on noyalib locks", { ...noyalib, review: webpki.review }],
+    ["noyalib id on webpki locks", { ...webpki, review: noyalib.review }],
+    ["webpki old lock with noyalib new lock", { ...noyalib, oldSha: webpki.oldSha }],
+  ])("rejects a mixed noyalib decision: %s", (_label, transition) => {
     const s = staged(
       "cargo-producer-lock",
       { cargoTransition: transition },

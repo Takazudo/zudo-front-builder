@@ -41,6 +41,7 @@ jobs:
             scripts/__tests__/island-size-local-evidence.test.mjs \
             scripts/__tests__/rustls-security-transition.test.mjs \
             scripts/__tests__/webpki-security-transition.test.mjs \
+            scripts/__tests__/noyalib-lock-transition.test.mjs \
             scripts/__tests__/rebaseline-island-size-darwin.test.mjs \
             scripts/__tests__/rebaseline-island-size-linux.test.mjs \
             2>&1 | tee "$RUNNER_TEMP/local-evidence-tests.log"
