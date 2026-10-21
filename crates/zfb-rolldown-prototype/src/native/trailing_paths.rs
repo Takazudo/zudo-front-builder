@@ -83,6 +83,8 @@ impl Plugin for TrailingPaths {
         // Preserve the selected exact/wildcard mapping's complete target order:
         // an ordinary target before a trailing target must still win.
         for target in targets {
+            // Rewrite only targets actually tried, so an unused one can't fail.
+            let target = super::verbatim_specifiers::ordinary_target(target, cfg!(windows))?;
             if trailing_separator(&target) {
                 // esbuild's Dir/Base split probes dir/basename as a FILE before
                 // package main/index. A normal resolve of dir/basename could
@@ -210,8 +212,14 @@ mod tests {
             fs::write(path, value).unwrap();
         }
 
+        // Like ZFB's prepared tsconfig: on Windows, joining onto a verbatim
+        // root drops a trailing separator, which ZFB writes back.
         fn target(&self, path: &str) -> String {
-            self.0.join(path).to_string_lossy().into_owned()
+            let mut target = self.0.join(path).to_string_lossy().into_owned();
+            if path.ends_with('/') && !trailing_separator(Path::new(&target)) {
+                target.push('/');
+            }
+            target
         }
 
         fn config(&self, paths: Value) {

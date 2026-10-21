@@ -97,10 +97,12 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+#[cfg(feature = "direct-v8")]
+use crate::shared_runtime::SharedRuntime as JsRuntime;
 use async_trait::async_trait;
-use deno_core::{
-    serde_v8, v8, JsRuntime, ModuleId, ModuleSpecifier, PollEventLoopOptions, RuntimeOptions,
-};
+#[cfg(not(feature = "direct-v8"))]
+use deno_core::JsRuntime;
+use deno_core::{serde_v8, v8, ModuleId, ModuleSpecifier, PollEventLoopOptions, RuntimeOptions};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -247,6 +249,7 @@ pub struct EmbeddedV8RenderHost {
     /// frozen — bundle code can no longer lower a cap for the duration
     /// of one probe, which is the point.
     limits_json: String,
+    _thread_guard: zfb_js_host::process::HostThreadGuard,
 }
 
 // SAFETY-of-shape note: explicitly `!Send + !Sync` via `*const ()`-style
@@ -314,6 +317,9 @@ impl EmbeddedV8RenderHost {
     }
 
     fn with_loader_and_limits(loader: BundleModuleLoader, limits_json: String) -> Result<Self> {
+        crate::initialize_v8().map_err(RenderError::Runtime)?;
+        let thread_guard =
+            zfb_js_host::process::HostThreadGuard::acquire().map_err(RenderError::Runtime)?;
         let loader = Rc::new(loader);
         // The host runs on a bare `deno_core::JsRuntime` with no
         // extra extensions. Web Platform globals (Request / Response /
@@ -338,6 +344,7 @@ impl EmbeddedV8RenderHost {
             last_install_error: RefCell::new(None),
             mode_nonce: generate_mode_nonce()?,
             limits_json,
+            _thread_guard: thread_guard,
         };
         host.bootstrap_host_shim()?;
         Ok(host)

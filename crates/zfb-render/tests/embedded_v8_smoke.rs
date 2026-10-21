@@ -589,7 +589,8 @@ async fn dispatch_fetch_errors_when_called_before_bundle() {
 
     // Part 2: load a non-workerd-shaped module (no `default` export),
     // then call dispatch_fetch — the error must surface the install
-    // failure reason.
+    // failure reason. Only one native host may be alive per thread.
+    drop(host);
     let mut host2 = EmbeddedV8RenderHost::new().expect("host boot");
     host2
         .execute_module("util.mjs", "export const helper = () => 42;")
@@ -675,6 +676,8 @@ async fn good_bundle_dispatches_and_bad_only_host_reports_install_error() {
     assert_eq!(resp.body_utf8(), Some("ok-after-good"));
 
     // Host B: load a bad module — dispatch_fetch must report the install error.
+    // Only one native host may be alive per thread.
+    drop(host_good);
     let mut host_bad = EmbeddedV8RenderHost::new().expect("host boot (bad path)");
     host_bad
         .execute_module("util.mjs", "export const x = 1;")

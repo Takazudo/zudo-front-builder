@@ -408,7 +408,7 @@ pub fn build_resolver_inputs(
         // its own leak surface is deliberately left untouched here — not an
         // oversight.
         let _ = tmp.as_file().lock_shared();
-        let posix_target = path_to_posix_string(tmp.path());
+        let posix_target = esbuild_target_spelling(tmp.path());
         if user_claims_specifier(user_tsconfig_paths, specifier) {
             // The user's own `compilerOptions.paths` already claims this
             // specifier (exact key, or a wildcard it falls under). Suppress
@@ -450,6 +450,29 @@ pub fn build_resolver_inputs(
         plugin_alias_args,
         _temp_files: temp_files,
     })
+}
+
+/// POSIX spelling of a materialized virtual-module path for esbuild.
+///
+/// The SSR bundler's working dir is a canonicalized shadow directory, which on
+/// Windows carries the `\\?\C:\` verbatim prefix. Its POSIX form `//?/C:/…`
+/// reads to esbuild as a protocol-relative URL, so the import is left in the
+/// bundle and the embedded V8 host then cannot load `file:///?/C:/…` (#4343).
+/// Only the drive form is rewritten; verbatim UNC and device paths keep theirs.
+fn esbuild_target_spelling(path: &Path) -> String {
+    let spelling = path_to_posix_string(path);
+    if let Some(ordinary) = strip_verbatim_disk_prefix(&spelling) {
+        return ordinary.to_owned();
+    }
+    spelling
+}
+
+/// `//?/C:/x` to `C:/x`; `None` for any other spelling.
+fn strip_verbatim_disk_prefix(spelling: &str) -> Option<&str> {
+    let rest = spelling.strip_prefix("//?/")?;
+    let drive = rest.as_bytes();
+    (drive.len() >= 3 && drive[0].is_ascii_alphabetic() && drive[1] == b':' && drive[2] == b'/')
+        .then_some(rest)
 }
 
 /// True when the user's `compilerOptions.paths` already claims
@@ -1210,6 +1233,52 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn verbatim_disk_prefix_is_stripped_for_esbuild() {
+        assert_eq!(
+            strip_verbatim_disk_prefix("//?/C:/Users/a/zfb-bundler-x/.zfb-virtual-1.mjs"),
+            Some("C:/Users/a/zfb-bundler-x/.zfb-virtual-1.mjs")
+        );
+        assert_eq!(strip_verbatim_disk_prefix("//?/d:/x.mjs"), Some("d:/x.mjs"));
+        // Verbatim UNC, device paths, ordinary paths and a bare drive keep theirs.
+        assert_eq!(
+            strip_verbatim_disk_prefix("//?/UNC/server/share/x.mjs"),
+            None
+        );
+        assert_eq!(strip_verbatim_disk_prefix("//./C:/x.mjs"), None);
+        assert_eq!(strip_verbatim_disk_prefix("C:/x.mjs"), None);
+        assert_eq!(strip_verbatim_disk_prefix("/tmp/x.mjs"), None);
+        assert_eq!(strip_verbatim_disk_prefix("//?/C:"), None);
+    }
+
+    /// #4343: the SSR bundler hands a canonicalized (on Windows, `\\?\`
+    /// verbatim) shadow dir as the working dir. No esbuild target may start
+    /// with `//`, which esbuild reads as a protocol-relative URL.
+    #[test]
+    fn canonical_working_dir_yields_no_protocol_relative_targets() {
+        let dir = TempDir::new().unwrap();
+        let canonical = std::fs::canonicalize(dir.path()).unwrap();
+        let r = build_resolver_inputs(
+            &[],
+            &[("virtual:demo".into(), "export const a = 1;".into())],
+            &canonical,
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        for (_, target) in r.paths_entries.iter().chain(&r.virtual_module_alias_args) {
+            assert!(
+                !target.starts_with("//"),
+                "protocol-relative target {target}"
+            );
+            assert!(
+                Path::new(target).is_file(),
+                "target {target} is not the materialized file"
+            );
+        }
+        assert_eq!(r.virtual_module_alias_args.len(), 1);
+    }
 
     /// `build_resolver_inputs` with zero aliases + zero virtual modules
     /// returns an empty `paths_entries` and no temp files.

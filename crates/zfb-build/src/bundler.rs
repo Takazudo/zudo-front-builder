@@ -1327,6 +1327,8 @@ fn shadow_parent_dir_with_env(project_root: &Path, env: &ShadowParentEnv) -> Res
     )
 }
 
+mod shadow_parent_path;
+
 fn usable_shadow_parent_candidate(
     project_root: &Path,
     candidate: &Path,
@@ -1358,7 +1360,7 @@ fn usable_shadow_parent_candidate(
                     project_root.display()
                 )
             })?;
-            Ok(Some(canonical))
+            Ok(Some(shadow_parent_path::ordinary_shadow_parent(canonical)))
         }
         Err(error) => {
             rejected.push(format!(
@@ -2241,10 +2243,11 @@ pub fn reap_stale_shadow_sessions(parent: &Path) {
 /// no tempdir name. Linux's `/tmp` is not a symlink, so this is a no-op there
 /// (which is why the divergence is macOS-only).
 ///
-/// Gated to macOS: on Windows `fs::canonicalize` returns `\\?\`-prefixed
-/// verbatim paths, which would newly reach esbuild's entry/outfile args on a
-/// platform no CI runs tests on — and the underlying symlink divergence does
-/// not exist there (`%TEMP%` is not a symlink).
+/// Gated to macOS because the symlink divergence does not exist elsewhere
+/// (`%TEMP%` is not a symlink). The gate does not keep `\\?\` verbatim paths
+/// away from esbuild on Windows: `usable_shadow_parent_candidate` canonicalizes
+/// the shadow parent and returns the ordinary `C:\…` spelling only when it is
+/// safe (#4347); UNC, long and other verbatim parents stay `\\?\…` (#4343).
 #[cfg(target_os = "macos")]
 fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
     fs::canonicalize(work).with_context(|| {
@@ -17380,7 +17383,13 @@ mod tests {
             shadow_parent_dir_with_env(&project, &shadow_env(temp_dir.clone(), None, None, None))
                 .unwrap();
 
-        assert_eq!(parent, fs::canonicalize(temp_dir).unwrap());
+        #[cfg(not(windows))]
+        assert_eq!(parent, fs::canonicalize(&temp_dir).unwrap());
+        #[cfg(windows)]
+        assert_eq!(
+            fs::canonicalize(&parent).unwrap(),
+            fs::canonicalize(temp_dir).unwrap()
+        );
     }
 
     #[test]
@@ -17397,7 +17406,13 @@ mod tests {
         )
         .unwrap();
 
+        #[cfg(not(windows))]
         assert_eq!(parent, fs::canonicalize(xdg.join("zfb")).unwrap());
+        #[cfg(windows)]
+        assert_eq!(
+            fs::canonicalize(&parent).unwrap(),
+            fs::canonicalize(xdg.join("zfb")).unwrap()
+        );
         assert!(parent.is_dir(), "selected cache parent must be created");
     }
 
@@ -17442,13 +17457,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            parent,
+            fs::canonicalize(&parent).unwrap(),
             fs::canonicalize(local_app_data.join("zfb")).unwrap()
         );
         assert!(
             parent.is_dir(),
             "selected LOCALAPPDATA cache parent must be created"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shadow_parent_windows_drive_spelling_reaches_created_shadow() {
+        // This drive-path regression requires a short local-drive TEMP, as on
+        // the native Windows acceptance host. UNC/extended-length paths retain
+        // their spelling and are covered by shadow_parent_path's unit tests.
+        use std::path::{Component, Prefix};
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let outside = tmp.path().join("作業 with spaces");
+        fs::create_dir_all(&project).unwrap();
+        let parent =
+            shadow_parent_dir_with_env(&project, &shadow_env(outside.clone(), None, None, None))
+                .unwrap();
+        assert!(
+            matches!(parent.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_))),
+            "{parent:?}"
+        );
+        assert_eq!(
+            fs::canonicalize(&parent).unwrap(),
+            fs::canonicalize(&outside).unwrap()
+        );
+        assert!(!path_is_inside_project(&project, &parent).unwrap());
+        let shadow = tempfile::Builder::new()
+            .prefix("zfb-bundler-")
+            .tempdir_in(&parent)
+            .unwrap();
+        let entry = shadow.path().join("entry.mjs");
+        fs::write(&entry, "export default 42;").unwrap();
+        assert!(!entry.to_string_lossy().replace('\\', "/").starts_with("//"));
+        assert_eq!(fs::read_to_string(entry).unwrap(), "export default 42;");
     }
 
     #[test]

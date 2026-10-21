@@ -118,6 +118,19 @@ class CheckerProtocolTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertFalse(report["results"][1]["passed"])
 
+    def test_outer_cli_requires_the_selected_compiled_engine(self):
+        for engine in [None, BASELINE, CANDIDATE]:
+            with self.subTest(engine=engine):
+                rows = outer_receipts()
+                if engine is not None:
+                    for row in rows:
+                        row["engine"] = engine
+                runner = self.runner(framed(OUTER_PREFIX, rows))
+                proc, report = self.invoke("check-outer-config.py",
+                                           ["--runner", runner, "--engine", CANDIDATE])
+                self.assertEqual(report["passed"], engine == CANDIDATE)
+                self.assertEqual(proc.returncode, 0 if engine == CANDIDATE else 1)
+
     def test_extra_outer_receipt_is_not_silently_truncated(self):
         rows = outer_receipts()
         proc, report = self.outer(framed(OUTER_PREFIX, rows + [rows[0]]))

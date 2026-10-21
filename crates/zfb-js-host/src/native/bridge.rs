@@ -8,6 +8,7 @@ use crate::fetch::{perform_fetch, FetchError, FetchRequestSpec};
 use super::{services, values};
 
 pub(super) fn install(scope: &mut v8::PinScope) -> Result<(), String> {
+    values::install_errors(scope).ok_or("error registry installation failed")?;
     let bridge = v8::Object::new(scope);
     macro_rules! bind {
         ($name:literal, $callback:ident) => {{
@@ -257,10 +258,15 @@ fn digest(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
 }
 
 fn register_error_class(
-    _scope: &mut v8::PinScope,
-    _args: v8::FunctionCallbackArguments,
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    // Native errors already carry the fixed requested class name. No registry
-    // or general op/error-constructor framework is needed for these callbacks.
+    if catch_unwind(AssertUnwindSafe(|| {
+        values::register_error(scope, args.get(0), args.get(1));
+    }))
+    .is_err()
+    {
+        values::throw_named(scope, "Error", "native error registration callback failed");
+    }
 }

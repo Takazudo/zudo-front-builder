@@ -1,5 +1,11 @@
 # Phase 1 host contract
 
+> Phase 2 status: the nondefault actual CLI integration is implemented on
+> `feat/4301-direct-v8-cli`; see [CLI.md](CLI.md) for selection, ownership and
+> current verification status. The phase-1 observations below remain historical
+> and source-bound; an old hold is neither a current implementation claim nor
+> proof of phase-2 acceptance.
+
 This is the behavior inventory for [#4235](https://github.com/Takazudo/zudo-front-builder/issues/4235)
 and [#4236](https://github.com/Takazudo/zudo-front-builder/issues/4236), frozen from
 `main` at `6fb3fbe0103c5c90799c3262ca5c1ab9ade0f27e` on 2026-10-14. The epic and

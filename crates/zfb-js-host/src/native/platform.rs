@@ -27,7 +27,7 @@ struct QueueState {
 }
 
 #[derive(Default)]
-pub(super) struct ForegroundQueue {
+pub struct ForegroundQueue {
     state: Mutex<QueueState>,
 }
 impl ForegroundQueue {
@@ -120,7 +120,7 @@ impl ForegroundQueue {
     }
 }
 
-pub(super) struct NativePlatform;
+pub struct NativePlatform;
 impl NativePlatform {
     fn post(isolate: *mut c_void, task: v8::Task, delay: Option<Duration>) {
         // PlatformImpl is entered through upstream's C ABI trampoline. A custom

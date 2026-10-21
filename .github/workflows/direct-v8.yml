@@ -1,0 +1,468 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to the same SHAs as
+# health.yml; bump them together.
+#
+# Opt-in direct-V8 lane (#4302, #4303 blocker "no direct-v8 CI lane"). It runs
+# only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` for the
+# Rolldown variant) or on manual dispatch, so it is never a required check. On
+# other PRs only the small `plan` job runs and the row jobs are skipped. It
+# records native rows with the harness in prototypes/direct-v8/PLATFORMS.md on
+# standard GitHub-hosted runners: Linux x86_64, Linux arm64 and Windows x64.
+# Darwin rows need a Mac runner, which is not approved, and stay NOT RUN.
+
+name: direct-v8 (opt-in)
+
+on:
+  pull_request:
+    branches: [main, "base/**"]
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      rolldown:
+        description: Also qualify direct-v8,rolldown-prototype
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Decide which rows were asked for, so an unrequested row is skipped rather
+  # than reported as a green no-op.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      features: ${{ steps.plan.outputs.features }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          INPUT_ROLLDOWN: ${{ inputs.rolldown }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          event, action, label = os.environ["EVENT"], os.environ["ACTION"], os.environ["LABEL"]
+          labels = set(json.loads(os.environ["LABELS"] or "[]") or [])
+          if event == "workflow_dispatch":
+              wanted = ["direct-v8"] + (["direct-v8-rolldown"] if os.environ["INPUT_ROLLDOWN"] == "true" else [])
+          elif action == "labeled":
+              # Only the label just added starts work; an unrelated label never does.
+              wanted = [label] if label in ("direct-v8", "direct-v8-rolldown") else []
+          else:
+              wanted = sorted(labels & {"direct-v8", "direct-v8-rolldown"})
+          features = {"direct-v8": "direct-v8", "direct-v8-rolldown": "direct-v8,rolldown-prototype"}
+          print("features=" + json.dumps([features[name] for name in wanted]))
+          PY
+          cat "$GITHUB_OUTPUT"
+
+  linux-x64:
+    name: direct-v8 (${{ matrix.features }}, linux-x64)
+    needs: plan
+    if: needs.plan.outputs.features != '[]'
+    # Job-level, per feature set: a newer push or label run replaces an older
+    # run of the same row, and an unrelated label (empty plan) cancels nothing.
+    concurrency:
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.features }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    # Measured at f217f4d: 12 min end to end with no Rust cache (the v8 crate
+    # links a prebuilt archive). 45 leaves room for the ~7 min observer budget.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ${{ fromJSON(needs.plan.outputs.features) }}
+    env:
+      # The PR head, not the merge ref: the harness ties the row to this commit.
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ROLLDOWN: ${{ matrix.features != 'direct-v8' }}
+      ROW_DIR: ${{ github.workspace }}/target/direct-v8-ci
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      # No rust-cache on purpose: a cold build takes about 3 min here, and a
+      # V8-linked target tree would compete with health's caches for the repo's
+      # 10 GB Actions cache budget.
+
+      - name: Cache staged esbuild binary (issue 2385)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
+
+      # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile time.
+      - run: pnpm install --frozen-lockfile
+
+      - name: Offline harness controls
+        run: python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
+
+      - name: Prepare pinned ICU data
+        run: |
+          python3 prototypes/direct-v8/prepare-icu.py
+          echo "ZFB_V8_ICU_DATA=$PWD/target/direct-v8-inputs/icu77/icudtl.dat" >> "$GITHUB_ENV"
+
+      - name: Dependency resolution rows (all shipping targets; no build)
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--extra-feature rolldown-prototype)
+          mkdir -p "$ROW_DIR/graph"
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+                        x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            python3 prototypes/direct-v8/record-graph.py --cli --target "$target" "${extra[@]}" \
+              --output "$ROW_DIR/graph/$target.json"
+          done
+
+      - name: Native row (Linux x86_64, harness build)
+        run: |
+          df -h / | tee "$ROW_DIR/disk-before.txt"
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          status=0
+          python3 prototypes/direct-v8/qualify-target.py --target x86_64-unknown-linux-gnu --build \
+            --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
+          df -h / | tee "$ROW_DIR/disk-after.txt"
+          if [ -f "$ROW_DIR/qualify/row.json" ]; then
+            python3 -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
+              "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
+          fi
+          exit "$status"
+
+      # Packaging steps run after the row so their package-dir edits cannot
+      # dirty its source check. They also run after a failed row once it has
+      # built a binary (the Rolldown row fails on the known lifecycle case).
+      # cross provides the shipping GLIBC 2.34 image for both the binary and
+      # the CSS addon (as in node-free-smoke.yml).
+      - name: Install cross
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: cross@0.2.5
+
+      # The harness builds natively on the runner, not with the shipping cross
+      # recipe, so this is recorded, not gated: the binary's GLIBC floor is not
+      # qualified by this lane.
+      - name: Record the native binary's GLIBC requirement
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          objdump -T "$ROW_BINARY" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 | tee "$ROW_DIR/binary-max-glibc.txt"
+
+      # The shipping recipe: release.yml builds the Linux x86_64 binary with
+      # cross in the repo's Amazon Linux 2023 image to hold the GLIBC 2.34
+      # floor (Cross.toml, #3623). Same command with the direct-v8 features;
+      # the floor is gated exactly as in release.yml.
+      - name: Shipping-recipe binary (cross, GLIBC 2.34 floor)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        env:
+          # cross drops host env and mounts the workspace at /project, so the
+          # host ICU path does not exist in the container; mount its directory.
+          ICU_DIR: ${{ github.workspace }}/target/direct-v8-inputs/icu77
+        run: |
+          set -o pipefail
+          export CROSS_CONTAINER_OPTS="-v $ICU_DIR:/direct-v8-icu:ro --env ZFB_V8_ICU_DATA=/direct-v8-icu/icudtl.dat"
+          features=direct-v8
+          [ "$ROLLDOWN" = true ] && features=direct-v8,rolldown-prototype
+          cross build --locked -p zfb --release --no-default-features --features "$features" \
+            --target x86_64-unknown-linux-gnu 2>&1 | tee "$ROW_DIR/cross-build.log"
+          bin="$PWD/target/x86_64-unknown-linux-gnu/release/zfb"
+          sha256sum "$bin" | tee "$ROW_DIR/cross-binary.sha256"
+          "$bin" -V | tee "$ROW_DIR/cross-binary-version.txt"
+          maximum=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          echo "$maximum" | tee "$ROW_DIR/cross-binary-max-glibc.txt"
+          [ -n "$maximum" ] || { echo "::error::cannot inspect the binary's GLIBC symbols"; exit 1; }
+          if [ "$(printf '%s\n' "$maximum" GLIBC_2.34 | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::direct-v8 shipping-recipe binary requires $maximum, above the GLIBC_2.34 floor"
+            exit 1
+          fi
+          echo "CROSS_BINARY=$bin" >> "$GITHUB_ENV"
+
+      # Uses the shipping-recipe binary, so the carrier matches what release
+      # would pack (cross binary + cross addon).
+      - name: Packed clean-room consumer (Linux x86_64)
+        if: ${{ !cancelled() && env.CROSS_BINARY != '' }}
+        run: |
+          bash scripts/build-css-node.sh x86_64-unknown-linux-gnu cross
+          pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
+          addon="$RUNNER_TEMP/zfb-css.node"
+          cp packages/zfb-linux-x64-gnu/zfb-css.node "$addon"
+          ZFB_LINUX_X64_BINARY="$CROSS_BINARY" ZFB_LINUX_X64_CSS_ADDON="$addon" \
+            bash scripts/smoke-packed-clean-room.sh 2>&1 | tee "$ROW_DIR/packed-clean-room.log"
+
+      # The same carrier, consumed with the Rolldown prototype switched on for the
+      # site build; the clean-room smoke above keeps the default bundler.
+      - name: Packed consumer with Rolldown (Linux x86_64)
+        if: ${{ !cancelled() && env.ROLLDOWN == 'true' && env.CROSS_BINARY != '' }}
+        run: |
+          python3 prototypes/direct-v8/packed-consumer.py --carrier linux-x64-gnu --binary "$CROSS_BINARY" \
+            --css-addon "$RUNNER_TEMP/zfb-css.node" --output "$ROW_DIR/packed-rolldown" --rolldown
+
+      # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      # Runs after a failed row too, as the cases do.
+      - name: Install Chromium for the browser cases
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        continue-on-error: true
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          echo "CASE_CHROMIUM=$(node -e 'console.log(require("@playwright/test").chromium.executablePath())')" >> "$GITHUB_ENV"
+
+      # After the packaging steps so a failing case never hides them. Every case
+      # runs and is recorded; any failing row turns the step red, on the Rolldown
+      # leg too, where a red row is that case's recorded compatibility result.
+      - name: CLI interoperability cases (actual binary)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          [ -n "${CASE_CHROMIUM:-}" ] && extra+=(--chromium "$CASE_CHROMIUM")
+          python3 prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### direct-v8 ($MATRIX_FEATURES, linux-x64) at \`$SOURCE_SHA\`"
+            if [ -f "$ROW_DIR/qualify/row.json" ]; then
+              python3 - "$ROW_DIR/qualify/row.json" <<'PY'
+          import json, sys
+          row = json.load(open(sys.argv[1]))
+          print("status:", row["status"])
+          for name, check in row["checks"].items():
+              print(f"- {name}: {check.get('passed')}")
+          PY
+            else
+              echo "No native row recorded."
+            fi
+            if [ -f "$ROW_DIR/packed-rolldown/report.json" ]; then
+              python3 - "$ROW_DIR/packed-rolldown/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("packed consumer (Rolldown):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          for row in report["rows"]:
+              print(f"- {row['name']}: {row['passed']}")
+          PY
+            fi
+            if [ -f "$ROW_DIR/cases/report.json" ]; then
+              python3 prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
+            fi
+            echo
+            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner)."
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_FEATURES: ${{ matrix.features }}
+
+      - name: Upload row evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: direct-v8-linux-x64-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
+          path: ${{ env.ROW_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Native rows on the other standard runners. No packaging here: the clean-room
+  # smoke only packs the Linux x86_64 carrier.
+  other-hosts:
+    name: direct-v8 (${{ matrix.features }}, ${{ matrix.host.name }})
+    needs: plan
+    if: needs.plan.outputs.features != '[]'
+    concurrency:
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.host.name }}-${{ matrix.features }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.host.runner }}
+    # Measured at 349b112: the Windows leg took 30 min (12.5 min of it the
+    # release build for the packed consumer); about twice that.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ${{ fromJSON(needs.plan.outputs.features) }}
+        host:
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            python: python3
+          # The lifecycle observer stops `zfb dev` with a console Ctrl-C here.
+          - name: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            python: python
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ROLLDOWN: ${{ matrix.features != 'direct-v8' }}
+      ROW_DIR: ${{ github.workspace }}/target/direct-v8-ci
+      PYTHONDONTWRITEBYTECODE: "1"
+      PY: ${{ matrix.host.python }}
+      TARGET: ${{ matrix.host.target }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare pinned ICU data
+        id: icu
+        run: |
+          "$PY" prototypes/direct-v8/prepare-icu.py
+          "$PY" -c 'import os; print("ZFB_V8_ICU_DATA=" + os.path.abspath("target/direct-v8-inputs/icu77/icudtl.dat"))' >> "$GITHUB_ENV"
+
+      - name: Native row (harness build)
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          status=0
+          "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build \
+            --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
+          echo "qualify-target exit $status"
+          if [ -f "$ROW_DIR/qualify/row.json" ]; then
+            "$PY" -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
+              "$ROW_DIR/qualify/row.json" >> "$GITHUB_ENV"
+          fi
+          "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
+          import json, sys
+          row = json.load(open(sys.argv[1]))
+          open_checks = [name for name, check in row["checks"].items() if check.get("passed") is not True]
+          print("status:", row["status"], "not passing:", open_checks)
+          sys.exit(0 if row["status"] == "PASS" else 1)
+          PY
+
+      # The prototype's own tests are the only ones that see Windows verbatim
+      # canonical paths (tsconfig paths, rewritten imports, out-of-cwd inputs).
+      # A red result names the spellings still reaching Rolldown verbatim.
+      - name: Rolldown prototype library tests (Windows x64)
+        id: prototype_tests
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features != 'direct-v8' }}
+        run: |
+          set -o pipefail
+          mkdir -p "$ROW_DIR"
+          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 \
+            | tee "$ROW_DIR/rolldown-prototype-lib-tests.log"
+
+      # release.yml's native cargo build of the Windows carrier, here with the
+      # opt-in direct-v8 selection and pinned ICU, which release.yml does not build.
+      # Runs even when the native row fails, but only once setup has succeeded.
+      - name: Packed clean-room consumer (Windows x64, release recipe)
+        id: packed
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' }}
+        run: |
+          set -o pipefail
+          mkdir -p "$ROW_DIR"
+          cargo build --locked -p zfb --release --no-default-features --features direct-v8 \
+            --target "$TARGET" 2>&1 | tee "$ROW_DIR/release-build.log"
+          bash scripts/build-css-node.sh "$TARGET" cargo 2>&1 | tee "$ROW_DIR/css-addon-build.log"
+          pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
+          "$PY" prototypes/direct-v8/packed-consumer.py --carrier win32-x64-msvc \
+            --binary "target/$TARGET/release/zfb.exe" --css-addon packages/zfb-win32-x64-msvc/zfb-css.node \
+            --output "$ROW_DIR/packed"
+
+      # #4343 regression: a plugin virtual module through the shipping-recipe
+      # binary built above, where the shadow directory is a \\?\ verbatim path.
+      - name: Plugin virtual module build (Windows x64, release recipe)
+        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
+        run: |
+          "$PY" prototypes/direct-v8/check-plugin-virtual-module.py \
+            --binary "target/$TARGET/release/zfb.exe" --output "$ROW_DIR/plugin-virtual-module"
+
+      # Only for the browser rows; a failed install leaves them NOT RUN, never passed.
+      # Runs after a failed row too, as the cases do.
+      - name: Install Chromium for the browser cases
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        continue-on-error: true
+        run: |
+          deps=()
+          [ "$RUNNER_OS" = Linux ] && deps=(--with-deps)
+          pnpm exec playwright install "${deps[@]}" chromium
+          echo "CASE_CHROMIUM=$(node -e 'console.log(require("@playwright/test").chromium.executablePath())')" >> "$GITHUB_ENV"
+
+      # Every case runs and is recorded; any failing row turns the step red, on
+      # the Rolldown leg too, where a red row is that case's compatibility result.
+      - name: CLI interoperability cases (actual binary)
+        if: ${{ !cancelled() && env.ROW_BINARY != '' }}
+        run: |
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--rolldown)
+          [ -n "${CASE_CHROMIUM:-}" ] && extra+=(--chromium "$CASE_CHROMIUM")
+          "$PY" prototypes/direct-v8/check-cli-cases.py --binary "$ROW_BINARY" --output "$ROW_DIR/cases" "${extra[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### direct-v8 ($MATRIX_FEATURES, $TARGET) at \`$SOURCE_SHA\`"
+            if [ -f "$ROW_DIR/qualify/row.json" ]; then
+              "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
+          import json, sys
+          row = json.load(open(sys.argv[1]))
+          print("status:", row["status"])
+          for name, check in row["checks"].items():
+              print(f"- {name}: {check.get('passed')} {check.get('status') or ''}".rstrip())
+          PY
+            else
+              echo "No native row recorded."
+            fi
+            if [ -f "$ROW_DIR/packed/report.json" ]; then
+              "$PY" - "$ROW_DIR/packed/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("packed consumer:", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          for row in report["rows"]:
+              print(f"- {row['name']}: {row['passed']}")
+          PY
+            elif [ "$PACKED_OUTCOME" != skipped ]; then
+              echo "packed consumer: no report ($PACKED_OUTCOME)"
+            fi
+            if [ -f "$ROW_DIR/plugin-virtual-module/report.json" ]; then
+              "$PY" - "$ROW_DIR/plugin-virtual-module/report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("plugin virtual module (#4343):", "PASS" if report["passed"] else "FAIL", report.get("error") or "")
+          PY
+            fi
+            if [ -f "$ROW_DIR/cases/report.json" ]; then
+              "$PY" prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
+            fi
+            if [ "$PROTOTYPE_TESTS_OUTCOME" != skipped ]; then
+              echo "rolldown prototype library tests: $PROTOTYPE_TESTS_OUTCOME"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          MATRIX_FEATURES: ${{ matrix.features }}
+          PACKED_OUTCOME: ${{ steps.packed.outcome }}
+          PROTOTYPE_TESTS_OUTCOME: ${{ steps.prototype_tests.outcome }}
+
+      - name: Upload row evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: direct-v8-${{ matrix.host.name }}-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
+          path: ${{ env.ROW_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

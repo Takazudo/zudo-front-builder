@@ -191,8 +191,10 @@ function localizedNote(value, locale, field) {
 // records reachable from zudo-wind (including dev/optional/platform edges) are
 // unchanged versus accepted main b8a2a9d0. The shared-host extraction only moves
 // other workspace lock records; see prototypes/direct-v8/evidence/reconcile-main-2026-10-15/.
+// #4301 + #4314 combined: all 164 Wind lock records remain unchanged; the lock differs
+// from main's reviewed rustls lock only in zfb-js-host's deno_core edge (#4301).
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "bbfe6f81ab92f52c9e90e169ea1dd82cd3046b71a41b0588d55e3d30242dc4a2";
+  "fb1c48895deedaa7d3aef4be29ca8fe144b7494c61d1672952e751b798a8b63e";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

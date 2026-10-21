@@ -6,7 +6,10 @@
 //! [`zfb_build::pipeline::AssetEmitterPayload`], keeping the CSS command
 //! independent of production HTML/asset rewriting.
 
-#![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
+#![cfg_attr(
+    not(any(feature = "embed_v8", feature = "direct-v8")),
+    allow(unused_imports, dead_code)
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

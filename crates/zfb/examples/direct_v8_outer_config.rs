@@ -3,8 +3,14 @@
 
 use std::io::{self, BufRead};
 
+fn main() -> anyhow::Result<()> {
+    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    zfb_render::initialize_v8().map_err(anyhow::Error::msg)?;
+    run()
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     for line in io::stdin().lock().lines() {
         let input: serde_json::Value = serde_json::from_str(&line?)?;
         let source = input["source"]
@@ -26,6 +32,14 @@ async fn main() -> anyhow::Result<()> {
                     &directory.path().to_string_lossy().to_string(), "<fixture>"),
             }),
         };
+        let mut receipt = receipt;
+        receipt["engine"] = serde_json::json!(if cfg!(feature = "embed_v8") {
+            "deno_core 0.399.0 / v8 147.4.0"
+        } else if cfg!(feature = "direct-v8") {
+            "direct v8 147.4.0"
+        } else {
+            "node subprocess"
+        });
         println!("ZFB_OUTER_CONFIG_RECEIPT {receipt}");
     }
     Ok(())
