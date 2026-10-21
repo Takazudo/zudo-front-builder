@@ -3981,6 +3981,7 @@ describe("local rustls security evidence with separate tooling", () => {
       "rebaseline-island-size-linux.mjs",
       "island-size-local-evidence.mjs",
       "rustls-security-transition.mjs",
+      "security-lock-transitions.mjs",
     ])
       write(f.tools.root, "scripts/" + name, readFileSync(join(sourceRoot, "scripts", name)));
     for (const name of readdirSync(join(sourceRoot, "research/v3-island-size")))
