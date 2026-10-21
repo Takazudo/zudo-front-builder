@@ -10,6 +10,7 @@ import { parse } from "yaml";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FILTER_FILE = ".github/path-filters/docs-only.yml";
+const INPUTS_FILE = ".github/path-filters/docs-test-inputs.yml";
 const DOCS_ONLY_SKIP = "!cancelled() && needs.changed-files.outputs.docs_only != 'true'";
 
 const readWorkflow = (name) =>
@@ -18,55 +19,84 @@ const health = readWorkflow("health.yml");
 const smoke = readWorkflow("node-free-smoke.yml");
 const docsChecks = readWorkflow("docs-checks.yml");
 const filter = parse(readFileSync(join(rootDir, FILTER_FILE), "utf8"));
+const testInputs = parse(readFileSync(join(rootDir, INPUTS_FILE), "utf8"));
+const detectors = {
+  "health.yml": health.jobs["changed-files"],
+  "node-free-smoke.yml": smoke.jobs.changes,
+  "docs-checks.yml": docsChecks.jobs["changed-files"],
+};
 
 const bareIf = (job) =>
   String(job.if ?? "")
     .replace(/^\$\{\{\s*/, "")
     .replace(/\s*\}\}$/, "");
 
-function detectorSteps(job) {
-  return job.steps.filter((step) => step.with?.filters === FILTER_FILE);
-}
+const stepReading = (job, file) => job.steps.filter((step) => step.with?.filters === file);
 
 describe("docs-only path filter", () => {
   it("is one positive catch-all followed only by negated prose paths", () => {
-    expect(Object.keys(filter)).toEqual(["code"]);
+    expect(Object.keys(filter)).toEqual(["code", "all"]);
+    expect(filter.all).toEqual(["**"]);
     const [first, ...rest] = filter.code;
     expect(first).toBe("**");
     expect(rest.length).toBeGreaterThan(0);
     for (const pattern of rest) expect(pattern.startsWith("!")).toBe(true);
   });
 
-  it("never treats Markdown test inputs as docs-only", () => {
+  it("never treats Markdown test or build inputs as docs-only", () => {
     // research/3242-zudo-wind-v1-spec.md is an include_str! input of a Rust
-    // test, and crates/zfb/templates/** is embedded into the binary.
+    // test, crates/zfb/templates/** is embedded into the binary, and docs/
+    // outside src/content holds scripts, components and Wind examples.
     for (const pattern of filter.code.slice(1)) {
       expect(pattern).not.toMatch(/^!research\b/);
       expect(pattern).not.toMatch(/^!crates\/\*\*/);
       expect(pattern).not.toMatch(/^!\*\*\//);
+      expect(pattern).not.toMatch(/^!docs\/\*\*/);
       expect(pattern).not.toContain("templates");
       expect(pattern).not.toContain("tests");
       expect(pattern).not.toContain("fixtures");
     }
+    expect(testInputs.inputs).toContain("docs/src/content/docs/architecture/mdx-components.mdx");
+  });
+});
+
+describe("docs-only detectors", () => {
+  it("read both filter files from the PR base commit", () => {
+    for (const job of Object.values(detectors)) {
+      const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+      expect(checkout.with.ref).toBe("${{ github.event.pull_request.base.sha }}");
+
+      const [code] = stepReading(job, FILTER_FILE);
+      expect(stepReading(job, FILTER_FILE)).toHaveLength(1);
+      expect(code.with["predicate-quantifier"]).toBe("every");
+      expect(code.if).toContain(`hashFiles('${FILTER_FILE}') != ''`);
+
+      const [inputs] = stepReading(job, INPUTS_FILE);
+      expect(stepReading(job, INPUTS_FILE)).toHaveLength(1);
+      expect(inputs.with["predicate-quantifier"]).toBeUndefined();
+      expect(inputs.if).toContain(`hashFiles('${INPUTS_FILE}') != ''`);
+
+      expect(job.outputs.docs_only).toBe("${{ steps.scope.outputs.docs_only }}");
+    }
   });
 
-  it("is read by every detector with predicate-quantifier every", () => {
-    const detectors = [
-      health.jobs["changed-files"],
-      smoke.jobs.changes,
-      docsChecks.jobs["changed-files"],
-    ];
-    for (const job of detectors) {
-      const steps = detectorSteps(job);
-      expect(steps).toHaveLength(1);
-      expect(steps[0].with["predicate-quantifier"]).toBe("every");
-      expect(job.outputs.docs_only).toBe("${{ steps.scope.outputs.docs_only }}");
-      const scope = job.steps.find((step) => step.id === "scope");
-      expect(scope.run).toContain('[ "$CODE_CHANGED" = "false" ]');
+  it("resolve docs_only with one identical fail-closed script", () => {
+    const scopes = Object.values(detectors).map((job) => job.steps.find((s) => s.id === "scope"));
+    for (const scope of scopes) {
+      expect(scope.run).toBe(scopes[0].run);
+      expect(scope.env).toEqual(scopes[0].env);
     }
-    expect(health.jobs["changed-files"].steps.find((step) => step.id === "scope").run).toContain(
+    const { run } = scopes[0];
+    expect(run).toMatch(/^\s*docs_only=false$/m);
+    for (const guard of [
       '[ "$EVENT_NAME" = "pull_request" ]',
-    );
+      '[ "$BASE_REF" = "main" ] || [[ "$BASE_REF" == base/* ]]',
+      '[ "$CODE_CHANGED" = "false" ]',
+      '[ "$TEST_INPUTS_CHANGED" = "false" ]',
+      '[ "$FILE_COUNT" -gt 0 ] && [ "$FILE_COUNT" -lt 3000 ]',
+    ]) {
+      expect(run).toContain(guard);
+    }
   });
 });
 

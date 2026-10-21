@@ -164,27 +164,53 @@ jobs:
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
-      # Only for the shared filter file; paths-filter reads the PR's changed
-      # files through the API.
+      # Base commit, only for the shared filter files; paths-filter reads the
+      # PR's changed files through the API.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: .github/path-filters
           persist-credentials: false
 
+      # Docs-only scope (#4372). Both filter files come from the base-commit
+      # checkout above; a base without them never resolves docs-only.
       - name: Detect non-docs changes
         id: code
+        if: ${{ github.event_name == 'pull_request' && hashFiles('.github/path-filters/docs-only.yml') != '' }}
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           predicate-quantifier: every
           filters: .github/path-filters/docs-only.yml
 
+      - name: Detect docs files read by heavy jobs
+        id: inputs
+        if: ${{ github.event_name == 'pull_request' && hashFiles('.github/path-filters/docs-test-inputs.yml') != '' }}
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: .github/path-filters/docs-test-inputs.yml
+
+      # Fail closed: only an explicit docs-only result on a PR into main or
+      # base/** (where docs-checks.yml runs the JS subset) skips anything. The
+      # PR-files API lists at most 3000 files, so a listing that large, or an
+      # empty one, keeps the full lane.
       - name: Resolve docs-only scope
         id: scope
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
           CODE_CHANGED: ${{ steps.code.outputs.code }}
+          FILE_COUNT: ${{ steps.code.outputs.all_count }}
+          TEST_INPUTS_CHANGED: ${{ steps.inputs.outputs.inputs }}
         run: |
-          if [ "$CODE_CHANGED" = "false" ]; then docs_only=true; else docs_only=false; fi
-          echo "docs_only=${docs_only} (code=${CODE_CHANGED:-<unset>})"
+          set -euo pipefail
+          docs_only=false
+          if [ "$EVENT_NAME" = "pull_request" ] \
+            && { [ "$BASE_REF" = "main" ] || [[ "$BASE_REF" == base/* ]]; } \
+            && [ "$CODE_CHANGED" = "false" ] && [ "$TEST_INPUTS_CHANGED" = "false" ] \
+            && [[ "$FILE_COUNT" =~ ^[0-9]+$ ]] && [ "$FILE_COUNT" -gt 0 ] && [ "$FILE_COUNT" -lt 3000 ]; then
+            docs_only=true
+          fi
+          echo "docs_only=${docs_only} (event=${EVENT_NAME} base=${BASE_REF:-<unset>} code=${CODE_CHANGED:-<unset>} files=${FILE_COUNT:-<unset>} test_inputs=${TEST_INPUTS_CHANGED:-<unset>})"
           echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
 
   # ── Linux binary build (one job per platform) ──────────────────────────────

@@ -1,23 +1,26 @@
-# Shared definition of a "docs-only" pull request (#4372; see
-# CLAUDE.md "Docs-only pull requests"). Read by the changed-files detectors in
-# health.yml, node-free-smoke.yml and docs-checks.yml with
-# `predicate-quantifier: every`, so a changed file counts as `code` only when
-# it matches `**` AND none of the negated docs paths below. A PR is docs-only
-# when no changed file is `code`.
+# Shared definition of a "docs-only" pull request (#4372; see CLAUDE.md
+# "Docs-only pull requests"). The changed-files detectors in health.yml,
+# node-free-smoke.yml and docs-checks.yml read this file from the PR's BASE
+# commit, so a PR cannot widen the list for itself, with
+# `predicate-quantifier: every`: a changed file is `code` unless one of the
+# negated prose paths below matches it. `all` counts the listed files.
 #
-# Keep this list to prose that no Rust test, smoke or binary build reads.
-# Markdown that IS a test input stays `code`: crate fixtures
-# (crates/*/tests/**), scaffold templates (crates/zfb/templates/**, embedded
-# into the binary), and research/** (research/3242-zudo-wind-v1-spec.md is an
-# include_str! input of crates/zudo-wind/tests/goldens.rs). Docs-only PRs still
-# run the JS/format subset of health in docs-checks.yml, because scripts and
-# docs tests read several of these files.
+# Keep this list to prose that nothing in the skipped heavy jobs reads.
+# Markdown that IS a test or build input stays `code`: crate fixtures,
+# crates/zfb/templates/** (embedded into the binary), research/**
+# (research/3242-zudo-wind-v1-spec.md is an include_str! test input), and
+# docs/ outside src/content (scripts, components, wind-examples). Single
+# prose files that a heavy job reads go in docs-test-inputs.yml instead.
+# Docs-only PRs still run health's JS/format subset in docs-checks.yml.
 code:
   - "**"
-  - "!docs/**"
+  - "!docs/src/content/**"
+  - "!docs/*.md"
   - "!*.md"
   - "!crates/*.md"
   - "!crates/*/README.md"
   - "!packages/*/README.md"
   - "!prototypes/**/*.md"
   - "!.claude/**/*.md"
+all:
+  - "**"

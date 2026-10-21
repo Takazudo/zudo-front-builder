@@ -19,9 +19,6 @@ on:
     paths:
       - "crates/**"
       - "!crates/zfb-md-wasm/**"
-      # Crate READMEs and crates/*.md are prose (#4372).
-      - "!crates/*.md"
-      - "!crates/*/README.md"
       - "packages/zfb/**"
       - "packages/zfb-slugify/**"
       - "packages/zfb-runtime/**"
@@ -32,6 +29,11 @@ on:
       - "rust-toolchain.toml"
       - "pnpm-lock.yaml"
       - "package.json"
+      # Prose that docs-only.yml also lists (#4372); negations go last so
+      # they win over the broader crates/** and packages/* entries.
+      - "!crates/*.md"
+      - "!crates/*/README.md"
+      - "!packages/*/README.md"
   push:
     branches:
       - main
@@ -39,9 +41,6 @@ on:
     paths:
       - "crates/**"
       - "!crates/zfb-md-wasm/**"
-      # Crate READMEs and crates/*.md are prose (#4372).
-      - "!crates/*.md"
-      - "!crates/*/README.md"
       - "packages/zfb/**"
       - "packages/zfb-slugify/**"
       - "packages/zfb-runtime/**"
@@ -52,6 +51,11 @@ on:
       - "rust-toolchain.toml"
       - "pnpm-lock.yaml"
       - "package.json"
+      # Prose that docs-only.yml also lists (#4372); negations go last so
+      # they win over the broader crates/** and packages/* entries.
+      - "!crates/*.md"
+      - "!crates/*/README.md"
+      - "!packages/*/README.md"
 
 permissions:
   contents: read
