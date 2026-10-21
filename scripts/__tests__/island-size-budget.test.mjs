@@ -1866,8 +1866,8 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The webpki-security-4314 transition (#4314): Linux from health run
   // 39609635178 at merge source dbf93a6c (probe head 9a316700); Darwin from
-  // owner-attested local evidence at 5b5f2152. The Linux after-contract is frozen
-  // because the v4.6.0 release-bump replaced it.
+  // owner-attested local evidence at 5b5f2152. Both after-contracts are frozen:
+  // the v4.6.0 release-bump replaced Linux and replaces Darwin next.
   for (const { file, before, after, repinnedFrom, evidence } of [
     {
       file: "decision-linux-x64.json",
@@ -1896,6 +1896,18 @@ describe("live contracts preserve released evidence and authentic predecessors",
     {
       file: "decision.json",
       before: "fixtures/island-size-darwin-v4.5.4-v8rewire.json",
+      after: "fixtures/island-size-darwin-v4.5.4-webpki.json",
+      repinnedFrom: {
+        schemaVersion: 3,
+        outcome: "cargo-internal-rewire-transition",
+        packageVersion: "4.5.4",
+        baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
+        contract: {
+          sha256: "7de9bdfea2a7642aa931f060a8c2764bcece479fa61dcbed4ede98025393b41e",
+          commit: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
+          path: "research/v3-island-size/decision.json",
+        },
+      },
       evidence: {
         baselineSourceSha: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
         event: "local-native",
