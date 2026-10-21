@@ -2245,8 +2245,9 @@ pub fn reap_stale_shadow_sessions(parent: &Path) {
 ///
 /// Gated to macOS because the symlink divergence does not exist elsewhere
 /// (`%TEMP%` is not a symlink). The gate does not keep `\\?\` verbatim paths
-/// away from esbuild on Windows: `usable_shadow_parent_candidate` already
-/// canonicalizes the shadow parent, so Windows shadows are `\\?\C:\…` (#4343).
+/// away from esbuild on Windows: `usable_shadow_parent_candidate` canonicalizes
+/// the shadow parent and returns the ordinary `C:\…` spelling only when it is
+/// safe (#4347); UNC, long and other verbatim parents stay `\\?\…` (#4343).
 #[cfg(target_os = "macos")]
 fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
     fs::canonicalize(work).with_context(|| {
