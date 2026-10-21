@@ -761,7 +761,7 @@ jobs:
               fi
             done
           } > "$RUST_EVIDENCE_DIR/summary.md"
-          cat "$RUST_EVIDENCE_DIR/summary.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUST_EVIDENCE_DIR/summary.md"
           exit "$failed"
       - name: Retain first results
         if: always()
