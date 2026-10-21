@@ -105,3 +105,5 @@ For general contribution guidelines (formatting, CI, toolchain requirements), se
 ## License
 
 MIT — see [LICENSE](./LICENSE). Copyright (c) 2026 Takeshi Takatsudo.
+
+<!-- docs-only CI probe for #4372; this PR is closed, never merged. -->
