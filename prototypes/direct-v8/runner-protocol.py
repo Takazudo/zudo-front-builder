@@ -6,6 +6,7 @@ Watchdogs are failed observations, not proof of native or child-tree cleanup.
 """
 import base64
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -14,6 +15,31 @@ import subprocess
 
 
 MAX_JSON_DEPTH = 128
+
+# -I excludes sibling imports. Load only this checkout's known helper.
+_spec = importlib.util.spec_from_file_location("watchdog_drain", Path(__file__).with_name("watchdog-drain.py"))
+drain = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(drain)
+PENDING = drain.PendingRegistry()
+# The bounded drain is POSIX only (U8); Windows keeps kill + communicate.
+USE_DRAIN = os.name == "posix"
+
+
+def finish_report(report, interrupt=None):
+    """Record an interrupt and unreaped children in a checker report (U4, U7).
+
+    Call once at checker exit, then write the report and re-raise the interrupt.
+    Children are polled, never waited for; one still alive fails the report.
+    """
+    if interrupt is not None:
+        report["passed"] = False
+        report["error"] = f"interrupted: {type(interrupt).__name__}: {interrupt}"
+        if getattr(interrupt, "watchdog_cleanup", None) is not None:
+            report["watchdog_cleanup"] = interrupt.watchdog_cleanup
+    report["released_children"] = PENDING.release()
+    if any(entry["released_to_os"] for entry in report["released_children"]):
+        report["passed"] = False
+    return report
 
 
 def parse_json(source):
@@ -53,11 +79,14 @@ def parse_json(source):
     return value
 
 
-def run_receipts(binary, wire, prefix, expected_count, *, timeout=60):
+def run_receipts(binary, wire, prefix, expected_count, *, timeout=60, cleanup_timeout=1):
     """Run one independent process and retain protocol/operational failures.
 
     A valid transport result still needs the checker's independent semantic
     assertions. Digests bind this invocation, not the authenticity of a runner.
+    On POSIX the watchdog kills, drains and reaps only the direct child within
+    one shared cleanup_timeout; a cancellation propagates with this result
+    attached as exception.watchdog_cleanup.
     """
     binary = Path(binary).resolve()
     failures = []
@@ -92,21 +121,62 @@ def run_receipts(binary, wire, prefix, expected_count, *, timeout=60):
     if failures:
         return result
     stdout, stderr = b"", b""
-    try:
-        process = subprocess.run([str(binary)], input=wire.encode("utf-8"),
-                                 capture_output=True, timeout=timeout, check=False)
-        stdout, stderr = process.stdout, process.stderr
-        result["exit_code"] = process.returncode
-        if process.returncode != 0:
-            failures.append(f"runner exited unsuccessfully ({process.returncode})")
-    except subprocess.TimeoutExpired as error:
-        stdout, stderr = error.stdout, error.stderr
-        result["watchdog"] = f"runner watchdog expired after {timeout}s; no cleanup claim"
-        failures.append(result["watchdog"])
-    except OSError as error:
-        failures.append(f"runner failed to start: {type(error).__name__}: {error}")
+    cancellation = None
+    if not USE_DRAIN:
+        try:
+            process = subprocess.run([str(binary)], input=wire.encode("utf-8"),
+                                     capture_output=True, timeout=timeout, check=False)
+            stdout, stderr = process.stdout, process.stderr
+            result["exit_code"] = process.returncode
+            if process.returncode != 0:
+                failures.append(f"runner exited unsuccessfully ({process.returncode})")
+        except subprocess.TimeoutExpired as error:
+            stdout, stderr = error.stdout, error.stderr
+            result["watchdog"] = f"runner watchdog expired after {timeout}s; no cleanup claim"
+            failures.append(result["watchdog"])
+        except OSError as error:
+            failures.append(f"runner failed to start: {type(error).__name__}: {error}")
+    else:
+        drained = None
+        try:
+            drained = drain.run([str(binary)], wire.encode("utf-8"), timeout=timeout,
+                                cleanup_timeout=cleanup_timeout)
+        except BaseException as error:
+            drained = getattr(error, "watchdog_cleanup", None)
+            if not isinstance(error, OSError):
+                if drained is None:
+                    raise
+                # Cancellation or a defect: record it, then propagate it (U7).
+                cancellation = error
+                failures.append(f"runner interrupted: {type(error).__name__}: {error}")
+            elif drained is not None:
+                failures.append(f"runner communication failed: {type(error).__name__}: {error}")
+            else:
+                failures.append(f"runner failed to start: {type(error).__name__}: {error}")
+        if drained is not None:
+            stdout, stderr = drained["stdout"], drained["stderr"]
+            cleanup = PENDING.project(drained)
+            if drained["watchdog"]:
+                result["watchdog"] = (f"runner watchdog expired after {timeout}s; "
+                                      "direct child only, no descendant cleanup claim")
+                failures.append(result["watchdog"])
+            elif drained["exit_code"] is not None:
+                result["exit_code"] = drained["exit_code"]
+                if drained["exit_code"] != 0:
+                    failures.append(f"runner exited unsuccessfully ({drained['exit_code']})")
+            # drain_complete says whether partial output is complete or best effort.
+            result["watchdog_cleanup"] = {key: cleanup[key] for key in (
+                "drain_complete", "cleanup_exit_code", "cleanup_errors",
+                "pending_child_pid", "pending_stream_count")}
+            result["watchdog_cleanup"].update(execution_budget_seconds=cleanup["execution_seconds"],
+                                              cleanup_budget_seconds=cleanup["cleanup_seconds"])
+            failures.extend(f"runner cleanup: {message}" for message in cleanup["cleanup_errors"])
     save_stream("stdout", stdout)
     save_stream("stderr", stderr)
+    if cancellation is not None:
+        # Propagate promptly: no post-run digest or receipt parsing after an interrupt.
+        cancellation.watchdog_cleanup = result
+        raise cancellation
     result["executable_sha256_after"] = digest("after execution")
     if result["executable_sha256_after"] is not None and \
             result["executable_sha256_after"] != result["executable_sha256"]:
