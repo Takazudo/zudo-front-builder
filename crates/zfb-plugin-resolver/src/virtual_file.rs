@@ -5,20 +5,24 @@
 //! identical input. The file name is therefore derived from the specifier and
 //! source, which makes concurrent builds of one project share a file.
 //!
-//! Sharing uses the #1976 lock protocol: every holder keeps a shared lock,
-//! and only a process that wins an exclusive lock on a file that is still
-//! the one at the path may delete it.
+//! Every holder keeps the file pinned at its path until it drops, and the
+//! last holder removes it:
+//!
+//! - Unix: holders keep the #1976 shared lock. Only a process that wins an
+//!   exclusive lock on the file still at the path may delete it, and a holder
+//!   re-checks after locking that a releasing holder did not remove its file.
+//! - Windows: holders open the file without delete sharing, so the OS refuses
+//!   every removal while any holder is alive.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use sha2::{Digest, Sha256};
 
-const MAX_ACQUIRE_ATTEMPTS: usize = 32;
+const MAX_ACQUIRE_ATTEMPTS: usize = 64;
 
-/// A materialized virtual module, held under a shared lock until dropped.
+/// A materialized virtual module, pinned at its path until dropped.
 /// The last holder to drop it removes it from disk.
 pub struct VirtualModuleFile {
     path: PathBuf,
@@ -43,13 +47,15 @@ impl VirtualModuleFile {
     ) -> Result<Self> {
         let path = dir.join(file_name(prefix, suffix, specifier, source));
         for _ in 0..MAX_ACQUIRE_ATTEMPTS {
-            let file = match OpenOptions::new().read(true).open(&path) {
+            let file = match open_holder(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == ErrorKind::NotFound => {
-                    match publish(dir, prefix, suffix, &path, source)? {
-                        Some(file) => file,
-                        None => continue,
-                    }
+                    publish(dir, prefix, suffix, &path, source)?;
+                    continue;
+                }
+                Err(error) if is_transient_sharing_error(&error) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
                 }
                 Err(error) => {
                     return Err(error).with_context(|| {
@@ -79,6 +85,7 @@ impl VirtualModuleFile {
 impl Drop for VirtualModuleFile {
     fn drop(&mut self) {
         drop(self.file.take());
+        // Windows refuses this while another holder's handle is open.
         let Ok(candidate) = OpenOptions::new().read(true).write(true).open(&self.path) else {
             return;
         };
@@ -94,32 +101,51 @@ impl Drop for VirtualModuleFile {
 /// no file can replace `path` while the exclusive lock on it is held, since
 /// publishing never overwrites and every remover takes the same lock first.
 pub fn exclusive_lock_on_file_at_path(candidate: &File, path: &Path) -> bool {
-    match candidate.try_lock() {
-        Ok(()) => file_still_at_path(candidate, path),
-        Err(TryLockError::WouldBlock | TryLockError::Error(_)) => false,
+    candidate.try_lock().is_ok() && file_still_at_path(candidate, path)
+}
+
+#[cfg(unix)]
+fn file_still_at_path(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(held), Ok(current)) => held.dev() == current.dev() && held.ino() == current.ino(),
+        _ => false,
     }
 }
 
-fn file_still_at_path(file: &File, path: &Path) -> bool {
-    let Some(held) = file
-        .try_clone()
-        .ok()
-        .and_then(|clone| same_file::Handle::from_file(clone).ok())
-    else {
-        return false;
-    };
-    same_file::Handle::from_path(path).is_ok_and(|current| current == held)
+/// A Windows holder's handle was opened through `path` without delete
+/// sharing, so the file it names cannot have been removed or replaced.
+#[cfg(not(unix))]
+fn file_still_at_path(_file: &File, path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(windows)]
+fn open_holder(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_SHARE_READ only: esbuild can read the file, but no other handle
+    // may delete or write it while this one is open.
+    const FILE_SHARE_READ: u32 = 0x1;
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_holder(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().read(true).open(path)
+}
+
+/// A Windows sharing violation, or access to a file pending deletion: another
+/// process is publishing, sweeping or removing the file right now.
+fn is_transient_sharing_error(error: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 /// Write `source` beside `path` and move it into place without replacing an
-/// existing file. `None` means another process published it first.
-fn publish(
-    dir: &Path,
-    prefix: &str,
-    suffix: &str,
-    path: &Path,
-    source: &str,
-) -> Result<Option<File>> {
+/// existing file. Losing that race to another publisher is not an error.
+fn publish(dir: &Path, prefix: &str, suffix: &str, path: &Path, source: &str) -> Result<()> {
     let staging = tempfile::Builder::new()
         .prefix(prefix)
         .suffix(suffix)
@@ -137,22 +163,25 @@ fn publish(
         )
     })?;
     match staging.persist_noclobber(path) {
-        Ok(file) => Ok(Some(file)),
-        Err(error) if error.error.kind() == ErrorKind::AlreadyExists => Ok(None),
+        Ok(_) => Ok(()),
+        Err(error)
+            if error.error.kind() == ErrorKind::AlreadyExists
+                || is_transient_sharing_error(&error.error) =>
+        {
+            Ok(())
+        }
         Err(error) => Err(error.error)
             .with_context(|| format!("failed to publish virtual-module file `{}`", path.display())),
     }
 }
 
 fn file_name(prefix: &str, suffix: &str, specifier: &str, source: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update((specifier.len() as u64).to_le_bytes());
-    hasher.update(specifier.as_bytes());
-    hasher.update(source.as_bytes());
-    let digest = hasher.finalize();
-    let hex: String = digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("{prefix}{hex}{suffix}")
+    let mut key = Vec::with_capacity(8 + specifier.len() + source.len());
+    key.extend_from_slice(&(specifier.len() as u64).to_le_bytes());
+    key.extend_from_slice(specifier.as_bytes());
+    key.extend_from_slice(source.as_bytes());
+    let high = zfb_types::module_worker_content_hash(&key);
+    key.push(0);
+    let low = zfb_types::module_worker_content_hash(&key);
+    format!("{prefix}{high}{low}{suffix}")
 }
