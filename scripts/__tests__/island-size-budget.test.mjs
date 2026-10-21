@@ -741,20 +741,20 @@ describe("island shipped-size budget", () => {
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("c74faf450160b9eec6c995b5223e172209d62b14");
+    expect(darwinContract.baselineSourceSha).toBe("5b5f21523818634f8982e0dd3d7fc14885141f2c");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "9ad4eeaa6f254cb46e9a887fb0687d7ef9c64cfecae2d6622f532f56636fdd46" },
+      localReceipt: { sha256: "fdffd9ed251d0ecbb72e38fc7ce6bbcb216f6824bd37cc3d7404299af6950547" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
-    // reviewed rustls-security-4314 producer-lock transition at bda633b (#4314,
+    // reviewed webpki-security-4314 producer-lock transition at 5b5f2152 (#4314,
     // owner-attested local evidence); the ceilings below still follow run
     // 38451538696 (#4203, #4150).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
       "210f0042b072321faf86a5b5229e14cb5f33c1ad0e3c9f882575de0ea926ace2",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "0cd091b7adcc7776895d9de119ac28ac8e8a931cdf28e46c676d5460627cc6f2",
+      "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
     // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
@@ -1382,9 +1382,9 @@ describe("island shipped-size budget", () => {
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // Exact immediate predecessors of the live contracts: for Linux, the paired
 // direct-V8 cargo-internal-rewire (ZFB-L2-024 step 2), cited at 9a316700 and moved
-// by the webpki-security-4314 producer-lock transition (#4314); for Darwin, the
-// owner-attested local v4.5.4 release-bump (ZFB-L2-022), cited at c74faf45 and
-// moved by that paired rewire.
+// by the webpki-security-4314 producer-lock transition (#4314); for Darwin, its
+// paired rewire, cited at 5b5f2152 and moved by the same webpki transition on
+// owner-attested local evidence.
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -1402,12 +1402,12 @@ const repinnedFromContracts = [
   },
   {
     file: "decision.json",
-    commit: "c74faf450160b9eec6c995b5223e172209d62b14",
-    sha256: "17874673d1a3bd02cda03b543e64eedb1dd7f983ab7c844dbf975727e37f532d",
-    fixture: "fixtures/island-size-darwin-v4.5.4-release.json",
-    outcome: "release-version-stamp",
+    commit: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
+    sha256: "7de9bdfea2a7642aa931f060a8c2764bcece479fa61dcbed4ede98025393b41e",
+    fixture: "fixtures/island-size-darwin-v4.5.4-v8rewire.json",
+    outcome: "cargo-internal-rewire-transition",
     packageVersion: "4.5.4",
-    baselineSourceSha: "f9dd1f5f9dad47555cd8ff41b9e65dc0a2e04410",
+    baselineSourceSha: "c74faf450160b9eec6c995b5223e172209d62b14",
     baselineRunId: undefined,
   },
 ];
@@ -1858,7 +1858,8 @@ describe("live contracts preserve released evidence and authentic predecessors",
   }
 
   // The webpki-security-4314 transition (#4314): Linux from health run
-  // 39609635178 at merge source dbf93a6c (probe head 9a316700).
+  // 39609635178 at merge source dbf93a6c (probe head 9a316700); Darwin from
+  // owner-attested local evidence at 5b5f2152.
   for (const { file, before, evidence } of [
     {
       file: "decision-linux-x64.json",
@@ -1869,6 +1870,19 @@ describe("live contracts preserve released evidence and authentic predecessors",
         sourceSha: "dbf93a6ce7a74d927e0c0cbd9f86a503bc8bb05c",
         runId: 39609635178,
         jobId: 119254853191,
+      },
+    },
+    {
+      file: "decision.json",
+      before: "fixtures/island-size-darwin-v4.5.4-v8rewire.json",
+      evidence: {
+        baselineSourceSha: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
+        event: "local-native",
+        sourceSha: "5b5f21523818634f8982e0dd3d7fc14885141f2c",
+        stagingTool: { commit: "5b5f21523818634f8982e0dd3d7fc14885141f2c" },
+        localReceipt: {
+          sha256: "fdffd9ed251d0ecbb72e38fc7ce6bbcb216f6824bd37cc3d7404299af6950547",
+        },
       },
     },
   ]) {
