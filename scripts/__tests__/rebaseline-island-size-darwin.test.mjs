@@ -99,6 +99,19 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const legacy = JSON.parse(
   readFileSync(join(testDir, "fixtures/island-size-darwin-actual-gzip-v1.json"), "utf8"),
 );
+// Verbatim decision.json and island-size-budget.test.mjs at bda633b: the last
+// Darwin contract carrying Actions artifact evidence and the test pins that
+// match it. The live contract now records owner-attested local-native evidence
+// (#4314), so cases that start from an artifact-shaped Darwin pin use these.
+const PRE_LOCAL_DARWIN_CONTRACT = readFileSync(
+  join(testDir, "fixtures/island-size-darwin-v4.5.3-rewire.json"),
+  "utf8",
+);
+const PRE_LOCAL_DARWIN_PINS = readFileSync(
+  join(testDir, "fixtures/island-size-budget-test-v4.5.3-rewire.txt"),
+  "utf8",
+);
+const preLocalDarwinContract = () => JSON.parse(PRE_LOCAL_DARWIN_CONTRACT);
 const SOURCE_SHA = "a".repeat(40);
 const VERSION = "9.9.9";
 const MODES = ["workspace", "packed"];
@@ -776,13 +789,25 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
 
   it("rewrites the Darwin test pins on a re-pin, idempotently, touching nothing else", () => {
     const repoRoot = join(testDir, "..", "..");
-    const source = readFileSync(
+    // The live pins agree with the live contract, whatever its evidence shape.
+    const liveSource = readFileSync(
       join(repoRoot, "scripts/__tests__/island-size-budget.test.mjs"),
       "utf8",
     );
-    const current = JSON.parse(
+    const liveContract = JSON.parse(
       readFileSync(join(repoRoot, "research/v3-island-size/decision.json"), "utf8"),
     );
+    expect(rewriteDarwinTestPins(liveSource, liveContract)).toBe(liveSource);
+    // An artifact-shaped re-pin starts from the frozen bda633b pair.
+    expect(sha(PRE_LOCAL_DARWIN_CONTRACT)).toBe(
+      "cc32aa6d51f4f8f3c95fcf27d4b4f2898288d9c49b1b7a4a4e8a654fcbe88818",
+    );
+    expect(sha(PRE_LOCAL_DARWIN_PINS)).toBe(
+      "63f2072fa630274b675b984a6e27b23adcfe6399e8454e1e2b16707f50265d59",
+    );
+    const source = PRE_LOCAL_DARWIN_PINS;
+    const current = preLocalDarwinContract();
+    expect(current.baselineEvidence.event).toBe("ci-artifact");
     expect(rewriteDarwinTestPins(source, current)).toBe(source);
 
     const next = structuredClone(current);
@@ -1945,7 +1970,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
       contract.dependencyFingerprint = { ...repo.priorFingerprint };
       return contract;
     };
-    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
+    darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
     darwinPinned.normalizerSha256 = normalizerSha256();
@@ -1955,6 +1980,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     linuxPinned = pin(liveOf(LINUX), linuxArtifact);
     writeFileSync(at(DARWIN), contractText(darwinPinned));
     writeFileSync(at(LINUX), contractText(linuxPinned));
+    writeFileSync(at(TEST), PRE_LOCAL_DARWIN_PINS);
     saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
   });
   afterEach(() => {
@@ -2739,7 +2765,7 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
       contract.dependencyFingerprint = { ...repo.priorFingerprint };
       return contract;
     };
-    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
+    darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
     darwinPinned.normalizerSha256 = normalizerSha256();
@@ -2748,6 +2774,7 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
     }
     writeFileSync(at(DARWIN), contractText(darwinPinned));
     writeFileSync(at(LINUX), contractText(pin(liveOf(LINUX), linuxArtifact)));
+    writeFileSync(at(TEST), PRE_LOCAL_DARWIN_PINS);
     saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
   });
   afterEach(() => {
@@ -3087,7 +3114,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
       contract.dependencyFingerprint = { ...repo.dependencyFingerprint };
       return contract;
     };
-    darwinPinned = pin(liveOf(DARWIN), darwinArtifact);
+    darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
     darwinPinned.normalizerSha256 = normalizerSha256();
@@ -3097,6 +3124,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     linuxPinned = pin(liveOf(LINUX), linuxArtifact);
     writeFileSync(at(DARWIN), contractText(darwinPinned));
     writeFileSync(at(LINUX), contractText(linuxPinned));
+    writeFileSync(at(TEST), PRE_LOCAL_DARWIN_PINS);
     darwinInputs = writeInputsForTest(at("research/v3-island-size/rewire-darwin"), DARWIN_TARGET);
     linuxInputs = writeInputsForTest(at("research/v3-island-size/rewire-linux"), LINUX_TARGET);
     repo.git("add", "-A");
