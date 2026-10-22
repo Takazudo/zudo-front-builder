@@ -69,4 +69,4 @@ jobs:
 
       - name: zfb-islands graph identity tests
         if: ${{ !cancelled() }}
-        run: cargo test --locked -p zfb-islands --lib graph_identity:: -- --test-threads=1
+        run: cargo test --locked -p zfb-islands --lib graph_identity::tests -- --test-threads=1
