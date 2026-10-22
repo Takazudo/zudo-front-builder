@@ -78,10 +78,7 @@ const REPINNED_FROM_KEYS = [
 
 const { oldText, newText, OLD, NEW } = removalLocks();
 const SOURCE = { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD };
-const DECLARATION_SOURCE = {
-  path: "research/v3-island-size/removal.json",
-  sha256: "1".repeat(64),
-};
+const DECLARATION_SOURCE = { path: "research/v3-island-size/removal.json", sha256: "1".repeat(64) };
 const manifests = (edit = (_path, text) => text) => {
   const files = Object.fromEntries(
     Object.entries(REMOVAL_MANIFESTS).map(([path, text]) => [path, edit(path, text)]),
@@ -116,10 +113,7 @@ function inputs({
     declaration: removalDeclaration(declare, { oldText, newText: newLock }),
     declarationSource: DECLARATION_SOURCE,
     closures: {
-      old: {
-        receipt: removalReceipt("old", target, oldClosure),
-        sha256: "2".repeat(64),
-      },
+      old: { receipt: removalReceipt("old", target, oldClosure), sha256: "2".repeat(64) },
       new: {
         receipt: removalReceipt("new", target, newClosure, newLock),
         sha256: "3".repeat(64),
@@ -197,11 +191,8 @@ describe("cargo-removal (#4388) proof", () => {
     });
     // Raw bytes are hashed before decoding: Buffers prove like their text.
     expect(
-      prove({}, (i) => ({
-        ...i,
-        oldText: Buffer.from(oldText),
-        newText: Buffer.from(newText),
-      })).newSha,
+      prove({}, (i) => ({ ...i, oldText: Buffer.from(oldText), newText: Buffer.from(newText) }))
+        .newSha,
     ).toBe(NEW);
   });
 
@@ -221,10 +212,7 @@ describe("cargo-removal (#4388) proof", () => {
       '[[package]]\nname = "zudo-wind"',
       '[[package]]\nname = "zfb-v8-shim"\nversion = "0.0.0"\ndependencies = [\n "deno_core",\n]\n\n[[package]]\nname = "zudo-wind"',
     );
-    const transition = proveCargoRemoval({
-      ...inputs(),
-      ...rebindOld(oldLock),
-    });
+    const transition = proveCargoRemoval({ ...inputs(), ...rebindOld(oldLock) });
     expect(transition.removed.map((r) => [r.id, r.source])).toContainEqual([
       "zfb-v8-shim@0.0.0",
       null,
@@ -437,9 +425,7 @@ describe("cargo-removal (#4388) proof", () => {
     },
     {
       name: "removed edges that differ from the declaration",
-      options: {
-        declare: (d) => (d.changed[1].removedDependencies = ["deno_core", "sha2"]),
-      },
+      options: { declare: (d) => (d.changed[1].removedDependencies = ["deno_core", "sha2"]) },
       message:
         /declared changed zfb-render@0\.0\.0 removed edges \["deno_core"\] differ from removedDependencies/,
     },
@@ -517,17 +503,13 @@ describe("cargo-removal (#4388) proof", () => {
     },
     {
       name: "an external closure row leaving",
-      options: {
-        newClosure: (r) => (r.rows = r.rows.filter((x) => x.name !== "sha2")),
-      },
+      options: { newClosure: (r) => (r.rows = r.rows.filter((x) => x.name !== "sha2")) },
       message:
         /external rows left the producer closure: sha2@0\.10\.9 \(registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index\)/,
     },
     {
       name: "an undeclared internal closure row leaving",
-      options: {
-        newClosure: (r) => (r.rows = r.rows.filter((x) => x.name !== "zfb-render")),
-      },
+      options: { newClosure: (r) => (r.rows = r.rows.filter((x) => x.name !== "zfb-render")) },
       message:
         /closure rows removed \["zfb-render@0\.0\.0"\] differ from the declaration's closure\.removed/,
     },
@@ -558,9 +540,7 @@ describe("cargo-removal (#4388) proof", () => {
     },
     {
       name: "an internal feature move",
-      options: {
-        newClosure: (r) => (row(r, "zfb-render").features = ["default", "embed_v8"]),
-      },
+      options: { newClosure: (r) => (row(r, "zfb-render").features = ["default", "embed_v8"]) },
       message: /feature movement in the producer closure: zfb-render@0\.0\.0/,
     },
     {
@@ -612,10 +592,7 @@ describe("cargo-removal (#4388) proof", () => {
     ],
     [
       "a declaration bound to another old lock",
-      (i) => ({
-        ...i,
-        declaration: { ...i.declaration, oldCargoLockSha256: "5".repeat(64) },
-      }),
+      (i) => ({ ...i, declaration: { ...i.declaration, oldCargoLockSha256: "5".repeat(64) } }),
       /the declaration's oldCargoLockSha256 is not --expected-old-cargo-sha/,
     ],
     [
@@ -771,10 +748,7 @@ describe("cargo-removal (#4388) end to end", () => {
     expect(() =>
       assertAllowedMovement("cargo-removal", CARGO_REMOVAL_MOVEMENT, pinned, next),
     ).not.toThrow();
-    expect(next.toolchain).toEqual({
-      ...pinned.toolchain,
-      cargoLockSha256: NEW,
-    });
+    expect(next.toolchain).toEqual({ ...pinned.toolchain, cargoLockSha256: NEW });
     expect(next.ceilings).toEqual(pinned.ceilings);
     expect(next.allowance).toEqual(pinned.allowance);
     expect(next.fixtureSha256).toEqual(pinned.fixtureSha256);
@@ -793,11 +767,7 @@ describe("cargo-removal (#4388) end to end", () => {
     ]);
     expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
     const removal = next.baselineEvidence.cargoRemoval;
-    expect(removal.oldLockSource).toEqual({
-      commit: repo.commit,
-      path: "Cargo.lock",
-      sha256: OLD,
-    });
+    expect(removal.oldLockSource).toEqual({ commit: repo.commit, path: "Cargo.lock", sha256: OLD });
     expect(removal.newLockSource).toEqual({
       sha256: NEW,
       commit: newLockCommit,
@@ -889,9 +859,7 @@ describe("cargo-removal (#4388) end to end", () => {
     },
     {
       name: "a closure row leaving",
-      inputs: {
-        newClosure: (r) => (r.rows = r.rows.filter((x) => x.name !== "sha2")),
-      },
+      inputs: { newClosure: (r) => (r.rows = r.rows.filter((x) => x.name !== "sha2")) },
       message: /external rows left the producer closure: sha2@0\.10\.9/,
     },
     {
@@ -973,12 +941,7 @@ describe("cargo-removal (#4388) end to end", () => {
       const stage = join(tempDir("zfb-removal-stage-"), "stage");
       await expect(
         main(
-          argv({
-            stage,
-            artifact: measured,
-            "expected-new-cargo-sha": LOCK,
-            ...values,
-          }),
+          argv({ stage, artifact: measured, "expected-new-cargo-sha": LOCK, ...values }),
           repo.root,
         ),
       ).rejects.toThrow(message);
@@ -1056,9 +1019,7 @@ describe("cargo-removal (#4388) end to end", () => {
     ).rejects.toThrow(/artifact Cargo\.lock hash differs from this checkout's Cargo\.lock/);
     await expect(
       main(
-        argv({
-          artifact: linuxArtifact((p) => (p.platform = { os: "darwin", arch: "arm64" })),
-        }),
+        argv({ artifact: linuxArtifact((p) => (p.platform = { os: "darwin", arch: "arm64" })) }),
         repo.root,
       ),
     ).rejects.toThrow(/not linux-x64; Darwin arm64 uses rebaseline-island-size-darwin\.mjs/);
@@ -1274,11 +1235,7 @@ describe("cargo-removal prunedExternal (#4396)", () => {
       [
         (d) =>
           (d.prunedExternal = [
-            {
-              id: "x@1.0.0",
-              oldSha256: "1".repeat(64),
-              newSha256: "2".repeat(64),
-            },
+            { id: "x@1.0.0", oldSha256: "1".repeat(64), newSha256: "2".repeat(64) },
           ]),
         /prunedExternal entries need exactly/,
       ],
