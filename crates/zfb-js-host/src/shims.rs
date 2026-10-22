@@ -48,7 +48,7 @@ pub const NODE_FS_PROMISES_SRC: &str = include_str!("js/node_fs_promises.js");
 pub const NODE_PATH_SRC: &str = include_str!("js/node_path.js");
 
 /// `node:url` stub source. (Distinct from the global `URL`, which
-/// `deno_web` provides; this is for code paths that import the Node
+/// `web_polyfills.js` provides; this is for code paths that import the Node
 /// namespace by name.)
 pub const NODE_URL_SRC: &str = include_str!("js/node_url.js");
 
