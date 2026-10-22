@@ -72,7 +72,7 @@ See [`architecture/choosing-zfb.mdx`](./docs/src/content/docs/architecture/choos
 
 **Known limits of the direct host:** interrupting CPU-bound JavaScript is not supported, and the qualification harness drains a killed child's output only on a best-effort basis ([#4289](https://github.com/Takazudo/zudo-front-builder/issues/4289)). See [`prototypes/direct-v8/WATCHDOG-4289.md`](prototypes/direct-v8/WATCHDOG-4289.md).
 
-**In progress:** the final Deno-free evidence and its native platform rows ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). A label-triggered, non-required CI lane (`direct-v8.yml`) records Linux x64, Linux arm64 and Windows x64 rows; Darwin rows are run on a Mac. Rolldown stays a non-default prototype.
+**Platform coverage of the direct host:** native qualification and the deno_core removal are done ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). A label-triggered, non-required CI lane (`direct-v8.yml`) records Linux x64, Linux arm64 and Windows x64 rows; Darwin rows are run on a Mac. Rolldown stays a non-default prototype.
 
 ## Docs site
 

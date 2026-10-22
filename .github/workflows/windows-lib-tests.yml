@@ -5,7 +5,9 @@
 # Linux only, so Windows-only path behavior (verbatim `\\?\C:\…` canonical
 # paths, `\` separators, directory handles) and `cfg(windows)` code went
 # untested until a manual run found 25 failures. This lane runs the two
-# crates where those surfaced. It is path-filtered, so it is not a required
+# crates where those surfaced, plus zfb-islands' graph-identity tests, which
+# cover the `?url` resource read that Windows rejects as an invalid filename
+# (#4413). It is path-filtered, so it is not a required
 # check; a red result still needs triage like any other check.
 
 name: windows-lib-tests
@@ -30,7 +32,7 @@ concurrency:
 
 jobs:
   windows-lib-tests:
-    name: Windows lib tests (zfb-build, zfb-content)
+    name: Windows lib tests (zfb-build, zfb-content, zfb-islands graph identity)
     runs-on: windows-latest
     timeout-minutes: 120
     defaults:
@@ -64,3 +66,7 @@ jobs:
       - name: zfb-build lib tests
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-build --lib -- --test-threads=1
+
+      - name: zfb-islands graph identity tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p zfb-islands --lib graph_identity::tests -- --test-threads=1

@@ -238,9 +238,17 @@ fn resolved_input_bytes(cwd: &Path, key: &str) -> Result<Vec<u8>> {
     let path = cwd.join(key);
     match std::fs::read(&path) {
         Ok(bytes) => Ok(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && key.ends_with("?url") => {
+        Err(error)
+            if key.ends_with("?url")
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
+                ) =>
+        {
             // The locked resource contract already recognizes this exact
             // esbuild suffix. A real filename containing ?url wins above.
+            // Windows rejects `?` in a filename with ERROR_INVALID_NAME (os
+            // error 123) instead of reporting it missing (#4413).
             let resource = cwd.join(key.strip_suffix("?url").expect("checked suffix"));
             std::fs::read(&resource)
                 .with_context(|| format!("read esbuild resolved resource {}", resource.display()))
@@ -513,6 +521,29 @@ mod tests {
         assert!(digest().unwrap_err().to_string().contains("disconnected"));
         std::fs::write(&meta, br#"{"inputs":{"entry.js":{"imports":[{"path":"absent.js","kind":"import-statement"}]}}}"#).unwrap();
         assert!(digest().unwrap_err().to_string().contains("missing input"));
+    }
+
+    #[test]
+    fn url_resource_suffix_falls_back_on_every_platform() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(cwd.join("dist")).unwrap();
+        std::fs::write(cwd.join("dist/glue.zfb-resource.mjs"), "resource").unwrap();
+        // An absolute key, as esbuild reports a node_modules resource (#4413).
+        let key = cwd.join("dist/glue.zfb-resource.mjs?url");
+        assert_eq!(
+            resolved_input_bytes(&cwd, key.to_str().unwrap()).unwrap(),
+            b"resource"
+        );
+        assert_eq!(
+            resolved_input_bytes(&cwd, "dist/glue.zfb-resource.mjs?url").unwrap(),
+            b"resource"
+        );
+        let missing = resolved_input_bytes(&cwd, "dist/absent.mjs?url").unwrap_err();
+        assert!(
+            format!("{missing:#}").contains("read esbuild resolved resource"),
+            "{missing:#}"
+        );
     }
 
     #[cfg(unix)]
