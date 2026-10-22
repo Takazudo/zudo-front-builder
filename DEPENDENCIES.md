@@ -525,6 +525,14 @@ declaration is removable even if its package remains in `Cargo.lock`.
   growth threshold, a new advisory against 0.0.53, or a yank of either
   adopted version.
 
+  **Bumped to `0.0.55` and then to `0.0.58`.** The owner accepted 0.0.55's
+  growth (#4161/#4173). On 2026-10-21 the owner chose to adopt 0.0.58 (#4268)
+  despite its size growth and slower large-frontmatter parsing, raising the
+  `render-only` ceiling to 1,125,000 B. See the "`noyalib 0.0.58` adoption"
+  section below.
+  **Next trigger:** the next published lockstep pair, a yank of either
+  adopted version, or a new advisory against 0.0.58.
+
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
   `serde_yaml` baseline in 11 of 18 cases. A pinned pre-release re-check of
@@ -2947,6 +2955,24 @@ The frozen harness already pins the ratio rejection in its `alias-anchor-repetit
 **CI size alignment (#4173).** `crates/zfb-md-wasm/shipped-sizes.json` and its synced doc tables now carry the authoritative CI wasm-md build of PR #4178 ([health run 38290518002](https://github.com/Takazudo/zudo-front-builder/actions/runs/38290518002), job `wasm-md (default, default)` 114949291592, head `1798f6862f07917713c21ef532d290f78529d127`), never Mac bytes. finalWasm/gzip-9 moved: root 3,390,904/1,519,893 to 3,393,574/1,521,735, render 2,198,163/1,094,209 to 2,200,768/1,094,951, parse 701,081/284,532 to 703,433/285,917. highlight is unchanged (byte-identical finalWasm and gzip-9 817,815). Glue columns and every ceiling are unchanged. The manifest records no measured tarball total, so none is updated; a tarball figure would come from a later CI pack step.
 
 **Still open.** Native Darwin and CI Linux island-size confirmation at the new `Cargo.lock` hash are pending.
+
+##### `noyalib 0.0.58` adoption (#4268) — MIGRATE to 0.0.58
+
+**Decision.** Takazudo chose to adopt the published 0.0.58 pair on 2026-10-21 (#4268), after the evaluation below had recommended HOLD. The owner accepted both known costs: the WASM size growth, including a raise of the `render-only` gzip-9 ceiling, and the slower parsing of very large frontmatter. This replaces the HOLD; it is not a general waiver of the YAML size or growth rules for later pairs.
+
+**Evidence carried into the decision** (recorded on #4268):
+
+- Semantics and MSRV (Codex Cloud evaluation, 2026-10-17, at `f69c2785`): the immutable 18-observation differential harness, frontmatter resource budgets (5/5), protected error messages (2/2), all 1,121 `zfb-content` tests, the md-wasm API/AST pins, the #4172 boundary probe (26/26 observations identical to 0.0.55) and an exact Rust 1.89.0 check all passed. Both 0.0.58 manifests raise `rust-version` from 1.86.0 to 1.89.0; zfb builds on stable.
+- Speed: at 240k scalars the minimum parse time rose from 165.5 to 388.2 ms (mapping-value, 2.35x) and from 183.0 to 531.1 ms (document-start, 2.90x); peak RSS was unchanged and every above-budget refusal still stops at `max_nodes` 250,000. 0.0.58 runs an extra `repeated_struct_field` pass after compat deserialization, a plausible cause. Timing is evidence, not a CI gate.
+- Size: CI probe #4327 ([job 118230127158](https://github.com/Takazudo/zudo-front-builder/actions/runs/39302214945/job/118230127158)) against same-toolchain control job 117963854868 measured gzip-9 growth of default +14,342, render-only +15,897 (1,114,879 B, over the old 1,100,000 B ceiling), parse-only +15,216 and highlight-only −5. Glue sizes did not change.
+
+**Pin.** Root `Cargo.toml` pins `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.58" }`. `Cargo.lock` changes only the version and checksum of the two pair records: `3fad8f1a552070f6ba5f60f25e880f7b6daeda8fe138f589345141d31a21a3bb` (`noyalib 0.0.58`) and `c7ef9e69591faecd546d11575c1f65c4c5f6725692cd82c6280eae4c1a923696` (`noyalib-serde-yaml 0.0.58`), both matching crates.io. The Windows edges that `cargo update` reselected are left out. The harness label (`CURRENT_ADAPTER_NAME` and the fixture's `adapter` field) moves to 0.0.58 with the corpus and the 18 baseline observations byte-identical; the differential, resource-budget and error-message tests pass locally on the bumped lock.
+
+**Ceiling.** `crates/zfb-md-wasm/shipped-sizes.json` raises `render-only` from 1,100,000 B to 1,125,000 B. The other ceilings are unchanged and every artifact fits under them. Measured values and the synced doc tables come from CI wasm-md builds only, never Mac bytes.
+
+**Island size.** The lock move is the reviewed `noyalib-4268` transition (`research/v3-island-size/cargo-transitions/NOYALIB-4268.md`). Each platform contract records it from its own native evidence; island ceilings do not move.
+
+**Next trigger:** the next published lockstep pair, a yank of either 0.0.58 crate, or a new advisory against it, handled through the YAML candidate watch.
 
 ##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
 

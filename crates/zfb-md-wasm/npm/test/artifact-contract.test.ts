@@ -86,7 +86,7 @@ describe("slim artifact descriptors", () => {
         dirName: "wasm-render",
         outName: "zfb_md_wasm_render",
         workerd: false,
-        gzipCeiling: 1_100_000,
+        gzipCeiling: 1_125_000,
       },
       {
         entry: "./parse",

@@ -20,14 +20,18 @@ export function assertLocalSecurityTransition(transition) {
       transition?.review?.id === entry.id &&
       transition?.review?.manifestSha256 === entry.decisionSha256,
   );
-  if (!approved) fail("only an exact approved #4314 security transition supports local evidence");
+  if (!approved)
+    fail(
+      "only an exact approved #4314 security or #4268 noyalib transition supports local evidence",
+    );
   return approved;
 }
 
 // The only reasons that may stage owner-attested local evidence, each for its
 // own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire),
 // #4388 declared removal-only Cargo transitions (evidence.cargoRemoval),
-// the exact #4314 security lock transitions (evidence.cargoTransition), and the
+// the exact #4314 security and #4268 noyalib lock transitions
+// (evidence.cargoTransition), and the
 // provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
 // transition (owner decision 2026-10-21: Darwin re-pins must not require a
 // hosted Mac runner). Adding a reason here is a provenance-policy decision, not
