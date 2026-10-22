@@ -8,6 +8,8 @@ mod jsx_tsconfig_tests;
 #[cfg(test)]
 mod metafile_order_tests;
 mod prepared;
+#[cfg(test)]
+mod splitting_tests;
 mod trailing_paths;
 #[cfg(test)]
 mod unresolved_tests;
