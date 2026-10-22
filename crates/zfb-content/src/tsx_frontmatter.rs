@@ -362,7 +362,7 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
         .parse_module()
         .map_err(|e| TsxFrontmatterError::Parse {
             file: file_name.to_string(),
-            message: format!("{e:?}"),
+            message: crate::swc_parse_error::describe_parse_error(&cm, &e),
         })?;
 
     let ctx = Ctx {

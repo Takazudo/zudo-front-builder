@@ -27,6 +27,7 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::{Visit, VisitWith};
+use zfb_content::swc_parse_error::describe_parse_error;
 use zfb_plugin_resolver::{
     read_tsconfig_paths_file, TsConfigDependencyInput, TsConfigPaths, TsPathAlias,
 };
@@ -370,8 +371,9 @@ fn parse_module(path: &Path, source: &str) -> Result<(Module, u32, SyntaxContext
     let mut parser = Parser::new_from(lexer);
     let module = parser.parse_module().map_err(|error| {
         anyhow!(
-            "zfb bundler: failed to parse {} for module-worker discovery: {error:?}",
-            path.display()
+            "zfb bundler: failed to parse {} for module-worker discovery: {}",
+            path.display(),
+            describe_parse_error(&cm, &error)
         )
     })?;
     let globals = Globals::new();

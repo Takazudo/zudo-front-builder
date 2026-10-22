@@ -39,6 +39,9 @@ zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", optional = true }
 # zfb-types is a zero-zfb-dep leaf crate, so this introduces no
 # coupling beyond the constants themselves.
 zfb-types = { path = "../zfb-types" }
+# Readable SWC parse-error text shared with zfb-build and zfb-render
+# (#4427). zfb-build already depends on zfb-content, so this adds no crate.
+zfb-content = { path = "../zfb-content" }
 # Single source of truth for pinned external tool versions (esbuild,
 # wrangler, workerd). Consumed here for EXPECTED_ESBUILD_VERSION.
 zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }

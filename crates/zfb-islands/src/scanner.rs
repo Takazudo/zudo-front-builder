@@ -76,6 +76,7 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver as swc_resolver;
 use thiserror::Error;
+use zfb_content::swc_parse_error::describe_parse_error;
 use zfb_plugin_resolver::{
     read_tsconfig_paths, resolve_raw_target_with_aliases, RawImportAliasContext, TsConfigPaths,
     TsPathAlias,
@@ -3234,7 +3235,7 @@ fn parse_module(path: &Path, source: &str) -> ScanResult<Module> {
     let mut parser = Parser::new_from(lexer);
     parser.parse_module().map_err(|e| ScanError::Parse {
         path: path.to_path_buf(),
-        message: format!("{e:?}"),
+        message: describe_parse_error(&cm, &e),
     })
 }
 
@@ -4908,8 +4909,11 @@ mod tests {
         );
         let err = scan_islands(&[root().join("pages/broken.tsx")], &resolver).unwrap_err();
         match err {
-            ScanError::Parse { path, .. } => {
+            ScanError::Parse { path, message } => {
                 assert_eq!(path, root().join("pages/broken.tsx"));
+                // #4427: line/column and SWC's message, not its Debug form.
+                assert!(message.starts_with("line 1, column 27: "), "{message}");
+                assert!(!message.contains("Error {"), "{message}");
             }
             other => unreachable!("expected Parse error, got {other:?}"),
         }

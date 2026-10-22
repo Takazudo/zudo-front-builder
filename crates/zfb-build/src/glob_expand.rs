@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use walkdir::WalkDir;
+use zfb_content::swc_parse_error::describe_parse_error;
 use zfb_types::path_to_posix_string;
 
 use crate::bundler::is_pruned_infra_dir;
@@ -241,7 +242,10 @@ fn collect_import_meta_glob_calls(source: &str) -> Result<Vec<GlobCall>> {
     );
     let mut parser = Parser::new_from(lexer);
     let module = parser.parse_module().map_err(|e| {
-        anyhow!("zfb bundler: failed to parse module for import.meta.glob expansion: {e:?}")
+        anyhow!(
+            "zfb bundler: failed to parse module for import.meta.glob expansion: {}",
+            describe_parse_error(&cm, &e)
+        )
     })?;
 
     let mut collector = GlobCallCollector {
