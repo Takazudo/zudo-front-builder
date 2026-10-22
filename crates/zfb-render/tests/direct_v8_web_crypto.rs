@@ -835,3 +835,25 @@ async fn crypto_key_is_not_defined() {
         "undefined,undefined"
     );
 }
+
+/// The native entropy callback itself rejects an over-quota buffer with the
+/// contract's byte-quota message and class — the bridge-boundary twin of the
+/// JS check above (ported from `src/embedded_v8/crypto/tests.rs`'s
+/// `the_op_rejects_an_over_quota_buffer_at_the_v8_boundary`, #4393 S6a).
+/// Called directly so the polyfill's own quota check cannot answer first.
+#[tokio::test]
+async fn the_native_random_bytes_callback_rejects_an_over_quota_buffer() {
+    let over = MAX_RANDOM_BYTES_PER_CALL + 1;
+    let script = format!(
+        r#"{HELPERS}
+        return expectThrow(() => globalThis.__zfbHost.randomBytes(new Uint8Array({over})));
+        "#
+    );
+    assert_eq!(
+        probe(&script, DispatchMode::RequestTime).await,
+        format!(
+            "QuotaExceededError|crypto.getRandomValues: requested {over} bytes, quota is \
+             {MAX_RANDOM_BYTES_PER_CALL} bytes"
+        )
+    );
+}

@@ -38,7 +38,7 @@ use zfb_js_host::shims::{HOST_GLOBALS_SHIM_SRC, WEB_POLYFILLS_SRC};
 use zfb_render::{BundleModuleLoader, DispatchMode, EmbeddedV8RenderHost, HttpRequestLike};
 
 #[allow(dead_code)]
-#[path = "../src/embedded_v8/loopback_test_server.rs"]
+#[path = "../../zfb-js-host/src/loopback_test_server.rs"]
 mod loopback;
 use loopback::{ok_response, redirect_response, LoopbackServer};
 
@@ -1305,5 +1305,68 @@ fn the_request_body_cap_is_checked_before_the_buffer_is_copied() {
     assert!(
         check_at < copy_at,
         "the cap check must precede the copy in start_fetch"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Ported from `src/embedded_v8/mod.rs`'s `fetch_boundary_tests` (#4393,
+// S6a): the raw native bridge instead of `Deno.core.ops.op_zfb_fetch`,
+// reached from a genuine request-time dispatch instead of a
+// Deno-host-installed mode.
+// ---------------------------------------------------------------------
+
+/// A server that answers **only once two requests are in flight at the same
+/// time** — the falsifier for guardrail 1: if the bridge parked the isolate
+/// thread, the second call would never be reached and nothing would settle.
+async fn concurrency_barrier_server() -> LoopbackServer {
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    LoopbackServer::spawn(move |req, mut stream| {
+        let barrier = barrier.clone();
+        async move {
+            barrier.wait().await;
+            let _ = stream.write_all(&ok_response(&req.target)).await;
+            let _ = stream.shutdown().await;
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn the_bridge_runs_on_the_event_loop_and_does_not_park_the_isolate_thread() {
+    let server = concurrency_barrier_server().await;
+    let script = format!(
+        r#"const call = (path) => globalThis.__zfbHost.fetch(
+             {{ url: {base:?} + path, method: "GET", headers: [], redirect: "follow", hasBody: false }},
+             new Uint8Array(0),
+           );
+           // Both calls start before either is awaited; the server answers
+           // only when BOTH connections exist.
+           const results = await Promise.all([call("/one"), call("/two")]);
+           const decoder = new TextDecoder();
+           return results.map((r) => r.status + ":" + decoder.decode(r.body)).join("|");"#,
+        base = server.base_url(),
+    );
+
+    let got = probe(&script, DispatchMode::RequestTime).await;
+    assert_eq!(got, "200:/one|200:/two");
+    assert_eq!(server.request_count(), 2);
+}
+
+/// A transport rejection crosses the bridge as a rejected promise — never a
+/// synthetic empty `Response`, which would be indistinguishable from a real
+/// 200 with no content.
+#[tokio::test]
+async fn a_transport_rejection_reaches_js_as_a_rejected_promise() {
+    let script = r#"return await globalThis.__zfbHost.fetch(
+          { url: "ftp://example.invalid/data", method: "GET", headers: [], redirect: "follow", hasBody: false },
+          new Uint8Array(0),
+        ).then(
+          (r) => "RESOLVED:" + r.status,
+          (e) => "REJECTED:" + e.name + ":" + e.message,
+        );"#;
+
+    assert_eq!(
+        probe(script, DispatchMode::RequestTime).await,
+        "REJECTED:TypeError:Fetch API cannot load: ftp://example.invalid/data"
     );
 }

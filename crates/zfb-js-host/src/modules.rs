@@ -757,3 +757,51 @@ fn resolve_import(specifier: &str, referrer: &str) -> Result<ModuleSpecifier, St
         Err(error) => Err(format!("invalid URL: {error}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BundleModuleLoader;
+
+    /// The URL and error contract the Deno host's resolver had (#4393, S6a).
+    /// The original compared against `deno_core::resolve_import` as an
+    /// oracle; with that oracle going away, the same six cases are pinned
+    /// as literals in deno_core's `ModuleResolutionError` wording.
+    #[test]
+    fn shared_resolution_retains_the_baseline_url_and_error_contract() {
+        let cases: [(&str, &str, Result<&str, &str>); 6] = [
+            ("./child.js", "file:///zfb/main.mjs", Ok("file:///zfb/child.js")),
+            ("../child.js", "file:///zfb/nested/main.mjs", Ok("file:///zfb/child.js")),
+            (
+                "bare",
+                "file:///zfb/main.mjs",
+                Err("Relative import path \"bare\" not prefixed with / or ./ or ../ from \"file:///zfb/main.mjs\""),
+            ),
+            (
+                "bare",
+                "",
+                Err("Relative import path \"bare\" not prefixed with / or ./ or ../"),
+            ),
+            (
+                "./child.js",
+                "invalid base",
+                Err("invalid base URL for relative import: relative URL without a base"),
+            ),
+            (
+                "https://[invalid",
+                "file:///zfb/main.mjs",
+                Err("invalid URL: invalid IPv6 address"),
+            ),
+        ];
+        for (specifier, referrer, expected) in cases {
+            let actual = BundleModuleLoader::new()
+                .resolve(specifier, referrer)
+                .map(|url| url.to_string());
+            let expected = expected.map(str::to_string).map_err(|inner| {
+                format!(
+                    "embedded V8 host: failed to resolve `{specifier}` from `{referrer}`: {inner}"
+                )
+            });
+            assert_eq!(actual, expected, "{specifier:?} from {referrer:?}");
+        }
+    }
+}
