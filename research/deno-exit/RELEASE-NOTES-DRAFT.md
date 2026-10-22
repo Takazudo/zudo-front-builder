@@ -1,7 +1,9 @@
 # Release-notes draft: Deno exit (epic #4386)
 
 This is a draft for `/l-make-release` to use, covering everything merged after v4.6.0 up to
-`360f515` (#4416). It follows the five-lane contract in `CLAUDE.md`. Each lane section below is the
+`7a8cff8` (#4418). Two open PRs are expected to land before the release; their entries are in
+[Pending PRs](#pending-prs-merge-these-entries-if-they-land) and must be merged into the lanes below
+only if the PR is merged when the release is cut. It follows the five-lane contract in `CLAUDE.md`. Each lane section below is the
 body of `docs/src/content/docs/changelog/<lane>/v<version>.mdx`, minus the frontmatter and the
 `Released:` line, which the release procedure adds. The release itself, the version bump and the tag
 are Takazudo's.
@@ -16,6 +18,40 @@ are Takazudo's.
 - The noyalib 0.0.58 adoption grows the `zfb-md-wasm` files but keeps their API.
 
 Pick a major only to signal the engine change itself. No published interface requires one.
+
+If #4408 lands, 4.7.0 still fits: Rolldown becomes the default page and island bundler, but
+commands, config and the island contract are unchanged and `ZFB_BUNDLER=esbuild` restores the old
+bundler. Emitted island JS bytes and hashes change, so say that plainly in the notes.
+
+## Pending PRs: merge these entries if they land
+
+### #4408: Rolldown as the default bundler (zfb lane)
+
+Add under `## Features`:
+
+```md
+- Bundler: zfb now bundles pages/SSR and islands with Rolldown, in process, instead of the
+  embedded esbuild. Set `ZFB_BUNDLER=esbuild` to go back to esbuild. `ZFB_BUNDLER` accepts only
+  `rolldown` or `esbuild`, and any other value fails at startup. `zfb.config.ts` and plugins
+  still compile with esbuild.
+- Island JS output changes: Rolldown's island bundles are about 4% larger raw and about 4% smaller
+  gzipped than esbuild's, so asset hashes change on the first build after upgrading.
+```
+
+Add under `## Bug Fixes` only the parity fixes that change behavior a user could see with the new
+default (from the PR body): `--conditions` extends Rolldown's default conditions as esbuild did, a
+manual `--tsconfig`'s `jsx`/`jsxImportSource` applies to `node_modules` too, and unresolved-import
+errors name project files instead of `/tmp/zfb-bundler-*` shadow paths. The released binary also
+grows (113.7 → 127.4 MB, release Linux x64); re-measure on the release build before quoting it.
+
+### #4413: Windows `?url` imports in islands (zfb lane)
+
+Add under `## Bug Fixes`, once the fix is merged (wording to match the final fix):
+
+```md
+- Windows: an island build that imports an asset with `?url` no longer fails with
+  `read esbuild resolved graph input …?url` (os error 123).
+```
 
 ## Lane: zfb
 
@@ -114,5 +150,14 @@ Other user-facing changes:
 - #4381: Windows path fixes in zfb-build and zfb-content (#4371)
 
 Repo-only (no package-facing effect, so not in the notes): #4345, #4405 and #4411 (the non-default
-Rolldown prototype), #4378, #4379, #4380, #4383, #4384, #4402, #4416, and this PR (the draft
-itself, plus comment-only wording in the embedded JS shims).
+Rolldown prototype; if #4408 makes Rolldown the default, these fixes ship with it and are covered by
+its entry), #4378, #4379, #4380, #4383, #4384, #4402, #4416 (CI check of the CSS carriers' version
+pin), #4418 (this draft, plus comment-only wording in the embedded JS shims), and the docs PR that
+updated this draft.
+
+## Outside the changelog: update at the version bump
+
+- `README.md` "What ships": the "In the current release" paragraph names v4.6.0 and deno_core, and
+  the "On `main`, not yet released" paragraph describes the direct V8 host. At the bump, move the
+  direct V8 host (and Rolldown, if #4408 landed) into the current-release paragraph and drop the
+  unreleased paragraph.
