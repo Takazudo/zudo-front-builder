@@ -4,6 +4,8 @@ mod copy_reference;
 #[cfg(test)]
 mod css_tests;
 #[cfg(test)]
+mod jsx_tsconfig_tests;
+#[cfg(test)]
 mod metafile_order_tests;
 mod prepared;
 mod trailing_paths;
@@ -407,8 +409,9 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         .warnings
         .iter()
         // The prepared argv owns the transform options, so a tsconfig field it
-        // overrides (zfb always passes --jsx-import-source) is the esbuild
-        // precedence, which esbuild applies silently. Rolldown reports these
+        // overrides is the esbuild precedence, which esbuild applies silently.
+        // Islands argv passes --jsx-import-source; the SSR pass gets the same
+        // value promoted from its tsconfig (#4407). Rolldown reports these
         // outside `checks`, so they cannot be turned off there (#4404).
         .filter(|w| w.kind().to_string() != "CONFIGURATION_FIELD_CONFLICT")
         .map(|w| w.to_diagnostic().convert_to_string(false))

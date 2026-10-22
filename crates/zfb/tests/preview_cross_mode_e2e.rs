@@ -411,7 +411,7 @@ fn run_build(root: &Path, esbuild: &Path) -> bool {
     let combined = format!("{stdout}{stderr}");
 
     if !output.status.success() {
-        if combined.contains("embed_v8") || combined.contains("no esbuild") {
+        if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
             eprintln!(
                 "[preview_cross_mode_e2e] `zfb build` exited with known-skip indicator; \
                  skipping.\nstdout: {stdout}\nstderr: {stderr}"

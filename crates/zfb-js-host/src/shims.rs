@@ -12,10 +12,9 @@
 //! The host's `super::module_loader::BundleModuleLoader` is the
 //! canonical resolution point for `node:*` and the bridge globals —
 //! it serves the JS source out of the constants below. We deliberately
-//! do NOT register them as a `deno_core::Extension` because the
-//! `extension!` macro's path-relative file inclusion is brittle across
-//! `cargo` invocation contexts (workspace root vs crate dir vs test
-//! harness vs `cargo install` from a tarball). Inlining via `include_str!`
+//! inline them via `include_str!` rather than path-relative file inclusion,
+//! which is brittle across `cargo` invocation contexts (workspace root vs
+//! crate dir vs test harness vs `cargo install` from a tarball). Inlining via `include_str!`
 //! against the crate source dir keeps the build hermetic.
 //!
 //! ## v1 list

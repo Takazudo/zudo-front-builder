@@ -1,11 +1,17 @@
 # Phase 2 opt-in CLI integration
 
+> **Current status (2026-10-22):** the direct V8 host is zfb's only JS runtime. It has
+> been the default `direct-v8` feature since #4390, and #4395 removed the deno_core host
+> and the `embed_v8` feature (PR #4412, merge commit `7e7aea9`). The text below is kept
+> as written; where it describes the deno_core host, `embed_v8`, a baseline comparison
+> or a combined-feature build, it is source-bound history.
+
 Tracking: #4301. Base: `21d6807e442bbed61e578c165a91d64c4a7dc141`.
 
 > Status: integrated into `main` by #4368 (`47acd2a8`). Since #4390 `direct-v8` is the
-> default feature and `embed_v8` is the source-build rollback
-> (`--no-default-features --features embed_v8`) until Gate B removes it. The
-> integration-lane notes below are kept as written.
+> default feature. Gate B (#4395) removed the deno_core host and the `embed_v8`
+> rollback; references below to the combined-feature process, the Deno facade and
+> `direct_v8_shared` are historical. The integration-lane notes below are kept as written.
 
 This work follows `CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
 The integration branch targets main; this lane owns shared files, the combined
@@ -26,10 +32,8 @@ cargo test --locked -p zfb-render --no-default-features --features direct-v8,syn
 ```
 
 There is no runtime config field or CLI switch. Since #4390 `direct-v8` is the
-default and `embed_v8` is the source-build rollback. When both features unify,
-the existing Deno render/config facade wins; rollback-only commands must
-explicitly disable defaults. Slim builds
-with neither feature retain their existing Node config evaluator and no-V8
+default; #4395 removed the `embed_v8` rollback. Slim builds
+without it retain their existing Node config evaluator and no-V8
 render behavior. Markdown/Wasm and CSS-addon feature choices remain unchanged.
 
 `record-graph.py --cli` checks the actual CLI's normal/build closure, including
@@ -44,7 +48,7 @@ one-live-isolate-per-thread guard. Config evaluation creates a fresh host per
 call. Render workers retain the existing dedicated-thread adapter and owned
 request/response DTOs. No unsafe Send/Sync implementation is introduced.
 
-A combined-feature process uses one custom foreground platform. Deno receives
+Historical (removed in #4395): a combined-feature process used one custom foreground platform. Deno receives
 its tasks through its own main-context task spawner; native hosts use the
 existing wake-driven queue. Queue registration is closed before isolate disposal.
 ZFB's Deno extensions remain ops-only during construction: authored JavaScript

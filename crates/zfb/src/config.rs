@@ -31,7 +31,7 @@
 //! other Node-only APIs are not available inside the evaluator (esbuild
 //! `--platform=neutral` rejects them at bundle time).
 //!
-//! **Slim-build fallback** (`--no-default-features` / no `embed_v8`): the
+//! **Slim-build fallback** (`--no-default-features` / no `direct-v8`): the
 //! in-process evaluator is compiled out; TS config evaluation falls back to
 //! the `node` subprocess path. This path requires `node` in `PATH` and
 //! surfaces a clean error when it is absent.
@@ -55,9 +55,9 @@ use std::ffi::OsString;
 
 // Canonical default slot path — defined once in zfb-build, imported here so
 // the slim-build node-not-found test can reference it without repeating the
-// string literal. Only the no-embed_v8 test item uses it, so the import is
+// string literal. Only the no-direct-v8 test item uses it, so the import is
 // gated the same way.
-#[cfg(all(test, not(any(feature = "embed_v8", feature = "direct-v8"))))]
+#[cfg(all(test, not(feature = "direct-v8")))]
 use zfb_build::DEFAULT_ESBUILD_SLOT;
 
 // --- JsonSchema newtype --------------------------------------------------------
@@ -5060,7 +5060,7 @@ mod tests {
         assert!(message.contains("delete the key"), "{message}");
     }
 
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[tokio::test]
     async fn removed_framework_key_real_ts_config_fails_with_migration_message() {
         let tmp = TempDir::new().unwrap();
@@ -7091,10 +7091,10 @@ mod tests {
         assert_eq!(parsed_path, plugin_path.canonicalize().unwrap());
     }
 
-    // Slim-build-only: the default-features path (embed_v8) never calls
+    // Slim-build-only: the default-features path (direct-v8) never calls
     // node, so the "node not in PATH" error can only fire from the slim
     // build's subprocess fallback (#390 audit-trail criterion 2).
-    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+    #[cfg(not(feature = "direct-v8"))]
     #[tokio::test]
     async fn ts_config_missing_node_emits_actionable_error() {
         // Force the node binary to a path that doesn't exist so the
@@ -8012,8 +8012,7 @@ mod tests {
     ///
     /// ## Why the config has a CPU-heavy warm-up expression
     ///
-    /// deno_core ships a **V8 snapshot** — V8 boot is pre-baked into the
-    /// binary. Natural eval on warm V8 takes only ~20 ms, too short and too
+    /// V8 boot is fast. Natural eval on warm V8 takes only ~20 ms, too short and too
     /// timing-sensitive to discriminate WITH vs WITHOUT spawn_blocking. A
     /// deliberate CPU-busy loop embedded in the config's default export forces
     /// the eval to take ~150–200 ms deterministically on every attempt (V8
@@ -8037,7 +8036,7 @@ mod tests {
     /// < 15 ms) and the WITHOUT case (~150 ms). The original 10× sleep
     /// tolerance was too wide — this test needs a gap-based measurement to
     /// discriminate the two cases.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[tokio::test(flavor = "current_thread")]
     async fn v8_eval_spawn_blocking_does_not_starve_event_loop() {
         use std::cell::Cell;
@@ -8051,7 +8050,7 @@ mod tests {
         // CPU-heavy config: the IIFE runs a busy loop whose result is part of
         // the exported object, preventing V8 dead-code elimination.
         // This forces the eval to take ~150-200 ms regardless of V8 warm/cold
-        // state — necessary because deno_core's snapshot makes natural eval
+        // state — necessary because natural eval takes
         // only ~20 ms, which is too short to discriminate spawn_blocking
         // presence from absence. The `_warmup` field is ignored by assertions.
         // iteration count: 2e8 ≈ 150-200 ms on modern hardware (calibrated).
@@ -8139,7 +8138,7 @@ mod tests {
     /// produces an esbuild bundle-time error (not a V8 eval error) and that
     /// the error message names the offending import. This is the data-config
     /// contract: `zfb.config.ts` must not import Node built-ins.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[tokio::test]
     async fn v8_eval_node_fs_import_fails_at_bundle_time_not_v8() {
         let tmp = TempDir::new().unwrap();
@@ -8187,7 +8186,7 @@ mod tests {
     /// emitted bundle in real V8), not a logic-only test.
     ///
     /// An invalid enum value must name its field and the source file.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[tokio::test]
     async fn invalid_zfb_config_ts_points_at_field_and_file() {
         let tmp = TempDir::new().unwrap();
@@ -8225,7 +8224,7 @@ mod tests {
     /// genuine schema error, letting this case exercise the missing-field
     /// branch of `serde_path_to_error` rather than the unknown-variant
     /// branch the sibling test above covers.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[tokio::test]
     async fn invalid_zfb_config_ts_collection_missing_path_field() {
         let tmp = TempDir::new().unwrap();
@@ -8262,11 +8261,11 @@ mod tests {
     /// Slim-build only: verify that the "node not in PATH" actionable error
     /// fires when both node is missing AND the slim-build fallback is used.
     ///
-    /// Gated under `cfg(not(any(feature = "embed_v8", feature = "direct-v8")))` because the default-features
+    /// Gated under `cfg(not(feature = "direct-v8"))` because the default-features
     /// build compiles V8 in and never calls node to evaluate config — this
     /// state (V8 absent AND node absent) cannot occur on the default path.
     /// (#390 audit-trail: second acceptance criterion.)
-    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+    #[cfg(not(feature = "direct-v8"))]
     #[tokio::test]
     async fn slim_build_missing_node_emits_actionable_error() {
         let tmp = TempDir::new().unwrap();
@@ -9958,7 +9957,7 @@ mod tests {
     /// bundle (alias rewrites `@takazudo/zfb/config` to the stub) → V8 eval
     /// (stub stamps `source_package`) → Rust resolver (anchors at preset dir).
     ///
-    /// Gated on `embed_v8` (the default feature). CI has V8 compiled in, so
+    /// Gated on `direct-v8` (the default feature). CI has V8 compiled in, so
     /// this test runs in `cargo test -p zfb` at the PR gate without `#[ignore]`.
     /// The slim-build path (no V8) uses the node subprocess instead, which has
     /// the same esbuild alias and identical stub — the capture chain is the same;
@@ -9967,13 +9966,13 @@ mod tests {
     /// **Slim-path companion:** the slim-build (`--no-default-features`) node
     /// subprocess path is exercised by
     /// `e2e_capture_chain_define_preset_source_package_survives_esbuild_slim`
-    /// (below, gated `cfg(not(any(feature = "embed_v8", feature = "direct-v8")))`). The PR gate's `build-no-v8`
+    /// (below, gated `cfg(not(feature = "direct-v8"))`). The PR gate's `build-no-v8`
     /// job compile-checks it via `cargo check --no-default-features -p zfb --tests`,
     /// and it runs locally under `cargo test --no-default-features -p zfb`.
     /// **Executing** slim tests in CI (not just compiling them) still needs a T3
     /// slim-test lane and remains deferred — so the slim path is compile-covered at
     /// the gate + runnable locally, not yet CI-executed.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[tokio::test]
     async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_v8() {
         use std::fs;
@@ -10119,7 +10118,7 @@ export default {
     /// no-coverage skip cannot happen), or no runnable `node` on PATH (this is the first
     /// *positive* slim test that actually spawns node, so it guards on node availability
     /// rather than hard-fail on a node-less host).
-    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+    #[cfg(not(feature = "direct-v8"))]
     #[tokio::test]
     async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_slim() {
         use std::fs;

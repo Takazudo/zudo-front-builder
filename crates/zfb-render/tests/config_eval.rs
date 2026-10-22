@@ -16,7 +16,7 @@
 //! - V8 platform double-init: constructing a `ThreadedConfigEvaluator` after
 //!   `EmbeddedV8RenderHost::new()` does not cause a V8 double-init crash.
 
-#![cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#![cfg(feature = "direct-v8")]
 
 use zfb_render::{config_eval, ConfigEvalError, ThreadedConfigEvaluator};
 

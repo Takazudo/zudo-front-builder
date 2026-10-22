@@ -74,6 +74,7 @@ impl Request {
         let mut transform = rolldown_common::BundlerTransformOptions::default();
         let mut jsx = rolldown_common::JsxOptions::default();
         let mut has_jsx = false;
+        let mut tsconfig = None;
         for arg in cmd.get_args() {
             let arg = arg
                 .to_str()
@@ -108,9 +109,9 @@ impl Request {
             } else if let Some(value) = arg.strip_prefix("--metafile=") {
                 metafile = Some(cwd.join(value));
             } else if let Some(value) = arg.strip_prefix("--tsconfig=") {
-                options.tsconfig = Some(rolldown_common::TsConfig::Manual(
-                    engine_join(value)?.into(),
-                ));
+                let path = PathBuf::from(engine_join(value)?);
+                options.tsconfig = Some(rolldown_common::TsConfig::Manual(path.clone()));
+                tsconfig = Some(path);
             } else if let Some(value) = arg.strip_prefix("--target=") {
                 transform.target = Some(rolldown_common::Either::Left(value.to_string()));
             } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
@@ -210,28 +211,9 @@ impl Request {
             }
         }
         options.module_types = Some(types.into_iter().collect());
-        // Esbuild applies an explicit --tsconfig's JSX settings to every file,
-        // node_modules included. Rolldown matches each file against that
-        // tsconfig's include scope, so JSX in a linked workspace package fell
-        // back to `react/jsx-runtime`. Carry the settings as transform options.
-        if let Some(rolldown_common::TsConfig::Manual(path)) = &options.tsconfig {
-            let compiler = std::fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                .and_then(|config| config.get("compilerOptions").cloned());
-            if let Some(compiler) = compiler {
-                if jsx.import_source.is_none() {
-                    if let Some(source) = compiler["jsxImportSource"].as_str() {
-                        jsx.import_source = Some(source.to_string());
-                        has_jsx = true;
-                    }
-                }
-                if jsx.runtime.is_none()
-                    && matches!(compiler["jsx"].as_str(), Some("react-jsx" | "react-jsxdev"))
-                {
-                    jsx.runtime = Some("automatic".into());
-                    has_jsx = true;
-                }
+        if let Some(path) = &tsconfig {
+            if jsx.runtime.is_none() || jsx.import_source.is_none() {
+                has_jsx |= promote_tsconfig_jsx(path, &mut jsx)?;
             }
         }
         if has_jsx {
@@ -245,6 +227,68 @@ impl Request {
             file_extensions,
         })
     }
+}
+
+/// Esbuild applies a `--tsconfig` override's JSX settings to every module,
+/// while Rolldown's per-file tsconfig lookup skips paths inside `node_modules`
+/// (#4407). Lift the JSX fields argv left unset into the explicit transform
+/// options, which govern every module; per-file pragmas still win.
+fn promote_tsconfig_jsx(path: &Path, jsx: &mut rolldown_common::JsxOptions) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        // Rolldown reports a missing manual tsconfig itself.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read prepared tsconfig {}", path.display()))
+        }
+    };
+    let config: serde_json::Value = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "Rolldown prototype requires a strict-JSON prepared tsconfig: {}",
+            path.display()
+        )
+    })?;
+    let options = config.get("compilerOptions");
+    let field = |name: &str| options.and_then(|options| options.get(name));
+    let runtime = match field("jsx") {
+        None => None,
+        Some(value) if value.as_str() == Some("react-jsx") => Some("automatic"),
+        Some(value) => bail!(
+            "Rolldown prototype only supports compilerOptions.jsx \"react-jsx\" in a prepared tsconfig, found {value} in {}",
+            path.display()
+        ),
+    };
+    let import_source = match field("jsxImportSource") {
+        None => None,
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(value) => bail!(
+            "compilerOptions.jsxImportSource must be a string, found {value} in {}",
+            path.display()
+        ),
+    };
+    if runtime.is_none() && import_source.is_none() {
+        if config.get("extends").is_some() {
+            bail!(
+                "Rolldown prototype does not follow extends for JSX options in a prepared tsconfig: {}",
+                path.display()
+            );
+        }
+        return Ok(false);
+    }
+    let mut promoted = false;
+    if jsx.runtime.is_none() {
+        if let Some(runtime) = runtime {
+            jsx.runtime = Some(runtime.into());
+            promoted = true;
+        }
+    }
+    if jsx.import_source.is_none() {
+        if let Some(import_source) = import_source {
+            jsx.import_source = Some(import_source);
+            promoted = true;
+        }
+    }
+    Ok(promoted)
 }
 
 /// Every path Rolldown resolves against must be in the ordinary spelling on
@@ -306,6 +350,86 @@ mod tests {
             options.resolve.as_ref().unwrap().alias.as_ref().unwrap()[0].1,
             vec![Some(r"C:\shadow\alias.mjs".to_string())]
         );
+    }
+
+    struct TsconfigDir(PathBuf);
+    impl TsconfigDir {
+        fn new(name: &str, tsconfig: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("zfb-prepared-jsx-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("tsconfig.json"), tsconfig).unwrap();
+            Self(dir)
+        }
+        fn decode(&self, flags: &[&str]) -> anyhow::Result<Request> {
+            let mut cmd = Command::new("esbuild");
+            cmd.current_dir(&self.0)
+                .args(["entry.mjs", "--bundle", "--tsconfig=tsconfig.json"])
+                .args(flags);
+            Request::decode_for_host(&cmd, false)
+        }
+    }
+    impl Drop for TsconfigDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn jsx(request: &Request) -> &rolldown_common::JsxOptions {
+        match request.options.transform.as_ref().unwrap().jsx.as_ref() {
+            Some(rolldown_common::Either::Right(jsx)) => jsx,
+            other => panic!("expected explicit jsx options, got {other:?}"),
+        }
+    }
+
+    const SYNTHETIC: &str =
+        r#"{"compilerOptions":{"jsx":"react-jsx","jsxImportSource":"@takazudo/zfb/zudo-react"}}"#;
+
+    #[test]
+    fn tsconfig_jsx_fields_argv_leaves_unset_become_explicit() {
+        let dir = TsconfigDir::new("promote", SYNTHETIC);
+        let request = dir.decode(&[]).unwrap();
+        assert_eq!(jsx(&request).runtime.as_deref(), Some("automatic"));
+        assert_eq!(
+            jsx(&request).import_source.as_deref(),
+            Some("@takazudo/zfb/zudo-react")
+        );
+        let request = dir.decode(&["--jsx=automatic"]).unwrap();
+        assert_eq!(
+            jsx(&request).import_source.as_deref(),
+            Some("@takazudo/zfb/zudo-react")
+        );
+    }
+
+    #[test]
+    fn explicit_jsx_flags_win_without_reading_the_tsconfig() {
+        let dir = TsconfigDir::new("explicit", "{ // JSONC the decoder must not parse\n}");
+        let request = dir
+            .decode(&["--jsx=automatic", "--jsx-import-source=preact"])
+            .unwrap();
+        assert_eq!(jsx(&request).import_source.as_deref(), Some("preact"));
+    }
+
+    #[test]
+    fn unsupported_tsconfig_jsx_settings_fail_closed_naming_the_file() {
+        for (name, tsconfig) in [
+            ("preserve", r#"{"compilerOptions":{"jsx":"preserve"}}"#),
+            ("classic", r#"{"compilerOptions":{"jsx":"react"}}"#),
+            ("extends", r#"{"extends":"./base.json"}"#),
+            ("jsonc", "{ // comment\n}"),
+        ] {
+            let dir = TsconfigDir::new(name, tsconfig);
+            let error = format!("{:#}", dir.decode(&[]).err().expect(name));
+            assert!(error.contains("tsconfig.json"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_tsconfig_without_jsx_fields_adds_no_jsx_options() {
+        let dir = TsconfigDir::new("plain", r#"{"compilerOptions":{"baseUrl":"."}}"#);
+        let request = dir.decode(&[]).unwrap();
+        assert!(request.options.transform.as_ref().unwrap().jsx.is_none());
     }
 
     #[test]

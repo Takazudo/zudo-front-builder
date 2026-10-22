@@ -25,7 +25,7 @@
 //!
 //! ## Thread pinning
 //!
-//! `deno_core::JsRuntime` is `!Send` because V8 isolates are bound to the OS
+//! A V8 isolate is `!Send` because V8 isolates are bound to the OS
 //! thread that created them. [`ThreadedConfigEvaluator`] wraps the one-shot
 //! evaluation in a dedicated OS thread + `current_thread` tokio runtime,
 //! making the async result available to `Send` callers. The caller is
@@ -37,10 +37,6 @@ use std::thread;
 
 use thiserror::Error;
 
-#[cfg(feature = "embed_v8")]
-mod runtime;
-#[cfg(not(feature = "embed_v8"))]
-#[path = "native.rs"]
 mod runtime;
 
 pub use runtime::evaluate_config_bundle;

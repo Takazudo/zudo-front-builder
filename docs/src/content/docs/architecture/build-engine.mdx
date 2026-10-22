@@ -40,7 +40,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 | --- | --- | --- |
 | **Rolldown** | Bundles the server-side worker bundle (`zfb-build/bundler.rs`) and the shared islands client bundle (`zfb-islands`) in process. Handles TSX/JSX, MDX loaders, and tree-shaking. | `ClientBundler` (in `zfb-islands`) |
 | **esbuild** | Compiles `zfb.config.ts` and plugins. With `ZFB_BUNDLER=esbuild` it also bundles the worker and islands bundles in place of Rolldown. | `ClientBundler` (in `zfb-islands`) |
-| **deno_core (V8)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen because Tauri distribution requires a single binary with no Node dependency; see [JS runtime](./js-runtime.mdx) for the rationale. A source build can select an opt-in direct V8 host (`direct-v8` feature) instead. | `RenderHost` (in `zfb-render`) |
+| **V8 (direct V8 host)** | The embedded V8 isolate that executes the server-side worker bundle for SSG and the dev preview server. Chosen because Tauri distribution requires a single binary with no Node dependency; see [JS runtime](./js-runtime.mdx) for the rationale. The `zfb-js-host` crate drives the pinned `v8` crate directly (the default `direct-v8` feature); the former `deno_core` host was removed in #4395. | `RenderHost` (in `zfb-render`) |
 | **SWC** | Compiles TSX source to JavaScript before handing it off to esbuild or the render host. Lives inside `zfb-render`. | Internal to `zfb-render`; swappable by replacing that crate's transform step |
 | **lol_html** | Streaming HTML rewriter used where selector-aware mutation matters: island marker processing, base-link rewriting, and dev-server HTML injection. Production head asset injection is a byte-level splice, not a `lol_html` pass. | Used by `zfb-islands/src/html_tree.rs`, `zfb-build/src/link_base_rewrite.rs`, and `zfb-server`; no public trait needed — it is a low-level utility |
 
@@ -49,7 +49,7 @@ zfb is the orchestrator. It owns the dependency graph, the per-page rebuild cont
 zfb owns orchestration, the dependency graph, and the per-page contract. The tools each appear in exactly one layer:
 
 - **Rolldown** is called in two places: `zfb-build` (server worker bundle) and `zfb-islands` (shared islands client bundle). Both prepare an esbuild-style argument list and hand it to the selected bundler, so `ZFB_BUNDLER=esbuild` swaps in the embedded esbuild without changing either caller. Neither exposes the bundler to the crates above.
-- **deno_core (V8)** is the JS engine behind `RenderHost`. The renderer in `zfb-render` calls `RenderHost::call_default`; the concrete host (`EmbeddedV8RenderHost`) runs the bundle in an in-process V8 isolate. In a source build with only the `direct-v8` feature, that name refers to the direct host in `zfb-js-host` instead. The orchestrator in `zfb-build` never names the engine — it only receives rendered HTML.
+- **V8** is the JS engine behind `RenderHost`. The renderer in `zfb-render` calls `RenderHost::call_default`; the concrete host (`EmbeddedV8RenderHost`, which is the direct host from `zfb-js-host`) runs the bundle in an in-process V8 isolate. The orchestrator in `zfb-build` never names the engine — it only receives rendered HTML.
 - **SWC** runs inside `zfb-render` before the module reaches the render host, or inside `zfb-build/bundler.rs` before the bundler sees the source. Either way it is invisible to the orchestrator.
 - **lol_html** runs in the HTML mutation utilities that need real element or
   comment awareness: `zfb-islands/src/html_tree.rs`, `zfb-build/src/link_base_rewrite.rs`,
@@ -96,7 +96,7 @@ zfb never writes into an installed package's own directory tree, so staging the 
 
 ## V8-mode gate: `output` and auto-detection
 
-`zfb-render` exposes the embedded V8 host behind a default-on `embed_v8` cargo feature. The build engine decides at the start of every build whether the deploy artifact assumes a V8-bearing runtime is part of the shape — the `V8Mode` decision — and surfaces a clear error when the config and the route table disagree.
+`zfb-render` exposes the embedded V8 host behind the default-on `direct-v8` cargo feature. The build engine decides at the start of every build whether the deploy artifact assumes a V8-bearing runtime is part of the shape — the `V8Mode` decision — and surfaces a clear error when the config and the route table disagree.
 
 The decision is driven by two inputs:
 
@@ -119,7 +119,7 @@ The two manual overrides (`"static"`, `"hybrid"`) and the default (`"auto"`) cov
 - `"static"` — declare intent up front. Useful on SSG-only sites where the failure mode of "someone adds `prerender = false` to a page" should be loud, not silent.
 - `"hybrid"` — declare intent the other way. Useful for projects that will add SSR routes later and want the build topology stable in the meantime.
 
-What `V8Mode::Off` does today is the part to be honest about: it is observational on the shipping `zfb` binary. The build machine's `zfb` always boots V8 to render SSG pages — that's how the pipeline works — and a binary built without either V8 feature (`embed_v8` or `direct-v8`) already fails `zfb build` with a hard error. The mode is wired so the future shipping path (Tauri sidecar, standalone SSR server, `cargo install`-as-deploy) can read the same decision without re-deriving it. The load-bearing user-visible role today is the `"static"` precondition error.
+What `V8Mode::Off` does today is the part to be honest about: it is observational on the shipping `zfb` binary. The build machine's `zfb` always boots V8 to render SSG pages — that's how the pipeline works — and a binary built without the `direct-v8` feature (`--no-default-features`) already fails `zfb build` with a hard error. The mode is wired so the future shipping path (Tauri sidecar, standalone SSR server, `cargo install`-as-deploy) can read the same decision without re-deriving it. The load-bearing user-visible role today is the `"static"` precondition error.
 
 ## Atomic writes
 

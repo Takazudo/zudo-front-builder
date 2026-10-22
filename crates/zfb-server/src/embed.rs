@@ -825,7 +825,7 @@ mod tests {
     /// isolate), neither of which is staged in this crate's unit-test env —
     /// `zfb-server` ships no `EMBEDDED_VENDOR` snapshot, by design. The
     /// successful-evaluation path is covered by `zfb`'s `config.rs` V8 tests
-    /// (run in CI with `embed_v8`). Here we only prove the hard-error branch
+    /// (run in CI with `direct-v8`). Here we only prove the hard-error branch
     /// is gone: whatever error surfaces (esbuild-missing in CI, or success on
     /// a machine with `ZFB_ESBUILD_BIN` set) must NOT be the old milestone
     /// rejection or the unsupported-extension message.

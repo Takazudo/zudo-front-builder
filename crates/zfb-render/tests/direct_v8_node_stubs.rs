@@ -18,7 +18,7 @@
 //! These tests assert both halves for the v1 list:
 //! `node:fs`, `node:fs/promises`, `node:path`, `node:url`, `node:buffer`.
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 

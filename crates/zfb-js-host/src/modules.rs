@@ -199,7 +199,7 @@ impl BundleModuleLoader {
 
     /// Look up a resolved specifier (after `resolve()` ran) in the
     /// virtual-module map. The specifier stored in the hook is the bare
-    /// form (e.g. `"virtual:my-data"`); after `deno_core::resolve_import`
+    /// form (e.g. `"virtual:my-data"`); after `resolve_import`
     /// it becomes a full URL (e.g. `"virtual:my-data"` is a valid URI
     /// scheme+path). We match on the original bare form by checking
     /// whether the URL's string form equals the bare specifier directly
@@ -288,7 +288,7 @@ impl BundleModuleLoader {
         referrer: &str,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
         // `node:*` stays as-is — the URL parser would fail on the
-        // colon-without-scheme-host shape, but `deno_core` will accept
+        // colon-without-scheme-host shape, but the host accepts
         // any URL-shaped string we hand it back as a specifier.
         if specifier.starts_with("node:") {
             return parse_synthetic(specifier);
@@ -315,9 +315,9 @@ impl BundleModuleLoader {
         if self.find_virtual_module(specifier).is_some() {
             return parse_synthetic(specifier);
         }
-        // Otherwise fall back to deno_core's standard URL-relative
+        // Otherwise fall back to standard URL-relative
         // resolution. The bundle's main entry is registered with a
-        // `file://` specifier (see `crate::embedded_v8::main_specifier`)
+        // `file://` specifier
         // so relative imports inside the bundle (rare for the workerd
         // shape, since esbuild has already inlined them) still resolve.
         resolve_import(specifier, referrer).map_err(|e| {
@@ -567,8 +567,7 @@ fn url_from_path(path: &std::path::Path) -> Option<String> {
     }
     // Use `url::Url::from_file_path` to get the canonical `file://`
     // encoding including percent-escaping of special characters.
-    // `deno_core` re-exports `url`, so we go through `ModuleSpecifier`
-    // (which is `url::Url`) to avoid a separate `url` dep.
+    // `ModuleSpecifier` is `url::Url`.
     let url = ModuleSpecifier::from_file_path(path).ok()?;
     Some(url.to_string())
 }
@@ -694,9 +693,9 @@ fn alias_disk_read_authority(
 
 /// Read an alias-authorised module from `path` and wrap it as a JavaScript
 /// `ModuleSource`. The module stays keyed on the imported `specifier` (so
-/// deno_core's module map is keyed on the URL the bundle asked for), but its
+/// the host's module map is keyed on the URL the bundle asked for), but its
 /// **found** URL is set to `path`'s canonical `file://` URL. That found URL is
-/// the base against which deno_core resolves this module's own relative
+/// the base against which the host resolves this module's own relative
 /// imports, so a `./sibling.js` from a file-symlink alias target resolves
 /// beside the CANONICAL target — matching [`alias_disk_read_authority`]'s
 /// canonical same-parent-directory check. Without this redirect, relative

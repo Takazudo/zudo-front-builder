@@ -267,7 +267,7 @@ async fn wait_for_port_signal(
     loop {
         if let Some(status) = session.guard.try_status() {
             let logs = session.logs();
-            if logs.contains("embed_v8") || logs.contains("no esbuild") {
+            if logs.contains("direct-v8 = off") || logs.contains("no esbuild") {
                 eprintln!(
                     "[dev_sibling_watch_1678] `zfb dev` exited with a known-skip indicator \
                      (V8/esbuild unavailable); skipping test.\n{logs}"

@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 3,
+  "metric": "gzip-identity-normalized",
+  "normalizationVersion": 1,
+  "normalizerSha256": "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
+  "dependencyFingerprint": {
+    "policyVersion": 1,
+    "parser": "yaml@2.9.0",
+    "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
+    "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
+  },
+  "decisionIssue": 3469,
+  "outcome": "cargo-producer-lock-transition",
+  "selectedOptimizations": [],
+  "baselineSourceSha": "cf92bfa545410583215a9829bc5c71781463e14b",
+  "platform": {
+    "os": "linux",
+    "arch": "x64"
+  },
+  "fixtureVersion": "v3-islands-1",
+  "fixtureSha256": {
+    "event-only": "2264320634b4c896cd5ad62d3a7cfcd12691d6744226183a6756e262e5045eeb",
+    "scalar-signal": "1f69011b37ca925b4ed9a2868592d150efcf9450f220c7c3fc7d0bd491cdd364",
+    "show-for": "a2288f1a3bf185f9191309ef08dfb768cda0c62f2f56fb66d7d1b0bc97b29c38",
+    "model": "1273665b15a9f7ff0adefb301961f1484690fe95f8c79450fa5387079ed4995c",
+    "blog-menu": "f901991768adc5146562429544de9b1f23f843862efe8f0401e46c297969166a",
+    "theme-toggle": "206d45d5289464398e93943c78e9efb97267eaca7c3314ad9c9877057aeb4af0",
+    "json-api": "726ea60441febea7a2e8fc14b73b0701d82946c962f1602ee313a0a25d5ef8d5"
+  },
+  "runnerSha256": {
+    "measure-real.mjs": "c8be17ee9ffd25738247f9ed6ad650f1969b088c12b2f1bcd52fdc2d25770dca",
+    "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
+  },
+  "toolchain": {
+    "packageVersion": "4.6.0",
+    "honoVersion": "4.12.25",
+    "esbuildVersion": "0.25.12",
+    "nodeVersion": "v24.14.0",
+    "zlibVersion": "1.3.1-e00f703",
+    "pnpmLockSha256": "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
+    "cargoLockSha256": "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64"
+  },
+  "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
+  "allowance": {
+    "raw": 0,
+    "gzipNormalized": 0
+  },
+  "ceilings": {
+    "workspace": {
+      "no-island": {
+        "raw": 0,
+        "gzipNormalized": 0
+      },
+      "event-only": {
+        "raw": 64535,
+        "gzipNormalized": 22195
+      },
+      "scalar-signal": {
+        "raw": 64543,
+        "gzipNormalized": 22213
+      },
+      "show-for": {
+        "raw": 64695,
+        "gzipNormalized": 22272
+      },
+      "model": {
+        "raw": 64534,
+        "gzipNormalized": 22200
+      },
+      "blog-theme": {
+        "raw": 64890,
+        "gzipNormalized": 22334
+      },
+      "json-api": {
+        "raw": 64692,
+        "gzipNormalized": 22284
+      },
+      "multi-island": {
+        "raw": 64814,
+        "gzipNormalized": 22286
+      }
+    },
+    "packed": {
+      "no-island": {
+        "raw": 0,
+        "gzipNormalized": 0
+      },
+      "event-only": {
+        "raw": 64548,
+        "gzipNormalized": 22199
+      },
+      "scalar-signal": {
+        "raw": 64556,
+        "gzipNormalized": 22203
+      },
+      "show-for": {
+        "raw": 64708,
+        "gzipNormalized": 22286
+      },
+      "model": {
+        "raw": 64547,
+        "gzipNormalized": 22209
+      },
+      "blog-theme": {
+        "raw": 64903,
+        "gzipNormalized": 22347
+      },
+      "json-api": {
+        "raw": 64705,
+        "gzipNormalized": 22296
+      },
+      "multi-island": {
+        "raw": 64827,
+        "gzipNormalized": 22294
+      }
+    }
+  },
+  "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.6.0 ceilings on metric gzip-identity-normalized v1, re-pinned from workflow run 39661748139 at PR merge source ad295e2beec481e9ad1eb8047b1632c9380e06be (probe head cf92bfa545410583215a9829bc5c71781463e14b) after a reviewed non-additive Cargo.lock transition (Cargo.lock d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d to c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64 under reviewed non-additive transition noyalib-4268 (manifest SHA-256 5ff33c03ac56e9d494333153d7e5e2cf2e5bf4a2190f0b65fbe145b3c42e1994): 2 new identities, 0 changed records and 2 removed identities, proved against 84dc4a842bee059af334a02bfd453d2ce2c74871:Cargo.lock). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "baselineEvidence": {
+    "event": "ci",
+    "runId": 39661748139,
+    "jobId": 119436334916,
+    "sourceSha": "ad295e2beec481e9ad1eb8047b1632c9380e06be",
+    "repinnedFrom": {
+      "schemaVersion": 3,
+      "outcome": "release-version-stamp",
+      "packageVersion": "4.6.0",
+      "baselineSourceSha": "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
+      "baselineRunId": 39628733086,
+      "contract": {
+        "sha256": "f2c54dc1a953a84938fba2749330856593bea7f3fdf731b7bd9a6340f0d60120",
+        "commit": "cf92bfa545410583215a9829bc5c71781463e14b",
+        "path": "research/v3-island-size/decision-linux-x64.json"
+      }
+    },
+    "cargoTransition": {
+      "oldSha": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
+      "newSha": "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
+      "added": ["noyalib-serde-yaml@0.0.58", "noyalib@0.0.58"],
+      "changed": [],
+      "removed": ["noyalib-serde-yaml@0.0.55", "noyalib@0.0.55"],
+      "oldLockSource": {
+        "commit": "84dc4a842bee059af334a02bfd453d2ce2c74871",
+        "path": "Cargo.lock",
+        "sha256": "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d"
+      },
+      "review": {
+        "id": "noyalib-4268",
+        "manifestSha256": "5ff33c03ac56e9d494333153d7e5e2cf2e5bf4a2190f0b65fbe145b3c42e1994",
+        "sourceSha": "84dc4a842bee059af334a02bfd453d2ce2c74871"
+      }
+    },
+    "actualGzip": {
+      "workspace": {
+        "blog-theme": 22352,
+        "event-only": 22210,
+        "json-api": 22295,
+        "model": 22215,
+        "multi-island": 22301,
+        "no-island": 0,
+        "scalar-signal": 22228,
+        "show-for": 22288
+      },
+      "packed": {
+        "blog-theme": 22364,
+        "event-only": 22215,
+        "json-api": 22314,
+        "model": 22223,
+        "multi-island": 22307,
+        "no-island": 0,
+        "scalar-signal": 22217,
+        "show-for": 22298
+      }
+    },
+    "note": "Cargo producer-lock transition run at v4.6.0 at PR merge source ad295e2beec481e9ad1eb8047b1632c9380e06be (probe head cf92bfa545410583215a9829bc5c71781463e14b). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed non-additive Cargo.lock transition at unchanged v4.6.0 (Cargo.lock d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d to c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64 under reviewed non-additive transition noyalib-4268 (manifest SHA-256 5ff33c03ac56e9d494333153d7e5e2cf2e5bf4a2190f0b65fbe145b3c42e1994): 2 new identities, 0 changed records and 2 removed identities, proved against 84dc4a842bee059af334a02bfd453d2ce2c74871:Cargo.lock); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+  }
+}

@@ -6,7 +6,7 @@
 //! indefinitely**.  On timeout the watcher thread and the original handle are
 //! both detached; the OS reaps them on process exit.
 //!
-//! The module is unconditionally compiled (no `embed_v8` gate) so its unit
+//! The module is unconditionally compiled (no `direct-v8` gate) so its unit
 //! tests run in every CI job, including `--no-default-features`.
 
 use std::sync::mpsc;

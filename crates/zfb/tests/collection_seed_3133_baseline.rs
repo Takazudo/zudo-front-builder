@@ -114,7 +114,7 @@
 //! built into the `zfb` binary itself means no external esbuild slot is
 //! needed (unlike the `locate_esbuild()`-gated tests), matching
 //! `end_to_end_basic_blog_build`'s self-skip convention for the one
-//! exceptional environment (no `embed_v8` feature / stripped CI image) via
+//! exceptional environment (no `direct-v8` feature / stripped CI image) via
 //! [`is_known_skip`]. The `zfb dev` test self-skips the same way it does in
 //! `dev_out_of_root_collection_e2e.rs`: via [`locate_esbuild`] returning
 //! `None`, not an `#[ignore]` attribute — `zfb dev`'s client bundling always
@@ -204,7 +204,7 @@ fn find_pnpm_store_package(pnpm_dir: &Path, prefix: &str, package_name: &str) ->
 /// esbuild binary) — same convention as
 /// `end_to_end_basic_blog_build.rs`'s `is_known_skip`.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8") || combined.contains("no esbuild")
+    combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).

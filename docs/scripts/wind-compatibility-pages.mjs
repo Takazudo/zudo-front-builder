@@ -196,8 +196,11 @@ function localizedNote(value, locale, field) {
 // #4314 webpki replacement: rustls-webpki and webpki-roots are unreachable from
 // zudo-wind (normal/build/dev, all targets); only their two lock records move.
 // #4268 noyalib 0.0.58: Cargo.toml/Cargo.lock only; the YAML pair is unreachable from zudo-wind.
+// #4395/#4396 Deno exit: Cargo.lock only (21 deno_core-only records leave); crates/zudo-wind
+// and Cargo.toml are unchanged and all 164 lock records reachable from zudo-wind (every
+// edge kind) are byte-identical versus main 2abb238.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "c9ef5442c8e3fba129862217e8b5b3bb298e915f6c0e3f310514770b78d9bdc1";
+  "133dc5f9fbd1ad364b15ddf8a9c143c25f1fc2fac28470894b8866d09d17ae56";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];

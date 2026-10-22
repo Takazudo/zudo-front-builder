@@ -741,10 +741,10 @@ describe("island shipped-size budget", () => {
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("f65dd70d81da0e407fc3261ef57a99c54de83fdd");
+    expect(darwinContract.baselineSourceSha).toBe("2735135c7634dca7129ae084123d59313365a6d3");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "ab63a1eee7f0654acea6bcbabae41eb3c4df22d1e89a9e22cc32b63b62394605" },
+      localReceipt: { sha256: "88f9ba2cc6a9170fc91db7d0f6dd6fc1292d55ebecb9ab2a8fde436df0701be9" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
@@ -754,7 +754,7 @@ describe("island shipped-size budget", () => {
       "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
-      "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
+      "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216",
     );
     // rebaseline-island-size-darwin.mjs rewrites this literal once the contract
     // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
@@ -1383,11 +1383,11 @@ describe("island shipped-size budget", () => {
 
 // Historical S7a source remains cited by the dated README corrections below.
 const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
-// Exact immediate predecessors of the live contracts: for Linux, the v4.6.0
-// release-bump contract, cited at #4385 head cf92bfa5 (byte-identical to main
-// 84dc4a84) and moved by the noyalib-4268 producer-lock transition; for Darwin,
-// the v4.6.0 release-bump contract (ZFB-R003), cited at #4385 head f65dd70d and
-// moved by the noyalib-4268 transition on owner-attested local evidence (ZFB-R004).
+// Exact immediate predecessors of the live contracts: the noyalib-4268
+// producer-lock contracts of both platforms, cited at #4412 merge source 2735135c
+// (byte-identical to main 2abb2382) and moved by the cargo-removal Deno exit
+// (#4396/#4397), Linux from Actions evidence and Darwin from owner-attested local
+// evidence.
 // Each must equal a frozen verbatim fixture, so the metadata check also holds in
 // shallow CI; full checkouts also compare git bytes and that no intermediate
 // contract was skipped. A local-native predecessor has no Actions run, so its
@@ -1395,22 +1395,22 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "cf92bfa545410583215a9829bc5c71781463e14b",
-    sha256: "f2c54dc1a953a84938fba2749330856593bea7f3fdf731b7bd9a6340f0d60120",
-    fixture: "fixtures/island-size-linux-x64-v4.6.0.json",
-    outcome: "release-version-stamp",
+    commit: "2735135c7634dca7129ae084123d59313365a6d3",
+    sha256: "4d95553a9027b69fc3d81b42505d844e216c33b942761961f268bd331bc492e1",
+    fixture: "fixtures/island-size-linux-x64-v4.6.0-noyalib.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "4.6.0",
-    baselineSourceSha: "f2e157a5bcb0416c8fa8bc302389fb371994fc67",
-    baselineRunId: 39628733086,
+    baselineSourceSha: "cf92bfa545410583215a9829bc5c71781463e14b",
+    baselineRunId: 39661748139,
   },
   {
     file: "decision.json",
-    commit: "f65dd70d81da0e407fc3261ef57a99c54de83fdd",
-    sha256: "287e84e5f908f912b276edd583115c1d0214d37227f9219815ef413fe78d2660",
-    fixture: "fixtures/island-size-darwin-v4.6.0.json",
-    outcome: "release-version-stamp",
+    commit: "2735135c7634dca7129ae084123d59313365a6d3",
+    sha256: "6d7b90a3d13cac7328541e9b099b2dad7b06cdf692234eb6de2beef2b3725e7c",
+    fixture: "fixtures/island-size-darwin-v4.6.0-noyalib.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "4.6.0",
-    baselineSourceSha: "febb20e74833db11d69df7d6d07a8c7df4089aa9",
+    baselineSourceSha: "f65dd70d81da0e407fc3261ef57a99c54de83fdd",
     baselineRunId: undefined,
   },
 ];
@@ -2041,11 +2041,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The noyalib-4268 transition (#4268): Linux from health run 39661748139 at
   // merge source ad295e2b (probe head cf92bfa5).
-  it("moves the live Linux contract from the frozen v4.6.0 bytes only by the noyalib-4268 transition", () => {
+  it("moves the frozen noyalib Linux contract from the frozen v4.6.0 bytes only by the noyalib-4268 transition", () => {
     const predecessor = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.6.0.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.6.0-noyalib.json"), "utf8"),
+    );
     expect(live.outcome).toBe("cargo-producer-lock-transition");
     expect(predecessor.toolchain.cargoLockSha256).toBe(
       "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
@@ -2084,11 +2086,13 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The noyalib-4268 transition (#4268): Darwin from owner-attested local native
   // evidence at f65dd70d (ZFB-R004 on #4336).
-  it("moves the live Darwin contract from the frozen v4.6.0 bytes only by the noyalib-4268 transition", () => {
+  it("moves the frozen noyalib Darwin contract from the frozen v4.6.0 bytes only by the noyalib-4268 transition", () => {
     const predecessor = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-darwin-v4.6.0.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    const live = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-darwin-v4.6.0-noyalib.json"), "utf8"),
+    );
     expect(live.outcome).toBe("cargo-producer-lock-transition");
     expect(predecessor.toolchain.cargoLockSha256).toBe(
       "d51febae86251fc5b354d81b9505aea21841661150105476029fcc3e6327766d",
@@ -2124,6 +2128,75 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
     expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
     expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+  });
+
+  // The cargo-removal Deno exit (#4396/#4397): Linux from health run
+  // 39739634110 at merge source 2735135c (probe head 9e48145d), Darwin from
+  // owner-attested local native evidence at 2735135c on ball-lightning.
+  const denoExitRemoval = (predecessor, live) => {
+    expect(live.outcome).toBe("cargo-removal-transition");
+    expect(predecessor.toolchain.cargoLockSha256).toBe(
+      "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
+    );
+    expect(live.toolchain.cargoLockSha256).toBe(
+      "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216",
+    );
+    const removal = live.baselineEvidence.cargoRemoval;
+    expect(removal).toMatchObject({
+      oldSha: predecessor.toolchain.cargoLockSha256,
+      newSha: live.toolchain.cargoLockSha256,
+      oldLockSource: {
+        commit: "2abb23825ff5a880d761e9c1cdce57b062a2b839",
+        path: "Cargo.lock",
+        sha256: predecessor.toolchain.cargoLockSha256,
+      },
+      declaration: {
+        path: "research/v3-island-size/cargo-transitions/deno-exit-4303.json",
+        sha256: "dc9e474bacf8bab878620b583c3d175f218461063b23629a88d95634ab598778",
+      },
+      added: [],
+    });
+    expect(removal.removed).toHaveLength(21);
+    expect(removal.prunedExternal.map((entry) => entry.id)).toEqual([
+      "num-bigint@0.4.6",
+      "tokio@1.52.3",
+      "url@2.5.8",
+    ]);
+    expect(live.baselineEvidence).not.toHaveProperty("cargoTransition");
+    expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
+    expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+  };
+
+  it("moves the live Linux contract from the frozen noyalib bytes only by the Deno-exit removal", () => {
+    const predecessor = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.6.0-noyalib.json"), "utf8"),
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    denoExitRemoval(predecessor, live);
+    expect(live.baselineSourceSha).toBe("9e48145db73f95fc5a83140465d85c136e504602");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      sourceSha: "2735135c7634dca7129ae084123d59313365a6d3",
+      runId: 39739634110,
+      jobId: 119693526763,
+    });
+  });
+
+  it("moves the live Darwin contract from the frozen noyalib bytes only by the Deno-exit removal", () => {
+    const predecessor = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-darwin-v4.6.0-noyalib.json"), "utf8"),
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    denoExitRemoval(predecessor, live);
+    expect(live.baselineSourceSha).toBe("2735135c7634dca7129ae084123d59313365a6d3");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "2735135c7634dca7129ae084123d59313365a6d3",
+      stagingTool: { commit: "2735135c7634dca7129ae084123d59313365a6d3" },
+      localReceipt: { sha256: "88f9ba2cc6a9170fc91db7d0f6dd6fc1292d55ebecb9ab2a8fde436df0701be9" },
+      originalCheckerResult: { exitCode: 1 },
+    });
   });
 
   it("keeps the dated README corrections", () => {

@@ -170,7 +170,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
     let port = loop {
         if let Some(status) = session.guard.try_exit_status() {
             let logs = session.logs();
-            if logs.contains("embed_v8") || logs.contains("no esbuild") {
+            if logs.contains("direct-v8 = off") || logs.contains("no esbuild") {
                 eprintln!("[wind_clean_warm_identity_e2e] known environment skip:\n{logs}");
                 return None;
             }

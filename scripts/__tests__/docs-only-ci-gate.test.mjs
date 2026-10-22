@@ -109,11 +109,8 @@ describe("health.yml docs-only skip", () => {
     }
   });
 
-  it("gives the non-required embed_v8 rollback lane the same skip (#4391)", () => {
-    const job = health.jobs["rollback-embed-v8"];
-    expect(job.name).toBe("rollback (embed_v8)");
-    expect(job.needs).toBe("changed-files");
-    expect(bareIf(job)).toBe(DOCS_ONLY_SKIP);
+  it("has no embed_v8 rollback lane after the Deno host was removed (#4395)", () => {
+    expect(health.jobs["rollback-embed-v8"]).toBeUndefined();
   });
 
   it("keeps the optional md-wasm jobs off docs-only PRs", () => {

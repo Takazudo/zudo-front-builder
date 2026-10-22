@@ -8,7 +8,7 @@ zfb は組み込み V8 アイソレートを介してサーバーサイドで TS
 
 ## ランタイムの選択に至った経緯
 
-V8 を組み込むという決定は、利用可能な JS ホストの計測的な評価を経て到達しました。初期のイテレーションはインプロセスの `deno_core` アイソレートを使い（`deno_core`・`ssr_rs`・`rquickjs` の 3 候補をスパイクした上で承認）、その後 Cloudflare Workers の本番ターゲットとランタイムの一致を得るために、Node がホストする miniflare ワーカーへ移行しました。Tauri での配布が最終的にその選択を覆しました。zfb をデスクトップアプリとして出荷するには、エンドユーザーのマシンに Node.js 依存のない単一バイナリが必要であり、miniflare は Node のパッケージだからです。バイナリサイズと初回ビルド時間のコストを受け入れた上で、`deno_core` を介した V8 組み込みが再採用されました。Node なしの単一バイナリ制約を満たす唯一の経路だからです。
+V8 を組み込むという決定は、利用可能な JS ホストの計測的な評価を経て到達しました。初期のイテレーションはインプロセスの `deno_core` アイソレートを使い（`deno_core`・`ssr_rs`・`rquickjs` の 3 候補をスパイクした上で承認）、その後 Cloudflare Workers の本番ターゲットとランタイムの一致を得るために、Node がホストする miniflare ワーカーへ移行しました。Tauri での配布が最終的にその選択を覆しました。zfb をデスクトップアプリとして出荷するには、エンドユーザーのマシンに Node.js 依存のない単一バイナリが必要であり、miniflare は Node のパッケージだからです。バイナリサイズと初回ビルド時間のコストを受け入れた上で、`deno_core` を介した V8 組み込みが再採用されました。Node なしの単一バイナリ制約を満たす唯一の経路だからです。その後 zfb は `deno_core` を、`v8` クレートを直接扱う独自のホストに置き換えました。[#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) でこれがデフォルトになり、[#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) で `deno_core` のホストが削除されました。V8 は引き続き組み込まれており、変わったのは zfb と V8 の間の層だけです。
 
 この間ずっと安定した本番のコントラクトは _バンドルの形_（`export default { fetch }`）であり、ビルド時のエンジンではありませんでした。zfb がビルド時にレンダリングするのと同じバンドルが、ランタイム SSR 向けに Cloudflare Workers へ変更なしでデプロイされます。
 
@@ -43,9 +43,9 @@ zfb の対象読者は、すでに TSX を知っている frontend 開発者で�
 
 ## 今日動いているもの
 
-`zfb build` / `zfb dev` では、Rust のオーケストレーターが `deno_core` を介してインプロセスの V8 アイソレートを生成します。それは `@takazudo/zfb-runtime` が esbuild でビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
+`zfb build` / `zfb dev` では、Rust のオーケストレーターが `zfb-js-host` クレートの direct V8 ホストを介してインプロセスの V8 アイソレートを生成します。それは `@takazudo/zfb-runtime` が esbuild でビルドする workerd 形のバンドルを読み込みます。ルートごとの props は JSON として渡され、アイソレートは合成された `Request` でバンドルの `fetch` エントリを呼び、`Response`（HTML）を集めて返します。オーケストレーターは素の HTML を `dist/` に書き込みます。サブプロセスは生成されず、Node.js も不要です。
 
-V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッドを起動する前にメインスレッドで初期化されます。2 つのホスト実装はこの起動コード（`zfb-js-host::process::initialize`）と、1 つのスレッドで同時に生きているホストは 1 つだけというルールを共有します。
+V8 自体はプロセスごとに 1 回、CLI が Tokio やホストのスレッドを起動する前にメインスレッドで初期化されます（`zfb-js-host::process::initialize`）。1 つのスレッドで同時に生きていられるホストは 1 つだけです。
 
 同じバンドル（`export default { fetch }`）は、`prerender = false` ルートのランタイム SSR 向けに Cloudflare Workers へ変更なしでデプロイされます。workerd がリクエスト時にそれを実行します。本番の経路は、どのビルド時エンジンがバンドルを生成したかを関知しません。
 
@@ -64,11 +64,11 @@ zfb のレンダラーはページの TSX を SWC を通してコンパイルし
 
 ### 候補
 
-- **`deno_core`** — Deno の再利用可能なコアでラップされた V8。ES モジュールローダー、トップレベル await のためのイベントループ、ソースマップ付きエラーをすぐに備えています。**現在の選択。**
+- **`deno_core`** — Deno の再利用可能なコアでラップされた V8。ES モジュールローダー、トップレベル await のためのイベントループ、ソースマップ付きエラーをすぐに備えています。**このスパイクで選ばれ**、#4395 で direct V8 ホストに置き換えられるまで使われました。
 - **`ssr_rs`** — Preact / React の SSR に特化した薄い V8 ラッパー。スコープが狭く、単一バンドルのエントリポイントモデルです。
 - **`rquickjs`** — QuickJS をラップする Rust バインディング。フットプリントが小さく、コンパイルが速く、シングルスレッドです。
 
-もう 2 つは計測的なスパイクなしに却下されました。`rusty_v8` は `deno_core` を通して得られるのと同じ V8 を、ただより低レベルで扱うものです。これを選ぶことは、`deno_core` がすでに与えてくれるローダーとアイソレートの配管を再実装することを意味します。（このコストは後に、`v8` クレートを直接扱うオプトインの direct V8 ホスト（[後述](#現在のデフォルトと実験)）のために意図して受け入れられました。）`boa` は純粋な Rust の ESM 実装です。ECMA への準拠とソースマップの忠実度が V8 に対して十分に劣るため、実世界の Preact / React の SSR は未対応の隅に当たります。
+もう 2 つは計測的なスパイクなしに却下されました。`rusty_v8` は `deno_core` を通して得られるのと同じ V8 を、ただより低レベルで扱うものです。これを選ぶことは、`deno_core` がすでに与えてくれるローダーとアイソレートの配管を再実装することを意味します。（このコストは後に、`v8` クレートを直接扱う direct V8 ホスト（[後述](#現在のデフォルトと実験)）のために意図して受け入れられました。これが現在の zfb の唯一のランタイムです。）`boa` は純粋な Rust の ESM 実装です。ECMA への準拠とソースマップの忠実度が V8 に対して十分に劣るため、実世界の Preact / React の SSR は未対応の隅に当たります。
 
 ### トレードオフのマトリクス
 
@@ -88,7 +88,7 @@ V8 クラスのエンジンは正しさの軸で勝ち、QuickJS はフットプ
 
 <Note title="このビルドコストの行はワークスペースのビルド時間ではありません">
 
-上記の約 3 分という数値は、いまは削除されたスパイク用クレートが `deno_core` への依存を単体で（1 クレート、1 つの依存グラフとして）コンパイルしたものです。これは [なぜ Rust か](./why-rust.mdx#正直な反論-ビルドコスト) に記載されている、zfb の *ワークスペース全体* の最初の `cargo build` にかかる 15〜30 分という数値とは異なる計測です。後者はワークスペースのすべてのクレートと `deno_core` をまとめてコンパイルします。この 2 つの数値は、`deno_core` のコンパイル時間についての食い違いではなく、ビルドの対象範囲が異なることを表しています。
+上記の約 3 分という数値は、いまは削除されたスパイク用クレートが `deno_core` への依存を単体で（1 クレート、1 つの依存グラフとして）コンパイルしたものです。これは [なぜ Rust か](./why-rust.mdx#正直な反論-ビルドコスト) に記載されている、zfb の *ワークスペース全体* の最初の `cargo build` にかかる 15〜30 分という数値とは異なる計測です。後者はワークスペースのすべてのクレートと V8 をまとめてコンパイルします。この 2 つの数値は、ビルドの対象範囲が異なることを表しています。
 
 </Note>
 
@@ -115,25 +115,31 @@ pub trait RenderHost {
 
 これがレンダラーが使うインターフェースの全体です。`zfb-render`、`zfb-build`、そしてフレームワークアダプターは、具体的なランタイムの名前を一切口にしません。呼び出し箇所に触れることなく実装を差し替えられます — 新しいホストを追加し、ベンチを再実行し、アダプターの結合テストを走らせてバイト単位で同一の HTML を確認します。
 
-後述の direct V8 ホストは、2 つ目のトレイト実装としてではなく、コンパイル時に差し替えられます。`direct-v8` だけのビルドでは、`zfb-render` が `zfb_js_host::native::NativeHost` を既存の `EmbeddedV8RenderHost` という名前で公開するため、`zfb-build`、dev サーバー、CLI のスレッドアダプターはどちらのホストに対しても変更なしでコンパイルされます。
+`zfb-render` は direct V8 ホストである `zfb_js_host::native::NativeHost` を `EmbeddedV8RenderHost` という名前で公開します。そのため `zfb-build`、dev サーバー、CLI のスレッドアダプターはこの名前を使い、ホストのクレートを直接参照しません。
 
 ## 現在のデフォルトと実験
 
-npm のプラットフォームパッケージや Homebrew の formula を含め、リリースされたすべての `zfb` バイナリは `deno_core` によるホストと esbuild を使います。これがデフォルトの `embed_v8` Cargo フィーチャーです。
+zfb の JS ランタイムは 1 つだけです。`zfb-js-host` クレートにある **direct V8** ホストです。固定版の `v8` クレート（`=147.4.0`）を直接扱い、モジュール読み込み、Web API サービス、ディスパッチ、dev のリロードを自前で実装しています。[#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) 以降はデフォルトの `direct-v8` Cargo フィーチャーです。[#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) で、以前の `deno_core` によるホスト、その `embed_v8` フィーチャー、そして `deno_core`・`deno_ops`・`deno_error`・`serde_v8` クレートが削除されました。v4.6.0 までのリリース済みバイナリは引き続き `deno_core` のホストを使い、#4395 以降に切られるリリースは direct ホストを使います。
 
-2 つ目のホストである **direct V8** は `zfb-js-host` クレートにあります。同じ固定版の V8（`v8` クレート 147.4.0）を `deno_core` や `serde_v8` なしで扱い、同じモジュール読み込み、Web API サービス、ディスパッチ、dev のリロード動作を実装しています。ソースビルドでのオプトインに限られます。
+zfb をソースからコンパイルするときは、Cargo フィーチャーでビルドを選びます。
 
 ```sh
-python3 prototypes/direct-v8/prepare-icu.py
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
-cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
+# デフォルト: direct V8 ホスト
+cargo build --locked -p zfb --bin zfb
+
+# スリム: V8 なし
+cargo build --locked -p zfb --no-default-features --bin zfb
 ```
 
-- ICU データファイルはコンパイル時の入力です。`ZFB_V8_ICU_DATA` がないとビルドは失敗します。
-- デフォルトフィーチャーを外す必要があります。`embed_v8` と `direct-v8` の両方が有効な場合、レンダリングと設定の評価は引き続き `deno_core` のホストが行い、2 つは V8 プラットフォームを 1 つ共有するだけです。
-- どちらのフィーチャーもないスリムビルドは従来どおりです。設定は `node` サブプロセスで評価され、SSR の経路ははっきり失敗します。
+- V8 が必要とする ICU 77 のデータは `crates/zfb-js-host/icu/icudtl.dat` に同梱されており、コンパイル時に埋め込まれます。環境変数もダウンロードも不要です。
+- スリムビルドには V8 がありません。`zfb.config.ts` は `node` サブプロセスで評価され（そのため `PATH` に `node` が必要です）、`zfb build` と `zfb dev` は `direct-v8 = off` を示すエラーで停止します。
 
-direct V8 は検証中であり、採用されたわけではありません。オプトインの CI レーン（`direct-v8.yml`、PR に `direct-v8` または `direct-v8-rolldown` ラベルを付けると実行）が Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac が必要なため CI では実行しません。direct V8 をデフォルトにして `deno_core` のホストを取り除くかどうかは別の判断です（[#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302)、[#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)）。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
+direct ホストの既知の制限:
+
+- 無限ループに陥ったページのような CPU バウンドの JavaScript を中断することはできません。ホストは CPU 時間の制限もハードなヒープ制限も設けていません。CLI のスレッド化されたホストアダプターは、終了時に V8 スレッドを最大 10 秒待ってから切り離します。切り離されたスレッドはアイソレートのクリーンな終了ではありません。
+- 検証用ハーネスのウォッチドッグは、kill した子プロセスの出力をベストエフォートで回収します（[#4289](https://github.com/Takazudo/zudo-front-builder/issues/4289)）。これは証跡用ハーネスの制限であり、出荷される CLI の制限ではありません。
+
+ラベルで起動する必須ではない CI レーン（`direct-v8.yml`）が、Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac 上で手作業で実行します。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
 
 ページとアイランドは、デフォルトで Rolldown がバンドルします（`rolldown-prototype` フィーチャーはデフォルトフィーチャーに含まれます）。`ZFB_BUNDLER=esbuild` を設定すると、これらのバンドルに組み込みの esbuild を使います。`zfb.config.ts` とプラグインのコンパイルには引き続き esbuild を使います。`direct-v8-rolldown` レーンは Rolldown を direct V8 と一緒にビルドします。
 

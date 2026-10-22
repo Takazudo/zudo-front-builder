@@ -218,7 +218,7 @@ async fn dev_serves_wasm_importing_ssr_route() {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[wasm_ssr_dev_smoke_e2e] `zfb dev` exited with a known environment \\
                      gate; skipping.\n{}",

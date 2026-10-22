@@ -63,11 +63,13 @@ as removals because the lock delta did not remove them.
 * **`futures` umbrella (#2747).** `zfb-server` now has `futures-util` once in
   normal dependencies, and the two imports use `futures_util` directly. The
   lockfile changed only by removing the `"futures"` edge from the `zfb-server`
-  package stanza. The `futures` package itself remains because `deno_core`
-  pulls it in under the default `embed_v8` graph, so the package count is
-  unchanged. In the `zfb --no-default-features` compile graph, both `futures`
+  package stanza. The `futures` package itself remained because `deno_core`
+  pulled it in under the then-default `embed_v8` graph, so the package count
+  was unchanged. In the `zfb --no-default-features` compile graph, both `futures`
   and `futures-executor` disappear; this is a build-no-V8 compile-graph win,
-  not a workspace package-count reduction.
+  not a workspace package-count reduction. Since #4395 removed `deno_core`,
+  the lock keeps `futures` only for the non-default Rolldown prototype
+  (`rolldown`, `rolldown_utils`, `async-scoped`).
 * **`reqwest`'s `json` feature in `zfb-build` (#2748).** There are no
   `Response::json()` calls in `zfb-build`, so its speculative feature was
   removed while `blocking` and `rustls-tls` remained. `Cargo.lock` did not
@@ -3148,6 +3150,11 @@ live and documented above. `swc_core`, `deno_core`, `lightningcss`, Oxc,
 `garde`, `lol_html`, Rustls, and `tempfile` dictate the remaining versions.
 There is no currently actionable duplicate for us to fix and no safe duplicate
 collapse to perform in this register.
+
+The table above is that capture, not the current graph. #4395 later removed
+`deno_core`; `bincode` 1.3 is now pulled only by `syntect` (see
+[SECURITY-DEPS.md](./SECURITY-DEPS.md)). Re-run `cargo tree -i` before relying
+on any other row.
 
 ## Deliberate duplication
 

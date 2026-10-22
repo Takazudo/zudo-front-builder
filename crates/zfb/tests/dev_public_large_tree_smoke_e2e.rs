@@ -282,7 +282,7 @@ async fn dev_boots_and_serves_under_large_public_tree() {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[large_public_tree_smoke] `zfb dev` exited with a known-skip indicator \
                      (V8/esbuild unavailable); skipping.\n{}",

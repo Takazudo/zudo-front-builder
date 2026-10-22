@@ -449,7 +449,7 @@ async fn wait_for_binding_port_before(
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[dev_bind_before_walk_e2e] `zfb dev` exited with a known-skip \
                      indicator (V8/esbuild unavailable); skipping test.\n{}",

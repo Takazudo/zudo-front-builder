@@ -260,7 +260,7 @@ async fn wait_for_binding_port(session: &mut DevSession) -> Option<u16> {
     loop {
         if let Some(status) = session.guard.try_exit_status() {
             let combined = session.combined();
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[ssr_reload_self_heal] `zfb dev` exited with a known-skip indicator \
                      (V8/esbuild unavailable); skipping test.\n{}",

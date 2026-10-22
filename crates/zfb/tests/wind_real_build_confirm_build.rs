@@ -114,7 +114,7 @@ fn run_build(root: &Path, esbuild: &Path, label: &str) -> Option<String> {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let combined = format!("{stdout}{stderr}");
     if !output.status.success()
-        && (combined.contains("embed_v8") || combined.contains("no esbuild"))
+        && (combined.contains("direct-v8 = off") || combined.contains("no esbuild"))
     {
         eprintln!("[{label}] known environment skip; {combined}");
         return None;
@@ -628,7 +628,7 @@ fn w_a08_strict_wind_commands_report_hints_for_authored_and_malformed_classes() 
     let build = run_build_output(&root, &esbuild);
     let build_output = output_text(&build);
     if !build.status.success()
-        && (build_output.contains("embed_v8") || build_output.contains("no esbuild"))
+        && (build_output.contains("direct-v8 = off") || build_output.contains("no esbuild"))
     {
         eprintln!("[W-A08 strict CLI] known environment skip; {build_output}");
         return;

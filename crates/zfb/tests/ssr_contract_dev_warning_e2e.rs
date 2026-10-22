@@ -238,7 +238,7 @@ async fn wait_for_ready(session: &mut DevSession, label: &str) -> BootOutcome {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 return BootOutcome::Skip(format!(
                     "[ssr_contract_dev_warning_e2e:{label}] `zfb dev` exited with a known \
                      environment gate; skipping.\n{}",
