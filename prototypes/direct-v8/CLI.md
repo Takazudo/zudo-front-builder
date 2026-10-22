@@ -2,8 +2,10 @@
 
 Tracking: #4301. Base: `21d6807e442bbed61e578c165a91d64c4a7dc141`.
 
-> Status: integrated into `main` by #4368 (`47acd2a8`). The feature stays non-default
-> and no release includes it. The integration-lane notes below are kept as written.
+> Status: integrated into `main` by #4368 (`47acd2a8`). Since #4390 `direct-v8` is the
+> default feature and `embed_v8` is the source-build rollback
+> (`--no-default-features --features embed_v8`) until Gate B removes it. The
+> integration-lane notes below are kept as written.
 
 This work follows `CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
 The integration branch targets main; this lane owns shared files, the combined

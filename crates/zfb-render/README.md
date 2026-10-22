@@ -19,7 +19,7 @@ The orchestrator ([`render`](src/render.rs)) is intentionally thin: it owns a `M
 - **Loader** — `read_to_string`, `ResolverError`
 - **Render orchestrator** — `Renderer<H>`, `RenderRequest`
 - **Runtime host trait** — `RenderHost`, `ModuleHandle`
-- **Embedded V8 host** (`embed_v8` feature, default-on; with only `direct-v8`, the same names re-export the direct host from `zfb-js-host`) — `EmbeddedV8RenderHost`, `BundleModuleLoader`, `AliasHook`, `VirtualModuleHook`, `PluginRegistryHooks`, `HttpRequestLike`, `HttpResponseLike`
+- **Embedded V8 host** (`direct-v8` feature, default-on, re-exports the direct host from `zfb-js-host` under these names; the `embed_v8` rollback provides the `deno_core` host) — `EmbeddedV8RenderHost`, `BundleModuleLoader`, `AliasHook`, `VirtualModuleHook`, `PluginRegistryHooks`, `HttpRequestLike`, `HttpResponseLike`
 - **Config evaluator** (`embed_v8` or `direct-v8` feature) — `ThreadedConfigEvaluator`, `ConfigEvalError`
 - **Process startup** (`embed_v8` or `direct-v8` feature) — `initialize_v8`, to call on the main thread before any host thread starts
 
@@ -82,8 +82,8 @@ What `fetch` and Web Crypto are allowed to do inside this host — and how build
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `embed_v8` | yes | Pulls in `deno_core 0.399` + `tokio`; enables `EmbeddedV8RenderHost` and `ThreadedConfigEvaluator`. |
-| `direct-v8` | no | Uses the direct V8 host from `zfb-js-host` (`v8` 147.4.0, no `deno_core`). Embeds the vendored ICU data from `zfb-js-host/icu/`. When combined with `embed_v8`, the `deno_core` host still renders; both share one V8 platform. |
+| `embed_v8` | no | Source-build rollback until Gate B removes it. Pulls in `deno_core 0.399` + `tokio`; enables `EmbeddedV8RenderHost` and `ThreadedConfigEvaluator`. |
+| `direct-v8` | yes | Uses the direct V8 host from `zfb-js-host` (`v8` 147.4.0, no `deno_core`). Embeds the vendored ICU data from `zfb-js-host/icu/`. When combined with `embed_v8`, the `deno_core` host still renders; both share one V8 platform. |
 | *(no feature)* | — | Keeps only the SWC pipeline + loader + trait. Useful for CI images that only need the compile step. |
 
 `deno_core` is pinned to `=0.399.0` and acts as a compatibility anchor tied to the workspace's `rust-toolchain.toml`. Bumping is a coordinated change — update the pin in lock-step with the toolchain.
