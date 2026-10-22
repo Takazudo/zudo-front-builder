@@ -57,6 +57,12 @@ impl Request {
             // DCE-only pass also drops bindings after an unconditional top-level
             // throw while keeping their export entries (#4336 ZFB-RD-003).
             minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
+            // Esbuild drops module-level directives such as an island's
+            // "use client" marker without a warning (#4404).
+            checks: Some(rolldown_common::ChecksOptions {
+                module_level_directive: Some(false),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let mut resolve = rolldown::ResolveOptions::default();

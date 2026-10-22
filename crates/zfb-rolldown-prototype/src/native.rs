@@ -6,6 +6,8 @@ mod css_tests;
 mod prepared;
 mod trailing_paths;
 mod verbatim_specifiers;
+#[cfg(test)]
+mod warning_tests;
 mod windows_path;
 use anyhow::{bail, Context, Result};
 use prepared::Request;
@@ -341,6 +343,11 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let warnings: Vec<_> = result
         .warnings
         .iter()
+        // The prepared argv owns the transform options, so a tsconfig field it
+        // overrides (zfb always passes --jsx-import-source) is the esbuild
+        // precedence, which esbuild applies silently. Rolldown reports these
+        // outside `checks`, so they cannot be turned off there (#4404).
+        .filter(|w| w.kind().to_string() != "CONFIGURATION_FIELD_CONFLICT")
         .map(|w| w.to_diagnostic().convert_to_string(false))
         .collect();
     for warning in &warnings {
