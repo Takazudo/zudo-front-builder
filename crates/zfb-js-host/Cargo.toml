@@ -11,7 +11,10 @@ default = []
 # Existing embedded-host transport, crypto and authorized module reads.
 services = ["dep:serde", "dep:serde_json", "dep:thiserror", "dep:getrandom", "dep:reqwest", "dep:sha1", "dep:sha2", "dep:tokio", "dep:url", "dep:base64"]
 # The default JS runtime of the zfb CLI (#4390).
-direct-v8 = ["services", "dep:v8"]
+direct-v8 = ["services", "v8-platform"]
+# Kept as its own feature so the producer closure row is unchanged by the
+# Deno exit (#4395; island-size cargo-removal admission).
+v8-platform = ["dep:v8"]
 
 [dependencies]
 serde = { workspace = true, optional = true }

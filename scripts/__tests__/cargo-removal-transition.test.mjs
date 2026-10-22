@@ -1099,3 +1099,123 @@ describe("cargo-removal (#4388) end to end", () => {
     unchanged(live());
   });
 });
+
+describe("cargo-removal prunedExternal (#4396)", () => {
+  // serde_json keeps its version, source and checksum but loses the
+  // `itoa 1.0.15` entry, the lock-level shape of an optional edge that only a
+  // removed record's feature request enabled.
+  const prunedLock = editRecord(newText, "serde_json@1.0.140", (body) =>
+    body.replace('\ndependencies = [\n "itoa 1.0.15",\n]', ""),
+  );
+  const prune = (d, { oldText: old, newText: next, sha }) => {
+    d.prunedExternal = [
+      {
+        id: "serde_json@1.0.140",
+        oldSha256: sha(removalRecordOf(old, "serde_json@1.0.140").body),
+        newSha256: sha(removalRecordOf(next, "serde_json@1.0.140").body),
+        removedDependencies: ["itoa 1.0.15"],
+      },
+    ];
+  };
+
+  it("refuses the prune when it is not declared", () => {
+    expect(() => prove({ newLock: prunedLock })).toThrow(
+      /changed external records serde_json@1\.0\.140 \(an external record may not change/,
+    );
+  });
+
+  it("admits a declared prune and records it", () => {
+    const proof = prove({ newLock: prunedLock, declare: prune });
+    expect(proof.prunedExternal).toEqual([
+      {
+        id: "serde_json@1.0.140",
+        oldSha256: removalSha(removalRecordOf(oldText, "serde_json@1.0.140").body),
+        newSha256: removalSha(removalRecordOf(prunedLock, "serde_json@1.0.140").body),
+        removedDependencies: ["itoa 1.0.15"],
+      },
+    ]);
+    expect(prove().prunedExternal).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "a checksum change",
+      editRecord(prunedLock, "serde_json@1.0.140", (body) =>
+        body.replace(/checksum = "[0-9a-f]+"/, 'checksum = "' + "6".repeat(64) + '"'),
+      ),
+      prune,
+      /declared pruned serde_json@1\.0\.140 moved a field other than dependencies/,
+    ],
+    [
+      "a spelling rewrite",
+      editRecord(newText, "serde_json@1.0.140", (body) => body.replace('"itoa 1.0.15"', '"itoa"')),
+      (d, ctx) => {
+        prune(d, ctx);
+        d.prunedExternal[0].removedDependencies = ["itoa 1.0.15"];
+      },
+      /declared pruned serde_json@1\.0\.140 adds edges \["itoa"\]/,
+    ],
+    [
+      "a wrong edge list",
+      prunedLock,
+      (d, ctx) => {
+        prune(d, ctx);
+        d.prunedExternal[0].removedDependencies = ["itoa 0.4.8"];
+      },
+      /declared pruned serde_json@1\.0\.140 removed edges \["itoa 1\.0\.15"\] differ/,
+    ],
+    [
+      "an internal record",
+      prunedLock,
+      (d, ctx) => {
+        prune(d, ctx);
+        d.prunedExternal.push({ ...d.changed[0] });
+        delete d.prunedExternal[1].manifest;
+        d.changed.splice(0, 1);
+      },
+      /declared pruned zfb-js-host@0\.0\.0 is not an external/,
+    ],
+  ])("refuses %s", (_name, newLock, declare, message) => {
+    expect(() => prove({ newLock, declare })).toThrow(message);
+  });
+
+  it("refuses a malformed prunedExternal declaration", () => {
+    for (const [edit, message] of [
+      [(d) => (d.prunedExternal = []), /prunedExternal must be omitted rather than empty/],
+      [(d) => (d.prunedExternal = {}), /prunedExternal must be an array/],
+      [
+        (d) =>
+          (d.prunedExternal = [
+            { id: "x@1.0.0", oldSha256: "1".repeat(64), newSha256: "2".repeat(64) },
+          ]),
+        /prunedExternal entries need exactly/,
+      ],
+      [
+        (d) =>
+          (d.prunedExternal = [
+            {
+              id: "x@1.0.0",
+              oldSha256: "1".repeat(64),
+              newSha256: "2".repeat(64),
+              removedDependencies: [],
+            },
+          ]),
+        /needs a nonempty removedDependencies array/,
+      ],
+      [
+        (d) =>
+          (d.prunedExternal = [
+            {
+              id: "deno_core@0.399.0",
+              oldSha256: "1".repeat(64),
+              newSha256: "2".repeat(64),
+              removedDependencies: ["anyhow"],
+            },
+          ]),
+        /repeats deno_core@0\.399\.0/,
+      ],
+    ]) {
+      expect(() => checkRemovalDeclaration(removalDeclaration(edit))).toThrow(message);
+    }
+  });
+});

@@ -89,7 +89,14 @@
 // Cargo.lock move that only removes: `[[package]]` records leave the lock and
 // existing unpublished workspace records lose dependency edges; nothing is
 // added and no external record changes (not even a dependency-spelling
-// rewrite such as `"x 1.2"` -> `"x"`). It is declared up front
+// rewrite such as `"x 1.2"` -> `"x"`) except one explicitly declared
+// `prunedExternal` shape: an external record whose version, source and
+// checksum are unchanged and whose only delta is losing dependency entries
+// that were enabled solely by a removed record's feature request (Cargo.lock
+// unions every optional edge any workspace feature activates, so removing
+// deno_core drops e.g. `tokio`'s `parking_lot` entry). The identical producer
+// closures below prove such a prune changes nothing that is built. It is
+// declared up front
 // (`--removal-declaration`, REMOVAL_DECLARATION_SCHEMA below) with every removed
 // record's exact bytes and every changed record's before/after bytes and
 // removed edges, and proven by proveCargoRemoval against the old lock's blob,
@@ -2663,6 +2670,12 @@ export function cargoRewireMarkdown(transition) {
 //       "newSha256": "<64 hex of the new record bytes>",
 //       "removedDependencies": ["deno_core", "deno_error"]
 //     }],
+//     "prunedExternal": [{                     // optional: external records losing edges
+//       "id": "tokio@1.52.3",
+//       "oldSha256": "<64 hex of the old record bytes>",
+//       "newSha256": "<64 hex of the new record bytes>",
+//       "removedDependencies": ["parking_lot"]
+//     }],
 //     "closure": { "removed": [] }             // internal producer-closure rows that leave
 //   }
 //
@@ -2690,6 +2703,7 @@ const REMOVAL_CHANGED_KEYS = Object.freeze([
   "newSha256",
   "removedDependencies",
 ]);
+const REMOVAL_PRUNED_KEYS = Object.freeze(["id", "oldSha256", "newSha256", "removedDependencies"]);
 
 function repeatedEntries(entries) {
   return sortedUnique(entries.filter((entry, i) => entries.indexOf(entry) !== i));
@@ -2703,8 +2717,15 @@ export function checkRemovalDeclaration(declaration) {
   if (declaration.schemaVersion !== REMOVAL_DECLARATION_SCHEMA) {
     throw fail("schemaVersion must be " + REMOVAL_DECLARATION_SCHEMA);
   }
-  if (!exactKeys(declaration, REMOVAL_DECLARATION_KEYS)) {
-    throw fail("must carry exactly " + REMOVAL_DECLARATION_KEYS.join(", "));
+  if (
+    !exactKeys(declaration, REMOVAL_DECLARATION_KEYS) &&
+    !exactKeys(declaration, [...REMOVAL_DECLARATION_KEYS, "prunedExternal"])
+  ) {
+    throw fail(
+      "must carry exactly " +
+        REMOVAL_DECLARATION_KEYS.join(", ") +
+        " and optionally prunedExternal",
+    );
   }
   if (declaration.producer !== PRODUCER_PACKAGE) {
     throw fail(
@@ -2760,7 +2781,36 @@ export function checkRemovalDeclaration(declaration) {
       throw fail("changed " + entry.id + " repeats " + repeatedEntries(edges).join(", "));
     }
   }
-  const ids = [...removed, ...changed].map((entry) => entry.id);
+  const pruned = declaration.prunedExternal ?? [];
+  if (!Array.isArray(pruned)) throw fail("prunedExternal must be an array");
+  if ("prunedExternal" in declaration && pruned.length === 0) {
+    throw fail("prunedExternal must be omitted rather than empty");
+  }
+  for (const entry of pruned) {
+    if (!exactKeys(entry, REMOVAL_PRUNED_KEYS) || typeof entry.id !== "string") {
+      throw fail("prunedExternal entries need exactly " + REMOVAL_PRUNED_KEYS.join(", "));
+    }
+    if (!LOCK_ID.test(entry.id)) {
+      throw fail("prunedExternal entries need an id of the form name@version");
+    }
+    for (const key of ["oldSha256", "newSha256"]) {
+      if (!isSha(entry[key])) throw fail("prunedExternal " + entry.id + " needs " + key);
+    }
+    if (entry.oldSha256 === entry.newSha256) {
+      throw fail("prunedExternal " + entry.id + " declares identical old and new bytes");
+    }
+    const edges = entry.removedDependencies;
+    if (!isStringArray(edges) || edges.length === 0) {
+      throw fail("prunedExternal " + entry.id + " needs a nonempty removedDependencies array");
+    }
+    if (edges.some((edge) => !DEPENDENCY_ENTRY.test(edge))) {
+      throw fail("prunedExternal " + entry.id + " has a malformed removedDependencies entry");
+    }
+    if (repeatedEntries(edges).length > 0) {
+      throw fail("prunedExternal " + entry.id + " repeats " + repeatedEntries(edges).join(", "));
+    }
+  }
+  const ids = [...removed, ...changed, ...pruned].map((entry) => entry.id);
   if (repeatedEntries(ids).length > 0) throw fail("repeats " + repeatedEntries(ids).join(", "));
   if (
     !exactKeys(closure, ["removed"]) ||
@@ -2785,6 +2835,12 @@ export function checkRemovalDeclaration(declaration) {
       newSha256: entry.newSha256,
       removedDependencies: sortedUnique(entry.removedDependencies),
     })),
+    prunedExternal: pruned.map((entry) => ({
+      id: entry.id,
+      oldSha256: entry.oldSha256,
+      newSha256: entry.newSha256,
+      removedDependencies: sortedUnique(entry.removedDependencies),
+    })),
     closure: { removed: sortedUnique(closure.removed) },
   };
 }
@@ -2798,8 +2854,11 @@ function isExternalRecord(record) {
 // proveCargoInternalRewire's, with the parsed removal `declaration`. It admits
 // exactly: the declared removed records (byte hash), declared internal
 // workspace records whose only delta is the removal of declared dependency
-// edges, no added record, no changed external record (a dependency-spelling
-// rewrite included), an unchanged header and other sections, and identical
+// edges, declared `prunedExternal` records whose version, source and checksum
+// are unchanged and whose only delta is the removal of declared dependency
+// entries, no added record, no other changed external record (a
+// dependency-spelling rewrite included), an unchanged header and other
+// sections, and identical
 // default-feature producer closures apart from the declared internal rows
 // leaving.
 export function proveCargoRemoval({
@@ -2850,6 +2909,7 @@ export function proveCargoRemoval({
   );
   const declaredRemoved = new Map(declared.removed.map((entry) => [entry.id, entry]));
   const declaredChanged = new Map(declared.changed.map((entry) => [entry.id, entry]));
+  const declaredPruned = new Map(declared.prunedExternal.map((entry) => [entry.id, entry]));
   const addedIds = newRecords.filter((record) => !oldById.has(record.id)).map((r) => r.id);
   const undeclaredRemoved = [];
   const changedExternal = [];
@@ -2861,6 +2921,7 @@ export function proveCargoRemoval({
       continue;
     }
     if (next.body === record.body || declaredChanged.has(record.id)) continue;
+    if (declaredPruned.has(record.id)) continue;
     if (isExternalRecord(record) || isExternalRecord(next)) changedExternal.push(record.id);
     else undeclaredChanged.push(record.id);
   }
@@ -2992,6 +3053,87 @@ export function proveCargoRemoval({
       removedDependencies: removedEdges,
     });
   }
+  const prunedExternal = [];
+  for (const entry of declared.prunedExternal) {
+    const record = oldById.get(entry.id);
+    const next = newById.get(entry.id);
+    if (!record || !next) {
+      problems.push("declared pruned " + entry.id + " is not in both Cargo.lock files");
+      continue;
+    }
+    if (record.body === next.body) {
+      problems.push("declared pruned " + entry.id + " is byte-identical in both Cargo.lock files");
+      continue;
+    }
+    if (sha256(record.body) !== entry.oldSha256) {
+      problems.push(
+        "declared pruned " +
+          entry.id +
+          " old bytes hash to " +
+          sha256(record.body) +
+          ", not its oldSha256",
+      );
+    }
+    if (sha256(next.body) !== entry.newSha256) {
+      problems.push(
+        "declared pruned " +
+          entry.id +
+          " new bytes hash to " +
+          sha256(next.body) +
+          ", not its newSha256",
+      );
+    }
+    if (!isExternalRecord(record) || !isExternalRecord(next)) {
+      problems.push("declared pruned " + entry.id + " is not an external (source/checksum) record");
+    }
+    if (!isDeepStrictEqual(record.fields.rest, next.fields.rest)) {
+      problems.push(
+        "declared pruned " +
+          entry.id +
+          " moved a field other than dependencies (version, source, checksum)",
+      );
+    }
+    const was = record.fields.dependencies ?? [];
+    const now = next.fields.dependencies ?? [];
+    const addedEdges = sortedUnique(now.filter((d) => !was.includes(d)));
+    const removedEdges = sortedUnique(was.filter((d) => !now.includes(d)));
+    if (addedEdges.length > 0) {
+      problems.push(
+        "declared pruned " +
+          entry.id +
+          " adds edges " +
+          JSON.stringify(addedEdges) +
+          " (a pruned external record may only lose edges; a dependency-spelling rewrite is an added edge)",
+      );
+    }
+    if (!isDeepStrictEqual(removedEdges, entry.removedDependencies)) {
+      problems.push(
+        "declared pruned " +
+          entry.id +
+          " removed edges " +
+          JSON.stringify(removedEdges) +
+          " differ from removedDependencies",
+      );
+    } else if (
+      addedEdges.length === 0 &&
+      !isDeepStrictEqual(
+        now,
+        was.filter((d) => !entry.removedDependencies.includes(d)),
+      )
+    ) {
+      problems.push("declared pruned " + entry.id + " reorders its remaining dependency edges");
+    }
+    for (const dependency of entry.removedDependencies) {
+      const { problem } = resolveDependencyEntry(dependency, oldRecords, "old");
+      if (problem) problems.push("pruned " + entry.id + ": " + problem);
+    }
+    prunedExternal.push({
+      id: entry.id,
+      oldSha256: entry.oldSha256,
+      newSha256: entry.newSha256,
+      removedDependencies: removedEdges,
+    });
+  }
   // No surviving edge may point at a removed record or become ambiguous.
   for (const record of newRecords) {
     for (const dependency of record.fields.dependencies ?? []) {
@@ -3084,6 +3226,7 @@ export function proveCargoRemoval({
     added: [],
     removed,
     changed,
+    ...(prunedExternal.length > 0 ? { prunedExternal } : {}),
     closure: {
       target,
       oldSha256: closures.old.sha256,
@@ -3114,7 +3257,18 @@ export function cargoRemovalText(transition) {
     transition.changed.length +
     " internal record(s) (" +
     recordList(transition.changed, (r) => r.id + " -" + JSON.stringify(r.removedDependencies)) +
-    "); no record is added and every other [[package]] record and the header are byte-identical, declared in " +
+    ")" +
+    (transition.prunedExternal
+      ? " and prunes dependency entries from " +
+        transition.prunedExternal.length +
+        " external record(s) with unchanged version, source and checksum (" +
+        recordList(
+          transition.prunedExternal,
+          (r) => r.id + " -" + JSON.stringify(r.removedDependencies),
+        ) +
+        ")"
+      : "") +
+    "; no record is added and every other [[package]] record and the header are byte-identical, declared in " +
     transition.declaration.path +
     " (SHA-256 " +
     transition.declaration.sha256 +
@@ -3156,7 +3310,18 @@ export function cargoRemovalMarkdown(transition) {
       transition.changed,
       (r) => code(r.id) + " drops " + recordList(r.removedDependencies, code),
     ) +
-    "); no record is added and every other `[[package]]` record and the header are byte-identical, as declared in `" +
+    ")" +
+    (transition.prunedExternal
+      ? " and pruning dependency entries from " +
+        transition.prunedExternal.length +
+        " external record(s) with unchanged version, source and checksum (" +
+        recordList(
+          transition.prunedExternal,
+          (r) => code(r.id) + " drops " + recordList(r.removedDependencies, code),
+        ) +
+        ")"
+      : "") +
+    "; no record is added and every other `[[package]]` record and the header are byte-identical, as declared in `" +
     transition.declaration.path +
     "` (SHA-256 `" +
     transition.declaration.sha256 +
