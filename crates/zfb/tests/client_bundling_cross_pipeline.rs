@@ -2004,11 +2004,11 @@ async fn real_binary_build_rejects_root_claimed_undeclared_sibling_escape_on_bot
 }
 
 /// Mirrors `zfb_rolldown_prototype::enabled()` for the child `zfb` binary this
-/// test spawns: Rolldown unless the build lacks it or the env selects esbuild.
+/// test spawns: Rolldown unless the env selects esbuild.
+#[cfg(feature = "rolldown-prototype")]
 fn rolldown_selected() -> bool {
-    cfg!(feature = "rolldown-prototype")
-        && match std::env::var_os("ZFB_BUNDLER") {
-            Some(value) => value != "esbuild",
-            None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
-        }
+    match std::env::var_os("ZFB_BUNDLER") {
+        Some(value) => value != "esbuild",
+        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
+    }
 }
