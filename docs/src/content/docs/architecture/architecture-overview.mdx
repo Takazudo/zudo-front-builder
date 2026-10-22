@@ -152,7 +152,7 @@ the two-file worker output and how requests are dispatched at runtime, see
 The full rationale for this design is in [JS Runtime](../architecture/js-runtime.mdx):
 the embedded V8 host design and why the bundle contract is engine-agnostic.
 The SSG-first, Hono/Workers bundle shape was chosen to keep the build-time
-and production execution environments compatible at the bundle boundary. Every released binary's embedded V8 host is backed by `deno_core`. A second host that drives V8 directly can be selected only when building zfb from source with the `direct-v8` Cargo feature; it is being qualified and is not the default.
+and production execution environments compatible at the bundle boundary. The embedded V8 host is the direct V8 host in `zfb-js-host`, which drives the `v8` crate without `deno_core` (the default `direct-v8` Cargo feature). Released binaries up to v4.6.0 still use the former `deno_core` host, which #4395 removed.
 
 ## Layering summary
 

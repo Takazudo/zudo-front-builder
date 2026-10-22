@@ -1,5 +1,11 @@
 # Phase 1 host contract
 
+> **Current status (2026-10-22):** the direct V8 host is zfb's only JS runtime. It has
+> been the default `direct-v8` feature since #4390, and #4395 removed the deno_core host
+> and the `embed_v8` feature (PR #4412, merge commit `7e7aea9`). The text below is kept
+> as written; where it describes the deno_core host, `embed_v8`, a baseline comparison
+> or a combined-feature build, it is source-bound history.
+
 > Phase 2 status: the actual CLI integration is on `main` (merged by
 > #4368 from `feat/4301-direct-v8-cli`), and since #4390 `direct-v8` is the default
 > feature with `embed_v8` as the source-build rollback until Gate B; see [CLI.md](CLI.md)

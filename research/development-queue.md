@@ -6,7 +6,35 @@ Current snapshot: 2026-10-21 03:00 UTC, `main` `cd09e6c` after the v4.5.4 releas
 integration/CI triage owner: the project integration manager (one fixed owner). The "Round record
 at main `013b0ab`", "Round record at main `21ef7c4`" and everything from "Historical checkpoint 4294"
 onward are earlier records, kept as evidence; where they say "draft", "candidate" or "pending",
-the current roadmap below wins.
+the current roadmap below wins. For the JS runtime, the "Deno exit" section below supersedes
+the direct-V8 and Deno entries in every older section, including the 2026-10-21 roadmap.
+
+## Deno exit (epic 4386, updated 2026-10-22)
+
+Source: `git log --first-parent main` and the
+[4386 epic](https://github.com/Takazudo/zudo-front-builder/issues/4386). The owner approved
+Gate A and Gate B of 4303 on 2026-10-21. Each step merged into `main` as its own PR with a
+regular merge commit.
+
+| Step | Issues | State |
+| --- | --- | --- |
+| S1 vendored ICU, S2 `cargo-removal` reason, S3 qualification rows | 4387, 4388, 4389 | Merged in PR 4401 (`addf681`) |
+| S4a/S4b default flip to `direct-v8`, review fixes, rollback lane | 4390, 4391 | Merged in PR 4403 (`978f7e7`) |
+| S5 Gate A confirmation on `main` | 4392 | Closed (confirmation only, no code) |
+| S6a/S6b port or move the `embed_v8`-only tests | 4393, 4394 | Merged in PR 4406 (`2abb238`) |
+| S7a/S7b/S8 remove the deno_core host and `embed_v8`, removal declaration, Linux stage, Darwin re-pin and paired apply | 4395, 4396, 4397 | Merged in PR 4412 as `7e7aea9` on 2026-10-22 (08:38 UTC) |
+| S9 Deno-free proof and final evidence ledger | 4398 | In progress |
+| S10 docs | 4399 | In progress |
+| S11 release-notes hand-off | 4400 | Open; waits on S9 and S10 |
+
+- `direct-v8` is now the only JS runtime and a default feature; `--no-default-features` builds
+  without V8. The deno_core host, the `embed_v8` feature and the rollback lane are gone, so
+  rolling back means reverting PRs, not switching a feature.
+- Released binaries up to v4.6.0 still use the deno_core host. The release that first ships the
+  direct host is the owner's decision; nothing here approves a release, publish or tag.
+- Known limitations carried forward: CPU-bound JavaScript is not interruptible, and the
+  qualification harness's watchdog drain is best-effort (4289, see
+  `prototypes/direct-v8/WATCHDOG-4289.md`).
 
 ## Current roadmap (main `cd09e6c`, updated 2026-10-21 03:00 UTC)
 
@@ -94,7 +122,8 @@ Two separate tracks, which must not be mixed:
   content is the two islands fixes (4298, 4308). The rustls 0.23.46 transition is not on `main` and
   is not in the drafts. L5 is preparing the checkpoint report and a draft bump PR. md-wasm sizes and
   island-size ceilings come from CI measurement; a red ceiling is recorded, never relaxed.
-- **Deno exit roadmap (future; 4303, not assigned).** Nothing in the current plan removes Deno or
+- **Deno exit roadmap (future; 4303, not assigned).** Superseded: the Deno exit was approved
+  and merged on 2026-10-22; see "Deno exit" at the top. As recorded then: nothing in the current plan removes Deno or
   switches the default. The remaining blockers are listed in the
   [4303 comment](https://github.com/Takazudo/zudo-front-builder/issues/4303#issuecomment-6276732610):
   the Gate A default-switch approval, native qualification on four platforms, lock-admission apply,

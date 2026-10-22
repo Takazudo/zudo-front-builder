@@ -8,7 +8,7 @@ zfb renders TSX server-side via an embedded V8 isolate — a Rust-hosted V8 engi
 
 ## How the runtime choice was reached
 
-The V8 embedding decision came through a measured evaluation of available JS hosts. Early iterations used an in-process `deno_core` isolate (ratified after spiking three candidates: `deno_core`, `ssr_rs`, and `rquickjs`), then moved to a Node-hosted miniflare worker to achieve runtime parity with the Cloudflare Workers production target. Tauri distribution ultimately reversed that choice: shipping zfb as a desktop app requires a single binary with no Node.js dependency on end-user machines, and miniflare is a Node package. V8 embedding via `deno_core` was re-adopted — accepting the binary-size and first-build-time costs — because it is the only path that satisfies the no-Node single-binary constraint.
+The V8 embedding decision came through a measured evaluation of available JS hosts. Early iterations used an in-process `deno_core` isolate (ratified after spiking three candidates: `deno_core`, `ssr_rs`, and `rquickjs`), then moved to a Node-hosted miniflare worker to achieve runtime parity with the Cloudflare Workers production target. Tauri distribution ultimately reversed that choice: shipping zfb as a desktop app requires a single binary with no Node.js dependency on end-user machines, and miniflare is a Node package. V8 embedding via `deno_core` was re-adopted — accepting the binary-size and first-build-time costs — because it is the only path that satisfies the no-Node single-binary constraint. Later, zfb replaced `deno_core` with its own host that drives the `v8` crate directly: [#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390) made it the default, and [#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) removed the `deno_core` host. V8 is still embedded; only the layer between zfb and V8 changed.
 
 The stable production contract throughout has been the _bundle shape_ (`export default { fetch }`), not the build-time engine. The same bundle that zfb renders at build time deploys unchanged to Cloudflare Workers for runtime SSR.
 
@@ -43,9 +43,9 @@ Pure-Rust SSG (Boa/QuickJS) and no-V8-at-runtime (build-time-only V8) are real f
 
 ## What runs today
 
-At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate via `deno_core`. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
+At `zfb build` / `zfb dev`, the Rust orchestrator creates an in-process V8 isolate through the direct V8 host in the `zfb-js-host` crate. It loads the workerd-shape bundle that `@takazudo/zfb-runtime` builds with esbuild. Per-route props are passed as JSON; the isolate invokes the bundle's `fetch` entry with a synthetic `Request`, collects the `Response` (HTML), and returns it. The orchestrator writes plain HTML to `dist/`. No subprocess is spawned; no Node.js is required.
 
-V8 itself is initialized once per process, on the main thread, before the CLI starts Tokio or any host thread. Both host implementations share that startup code (`zfb-js-host::process::initialize`) and the rule that only one host is alive on a thread at a time.
+V8 itself is initialized once per process, on the main thread, before the CLI starts Tokio or any host thread (`zfb-js-host::process::initialize`). Only one host may be alive on a thread at a time.
 
 The same bundle (`export default { fetch }`) deploys unchanged to Cloudflare Workers for runtime SSR of `prerender = false` routes. workerd executes it on request. The production path is unaware of which build-time engine produced the bundle.
 
@@ -64,11 +64,11 @@ A now-removed spike crate implemented the same `RenderHost` trait against three 
 
 ### Candidates
 
-- **`deno_core`** — V8 wrapped by Deno's reusable core. Ships an ES module loader, an event loop for top-level await, and source-mapped errors out of the box. **The current choice.**
+- **`deno_core`** — V8 wrapped by Deno's reusable core. Ships an ES module loader, an event loop for top-level await, and source-mapped errors out of the box. **Chosen by this spike**, and used until #4395 replaced it with the direct V8 host.
 - **`ssr_rs`** — a thin V8 wrapper specialised for Preact / React SSR. Narrower scope, single-bundle entry-point model.
 - **`rquickjs`** — Rust bindings around QuickJS. Small footprint, fast to compile, single-threaded.
 
-Two more were rejected without a measured spike. `rusty_v8` is the same V8 we would get through `deno_core`, only at a lower level — choosing it means re-implementing the loader and isolate plumbing `deno_core` already gives us. (That cost was later accepted on purpose for the opt-in direct V8 host described [below](#current-defaults-and-experiments), which talks to the `v8` crate directly.) `boa` is a pure-Rust ESM implementation; ECMA conformance and source-map fidelity trail V8 by enough that real-world Preact / React SSR hits unsupported corners.
+Two more were rejected without a measured spike. `rusty_v8` is the same V8 we would get through `deno_core`, only at a lower level — choosing it means re-implementing the loader and isolate plumbing `deno_core` already gives us. (That cost was later accepted on purpose for the direct V8 host described [below](#current-defaults-and-experiments), which talks to the `v8` crate directly and is now zfb's only runtime.) `boa` is a pure-Rust ESM implementation; ECMA conformance and source-map fidelity trail V8 by enough that real-world Preact / React SSR hits unsupported corners.
 
 ### Trade-off matrix
 
@@ -88,7 +88,7 @@ The V8-class engines win on the correctness axes; QuickJS wins on footprint and 
 
 <Note title="This build-cost row is not the workspace build time">
 
-The ~3 minute figure above is the now-removed spike crate compiling its `deno_core` dependency in isolation — one crate, one dependency graph. It is not the same measurement as the 15–30 minute cold first `cargo build` of zfb's *whole* workspace described in [Why Rust](./why-rust.mdx#honest-counterpoint-build-cost), which compiles every workspace crate plus `deno_core` together. The two numbers describe different build scopes, not a discrepancy in how long `deno_core` takes to compile.
+The ~3 minute figure above is the now-removed spike crate compiling its `deno_core` dependency in isolation — one crate, one dependency graph. It is not the same measurement as the 15–30 minute cold first `cargo build` of zfb's *whole* workspace described in [Why Rust](./why-rust.mdx#honest-counterpoint-build-cost), which compiles every workspace crate plus V8 together. The two numbers describe different build scopes.
 
 </Note>
 
@@ -115,26 +115,32 @@ pub trait RenderHost {
 
 That is the entire surface the renderer uses. `zfb-render`, `zfb-build`, and the framework adapters never name the concrete runtime. The implementation can be swapped without touching call sites — add a new host, re-run the bench, and run the adapter integration tests to confirm byte-identical HTML.
 
-The direct V8 host below is swapped in at compile time rather than through a second trait implementation. In a direct-V8-only build, `zfb-render` exports `zfb_js_host::native::NativeHost` under the existing `EmbeddedV8RenderHost` name, so `zfb-build`, the dev server and the CLI's thread adapter compile unchanged against either host.
+`zfb-render` exports the direct V8 host, `zfb_js_host::native::NativeHost`, under the name `EmbeddedV8RenderHost`, so `zfb-build`, the dev server and the CLI's thread adapter use that name and never refer to the host crate directly.
 
 ## Current defaults and experiments
 
-Every released `zfb` binary, including the npm platform packages and the Homebrew formula, uses the `deno_core`-backed host and esbuild. That is the default `embed_v8` Cargo feature.
+zfb has one JS runtime: the **direct V8** host in the `zfb-js-host` crate. It drives the pinned `v8` crate (`=147.4.0`) directly and implements module loading, the Web API services, dispatch and dev reload itself. It is the default `direct-v8` Cargo feature since [#4390](https://github.com/Takazudo/zudo-front-builder/issues/4390). [#4395](https://github.com/Takazudo/zudo-front-builder/issues/4395) removed the former `deno_core`-backed host, its `embed_v8` feature, and the `deno_core`, `deno_ops`, `deno_error` and `serde_v8` crates. Released binaries up to v4.6.0 still use the `deno_core` host; releases cut after #4395 use the direct host.
 
-A second host, **direct V8**, lives in the `zfb-js-host` crate. It drives the same pinned V8 (`v8` crate 147.4.0) without `deno_core` or `serde_v8`, and it implements the same module loading, Web API services, dispatch and dev-reload behavior. It is a source-build opt-in only:
+Cargo features choose the build when zfb is compiled from source:
 
 ```sh
-python3 prototypes/direct-v8/prepare-icu.py
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
-cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
+# Default: the direct V8 host
+cargo build --locked -p zfb --bin zfb
+
+# Slim: no V8
+cargo build --locked -p zfb --no-default-features --bin zfb
 ```
 
-- The ICU data file is a compile-time input: the build fails without `ZFB_V8_ICU_DATA`.
-- Turning off default features is required. If `embed_v8` and `direct-v8` are both enabled, the `deno_core` host still renders and evaluates config; the two only share one V8 platform.
-- With neither feature, the slim build keeps its existing behavior: config is evaluated by a `node` subprocess and SSR paths fail loudly.
+- The ICU 77 data that V8 needs is vendored at `crates/zfb-js-host/icu/icudtl.dat` and embedded at compile time. No environment variable or download is needed.
+- The slim build has no V8. It evaluates `zfb.config.ts` through a `node` subprocess (so it needs `node` on `PATH`), and `zfb build` and `zfb dev` stop with an error that names `direct-v8 = off`.
 
-Direct V8 is being qualified, not adopted. An opt-in CI lane (`direct-v8.yml`, run by the `direct-v8` or `direct-v8-rolldown` PR label) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows need a Mac and are not run in CI. Whether direct V8 becomes the default and the `deno_core` host is removed is a separate decision ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
+Known limitations of the direct host:
 
-Rolldown is a separate non-default bundler prototype (`rolldown-prototype` feature). The `direct-v8-rolldown` lane builds it together with direct V8; esbuild stays the bundler of every released binary.
+- Interrupting CPU-bound JavaScript, such as a page stuck in an endless loop, is not supported. The host sets no CPU-time limit and no hard heap limit. When the CLI's threaded host adapter shuts down, it waits up to 10 seconds for its V8 thread and then detaches it; a detached thread is not a clean isolate shutdown.
+- The qualification harness's watchdog drains a killed child's output on a best-effort basis ([#4289](https://github.com/Takazudo/zudo-front-builder/issues/4289)). This limits the evidence harness, not the shipped CLI.
+
+A label-triggered, non-required CI lane (`direct-v8.yml`) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows are run by hand on a Mac. The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
+
+Rolldown is a separate non-default bundler prototype (`rolldown-prototype` feature). The `direct-v8-rolldown` lane builds it together with the direct V8 host; esbuild stays the bundler of the default build.
 
 `zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.

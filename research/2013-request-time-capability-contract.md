@@ -3,6 +3,12 @@
 Status: locked for implementation by issues #2014, #2015, #2016, #2017, #2018, #2019, and #2020
 (epic #2012, superseding #1750 and #1751).
 
+> Note (2026-10-22): this contract was written for the deno_core-backed host in
+> `crates/zfb-render/src/embedded_v8/`. That host was replaced by the direct V8 host in
+> `crates/zfb-js-host` (default since #4390) and removed in #4395. The direct host keeps these
+> decisions (for example D4 in `crates/zfb-js-host/src/fetch.rs`); references below to
+> `deno_core`, `#[op2]` and `embed_v8` describe the original implementation.
+
 This note is the durable decision record for what `fetch` and Web Crypto do inside
 `crates/zfb-render/src/embedded_v8/` once the host can tell **build-time SSG** from **request-time
 SSR**. It is a contract, not a survey: every cell below is a decision an implementer can code
