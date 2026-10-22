@@ -19,8 +19,10 @@
 //! `INSANE_UPDATE_SNAPSHOTS=1`, rewrites) HTML snapshots under
 //! `tests/snapshots/e2e_routing_rendering/`. All routes are SSG.
 //!
-//! The whole file is gated on the `embed_v8` feature: `Backend::EmbeddedV8`
-//! and the thread-pinned host adapter below do not exist on the V8-off path.
+//! The whole file is gated on a JS runtime feature (`direct-v8`, the default,
+//! or the `embed_v8` rollback): `Backend::EmbeddedV8` and the thread-pinned
+//! host adapter below do not exist on the V8-off path. The rendered HTML is
+//! engine-neutral, so both runtimes compare against the same snapshots.
 //!
 //! ## Skip conditions
 //!
@@ -37,7 +39,7 @@
 //! Run with `INSANE_UPDATE_SNAPSHOTS=1` to (re-)write the snapshots.
 //! Without it, the test compares rendered HTML against the stored
 //! snapshots and fails if they differ.
-#![cfg(feature = "embed_v8")]
+#![cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -544,7 +546,8 @@ fn check_rendered_html(pages: &[(String, Vec<u8>)]) {
 //
 // `Backend::EmbeddedV8` needs a `Box<dyn EmbeddedV8Host + Send>`, but
 // `zfb_render::EmbeddedV8RenderHost` is `!Send` — it owns a V8 isolate, which
-// deno_core pins to its creating thread. The production adapter that bridges
+// is pinned to its creating thread (by deno_core under `embed_v8`, by the
+// direct-V8 host's per-thread guard under the default `direct-v8`). The production adapter that bridges
 // this gap (`ThreadedV8Host` in `crates/zfb/src/v8_host_adapter.rs`) lives in
 // the downstream `zfb` bin crate, so depending on it from `zfb-build` would
 // form a dependency cycle (documented in `embedded_v8_snapshot_e2e.rs`).
@@ -563,7 +566,7 @@ mod test_v8_host {
     use std::thread;
 
     use zfb_build::renderer::{EmbeddedV8Host, HttpResponseLike, RendererError};
-    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike};
+    use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
     /// A single SSG GET forwarded to the pinned V8 thread, plus a one-shot
     /// reply channel the thread answers on.
@@ -599,7 +602,7 @@ mod test_v8_host {
                 .name("zfb-build-test-v8-host".into())
                 .spawn(move || {
                     // A current-thread runtime keeps the isolate on this OS
-                    // thread — deno_core's `JsRuntime` must never migrate.
+                    // thread — a V8 isolate must never migrate.
                     let rt = match tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -611,14 +614,16 @@ mod test_v8_host {
                         }
                     };
                     rt.block_on(async move {
+                        #[cfg(feature = "embed_v8")]
                         use zfb_render::RenderHost as _;
-                        let mut host = match EmbeddedV8RenderHost::new() {
-                            Ok(h) => h,
-                            Err(e) => {
-                                let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
-                                return;
-                            }
-                        };
+                        let mut host =
+                            match EmbeddedV8RenderHost::with_loader(BundleModuleLoader::new()) {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
+                                    return;
+                                }
+                            };
                         let src = match std::fs::read_to_string(&bundle_path) {
                             Ok(s) => s,
                             Err(e) => {

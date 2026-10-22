@@ -11,10 +11,7 @@ use crate::fetch::FetchConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
-#[allow(dead_code)]
-#[path = "../../../zfb-render/src/embedded_v8/loopback_test_server.rs"]
-mod loopback;
-use loopback::{ok_response, redirect_response, LoopbackServer};
+use crate::loopback_test_server::{ok_response, redirect_response, LoopbackServer};
 
 // Hang guard only; no assertion depends on elapsed wall-clock time.
 const BOUND: Duration = Duration::from_secs(30);

@@ -12,7 +12,8 @@
 //!    must match. This pins the sort-by-(collection, slug) contract
 //!    documented in `crates/zfb-content/src/content_bridge.rs`.
 //!
-//! 3. **EmbeddedV8 render path** (gated, requires the `embed_v8` feature) — a
+//! 3. **EmbeddedV8 render path** (gated on a JS runtime feature: the default
+//!    `direct-v8` or the `embed_v8` rollback) — a
 //!    bundle built with a real esbuild renders a page that calls
 //!    `getCollection("blog")` and the HTML contains snapshot data.
 //!    Skips gracefully when esbuild is unavailable or pnpm deps are missing.
@@ -22,24 +23,26 @@
 //! The bundler-level tests (groups 1 and 2) do NOT require esbuild or a
 //! running JS runtime — they exercise only the `bundle()` codepath
 //! with `mock_subprocess_output` so they run in CI without any external
-//! binary. The EmbeddedV8 render test (group 3) is gated on the `embed_v8`
-//! feature and skips when esbuild or the pnpm store is unavailable.
+//! binary. The EmbeddedV8 render tests (groups 3–5) are gated on
+//! `any(embed_v8, direct-v8)` — the same engine-neutral assertions run on the
+//! default direct-V8 host and the deno_core rollback — and skip when esbuild
+//! or the pnpm store is unavailable.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use zfb_build::ContentCollectionSpec;
 use zfb_build::{
     bundle, render_all, Backend, BundleManifest, BundleMode, BundlerInput, RendererInput,
     RouteUniverseEntry,
 };
 use zfb_content::{build_snapshot, CollectionConfig};
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use zfb_content::{build_snapshot_with_config, PipelineSpec};
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -64,7 +67,7 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
     blog
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 fn owned_pipeline_spec() -> PipelineSpec {
     PipelineSpec {
         ..PipelineSpec::default()
@@ -371,7 +374,7 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 // Group 3 — EmbeddedV8 render path
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Workspace root (two levels up from `CARGO_MANIFEST_DIR`).
 fn workspace_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -381,7 +384,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Locate a `node_modules/.pnpm/node_modules` directory that contains the
 /// runtime deps (`hono`) the bundle needs.
 ///
@@ -413,7 +416,7 @@ fn locate_pnpm_node_modules() -> Option<PathBuf> {
     None
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Build a custom `node_modules` directory for the test bundle.
 ///
 /// Mirrors `integration_e2e_routing_rendering::make_test_node_modules`:
@@ -474,7 +477,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     Some(tmp)
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Create a minimal fixture project on disk: a `pages/index.tsx` that
 /// reads from a `blog` content collection via `getCollection("blog")` and
 /// renders post titles plus the first post's `Content` component, plus a
@@ -588,13 +591,14 @@ export default function HomePage({ posts }: Props) {
 /// the host directly here gives the same proof with no extra wiring.
 ///
 /// Skips with an `eprintln!` when esbuild is unavailable (mirroring
-/// `integration_e2e_routing_rendering`). Gated on the `embed_v8`
-/// feature; off by default builds drop this test entirely (same
-/// pattern as `crates/zfb-render/tests/embedded_v8_*.rs`).
-#[cfg(feature = "embed_v8")]
+/// `integration_e2e_routing_rendering`). Gated on `any(embed_v8,
+/// direct-v8)`; only the V8-off (`--no-default-features`) build drops it.
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[tokio::test]
 async fn embedded_v8_renders_page_with_snapshot_data() {
-    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+    #[cfg(feature = "embed_v8")]
+    use zfb_render::RenderHost as _;
+    use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -709,7 +713,8 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
     );
 
     // --- Dispatch through the embedded V8 host ---
-    let mut host = EmbeddedV8RenderHost::new().expect("EmbeddedV8RenderHost boot");
+    let mut host = EmbeddedV8RenderHost::with_loader(BundleModuleLoader::new())
+        .expect("EmbeddedV8RenderHost boot");
     host.execute_module("bundle.mjs", &bundle_source)
         .await
         .unwrap_or_else(|e| panic!("bundle failed to load in V8 host: {e}"));
@@ -804,12 +809,14 @@ fn write_md_html_page_fixture(root: &Path) {
 ///   body would be raw markdown / a `<pre>` fallback, and both substrings
 ///   would be absent.
 ///
-/// Gated on `#[cfg(feature = "embed_v8")]` (same as the rest of this group).
+/// Gated on `any(embed_v8, direct-v8)` (same as the rest of this group).
 /// Skips when esbuild is unavailable or pnpm runtime deps are missing.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[tokio::test]
 async fn embedded_v8_md_page_renders_to_html() {
-    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+    #[cfg(feature = "embed_v8")]
+    use zfb_render::RenderHost as _;
+    use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -889,7 +896,8 @@ async fn embedded_v8_md_page_renders_to_html() {
     );
 
     // Dispatch via the embedded V8 host.
-    let mut host = EmbeddedV8RenderHost::new().expect("EmbeddedV8RenderHost boot");
+    let mut host = EmbeddedV8RenderHost::with_loader(BundleModuleLoader::new())
+        .expect("EmbeddedV8RenderHost boot");
     host.execute_module("bundle.mjs", &bundle_source)
         .await
         .unwrap_or_else(|e| panic!("bundle failed to load in V8 host: {e}"));
@@ -1023,7 +1031,7 @@ fn html_page_written_verbatim_via_render_all() {
 // Group 5 — `paths()` worker dispatch over a dual-`zfb/content` instance bundle
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Build a `node_modules` directory that mimics the pnpm-strict layout
 /// real consumers ship: `@takazudo/zfb` is reachable via TWO physical
 /// paths so esbuild + `--preserve-symlinks` will end up inlining
@@ -1154,7 +1162,7 @@ fn make_dual_zfb_node_modules() -> Option<tempfile::TempDir> {
     Some(tmp)
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Recursive directory copy (regular files + symlinks). We need a real
 /// copy of zfb-runtime so we can attach a private `node_modules/` inside
 /// it without contaminating the workspace package.
@@ -1180,7 +1188,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 /// Write a fixture project that has a dynamic route `[slug].tsx` whose
 /// `paths()` calls `getCollection("blog")`. The synthetic
 /// `/__paths__/<encoded-route-key>` endpoint should return the resolved
@@ -1252,10 +1260,12 @@ export default function PostPage({ title, params }: Props) {
 /// `globalThis.__zfb.contentSnapshot` slot, the user `paths()`
 /// returns the expected array, and the `/__paths__/` endpoint returns
 /// 200 + a JSON list with the two slugs.
-#[cfg(feature = "embed_v8")]
+#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
 #[tokio::test]
 async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
-    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+    #[cfg(feature = "embed_v8")]
+    use zfb_render::RenderHost as _;
+    use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -1355,7 +1365,8 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
 
     // Boot the embedded V8 host with the bundle and dispatch the
     // synthetic `/__paths__/<encoded-route-key>` endpoint.
-    let mut host = EmbeddedV8RenderHost::new().expect("EmbeddedV8RenderHost boot");
+    let mut host = EmbeddedV8RenderHost::with_loader(BundleModuleLoader::new())
+        .expect("EmbeddedV8RenderHost boot");
     host.execute_module("bundle.mjs", &bundle_source)
         .await
         .unwrap_or_else(|e| panic!("bundle failed to load in V8 host: {e}"));
