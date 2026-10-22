@@ -20,10 +20,11 @@ publish = false
 # false` on `zfb-render` keeps the toggle decided in exactly one place per
 # consumer (mirrors `zfb-server` / `zfb-build`).
 [features]
-# Internal build-time opt-in; the default remains Deno-backed embed_v8.
+# Default JS runtime (#4390). embed_v8 stays an opt-in rollback; with both
+# features enabled the Deno facade wins.
 direct-v8 = ["zfb-render/direct-v8"]
 
-default = ["embed_v8"]
+default = ["direct-v8"]
 embed_v8 = ["zfb-render/embed_v8"]
 
 [dependencies]

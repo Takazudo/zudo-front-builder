@@ -21,11 +21,12 @@ description = "zfb build orchestrator: ties watcher + dependency graph + render/
 # V8-off path do so explicitly via `--no-default-features` at the top
 # level — see `crates/zfb/Cargo.toml` for the matching seam.
 [features]
-# Internal build-time opt-in; the default remains Deno-backed embed_v8.
+# Default JS runtime (#4390). embed_v8 stays an opt-in rollback; with both
+# features enabled the Deno facade wins.
 direct-v8 = ["zfb-render/direct-v8"]
 
 rolldown-prototype = ["dep:zfb-rolldown-prototype", "zfb-rolldown-prototype/native"]
-default = ["embed_v8"]
+default = ["direct-v8"]
 embed_v8 = ["zfb-render/embed_v8"]
 
 [dependencies]
@@ -41,7 +42,7 @@ zfb-content = { path = "../zfb-content" }
 #
 # `default-features = false` so this crate controls V8 inclusion via the
 # pass-through `embed_v8` feature above instead of silently inheriting
-# `zfb-render`'s default = ["embed_v8"].
+# `zfb-render`'s default = ["direct-v8"].
 zfb-render = { path = "../zfb-render", default-features = false }
 # Shared stable-URL constants for the production asset graph
 # (`STABLE_CSS_URL`, `STABLE_ISLANDS_URL`, …). The renderer's prod-head
