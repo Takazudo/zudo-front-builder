@@ -1404,11 +1404,12 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
+    // The v4.7.0 release bump cites the #4417 Rolldown contract at its probe head.
     file: "decision-linux-x64.json",
-    commit: "ce795d6112962427794c8d17eddc0e4b283828fa",
-    sha256: "15b2fe05272b7a6ae8afca95d95d055444fe39b2f5b225fea5d42cd4d3065064",
-    fixture: "fixtures/island-size-linux-x64-v4.6.0-deno-exit.json",
-    outcome: "cargo-removal-transition",
+    commit: "9f2a25a6354f564ba54fbf1d7f37b02ed2a8ef48",
+    sha256: "6ced75c96736805e0fb5b58adb39f4f72298c48086fce8e6c16d7372a73bfe79",
+    fixture: "fixtures/island-size-linux-x64-v4.6.0-rolldown.json",
+    outcome: "rolldown-ceiling-transition",
     packageVersion: "4.6.0",
     baselineSourceSha: "9e48145db73f95fc5a83140465d85c136e504602",
     baselineRunId: 39739634110,
@@ -2277,12 +2278,89 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(rest(live)).toEqual(rest(predecessor));
   };
 
-  it("moves the live Linux contract from the frozen Deno-exit bytes only by the #4417 Rolldown re-pin", () => {
+  // Verbatim bytes of decision-linux-x64.json at fb4c7335 (#4417), the Rolldown
+  // state the v4.7.0 release bump moved.
+  const linuxRolldown = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v4.6.0-rolldown.json",
+      "6ced75c96736805e0fb5b58adb39f4f72298c48086fce8e6c16d7372a73bfe79",
+    );
+
+  it("moves the frozen Rolldown Linux contract from the frozen Deno-exit bytes only by the #4417 Rolldown re-pin", () => {
     rolldownNormalizerV2(
       linuxDenoExit(),
-      JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8")),
+      linuxRolldown(),
       "9b518ab3aa1cf354c6a0c153ff2a954381bb26ce",
     );
+  });
+
+  it("moves the live Linux contract from the frozen Rolldown bytes only by the v4.7.0 release bump", () => {
+    const predecessor = linuxRolldown();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("4.7.0");
+    expect(live.baselineSourceSha).toBe("9f2a25a6354f564ba54fbf1d7f37b02ed2a8ef48");
+    expect(live.baselineEvidence).toMatchObject({
+      runId: 39823049816,
+      jobId: 119979113674,
+      sourceSha: "1102644f1d611f2ef80a57ad590262ee51bf9fcc",
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The v4.7.0 pnpm-lock.yaml the release probe measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "3f64bb1a06fd4357a7e0498b673964a9f052a8124f039ee413a7fdd3113dc1f1",
+    );
+    // The cited probe head 9f2a25a6 is off main; the same blob entered main at
+    // fb4c7335, so a full checkout anchors the citation there.
+    const mainlineCommit = "fb4c73351247b32adef8db11062a9c5cf1dc05a1";
+    let mainlineAvailable = false;
+    try {
+      execFileSync("git", ["cat-file", "-e", mainlineCommit + "^{commit}"], {
+        cwd: repoRoot,
+        stdio: "ignore",
+      });
+      mainlineAvailable = true;
+    } catch {
+      // Shallow checkout: the frozen fixture digest above remains mandatory.
+    }
+    if (mainlineAvailable) {
+      execFileSync("git", ["merge-base", "--is-ancestor", mainlineCommit, "HEAD"], {
+        cwd: repoRoot,
+        stdio: "ignore",
+      });
+      const blob = execFileSync(
+        "git",
+        ["show", mainlineCommit + ":research/v3-island-size/decision-linux-x64.json"],
+        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
+      );
+      expect(sha(blob)).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
+      expect(
+        previousDistinctContractSha256("research/v3-island-size/decision-linux-x64.json"),
+      ).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
+    }
+    // actualGzip is transfer-size evidence that a version stamp may move, so only
+    // its fixture coverage is pinned, not its values.
+    const gzipShape = (contract) =>
+      Object.fromEntries(
+        Object.entries(contract.baselineEvidence.actualGzip).map(([mode, rows]) => [
+          mode,
+          Object.keys(rows).sort(),
+        ]),
+      );
+    expect(gzipShape(live)).toEqual(gzipShape(predecessor));
+    // A release bump moves only the version stamp, its lockfile provenance and the evidence.
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"]) {
+        delete copy[key];
+      }
+      copy.toolchain.packageVersion = null;
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(predecessor));
   });
 
   it("moves the live Darwin contract from the frozen Deno-exit bytes only by the #4417 Rolldown re-pin", () => {
