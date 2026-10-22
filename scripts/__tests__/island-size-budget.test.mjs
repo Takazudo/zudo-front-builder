@@ -1963,6 +1963,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
         });
         expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
         const { baselineSourceSha, ...identity } = evidence;
+        expect(live.baselineSourceSha).toBe(baselineSourceSha);
         expect(live.baselineEvidence).toMatchObject(identity);
         if (repinnedFrom) expect(live.baselineEvidence.repinnedFrom).toEqual(repinnedFrom);
         expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
