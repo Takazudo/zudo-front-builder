@@ -18,5 +18,5 @@ pub mod modules;
 pub mod native;
 pub mod shims;
 
-#[cfg(feature = "v8-platform")]
+#[cfg(feature = "direct-v8")]
 pub mod process;

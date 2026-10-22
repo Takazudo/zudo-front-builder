@@ -83,7 +83,7 @@ use zfb_types::{normalize_path_lexical, path_to_posix_string};
 /// Re-exported so consumers of [`EmbeddedV8Host`] can name the
 /// per-dispatch mode without depending on `zfb-render` directly.
 /// Deliberately from `zfb_render`'s ungated `dispatch_mode` module — the
-/// trait below is compiled with and without the `embed_v8` feature.
+/// trait below is compiled with and without the `direct-v8` feature.
 pub use zfb_render::DispatchMode;
 
 // ---------------------------------------------------------------------------
@@ -314,11 +314,11 @@ pub enum Backend {
     /// keeps `Backend` cheaply clone-able even though the factory is
     /// a closure.
     ///
-    /// Compiled in only when the `embed_v8` cargo feature is on
+    /// Compiled in only when the `direct-v8` cargo feature is on
     /// (issue #371, sub-task 4.1a). On the V8-off path the variant
     /// is absent and callers that want SSR/SSG dispatch must use the
     /// `Existing` or `Stub` backends instead.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     EmbeddedV8 { host_factory: EmbeddedV8HostFactory },
     /// In-process stub handler for unit tests.
     ///
@@ -340,7 +340,7 @@ impl std::fmt::Debug for Backend {
             Backend::Existing { base_url } => {
                 write!(f, "Backend::Existing {{ base_url: {base_url:?} }}")
             }
-            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+            #[cfg(feature = "direct-v8")]
             Backend::EmbeddedV8 { .. } => write!(f, "Backend::EmbeddedV8 {{ .. }}"),
             Backend::Stub { .. } => write!(f, "Backend::Stub {{ .. }}"),
         }
@@ -387,8 +387,8 @@ enum BackendHandle {
     /// `terminate()` calls `guard.terminate()` which drops the host (and
     /// thus the V8 isolate) synchronously.
     ///
-    /// Gated behind `embed_v8` (issue #371, sub-task 4.1a).
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    /// Gated behind `direct-v8` (issue #371, sub-task 4.1a).
+    #[cfg(feature = "direct-v8")]
     EmbeddedV8 { guard: EmbeddedV8Guard },
     /// Unit-test stub: answers requests with a closure.
     Stub {
@@ -439,7 +439,7 @@ impl BackendHandle {
                     body,
                 })
             }
-            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+            #[cfg(feature = "direct-v8")]
             BackendHandle::EmbeddedV8 { guard } => {
                 let host = guard
                     .host
@@ -454,7 +454,7 @@ impl BackendHandle {
     fn collect_logs(&mut self) -> String {
         match self {
             BackendHandle::Http { .. } => String::new(),
-            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+            #[cfg(feature = "direct-v8")]
             BackendHandle::EmbeddedV8 { guard } => guard.collect_logs(),
             BackendHandle::Stub { .. } => String::new(),
         }
@@ -463,7 +463,7 @@ impl BackendHandle {
     fn terminate(&mut self) {
         match self {
             BackendHandle::Http { .. } => {}
-            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+            #[cfg(feature = "direct-v8")]
             BackendHandle::EmbeddedV8 { guard } => guard.terminate(),
             BackendHandle::Stub { .. } => {}
         }
@@ -932,7 +932,7 @@ impl std::fmt::Debug for BackendHandle {
             BackendHandle::Http { base_url, .. } => {
                 write!(f, "BackendHandle::Http {{ base_url: {base_url:?} }}")
             }
-            #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+            #[cfg(feature = "direct-v8")]
             BackendHandle::EmbeddedV8 { .. } => write!(f, "BackendHandle::EmbeddedV8 {{ .. }}"),
             BackendHandle::Stub { .. } => write!(f, "BackendHandle::Stub {{ .. }}"),
         }
@@ -959,7 +959,7 @@ impl RendererState {
     /// it is `Http` or `Stub`), or when the host has already been
     /// terminated via [`shutdown`].
     ///
-    /// Gated behind `embed_v8` (issue #371, sub-task 4.1a). When the
+    /// Gated behind `direct-v8` (issue #371, sub-task 4.1a). When the
     /// feature is off the embedded V8 backend is unavailable and this
     /// accessor does not exist.
     ///
@@ -970,7 +970,7 @@ impl RendererState {
     /// dev-mode page render. Callers that dispatch heavily outside
     /// `render_one` can call
     /// [`EmbeddedV8Host::drain_console_logs`] themselves.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     pub fn embedded_v8_host_mut(&mut self) -> Option<&mut dyn EmbeddedV8Host> {
         match &mut self.handle {
             BackendHandle::EmbeddedV8 { guard } => guard
@@ -1364,14 +1364,14 @@ fn join_url(base: &str, path: &str) -> String {
 /// `terminate()` is idempotent — calling it after the host has already
 /// been taken out is a no-op.
 ///
-/// Gated behind `embed_v8` (issue #371, sub-task 4.1a) — when V8 is off
+/// Gated behind `direct-v8` (issue #371, sub-task 4.1a) — when V8 is off
 /// there is no isolate to guard.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 struct EmbeddedV8Guard {
     host: Option<Box<dyn EmbeddedV8Host>>,
 }
 
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 impl EmbeddedV8Guard {
     fn new(host: Box<dyn EmbeddedV8Host>) -> Self {
         Self { host: Some(host) }
@@ -1397,7 +1397,7 @@ impl EmbeddedV8Guard {
     }
 }
 
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 impl Drop for EmbeddedV8Guard {
     fn drop(&mut self) {
         self.terminate();
@@ -1411,11 +1411,7 @@ impl Drop for EmbeddedV8Guard {
 /// in-process V8 host. For `Stub` it simply wraps the closure.
 fn launch(
     backend: &Backend,
-    #[cfg_attr(
-        not(any(feature = "embed_v8", feature = "direct-v8")),
-        allow(unused_variables)
-    )]
-    bundle_path: &Path,
+    #[cfg_attr(not(feature = "direct-v8"), allow(unused_variables))] bundle_path: &Path,
     timeout: Duration,
 ) -> Result<BackendHandle, RendererError> {
     match backend {
@@ -1426,7 +1422,7 @@ fn launch(
                 client,
             })
         }
-        #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+        #[cfg(feature = "direct-v8")]
         Backend::EmbeddedV8 { host_factory } => {
             // Resolve the bundle path to an absolute path before calling
             // the factory, so the factory impl never needs to handle
@@ -2128,8 +2124,8 @@ mod tests {
     /// [`render_all`] never fired for the production backend. These
     /// tests pin the wiring with an in-process `EmbeddedV8Host` double
     /// — the real console capture inside the V8 isolate is covered by
-    /// `zfb-render/tests/embedded_v8_console_logs.rs`.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    /// `zfb-render/tests/direct_v8_console_logs.rs`.
+    #[cfg(feature = "direct-v8")]
     mod embedded_v8_console_logs {
         use super::*;
         use std::sync::atomic::{AtomicBool, Ordering};

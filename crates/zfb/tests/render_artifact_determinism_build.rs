@@ -58,7 +58,7 @@ fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
 /// `true` when the non-zero build is a known-skip (no embedded V8 / no
 /// esbuild).
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8") || combined.contains("no esbuild")
+    combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
 /// Recursively collect every regular file under `dir` into a

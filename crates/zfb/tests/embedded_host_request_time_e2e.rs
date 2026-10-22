@@ -52,8 +52,8 @@
 //! itself cannot run at all, e.g. the channel is closed or the runtime
 //! is shutting down — `FetchError::HostUnavailable`). The latter is only
 //! reachable by removing the fetch extension from the runtime entirely
-//! (already unit-tested inside `zfb-render`, e.g.
-//! `crates/zfb-render/src/embedded_v8/fetch.rs`'s own tests) — there is
+//! (already unit-tested inside `zfb-js-host`, e.g.
+//! `crates/zfb-js-host/src/fetch/tests.rs`) — there is
 //! no way to force that state from outside a running `zfb dev` process.
 //! Case 3 here exercises the deterministic, e2e-reachable neighbour:
 //! a real connection refusal, which is still a genuine HOST-SIDE
@@ -81,7 +81,7 @@
 //! NOT `#[ignore]`d — like `wasm_ssr_dev_smoke_e2e.rs`, this test
 //! self-skips at runtime when esbuild is unavailable
 //! (`locate_esbuild()` returns `None`) or when `zfb dev`/`zfb build`
-//! exits with a known environment-gate indicator (`embed_v8` cfg off,
+//! exits with a known environment-gate indicator (`direct-v8` cfg off,
 //! "no esbuild"). It spawns a real `zfb dev` AND a real `zfb build`, so
 //! it joins the flock-adopting bucket of `.config/nextest.toml`'s
 //! `e2e-heavy` test-group (see that file and crates/CLAUDE.md's nextest
@@ -357,13 +357,13 @@ fn spawn_dev(root: &Path, esbuild: &Path) -> DevSession {
 }
 
 /// Boot `zfb dev` and return its ephemeral port, or `None` if it exited
-/// with a known environment-gate indicator (no esbuild / no `embed_v8`).
+/// with a known environment-gate indicator (no esbuild / no `direct-v8`).
 async fn boot_dev_or_skip(session: &mut DevSession) -> Option<u16> {
     let boot_start = Instant::now();
     loop {
         if let Some(status) = session.guard.try_exit_status() {
             let combined = session.logs();
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[embedded_host_request_time_e2e] `zfb dev` exited with a known \
                      environment gate; skipping.\n{combined}",
@@ -770,7 +770,7 @@ async fn build_still_denies_network_at_ssg_time() {
     let combined = format!("{stdout}{stderr}");
 
     if !output.status.success()
-        && (combined.contains("embed_v8") || combined.contains("no esbuild"))
+        && (combined.contains("direct-v8 = off") || combined.contains("no esbuild"))
     {
         eprintln!(
             "[embedded_host_request_time_e2e] `zfb build` exited with a known \

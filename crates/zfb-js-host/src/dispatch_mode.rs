@@ -18,7 +18,7 @@
 //! too, so `zfb_render::embedded_v8::dispatch::DispatchMode` resolves).
 //! The enum itself has to sit in an **ungated** module because
 //! `zfb_build::renderer::EmbeddedV8Host` — which grows the mode-bearing
-//! entry point — is compiled with or without the `embed_v8` feature,
+//! entry point — is compiled with or without the `direct-v8` feature,
 //! while `embedded_v8` exists only when the feature is on. Defining it
 //! under the gate would break `cargo check --no-default-features -p zfb
 //! --tests`.

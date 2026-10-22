@@ -423,7 +423,7 @@ async fn boot_and_wait_ready(session: &mut DevSession) -> Option<(String, reqwes
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[plugin_watch_hook_confirm_2170_e2e] `zfb dev` exited with a known-skip \
                      indicator (V8/esbuild unavailable); skipping test.\n{}",

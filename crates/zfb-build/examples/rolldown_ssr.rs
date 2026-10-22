@@ -1,23 +1,13 @@
-//! #318 L3 runtime probe. Run with rolldown-prototype on a V8 build: the default
-//! direct-v8 host, or the embed_v8 rollback (`--no-default-features --features embed_v8,...`).
-#[cfg(all(
-    any(feature = "embed_v8", feature = "direct-v8"),
-    feature = "rolldown-prototype"
-))]
+//! #318 L3 runtime probe. Run with rolldown-prototype on the default direct-v8 build.
+#[cfg(all(feature = "direct-v8", feature = "rolldown-prototype"))]
 fn main() -> anyhow::Result<()> {
     probe::run()
 }
-#[cfg(not(all(
-    any(feature = "embed_v8", feature = "direct-v8"),
-    feature = "rolldown-prototype"
-)))]
+#[cfg(not(all(feature = "direct-v8", feature = "rolldown-prototype")))]
 fn main() {
-    panic!("requires rolldown-prototype and a V8 host (direct-v8 default or embed_v8)");
+    panic!("requires rolldown-prototype and the direct-v8 host");
 }
-#[cfg(all(
-    any(feature = "embed_v8", feature = "direct-v8"),
-    feature = "rolldown-prototype"
-))]
+#[cfg(all(feature = "direct-v8", feature = "rolldown-prototype"))]
 mod probe {
     use anyhow::{ensure, Result};
     use std::{
@@ -25,8 +15,6 @@ mod probe {
         time::Instant,
     };
     use zfb_build::{bundle, BundleMode, BundlerInput};
-    #[cfg(feature = "embed_v8")]
-    use zfb_render::RenderHost as _;
     use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
     fn input(root: &Path, backend: &str) -> BundlerInput {
         let mut input = BundlerInput::for_project(

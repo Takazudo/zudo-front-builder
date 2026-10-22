@@ -422,7 +422,7 @@ async fn dev_e2e_static_injected_route_renders() {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[injected_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -717,7 +717,7 @@ async fn dev_e2e_package_route_island_with_no_host_importer_reaches_islands_bund
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[islands_seed_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -975,7 +975,7 @@ async fn dev_e2e_package_route_only_utility_class_reaches_dev_css() {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[package_css_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -1202,7 +1202,7 @@ async fn dev_e2e_virtual_module_only_import_reaches_islands_bundle() {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[vmodule_islands_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -1506,7 +1506,7 @@ async fn dev_e2e_dynamic_injected_route_renders() {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[dynamic_injected_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -1957,7 +1957,7 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[hmr_injected_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -2286,7 +2286,7 @@ async fn dev_e2e_trailing_slash_parity() {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[trailing_slash_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -2542,7 +2542,7 @@ async fn run_root_injecting_dev_case(with_user_index: bool) {
                     read_log(&session.stdout_path),
                     read_log(&session.stderr_path)
                 );
-                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                     eprintln!(
                         "[injected_root_e2e] `zfb dev` exited with a known-skip indicator; \
                          skipping.\n{}",
@@ -2882,7 +2882,7 @@ fn run_zero_pages_build(root: &Path, esbuild: &Path) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}\n{stderr}");
-    if combined.contains("embed_v8") || combined.contains("no esbuild") {
+    if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
         eprintln!(
             "[zero_pages_e2e] `zfb build` exited with a known-skip indicator; skipping.\n{combined}"
         );
@@ -2952,7 +2952,7 @@ async fn dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes() {
                         read_log(&session.stdout_path),
                         read_log(&session.stderr_path)
                     );
-                    if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                         eprintln!(
                             "[zero_pages_e2e] `zfb dev` exited with a known-skip indicator; \
                              skipping.\n{}",

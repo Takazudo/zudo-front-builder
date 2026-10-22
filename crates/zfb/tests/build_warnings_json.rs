@@ -20,7 +20,7 @@ fn build(root: &Path, args: &[&str]) -> Option<Output> {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && stderr.contains("embed_v8") {
+    if !output.status.success() && stderr.contains("direct-v8 = off") {
         return None;
     }
     Some(output)

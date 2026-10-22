@@ -27,7 +27,7 @@
 //! never dispatches events, and pinning behaviour we don't intend
 //! to support would make future expansion harder.
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
 

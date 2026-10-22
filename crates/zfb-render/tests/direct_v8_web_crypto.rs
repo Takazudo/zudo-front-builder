@@ -20,7 +20,7 @@
 //! known-answer digests) and wiring (the entropy callback is genuinely
 //! invoked; `OS_ENTROPY_CALLS` is a process-wide lower bound).
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;

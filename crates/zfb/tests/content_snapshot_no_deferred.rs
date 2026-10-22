@@ -27,7 +27,7 @@
 //! ## Skip behaviour
 //!
 //! The test requires the embedded esbuild and V8 runtime. These are present in
-//! the default feature set (`embed_v8` is in `[features] default`). The test
+//! the default feature set (`direct-v8` is in `[features] default`). The test
 //! guards against a missing binary via the same skip pattern used elsewhere —
 //! it checks for a non-success exit and a recognisable error message, and skips
 //! gracefully with `eprintln!` rather than panicking.
@@ -76,9 +76,9 @@ fn getstaticprops_collection_appears_in_rendered_html() {
     );
 
     // Skip gracefully when the embedded runtime is unavailable (e.g. build
-    // was done without the embed_v8 feature, or in a stripped CI image).
+    // was done without the direct-v8 feature, or in a stripped CI image).
     if !output.status.success() {
-        if combined.contains("embed_v8") || combined.contains("no esbuild") {
+        if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
             eprintln!(
                 "[content_snapshot_no_deferred] zfb build exited non-zero with \
                  a known-skip indicator; skipping test.\n\
@@ -147,7 +147,9 @@ fn build_timing_opt_in_reports_snapshot_and_bundler_phase_starts() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    if !output.status.success() && (stderr.contains("embed_v8") || stderr.contains("no esbuild")) {
+    if !output.status.success()
+        && (stderr.contains("direct-v8 = off") || stderr.contains("no esbuild"))
+    {
         eprintln!(
             "[content_snapshot_no_deferred] timed zfb build exited non-zero with \
              a known-skip indicator; skipping test.\nstdout: {stdout}\nstderr: {stderr}"

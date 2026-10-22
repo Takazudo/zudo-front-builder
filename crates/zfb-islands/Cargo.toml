@@ -56,10 +56,10 @@ zfb-plugin-resolver = { path = "../zfb-plugin-resolver" }
 # orchestration (`zfb` wiring `zfb-build` + `zfb-islands` together) is
 # unaffected.
 #
-# `default-features = false`: `zfb-build`'s own `default = ["embed_v8"]`
-# would otherwise silently drag `deno_core`/V8 into this crate's
+# `default-features = false`: `zfb-build`'s own `default = ["direct-v8"]`
+# would otherwise silently drag V8 into this crate's
 # dependency surface. `metafile_deps` (the only module used here) is a
-# pure/no-`cfg` module, so it compiles fine without `embed_v8` — this
+# pure/no-`cfg` module, so it compiles fine without `direct-v8` — this
 # keeps zfb-islands the "light, no V8" crate the test strategy relies on
 # (see CLAUDE.md's Testing section).
 zfb-build = { path = "../zfb-build", default-features = false }

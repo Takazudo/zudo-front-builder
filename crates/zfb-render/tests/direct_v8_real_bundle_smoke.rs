@@ -39,7 +39,7 @@
 //! deterministically (probably from a workspace-relative path under
 //! `target/zfb-test-fixtures/`) instead of via env var.
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use std::path::PathBuf;
 use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};

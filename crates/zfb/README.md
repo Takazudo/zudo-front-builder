@@ -161,28 +161,20 @@ TypeScript wins over JSON when both files are present.
 `prerender = false` routes, while `Static` and `Hybrid` are explicit
 precondition choices.
 
-### `embed_v8` feature flag
+### `direct-v8` feature flag
 
-`embed_v8` propagates to `zfb-render`, `zfb-build`, `zfb-server`, and
-`zfb-config-loader`. It compiles in `deno_core` / V8 for in-process
-TS-config evaluation and SSR dispatch. Since #4390 it is not a default
-feature: it is the source-build rollback
-(`--no-default-features --features embed_v8`) until Gate B removes it.
+The default `direct-v8` feature propagates to `zfb-render`, `zfb-build`,
+`zfb-server`, and `zfb-config-loader` and selects the direct V8 host from
+`zfb-js-host` (the pinned `v8` crate; the ICU data is vendored in
+`zfb-js-host`) for in-process TS-config evaluation and SSR dispatch; see
+[`prototypes/direct-v8/CLI.md`](../../prototypes/direct-v8/CLI.md). With it,
+`main` initializes V8 on the main thread before it starts the Tokio runtime.
+The former deno_core host and its `embed_v8` rollback were removed in #4395.
 
 `cargo build --no-default-features -p zfb` produces the slim build. In that
 mode, TS config evaluation falls back to a `node` subprocess and SSR-required
 paths fail loudly. The V8-bearing adapter modules gated in this crate are
 `lazy_render_adapter`, `ssr_adapter`, and `v8_host_adapter`.
-
-### `direct-v8` feature flag
-
-The default `direct-v8` feature propagates the same way and selects the
-direct V8 host from `zfb-js-host` (the `v8` crate without `deno_core`; the
-ICU data is vendored in `zfb-js-host`); see
-[`prototypes/direct-v8/CLI.md`](../../prototypes/direct-v8/CLI.md). When both
-features are on, the `deno_core` host is used. V8-gated code in this crate is
-compiled when either feature is on. With either feature, `main` initializes
-V8 on the main thread before it starts the Tokio runtime.
 
 ## Public library surface
 

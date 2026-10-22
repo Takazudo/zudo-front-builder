@@ -24,7 +24,7 @@
 //! `zfb-js-host/src/native/services_tests.rs`
 //! (`immediate_response_abort_closes_mid_body_socket_while_host_stays_alive`).
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use std::rc::Rc;
 use std::sync::Arc;

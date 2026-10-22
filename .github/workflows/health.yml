@@ -1118,9 +1118,8 @@ jobs:
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
-  # Without this job the V8 runtime feature gates (the default
-  # `direct-v8`, and the `embed_v8` rollback covered by
-  # `rollback (embed_v8)` below) can rot silently — a missing gate on a
+  # Without this job the `direct-v8` runtime feature gate can rot
+  # silently — a missing gate on a
   # new V8 reference would still pass the V8-on health job above,
   # leaving the V8-off path broken until a downstream consumer notices.
   #
@@ -1211,102 +1210,6 @@ jobs:
 
       - name: cargo test (zfb --no-default-features --lib)
         run: cargo test --no-default-features -p zfb --lib
-
-  # embed_v8 rollback lane (#4391). Since #4390 the default JS runtime is
-  # direct-v8, so the `health` job no longer builds or tests the deno_core
-  # host. `embed_v8` stays the source-build rollback
-  # (`--no-default-features --features embed_v8`) until Gate B removes it;
-  # this job keeps that rollback compiling, lint-clean and executing its
-  # own tests: the seven zfb-render `tests/embedded_v8_*` files, the
-  # `src/embedded_v8/**` unit tests, and the zfb-build e2e binaries on the
-  # deno_core host (since #4394 they also run on direct-v8 in `health`).
-  #
-  # NOT required: keep it out of ruleset 18452968 (scripts/apply-main-ruleset.sh).
-  # A red run still needs manager triage like any other check.
-  rollback-embed-v8:
-    name: rollback (embed_v8)
-    # Same docs-only skip as `health` (#4372).
-    needs: changed-files
-    if: ${{ !cancelled() && needs.changed-files.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
-    # Scoped to three packages (not `--workspace --all-targets` like
-    # `health`'s 90-minute budget), but a cold cache still pays the V8 link
-    # plus two feature sets (build/test and clippy's check build).
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
-        with:
-          # Own key: the embed_v8 feature set does not share rmeta with the
-          # default (direct-v8) `health` tree or the no-v8 tree.
-          prefix-key: "v2-zfb-embed-v8"
-
-      # Staged-binaries cache (issue 2385) — same step and key as the
-      # `health` job; see that step's comment for the rationale.
-      - name: Cache staged esbuild binary (issue 2385)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          path: |
-            crates/zfb/binaries/esbuild/esbuild
-          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
-
-      # crates/zfb/build.rs embeds Hono from node_modules/.pnpm, and the
-      # zfb-build e2e tests below resolve their bundle inputs from the pnpm
-      # store.
-      - run: pnpm install --frozen-lockfile
-
-      # Also runs crates/zfb/build.rs, which SHA-verifies and stages esbuild
-      # into crates/zfb/binaries/esbuild/esbuild for the tests below.
-      - name: cargo build (zfb, embed_v8)
-        run: cargo build --locked -p zfb --no-default-features --features embed_v8
-
-      - name: cargo clippy (zfb, zfb-render, zfb-build, embed_v8)
-        run: cargo clippy --locked -p zfb -p zfb-render -p zfb-build --no-default-features --features embed_v8 --all-targets -- -D warnings
-
-      # Same guard as `health` (issue #638): the zfb-build e2e tests return
-      # early (a cargo PASS) without esbuild, so fail if it is not staged.
-      - name: Assert esbuild binary was provisioned for the test suite
-        run: |
-          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
-          if [ ! -x "$ESBUILD_SLOT" ]; then
-            echo "::error::$ESBUILD_SLOT not staged — the env-gated tests would silently skip (issue #638). Failing the job instead."
-            exit 1
-          fi
-          "$ESBUILD_SLOT" --version
-
-      # `syntect-onig`: syntect needs one regex backend and
-      # --no-default-features drops zfb-render's native default.
-      - name: cargo test (zfb-render, embed_v8)
-        run: cargo test --locked -p zfb-render --no-default-features --features embed_v8,syntect-onig
-
-      # The deno-backed config evaluator and zfb's `v8_host_adapter` only run
-      # through the deno_core host when `direct-v8` is off.
-      - name: cargo test (zfb-config-loader, zfb lib, embed_v8)
-        run: |
-          cargo test --locked -p zfb-config-loader --no-default-features --features embed_v8
-          cargo test --locked -p zfb --no-default-features --features embed_v8 --lib
-
-      - name: cargo test (zfb-build embed_v8 e2e)
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: >-
-          cargo test --locked -p zfb-build --no-default-features --features embed_v8
-          --test embedded_v8_snapshot_e2e
-          --test integration_e2e_routing_rendering
-          --test migration_fixes_integration_confirm
 
   # @takazudo/zfb-md-wasm CI (epic #2446, issue #2454): every supported
   # capability surface is checked on wasm32 and natively where applicable,

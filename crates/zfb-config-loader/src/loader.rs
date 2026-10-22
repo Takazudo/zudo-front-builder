@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 // tokio::process::Command is used on both paths:
-//   - default (embed_v8): esbuild spawn in load_ts_via_inprocess_v8
-//   - slim (no embed_v8): esbuild + node spawns in load_ts_via_subprocess
+//   - default (direct-v8): esbuild spawn in load_ts_via_inprocess_v8
+//   - slim (no direct-v8): esbuild + node spawns in load_ts_via_subprocess
 use tokio::process::Command;
 
 // Only the in-process V8 path resolves plugins in Rust (the slim subprocess
 // path resolves them inside config-loader.mjs), so this import is gated to
 // the same feature as `resolve_plugins_from_value`.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 use crate::node_resolve::resolve_node_bare_specifier;
 
 /// JS payload run by `node` to dynamic-import the bundled config and emit
@@ -27,9 +27,9 @@ use crate::node_resolve::resolve_node_bare_specifier;
 /// don't have to ship a sidecar file at runtime.
 ///
 /// Slim-build-only: staged into a tempdir and evaluated by the `node`
-/// subprocess in [`load_ts_via_subprocess`]. Default (embed_v8) builds
+/// subprocess in [`load_ts_via_subprocess`]. Default (direct-v8) builds
 /// evaluate the bundle in-process and do not need this file.
-#[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+#[cfg(not(feature = "direct-v8"))]
 const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
 
 /// Stub for the `zfb/config` (and `@takazudo/zfb/config`) import that user
@@ -132,11 +132,11 @@ pub async fn load_from_ts_file(
         return parse_loader_envelope(canned, ts_path);
     }
 
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     {
         load_ts_via_inprocess_v8(ts_path, dir, opts).await
     }
-    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+    #[cfg(not(feature = "direct-v8"))]
     {
         let json = load_ts_via_subprocess(ts_path, dir, opts).await?;
         parse_loader_envelope(&json, ts_path)
@@ -242,7 +242,7 @@ pub const CONFIG_SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::
 /// `--platform=neutral` means any `node:*` import becomes a bundle-time
 /// error from esbuild (not a silent external + runtime crash). This is the
 /// explicit data-config contract: `zfb.config.ts` must be self-contained.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 async fn load_ts_via_inprocess_v8(
     ts_path: &Path,
     dir: &Path,
@@ -340,7 +340,7 @@ async fn load_ts_via_inprocess_v8(
 /// directly, bare specifiers resolve via `oxc_resolver`. Used by the
 /// in-process V8 path, which gets the config as a value (the slim subprocess
 /// path resolves plugins in `config-loader.mjs` and emits the envelope).
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 fn resolve_plugins_from_value(raw_value: &serde_json::Value, dir: &Path) -> Result<Vec<String>> {
     let plugins_arr = match raw_value.get("plugins") {
         None => vec![],
@@ -412,7 +412,7 @@ pub fn resolve_plugin_path_to_file_url(name: &str, dir: &Path) -> Result<Option<
 
 /// Internal envelope shape produced by the TS config evaluator.
 ///
-/// On the default (embed_v8) path the in-process evaluator builds the
+/// On the default (direct-v8) path the in-process evaluator builds the
 /// equivalent value in Rust. On the slim-build path `js/config-loader.mjs`
 /// writes `{"config": <user-default-export>, "plugins": [<resolved-module-
 /// specifier>, …]}` to stdout. Callers that supply `test_default_export_json`
@@ -503,9 +503,9 @@ pub fn resolve_esbuild_binary_with_handle(
 /// Run esbuild + node to compile `ts_path` to ESM and pull the default
 /// export back as JSON (envelope shape).
 ///
-/// Slim-build fallback: available only when `embed_v8` is disabled so the
+/// Slim-build fallback: available only when `direct-v8` is disabled so the
 /// node subprocess path is preserved for the slim-build audience.
-#[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+#[cfg(not(feature = "direct-v8"))]
 async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<String> {
     // The TempDir handle (when the embedded extraction tier is taken) must
     // outlive every subprocess spawn below — esbuild and node both reference
@@ -740,7 +740,7 @@ mod tests {
     /// `--no-resolve-plugins` it succeeds and emits an empty `plugins` array,
     /// which is exactly the embed path's behaviour. The 4 scalar config
     /// fields survive in the envelope either way.
-    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+    #[cfg(not(feature = "direct-v8"))]
     #[tokio::test]
     async fn no_resolve_plugins_flag_skips_unresolvable_plugin() {
         if Command::new("node")
@@ -816,7 +816,7 @@ mod tests {
     /// Mirrors `zfb-server`'s `EmbedConfig` scalar subset (camelCase) so the
     /// test can prove the embed-relevant fields survive a plugins-skipped
     /// load without depending on the `zfb-server` crate.
-    #[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+    #[cfg(not(feature = "direct-v8"))]
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct EmbedTestScalars {
@@ -852,7 +852,7 @@ mod tests {
     // --- resolve_plugins_from_value tests ---------------------------------------
 
     /// A missing `plugins` key is a clean no-plugins load (not an error).
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[test]
     fn resolve_plugins_from_value_absent_plugins_returns_empty() {
         let value = serde_json::json!({ "port": 3000 });
@@ -864,7 +864,7 @@ mod tests {
     /// A `plugins` value that is present but not an array (e.g. an accidental
     /// object typo) must return a descriptive error rather than silently
     /// treating the config as plugin-free.
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     #[test]
     fn resolve_plugins_from_value_non_array_plugins_errors() {
         let value = serde_json::json!({ "plugins": { "name": "oops-should-be-array" } });

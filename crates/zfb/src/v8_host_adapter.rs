@@ -4,8 +4,8 @@
 //!
 //! ## Design
 //!
-//! V8 isolates are bound to the OS thread that created them; `deno_core`'s
-//! `JsRuntime` is `!Send` for exactly this reason. The renderer's
+//! V8 isolates are bound to the OS thread that created them; the embedded
+//! host is `!Send` for exactly this reason. The renderer's
 //! [`Backend::EmbeddedV8`] path expects a `Box<dyn EmbeddedV8Host + Send>`
 //! so the guard can be moved into a `Mutex` for dev-mode thread safety.
 //!

@@ -4,7 +4,7 @@ use zfb::cli::{Cli, Command};
 use zfb::commands;
 
 fn main() {
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     if let Err(error) = zfb_render::initialize_v8() {
         eprintln!("V8 initialization failed: {error}");
         std::process::exit(1);

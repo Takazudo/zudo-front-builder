@@ -19,7 +19,7 @@
 //!   throws at evaluation time, so the plugin name is carried in the
 //!   `AliasHook` / `VirtualModuleHook` and visible in diagnostics).
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use std::path::PathBuf;
 
