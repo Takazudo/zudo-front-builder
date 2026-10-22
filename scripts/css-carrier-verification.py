@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tarfile
 
-VERSION = "4.4.0"
+VERSION = os.environ["CSS_PACKAGE_VERSION"]
 CARRIERS = ("darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-x64-gnu", "win32-x64-msvc")
 CARRIER_ROWS = [
     {"host": "macos-15", "target": "aarch64-apple-darwin", "carrier": "darwin-arm64", "builder": "cargo", "library": "libzfb_css_node.dylib", "runtime": "darwin/arm64", "node_arch": "arm64"},
