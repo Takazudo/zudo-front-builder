@@ -21,6 +21,13 @@ import threading
 ROOT = Path(__file__).resolve().parents[2]
 HOST_PREFIX = "ZFB_HOST_RECEIPT "
 POST_PREFIX = "ZFB_POSTPROCESS_RECEIPT "
+# The baseline is the deno_core rollback runner. direct-v8 is the default since
+# #4390, so build it with the pinned rollback features or it exits 2.
+BASELINE_ENGINE = "deno_core 0.399.0 / v8 147.4.0"
+BASELINE_BUILD_FEATURES = "--no-default-features --features embed_v8,syntect-onig"
+BASELINE_HELP = ("direct_v8_baseline example built with `cargo build --locked -p zfb-render "
+                 + BASELINE_BUILD_FEATURES + " --example direct_v8_baseline`")
+CANDIDATE_ENGINE = "direct v8 147.4.0"
 
 
 def sha(path):
@@ -303,7 +310,8 @@ def browser_check(snapshot, html, expected, postprocessor, node, chromium, outpu
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("snapshot", "baseline", "candidate", "postprocessor", "node", "chromium", "output"):
-        parser.add_argument("--" + name, type=Path, required=True)
+        parser.add_argument("--" + name, type=Path, required=True,
+                            help=BASELINE_HELP if name == "baseline" else None)
     args = parser.parse_args()
     for name, value in vars(args).items():
         setattr(args, name, value.resolve())
@@ -324,8 +332,8 @@ def main():
                                  for name in ("baseline", "candidate", "postprocessor", "node", "chromium")}
         report["input_sha256"] = hashlib.sha256(json.dumps([p for _, p in named], sort_keys=True).encode()).hexdigest()
         observations = []
-        for label, binary, engine in (("baseline", args.baseline, "deno_core 0.399.0 / v8 147.4.0"),
-                                      ("candidate", args.candidate, "direct v8 147.4.0")):
+        for label, binary, engine in (("baseline", args.baseline, BASELINE_ENGINE),
+                                      ("candidate", args.candidate, CANDIDATE_ENGINE)):
             receipts = invoke(binary, [packet for _, packet in named], HOST_PREFIX, args.output, label)
             rows = inspect_receipts(engine, named, receipts, expected, manifest, args.snapshot,
                                     args.postprocessor, args.output, label)

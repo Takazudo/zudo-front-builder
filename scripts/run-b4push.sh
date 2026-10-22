@@ -410,7 +410,7 @@ fi
 
 # ── No-V8 cargo check (opt-in) ──────────────────────────
 # Mirrors the build-no-v8 job's cargo check (health.yml:219), which proves the
-# cfg(feature = "embed_v8") gates still compile with V8 off. Not covered by any
+# V8 runtime feature gates (direct-v8, embed_v8) still compile with V8 off. Not covered by any
 # other step above — all of them build with default features (V8 on).
 step "No-V8 cargo check (cargo check --no-default-features -p zfb --tests)"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then

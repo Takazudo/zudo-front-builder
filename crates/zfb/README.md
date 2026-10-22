@@ -163,9 +163,11 @@ precondition choices.
 
 ### `embed_v8` feature flag
 
-The default build enables `embed_v8`, which propagates to `zfb-render`,
-`zfb-build`, `zfb-server`, and `zfb-config-loader`. It compiles in
-`deno_core` / V8 for in-process TS-config evaluation and SSR dispatch.
+`embed_v8` propagates to `zfb-render`, `zfb-build`, `zfb-server`, and
+`zfb-config-loader`. It compiles in `deno_core` / V8 for in-process
+TS-config evaluation and SSR dispatch. Since #4390 it is not a default
+feature: it is the source-build rollback
+(`--no-default-features --features embed_v8`) until Gate B removes it.
 
 `cargo build --no-default-features -p zfb` produces the slim build. In that
 mode, TS config evaluation falls back to a `node` subprocess and SSR-required
@@ -174,10 +176,9 @@ paths fail loudly. The V8-bearing adapter modules gated in this crate are
 
 ### `direct-v8` feature flag
 
-The non-default `direct-v8` feature propagates the same way and selects the
-direct V8 host from `zfb-js-host` (the `v8` crate without `deno_core`). Build
-it with `--no-default-features --features direct-v8` (the ICU data is
-vendored in `zfb-js-host`); see
+The default `direct-v8` feature propagates the same way and selects the
+direct V8 host from `zfb-js-host` (the `v8` crate without `deno_core`; the
+ICU data is vendored in `zfb-js-host`); see
 [`prototypes/direct-v8/CLI.md`](../../prototypes/direct-v8/CLI.md). When both
 features are on, the `deno_core` host is used. V8-gated code in this crate is
 compiled when either feature is on. With either feature, `main` initializes

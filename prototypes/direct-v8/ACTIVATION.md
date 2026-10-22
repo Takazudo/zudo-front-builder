@@ -1,8 +1,9 @@
 # Live activation checklist and next runtime milestone
 
-> Phase 2 status: the nondefault actual CLI integration is on `main` (merged by
-> #4368 from `feat/4301-direct-v8-cli`); see [CLI.md](CLI.md) for selection, ownership and
-> current verification status. The phase-1 observations below remain historical
+> Phase 2 status: the actual CLI integration is on `main` (merged by
+> #4368 from `feat/4301-direct-v8-cli`), and since #4390 `direct-v8` is the default
+> feature with `embed_v8` as the source-build rollback until Gate B; see [CLI.md](CLI.md)
+> for selection, ownership and current verification status. The phase-1 observations below remain historical
 > and source-bound; an old hold is neither a current implementation claim nor
 > proof of phase-2 acceptance.
 

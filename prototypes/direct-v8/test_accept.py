@@ -290,5 +290,18 @@ class AcceptanceIntegrityTest(unittest.TestCase):
         self.assertEqual(report["error"], "gates failed: config")
 
 
+class BaselinePinTest(unittest.TestCase):
+    # direct-v8 became the default in #4390; an unpinned baseline build would
+    # produce the refusing (exit 2) example instead of the deno_core runner.
+    def test_baseline_build_pins_the_embed_v8_rollback_features(self):
+        self.assertEqual(accept.BASELINE_FEATURES,
+                         ["--no-default-features", "--features", "embed_v8,syntect-onig"])
+        build = accept.BASELINE_BUILD
+        self.assertEqual(build[:5], ["cargo", "build", "--locked", "-p", "zfb-render"])
+        self.assertEqual(build[5:8], accept.BASELINE_FEATURES)
+        self.assertEqual(build[-2:], ["--example", "direct_v8_baseline"])
+        self.assertNotIn("direct-v8", " ".join(build))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,15 +38,15 @@ If you want to compile test harnesses during the warm-up build, use Cargo's all-
 cargo build --workspace --all-targets
 ```
 
-### Cargo feature gate — `embed_v8`
+### Cargo feature gate — `direct-v8` / `embed_v8`
 
-The V8 engine is gated behind a **default-on** cargo feature called `embed_v8` on the `zfb-render` crate. Crates that do not need JavaScript rendering (e.g. `zfb-content`, utility crates) do not depend on `zfb-render` and therefore never compile V8 unless they explicitly ask for it. This means:
+The V8 engine is gated behind cargo features on the `zfb-render` crate: the **default-on** `direct-v8` (since #4390) and the `embed_v8` rollback. Crates that do not need JavaScript rendering (e.g. `zfb-content`, utility crates) do not depend on `zfb-render` and therefore never compile V8 unless they explicitly ask for it. This means:
 
 - `cargo test -p zfb-content` compiles in seconds — no V8.
 - `cargo build --workspace` compiles everything including V8 exactly once and caches the result.
 - If you want to build or test workspace members that don't touch rendering, use `-p <crate>` to avoid pulling in the V8 dependency graph unnecessarily.
 
-A second, non-default feature, `direct-v8`, selects the opt-in direct V8 host in `zfb-js-host` instead of `deno_core`. Build it with `--no-default-features --features direct-v8` (ICU data is vendored, no setup needed); see [BUILDING.md](./BUILDING.md#direct-v8-developer-tooling). Code gated on V8 availability uses `cfg(any(feature = "embed_v8", feature = "direct-v8"))`, so check both features when you touch such a gate.
+`direct-v8` selects the direct V8 host in `zfb-js-host` (ICU data is vendored, no setup needed). `embed_v8` selects the `deno_core` host and stays as a source-build rollback (`--no-default-features --features embed_v8`) until Gate B removes it; see [BUILDING.md](./BUILDING.md#direct-v8-developer-tooling). Code gated on V8 availability uses `cfg(any(feature = "embed_v8", feature = "direct-v8"))`, so check both features when you touch such a gate.
 
 ### Speeding up local builds with sccache
 

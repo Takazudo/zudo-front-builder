@@ -14,24 +14,25 @@ publish = false
 # crate (issue #1037) so BOTH `zfb` and `zfb-server` can call it without a
 # circular dependency (`zfb` depends on `zfb-server`, not the reverse).
 #
-# `embed_v8` (default-on) pulls in the in-process V8 isolate via
-# `zfb-render`'s own `embed_v8` feature. With `--no-default-features` the
+# The V8 runtime features (`direct-v8` by default, `embed_v8` as the rollback)
+# pull in the in-process V8 isolate via the matching `zfb-render` feature. With `--no-default-features` the
 # evaluator falls back to the `node` subprocess path. `default-features =
 # false` on `zfb-render` keeps the toggle decided in exactly one place per
 # consumer (mirrors `zfb-server` / `zfb-build`).
 [features]
-# Internal build-time opt-in; the default remains Deno-backed embed_v8.
+# Default JS runtime (#4390). embed_v8 stays an opt-in rollback; with both
+# features enabled the Deno facade wins.
 direct-v8 = ["zfb-render/direct-v8"]
 
-default = ["embed_v8"]
+default = ["direct-v8"]
 embed_v8 = ["zfb-render/embed_v8"]
 
 [dependencies]
 # Shared esbuild binary resolver (resolve_esbuild_binary_with_env) and the
 # DEFAULT_ESBUILD_SLOT constant. `default-features = false` for the V8 gate —
-# this crate's `embed_v8` is the single place V8 inclusion is decided here.
+# this crate's runtime features are the single place V8 inclusion is decided here.
 zfb-build = { path = "../zfb-build", default-features = false }
-# In-process V8 config evaluator (ThreadedConfigEvaluator), behind embed_v8.
+# In-process V8 config evaluator (ThreadedConfigEvaluator), behind the runtime features.
 zfb-render = { path = "../zfb-render", default-features = false }
 anyhow = { workspace = true }
 serde = { workspace = true }

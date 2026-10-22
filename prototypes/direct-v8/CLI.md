@@ -2,8 +2,10 @@
 
 Tracking: #4301. Base: `21d6807e442bbed61e578c165a91d64c4a7dc141`.
 
-> Status: integrated into `main` by #4368 (`47acd2a8`). The feature stays non-default
-> and no release includes it. The integration-lane notes below are kept as written.
+> Status: integrated into `main` by #4368 (`47acd2a8`). Since #4390 `direct-v8` is the
+> default feature and `embed_v8` is the source-build rollback
+> (`--no-default-features --features embed_v8`) until Gate B removes it. The
+> integration-lane notes below are kept as written.
 
 This work follows `CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
 The integration branch targets main; this lane owns shared files, the combined
@@ -23,9 +25,10 @@ cargo test --locked -p zfb --no-default-features --features direct-v8 --lib v8_h
 cargo test --locked -p zfb-render --no-default-features --features direct-v8,syntect-onig --test config_eval
 ```
 
-There is no runtime config field or CLI switch. `embed_v8` remains the default
-Deno implementation. When both features unify, the existing Deno render/config
-facade wins; direct-only commands must explicitly disable defaults. Slim builds
+There is no runtime config field or CLI switch. Since #4390 `direct-v8` is the
+default and `embed_v8` is the source-build rollback. When both features unify,
+the existing Deno render/config facade wins; rollback-only commands must
+explicitly disable defaults. Slim builds
 with neither feature retain their existing Node config evaluator and no-V8
 render behavior. Markdown/Wasm and CSS-addon feature choices remain unchanged.
 
@@ -49,7 +52,7 @@ starts after queue registration. The shared-engine example exercises both
 initialization orders in separate executions and concurrent finite work:
 
 ```sh
-cargo build --locked -p zfb-render --features direct-v8 --example direct_v8_shared
+cargo build --locked -p zfb-render --features embed_v8 --example direct_v8_shared
 target/debug/examples/direct_v8_shared native-first
 target/debug/examples/direct_v8_shared deno-first
 ```

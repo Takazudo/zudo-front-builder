@@ -109,6 +109,13 @@ describe("health.yml docs-only skip", () => {
     }
   });
 
+  it("gives the non-required embed_v8 rollback lane the same skip (#4391)", () => {
+    const job = health.jobs["rollback-embed-v8"];
+    expect(job.name).toBe("rollback (embed_v8)");
+    expect(job.needs).toBe("changed-files");
+    expect(bareIf(job)).toBe(DOCS_ONLY_SKIP);
+  });
+
   it("keeps the optional md-wasm jobs off docs-only PRs", () => {
     for (const name of ["wasm-md", "wasm-md-browser"]) {
       expect(bareIf(health.jobs[name])).toContain(

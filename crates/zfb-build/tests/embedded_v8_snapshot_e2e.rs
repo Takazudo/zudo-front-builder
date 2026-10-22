@@ -30,11 +30,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "embed_v8")]
+use zfb_build::ContentCollectionSpec;
 use zfb_build::{
-    bundle, render_all, Backend, BundleManifest, BundleMode, BundlerInput, ContentCollectionSpec,
-    RendererInput, RouteUniverseEntry,
+    bundle, render_all, Backend, BundleManifest, BundleMode, BundlerInput, RendererInput,
+    RouteUniverseEntry,
 };
-use zfb_content::{build_snapshot, build_snapshot_with_config, CollectionConfig, PipelineSpec};
+use zfb_content::{build_snapshot, CollectionConfig};
+#[cfg(feature = "embed_v8")]
+use zfb_content::{build_snapshot_with_config, PipelineSpec};
+#[cfg(feature = "embed_v8")]
 use zfb_test_utils::locate_esbuild;
 
 // ---------------------------------------------------------------------------
@@ -59,6 +64,7 @@ fn write_blog_fixture(dir: &std::path::Path) -> PathBuf {
     blog
 }
 
+#[cfg(feature = "embed_v8")]
 fn owned_pipeline_spec() -> PipelineSpec {
     PipelineSpec {
         ..PipelineSpec::default()
@@ -365,6 +371,7 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
 // Group 3 — EmbeddedV8 render path
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "embed_v8")]
 /// Workspace root (two levels up from `CARGO_MANIFEST_DIR`).
 fn workspace_root() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -374,6 +381,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+#[cfg(feature = "embed_v8")]
 /// Locate a `node_modules/.pnpm/node_modules` directory that contains the
 /// runtime deps (`hono`) the bundle needs.
 ///
@@ -405,6 +413,7 @@ fn locate_pnpm_node_modules() -> Option<PathBuf> {
     None
 }
 
+#[cfg(feature = "embed_v8")]
 /// Build a custom `node_modules` directory for the test bundle.
 ///
 /// Mirrors `integration_e2e_routing_rendering::make_test_node_modules`:
@@ -465,6 +474,7 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     Some(tmp)
 }
 
+#[cfg(feature = "embed_v8")]
 /// Create a minimal fixture project on disk: a `pages/index.tsx` that
 /// reads from a `blog` content collection via `getCollection("blog")` and
 /// renders post titles plus the first post's `Content` component, plus a
@@ -1013,6 +1023,7 @@ fn html_page_written_verbatim_via_render_all() {
 // Group 5 — `paths()` worker dispatch over a dual-`zfb/content` instance bundle
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "embed_v8")]
 /// Build a `node_modules` directory that mimics the pnpm-strict layout
 /// real consumers ship: `@takazudo/zfb` is reachable via TWO physical
 /// paths so esbuild + `--preserve-symlinks` will end up inlining
@@ -1143,6 +1154,7 @@ fn make_dual_zfb_node_modules() -> Option<tempfile::TempDir> {
     Some(tmp)
 }
 
+#[cfg(feature = "embed_v8")]
 /// Recursive directory copy (regular files + symlinks). We need a real
 /// copy of zfb-runtime so we can attach a private `node_modules/` inside
 /// it without contaminating the workspace package.
@@ -1168,6 +1180,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "embed_v8")]
 /// Write a fixture project that has a dynamic route `[slug].tsx` whose
 /// `paths()` calls `getCollection("blog")`. The synthetic
 /// `/__paths__/<encoded-route-key>` endpoint should return the resolved

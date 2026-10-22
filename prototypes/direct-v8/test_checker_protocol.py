@@ -254,6 +254,15 @@ class CheckerProtocolTest(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def test_checkers_pin_the_embed_v8_baseline_labels(self):
+        accept = self.load("accept.py")
+        for name in ("check-config.py", "check-generated.py"):
+            module = self.load(name)
+            self.assertEqual(module.BASELINE_ENGINE, BASELINE)
+            self.assertEqual(module.CANDIDATE_ENGINE, CANDIDATE)
+            self.assertEqual(module.BASELINE_BUILD_FEATURES.split(), accept.BASELINE_FEATURES)
+            self.assertIn(module.BASELINE_BUILD_FEATURES, module.BASELINE_HELP)
+
     def test_service_mode_and_frozen_wire_reach_both_processes(self):
         self.cases[0]["mode"] = "build-time"
         self.write_corpus()

@@ -54,7 +54,7 @@ def run(runner, *, timeout=60, engine=None):
                 failures.append("expected error fragments differ")
         rows.append({"name": name, "expected": expected, "passed": not failures,
                      "failures": failures, "receipt": receipt})
-    result.update(observer="actual CLI outer loader: " + (engine or "Deno default"),
+    result.update(observer="actual CLI outer loader: " + (engine or "default features"),
                   runner_sha256=result["executable_sha256"], requests=requests, rows=rows,
                   passed=result["passed"] and all(row["passed"] for row in rows))
     return result
