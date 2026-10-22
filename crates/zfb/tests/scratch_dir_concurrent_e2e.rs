@@ -176,7 +176,10 @@ fn assert_origin(html: &str, island_bundle: &str, expected: &str, other: &str, c
             })
             .collect::<Vec<_>>()
             .join("\n");
-        compact.contains(&format!(":\"{value}\""))
+        // Rolldown's minifier may print the string literal with backticks.
+        ['"', '`', '\'']
+            .iter()
+            .any(|q| compact.contains(&format!(":{q}{value}{q}")))
     };
     assert!(
         has_mark(expected),

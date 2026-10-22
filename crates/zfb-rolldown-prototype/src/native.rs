@@ -9,6 +9,8 @@ mod jsx_tsconfig_tests;
 mod metafile_order_tests;
 mod prepared;
 mod trailing_paths;
+#[cfg(test)]
+mod unresolved_tests;
 mod verbatim_specifiers;
 #[cfg(test)]
 mod warning_tests;
@@ -211,13 +213,23 @@ fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
     let mut report = String::new();
     for diagnostic in rendered {
         let (_, rest) = diagnostic.split_once("[UNRESOLVED_IMPORT] Could not resolve '")?;
-        let (specifier, _) = rest.split_once("' in ")?;
-        let (_, location) = diagnostic.split_once("╭─[ ")?;
-        let (location, _) = location.split_once(" ]")?;
-        let mut parts = location.rsplitn(3, ':');
-        let col = parts.next()?;
-        let row = parts.next()?;
-        let path = lexical_normal(&process_cwd.join(parts.next()?));
+        let (specifier, rest) = rest.split_once("' in ")?;
+        let (path, row, col) = match diagnostic.split_once("╭─[ ") {
+            Some((_, location)) => {
+                let (location, _) = location.split_once(" ]")?;
+                let mut parts = location.rsplitn(3, ':');
+                let col = parts.next()?.to_string();
+                let row = parts.next()?.to_string();
+                (lexical_normal(&process_cwd.join(parts.next()?)), row, col)
+            }
+            // An automatic-runtime import has no source span; name the pragma when present.
+            None => {
+                let importer = rest.lines().next()?.trim();
+                let path = lexical_normal(&process_cwd.join(importer));
+                let (row, col) = jsx_import_source_position(&path);
+                (path, row.to_string(), col.to_string())
+            }
+        };
         let shown = path.strip_prefix(cwd).unwrap_or(&path);
         report.push_str(&format!(
             "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n\n",
@@ -225,6 +237,15 @@ fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
         ));
     }
     (!report.is_empty()).then(|| report.trim_end().to_string())
+}
+
+fn jsx_import_source_position(path: &Path) -> (usize, usize) {
+    let source = std::fs::read_to_string(path).unwrap_or_default();
+    source
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("@jsxImportSource").map(|col| (row + 1, col)))
+        .unwrap_or((1, 0))
 }
 
 fn lexical_normal(path: &Path) -> PathBuf {
