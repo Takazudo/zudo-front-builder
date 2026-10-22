@@ -17,10 +17,11 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # only runs the SWC pipeline) can opt out with
 # `--no-default-features`.
 [features]
-# Internal build-time opt-in; the default remains Deno-backed embed_v8.
+# Default JS runtime (#4390). embed_v8 stays an opt-in rollback; with both
+# features enabled the Deno facade wins.
 direct-v8 = ["zfb-js-host/direct-v8", "dep:tokio"]
 
-default = ["embed_v8", "syntect-onig"]
+default = ["direct-v8", "syntect-onig"]
 embed_v8 = [
     "dep:deno_core",
     "dep:deno_error",

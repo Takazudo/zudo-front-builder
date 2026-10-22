@@ -1,8 +1,9 @@
 # Direct V8 phase 1 experiment
 
-> Phase 2 status: the nondefault actual CLI integration is on `main` (merged by
-> #4368 from `feat/4301-direct-v8-cli`); see [CLI.md](CLI.md) for selection, ownership and
-> current verification status. The phase-1 observations below remain historical
+> Phase 2 status: the actual CLI integration is on `main` (merged by
+> #4368 from `feat/4301-direct-v8-cli`), and since #4390 `direct-v8` is the default
+> feature with `embed_v8` as the source-build rollback until Gate B; see [CLI.md](CLI.md)
+> for selection, ownership and current verification status. The phase-1 observations below remain historical
 > and source-bound; an old hold is neither a current implementation claim nor
 > proof of phase-2 acceptance. Phase 3 (#4302) platform rows and their
 > recording harness are in [PLATFORMS.md](PLATFORMS.md); every native row there
@@ -68,7 +69,7 @@ remain unchanged.
 Pass these commands to the selected heavy guard, one at a time:
 
 ```sh
-cargo build --locked -p zfb-render --example direct_v8_baseline
+cargo build --locked -p zfb-render --no-default-features --features embed_v8,syntect-onig --example direct_v8_baseline
 cargo build --locked -p zfb-js-host --no-default-features --features direct-v8 --example direct_v8
 cargo test --locked -p zfb-js-host --no-default-features --features direct-v8 --lib
 ```

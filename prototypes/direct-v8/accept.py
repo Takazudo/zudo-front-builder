@@ -59,7 +59,12 @@ CANDIDATE_ENGINE = "direct v8 147.4.0"
 # engine string without evaluating JavaScript fails the value comparison.
 PROBE_SOURCE = "export default { probe: 6 * 7, text: 'direct-v8-accept' };"
 PROBE_VALUE = {"probe": 42, "text": "direct-v8-accept"}
-BASELINE_BUILD = ["cargo", "build", "--locked", "-p", "zfb-render", "--example", "direct_v8_baseline"]
+# direct-v8 is the default runtime since #4390, so the deno_core baseline must
+# name its feature set; with defaults the example refuses to run (exit 2) and
+# there is nothing to compare against.
+BASELINE_FEATURES = ["--no-default-features", "--features", "embed_v8,syntect-onig"]
+BASELINE_BUILD = ["cargo", "build", "--locked", "-p", "zfb-render", *BASELINE_FEATURES,
+                  "--example", "direct_v8_baseline"]
 CANDIDATE_BUILD = ["cargo", "build", "--locked", "-p", "zfb-js-host", "--no-default-features",
                    "--features", "direct-v8", "--example", "direct_v8"]
 CANDIDATE_TESTS = ["cargo", "test", "--locked", "-p", "zfb-js-host", "--no-default-features",

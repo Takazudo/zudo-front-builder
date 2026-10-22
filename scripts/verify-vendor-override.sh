@@ -24,7 +24,7 @@ set -euo pipefail
 #      path + var-naming error from `validate_override_path` in build.rs,
 #      not a generic/opaque failure.
 #
-# `--no-default-features` disables the `embed_v8` feature (see
+# `--no-default-features` disables the default `direct-v8` runtime (see
 # crates/zfb/Cargo.toml) so this check does not pay the V8 compile cost;
 # build.rs (the thing under test) runs unconditionally regardless of that
 # feature.

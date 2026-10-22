@@ -139,15 +139,23 @@ The per-platform binaries shipped on npm (`linux-x64-gnu`, `linux-arm64-gnu`, `d
 
 ## Direct V8 developer tooling
 
-The CLI can be built with an opt-in [direct V8 host](prototypes/direct-v8/CLI.md) that drives the pinned `v8` crate without `deno_core`. It is a source-build choice only: there is no runtime config field or CLI switch, and released binaries keep the default `embed_v8` (deno_core) host.
+Since #4390 the default build uses the [direct V8 host](prototypes/direct-v8/CLI.md), which drives the pinned `v8` crate without `deno_core`. `release.yml` builds default features, so release binaries cut from this source use it too. There is no runtime config field or CLI switch.
 
 ```sh
-cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
+cargo build --locked -p zfb --bin zfb
 ```
 
+The `embed_v8` (deno_core) host remains as a source-build rollback until Gate B removes it:
+
+```sh
+cargo build --locked -p zfb --no-default-features --features embed_v8 --bin zfb
+```
+
+The non-required `rollback (embed_v8)` job in [`health.yml`](./.github/workflows/health.yml) builds, lints and tests that configuration.
+
 - The ICU 77 data is vendored at `crates/zfb-js-host/icu/icudtl.dat` and embedded at compile time; no environment variable or download is needed. `python3 prototypes/direct-v8/prepare-icu.py --verify` checks it against the pin.
-- Disable default features. With both `embed_v8` and `direct-v8` enabled, the deno_core host still renders and evaluates config; the two only share one V8 platform.
-- A later `cargo build --workspace --all-targets` rebuilds with default features, so rebuild with the command above before testing the direct host.
+- Disable default features for the rollback. With both `embed_v8` and `direct-v8` enabled, the deno_core host still renders and evaluates config; the two only share one V8 platform.
+- A later default build (e.g. `cargo build --workspace --all-targets`) overwrites `target/debug/zfb` with the direct host, so rebuild with the rollback command before testing the deno_core host.
 - Run these builds through the heavy guard like any other V8 build.
 
 The CI lane [`.github/workflows/direct-v8.yml`](./.github/workflows/direct-v8.yml) runs only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` to add the Rolldown prototype), or on manual dispatch. It records native rows on Linux x64, Linux arm64 and Windows x64 and is never a required check. Darwin rows need a Mac and are not run there.
