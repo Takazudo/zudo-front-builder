@@ -109,13 +109,13 @@ Scoped to the normalization ONLY. See the `PageSelection::All` trap below for wh
   The watcher can batch a removed directory and a `Created` beneath it into ONE tick, so
   purging afterwards is too late and a genuine delete→recreate would skip discovery.
 
-- **`#[cfg(feature = "embed_v8")]` sitting between a doc comment and its `fn` is a
-  footgun.** Insert a new function into that gap and the gate silently transfers to your
+- **`#[cfg(feature = "direct-v8")]` (`embed_v8` before #4395) sitting between a doc
+  comment and its `fn` is a footgun.** Insert a new function into that gap and the gate silently transfers to your
   function, leaving the original ungated. It still compiles with default features — only
   the no-v8 lane catches it.
 
 - **`pnpm b4push` does NOT run the no-v8 lane** (it is a `B4PUSH_FULL=1` step). A green
-  b4push is NOT sufficient before pushing anything that touches an `embed_v8` cfg
+  b4push is NOT sufficient before pushing anything that touches a `direct-v8` cfg
   boundary. Run `cargo check --no-default-features -p zfb --tests` by hand, or it costs a
   CI round-trip.
 

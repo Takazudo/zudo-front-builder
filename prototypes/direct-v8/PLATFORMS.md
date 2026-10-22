@@ -1,5 +1,11 @@
 # Phase 3 platform and interoperability ledger
 
+> **Current status (2026-10-22):** the direct V8 host is zfb's only JS runtime. It has
+> been the default `direct-v8` feature since #4390, and #4395 removed the deno_core host
+> and the `embed_v8` feature (PR #4412, merge commit `7e7aea9`). The text below is kept
+> as written; where it describes the deno_core host, `embed_v8`, a baseline comparison
+> or a combined-feature build, it is source-bound history.
+
 Tracking: #4302 (after #4301). This work follows
 `CLAUDE.md#development-strategy-integrate-first-use-ci-to-find-regressions`.
 Owner of this ledger: the opt-in direct-V8 lane (PR #4307 branch). Nothing here
