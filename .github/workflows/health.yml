@@ -1224,8 +1224,8 @@ jobs:
   # (`--no-default-features --features embed_v8`) until Gate B removes it;
   # this job keeps that rollback compiling, lint-clean and executing its
   # own tests: the seven zfb-render `tests/embedded_v8_*` files, the
-  # `src/embedded_v8/**` unit tests, and the zfb-build e2e binaries gated
-  # on `cfg(feature = "embed_v8")`.
+  # `src/embedded_v8/**` unit tests, and the zfb-build e2e binaries on the
+  # deno_core host (since #4394 they also run on direct-v8 in `health`).
   #
   # NOT required: keep it out of ruleset 18452968 (scripts/apply-main-ruleset.sh).
   # A red run still needs manager triage like any other check.

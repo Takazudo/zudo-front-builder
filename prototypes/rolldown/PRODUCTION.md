@@ -6,7 +6,7 @@ The real production path works for this mixed SSG/SSR fixture with both esbuild 
 
 `crates/zfb/examples/rolldown_production.rs` copies `production-fixture` into an owned ignored directory, extracts the binary's real embedded SDK, and links the existing workspace Cloudflare adapter. It runs the actual `zfb build` CLI. No deployment command runs. Production first renders the full SSG bundle and then uses the existing `worker_only_routes` path to create `bundle-runtime.mjs` for the adapter. The checked-in adapter writes its normal `_zfb_inner.mjs` and Wasm files.
 
-The probe executes **both** scratch `bundle-runtime.mjs` and emitted `dist/_zfb_inner.mjs` with the existing `EmbeddedV8RenderHost` and unchanged module loader:
+The probe executes **both** scratch `bundle-runtime.mjs` and emitted `dist/_zfb_inner.mjs` with the existing `EmbeddedV8RenderHost` and unchanged module loader. Since #4390 that name resolves to the default direct-v8 host; the results below were recorded on the deno_core host, now the `embed_v8` rollback (see the README's JS runtime note for the rollback build command):
 
 | Contract | Observed result, both backends |
 | --- | --- |

@@ -156,3 +156,6 @@ pub fn fill_random_bytes(
         .fill(dst)
         .map_err(|detail| EntropyError::Unavailable { detail })
 }
+
+#[cfg(test)]
+mod tests;

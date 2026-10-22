@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Exact-source experimental integration evidence; no publication or re-pin.
+# Default features select the direct-v8 JS host (#4390); the SSR probes run on it.
+# For the deno_core rollback see the README's JS runtime note.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 : "${ZFB_ESBUILD_BIN:?absolute pinned esbuild executable required}"
