@@ -1,13 +1,26 @@
 //! Internal #318 probe: real production CLI, second rebundle, local adapter, existing V8.
-#[cfg(all(feature = "embed_v8", feature = "rolldown-prototype", unix))]
+//! Runs on the default direct-v8 host or the embed_v8 rollback.
+#[cfg(all(
+    any(feature = "embed_v8", feature = "direct-v8"),
+    feature = "rolldown-prototype",
+    unix
+))]
 fn main() -> anyhow::Result<()> {
     probe::run()
 }
-#[cfg(not(all(feature = "embed_v8", feature = "rolldown-prototype", unix)))]
+#[cfg(not(all(
+    any(feature = "embed_v8", feature = "direct-v8"),
+    feature = "rolldown-prototype",
+    unix
+)))]
 fn main() {
-    panic!("requires Unix, embed_v8 and rolldown-prototype");
+    panic!("requires Unix, rolldown-prototype and a V8 host (direct-v8 default or embed_v8)");
 }
-#[cfg(all(feature = "embed_v8", feature = "rolldown-prototype", unix))]
+#[cfg(all(
+    any(feature = "embed_v8", feature = "direct-v8"),
+    feature = "rolldown-prototype",
+    unix
+))]
 mod probe {
     use anyhow::{ensure, Result};
     use serde_json::{json, Value};
@@ -17,7 +30,9 @@ mod probe {
         process::Command,
         time::Instant,
     };
-    use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+    #[cfg(feature = "embed_v8")]
+    use zfb_render::RenderHost as _;
+    use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike};
     fn copy(src: &Path, dst: &Path) -> Result<()> {
         fs::create_dir_all(dst)?;
         for entry in fs::read_dir(src)? {
