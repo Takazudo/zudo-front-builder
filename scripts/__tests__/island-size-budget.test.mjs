@@ -2308,6 +2308,10 @@ describe("live contracts preserve released evidence and authentic predecessors",
     for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
       expect(live.baselineEvidence).not.toHaveProperty(key);
     }
+    // The v4.7.0 pnpm-lock.yaml the release probe measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "3f64bb1a06fd4357a7e0498b673964a9f052a8124f039ee413a7fdd3113dc1f1",
+    );
     // The cited probe head 9f2a25a6 is off main; the same blob entered main at
     // fb4c7335, so a full checkout anchors the citation there.
     const mainlineCommit = "fb4c73351247b32adef8db11062a9c5cf1dc05a1";
@@ -2332,6 +2336,9 @@ describe("live contracts preserve released evidence and authentic predecessors",
         { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
       );
       expect(sha(blob)).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
+      expect(
+        previousDistinctContractSha256("research/v3-island-size/decision-linux-x64.json"),
+      ).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
     }
     // actualGzip is transfer-size evidence that a version stamp may move, so only
     // its fixture coverage is pinned, not its values.
