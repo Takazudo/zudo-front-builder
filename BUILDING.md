@@ -142,12 +142,10 @@ The per-platform binaries shipped on npm (`linux-x64-gnu`, `linux-arm64-gnu`, `d
 The CLI can be built with an opt-in [direct V8 host](prototypes/direct-v8/CLI.md) that drives the pinned `v8` crate without `deno_core`. It is a source-build choice only: there is no runtime config field or CLI switch, and released binaries keep the default `embed_v8` (deno_core) host.
 
 ```sh
-python3 prototypes/direct-v8/prepare-icu.py
-export ZFB_V8_ICU_DATA="$PWD/target/direct-v8-inputs/icu77/icudtl.dat"
 cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
 ```
 
-- `ZFB_V8_ICU_DATA` is a compile-time input; without it the build fails. `prepare-icu.py` fetches a checksum-pinned data archive only and writes below the ignored `target/`.
+- The ICU 77 data is vendored at `crates/zfb-js-host/icu/icudtl.dat` and embedded at compile time; no environment variable or download is needed. `python3 prototypes/direct-v8/prepare-icu.py --verify` checks it against the pin.
 - Disable default features. With both `embed_v8` and `direct-v8` enabled, the deno_core host still renders and evaluates config; the two only share one V8 platform.
 - A later `cargo build --workspace --all-targets` rebuilds with default features, so rebuild with the command above before testing the direct host.
 - Run these builds through the heavy guard like any other V8 build.

@@ -45,7 +45,7 @@ class Preparation(unittest.TestCase):
 
     def build_fixture(self, base):
         self.root = Path(base).resolve()
-        self.destination = self.root / "target/direct-v8-inputs/icu77/icudtl.dat"
+        self.destination = self.root / "crates/zfb-js-host/icu/icudtl.dat"
         self.destination.parent.mkdir(parents=True)
         self.archive = self.root / "icu.crate"
         with tarfile.open(self.archive, "w:gz") as archive:
@@ -85,7 +85,7 @@ class Preparation(unittest.TestCase):
         self.stack.close()
         self.build_fixture(alias)
         printed = self.run_prepare()
-        expected = Path(physical.name).resolve() / "target/direct-v8-inputs/icu77/icudtl.dat"
+        expected = Path(physical.name).resolve() / "crates/zfb-js-host/icu/icudtl.dat"
         self.assertEqual(printed, str(expected))
         self.assertEqual(expected.read_bytes(), DATA)
 
@@ -221,6 +221,36 @@ class Preparation(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 icu.main()
         self.assert_preserved()
+
+    def run_verify(self):
+        with mock.patch("sys.argv", ["prepare-icu.py", "--verify"]), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            icu.main()
+        return output.getvalue().strip()
+
+    def test_verify_accepts_pinned_vendored_bytes_offline(self):
+        self.destination.write_bytes(DATA)
+        self.assertEqual(self.run_verify(), str(self.destination))
+        self.assertEqual(self.destination.read_bytes(), DATA)
+
+    def test_verify_rejects_changed_vendored_bytes_without_rewriting(self):
+        self.destination.write_bytes(DATA + b"x")
+        with self.assertRaises(SystemExit) as raised:
+            self.run_verify()
+        self.assertIn("differs", str(raised.exception))
+        self.assertEqual(self.destination.read_bytes(), DATA + b"x")
+
+    def test_verify_rejects_missing_vendored_file(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.run_verify()
+        self.assertIn("missing", str(raised.exception))
+        self.assertFalse(self.destination.exists())
+
+
+class VendoredFile(unittest.TestCase):
+    def test_repository_copy_matches_the_pin(self):
+        vendored = Path(__file__).resolve().parents[2] / icu.VENDORED
+        self.assertEqual(hashlib.sha256(vendored.read_bytes()).hexdigest(), icu.DATA_SHA256)
 
 
 if __name__ == "__main__":

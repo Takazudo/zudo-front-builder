@@ -353,6 +353,49 @@ node scripts/rebaseline-island-size-linux.mjs --apply <dir>
 
 The accompanying tests run the reason against synthetic five-record locks in disposable git-backed checkouts (`scripts/__tests__/fixtures/cargo-internal-rewire/`); they are fixtures, not native evidence, and no live contract moved. A real activation needs fresh enforced artifacts for the actual rewired source on **both** platforms, the reviewed declaration committed with that source, the four closure receipts, the paired `--stage`/`--apply` above and a final enforced success, under the same protocol as the fingerprint reasons; the initial enforced collection may legitimately fail against the old Cargo pin and is preserved, not relabelled.
 
+## Cargo removal transitions (#4388)
+
+`cargo-producer-lock` admits additions only and `cargo-internal-rewire` refuses any removed record, so a lockfile move that only deletes crates (the Deno exit: `deno_core` and its private dependencies leave `Cargo.lock`, and the internal crates that used them drop that edge) has no admissible reason. `--reason cargo-removal` (schemaVersion 3, either script, outcome `cargo-removal-transition`) is the separate, bounded capability for exactly that shape; it changes no live contract by itself. It is paired and source-bound like `cargo-internal-rewire` (`--source-sha`, `--stage`, then `--apply` once both platforms are staged), reuses its old-lock, new-lock, manifest and closure-receipt machinery, and moves only `toolchain.cargoLockSha256`, `outcome`, `baselineSourceSha`, `platformStatus` and `baselineEvidence` (which records `cargoRemoval` next to `repinnedFrom`), enforced by the exact-key diff.
+
+The reviewed declaration is passed with `--removal-declaration` and has exactly these keys; every claim is checked against the actual bytes, and the declaration is proposed evidence, never approval by itself:
+
+```json
+{
+  "schemaVersion": 1,
+  "producer": "zfb",
+  "oldCargoLockSha256": "<pinned Cargo.lock sha256>",
+  "newCargoLockSha256": "<checkout Cargo.lock sha256>",
+  "removed": [{ "id": "deno_core@0.399.0", "sha256": "<old record bytes>" }],
+  "changed": [{ "id": "zfb-render@0.0.0", "manifest": "crates/zfb-render/Cargo.toml", "oldSha256": "<old record bytes>", "newSha256": "<new record bytes>", "removedDependencies": ["deno_core"] }],
+  "closure": { "removed": [] }
+}
+```
+
+What the proof requires (`proveCargoRemoval`, shared by both scripts):
+
+- **Removed exactly as declared.** The old and new locks are bound exactly as for `cargo-internal-rewire` (`--old-cargo-ref`, `--expected-old-cargo-sha`, `--expected-new-cargo-sha`, optional `--new-cargo-ref`), and the declaration binds both hashes. The header and every non-package section must be equal. Every old record missing from the new lock must be a declared `removed` entry whose `sha256` equals its exact old record bytes; a declared removal still present, an undeclared removal and any added record are refused.
+- **Changed records are internal and only lose edges.** Every other old record must be byte-identical unless declared `changed`. A changed record must carry no `source` or `checksum`, its `manifest` must prove a `publish = false` workspace member (the same bounded reader as the rewire), its `oldSha256`/`newSha256` must equal the record bytes, every line other than `dependencies` must be identical, and the only delta is removal of exactly `removedDependencies`, with the remaining edges in their original order. Any changed external record is refused, including a spelling rewrite such as `"itoa 1.0.15"` becoming `"itoa"` after the other `itoa` version leaves: that is an added edge. Every surviving edge in the new lock must still resolve unambiguously, so nothing may point at a removed record.
+- **Producer closures identical except declared internal rows leaving.** `--old-closure` and `--new-closure` are default-feature `cargo metadata` receipts from `scripts/record-cargo-producer-closure.mjs` for the platform's target, as for the rewire. No row may join, no row's features may move, no external row may leave, and the internal rows that leave must equal `closure.removed` (possibly empty). A removed crate that the measured producer links therefore needs a different, reviewed decision.
+- **Everything else unchanged.** Totals and fixture set (any raw or `gzipNormalized` movement, including a decrease, is refused), ceilings, allowance, metric, normalizer, fixtures, runners, toolchain, `pnpm-lock.yaml` and its dependency fingerprint, the package version and the saved sidecars. Only the Cargo hash moves.
+- **One coherent pair.** Each staged run records `removal: {declarationSha256, oldLockSha256, newLockSha256}`; staging the second platform and `--apply` refuse when the two runs disagree on it, on the transition, on the measured source or on the reason. A tampered staged file is refused as for every staged reason.
+
+```sh
+node scripts/rebaseline-island-size-linux.mjs --artifact <linux artifact> --run-id <run-id> --job-id <job-id> \
+  --head-sha <probe head> --source-sha <measured source> --reason cargo-removal \
+  --expected-old-cargo-sha <pinned sha256> --expected-new-cargo-sha <checkout sha256> \
+  --old-cargo-ref <commit whose Cargo.lock the contracts pin>[:<path>] [--new-cargo-ref <commit storing the new lock>] \
+  --removal-declaration <declaration.json> --old-closure <old-linux.json> --new-closure <new-linux.json> --stage <dir>
+node scripts/rebaseline-island-size-darwin.mjs --artifact <darwin artifact> --run-id <run-id> --job-id <job-id> \
+  --artifact-id <artifact-id> --artifact-expires-at <ISO timestamp> --source-sha <measured source> \
+  --reason cargo-removal --expected-old-cargo-sha <pinned sha256> --expected-new-cargo-sha <checkout sha256> \
+  --old-cargo-ref <commit>[:<path>] --removal-declaration <declaration.json> \
+  --old-closure <old-darwin.json> --new-closure <new-darwin.json> --stage <dir>
+# review <dir>, then from the same checkout:
+node scripts/rebaseline-island-size-linux.mjs --apply <dir>
+```
+
+Darwin may also stage owner-attested local evidence through the `cargo-removal` profile in [LOCAL-NATIVE-EVIDENCE.md](LOCAL-NATIVE-EVIDENCE.md). The accompanying tests run the reason against synthetic eleven-record locks in disposable git-backed checkouts (`scripts/__tests__/fixtures/cargo-removal/`); they are fixtures, not native evidence, and no live contract moved. A real activation needs fresh enforced artifacts for the actual source on both platforms, the reviewed declaration committed with that source, the four closure receipts and the paired `--stage`/`--apply` above.
+
 ## Final combined sweep measurement
 
 The [final Darwin arm64 report](final-sweep-darwin-report.md) records the complete real workspace and packed matrices after all sweep product changes. `decision.json` now uses those exact observed totals with zero allowance. The measurement source is `35bee65b022645286aac6d9778c434c99a6ad21a`; older deferred notes above describe historical states. Final verification is tracked by [#3641](https://github.com/Takazudo/zudo-front-builder/issues/3641), resolving [#3594](https://github.com/Takazudo/zudo-front-builder/issues/3594).

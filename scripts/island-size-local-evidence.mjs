@@ -29,6 +29,7 @@ export function assertLocalSecurityTransition(transition) {
 
 // The only reasons that may stage owner-attested local evidence, each for its
 // own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire),
+// #4388 declared removal-only Cargo transitions (evidence.cargoRemoval),
 // the exact #4314 security and #4268 noyalib lock transitions
 // (evidence.cargoTransition), and the
 // provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
@@ -55,6 +56,19 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
         fail("cargo-internal-rewire evidence lacks its rewire proof");
     },
   }),
+  "cargo-removal": Object.freeze({
+    transitionKey: "cargoRemoval",
+    requiresReviewedTransition: false,
+    assertContract(contract) {
+      if (
+        !contract.baselineEvidence?.cargoRemoval ||
+        typeof contract.baselineEvidence.cargoRemoval !== "object"
+      )
+        fail("cargo-removal evidence lacks its removal proof");
+      if (contract.outcome !== "cargo-removal-transition")
+        fail("cargo-removal evidence must record outcome cargo-removal-transition");
+    },
+  }),
   "cargo-producer-lock": Object.freeze({
     transitionKey: "cargoTransition",
     requiresReviewedTransition: true,
@@ -67,7 +81,7 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
   "release-bump": provenanceRepin("release-bump", "release-version-stamp"),
   "runtime-identity": provenanceRepin("runtime-identity", "runtime-identity-repin"),
 });
-const TRANSITION_KEYS = ["cargoRewire", "cargoTransition"];
+const TRANSITION_KEYS = ["cargoRewire", "cargoRemoval", "cargoTransition"];
 
 export function localEvidenceProfile(reason) {
   if (typeof reason !== "string" || !Object.hasOwn(LOCAL_EVIDENCE_PROFILES, reason))

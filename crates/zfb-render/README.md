@@ -83,7 +83,7 @@ What `fetch` and Web Crypto are allowed to do inside this host — and how build
 | Feature | Default | Effect |
 | --- | --- | --- |
 | `embed_v8` | yes | Pulls in `deno_core 0.399` + `tokio`; enables `EmbeddedV8RenderHost` and `ThreadedConfigEvaluator`. |
-| `direct-v8` | no | Uses the direct V8 host from `zfb-js-host` (`v8` 147.4.0, no `deno_core`). Requires `ZFB_V8_ICU_DATA` at compile time. When combined with `embed_v8`, the `deno_core` host still renders; both share one V8 platform. |
+| `direct-v8` | no | Uses the direct V8 host from `zfb-js-host` (`v8` 147.4.0, no `deno_core`). Embeds the vendored ICU data from `zfb-js-host/icu/`. When combined with `embed_v8`, the `deno_core` host still renders; both share one V8 platform. |
 | *(no feature)* | — | Keeps only the SWC pipeline + loader + trait. Useful for CI images that only need the compile step. |
 
 `deno_core` is pinned to `=0.399.0` and acts as a compatibility anchor tied to the workspace's `rust-toolchain.toml`. Bumping is a coordinated change — update the pin in lock-step with the toolchain.

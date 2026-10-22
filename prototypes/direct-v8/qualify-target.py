@@ -20,6 +20,11 @@ cannot run or finish is NOT RUN/TIMEOUT and makes the row PARTIAL, never PASS.
 
 Exit codes: 0 PASS, 1 FAIL or PARTIAL, 2 usage refusal, 3 not a native row.
 
+--selection picks the build: `direct-v8` (default) is `--no-default-features
+--features direct-v8`; `default` is the CLI's default features with no flags.
+The selection is recorded in row.json. Before the default engine flips, the
+`default` graph check resolves the Deno-backed default and FAILS honestly.
+
 Usage (from the repository root):
   python3 prototypes/direct-v8/qualify-target.py --target aarch64-apple-darwin --build \
     --source-sha "$(git rev-parse HEAD)" --output target/direct-v8-qualify-darwin-arm64
@@ -38,6 +43,7 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+SELECTIONS = ("direct-v8", "default")
 # (platform.system(), normalized machine) that natively executes each shipping triple.
 NATIVE_HOSTS = {
     "x86_64-unknown-linux-gnu": ("Linux", "x86_64"),
@@ -57,6 +63,14 @@ BINARY_FORMATS = {
 MACHINE_ALIASES = {"amd64": "x86_64", "x64": "x86_64", "aarch64": "arm64"}
 ROLLDOWN_MARKERS = (b"zfb_rolldown_prototype", b"zfb-rolldown-prototype")
 LIFECYCLE_TIMEOUT = 1800  # above check-cli-lifecycle.py's summed internal deadlines (~420 s)
+
+
+def selection_args(selection, extra_features=()):
+    """Exact cargo feature arguments for a selection (same contract as record-graph.py) and its label."""
+    if selection == "default":
+        return [], "default"
+    features = ",".join(["direct-v8", *sorted(set(extra_features))])
+    return ["--no-default-features", "--features", features], features
 
 
 def sha256(path):
@@ -148,11 +162,11 @@ def dynamic_dependencies(binary, system):
     return {"status": "NOT RUN", "passed": None, "reason": f"none of {[c[0] for c in tools]} is installed"}
 
 
-def pinned_icu_sha256():
+def icu_module():
     spec = importlib.util.spec_from_file_location("prepare_icu", HERE / "prepare-icu.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.DATA_SHA256
+    return module
 
 
 def status_of(checks):
@@ -169,21 +183,25 @@ def main():
     parser.add_argument("--source-sha", required=True, help="Expected 40-hex candidate source commit")
     parser.add_argument("--output", required=True, type=Path, help="New directory for this row")
     parser.add_argument("--cargo", default="cargo")
+    parser.add_argument("--selection", choices=SELECTIONS, default="direct-v8",
+                        help="direct-v8: --no-default-features --features direct-v8; default: no feature flags")
     parser.add_argument("--rolldown", action="store_true",
                         help="Qualify direct-v8,rolldown-prototype and run with ZFB_ROLLDOWN_PROTOTYPE=1")
     args = parser.parse_args()
+    if args.rolldown and args.selection != "direct-v8":
+        parser.error("--rolldown extends the direct-v8 selection; it cannot combine with --selection default")
     if not args.binary and not args.build:
         parser.error("--binary is required without --build")
     output = args.output.resolve()
     if output.exists():
         parser.error(f"--output {output} already exists; every row needs a new directory")
     output.mkdir(parents=True)
-    features = "direct-v8,rolldown-prototype" if args.rolldown else "direct-v8"
+    feature_args, features = selection_args(args.selection, ["rolldown-prototype"] if args.rolldown else [])
     binary = (args.binary or default_binary(args.target)).resolve()
     host = host_identity()
-    build_command = [args.cargo, "build", "--locked", "-p", "zfb", "--no-default-features", "--features", features,
-                     "--bin", "zfb"]
-    row = {"target": args.target, "host": host, "expected_source_sha": args.source_sha, "features": features,
+    build_command = [args.cargo, "build", "--locked", "-p", "zfb", *feature_args, "--bin", "zfb"]
+    row = {"target": args.target, "host": host, "expected_source_sha": args.source_sha,
+           "selection": args.selection, "features": features,
            "build_command": build_command, "binary_provenance": "built-by-harness" if args.build else "supplied",
            "checks": {}, "status": "FAIL"}
     checks = row["checks"]
@@ -235,16 +253,17 @@ def main():
     has_rolldown = any(marker in data for marker in ROLLDOWN_MARKERS)
     checks["feature_markers"] = {"rolldown_prototype_present": has_rolldown, "expected": args.rolldown,
                                  "passed": has_rolldown == args.rolldown}
-    icu = os.environ.get("ZFB_V8_ICU_DATA")
-    pinned = pinned_icu_sha256()
-    if icu and Path(icu).is_file():
+    icu_pin = icu_module()
+    icu = ROOT / icu_pin.VENDORED
+    if icu.is_file():
         actual = sha256(icu)
-        checks["icu"] = {"path": icu, "sha256": actual, "pinned_sha256": pinned, "passed": actual == pinned}
+        checks["icu"] = {"path": str(icu_pin.VENDORED), "sha256": actual, "pinned_sha256": icu_pin.DATA_SHA256,
+                         "passed": actual == icu_pin.DATA_SHA256}
     else:
-        checks["icu"] = {"status": "NOT RECORDED", "passed": None, "reason": "ZFB_V8_ICU_DATA unset or missing"}
+        checks["icu"] = {"status": "NOT RECORDED", "passed": None, "reason": f"{icu_pin.VENDORED} missing"}
     checks["dynamic_dependencies"] = dynamic_dependencies(binary, host["system"])
     graph = run([sys.executable, HERE / "record-graph.py", "--cli", "--target", args.target, "--cargo", args.cargo,
-                 *(["--extra-feature", "rolldown-prototype"] if args.rolldown else []),
+                 "--selection", args.selection, *(["--extra-feature", "rolldown-prototype"] if args.rolldown else []),
                  "--output", output / "graph.json"], cwd=ROOT)
     checks["graph"] = {**graph, "report": "graph.json", "passed": graph.get("exit") == 0}
     env = {key: value for key, value in os.environ.items() if key != "ZFB_ROLLDOWN_PROTOTYPE"}

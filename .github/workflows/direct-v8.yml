@@ -2,13 +2,16 @@
 # health.yml; bump them together.
 #
 # Opt-in direct-V8 lane (#4302, #4303 blocker "no direct-v8 CI lane"). It runs
-# only when a PR carries the `direct-v8` label (or `direct-v8-rolldown` for the
-# Rolldown variant) or on manual dispatch, so it is never a required check. On
-# other PRs only the small `plan` job runs and the row jobs are skipped. It
-# records native rows with the harness in prototypes/direct-v8/PLATFORMS.md on
-# standard GitHub-hosted runners: Linux x86_64, Linux arm64 and Windows x64.
-# Darwin rows need a Mac runner, which is not approved, and stay NOT RUN. The
-# `harness-macos` job runs only the offline Python harness on macos-latest.
+# only when a PR carries the `direct-v8` label (explicit direct-v8 selection),
+# `native-default` (the default build, no feature flags) or `direct-v8-rolldown`
+# (the Rolldown variant), or on manual dispatch, so it is never a required
+# check. On other PRs only the small `plan` job runs and the row jobs are
+# skipped. It records native rows with the harness in
+# prototypes/direct-v8/PLATFORMS.md on standard GitHub-hosted runners (free for
+# this public repo): Linux x86_64, Linux arm64 and Windows x64. Darwin rows are
+# NOT run on Actions (macOS runner cost); the owner qualifies them locally on a
+# Mac, see PLATFORMS.md. The `harness-macos` job runs only the offline Python
+# harness on macos-latest.
 
 name: direct-v8 (opt-in)
 
@@ -18,6 +21,11 @@ on:
     types: [labeled, synchronize, reopened]
   workflow_dispatch:
     inputs:
+      selection:
+        description: "Build to qualify: direct-v8 (--no-default-features --features direct-v8) or default (no feature flags)"
+        type: choice
+        options: [direct-v8, default]
+        default: direct-v8
       rolldown:
         description: Also qualify direct-v8,rolldown-prototype
         type: boolean
@@ -33,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      features: ${{ steps.plan.outputs.features }}
+      rows: ${{ steps.plan.outputs.rows }}
     steps:
       - id: plan
         env:
@@ -41,32 +49,42 @@ jobs:
           ACTION: ${{ github.event.action }}
           LABEL: ${{ github.event.label.name }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          INPUT_SELECTION: ${{ inputs.selection }}
           INPUT_ROLLDOWN: ${{ inputs.rolldown }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
           event, action, label = os.environ["EVENT"], os.environ["ACTION"], os.environ["LABEL"]
           labels = set(json.loads(os.environ["LABELS"] or "[]") or [])
+          # selection is what qualify-target.py/record-graph.py take; cargo_args is the exact
+          # feature selection the shipping-recipe builds repeat.
+          rows = {
+              "direct-v8": {"selection": "direct-v8", "rolldown": False, "artifact": "direct",
+                            "cargo_args": "--no-default-features --features direct-v8"},
+              "direct-v8-rolldown": {"selection": "direct-v8", "rolldown": True, "artifact": "rolldown",
+                                     "cargo_args": "--no-default-features --features direct-v8,rolldown-prototype"},
+              "native-default": {"selection": "default", "rolldown": False, "artifact": "default", "cargo_args": ""},
+          }
           if event == "workflow_dispatch":
-              wanted = ["direct-v8"] + (["direct-v8-rolldown"] if os.environ["INPUT_ROLLDOWN"] == "true" else [])
+              wanted = ["native-default" if os.environ["INPUT_SELECTION"] == "default" else "direct-v8"]
+              wanted += ["direct-v8-rolldown"] if os.environ["INPUT_ROLLDOWN"] == "true" else []
           elif action == "labeled":
               # Only the label just added starts work; an unrelated label never does.
-              wanted = [label] if label in ("direct-v8", "direct-v8-rolldown") else []
+              wanted = [label] if label in rows else []
           else:
-              wanted = sorted(labels & {"direct-v8", "direct-v8-rolldown"})
-          features = {"direct-v8": "direct-v8", "direct-v8-rolldown": "direct-v8,rolldown-prototype"}
-          print("features=" + json.dumps([features[name] for name in wanted]))
+              wanted = sorted(labels & set(rows))
+          print("rows=" + json.dumps([{"label": name, **rows[name]} for name in wanted]))
           PY
           cat "$GITHUB_OUTPUT"
 
   linux-x64:
-    name: direct-v8 (${{ matrix.features }}, linux-x64)
+    name: direct-v8 (${{ matrix.row.label }}, linux-x64)
     needs: plan
-    if: needs.plan.outputs.features != '[]'
-    # Job-level, per feature set: a newer push or label run replaces an older
+    if: needs.plan.outputs.rows != '[]'
+    # Job-level, per row: a newer push or label run replaces an older
     # run of the same row, and an unrelated label (empty plan) cancels nothing.
     concurrency:
-      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.features }}
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.row.label }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     # Measured at f217f4d: 12 min end to end with no Rust cache (the v8 crate
@@ -75,11 +93,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ${{ fromJSON(needs.plan.outputs.features) }}
+        row: ${{ fromJSON(needs.plan.outputs.rows) }}
     env:
       # The PR head, not the merge ref: the harness ties the row to this commit.
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      ROLLDOWN: ${{ matrix.features != 'direct-v8' }}
+      ROW_LABEL: ${{ matrix.row.label }}
+      SELECTION: ${{ matrix.row.selection }}
+      ROLLDOWN: ${{ matrix.row.rolldown }}
+      CARGO_ARGS: ${{ matrix.row.cargo_args }}
       ROW_DIR: ${{ github.workspace }}/target/direct-v8-ci
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -114,30 +135,35 @@ jobs:
       - name: Offline harness controls
         run: python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
 
-      - name: Prepare pinned ICU data
-        run: |
-          python3 prototypes/direct-v8/prepare-icu.py
-          echo "ZFB_V8_ICU_DATA=$PWD/target/direct-v8-inputs/icu77/icudtl.dat" >> "$GITHUB_ENV"
+      - name: Verify vendored ICU data
+        run: python3 prototypes/direct-v8/prepare-icu.py --verify
 
+      # Every target is resolved and recorded; any failing target fails the step
+      # at the end. The default selection resolves the Deno-backed default until
+      # the default flips, so there it reports FAIL on purpose.
       - name: Dependency resolution rows (all shipping targets; no build)
+        id: graph
         run: |
           extra=()
           [ "$ROLLDOWN" = true ] && extra=(--extra-feature rolldown-prototype)
           mkdir -p "$ROW_DIR/graph"
+          status=0
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
                         x86_64-apple-darwin x86_64-pc-windows-msvc; do
-            python3 prototypes/direct-v8/record-graph.py --cli --target "$target" "${extra[@]}" \
-              --output "$ROW_DIR/graph/$target.json"
+            python3 prototypes/direct-v8/record-graph.py --cli --selection "$SELECTION" --target "$target" "${extra[@]}" \
+              --output "$ROW_DIR/graph/$target.json" || status=1
           done
+          exit "$status"
 
       - name: Native row (Linux x86_64, harness build)
+        if: ${{ !cancelled() && steps.graph.outcome != 'skipped' }}
         run: |
           df -h / | tee "$ROW_DIR/disk-before.txt"
           extra=()
           [ "$ROLLDOWN" = true ] && extra=(--rolldown)
           status=0
           python3 prototypes/direct-v8/qualify-target.py --target x86_64-unknown-linux-gnu --build \
-            --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
+            --selection "$SELECTION" --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           df -h / | tee "$ROW_DIR/disk-after.txt"
           if [ -f "$ROW_DIR/qualify/row.json" ]; then
             python3 -c 'import json,sys; path = json.load(open(sys.argv[1])).get("checks", {}).get("binary", {}).get("path"); print("ROW_BINARY=" + path) if path else None' \
@@ -167,19 +193,14 @@ jobs:
       # The shipping recipe: release.yml builds the Linux x86_64 binary with
       # cross in the repo's Amazon Linux 2023 image to hold the GLIBC 2.34
       # floor (Cross.toml, #3623). Same command with the direct-v8 features;
-      # the floor is gated exactly as in release.yml.
+      # the floor is gated exactly as in release.yml. The default selection builds
+      # with no feature flags, as release.yml does today.
       - name: Shipping-recipe binary (cross, GLIBC 2.34 floor)
         if: ${{ !cancelled() && env.ROW_BINARY != '' }}
-        env:
-          # cross drops host env and mounts the workspace at /project, so the
-          # host ICU path does not exist in the container; mount its directory.
-          ICU_DIR: ${{ github.workspace }}/target/direct-v8-inputs/icu77
         run: |
           set -o pipefail
-          export CROSS_CONTAINER_OPTS="-v $ICU_DIR:/direct-v8-icu:ro --env ZFB_V8_ICU_DATA=/direct-v8-icu/icudtl.dat"
-          features=direct-v8
-          [ "$ROLLDOWN" = true ] && features=direct-v8,rolldown-prototype
-          cross build --locked -p zfb --release --no-default-features --features "$features" \
+          # shellcheck disable=SC2086 # CARGO_ARGS is a word list ("" for the default selection)
+          cross build --locked -p zfb --release $CARGO_ARGS \
             --target x86_64-unknown-linux-gnu 2>&1 | tee "$ROW_DIR/cross-build.log"
           bin="$PWD/target/x86_64-unknown-linux-gnu/release/zfb"
           sha256sum "$bin" | tee "$ROW_DIR/cross-binary.sha256"
@@ -237,7 +258,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### direct-v8 ($MATRIX_FEATURES, linux-x64) at \`$SOURCE_SHA\`"
+            echo "### direct-v8 ($ROW_LABEL, selection $SELECTION, linux-x64) at \`$SOURCE_SHA\`"
             if [ -f "$ROW_DIR/qualify/row.json" ]; then
               python3 - "$ROW_DIR/qualify/row.json" <<'PY'
           import json, sys
@@ -261,29 +282,27 @@ jobs:
             if [ -f "$ROW_DIR/cases/report.json" ]; then
               python3 prototypes/direct-v8/check-cli-cases.py --summary "$ROW_DIR/cases/report.json"
             fi
-            echo
-            echo "Not run in this lane: Darwin arm64/x64 native rows (no approved Mac runner)."
           } >> "$GITHUB_STEP_SUMMARY"
-        env:
-          MATRIX_FEATURES: ${{ matrix.features }}
 
       - name: Upload row evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: direct-v8-linux-x64-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
+          name: direct-v8-linux-x64-${{ matrix.row.artifact }}
           path: ${{ env.ROW_DIR }}
           if-no-files-found: warn
           retention-days: 14
 
-  # Native rows on the other standard runners. No packaging here: the clean-room
-  # smoke only packs the Linux x86_64 carrier.
+  # Native rows on the other standard runners. Windows also builds the release
+  # binary and CSS addon natively (as release.yml does) and runs the packed
+  # clean-room consumer; Linux arm64 has no packaging row (its shipping recipe is
+  # cross under QEMU).
   other-hosts:
-    name: direct-v8 (${{ matrix.features }}, ${{ matrix.host.name }})
+    name: direct-v8 (${{ matrix.row.label }}, ${{ matrix.host.name }})
     needs: plan
-    if: needs.plan.outputs.features != '[]'
+    if: needs.plan.outputs.rows != '[]'
     concurrency:
-      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.host.name }}-${{ matrix.features }}
+      group: direct-v8-${{ github.event.pull_request.number || github.ref }}-${{ matrix.host.name }}-${{ matrix.row.label }}
       cancel-in-progress: true
     runs-on: ${{ matrix.host.runner }}
     # Measured at 349b112: the Windows leg took 30 min (12.5 min of it the
@@ -292,7 +311,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ${{ fromJSON(needs.plan.outputs.features) }}
+        row: ${{ fromJSON(needs.plan.outputs.rows) }}
         host:
           - name: linux-arm64
             runner: ubuntu-24.04-arm
@@ -308,7 +327,10 @@ jobs:
         shell: bash
     env:
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      ROLLDOWN: ${{ matrix.features != 'direct-v8' }}
+      ROW_LABEL: ${{ matrix.row.label }}
+      SELECTION: ${{ matrix.row.selection }}
+      ROLLDOWN: ${{ matrix.row.rolldown }}
+      CARGO_ARGS: ${{ matrix.row.cargo_args }}
       ROW_DIR: ${{ github.workspace }}/target/direct-v8-ci
       PYTHONDONTWRITEBYTECODE: "1"
       PY: ${{ matrix.host.python }}
@@ -329,18 +351,29 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Prepare pinned ICU data
+      - name: Verify vendored ICU data
         id: icu
+        run: '"$PY" prototypes/direct-v8/prepare-icu.py --verify'
+
+      # The default selection resolves the Deno-backed default until the default
+      # flips, so it reports FAIL here (also recorded inside the native row).
+      - name: Dependency resolution row (this target; no build)
+        id: graph
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' }}
         run: |
-          "$PY" prototypes/direct-v8/prepare-icu.py
-          "$PY" -c 'import os; print("ZFB_V8_ICU_DATA=" + os.path.abspath("target/direct-v8-inputs/icu77/icudtl.dat"))' >> "$GITHUB_ENV"
+          extra=()
+          [ "$ROLLDOWN" = true ] && extra=(--extra-feature rolldown-prototype)
+          mkdir -p "$ROW_DIR/graph"
+          "$PY" prototypes/direct-v8/record-graph.py --cli --selection "$SELECTION" --target "$TARGET" "${extra[@]}" \
+            --output "$ROW_DIR/graph/$TARGET.json"
 
       - name: Native row (harness build)
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' }}
         run: |
           extra=()
           [ "$ROLLDOWN" = true ] && extra=(--rolldown)
           status=0
-          "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build \
+          "$PY" prototypes/direct-v8/qualify-target.py --target "$TARGET" --build --selection "$SELECTION" \
             --source-sha "$SOURCE_SHA" --output "$ROW_DIR/qualify" "${extra[@]}" || status=$?
           echo "qualify-target exit $status"
           if [ -f "$ROW_DIR/qualify/row.json" ]; then
@@ -360,7 +393,7 @@ jobs:
       # A red result names the spellings still reaching Rolldown verbatim.
       - name: Rolldown prototype library tests (Windows x64)
         id: prototype_tests
-        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features != 'direct-v8' }}
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.row.rolldown }}
         run: |
           set -o pipefail
           mkdir -p "$ROW_DIR"
@@ -368,15 +401,18 @@ jobs:
             | tee "$ROW_DIR/rolldown-prototype-lib-tests.log"
 
       # release.yml's native cargo build of the Windows carrier, here with the
-      # opt-in direct-v8 selection and pinned ICU, which release.yml does not build.
+      # row's selection (no feature flags for the default selection, as
+      # release.yml builds today; the opt-in direct-v8 features otherwise).
       # Runs even when the native row fails, but only once setup has succeeded.
+      # Not run on the Rolldown row (its carrier smoke is Linux x64).
       - name: Packed clean-room consumer (Windows x64, release recipe)
         id: packed
-        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' }}
+        if: ${{ !cancelled() && steps.icu.outcome == 'success' && matrix.host.name == 'windows-x64' && !matrix.row.rolldown }}
         run: |
           set -o pipefail
           mkdir -p "$ROW_DIR"
-          cargo build --locked -p zfb --release --no-default-features --features direct-v8 \
+          # shellcheck disable=SC2086 # CARGO_ARGS is a word list ("" for the default selection)
+          cargo build --locked -p zfb --release $CARGO_ARGS \
             --target "$TARGET" 2>&1 | tee "$ROW_DIR/release-build.log"
           bash scripts/build-css-node.sh "$TARGET" cargo 2>&1 | tee "$ROW_DIR/css-addon-build.log"
           pnpm --filter @takazudo/zfb-slugify --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
@@ -387,7 +423,7 @@ jobs:
       # #4343 regression: a plugin virtual module through the shipping-recipe
       # binary built above, where the shadow directory is a \\?\ verbatim path.
       - name: Plugin virtual module build (Windows x64, release recipe)
-        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
+        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && !matrix.row.rolldown && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
         run: |
           "$PY" prototypes/direct-v8/check-plugin-virtual-module.py \
             --binary "target/$TARGET/release/zfb.exe" --output "$ROW_DIR/plugin-virtual-module"
@@ -395,7 +431,7 @@ jobs:
       # #4347 regression: plugin addAlias (#3002) from a node_modules importer
       # through the same binary. Before #4360 esbuild could not resolve the alias here.
       - name: Plugin alias from node_modules (Windows x64, release recipe)
-        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && matrix.features == 'direct-v8' && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
+        if: ${{ !cancelled() && matrix.host.name == 'windows-x64' && !matrix.row.rolldown && hashFiles(format('target/{0}/release/zfb.exe', matrix.host.target)) != '' }}
         run: |
           "$PY" prototypes/direct-v8/check-plugin-alias-node-modules.py \
             --binary "target/$TARGET/release/zfb.exe" --output "$ROW_DIR/plugin-alias"
@@ -425,7 +461,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### direct-v8 ($MATRIX_FEATURES, $TARGET) at \`$SOURCE_SHA\`"
+            echo "### direct-v8 ($ROW_LABEL, selection $SELECTION, $TARGET) at \`$SOURCE_SHA\`"
             if [ -f "$ROW_DIR/qualify/row.json" ]; then
               "$PY" - "$ROW_DIR/qualify/row.json" <<'PY'
           import json, sys
@@ -470,7 +506,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
-          MATRIX_FEATURES: ${{ matrix.features }}
           PACKED_OUTCOME: ${{ steps.packed.outcome }}
           PROTOTYPE_TESTS_OUTCOME: ${{ steps.prototype_tests.outcome }}
 
@@ -478,7 +513,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: direct-v8-${{ matrix.host.name }}-${{ matrix.features == 'direct-v8' && 'direct' || 'rolldown' }}
+          name: direct-v8-${{ matrix.host.name }}-${{ matrix.row.artifact }}
           path: ${{ env.ROW_DIR }}
           if-no-files-found: warn
           retention-days: 14
@@ -488,7 +523,7 @@ jobs:
   harness-macos:
     name: direct-v8 offline harness (macos)
     needs: plan
-    if: needs.plan.outputs.features != '[]'
+    if: needs.plan.outputs.rows != '[]'
     concurrency:
       group: direct-v8-${{ github.event.pull_request.number || github.ref }}-harness-macos
       cancel-in-progress: true

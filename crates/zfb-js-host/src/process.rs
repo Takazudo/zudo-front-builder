@@ -4,6 +4,11 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+/// Pinned ICU 77 common data (see `icu/README.md`); refresh only with V8.
+#[cfg(feature = "direct-v8")]
+const ICU_DATA: &[u8; 10_822_192] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icu/icudtl.dat"));
+
 /// Initialize before spawning host threads. Library/test callers may initialize
 /// lazily; they must otherwise arrange the same main-thread startup contract.
 pub fn initialize() -> Result<(), String> {
@@ -14,8 +19,7 @@ pub fn initialize() -> Result<(), String> {
             let platform = {
                 #[repr(align(16))]
                 struct AlignedIcu<const N: usize>([u8; N]);
-                static ICU: AlignedIcu<{ include_bytes!(env!("ZFB_V8_ICU_DATA")).len() }> =
-                    AlignedIcu(*include_bytes!(env!("ZFB_V8_ICU_DATA")));
+                static ICU: AlignedIcu<{ ICU_DATA.len() }> = AlignedIcu(*ICU_DATA);
                 v8::icu::set_common_data_77(&ICU.0)
                     .map_err(|code| format!("ICU77 data initialization failed: {code}"))?;
                 Some(
@@ -66,5 +70,22 @@ impl HostThreadGuard {
 impl Drop for HostThreadGuard {
     fn drop(&mut self) {
         HOST_ACTIVE.with(|active| active.set(false));
+    }
+}
+
+#[cfg(all(test, feature = "direct-v8"))]
+mod tests {
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn embedded_icu_data_matches_the_pin() {
+        let digest: String = Sha256::digest(super::ICU_DATA)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            digest,
+            "1cf67874b5a87a8363a86fb3f81e3cbbed54d389062dab8fb52308d5cf8c8612"
+        );
     }
 }

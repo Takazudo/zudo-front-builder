@@ -183,7 +183,7 @@ export default { async fetch(request: Request) {
         manifest = {"schema": 1, "producer": before, "producer_build_command_supplied": args.producer_build_command,
                     "tools": {name: {"path": str(path), "sha256": sha(path)} for name, path in tools.items()},
                     "versions": versions, "environment": {name: environment[name] for name in (
-                        "ZFB_ESBUILD_BIN", "ZFB_NODE_BIN", "ZFB_V8_ICU_DATA", "CARGO_BUILD_JOBS",
+                        "ZFB_ESBUILD_BIN", "ZFB_NODE_BIN", "CARGO_BUILD_JOBS",
                         "CARGO_INCREMENTAL", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN") if name in environment},
                     "commands": commands, "files": inventory(frozen),
                     "policy": {"normal_cli_host": "deno_core 0.399.0 / v8 147.4.0",

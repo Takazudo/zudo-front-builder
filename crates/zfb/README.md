@@ -176,8 +176,8 @@ paths fail loudly. The V8-bearing adapter modules gated in this crate are
 
 The non-default `direct-v8` feature propagates the same way and selects the
 direct V8 host from `zfb-js-host` (the `v8` crate without `deno_core`). Build
-it with `--no-default-features --features direct-v8` and `ZFB_V8_ICU_DATA`
-set at compile time; see
+it with `--no-default-features --features direct-v8` (the ICU data is
+vendored in `zfb-js-host`); see
 [`prototypes/direct-v8/CLI.md`](../../prototypes/direct-v8/CLI.md). When both
 features are on, the `deno_core` host is used. V8-gated code in this crate is
 compiled when either feature is on. With either feature, `main` initializes

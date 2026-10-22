@@ -101,6 +101,15 @@
 // like dependency-graph: `--stage` is required and `--apply` lands both
 // platforms only when their transitions and declaration digests agree.
 //
+// `--reason cargo-removal` (#4388, schemaVersion 3) is its removal-only
+// counterpart: declared removed records and internal records that only lose
+// declared edges, no addition and no external change, proven by the Linux
+// script's shared proveCargoRemoval against `--removal-declaration`, the old
+// lock blob, the checkout's lock, the workspace manifests and the two
+// `aarch64-apple-darwin` default-feature closure receipts, which must be
+// identical apart from declared internal rows leaving. Paired and source-bound
+// the same way.
+//
 // No file is written before every validation and every rendered output
 // succeeds; there is no force or ignore-provenance option.
 // Optional --reviewed-cargo-transition uses the same exact non-additive #318
@@ -130,6 +139,7 @@ import {
 import {
   CARGO_INTERNAL_REWIRE_REASON,
   CARGO_PRODUCER_LOCK_REASON,
+  CARGO_REMOVAL_REASON,
   DEPENDENCY_GRAPH_MOVEMENT,
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_HELPER_REASON,
@@ -145,7 +155,10 @@ import {
   assertAllowedMovement,
   assertCargoInternalRewireMovement,
   assertCargoProducerLockMovement,
+  assertCargoRemovalMovement,
   cargoMoveRefusal,
+  cargoRemovalMarkdown,
+  cargoRemovalText,
   cargoRewireMarkdown,
   cargoRewireText,
   cargoTransitionMarkdown,
@@ -176,7 +189,9 @@ import {
   previousContractReference,
   proveCargoInternalRewire,
   proveCargoProducerLock,
+  proveCargoRemoval,
   readCargoLockEvidence,
+  readCargoRemovalEvidence,
   readCargoRewireEvidence,
   readCheckoutIdentity,
   regenerateInventory,
@@ -207,6 +222,7 @@ const DARWIN_REASONS = [
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
+  CARGO_REMOVAL_REASON,
 ];
 // The Darwin reasons that record `repinnedFrom` and accept --previous-contract-ref.
 const DARWIN_REPINNED_FROM_REASONS = [
@@ -215,6 +231,7 @@ const DARWIN_REPINNED_FROM_REASONS = [
   DEPENDENCY_GRAPH_REASON,
   FINGERPRINT_POLICY_REASON,
   CARGO_INTERNAL_REWIRE_REASON,
+  CARGO_REMOVAL_REASON,
 ];
 // The producer closure target a Darwin arm64 rewire receipt must be recorded for.
 export const DARWIN_PRODUCER_TARGET = "aarch64-apple-darwin";
@@ -1047,13 +1064,40 @@ export function darwinCargoProducerLockReadmeSection(contract, gzipMoves) {
   );
 }
 
-// One reviewed internal Cargo.lock rewire on a schemaVersion-3 contract. The
+// The two declaration-bound Cargo reasons share one Darwin transition: the
+// reason, its shared Linux proof, the baselineEvidence key it records, the
+// phrase and README wording it renders, and its exact-key movement check.
+const DECLARED_CARGO_KINDS = Object.freeze({
+  [CARGO_INTERNAL_REWIRE_REASON]: Object.freeze({
+    prove: proveCargoInternalRewire,
+    evidenceKey: "cargoRewire",
+    phrase: "a reviewed internal Cargo.lock rewire",
+    readmePhrase: "a reviewed internal `Cargo.lock` rewire",
+    noteLabel: "Cargo internal-rewire transition",
+    text: cargoRewireText,
+    markdown: cargoRewireMarkdown,
+    assertMovement: assertCargoInternalRewireMovement,
+  }),
+  [CARGO_REMOVAL_REASON]: Object.freeze({
+    prove: proveCargoRemoval,
+    evidenceKey: "cargoRemoval",
+    phrase: "a reviewed removal-only Cargo.lock transition",
+    readmePhrase: "a reviewed removal-only `Cargo.lock` transition",
+    noteLabel: "Cargo removal transition",
+    text: cargoRemovalText,
+    markdown: cargoRemovalMarkdown,
+    assertMovement: assertCargoRemovalMovement,
+  }),
+});
+
+// One reviewed declaration-bound Cargo.lock move (`reason` is
+// cargo-internal-rewire or cargo-removal) on a schemaVersion-3 contract. The
 // package version, pnpm lock, normalizer and fingerprint must equal the
 // contract (fixtures, runners and toolchain are checked by
-// validateDarwinEvidence); `rewire` is readCargoRewireEvidence's result for
-// DARWIN_PRODUCER_TARGET, proven by the shared proveCargoInternalRewire.
-export function transitionDarwinCargoRewire(contract, totals, evidence, checkout, rewire) {
-  const reason = CARGO_INTERNAL_REWIRE_REASON;
+// validateDarwinEvidence); `input` is the reason's read*Evidence result for
+// DARWIN_PRODUCER_TARGET, proven by the shared Linux proof.
+function transitionDarwinDeclaredCargo(reason, contract, totals, evidence, checkout, input) {
+  const kind = DECLARED_CARGO_KINDS[reason];
   const repinnedFrom = repinnedFromRecord(contract, evidence.previousContract);
   const errors = checkRepinTotals(contract, totals);
   if (contract.schemaVersion !== 3) {
@@ -1080,8 +1124,8 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
     );
   }
   if (errors.length > 0) throw new Error(errors.join("; "));
-  const transition = proveCargoInternalRewire({
-    ...rewire,
+  const transition = kind.prove({
+    ...input,
     contractSha: contract.toolchain.cargoLockSha256,
     artifactSha: evidence.cargoLockSha256,
   });
@@ -1101,8 +1145,10 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
       : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
-    " after a reviewed internal Cargo.lock rewire (" +
-    cargoRewireText(transition) +
+    " after " +
+    kind.phrase +
+    " (" +
+    kind.text(transition) +
     "). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, " +
     "toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; " +
     "only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. " +
@@ -1129,13 +1175,14 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
     sourceSha: evidence.sourceSha,
     nativeRunner: evidence.nativeRunner,
     repinnedFrom,
-    cargoRewire: transition,
+    [kind.evidenceKey]: transition,
     originalCheckerResult: evidence.originalCheckerResult,
     actualGzip: actualGzipRows(totals),
     note:
       (evidence.localReceipt
-        ? "Cargo internal-rewire transition from owner-attested local native Darwin arm64 evidence at source "
-        : "Cargo internal-rewire transition from the native Darwin arm64 artifact of run " +
+        ? kind.noteLabel + " from owner-attested local native Darwin arm64 evidence at source "
+        : kind.noteLabel +
+          " from the native Darwin arm64 artifact of run " +
           evidence.runId +
           " (job " +
           evidence.jobId +
@@ -1150,19 +1197,22 @@ export function transitionDarwinCargoRewire(contract, totals, evidence, checkout
       "preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact " +
       "measurements with zero allowance; earlier ceilings remain in git history.",
   };
-  assertCargoInternalRewireMovement(contract, next);
+  kind.assertMovement(contract, next);
   return { contract: next, gzipMoves: moves ?? [] };
 }
 
-export function darwinCargoRewireReadmeSection(contract, gzipMoves) {
+function darwinDeclaredCargoReadmeSection(reason, contract, gzipMoves) {
+  const kind = DECLARED_CARGO_KINDS[reason];
   const e = contract.baselineEvidence;
   return (
     "\n## Darwin v" +
     contract.toolchain.packageVersion +
     " " +
-    REASONS[CARGO_INTERNAL_REWIRE_REASON].heading +
+    REASONS[reason].heading +
     "\n\n" +
-    "The Darwin arm64 contract recorded a reviewed internal `Cargo.lock` rewire at v" +
+    "The Darwin arm64 contract recorded " +
+    kind.readmePhrase +
+    " at v" +
     contract.toolchain.packageVersion +
     (e.event === "local-native"
       ? " from owner-attested local native evidence (receipt SHA-256 `" +
@@ -1179,7 +1229,7 @@ export function darwinCargoRewireReadmeSection(contract, gzipMoves) {
         ") at source `") +
     e.sourceSha +
     "`: " +
-    cargoRewireMarkdown(e.cargoRewire) +
+    kind.markdown(e[kind.evidenceKey]) +
     " The package version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, " +
     "toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is " +
     "unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove " +
@@ -1196,6 +1246,41 @@ export function darwinCargoRewireReadmeSection(contract, gzipMoves) {
         "); that is transfer-size evidence in `baselineEvidence.actualGzip`, not a ceiling.") +
     " Linux x64 moves in the same paired change (`--stage`, then `--apply`).\n"
   );
+}
+
+// One reviewed internal Cargo.lock rewire; `rewire` is readCargoRewireEvidence's
+// result for DARWIN_PRODUCER_TARGET, proven by the shared proveCargoInternalRewire.
+export function transitionDarwinCargoRewire(contract, totals, evidence, checkout, rewire) {
+  return transitionDarwinDeclaredCargo(
+    CARGO_INTERNAL_REWIRE_REASON,
+    contract,
+    totals,
+    evidence,
+    checkout,
+    rewire,
+  );
+}
+
+export function darwinCargoRewireReadmeSection(contract, gzipMoves) {
+  return darwinDeclaredCargoReadmeSection(CARGO_INTERNAL_REWIRE_REASON, contract, gzipMoves);
+}
+
+// One reviewed removal-only Cargo.lock move; `removal` is
+// readCargoRemovalEvidence's result for DARWIN_PRODUCER_TARGET, proven by the
+// shared proveCargoRemoval.
+export function transitionDarwinCargoRemoval(contract, totals, evidence, checkout, removal) {
+  return transitionDarwinDeclaredCargo(
+    CARGO_REMOVAL_REASON,
+    contract,
+    totals,
+    evidence,
+    checkout,
+    removal,
+  );
+}
+
+export function darwinCargoRemovalReadmeSection(contract, gzipMoves) {
+  return darwinDeclaredCargoReadmeSection(CARGO_REMOVAL_REASON, contract, gzipMoves);
 }
 
 // One reviewed dependency-graph move on a schemaVersion-3 contract: the
@@ -1938,6 +2023,19 @@ const DARWIN_HANDLERS = {
     readme: (result) => darwinCargoRewireReadmeSection(result.contract, result.gzipMoves),
     verb: "re-pinned",
   },
+  [CARGO_REMOVAL_REASON]: {
+    checkout: true,
+    run: ({ contract, totals, evidence, checkout, args, root }) =>
+      transitionDarwinCargoRemoval(
+        contract,
+        totals,
+        evidence,
+        checkout,
+        readCargoRemovalEvidence(args, root, DARWIN_PRODUCER_TARGET),
+      ),
+    readme: (result) => darwinCargoRemovalReadmeSection(result.contract, result.gzipMoves),
+    verb: "re-pinned",
+  },
 };
 
 // Actual gzip movement against a schemaVersion-1 contract's actual-gzip ceilings.
@@ -1987,7 +2085,13 @@ export async function main(
     }
     // The CLI may run from the tooling checkout, so every input file path
     // names bytes in the measured source, never the caller's directory.
-    for (const key of ["old-cargo-lock", "rewire-declaration", "old-closure", "new-closure"])
+    for (const key of [
+      "old-cargo-lock",
+      "rewire-declaration",
+      "removal-declaration",
+      "old-closure",
+      "new-closure",
+    ])
       if (args[key]) args[key] = resolve(root, args[key]);
   }
   const handler = DARWIN_HANDLERS[args.reason];

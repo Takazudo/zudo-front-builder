@@ -5,6 +5,7 @@ import { rustlsSecurityLock } from "./fixtures/rustls-security-transition.mjs";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -27,6 +28,7 @@ import {
 import {
   CARGO_INTERNAL_REWIRE_MOVEMENT,
   CARGO_PRODUCER_LOCK_MOVEMENT,
+  CARGO_REMOVAL_MOVEMENT,
   DEPENDENCY_GRAPH_MOVEMENT,
   FINGERPRINT_HELPER_MOVEMENT,
   FINGERPRINT_POLICY_MOVEMENT,
@@ -58,6 +60,7 @@ import {
   darwinRepinReadmeSection,
   rewriteDarwinTestPins,
   transitionDarwinCargoLock,
+  transitionDarwinCargoRemoval,
   transitionDarwinCargoRewire,
   validateDarwinEvidence,
 } from "../rebaseline-island-size-darwin.mjs";
@@ -94,6 +97,14 @@ import {
   writeExternalInputs,
 } from "./fixtures/island-size-external-edge.mjs";
 import { reviewedCargoLock } from "./fixtures/reviewed-cargo-transition.mjs";
+import {
+  REMOVAL_MANIFESTS,
+  removalDeclaration,
+  removalLocks,
+  removalReceipt,
+  writeRemovalInputs,
+  writeRemovalManifests,
+} from "./fixtures/island-size-cargo-removal.mjs";
 
 // Synchronous git/helper end-to-end cases peak near 5.3 s on hosted runners (median up to 3.7 s); measured in #4364.
 vi.setConfig({ testTimeout: 15_000 });
@@ -373,7 +384,7 @@ describe("rebaseline-island-size-darwin", () => {
     expect(bad({ reason: "runtime-identity" })).not.toThrow();
     expect(bad({ reason: "fingerprint-migration" })).not.toThrow();
     expect(bad({ reason: "other" })).toThrow(
-      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire$/,
+      /--reason must be one of metric-migration, release-bump, runtime-identity, fingerprint-migration, fingerprint-helper, cargo-producer-lock, dependency-graph, fingerprint-policy, cargo-internal-rewire, cargo-removal$/,
     );
     // The Linux-only consumer-lock reason (#4184) is not a Darwin re-pin reason.
     expect(bad({ reason: "lockfile-provenance" })).toThrow("--reason must be one of");
@@ -4210,4 +4221,421 @@ describe("local provenance re-pin evidence with separate tooling", () => {
       expect(existsSync(f.values.stage)).toBe(false);
     },
   );
+});
+
+// cargo-removal paired staging (#4388). Test fixture — synthetic removal-only
+// transition, not native evidence: one git-backed checkout whose tag
+// `old-lock` holds the OLD eleven-record Cargo.lock and whose HEAD holds the
+// NEW lock, both contracts pinning the old lock, the workspace manifests and
+// the reviewed inputs; a native Darwin artifact and a Linux artifact both
+// measured at the new lock. The shared proof refusals are covered in
+// cargo-removal-transition.test.mjs; this suite proves the Darwin handler, the
+// paired stage/apply protocol with its bound removal identity, its refusals and
+// the owner-attested local route.
+describe("cargo-removal paired staging (#4388)", () => {
+  const removalRoots = [];
+  const { oldText, newText, OLD, NEW } = removalLocks();
+  const DARWIN = "research/v3-island-size/decision.json";
+  const LINUX = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const OUTPUTS = [DARWIN, LINUX, TEST, README];
+  const LINUX_SOURCE = "b".repeat(40);
+  let repo;
+  let darwinArtifact;
+  let linuxArtifact;
+  let darwinPinned;
+  let darwinInputs;
+  let linuxInputs;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const contractOf = (file) => JSON.parse(read(file).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+  const tempDir = (prefix) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    removalRoots.push(dir);
+    return dir;
+  };
+  const darwinArtifactAt = (tweak) => {
+    const dir = makeArtifact({
+      version: repo.version,
+      tweak: (p, mode) => {
+        p.fixtureSha256 = repo.fixtureSha256;
+        p.runnerSha256 = repo.runnerSha256;
+        p.pnpmLockSha256 = repo.pnpmLockSha256;
+        p.cargoLockSha256 = NEW;
+        p.dependencyFingerprint = { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 };
+        tweak?.(p, mode);
+      },
+    });
+    removalRoots.push(roots.splice(roots.indexOf(dir), 1)[0]);
+    return dir;
+  };
+
+  beforeAll(() => {
+    repo = makeGitCheckout(removalRoots, {
+      oldCargoLock: oldText,
+      newCargoLock: newText,
+      prepare: (checkout) => writeRemovalManifests(checkout.root),
+    });
+    repo.git("tag", "old-lock");
+    darwinArtifact = darwinArtifactAt();
+    linuxArtifact = tempDir("zfb-removal-linux-artifact-");
+    const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+    writeRuns(linuxArtifact, Object.keys(liveOf(LINUX).ceilings.workspace), (mode) => ({
+      sourceSha: LINUX_SOURCE,
+      mode,
+      platform: { os: "linux", arch: "x64" },
+      fixtureVersion: liveOf(LINUX).fixtureVersion,
+      fixtureSha256: repo.fixtureSha256,
+      runnerSha256: repo.runnerSha256,
+      packageVersion: repo.version,
+      runtimePackageVersion: repo.version,
+      honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
+      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
+      zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
+      compression: liveOf(LINUX).compression,
+      repeats: 2,
+      pnpmLockSha256: repo.pnpmLockSha256,
+      dependencyFingerprint: { policyVersion: 1, sha256: repo.dependencyFingerprint.sha256 },
+      cargoLockSha256: NEW,
+    }));
+    const pin = (contract, artifactDir) => {
+      contract.ceilings = ceilingsOf(artifactDir);
+      contract.fixtureSha256 = { ...repo.fixtureSha256 };
+      contract.runnerSha256 = { ...repo.runnerSha256 };
+      contract.toolchain.packageVersion = repo.version;
+      contract.toolchain.pnpmLockSha256 = repo.pnpmLockSha256;
+      contract.toolchain.cargoLockSha256 = OLD;
+      contract.dependencyFingerprint = { ...repo.dependencyFingerprint };
+      return contract;
+    };
+    darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
+    darwinPinned.fixtureVersion = legacy.fixtureVersion;
+    darwinPinned.compression = legacy.compression;
+    darwinPinned.normalizerSha256 = normalizerSha256();
+    for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
+      darwinPinned.toolchain[key] = legacy.toolchain[key];
+    }
+    writeFileSync(at(DARWIN), contractText(darwinPinned));
+    writeFileSync(at(LINUX), contractText(pin(liveOf(LINUX), linuxArtifact)));
+    writeFileSync(at(TEST), PRE_LOCAL_DARWIN_PINS);
+    darwinInputs = writeRemovalInputs(at("research/v3-island-size/removal-darwin"), DARWIN_TARGET);
+    linuxInputs = writeRemovalInputs(at("research/v3-island-size/removal-linux"), LINUX_TARGET);
+    repo.git("add", "-A");
+    repo.git("commit", "-qm", "test fixture: new Cargo.lock, pinned contracts, removal inputs");
+    saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of removalRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const cargoArgs = {
+    reason: "cargo-removal",
+    "expected-old-cargo-sha": OLD,
+    "expected-new-cargo-sha": NEW,
+    "old-cargo-ref": "old-lock",
+  };
+  const darwinArgv = (extra = {}) =>
+    Object.entries({
+      ...args,
+      artifact: darwinArtifact,
+      ...cargoArgs,
+      ...darwinInputs,
+      stage: join(tempDir("zfb-removal-stage-"), "stage"),
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const linuxArgv = (extra = {}) =>
+    Object.entries({
+      artifact: linuxArtifact,
+      "run-id": "71",
+      "job-id": "72",
+      // Linux measured the PR merge source of the probe head Darwin measured natively.
+      "head-sha": SOURCE_SHA,
+      "source-sha": LINUX_SOURCE,
+      ...cargoArgs,
+      ...linuxInputs,
+      ...extra,
+    })
+      .filter(([, value]) => value !== undefined)
+      .flatMap(([key, value]) => ["--" + key, value]);
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const unchanged = (before) =>
+    OUTPUTS.forEach((file, i) => expect(read(file).equals(before[i])).toBe(true));
+  const live = () => OUTPUTS.map((file) => saved[file]);
+  const manifestOf = (stage) =>
+    JSON.parse(readFileSync(join(stage, "stage-manifest.json"), "utf8"));
+  const editRuns = (stage, edit) => {
+    const manifest = manifestOf(stage);
+    edit(manifest.runs);
+    writeFileSync(join(stage, "stage-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+  };
+  async function stagePair() {
+    const stage = join(tempDir("zfb-removal-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await main(darwinArgv({ stage }), repo.root);
+    return stage;
+  }
+  const disagree = (problem) =>
+    "--reason cargo-removal paired runs disagree: " +
+    problem +
+    "; discard the stage directory and stage both platforms from one checkout and one measured candidate";
+
+  it("moves only the Cargo hash and its evidence in the pure Darwin transition", () => {
+    const artifact = loadDarwinArtifact(darwinArtifact);
+    expect(validateDarwinEvidence(darwinPinned, artifact, SOURCE_SHA, "cargo-removal")).toEqual([]);
+    const evidence = evidenceFor({ ...args, reason: "cargo-removal" }, artifact);
+    const checkout = {
+      dependencyFingerprint: repo.dependencyFingerprint,
+      dependencyFingerprintError: null,
+    };
+    const removal = {
+      expectedOldSha: OLD,
+      expectedNewSha: NEW,
+      oldText,
+      newText,
+      oldLockSource: { commit: "a".repeat(40), path: "Cargo.lock", sha256: OLD },
+      newLockSource: { sha256: NEW },
+      declaration: removalDeclaration(),
+      declarationSource: { path: "removal.json", sha256: "1".repeat(64) },
+      closures: {
+        old: { receipt: removalReceipt("old", DARWIN_TARGET), sha256: "2".repeat(64) },
+        new: { receipt: removalReceipt("new", DARWIN_TARGET), sha256: "3".repeat(64) },
+      },
+      target: DARWIN_TARGET,
+      readManifest: (path) => Buffer.from(REMOVAL_MANIFESTS[path]),
+    };
+    const { contract: next } = transitionDarwinCargoRemoval(
+      darwinPinned,
+      totalsOf(artifact),
+      evidence,
+      checkout,
+      removal,
+    );
+    expect(next.outcome).toBe("cargo-removal-transition");
+    expect(next.toolchain).toEqual({ ...darwinPinned.toolchain, cargoLockSha256: NEW });
+    expect(next.ceilings).toEqual(darwinPinned.ceilings);
+    expect(next.dependencyFingerprint).toEqual(darwinPinned.dependencyFingerprint);
+    expect(next.baselineEvidence).not.toHaveProperty("cargoRewire");
+    expect(next.baselineEvidence.cargoRemoval).toMatchObject({
+      oldSha: OLD,
+      newSha: NEW,
+      added: [],
+      removed: [{ id: "deno_core@0.399.0" }, { id: "serde_v8@0.250.0" }],
+      closure: { target: DARWIN_TARGET, rows: { old: 7, new: 7, unchanged: 7 }, removed: [] },
+    });
+    expect(Object.keys(next.baselineEvidence.repinnedFrom)).toEqual(REPINNED_FROM_KEYS);
+    for (const key of contractDiffKeys(darwinPinned, next)) {
+      expect(
+        CARGO_REMOVAL_MOVEMENT.some((allowed) => key === allowed || key.startsWith(allowed + ".")),
+      ).toBe(true);
+    }
+    expect(next.platformStatus).toContain("after a reviewed removal-only Cargo.lock transition");
+    expect(next.baselineEvidence.note.startsWith("Cargo removal transition from the native")).toBe(
+      true,
+    );
+    // Linux receipts are refused for the Darwin target.
+    expect(() =>
+      transitionDarwinCargoRemoval(darwinPinned, totalsOf(artifact), evidence, checkout, {
+        ...removal,
+        closures: {
+          old: { receipt: removalReceipt("old", LINUX_TARGET), sha256: "2".repeat(64) },
+          new: { receipt: removalReceipt("new", LINUX_TARGET), sha256: "3".repeat(64) },
+        },
+      }),
+    ).toThrow(
+      "old closure receipt was recorded for target x86_64-unknown-linux-gnu, not aarch64-apple-darwin",
+    );
+    const moved = structuredClone(darwinPinned);
+    moved.toolchain.packageVersion = "9.9.8";
+    expect(() =>
+      transitionDarwinCargoRemoval(moved, totalsOf(artifact), evidence, checkout, removal),
+    ).toThrow("--reason cargo-removal allows only Cargo.lock to move, but packageVersion differ");
+  });
+
+  it("stages both platforms with one bound removal identity and applies them in one step", async () => {
+    quiet();
+    const stage = await stagePair();
+    unchanged(live());
+    const staged = (file) => readFileSync(join(stage, file));
+    const linuxNext = JSON.parse(staged(LINUX).toString("utf8"));
+    const darwinNext = JSON.parse(staged(DARWIN).toString("utf8"));
+    expect(linuxNext.toolchain.cargoLockSha256).toBe(NEW);
+    expect(darwinNext.toolchain.cargoLockSha256).toBe(NEW);
+    expect(darwinNext.baselineEvidence.cargoRemoval.closure.target).toBe(DARWIN_TARGET);
+    expect(linuxNext.baselineEvidence.cargoRemoval.closure.target).toBe(LINUX_TARGET);
+    const [linuxRun, darwinRun] = manifestOf(stage).runs;
+    expect(linuxRun.transition).toEqual(darwinRun.transition);
+    expect(linuxRun.removal).toEqual({
+      declarationSha256: sha(readFileSync(linuxInputs["removal-declaration"])),
+      oldLockSha256: OLD,
+      newLockSha256: NEW,
+    });
+    expect(darwinRun.removal).toEqual(linuxRun.removal);
+    expect(darwinRun).toMatchObject({
+      reason: "cargo-removal",
+      platform: "darwin-arm64",
+      sourceSha: SOURCE_SHA,
+      runId: 7,
+      artifactId: 9,
+    });
+    const readme = staged(README).toString("utf8");
+    const linuxAt = readme.indexOf("cargo-removal transition\n\nThe Linux contract");
+    const darwinAt = readme.indexOf("## Darwin v" + repo.version + " cargo-removal transition");
+    expect(linuxAt).toBeGreaterThan(0);
+    expect(darwinAt).toBeGreaterThan(linuxAt);
+    expect(readme).toContain("reviewed removal-only `Cargo.lock` transition");
+    applyStage(stage, repo.root, () => {});
+    for (const file of OUTPUTS) expect(read(file).equals(staged(file))).toBe(true);
+    expect(contractOf(DARWIN).outcome).toBe("cargo-removal-transition");
+    expect(contractOf(LINUX).outcome).toBe("cargo-removal-transition");
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      /moved since staging; nothing was applied/,
+    );
+  });
+
+  it("refuses the second platform and --apply when the pair does not match", async () => {
+    quiet();
+    // Byte-different declaration: the Darwin side names a different digest.
+    const other = writeRemovalInputs(tempDir("zfb-removal-other-"), DARWIN_TARGET);
+    writeFileSync(other["removal-declaration"], JSON.stringify(removalDeclaration()) + "\n");
+    const stage = join(tempDir("zfb-removal-pair-"), "stage");
+    await linuxMain(linuxArgv({ stage }), repo.root);
+    await expect(main(darwinArgv({ stage, ...other }), repo.root)).rejects.toThrow(
+      disagree(
+        "removal declarationSha256 differs (linux-x64 " +
+          sha(readFileSync(linuxInputs["removal-declaration"])) +
+          ", darwin-arm64 " +
+          sha(readFileSync(other["removal-declaration"])) +
+          ")",
+      ) + " (nothing was staged)",
+    );
+    await expect(main(["--apply", stage], repo.root)).rejects.toThrow(
+      "--reason cargo-removal is not staged for darwin-arm64",
+    );
+    const forged = await stagePair();
+    editRuns(forged, (runs) => (runs[1].removal.oldLockSha256 = "9".repeat(64)));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      disagree(
+        "removal oldLockSha256 differs (linux-x64 " +
+          OLD +
+          ", darwin-arm64 " +
+          "9".repeat(64) +
+          ")",
+      ) + " (nothing was applied)",
+    );
+    editRuns(forged, (runs) => {
+      runs[1].rewire = runs[1].removal;
+      delete runs[1].removal;
+    });
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      "darwin-arm64 run records no removal identity",
+    );
+    editRuns(forged, (runs) => (runs[0].reason = "cargo-internal-rewire"));
+    await expect(main(["--apply", forged], repo.root)).rejects.toThrow(
+      "the stage directory mixes --reason cargo-internal-rewire, cargo-removal",
+    );
+    unchanged(live());
+  });
+
+  it("refuses a tampered stage and moved totals without a live write", async () => {
+    quiet();
+    const stage = await stagePair();
+    writeFileSync(join(stage, DARWIN), "{}\n");
+    expect(() => applyStage(stage, repo.root, () => {})).toThrow(
+      /the staged research\/v3-island-size\/decision\.json changed after staging/,
+    );
+    unchanged(live());
+    const grown = structuredClone(darwinPinned);
+    grown.ceilings.packed.model.gzipNormalized += 1;
+    writeFileSync(at(DARWIN), contractText(grown));
+    await expect(main(darwinArgv(), repo.root)).rejects.toThrow(
+      "gzipNormalized totals changed (packed/model -1)",
+    );
+    const raw = structuredClone(darwinPinned);
+    raw.ceilings.workspace["event-only"].raw -= 1;
+    writeFileSync(at(DARWIN), contractText(raw));
+    await expect(main(darwinArgv(), repo.root)).rejects.toThrow(
+      "raw totals changed (workspace/event-only)",
+    );
+    writeFileSync(at(DARWIN), saved[DARWIN]);
+    await expect(
+      main(darwinArgv({ artifact: darwinArtifactAt((p) => (p.cargoLockSha256 = OLD)) }), repo.root),
+    ).rejects.toThrow("artifact Cargo.lock hash differs from this checkout's Cargo.lock");
+    await expect(main(darwinArgv({ stage: undefined }), repo.root)).rejects.toThrow(
+      "--reason cargo-removal re-pins both platforms together and only stages",
+    );
+    await expect(main(darwinArgv({ "removal-declaration": undefined }), repo.root)).rejects.toThrow(
+      "required --removal-declaration",
+    );
+    unchanged(live());
+  });
+
+  it("stages and applies owner-attested local evidence through the cargo-removal profile", async () => {
+    quiet();
+    const source = repo.git("rev-parse", "HEAD").trim();
+    const artifact = realpathSync(darwinArtifactAt((p) => (p.sourceSha = source)));
+    const runner = join(artifact, "runner-provenance.txt");
+    writeFileSync(runner, readFileSync(runner, "utf8").replace(SOURCE_SHA, source));
+    const receipt = {
+      schemaVersion: 1,
+      kind: "local-native-darwin",
+      operator: "fixture owner",
+      collectedAt: "2026-01-01T00:00:00.000Z",
+      source: { commit: source, clean: true },
+      platform: { os: "darwin", arch: "arm64" },
+      commands: [["fixture-collector", "--two-passes"]],
+      bundle: { location: "retained fixture bundle", sha256: localBundleDigest(artifact) },
+    };
+    const receiptPath = join(realpathSync(tempDir("zfb-local-receipt-")), "receipt.json");
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const tools = makeGitCheckout(removalRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const stage = join(tempDir("zfb-local-stage-"), "stage");
+    const argv = darwinArgv({
+      stage,
+      artifact,
+      "source-sha": source,
+      "run-id": undefined,
+      "job-id": undefined,
+      "artifact-id": undefined,
+      "artifact-expires-at": undefined,
+      "tool-sha": toolSha,
+      "local-receipt": receiptPath,
+      "local-receipt-sha": sha(readFileSync(receiptPath)),
+    });
+    await main(argv, repo.root, undefined, tools.root);
+    await linuxMain(linuxArgv({ stage, "head-sha": source }), repo.root);
+    unchanged(live());
+    const staged = JSON.parse(readFileSync(join(stage, DARWIN), "utf8"));
+    expect(staged.baselineEvidence).toMatchObject({
+      event: "local-native",
+      localReceipt: { receipt },
+      stagingTool: { commit: toolSha },
+      cargoRemoval: { oldSha: OLD, newSha: NEW },
+    });
+    for (const key of ["runId", "jobId", "artifact", "cargoRewire", "cargoTransition"])
+      expect(staged.baselineEvidence).not.toHaveProperty(key);
+    // A removal stage relabelled as the rewire reason must not borrow its profile.
+    const relabelled = join(tempDir("zfb-local-relabel-"), "stage");
+    cpSync(stage, relabelled, { recursive: true });
+    editRuns(relabelled, (runs) => {
+      for (const run of runs) run.reason = "cargo-internal-rewire";
+    });
+    expect(() => applyStage(relabelled, repo.root)).toThrow(/local Darwin evidence/);
+    applyStage(stage, repo.root);
+    expect(contractOf(DARWIN).baselineEvidence.event).toBe("local-native");
+    expect(contractOf(DARWIN).outcome).toBe("cargo-removal-transition");
+  });
 });

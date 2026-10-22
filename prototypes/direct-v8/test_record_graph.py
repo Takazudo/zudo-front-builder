@@ -25,6 +25,12 @@ class Classifier(unittest.TestCase):
         self.assertFalse(passed)
         self.assertEqual(invalid, ["zfb-render v0.0.0 features=[direct-v8]"])
 
+    def test_cli_forbids_only_deno_and_serde_v8_records(self):
+        for row in ("zfb-render v0.0.0 features=[]", "zfb-build v0.0.0 features=[]", "zfb-js-host v0.0.0 features=[]"):
+            self.assertTrue(graph.evaluate([*CLEAN, row], cli=True)[0], row)
+        for row in ("zfb-render v0.0.0 features=[]", "zfb-build v0.0.0 features=[]"):
+            self.assertFalse(graph.evaluate([*CLEAN, row], cli=False)[0], row)
+
     def test_any_deno_crate_rejects(self):
         for row in ["deno_core v0.400.0 features=[]", "deno_unsync v0.4.0 features=[]", "serde_v8 v0.300.0 features=[]"]:
             self.assertFalse(graph.evaluate([*CLEAN, row], cli=True)[0], row)
@@ -65,6 +71,39 @@ class Command(unittest.TestCase):
         _, report, argv = self.run_with("\n".join(CLEAN) + "\n", "--cli")
         self.assertEqual(argv[argv.index("--target") + 1], "x86_64-unknown-linux-gnu")
         self.assertEqual(report["features"], "direct-v8")
+
+    def test_default_selection_passes_no_feature_flags_and_records_selection(self):
+        result, report, argv = self.run_with("\n".join(CLEAN) + "\n", "--cli", "--selection", "default",
+                                             "--target", "x86_64-apple-darwin")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--no-default-features", argv)
+        self.assertNotIn("--features", argv)
+        self.assertEqual(argv[argv.index("-p") + 1], "zfb")
+        self.assertEqual((report["selection"], report["features"]), ("default", "default"))
+        self.assertNotIn("--no-default-features", report["build_command"])
+        self.assertEqual(report["build_command"][-2:], ["--bin", "zfb"])
+
+    def test_direct_v8_selection_is_explicit_and_recorded(self):
+        _, report, argv = self.run_with("\n".join(CLEAN) + "\n", "--cli")
+        self.assertEqual(report["selection"], "direct-v8")
+        self.assertEqual(argv[argv.index("--features") + 1], "direct-v8")
+        self.assertIn("--no-default-features", argv)
+
+    def test_default_selection_that_still_resolves_deno_fails_honestly(self):
+        tree = "\n".join([*CLEAN[:2], "deno_core v0.400.0 features=[]", "v8 v146.0.0 features=[]"]) + "\n"
+        result, report, _ = self.run_with(tree, "--cli", "--selection", "default")
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stdout.startswith("FAIL"))
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["forbidden_dependencies"], ["deno_core v0.400.0 features=[]"])
+
+    def test_default_selection_requires_cli_and_no_extra_feature(self):
+        for argv in (["--selection", "default"], ["--cli", "--selection", "default", "--extra-feature", "rolldown-prototype"],
+                     ["--cli", "--selection", "other"]):
+            result, report, cargo_argv = self.run_with("", *argv)
+            self.assertEqual(result.returncode, 2, argv)
+            self.assertIsNone(report)
+            self.assertIsNone(cargo_argv)
 
     def test_deno_row_fails_with_report(self):
         result, report, _ = self.run_with("\n".join([*CLEAN, "deno_core v0.400.0 features=[]"]) + "\n", "--cli")
