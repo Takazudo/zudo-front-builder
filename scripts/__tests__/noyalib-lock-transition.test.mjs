@@ -23,7 +23,11 @@ const proof = (patch = {}) =>
     artifactSha: review.newSha,
     expectedOldSha: review.oldSha,
     expectedNewSha: review.newSha,
-    oldLockSource: { commit: review.sourceSha, path: "Cargo.lock", sha256: review.oldSha },
+    oldLockSource: {
+      commit: review.sourceSha,
+      path: "Cargo.lock",
+      sha256: review.oldSha,
+    },
     added,
     ...patch,
   });
@@ -39,9 +43,19 @@ describe("exact noyalib 0.0.58 adoption", () => {
   it("starts from the lock the webpki transition produced", () => {
     expect(NOYALIB_LOCK_TRANSITION.oldLockSha256).toBe(sha(webpkiSecurityLock().newText));
   });
-  it("matches the committed Cargo.lock byte for byte", () => {
+  it("leads to the committed Cargo.lock through the reviewed Deno-exit removal (#4396)", () => {
+    const denoExit = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../research/v3-island-size/cargo-transitions/deno-exit-4303.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
     const live = readFileSync(new URL("../../Cargo.lock", import.meta.url), "utf8");
-    expect(sha(live)).toBe(NOYALIB_LOCK_TRANSITION.newLockSha256);
+    expect(denoExit.oldCargoLockSha256).toBe(NOYALIB_LOCK_TRANSITION.newLockSha256);
+    expect(sha(live)).toBe(denoExit.newCargoLockSha256);
   });
   it("admits only the approved pair and records the decision", () => {
     expect(proof()).toMatchObject({
@@ -70,7 +84,11 @@ describe("exact noyalib 0.0.58 adoption", () => {
   ])("rejects a changed %s even when the artifact and operator agree", (_name, alter) => {
     const changed = alter(newText);
     expect(() =>
-      proof({ newText: changed, artifactSha: sha(changed), expectedNewSha: sha(changed) }),
+      proof({
+        newText: changed,
+        artifactSha: sha(changed),
+        expectedNewSha: sha(changed),
+      }),
     ).toThrow(/exact approved old\/new/);
   });
   it("rejects other predecessors and reversal", () => {
