@@ -116,6 +116,10 @@ impl Request {
             } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
                 jsx.import_source = Some(value.to_string());
                 has_jsx = true;
+            } else if let Some(value) = arg.strip_prefix("--conditions=") {
+                // Esbuild adds custom conditions to its defaults; Rolldown's
+                // resolver extends its own defaults the same way.
+                resolve.condition_names = Some(value.split(',').map(str::to_string).collect());
             } else if let Some(value) = arg.strip_prefix("--main-fields=") {
                 resolve.main_fields = Some(value.split(',').map(str::to_string).collect());
             } else {
@@ -206,6 +210,30 @@ impl Request {
             }
         }
         options.module_types = Some(types.into_iter().collect());
+        // Esbuild applies an explicit --tsconfig's JSX settings to every file,
+        // node_modules included. Rolldown matches each file against that
+        // tsconfig's include scope, so JSX in a linked workspace package fell
+        // back to `react/jsx-runtime`. Carry the settings as transform options.
+        if let Some(rolldown_common::TsConfig::Manual(path)) = &options.tsconfig {
+            let compiler = std::fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|config| config.get("compilerOptions").cloned());
+            if let Some(compiler) = compiler {
+                if jsx.import_source.is_none() {
+                    if let Some(source) = compiler["jsxImportSource"].as_str() {
+                        jsx.import_source = Some(source.to_string());
+                        has_jsx = true;
+                    }
+                }
+                if jsx.runtime.is_none()
+                    && matches!(compiler["jsx"].as_str(), Some("react-jsx" | "react-jsxdev"))
+                {
+                    jsx.runtime = Some("automatic".into());
+                    has_jsx = true;
+                }
+            }
+        }
         if has_jsx {
             transform.jsx = Some(rolldown_common::Either::Right(jsx));
         }

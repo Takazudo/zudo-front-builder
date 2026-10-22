@@ -132,6 +132,11 @@ impl Plugin for GraphPlugin {
             let Some(info) = ctx.get_module_info(&id) else {
                 bail!("missing resolved module info: {id}")
             };
+            // External modules carry module info without code. Esbuild's
+            // metafile lists them only as external imports, never as inputs.
+            if info.code.is_none() {
+                continue;
+            }
             let mut imports = Vec::new();
             for (ids, kind) in [
                 (&info.imported_ids, "import-statement"),
@@ -143,7 +148,12 @@ impl Plugin for GraphPlugin {
                         copy_outputs.insert(imported.to_string(), filename.clone());
                         imports.push(json!({"path": imported.as_str(), "kind":kind, "external":false, "zfbCopiedOutput":filename}));
                     } else {
-                        imports.push(json!({"path": imported.as_str(), "kind":kind, "external": ctx.get_module_info(imported).is_none()}));
+                        let external = ctx
+                            .get_module_info(imported)
+                            .is_none_or(|info| info.code.is_none());
+                        imports.push(
+                            json!({"path": imported.as_str(), "kind":kind, "external": external}),
+                        );
                     }
                 }
             }
@@ -186,6 +196,45 @@ pub fn run_prepared(cmd: &Command) -> Result<()> {
     }
     Ok(())
 }
+/// Re-render unresolved imports in esbuild's shape, with paths relative to the
+/// job's working directory, so the callers' existing esbuild diagnostic mapping
+/// (shadow path to project path, out-of-root hints) applies unchanged. Returns
+/// `None` unless every diagnostic is an unresolved import it can parse.
+fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
+    let process_cwd = std::env::current_dir().ok()?;
+    let mut report = String::new();
+    for diagnostic in rendered {
+        let (_, rest) = diagnostic.split_once("[UNRESOLVED_IMPORT] Could not resolve '")?;
+        let (specifier, _) = rest.split_once("' in ")?;
+        let (_, location) = diagnostic.split_once("╭─[ ")?;
+        let (location, _) = location.split_once(" ]")?;
+        let mut parts = location.rsplitn(3, ':');
+        let col = parts.next()?;
+        let row = parts.next()?;
+        let path = lexical_normal(&process_cwd.join(parts.next()?));
+        let shown = path.strip_prefix(cwd).unwrap_or(&path);
+        report.push_str(&format!(
+            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n\n",
+            shown.display()
+        ));
+    }
+    (!report.is_empty()).then(|| report.trim_end().to_string())
+}
+
+fn lexical_normal(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let start = Instant::now();
     let inputs = Arc::new(Mutex::new(BTreeMap::new()));
@@ -219,23 +268,26 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     // close also clears the pinned driver's retained state on returned errors;
     // a cleanup error must never replace the original generation diagnostic.
     let closed = bundler.close().await;
+    let cwd = request.cwd.clone();
     let result = generated.map_err(|e| {
-        anyhow::anyhow!(
-            "Rolldown native diagnostic: {}",
-            e.into_vec()
-                .iter()
-                .map(|d| d.to_diagnostic().convert_to_string(false))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
+        let rendered: Vec<_> = e
+            .into_vec()
+            .iter()
+            .map(|d| d.to_diagnostic().convert_to_string(false))
+            .collect();
+        match esbuild_style_unresolved(&rendered, &cwd) {
+            Some(report) => anyhow::anyhow!("{report}"),
+            None => anyhow::anyhow!("Rolldown native diagnostic: {}", rendered.join("\n")),
+        }
     })?;
     closed.map_err(|e| anyhow::anyhow!("Rolldown close diagnostic: {e:?}"))?;
     for warning in &result.warnings {
         if warning.kind().to_string() == "UNRESOLVED_IMPORT" {
-            bail!(
-                "Rolldown refused unresolved import: {}",
-                warning.to_diagnostic().convert_to_string(false)
-            );
+            let rendered = [warning.to_diagnostic().convert_to_string(false)];
+            match esbuild_style_unresolved(&rendered, &cwd) {
+                Some(report) => bail!("{report}"),
+                None => bail!("Rolldown refused unresolved import: {}", rendered[0]),
+            }
         }
     }
     let bundle_us = start.elapsed().as_micros();

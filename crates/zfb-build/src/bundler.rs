@@ -15461,7 +15461,23 @@ fn run_esbuild(
 
     #[cfg(feature = "rolldown-prototype")]
     if zfb_rolldown_prototype::enabled() {
-        return zfb_rolldown_prototype::run_prepared(&cmd);
+        return zfb_rolldown_prototype::run_prepared(&cmd).map_err(|err| {
+            let message = format!("{err:#}");
+            let located: BTreeSet<&Path> = message
+                .lines()
+                .filter_map(esbuild_location_path)
+                .map(Path::new)
+                .collect();
+            crate::jsx_pragma::emit_foreign_pragma_warnings(&input.project_root, located);
+            let friendly = friendly_esbuild_error(
+                &message,
+                shadow,
+                &input.project_root,
+                first_party_root,
+                work_root,
+            );
+            anyhow!("bundler: Rolldown could not bundle: {friendly}")
+        });
     }
 
     let output =
