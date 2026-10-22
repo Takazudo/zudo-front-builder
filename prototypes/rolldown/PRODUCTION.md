@@ -33,7 +33,7 @@ bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build --locked -p zfb --feat
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- node prototypes/rolldown/production.mjs
 ```
 
-The wrapper explicitly unsets native selection for the esbuild leg and sets `ZFB_ROLLDOWN_PROTOTYPE=1` only for the native leg. Logs, both actual graphs, and response reports live in `target/rolldown-production/{esbuild,rolldown}/evidence`. The harness only replaces its owned directories. Manual rollback is simply unset the environment variable, or rebuild without `rolldown-prototype`; a native error has no fallback to esbuild.
+The wrapper sets `ZFB_BUNDLER=esbuild` for the esbuild leg and `ZFB_BUNDLER=rolldown` for the native leg. Logs, both actual graphs, and response reports live in `target/rolldown-production/{esbuild,rolldown}/evidence`. The harness only replaces its owned directories. Manual rollback is `ZFB_BUNDLER=esbuild`, or a rebuild without `rolldown-prototype`; a native error has no fallback to esbuild.
 
 `prepare.mjs` now refreshes its owned SDK copies on every run. The earlier 8e029dd rerun did invoke preparation, but its old copy-if-absent behavior left package metadata at 4.2.0 (the relevant JS was unchanged). The follow-up checks actually use refreshed 4.3.0 copies and freshly embedded CLI SDK. This corrects the prior freshness claim.
 

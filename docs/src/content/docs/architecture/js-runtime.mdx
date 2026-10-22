@@ -135,6 +135,6 @@ cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
 
 Direct V8 is being qualified, not adopted. An opt-in CI lane (`direct-v8.yml`, run by the `direct-v8` or `direct-v8-rolldown` PR label) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows need a Mac and are not run in CI. Whether direct V8 becomes the default and the `deno_core` host is removed is a separate decision ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
 
-Rolldown is a separate non-default bundler prototype (`rolldown-prototype` feature). The `direct-v8-rolldown` lane builds it together with direct V8; esbuild stays the bundler of every released binary.
+Rolldown bundles pages and islands by default (the `rolldown-prototype` feature is in the default feature set). Set `ZFB_BUNDLER=esbuild` to use the embedded esbuild for those bundles instead; esbuild also still compiles `zfb.config.ts` and plugins. The `direct-v8-rolldown` lane builds Rolldown together with direct V8.
 
 `zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.

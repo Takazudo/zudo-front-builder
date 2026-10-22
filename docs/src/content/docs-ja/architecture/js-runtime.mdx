@@ -135,6 +135,6 @@ cargo build --locked -p zfb --no-default-features --features direct-v8 --bin zfb
 
 direct V8 は検証中であり、採用されたわけではありません。オプトインの CI レーン（`direct-v8.yml`、PR に `direct-v8` または `direct-v8-rolldown` ラベルを付けると実行）が Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac が必要なため CI では実行しません。direct V8 をデフォルトにして `deno_core` のホストを取り除くかどうかは別の判断です（[#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302)、[#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)）。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
 
-Rolldown は別の非デフォルトのバンドラープロトタイプ（`rolldown-prototype` フィーチャー）です。`direct-v8-rolldown` レーンはこれを direct V8 と一緒にビルドします。リリースされるすべてのバイナリのバンドラーは esbuild のままです。
+ページとアイランドは、デフォルトで Rolldown がバンドルします（`rolldown-prototype` フィーチャーはデフォルトフィーチャーに含まれます）。`ZFB_BUNDLER=esbuild` を設定すると、これらのバンドルに組み込みの esbuild を使います。`zfb.config.ts` とプラグインのコンパイルには引き続き esbuild を使います。`direct-v8-rolldown` レーンは Rolldown を direct V8 と一緒にビルドします。
 
 `zfb preview` は再ビルドせず、ビルド済み出力を配信します。Cloudflare アダプターでは Wrangler に委譲します。一般に組み込み V8 でページを再レンダリングするコマンドではありません。

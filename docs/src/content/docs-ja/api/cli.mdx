@@ -649,6 +649,7 @@ dev サーバーで直近の `zfb build` と異なる `--define` を使うとき
 | `ZFB_DEV_DEFER_BUNDLE` | 未設定 | `0` を設定すると boot-lazy のバンドル遅延をオプトアウトします（どちらのバリアントでも。最初のリクエスト後ではなく bind 前にレンダラーをビルドします）。boot-lazy が有効なときはデフォルトで有効です。 |
 | `ZFB_DEV_TIMING` | 未設定 | `1` または `true` を設定すると、ファイル変更 tick ごとの dev モードのフェーズタイミングを出力します。 |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120`（秒） | 単一のプラグインフックの応答を待つ最大時間（秒）。これを超えるとプラグインホストが強制終了され、ビルドが失敗します。優先順位: 設定の `pluginHookTimeoutSecs` > この環境変数 > 組み込みのデフォルト 120 秒。 |
+| `ZFB_BUNDLER` | `rolldown` | ページ/SSR とアイランドのバンドルに使うバンドラー。`rolldown`（デフォルト）はプロセス内でバンドルし、`esbuild` は代わりに組み込みの esbuild を使います。それ以外の値は使い方のエラーです。未設定のときは、`ZFB_ROLLDOWN_PROTOTYPE=0` でも esbuild を選べます。 |
 | `ZFB_ESBUILD_BIN` | 未設定 | esbuild バイナリへの絶対パス。埋め込み / staged 済みの esbuild バイナリが利用できない、または上書きしたい場合に、バンドラ、islands コンパイラ、テスト、TypeScript 設定ロード（`zfb.config.ts`）で使用されます。 |
 | `ZFB_DEBUG_SNAPSHOT` | 未設定 | `1` または `true` を設定すると、`zfb build` 実行時にコンテンツスナップショットのエントリ数とシリアライズ後のバイト数を stderr に出力します。大規模サイトでの V8 メモリ負荷の監視に使えます。[インクリメンタルリビルド](../architecture/incremental-rebuild.mdx) を参照してください。 |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler 最小バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
