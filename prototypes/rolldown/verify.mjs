@@ -15,7 +15,7 @@ run(process.execPath, ["prototypes/rolldown/gate.mjs"]);
 for (const backend of ["esbuild", "rolldown"]) {
   const env = { ...process.env, ZFB_DEV_TIMING: "1" };
   delete env.ZFB_ROLLDOWN_PROTOTYPE;
-  if (backend === "rolldown") env.ZFB_ROLLDOWN_PROTOTYPE = "1";
+  env.ZFB_BUNDLER = backend;
   run(`target/${profile}/examples/rolldown_ssr`, [root], env);
   const produce = () => run(`target/${profile}/examples/rolldown_browser`, [root], env);
   const snapshot = () => {

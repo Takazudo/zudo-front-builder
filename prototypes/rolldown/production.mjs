@@ -12,7 +12,7 @@ for (const backend of ["esbuild", "rolldown"]) {
     ZFB_PROTOTYPE_CLI: process.env.ZFB_PROTOTYPE_CLI ?? resolve(`target/${profile}/zfb`),
   };
   delete env.ZFB_ROLLDOWN_PROTOTYPE;
-  if (backend === "rolldown") env.ZFB_ROLLDOWN_PROTOTYPE = "1";
+  env.ZFB_BUNDLER = backend;
   const result = spawnSync(`target/${profile}/examples/rolldown_production`, [], {
     env,
     stdio: "inherit",

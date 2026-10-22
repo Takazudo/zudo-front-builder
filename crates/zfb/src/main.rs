@@ -15,6 +15,10 @@ fn main() {
 #[tokio::main]
 async fn run() {
     let cli = Cli::parse();
+    if let Err(e) = zfb::check_bundler_selection(std::env::var_os("ZFB_BUNDLER").as_deref()) {
+        zfb::report_error(&e);
+        std::process::exit(1);
+    }
     let result = match &cli.command {
         Command::New(args) => commands::new::run(args).await,
         Command::Dev(args) => commands::dev::run(args).await,

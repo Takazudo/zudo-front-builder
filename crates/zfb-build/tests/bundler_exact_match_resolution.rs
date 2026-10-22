@@ -1583,9 +1583,7 @@ fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
 
     let error = bundle(input).expect_err("CSS context must not fall through to live excluded CSS");
     let message = format!("{error:#}");
-    if cfg!(feature = "rolldown-prototype")
-        && std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
-    {
+    if rolldown_selected() {
         assert!(
             message.contains("ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED"),
             "{message}"
@@ -1640,9 +1638,7 @@ fn css_import_context_keeps_css_when_invalid_ts_alternate_is_excluded() {
     input.bundle_exclude = vec!["src/theme.ts".to_string()];
 
     let result = bundle(input);
-    if cfg!(feature = "rolldown-prototype")
-        && std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
-    {
+    if rolldown_selected() {
         // Raw CSS is explicitly outside the native prototype's accepted
         // contract. Keep the ordinary esbuild success assertion below intact.
         let error = result.expect_err("native raw CSS must fail closed");
@@ -3439,4 +3435,11 @@ fn excluded_alias_cannot_fall_back_to_transitively_staged_package() {
         let body = fs::read_to_string(bundle_path).unwrap();
         assert!(!body.contains("TRANSITIVE_LIVE_BARE_FALLBACK"), "{body}");
     }
+}
+
+fn rolldown_selected() -> bool {
+    #[cfg(feature = "rolldown-prototype")]
+    return zfb_rolldown_prototype::enabled();
+    #[cfg(not(feature = "rolldown-prototype"))]
+    false
 }

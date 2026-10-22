@@ -28,8 +28,15 @@ use std::{
     time::Instant,
 };
 
+/// Rolldown is the default bundler wherever this backend is compiled in.
+/// `ZFB_BUNDLER=esbuild` selects the esbuild subprocess instead, and the
+/// opt-in-era `ZFB_ROLLDOWN_PROTOTYPE=0` still does when `ZFB_BUNDLER` is unset.
+/// The `zfb` CLI rejects any other `ZFB_BUNDLER` value before a build starts.
 pub fn enabled() -> bool {
-    std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
+    match std::env::var_os("ZFB_BUNDLER") {
+        Some(value) => value != "esbuild",
+        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
+    }
 }
 
 #[derive(Debug)]
@@ -55,7 +62,7 @@ impl Plugin for GraphPlugin {
         // Raw CSS is outside this experiment's contract at the pinned engine.
         if matches!(args.module_type, ModuleType::Css) {
             bail!(
-                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: raw CSS bundling is unsupported by the experimental native backend: {}",
+                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: the Rolldown bundler does not bundle raw CSS yet; set ZFB_BUNDLER=esbuild to build this project: {}",
                 args.id
             );
         }

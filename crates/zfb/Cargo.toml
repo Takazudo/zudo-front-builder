@@ -35,7 +35,7 @@ path = "src/lib.rs"
 direct-v8 = ["zfb-render/direct-v8", "zfb-build/direct-v8", "zfb-server/direct-v8", "zfb-config-loader/direct-v8"]
 
 rolldown-prototype = ["zfb-build/rolldown-prototype", "zfb-islands/rolldown-prototype"]
-default = ["direct-v8"]
+default = ["direct-v8", "rolldown-prototype"]
 embed_v8 = [
     "zfb-render/embed_v8",
     "zfb-build/embed_v8",
