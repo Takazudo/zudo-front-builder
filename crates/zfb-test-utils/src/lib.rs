@@ -43,9 +43,9 @@ use std::process::{Command, Stdio};
 ///    where `*` is each directory entry under `.pnpm` (pnpm's content-
 ///    addressed layout). Mirrors the shape in
 ///    `crates/zfb/tests/css_modules_components_build.rs:166-176`.
-///    Note: the pnpm Windows package puts the binary at the package root
-///    rather than under `bin/`; this path uses `bin/` uniformly following
-///    the spec — a future Windows fix can adjust the suffix path if needed.
+///    The `@esbuild/win32-*` packages ship `esbuild.exe` at the package
+///    root instead of under `bin/`, so on Windows the probe drops `bin/`
+///    (#4422; without it every gated test skipped on `windows-latest`).
 /// 4. Flat pnpm store, per candidate root:
 ///    `node_modules/.pnpm/node_modules/esbuild/bin/<binary>` — kept for
 ///    parity with `crates/zfb-build/tests/embedded_v8_snapshot_e2e.rs`.
@@ -175,17 +175,17 @@ pub fn locate_esbuild_from(roots: &[PathBuf], path_entries: &[PathBuf]) -> Esbui
     }
 
     for root in roots {
-        // Step 3: pnpm nested store — node_modules/.pnpm/*/node_modules/@esbuild/<suffix>/bin/<binary>.
+        // Step 3: pnpm nested store — node_modules/.pnpm/*/node_modules/@esbuild/<suffix>/[bin/]<binary>.
         if let Some(suffix) = esbuild_npm_suffix() {
             let pnpm_dir = root.join("node_modules/.pnpm");
             if let Ok(rd) = std::fs::read_dir(&pnpm_dir) {
                 for entry in rd.flatten() {
-                    let cand = entry
-                        .path()
-                        .join("node_modules/@esbuild")
-                        .join(suffix)
-                        .join("bin")
-                        .join(binary);
+                    let package_dir = entry.path().join("node_modules/@esbuild").join(suffix);
+                    let cand = if cfg!(windows) {
+                        package_dir.join(binary)
+                    } else {
+                        package_dir.join("bin").join(binary)
+                    };
                     if consider_candidate(&mut lookup, cand) {
                         return lookup;
                     }

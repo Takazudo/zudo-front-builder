@@ -4248,8 +4248,10 @@ mod tests {
             msg.starts_with(&expected_prefix),
             "error must match the locked bundle-failure prefix.\nexpected prefix: {expected_prefix}\ngot: {msg}"
         );
+        // esbuild prints `X` instead of `✘` on Windows unless `WT_SESSION`
+        // is set (`isProbablyWindowsCommandPrompt` in its logger, #4422).
         assert!(
-            msg.contains("✘ [ERROR]"),
+            msg.contains("✘ [ERROR]") || msg.contains("X [ERROR]"),
             "the error must carry esbuild's own diagnostic marker, not just our wrapper text: {msg}"
         );
         assert!(
@@ -4762,12 +4764,12 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
         );
         // See the matching comment in
         // `mjs_plugin_import_meta_url_and_relative_fs_read_are_unchanged_through_real_host`:
-        // compare against the canonicalized root, not the raw tempdir
-        // path, to sidestep macOS's `/var` -> `/private/var` symlink.
+        // canonicalize both sides, for macOS's `/var` -> `/private/var`
+        // symlink and Windows's `\\?\` verbatim prefix (#4422).
         let canonical_root = std::fs::canonicalize(root).unwrap();
         assert_eq!(
-            parsed["dir"].as_str().unwrap(),
-            canonical_root.to_string_lossy(),
+            std::fs::canonicalize(parsed["dir"].as_str().unwrap()).unwrap(),
+            canonical_root,
             "the staged bundle's dirname must still be the entry's OWN directory: {written}"
         );
     }
