@@ -748,8 +748,8 @@ describe("island shipped-size budget", () => {
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
-    // owner-attested local evidence); the ceilings below still follow run
-    // 38451538696 (#4203, #4150).
+    // owner-attested local evidence); the ceilings below follow the Rolldown
+    // default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
       "319e1e32bafd3ea1cf647baefac6cf5cd6e0ae0be692e780b4c761c13fb34ec1",
     );
@@ -765,34 +765,43 @@ describe("island shipped-size budget", () => {
     }
     expect(darwinContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 64535, gzipNormalized: 22195 },
-      "scalar-signal": { raw: 64543, gzipNormalized: 22213 },
-      "show-for": { raw: 64695, gzipNormalized: 22272 },
-      model: { raw: 64534, gzipNormalized: 22200 },
-      "blog-theme": { raw: 64890, gzipNormalized: 22334 },
-      "json-api": { raw: 64692, gzipNormalized: 22284 },
-      "multi-island": { raw: 64814, gzipNormalized: 22286 },
+      "event-only": { raw: 66691, gzipNormalized: 21252 },
+      "scalar-signal": { raw: 66702, gzipNormalized: 21257 },
+      "show-for": { raw: 66939, gzipNormalized: 21341 },
+      model: { raw: 66720, gzipNormalized: 21258 },
+      "blog-theme": { raw: 67145, gzipNormalized: 21391 },
+      "json-api": { raw: 66896, gzipNormalized: 21350 },
+      "multi-island": { raw: 67022, gzipNormalized: 21352 },
     });
     expect(darwinContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 64548, gzipNormalized: 22199 },
-      "scalar-signal": { raw: 64556, gzipNormalized: 22203 },
-      "show-for": { raw: 64708, gzipNormalized: 22286 },
-      model: { raw: 64547, gzipNormalized: 22209 },
-      "blog-theme": { raw: 64903, gzipNormalized: 22347 },
-      "json-api": { raw: 64705, gzipNormalized: 22296 },
-      "multi-island": { raw: 64827, gzipNormalized: 22294 },
+      "event-only": { raw: 66691, gzipNormalized: 21252 },
+      "scalar-signal": { raw: 66702, gzipNormalized: 21257 },
+      "show-for": { raw: 66939, gzipNormalized: 21341 },
+      model: { raw: 66720, gzipNormalized: 21258 },
+      "blog-theme": { raw: 67145, gzipNormalized: 21391 },
+      "json-api": { raw: 66896, gzipNormalized: 21350 },
+      "multi-island": { raw: 67022, gzipNormalized: 21352 },
     });
-    // Raw totals never exceed the frozen actual-gzip contract's; #4203's runtime
-    // rework (observed at run 38451538696) lowered them, and the metric moved.
+    // Up to the pre-Rolldown contract, raw totals never exceeded the frozen
+    // actual-gzip contract's: #4203's runtime rework (observed at run
+    // 38451538696) lowered them, and the metric moved. The Rolldown ceilings
+    // (#4417) raised raw by 2,143..2,255 bytes per fixture, which puts exactly
+    // workspace blog-theme 1 byte above it; gzipNormalized stays below.
+    const preRolldown = JSON.parse(
+      readFileSync(join(testDir, "fixtures/island-size-darwin-v4.6.0-noyalib.json"), "utf8"),
+    );
+    const rawAboveBase = [];
     for (const mode of ["workspace", "packed"]) {
       for (const [fixture, ceiling] of Object.entries(darwinContract.ceilings[mode])) {
-        expect(ceiling.raw).toBeLessThanOrEqual(baseContract.ceilings[mode][fixture].raw);
-        expect(ceiling.gzipNormalized).toBeLessThanOrEqual(
-          baseContract.ceilings[mode][fixture].gzip,
-        );
+        const base = baseContract.ceilings[mode][fixture];
+        expect(preRolldown.ceilings[mode][fixture].raw).toBeLessThanOrEqual(base.raw);
+        if (ceiling.raw > base.raw)
+          rawAboveBase.push(mode + "/" + fixture + " +" + (ceiling.raw - base.raw));
+        expect(ceiling.gzipNormalized).toBeLessThanOrEqual(base.gzip);
       }
     }
+    expect(rawAboveBase).toEqual(["workspace/blog-theme +1"]);
     assertHistoricalContractAndReviewedCargoGate(darwinContract);
   });
 
@@ -812,23 +821,23 @@ describe("island shipped-size budget", () => {
     expect(linuxContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
     expect(linuxContract.ceilings.workspace).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 64535, gzipNormalized: 22195 },
-      "scalar-signal": { raw: 64543, gzipNormalized: 22213 },
-      "show-for": { raw: 64695, gzipNormalized: 22272 },
-      model: { raw: 64534, gzipNormalized: 22200 },
-      "blog-theme": { raw: 64890, gzipNormalized: 22334 },
-      "json-api": { raw: 64692, gzipNormalized: 22284 },
-      "multi-island": { raw: 64814, gzipNormalized: 22286 },
+      "event-only": { raw: 66691, gzipNormalized: 21252 },
+      "scalar-signal": { raw: 66702, gzipNormalized: 21257 },
+      "show-for": { raw: 66939, gzipNormalized: 21341 },
+      model: { raw: 66720, gzipNormalized: 21258 },
+      "blog-theme": { raw: 67145, gzipNormalized: 21391 },
+      "json-api": { raw: 66896, gzipNormalized: 21350 },
+      "multi-island": { raw: 67022, gzipNormalized: 21352 },
     });
     expect(linuxContract.ceilings.packed).toEqual({
       "no-island": { raw: 0, gzipNormalized: 0 },
-      "event-only": { raw: 64548, gzipNormalized: 22199 },
-      "scalar-signal": { raw: 64556, gzipNormalized: 22203 },
-      "show-for": { raw: 64708, gzipNormalized: 22286 },
-      model: { raw: 64547, gzipNormalized: 22209 },
-      "blog-theme": { raw: 64903, gzipNormalized: 22347 },
-      "json-api": { raw: 64705, gzipNormalized: 22296 },
-      "multi-island": { raw: 64827, gzipNormalized: 22294 },
+      "event-only": { raw: 66691, gzipNormalized: 21252 },
+      "scalar-signal": { raw: 66702, gzipNormalized: 21257 },
+      "show-for": { raw: 66939, gzipNormalized: 21341 },
+      model: { raw: 66720, gzipNormalized: 21258 },
+      "blog-theme": { raw: 67145, gzipNormalized: 21391 },
+      "json-api": { raw: 66896, gzipNormalized: 21350 },
+      "multi-island": { raw: 67022, gzipNormalized: 21352 },
     });
     assertHistoricalContractAndReviewedCargoGate(linuxContract);
   });
@@ -873,7 +882,7 @@ describe("island shipped-size budget", () => {
     const overflow = v3State();
     overflow.contract.ceilings.packed.model.gzipNormalized -= 1;
     expect(validate(overflow).errors.join("\n")).toContain(
-      "packed model v24.14.0 gzip-identity-normalized v1",
+      "packed model v24.14.0 gzip-identity-normalized v2",
     );
 
     const withoutSidecar = v3State();
@@ -1042,7 +1051,7 @@ describe("island shipped-size budget", () => {
     const overflow = linuxState();
     overflow.contract.ceilings.workspace["multi-island"].gzipNormalized -= 1;
     const findings = validate(overflow).errors.join("\n");
-    expect(findings).toContain("workspace multi-island v24.14.0 gzip-identity-normalized v1");
+    expect(findings).toContain("workspace multi-island v24.14.0 gzip-identity-normalized v2");
     expect(findings).toContain("delta 0/+1");
     expect(findings).toContain("actual gzip " + shipped.gzip + ", evidence only");
 
@@ -1118,9 +1127,10 @@ describe("island shipped-size budget", () => {
     );
 
     const wrongVersion = linuxState();
-    wrongVersion.workspace.normalized.normalizationVersion = 2;
+    // A sidecar left over from the v1 normalizer (before #4417).
+    wrongVersion.workspace.normalized.normalizationVersion = 1;
     expect(validate(wrongVersion).errors.join("\n")).toContain(
-      "workspace normalized: normalizationVersion 2 differs from the contract's v1",
+      "workspace normalized: normalizationVersion 1 differs from the contract's v2",
     );
 
     const wrongNormalizer = linuxState();
@@ -1395,22 +1405,22 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 const repinnedFromContracts = [
   {
     file: "decision-linux-x64.json",
-    commit: "2735135c7634dca7129ae084123d59313365a6d3",
-    sha256: "4d95553a9027b69fc3d81b42505d844e216c33b942761961f268bd331bc492e1",
-    fixture: "fixtures/island-size-linux-x64-v4.6.0-noyalib.json",
-    outcome: "cargo-producer-lock-transition",
+    commit: "ce795d6112962427794c8d17eddc0e4b283828fa",
+    sha256: "15b2fe05272b7a6ae8afca95d95d055444fe39b2f5b225fea5d42cd4d3065064",
+    fixture: "fixtures/island-size-linux-x64-v4.6.0-deno-exit.json",
+    outcome: "cargo-removal-transition",
     packageVersion: "4.6.0",
-    baselineSourceSha: "cf92bfa545410583215a9829bc5c71781463e14b",
-    baselineRunId: 39661748139,
+    baselineSourceSha: "9e48145db73f95fc5a83140465d85c136e504602",
+    baselineRunId: 39739634110,
   },
   {
     file: "decision.json",
-    commit: "2735135c7634dca7129ae084123d59313365a6d3",
-    sha256: "6d7b90a3d13cac7328541e9b099b2dad7b06cdf692234eb6de2beef2b3725e7c",
-    fixture: "fixtures/island-size-darwin-v4.6.0-noyalib.json",
-    outcome: "cargo-producer-lock-transition",
+    commit: "ce795d6112962427794c8d17eddc0e4b283828fa",
+    sha256: "70aa246389be5f47535d28d8a4fc664e9911995e0194d770a239d2a8b9011954",
+    fixture: "fixtures/island-size-darwin-v4.6.0-deno-exit.json",
+    outcome: "cargo-removal-transition",
     packageVersion: "4.6.0",
-    baselineSourceSha: "f65dd70d81da0e407fc3261ef57a99c54de83fdd",
+    baselineSourceSha: "2735135c7634dca7129ae084123d59313365a6d3",
     baselineRunId: undefined,
   },
 ];
@@ -1953,7 +1963,6 @@ describe("live contracts preserve released evidence and authentic predecessors",
         });
         expect(live.baselineEvidence).not.toHaveProperty("cargoRewire");
         const { baselineSourceSha, ...identity } = evidence;
-        expect(live.baselineSourceSha).toBe(baselineSourceSha);
         expect(live.baselineEvidence).toMatchObject(identity);
         if (repinnedFrom) expect(live.baselineEvidence.repinnedFrom).toEqual(repinnedFrom);
         expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
@@ -2168,11 +2177,29 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
   };
 
-  it("moves the live Linux contract from the frozen noyalib bytes only by the Deno-exit removal", () => {
+  // Verbatim bytes of both contracts at ce795d6 (origin/main), the Deno-exit
+  // state the Rolldown re-pin (#4417) moved.
+  const frozenDenoExit = (fixture, sha256) => {
+    const blob = readFileSync(join(testDir, fixture));
+    expect(sha(blob)).toBe(sha256);
+    return JSON.parse(blob.toString("utf8"));
+  };
+  const linuxDenoExit = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v4.6.0-deno-exit.json",
+      "15b2fe05272b7a6ae8afca95d95d055444fe39b2f5b225fea5d42cd4d3065064",
+    );
+  const darwinDenoExit = () =>
+    frozenDenoExit(
+      "fixtures/island-size-darwin-v4.6.0-deno-exit.json",
+      "70aa246389be5f47535d28d8a4fc664e9911995e0194d770a239d2a8b9011954",
+    );
+
+  it("moves the frozen Deno-exit Linux contract from the frozen noyalib bytes only by the Deno-exit removal", () => {
     const predecessor = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-linux-x64-v4.6.0-noyalib.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxDenoExit();
     denoExitRemoval(predecessor, live);
     expect(live.baselineSourceSha).toBe("9e48145db73f95fc5a83140465d85c136e504602");
     expect(live.baselineEvidence).toMatchObject({
@@ -2183,11 +2210,11 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
   });
 
-  it("moves the live Darwin contract from the frozen noyalib bytes only by the Deno-exit removal", () => {
+  it("moves the frozen Deno-exit Darwin contract from the frozen noyalib bytes only by the Deno-exit removal", () => {
     const predecessor = JSON.parse(
       readFileSync(join(testDir, "fixtures/island-size-darwin-v4.6.0-noyalib.json"), "utf8"),
     );
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    const live = darwinDenoExit();
     denoExitRemoval(predecessor, live);
     expect(live.baselineSourceSha).toBe("2735135c7634dca7129ae084123d59313365a6d3");
     expect(live.baselineEvidence).toMatchObject({
@@ -2199,6 +2226,72 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
   });
 
+  // The Rolldown default islands bundler (#4408) under identity normalizer v2
+  // (#4417, owner decision 2026-10-22): both platforms move to the same measured
+  // Rolldown totals, workspace and packed identical, with zero allowance.
+  const rolldownCeilings = {
+    "no-island": { raw: 0, gzipNormalized: 0 },
+    "event-only": { raw: 66691, gzipNormalized: 21252 },
+    "scalar-signal": { raw: 66702, gzipNormalized: 21257 },
+    "show-for": { raw: 66939, gzipNormalized: 21341 },
+    model: { raw: 66720, gzipNormalized: 21258 },
+    "blog-theme": { raw: 67145, gzipNormalized: 21391 },
+    "json-api": { raw: 66896, gzipNormalized: 21350 },
+    "multi-island": { raw: 67022, gzipNormalized: 21352 },
+  };
+  const rolldownNormalizerV2 = (predecessor, live, measuredSource) => {
+    expect(predecessor.normalizationVersion).toBe(1);
+    expect(predecessor.normalizerSha256).toBe(
+      "ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a",
+    );
+    expect(live.normalizationVersion).toBe(2);
+    expect(live.normalizerSha256).toBe(
+      "b07ba2c92f5996ab3586963a1b768dfb3432063a53b10aa65c4f6679e0ce2cec",
+    );
+    expect(live.normalizerSha256).toBe(normalizerSha256());
+    expect(live.ceilings).toEqual({ workspace: rolldownCeilings, packed: rolldownCeilings });
+    expect(live.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
+    expect(live.outcome).toBe("rolldown-ceiling-transition");
+    expect(live.platformStatus).toContain("gzip-identity-normalized v2 (#4417)");
+    expect(live.platformStatus).toContain("the owner approved the move on 2026-10-22");
+    expect(live.platformStatus).toContain(measuredSource);
+    expect(live.baselineEvidence.note).toMatch(/^Bundler ceiling transition \(#4417\)/);
+    const rest = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of [
+        "normalizationVersion",
+        "normalizerSha256",
+        "ceilings",
+        "outcome",
+        "platformStatus",
+      ]) {
+        delete copy[key];
+      }
+      delete copy.baselineEvidence.repinnedFrom;
+      delete copy.baselineEvidence.note;
+      return copy;
+    };
+    expect(Object.keys(live)).toEqual(Object.keys(predecessor));
+    expect(Object.keys(live.baselineEvidence)).toEqual(Object.keys(predecessor.baselineEvidence));
+    expect(rest(live)).toEqual(rest(predecessor));
+  };
+
+  it("moves the live Linux contract from the frozen Deno-exit bytes only by the #4417 Rolldown re-pin", () => {
+    rolldownNormalizerV2(
+      linuxDenoExit(),
+      JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8")),
+      "9b518ab3aa1cf354c6a0c153ff2a954381bb26ce",
+    );
+  });
+
+  it("moves the live Darwin contract from the frozen Deno-exit bytes only by the #4417 Rolldown re-pin", () => {
+    rolldownNormalizerV2(
+      darwinDenoExit(),
+      JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8")),
+      "e5e49ccfda49c5ed2befb62a45e15700c508f57b",
+    );
+  });
+
   it("keeps the dated README corrections", () => {
     const readme = readFileSync(join(sizeDir, "README.md"), "utf8");
     const notes = [
@@ -2208,6 +2301,8 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "compares with the final state of the v4.4.0 contract at source `05ab82100e8f15fa714db9fd1fb5b8e51b41abaf`",
       "`dcf1e923` release bump; Linux evidence is health run 38473455816 at PR-merge source `fafd4a2fbf1dca98ec346794fee3563bdbc18317`, which is intentionally distinct from probe head `dee7d83b0ea45bd32dbe0c6a7f91846ffb3335f3`",
       "at `42cb1bf9` `normalizerSha256` did not change",
+      "## Rolldown default: identity normalizer v2 and ceilings follow #4417",
+      "The owner decided on 2026-10-22, in [#4417]",
     ];
     for (const note of notes) expect(readme).toContain(note);
   });
