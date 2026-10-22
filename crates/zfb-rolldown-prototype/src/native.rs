@@ -371,11 +371,16 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     }
     // The existing audit/dependency schema keys staged routes relative to cwd.
     // Change only representation, preserving the engine's exact resolved edges.
+    // Rolldown ids are canonical, so a symlinked cwd is matched physically too.
+    let physical_cwd = std::fs::canonicalize(&request.cwd).unwrap_or_else(|_| request.cwd.clone());
     let key = |id: &str| {
-        Path::new(id).strip_prefix(&request.cwd).map_or_else(
-            |_| id.to_string(),
-            |p| p.to_string_lossy().replace('\\', "/"),
-        )
+        let id = Path::new(id);
+        let base = if id.starts_with(&request.cwd) {
+            &request.cwd
+        } else {
+            &physical_cwd
+        };
+        esbuild_relative(id, base)
     };
     for input in inputs.values_mut() {
         for import in input["imports"]
@@ -434,4 +439,28 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         );
     }
     Ok(files)
+}
+
+/// Spells `path` the way esbuild's metafile does: relative to `cwd`, with `..`
+/// segments for files outside it. Paths that share no root with `cwd` (another
+/// Windows drive, a virtual id) stay as given.
+fn esbuild_relative(path: &Path, cwd: &Path) -> String {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return path.to_string_lossy().into_owned();
+    }
+    let ours: Vec<_> = path.components().collect();
+    let base: Vec<_> = cwd.components().collect();
+    let shared = ours.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    let rooted = |c: &Component| matches!(c, Component::Prefix(_) | Component::RootDir);
+    if !ours[..shared].iter().any(rooted) {
+        return path.to_string_lossy().into_owned();
+    }
+    let mut parts: Vec<String> = vec!["..".to_string(); base.len() - shared];
+    parts.extend(
+        ours[shared..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
 }

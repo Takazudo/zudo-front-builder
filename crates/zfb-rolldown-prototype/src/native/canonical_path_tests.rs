@@ -131,7 +131,7 @@ fn rewritten_absolute_import_of_a_canonical_path_resolves() {
 }
 
 #[test]
-fn input_outside_cwd_keeps_an_absolute_key_naming_the_file() {
+fn input_outside_cwd_is_keyed_relative_to_cwd_like_esbuild() {
     let site = Dir::new("site");
     let outside = Dir::new("outside");
     let dep = outside.0.join("dep.js");
@@ -152,6 +152,8 @@ fn input_outside_cwd_keeps_an_absolute_key_naming_the_file() {
         .iter()
         .find(|key| key.ends_with("dep.js"))
         .unwrap_or_else(|| panic!("no outside input in {inputs:?}"));
-    assert!(Path::new(key).is_absolute(), "{key}");
-    assert_eq!(fs::canonicalize(key).unwrap(), dep, "{key}");
+    // Esbuild spells a file outside its working directory with `..` segments,
+    // and zfb-build's stage audits match that spelling.
+    assert!(key.starts_with("../"), "{key}");
+    assert_eq!(fs::canonicalize(site.0.join(key)).unwrap(), dep, "{key}");
 }

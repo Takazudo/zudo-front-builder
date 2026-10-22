@@ -47,3 +47,24 @@ fn metafile_imports_follow_source_order_not_path_order() {
     assert!(imports[0].ends_with("zeta.js"), "{imports:?}");
     assert!(imports[1].ends_with("alpha.js"), "{imports:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn metafile_paths_outside_cwd_use_esbuild_parent_segments() {
+    use super::esbuild_relative;
+    use std::path::Path;
+    let cwd = Path::new("/stage/site/app");
+    assert_eq!(
+        esbuild_relative(Path::new("/stage/site/app/pages/a.tsx"), cwd),
+        "pages/a.tsx"
+    );
+    assert_eq!(
+        esbuild_relative(Path::new("/stage/components/b.tsx"), cwd),
+        "../../components/b.tsx"
+    );
+    assert_eq!(
+        esbuild_relative(Path::new("/other/c.ts"), cwd),
+        "../../../other/c.ts"
+    );
+    assert_eq!(esbuild_relative(Path::new("\0virtual"), cwd), "\0virtual");
+}
