@@ -3,6 +3,8 @@ mod canonical_path_tests;
 mod copy_reference;
 #[cfg(test)]
 mod css_tests;
+#[cfg(test)]
+mod metafile_order_tests;
 mod prepared;
 mod trailing_paths;
 mod verbatim_specifiers;
@@ -157,7 +159,9 @@ impl Plugin for GraphPlugin {
                     }
                 }
             }
-            imports.sort_by_key(|v| v["path"].as_str().unwrap().to_owned());
+            // Keep source order, as esbuild does: island graph identity walks
+            // imports in this order, so sorting by resolved path would make the
+            // build token depend on where packages are installed.
             inputs.insert(
                 id.to_string(),
                 json!({"bytes":info.code.as_ref().map_or(0, |s|s.len()), "imports": imports}),
