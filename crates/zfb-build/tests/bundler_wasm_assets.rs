@@ -13,6 +13,10 @@ use zfb_test_utils::locate_esbuild;
 
 const WASM_BYTES: &[u8] = b"\0asm\x01\0\0\0";
 
+/// Serializes the tests here: the metafile test pins `ZFB_BUNDLER=esbuild`
+/// while it runs, and the others must see the default backend.
+static BUNDLER_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn scaffold_project(root: &Path, imports_wasm: bool) {
     for dir in ["pages", "content", "components", "layouts", "wasm"] {
         fs::create_dir_all(root.join(dir)).unwrap();
@@ -100,6 +104,7 @@ fn assert_wasm_bundle(out: &BundlerOutput) {
 
 #[test]
 fn copied_wasm_assets_are_manifested_for_both_production_bundle_passes() {
+    let _env = BUNDLER_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_wasm_assets] no esbuild binary; skipping.");
         return;
@@ -124,6 +129,7 @@ fn copied_wasm_assets_are_manifested_for_both_production_bundle_passes() {
 
 #[test]
 fn wasm_free_projects_report_an_empty_wasm_manifest() {
+    let _env = BUNDLER_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_wasm_assets] no esbuild binary; skipping.");
         return;
@@ -175,6 +181,21 @@ fn write_metafile_wrapper(root: &Path, esbuild: &Path, name: &str, action: &str)
 #[cfg(unix)]
 #[test]
 fn wasm_importing_bundle_rejects_malformed_or_missing_metafile() {
+    // The wrapper damages the metafile the esbuild CLI writes; the Rolldown
+    // backend produces it in process, so this case pins esbuild.
+    let _env = BUNDLER_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os("ZFB_BUNDLER");
+    std::env::set_var("ZFB_BUNDLER", "esbuild");
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("ZFB_BUNDLER", value),
+                None => std::env::remove_var("ZFB_BUNDLER"),
+            }
+        }
+    }
+    let _restore = Restore(previous);
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_wasm_assets] no esbuild binary; skipping.");
         return;

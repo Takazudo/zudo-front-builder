@@ -14926,13 +14926,14 @@ mod tests {
         assert!(registry.is_ssr_module_dependency(&in_root));
 
         // The source is syntactically valid for scanner preflight, then fails
-        // in esbuild because the stub project has no dependency to resolve.
+        // in the bundler because the stub project has no dependency to resolve.
         let Err(err) = session.refresh_bundle_and_routes() else {
             panic!("the broken page must fail the refresh");
         };
         let err = format!("{err:#}");
         assert!(
-            err.contains("re-bundle failed") && err.contains("esbuild exited"),
+            err.contains("re-bundle failed")
+                && (err.contains("esbuild exited") || err.contains("Rolldown could not bundle")),
             "the refresh must fail at the bundle step, got: {err}"
         );
         assert!(

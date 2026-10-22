@@ -123,6 +123,7 @@ The islands entry embeds the 16-character lowercase-hex `zudo_react_build` token
 
 - Read the token from every `data-zfb-build` attribute in the saved `index.html`. All must be one identical 16-character lowercase hex value; a malformed or disagreeing attribute is rejected.
 - In each emitted JS file replace only exact `build:"<that token>"` occurrences in the emitted registration identity and mount-local identity shapes, outside comments and strings, with `build:"0000000000000000"`. The placeholder has the same length, so raw totals are unchanged by construction and the normalizer refuses any replacement that changes a length.
+- Since `normalizationVersion` 2 ([#4417](https://github.com/Takazudo/zudo-front-builder/issues/4417)) the same sites are also recognized as ``build:`<that token>` ``, the template-literal form Rolldown's minifier prints ([#4408](https://github.com/Takazudo/zudo-front-builder/pull/4408)), and normalized to the placeholder inside the same quotes. The opening and closing quote must match; a mixed-quote shape is not a site.
 - Site counts are checked per role and were measured on the v4.3.1 Linux x64 artifact (health run 38075998971): the islands entry carries exactly 2 sites and no other 16-hex run; shared and lazy chunks carry 0. A different count is rejected — it means the compiler-owned shape changed and needs a new normalization version, not a silent accept. Hexadecimal strings in general and properties merely named `build` are never touched.
 - Any recognized compiler identity site carrying a token other than the HTML's is rejected. A dist with JavaScript but no HTML token, or an HTML token with no JavaScript, is rejected. The `no-island` dist (zero JS, no token) legitimately has zero sites.
 - `gzipNormalized` is `node:zlib gzipSync level=9 mtime=0` of the normalized bytes, summed per entry/shared/lazy role exactly like actual gzip. Actual gzip is kept per chunk and per sum as transfer-size evidence and is never compared with a normalized ceiling.
@@ -649,3 +650,30 @@ The Linux contract recorded a reviewed removal-only `Cargo.lock` transition at v
 ## Darwin v4.6.0 cargo-removal transition
 
 The Darwin arm64 contract recorded a reviewed removal-only `Cargo.lock` transition at v4.6.0 from owner-attested local native evidence (receipt SHA-256 `88f9ba2cc6a9170fc91db7d0f6dd6fc1292d55ebecb9ab2a8fde436df0701be9`) at source `2735135c7634dca7129ae084123d59313365a6d3`: `Cargo.lock` moved from `c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64` to `f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216` by removing 21 record(s) (`az@1.3.0`, `boxed_error@0.2.3`, `capacity_builder@0.5.0`, `capacity_builder_macros@0.3.0`, `cooked-waker@5.0.0`, `deno_core@0.399.0`, `deno_core_icudata@0.77.0`, `deno_error@0.7.1`, `deno_error_macro@0.7.1`, `deno_ops@0.275.0`, `deno_path_util@0.6.4`, `deno_unsync@0.4.4`, `inventory@0.3.24`, `serde_v8@0.308.0`, `stringcase@0.4.0`, `strum@0.27.2`, `strum_macros@0.27.2`, `syn-match@0.3.1`, `sys_traits@0.1.27`, `sys_traits_macros@0.1.0`, `wasm_dep_analyzer@0.4.0`) and dropping dependency edges from 2 internal record(s) (`zfb-js-host@0.0.0` drops `deno_core`, `zfb-render@0.0.0` drops `deno_core`, `deno_error`, `getrandom 0.3.4`, `reqwest`) and pruning dependency entries from 3 external record(s) with unchanged version, source and checksum (`num-bigint@0.4.6` drops `rand 0.8.6`, `tokio@1.52.3` drops `parking_lot`, `url@2.5.8` drops `serde_derive`); no record is added and every other `[[package]]` record and the header are byte-identical, as declared in `research/v3-island-size/cargo-transitions/deno-exit-4303.json` (SHA-256 `dc9e474bacf8bab878620b583c3d175f218461063b23629a88d95634ab598778`) and proved against `Cargo.lock` at commit `2abb23825ff5a880d761e9c1cdce57b062a2b839` (SHA-256 `c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64`). The `zfb` producer closure for `aarch64-apple-darwin` keeps 457 rows unchanged and loses 0 declared internal row(s) (none) with no row joining and no feature movement (receipts `9b0d4b7d459cfa7cc1469e7d2581f51d08163d91b6c888acbbb9c5f5047c2a6a` and `24ee9897cebeeb209412e81308ad5d42f54576680cbf3e57c38d35b13cbac483`). The package version, fixtures, runners, `pnpm-lock.yaml` and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and `gzipNormalized` total is unchanged; only `toolchain.cargoLockSha256` moved. These totals alone do not prove byte-identical product code. The artifact's own `check-budget.mjs` run against the previous pin is preserved as evidence (exit code 1). No actual gzip total moved. Linux x64 moves in the same paired change (`--stage`, then `--apply`).
+
+## Rolldown default: identity normalizer v2 and ceilings follow #4417
+
+[#4408](https://github.com/Takazudo/zudo-front-builder/pull/4408) makes Rolldown the default islands bundler. Its minifier prints the islands build token as a template literal, ``build:`<token>` ``, where esbuild printed `build:"<token>"`, so the v1 normalizer found no compiler identity site. The owner decided on 2026-10-22, in [#4417](https://github.com/Takazudo/zudo-front-builder/issues/4417), to move `normalize-identity.mjs` to `normalizationVersion` 2 (either quote is accepted when the same quote closes the literal; the site counts and every other rule are unchanged) and to re-pin both contracts. `normalizerSha256` moved from `ab60382e3c90c7417fc2fbee7429cea8281e90f0d8c8d16a5ecdbccb2e6ae71a` to `b07ba2c92f5996ab3586963a1b768dfb3432063a53b10aa65c4f6679e0ce2cec`.
+
+Both `decision.json` (Darwin arm64) and `decision-linux-x64.json` (Linux x64) now carry ceilings equal to the measured Rolldown totals, still with zero allowance. Workspace and packed totals are identical, and so are both platforms'. The no-island fixture stays at 0/0. Every other contract key is unchanged.
+
+| Mode | Fixture | raw (old → new) | gzipNormalized (old → new) |
+| --- | --- | --- | --- |
+| workspace | event-only | 64535 → 66691 (+2,156) | 22195 → 21252 (-943) |
+| workspace | scalar-signal | 64543 → 66702 (+2,159) | 22213 → 21257 (-956) |
+| workspace | show-for | 64695 → 66939 (+2,244) | 22272 → 21341 (-931) |
+| workspace | model | 64534 → 66720 (+2,186) | 22200 → 21258 (-942) |
+| workspace | blog-theme | 64890 → 67145 (+2,255) | 22334 → 21391 (-943) |
+| workspace | json-api | 64692 → 66896 (+2,204) | 22284 → 21350 (-934) |
+| workspace | multi-island | 64814 → 67022 (+2,208) | 22286 → 21352 (-934) |
+| packed | event-only | 64548 → 66691 (+2,143) | 22199 → 21252 (-947) |
+| packed | scalar-signal | 64556 → 66702 (+2,146) | 22203 → 21257 (-946) |
+| packed | show-for | 64708 → 66939 (+2,231) | 22286 → 21341 (-945) |
+| packed | model | 64547 → 66720 (+2,173) | 22209 → 21258 (-951) |
+| packed | blog-theme | 64903 → 67145 (+2,242) | 22347 → 21391 (-956) |
+| packed | json-api | 64705 → 66896 (+2,191) | 22296 → 21350 (-946) |
+| packed | multi-island | 64827 → 67022 (+2,195) | 22294 → 21352 (-942) |
+
+Raw grew by 2,143 to 2,255 bytes per fixture and `gzipNormalized` fell by 931 to 956 bytes. Workspace blog-theme raw (67145) is now 1 byte above the frozen schemaVersion 1 actual-gzip contract's 67144; every other raw total and every `gzipNormalized` total stays below it.
+
+Evidence: native Darwin arm64 at `e5e49ccfda49c5ed2befb62a45e15700c508f57b` on the owner's Mac, retained in cclogs `zudo-front-builder/4408-darwin-island-size/`, and a local Linux x64 replay at the merged head with Node v24.14.0 and zlib 1.3.1-e00f703 that gave identical totals. The local Linux replay is not native CI evidence: the authoritative Linux evidence is #4408's health run.

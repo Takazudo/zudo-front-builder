@@ -361,6 +361,15 @@ fn html_islands_entry(html: &str) -> PathBuf {
     PathBuf::from(entry.trim_start_matches('/'))
 }
 
+/// Whitespace-free JS with Rolldown's minifier backtick literals spelled as `"`.
+fn compact_js(source: &str) -> String {
+    source
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .map(|ch| if ch == '`' { '"' } else { ch })
+        .collect()
+}
+
 fn string_assignment(source: &str, name: &str) -> String {
     let compact: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();
     let assignment = compact
@@ -371,6 +380,13 @@ fn string_assignment(source: &str, name: &str) -> String {
         .split(';')
         .next()
         .expect("assignment has a value");
+    if let Some(text) = literal
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix('`'))
+        .filter(|text| !text.contains(['`', '\\', '$']))
+    {
+        return text.to_string();
+    }
     serde_json::from_str(literal)
         .unwrap_or_else(|error| panic!("parse {name} JSON string {literal:?}: {error}"))
 }
@@ -407,10 +423,7 @@ fn capture_build(
     )
     .expect("SSR inner module is UTF-8");
 
-    let islands_compact: String = islands_entry
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
+    let islands_compact = compact_js(&islands_entry);
     assert!(
         islands_compact.contains(&format!("build:\"{build_id}\"")),
         "islands entry identity must equal HTML data-zfb-build={build_id}\n{}",
@@ -448,11 +461,7 @@ fn assert_dist_equal(left: &BuildSnapshot, right: &BuildSnapshot, context: &str)
 }
 
 fn assert_island_label(snapshot: &BuildSnapshot, component: &str, label: &str) {
-    let compact: String = snapshot
-        .islands_entry
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
+    let compact = compact_js(&snapshot.islands_entry);
     let call_arguments = format!("\"{component}\",\"{component}\",\"{label}\"");
     assert!(
         compact.contains(&call_arguments),
@@ -749,9 +758,9 @@ fn dist_has_no_build_machine_paths_or_realpath_comments() {
     let snapshot = capture_build(&root, &esbuild, None, None);
     assert_no_path_leaks(&snapshot, &root, None);
     assert!(
-        snapshot
+        ["// ", "//#region "].iter().any(|prefix| snapshot
             .inner_module
-            .contains("// node_modules/repro-realpath-dep/index.js"),
+            .contains(&format!("{prefix}node_modules/repro-realpath-dep/index.js"))),
         "realpath escape dependency must survive in _zfb_inner.mjs under its stable label:\n{}",
         snapshot.inner_module
     );

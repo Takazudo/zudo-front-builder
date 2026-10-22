@@ -33,7 +33,12 @@ import {
   rewriteTestPins,
 } from "../rebaseline-island-size-linux.mjs";
 import { LOCAL_EVIDENCE_PROFILES, localEvidenceProfile } from "../island-size-local-evidence.mjs";
-import { ceilingsOf, makeGitCheckout, writeRuns } from "./fixtures/island-size-checkout.mjs";
+import {
+  ceilingsOf,
+  makeGitCheckout,
+  withCurrentNormalizer,
+  writeRuns,
+} from "./fixtures/island-size-checkout.mjs";
 import {
   DARWIN_TARGET,
   LINUX_TARGET,
@@ -684,7 +689,7 @@ describe("cargo-removal (#4388) end to end", () => {
     });
     repo.git("tag", "old-lock");
     artifact = linuxArtifact();
-    pinned = structuredClone(preTransitionContract);
+    pinned = withCurrentNormalizer(structuredClone(preTransitionContract));
     pinned.ceilings = ceilingsOf(artifact);
     pinned.fixtureSha256 = { ...repo.fixtureSha256 };
     pinned.runnerSha256 = { ...repo.runnerSha256 };

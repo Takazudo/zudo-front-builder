@@ -21,9 +21,11 @@ import { fileURLToPath } from "node:url";
 
 import { computeLockFingerprint } from "../../../research/v3-island-size/lock-fingerprint.mjs";
 import {
+  IDENTITY_NORMALIZATION_VERSION,
   NORMALIZED_SIDECAR,
   normalizeFixtureFiles,
   normalizeMeasurementDirectory,
+  normalizerSha256,
 } from "../../../research/v3-island-size/normalize-identity.mjs";
 
 export const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -48,6 +50,15 @@ export function asSchemaV2(contract) {
   delete v2.dependencyFingerprint;
   v2.schemaVersion = 2;
   return v2;
+}
+
+// A frozen contract fixture records the normalizer identity of its own era
+// (v1 before #4417). The checker implements only the current version, so a
+// tool run that starts from one re-pins that identity and nothing else.
+export function withCurrentNormalizer(contract) {
+  contract.normalizationVersion = IDENTITY_NORMALIZATION_VERSION;
+  contract.normalizerSha256 = normalizerSha256();
+  return contract;
 }
 
 export function write(root, relative, bytes) {

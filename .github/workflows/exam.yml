@@ -132,6 +132,9 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
+      # Same as health.yml's health job: keeps the shared rust-cache key
+      # identical and the Rolldown-linked workspace build within disk.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     outputs:
       rc: ${{ steps.run_manifest.outputs.rc }}
     steps:

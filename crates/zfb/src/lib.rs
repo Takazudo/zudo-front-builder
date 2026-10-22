@@ -41,6 +41,24 @@ impl std::fmt::Display for SilentExit {
 
 impl std::error::Error for SilentExit {}
 
+/// Reject a `ZFB_BUNDLER` value this binary cannot honor before any command runs.
+/// The bundler crates read the variable themselves and treat anything other
+/// than `esbuild` as Rolldown, so a typo would otherwise pass silently.
+pub fn check_bundler_selection(value: Option<&std::ffi::OsStr>) -> anyhow::Result<()> {
+    let Some(value) = value else { return Ok(()) };
+    match value.to_str() {
+        Some("esbuild") => Ok(()),
+        Some("rolldown") if cfg!(feature = "rolldown-prototype") => Ok(()),
+        Some("rolldown") => anyhow::bail!(
+            "ZFB_BUNDLER=rolldown: this zfb binary was built without the Rolldown bundler; unset ZFB_BUNDLER or set it to esbuild"
+        ),
+        _ => anyhow::bail!(
+            "ZFB_BUNDLER={}: expected `rolldown` or `esbuild`",
+            value.to_string_lossy()
+        ),
+    }
+}
+
 /// Render and print an [`anyhow::Error`] to stderr, prefixed with a red `✗`.
 ///
 /// Used by the `zfb` binary entry point to report top-level command failures.
@@ -48,4 +66,24 @@ impl std::error::Error for SilentExit {}
 /// need to import the internal `output` module directly.
 pub fn report_error(err: &anyhow::Error) {
     output::error(output::format_error(err).trim_end());
+}
+
+#[cfg(test)]
+mod bundler_selection_tests {
+    use super::check_bundler_selection;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn accepts_unset_and_esbuild_and_rejects_unknown_values() {
+        assert!(check_bundler_selection(None).is_ok());
+        assert!(check_bundler_selection(Some(OsStr::new("esbuild"))).is_ok());
+        let error = check_bundler_selection(Some(OsStr::new("esbuld"))).unwrap_err();
+        assert!(format!("{error}").contains("expected `rolldown` or `esbuild`"));
+    }
+
+    #[test]
+    fn rolldown_needs_the_compiled_backend() {
+        let result = check_bundler_selection(Some(OsStr::new("rolldown")));
+        assert_eq!(result.is_ok(), cfg!(feature = "rolldown-prototype"));
+    }
 }

@@ -5,8 +5,14 @@ mod copy_reference;
 mod css_tests;
 #[cfg(test)]
 mod jsx_tsconfig_tests;
+#[cfg(test)]
+mod metafile_order_tests;
 mod prepared;
+#[cfg(test)]
+mod splitting_tests;
 mod trailing_paths;
+#[cfg(test)]
+mod unresolved_tests;
 mod verbatim_specifiers;
 #[cfg(test)]
 mod warning_tests;
@@ -30,8 +36,15 @@ use std::{
     time::Instant,
 };
 
+/// Rolldown is the default bundler wherever this backend is compiled in.
+/// `ZFB_BUNDLER=esbuild` selects the esbuild subprocess instead, and the
+/// opt-in-era `ZFB_ROLLDOWN_PROTOTYPE=0` still does when `ZFB_BUNDLER` is unset.
+/// The `zfb` CLI rejects any other `ZFB_BUNDLER` value before a build starts.
 pub fn enabled() -> bool {
-    std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
+    match std::env::var_os("ZFB_BUNDLER") {
+        Some(value) => value != "esbuild",
+        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
+    }
 }
 
 #[derive(Debug)]
@@ -57,7 +70,7 @@ impl Plugin for GraphPlugin {
         // Raw CSS is outside this experiment's contract at the pinned engine.
         if matches!(args.module_type, ModuleType::Css) {
             bail!(
-                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: raw CSS bundling is unsupported by the experimental native backend: {}",
+                "ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED: the Rolldown bundler does not bundle raw CSS yet; set ZFB_BUNDLER=esbuild to build this project: {}",
                 args.id
             );
         }
@@ -127,6 +140,11 @@ impl Plugin for GraphPlugin {
             let Some(info) = ctx.get_module_info(&id) else {
                 bail!("missing resolved module info: {id}")
             };
+            // External modules carry module info without code. Esbuild's
+            // metafile lists them only as external imports, never as inputs.
+            if info.code.is_none() {
+                continue;
+            }
             let mut imports = Vec::new();
             for (ids, kind) in [
                 (&info.imported_ids, "import-statement"),
@@ -138,11 +156,18 @@ impl Plugin for GraphPlugin {
                         copy_outputs.insert(imported.to_string(), filename.clone());
                         imports.push(json!({"path": imported.as_str(), "kind":kind, "external":false, "zfbCopiedOutput":filename}));
                     } else {
-                        imports.push(json!({"path": imported.as_str(), "kind":kind, "external": ctx.get_module_info(imported).is_none()}));
+                        let external = ctx
+                            .get_module_info(imported)
+                            .is_none_or(|info| info.code.is_none());
+                        imports.push(
+                            json!({"path": imported.as_str(), "kind":kind, "external": external}),
+                        );
                     }
                 }
             }
-            imports.sort_by_key(|v| v["path"].as_str().unwrap().to_owned());
+            // Keep source order, as esbuild does: island graph identity walks
+            // imports in this order, so sorting by resolved path would make the
+            // build token depend on where packages are installed.
             inputs.insert(
                 id.to_string(),
                 json!({"bytes":info.code.as_ref().map_or(0, |s|s.len()), "imports": imports}),
@@ -181,6 +206,64 @@ pub fn run_prepared(cmd: &Command) -> Result<()> {
     }
     Ok(())
 }
+/// Re-render unresolved imports in esbuild's shape, with paths relative to the
+/// job's working directory, so the callers' existing esbuild diagnostic mapping
+/// (shadow path to project path, out-of-root hints) applies unchanged. Returns
+/// `None` unless every diagnostic is an unresolved import it can parse.
+fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
+    let process_cwd = std::env::current_dir().ok()?;
+    let mut report = String::new();
+    for diagnostic in rendered {
+        let (_, rest) = diagnostic.split_once("[UNRESOLVED_IMPORT] Could not resolve '")?;
+        let (specifier, rest) = rest.split_once("' in ")?;
+        let (path, row, col) = match diagnostic.split_once("╭─[ ") {
+            Some((_, location)) => {
+                let (location, _) = location.split_once(" ]")?;
+                let mut parts = location.rsplitn(3, ':');
+                let col = parts.next()?.to_string();
+                let row = parts.next()?.to_string();
+                (lexical_normal(&process_cwd.join(parts.next()?)), row, col)
+            }
+            // An automatic-runtime import has no source span; name the pragma when present.
+            None => {
+                let importer = rest.lines().next()?.trim();
+                let path = lexical_normal(&process_cwd.join(importer));
+                let (row, col) = jsx_import_source_position(&path);
+                (path, row.to_string(), col.to_string())
+            }
+        };
+        let shown = path.strip_prefix(cwd).unwrap_or(&path);
+        report.push_str(&format!(
+            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n\n",
+            shown.display()
+        ));
+    }
+    (!report.is_empty()).then(|| report.trim_end().to_string())
+}
+
+fn jsx_import_source_position(path: &Path) -> (usize, usize) {
+    let source = std::fs::read_to_string(path).unwrap_or_default();
+    source
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("@jsxImportSource").map(|col| (row + 1, col)))
+        .unwrap_or((1, 0))
+}
+
+fn lexical_normal(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let start = Instant::now();
     let inputs = Arc::new(Mutex::new(BTreeMap::new()));
@@ -214,23 +297,26 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     // close also clears the pinned driver's retained state on returned errors;
     // a cleanup error must never replace the original generation diagnostic.
     let closed = bundler.close().await;
+    let cwd = request.cwd.clone();
     let result = generated.map_err(|e| {
-        anyhow::anyhow!(
-            "Rolldown native diagnostic: {}",
-            e.into_vec()
-                .iter()
-                .map(|d| d.to_diagnostic().convert_to_string(false))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
+        let rendered: Vec<_> = e
+            .into_vec()
+            .iter()
+            .map(|d| d.to_diagnostic().convert_to_string(false))
+            .collect();
+        match esbuild_style_unresolved(&rendered, &cwd) {
+            Some(report) => anyhow::anyhow!("{report}"),
+            None => anyhow::anyhow!("Rolldown native diagnostic: {}", rendered.join("\n")),
+        }
     })?;
     closed.map_err(|e| anyhow::anyhow!("Rolldown close diagnostic: {e:?}"))?;
     for warning in &result.warnings {
         if warning.kind().to_string() == "UNRESOLVED_IMPORT" {
-            bail!(
-                "Rolldown refused unresolved import: {}",
-                warning.to_diagnostic().convert_to_string(false)
-            );
+            let rendered = [warning.to_diagnostic().convert_to_string(false)];
+            match esbuild_style_unresolved(&rendered, &cwd) {
+                Some(report) => bail!("{report}"),
+                None => bail!("Rolldown refused unresolved import: {}", rendered[0]),
+            }
         }
     }
     let bundle_us = start.elapsed().as_micros();
@@ -308,11 +394,16 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     }
     // The existing audit/dependency schema keys staged routes relative to cwd.
     // Change only representation, preserving the engine's exact resolved edges.
+    // Rolldown ids are canonical, so a symlinked cwd is matched physically too.
+    let physical_cwd = std::fs::canonicalize(&request.cwd).unwrap_or_else(|_| request.cwd.clone());
     let key = |id: &str| {
-        Path::new(id).strip_prefix(&request.cwd).map_or_else(
-            |_| id.to_string(),
-            |p| p.to_string_lossy().replace('\\', "/"),
-        )
+        let id = Path::new(id);
+        let base = if id.starts_with(&request.cwd) {
+            &request.cwd
+        } else {
+            &physical_cwd
+        };
+        esbuild_relative(id, base)
     };
     for input in inputs.values_mut() {
         for import in input["imports"]
@@ -371,4 +462,28 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         );
     }
     Ok(files)
+}
+
+/// Spells `path` the way esbuild's metafile does: relative to `cwd`, with `..`
+/// segments for files outside it. Paths that share no root with `cwd` (another
+/// Windows drive, a virtual id) stay as given.
+fn esbuild_relative(path: &Path, cwd: &Path) -> String {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return path.to_string_lossy().into_owned();
+    }
+    let ours: Vec<_> = path.components().collect();
+    let base: Vec<_> = cwd.components().collect();
+    let shared = ours.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    let rooted = |c: &Component| matches!(c, Component::Prefix(_) | Component::RootDir);
+    if !ours[..shared].iter().any(rooted) {
+        return path.to_string_lossy().into_owned();
+    }
+    let mut parts: Vec<String> = vec!["..".to_string(); base.len() - shared];
+    parts.extend(
+        ours[shared..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
 }

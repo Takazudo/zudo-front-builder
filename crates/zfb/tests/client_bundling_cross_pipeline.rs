@@ -1395,8 +1395,7 @@ async fn real_binary_build_and_dev_cover_client_bundling_contract() {
                 (job.to_string(), kind.to_string())
             })
             .collect::<Vec<_>>();
-        if std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Some(std::ffi::OsStr::new("1"))
-        {
+        if rolldown_selected() {
             assert_eq!(
                 observed.len(),
                 expected.len(),
@@ -2002,4 +2001,14 @@ async fn real_binary_build_rejects_root_claimed_undeclared_sibling_escape_on_bot
         islands_logs.contains("@scope/child"),
         "islands-leg rejection must name the escaped @scope/child input: {islands_logs}"
     );
+}
+
+/// Mirrors `zfb_rolldown_prototype::enabled()` for the child `zfb` binary this
+/// test spawns: Rolldown unless the env selects esbuild.
+#[cfg(feature = "rolldown-prototype")]
+fn rolldown_selected() -> bool {
+    match std::env::var_os("ZFB_BUNDLER") {
+        Some(value) => value != "esbuild",
+        None => std::env::var_os("ZFB_ROLLDOWN_PROTOTYPE").is_none_or(|value| value != "0"),
+    }
 }

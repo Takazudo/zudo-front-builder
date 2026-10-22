@@ -155,7 +155,7 @@ mod probe {
             .parent()
             .unwrap()
             .to_path_buf();
-        let backend = if std::env::var("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Ok("1") {
+        let backend = if std::env::var("ZFB_BUNDLER").as_deref() != Ok("esbuild") {
             "rolldown"
         } else {
             "esbuild"

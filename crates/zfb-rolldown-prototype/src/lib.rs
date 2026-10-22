@@ -1,4 +1,5 @@
-//! Internal, explicitly opted-in #318 feasibility adapter. No Rolldown types escape.
+//! Internal #318 Rolldown adapter, the default bundler when `native` is compiled in.
+//! No Rolldown types escape.
 #[cfg(feature = "native")]
 mod native;
 #[cfg(feature = "native")]

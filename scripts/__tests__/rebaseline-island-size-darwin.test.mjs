@@ -76,6 +76,7 @@ import {
   makeHelperCheckout,
   makePolicyCheckout,
   policyHelper,
+  withCurrentNormalizer,
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
 import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
@@ -335,7 +336,7 @@ describe("rebaseline-island-size-darwin", () => {
     const next = migrateDarwinContract(contract, totalsOf(artifact), evidenceFor(args, artifact));
     expect(next.schemaVersion).toBe(2);
     expect(next.metric).toBe("gzip-identity-normalized");
-    expect(next.normalizationVersion).toBe(1);
+    expect(next.normalizationVersion).toBe(2);
     expect(next.normalizerSha256).toBe(normalizerSha256());
     expect(next.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
     expect(next.platform).toEqual({ os: "darwin", arch: "arm64" });
@@ -753,7 +754,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
     const release = first.contract;
     expect(release.outcome).toBe("release-version-stamp");
     expect(release.platformStatus).toContain(
-      "v" + VERSION + " ceilings on metric gzip-identity-normalized v1, re-pinned (release-bump)",
+      "v" + VERSION + " ceilings on metric gzip-identity-normalized v2, re-pinned (release-bump)",
     );
     expect(release.platformStatus).toContain("unchanged from the v9.9.8 contract");
     expect(release.baselineEvidence.note).toContain("Re-pin (release-bump) from the native");
@@ -1051,7 +1052,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
     const { root, artifact, contract } = fixture();
     expect(
       validateDarwinEvidence(contractFor(root), artifact, SOURCE_SHA, "fingerprint-migration"),
-    ).toContain("contract is not a schemaVersion 2 gzip-identity-normalized v1 contract");
+    ).toContain("contract is not a schemaVersion 2 gzip-identity-normalized v2 contract");
     const { contract: v3 } = migrateDarwinFingerprint(
       contract,
       totalsOf(artifact),
@@ -1059,7 +1060,7 @@ describe("rebaseline-island-size-darwin fingerprint-migration (#4187)", () => {
       checkout,
     );
     expect(validateDarwinEvidence(v3, artifact, SOURCE_SHA, "fingerprint-migration")).toContain(
-      "contract is not a schemaVersion 2 gzip-identity-normalized v1 contract",
+      "contract is not a schemaVersion 2 gzip-identity-normalized v2 contract",
     );
     expect(() =>
       migrateDarwinFingerprint(
@@ -1515,7 +1516,7 @@ describe("rebaseline-island-size-darwin cargo-producer-lock (#4214)", () => {
     const { artifact, contract } = fixture();
     const v2 = asSchemaV2(contract);
     expect(validateDarwinEvidence(v2, artifact, SOURCE_SHA, "cargo-producer-lock")).toContain(
-      "contract is not a schemaVersion 3 gzip-identity-normalized v1 contract",
+      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
     );
     expect(() => run(v2, artifact)).toThrow(
       "--reason cargo-producer-lock needs a schemaVersion 3 contract, found schemaVersion 2",
@@ -1987,7 +1988,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
     darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
-    darwinPinned.normalizerSha256 = normalizerSha256();
+    withCurrentNormalizer(darwinPinned);
     for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
       darwinPinned.toolchain[key] = legacy.toolchain[key];
     }
@@ -2172,7 +2173,7 @@ describe("rebaseline-island-size-darwin dependency-graph and paired staging (#42
         c.schemaVersion = 2;
       }),
       {},
-      "contract is not a schemaVersion 3 gzip-identity-normalized v1 contract",
+      "contract is not a schemaVersion 3 gzip-identity-normalized v2 contract",
     ],
     [
       "a sidecar whose results were edited",
@@ -2782,7 +2783,7 @@ describe("rebaseline-island-size-darwin fingerprint-policy (#4218)", () => {
     darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
-    darwinPinned.normalizerSha256 = normalizerSha256();
+    withCurrentNormalizer(darwinPinned);
     for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
       darwinPinned.toolchain[key] = legacy.toolchain[key];
     }
@@ -3131,7 +3132,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
-    darwinPinned.normalizerSha256 = normalizerSha256();
+    withCurrentNormalizer(darwinPinned);
     for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
       darwinPinned.toolchain[key] = legacy.toolchain[key];
     }
@@ -4315,7 +4316,7 @@ describe("cargo-removal paired staging (#4388)", () => {
     darwinPinned = pin(preLocalDarwinContract(), darwinArtifact);
     darwinPinned.fixtureVersion = legacy.fixtureVersion;
     darwinPinned.compression = legacy.compression;
-    darwinPinned.normalizerSha256 = normalizerSha256();
+    withCurrentNormalizer(darwinPinned);
     for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
       darwinPinned.toolchain[key] = legacy.toolchain[key];
     }

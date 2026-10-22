@@ -85,6 +85,7 @@ import {
   makeHelperCheckout,
   makePolicyCheckout,
   policyHelper,
+  withCurrentNormalizer,
   writeRuns,
 } from "./fixtures/island-size-checkout.mjs";
 import { moveReachableSnapshot } from "./fixtures/island-size-lock-mutations.mjs";
@@ -196,7 +197,7 @@ describe("rebaseline-island-size-linux", () => {
     );
     expect(next.schemaVersion).toBe(2);
     expect(next.metric).toBe("gzip-identity-normalized");
-    expect(next.normalizationVersion).toBe(1);
+    expect(next.normalizationVersion).toBe(2);
     expect(next.normalizerSha256).toBe(evidence.normalizerSha256);
     expect(next.ceilings).toEqual(contract.ceilings);
     expect(next.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
@@ -4293,7 +4294,7 @@ describe("cargo-internal-rewire (#4258)", () => {
       });
       repo.git("tag", "old-lock");
       artifact = linuxArtifact();
-      pinned = structuredClone(preRewireContract);
+      pinned = withCurrentNormalizer(structuredClone(preRewireContract));
       pinned.ceilings = ceilingsOf(artifact);
       pinned.fixtureSha256 = { ...repo.fixtureSha256 };
       pinned.runnerSha256 = { ...repo.runnerSha256 };

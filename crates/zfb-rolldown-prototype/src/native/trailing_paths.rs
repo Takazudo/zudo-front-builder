@@ -78,7 +78,7 @@ impl Plugin for TrailingPaths {
             .as_ref()
             .is_some_and(|roots| !roots.is_empty())
         {
-            bail!("ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED: trailing-directory tsconfig mappings combined with rootDirs are unsupported by the experimental native backend: {}", args.specifier);
+            bail!("ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED: trailing-directory tsconfig mappings combined with rootDirs are unsupported by the Rolldown bundler; set ZFB_BUNDLER=esbuild to build this project: {}", args.specifier);
         }
         // Preserve the selected exact/wildcard mapping's complete target order:
         // an ordinary target before a trailing target must still win.

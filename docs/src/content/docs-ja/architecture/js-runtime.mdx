@@ -141,6 +141,6 @@ direct ホストの既知の制限:
 
 ラベルで起動する必須ではない CI レーン（`direct-v8.yml`）が、Linux x64、Linux arm64、Windows x64 のネイティブ行を記録します。Darwin の行は Mac 上で手作業で実行します。コントリビューター向けの詳細は [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md) にあります。
 
-Rolldown は別の非デフォルトのバンドラープロトタイプ（`rolldown-prototype` フィーチャー）です。`direct-v8-rolldown` レーンはこれを direct V8 ホストと一緒にビルドします。デフォルトビルドのバンドラーは esbuild のままです。
+ページとアイランドは、デフォルトで Rolldown がバンドルします（`rolldown-prototype` フィーチャーはデフォルトフィーチャーに含まれます）。`ZFB_BUNDLER=esbuild` を設定すると、これらのバンドルに組み込みの esbuild を使います。`zfb.config.ts` とプラグインのコンパイルには引き続き esbuild を使います。`direct-v8-rolldown` レーンは Rolldown を direct V8 と一緒にビルドします。
 
 `zfb preview` は再ビルドせず、ビルド済み出力を配信します。Cloudflare アダプターでは Wrangler に委譲します。一般に組み込み V8 でページを再レンダリングするコマンドではありません。

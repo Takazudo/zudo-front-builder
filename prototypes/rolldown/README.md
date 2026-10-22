@@ -1,8 +1,8 @@
 # Internal direct-Rust Rolldown feasibility probe (#318)
 
-Direction: **experimental opt-in for dogfooding**, subject to the whole-PR integration gates. PR #4120 remains draft until its owner reviews those gates; successful prototype checks alone do not authorize merging. The pinned Rust API can produce executable ZFB browser and embedded-V8 SSR bundles with authoritative graph/output provenance. The standalone client-script entry and its declared module workers run through the same opt-in. These fixtures do not justify a default switch or a speed claim. See [FINDINGS.md](FINDINGS.md) for the evidence and ownership costs.
+Direction: **default bundler** for page/SSR and islands bundles since the 2026-10-22 dogfooding round over the eleven `zfb-example-*` repositories, which matched esbuild on build, typecheck, test, browser and dev-server checks. `ZFB_BUNDLER=esbuild` is the supported opt-out. See [FINDINGS.md](FINDINGS.md) for the earlier evidence and ownership costs.
 
-The opt-in is deliberately internal: compile `rolldown-prototype` on `zfb-build` and `zfb-islands` (or the forwarding `zfb` CLI feature), then set `ZFB_ROLLDOWN_PROTOTYPE=1`. Without both, the existing esbuild path runs. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
+The `zfb` CLI enables `rolldown-prototype` by default, which forwards to `zfb-build` and `zfb-islands`. With the feature compiled, Rolldown runs unless `ZFB_BUNDLER=esbuild` (or, with `ZFB_BUNDLER` unset, `ZFB_ROLLDOWN_PROTOTYPE=0`) is set. Without the feature, esbuild runs and `ZFB_BUNDLER=rolldown` is a usage error. The existing `NativeRustBundler` public placeholder is unchanged. No Rolldown types cross the new crate boundary.
 
 **JS runtime (since #4390/#4394).** The SSR probes (`rolldown_ssr`, `rolldown_production`) run on whichever V8 host the build selects. The plain commands below now build the default **direct-v8** host (`crates/zfb-js-host`); the recorded evidence in this directory (including the #4123 Mac arm64 row) predates that switch and ran on the deno_core host. #4395 (S7a of #4386) removed that host and its `embed_v8` rollback feature, so those rows can only be reproduced from a checkout before the removal (for example `2abb238`), where the build adds `--no-default-features` and `embed_v8` to every V8 package. A separate known Rolldown output defect is engine-independent: a page whose first statement is an unconditional top-level `throw` links with `SyntaxError: Export 'routes' is not defined` ([PLATFORMS.md "Rolldown findings"](../direct-v8/PLATFORMS.md#rolldown-findings)); these probes throw inside the page function, so they do not exercise it.
 
@@ -60,11 +60,11 @@ Use the shared guard where installed, as required in this managed session; an or
 Run the already built binaries, keeping compilation outside measured samples:
 
 ```sh
-unset ZFB_ROLLDOWN_PROTOTYPE
+export ZFB_BUNDLER=esbuild
 ZFB_DEV_TIMING=1 target/debug/examples/rolldown_ssr target/rolldown-prototype/project
 ZFB_DEV_TIMING=1 target/debug/examples/rolldown_browser target/rolldown-prototype/project
-ZFB_ROLLDOWN_PROTOTYPE=1 ZFB_DEV_TIMING=1 target/debug/examples/rolldown_ssr target/rolldown-prototype/project
-ZFB_ROLLDOWN_PROTOTYPE=1 ZFB_DEV_TIMING=1 target/debug/examples/rolldown_browser target/rolldown-prototype/project
+ZFB_BUNDLER=rolldown ZFB_DEV_TIMING=1 target/debug/examples/rolldown_ssr target/rolldown-prototype/project
+ZFB_BUNDLER=rolldown ZFB_DEV_TIMING=1 target/debug/examples/rolldown_browser target/rolldown-prototype/project
 bash "$HOME/.codex/scripts/heavy-guard.sh" -- node prototypes/rolldown/browser.mjs target/rolldown-prototype/project
 ```
 

@@ -344,6 +344,115 @@ describe("identity normalization boundaries (L1)", () => {
   });
 });
 
+// Normalizer v2 (#4417): Rolldown's minifier (#4408) prints the same two
+// compiler-owned sites as template literals, build:`<token>`.
+describe("identity normalization v2 template-literal sites (L1)", () => {
+  const backtick = (text) =>
+    text.replaceAll('build:"' + REAL_TOKEN + '"', "build:`" + REAL_TOKEN + "`");
+  const backtickEntry = () => {
+    const entry = fixtureFiles("multi-island")[ENTRY].toString("latin1");
+    expect(entry.split('build:"' + REAL_TOKEN + '"')).toHaveLength(3);
+    return Buffer.from(backtick(entry), "latin1");
+  };
+  // A minimal entry with the registration site before the mount-local site.
+  const sites = (registration, mount) =>
+    Buffer.from(
+      "function r(n){return{identity:{component:n,build:" +
+        registration +
+        "},mount:()=>{let l={component:n,build:" +
+        mount +
+        "};return l}}}\n",
+      "latin1",
+    );
+  const tick = "`" + REAL_TOKEN + "`";
+
+  it("states the v2 rules", () => {
+    expect(IDENTITY_NORMALIZATION_VERSION).toBe(2);
+    expect(IDENTITY_NORMALIZATION_RULES.startsWith("v2: ")).toBe(true);
+    expect(IDENTITY_NORMALIZATION_RULES).toContain(
+      'exact build:"<that token>" or build:`<that token>` occurrences (same quote on both sides)',
+    );
+    expect(IDENTITY_NORMALIZATION_RULES).toContain("require exactly 2 sites in the islands entry");
+  });
+
+  it("normalizes both backtick sites of an entry to the backtick placeholder", () => {
+    const entry = backtickEntry();
+    const { bytes, sites: found } = normalizeIdentitySites(entry, REAL_TOKEN, 2, ENTRY);
+    expect(found).toBe(2);
+    expect(bytes.length).toBe(entry.length);
+    const text = bytes.toString("latin1");
+    expect(text.includes(REAL_TOKEN)).toBe(false);
+    expect(text.match(new RegExp("build:`" + IDENTITY_PLACEHOLDER + "`", "g"))).toHaveLength(2);
+    expect(text).not.toContain('build:"' + IDENTITY_PLACEHOLDER);
+    expect(text).toContain("identity:{component:n,build:`" + IDENTITY_PLACEHOLDER + "`}");
+    expect(text).toContain("let l={component:n,build:`" + IDENTITY_PLACEHOLDER + "`");
+    // Same bytes as the double-quoted v1 shape once the quotes are swapped back.
+    const quoted = normalizeIdentitySites(
+      fixtureFiles("multi-island")[ENTRY],
+      REAL_TOKEN,
+      2,
+      ENTRY,
+    );
+    expect(
+      text.replaceAll(
+        "build:`" + IDENTITY_PLACEHOLDER + "`",
+        'build:"' + IDENTITY_PLACEHOLDER + '"',
+      ),
+    ).toBe(quoted.bytes.toString("latin1"));
+  });
+
+  it("does not count a mixed-quote shape as a site", () => {
+    for (const mixed of ['"' + REAL_TOKEN + "`", "`" + REAL_TOKEN + '"']) {
+      const entry = sites(tick, mixed);
+      expect(() => normalizeIdentitySites(entry, REAL_TOKEN, 2, ENTRY)).toThrow(
+        "expected 2 build identity site(s), found 1",
+      );
+      const { bytes, sites: found } = normalizeIdentitySites(entry, REAL_TOKEN, 1, ENTRY);
+      expect(found).toBe(1);
+      const text = bytes.toString("latin1");
+      expect(text).toContain("identity:{component:n,build:`" + IDENTITY_PLACEHOLDER + "`}");
+      expect(text).toContain("let l={component:n,build:" + mixed + "}");
+    }
+    expect(normalizeIdentitySites(sites(tick, tick), REAL_TOKEN, 2, ENTRY).sites).toBe(2);
+  });
+
+  it("leaves backtick sites in comments and strings alone", () => {
+    const entry = backtickEntry();
+    const decoys = Buffer.from(
+      ";/* identity:{component:n,build:" +
+        tick +
+        "} */// let y={component:n,build:" +
+        tick +
+        "}\nconst text='let x={component:n,build:" +
+        tick +
+        "}';const other=\"identity:{component:n,build:" +
+        tick +
+        '}";\n',
+      "latin1",
+    );
+    const bytes = Buffer.concat([entry, decoys]);
+    const normalized = normalizeIdentitySites(bytes, REAL_TOKEN, 2, ENTRY);
+    expect(normalized.sites).toBe(2);
+    expect(normalized.bytes.subarray(entry.length).equals(decoys)).toBe(true);
+    expect(normalized.bytes.subarray(0, entry.length).toString("latin1")).not.toContain(REAL_TOKEN);
+  });
+
+  it("rejects a backtick site carrying another token", () => {
+    const other = "0123456789abcdef";
+    const entry = backtickEntry();
+    const oneForeign = Buffer.from(
+      entry.toString("latin1").replace(tick, "`" + other + "`"),
+      "latin1",
+    );
+    expect(() => normalizeIdentitySites(oneForeign, REAL_TOKEN, 2, ENTRY)).toThrow(
+      "build identity site carries 0123456789abcdef but index.html declares " + REAL_TOKEN,
+    );
+    expect(() =>
+      normalizeIdentitySites(sites(tick, "`" + other + "`"), REAL_TOKEN, 2, ENTRY),
+    ).toThrow("build identity site carries 0123456789abcdef");
+  });
+});
+
 describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () => {
   it("reproduces the v4.3.1 Linux workspace multi-island total from the fixture bytes", () => {
     const result = normalizeFixtureFiles(fixtureFiles("multi-island"), "multi-island");
@@ -534,8 +643,8 @@ describe("identity normalization over the real v4.3.1 artifact bytes (L3)", () =
       },
     });
     expect(IDENTITY_NORMALIZED_METRIC).toBe("gzip-identity-normalized");
-    expect(IDENTITY_NORMALIZATION_VERSION).toBe(1);
-    expect(IDENTITY_NORMALIZATION_RULES).toContain("v1:");
+    expect(IDENTITY_NORMALIZATION_VERSION).toBe(2);
+    expect(IDENTITY_NORMALIZATION_RULES.startsWith("v2:")).toBe(true);
     expect(sidecar.normalizer.sha256).toBe(normalizerSha256());
     expect(linuxContract.normalizerSha256).toBe(sidecar.normalizer.sha256);
     expect(sidecar.results["multi-island"]).toMatchObject({

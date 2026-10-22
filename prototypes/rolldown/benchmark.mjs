@@ -43,6 +43,7 @@ const base = {
   ZFB_PROTOTYPE_CLI: resolve("target/release/zfb"),
 };
 delete base.ZFB_ROLLDOWN_PROTOTYPE;
+delete base.ZFB_BUNDLER;
 const before = tree(root);
 const productionInputs = tree("prototypes/rolldown/production-fixture");
 const samples = [];
@@ -53,7 +54,7 @@ for (const [round, order] of [
 ]) {
   for (const backend of order) {
     const env = { ...base };
-    if (backend === "rolldown") env.ZFB_ROLLDOWN_PROTOTYPE = "1";
+    env.ZFB_BUNDLER = backend;
     for (const fixture of ["ssr", "browser", "production"]) {
       const label = `${round}-${backend}-${fixture}`;
       const { elapsed_us, log } = run(

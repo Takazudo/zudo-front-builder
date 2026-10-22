@@ -6512,6 +6512,8 @@ fn rewrite_esbuild_module_labels(
             continue;
         };
         labels.insert(format!(" {key}"), format!(" {label}"));
+        // Rolldown labels each module with a `//#region <path>` comment instead.
+        labels.insert(format!("#region {key}"), format!("#region {label}"));
     }
     if labels.is_empty() {
         return Some(bundle.to_string());
@@ -6664,6 +6666,25 @@ mod esbuild_module_label_tests {
         assert_eq!(
             rewritten,
             "// pages/index.tsx\r\n// shared/util.js\r\n// external/tool.js\r\n"
+        );
+    }
+
+    #[test]
+    fn rewrites_rolldown_region_labels_like_esbuild_labels() {
+        let key = "../.tmpAbc123/a/app/node_modules/hono/dist/compose.js";
+        let bundle = format!("//#region {key}\nexport {{}};\n//#endregion\n");
+        let metafile = serde_json::json!({"inputs": {key: {}}});
+        let rewritten = rewrite_esbuild_module_labels(
+            &bundle,
+            &serde_json::to_vec(&metafile).unwrap(),
+            Path::new("/tmp/shadow"),
+            Path::new("/tmp/.tmpAbc123/a/app"),
+            Path::new("/tmp/shadow"),
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten,
+            "//#region node_modules/hono/dist/compose.js\nexport {};\n//#endregion\n"
         );
     }
 
@@ -15461,7 +15482,23 @@ fn run_esbuild(
 
     #[cfg(feature = "rolldown-prototype")]
     if zfb_rolldown_prototype::enabled() {
-        return zfb_rolldown_prototype::run_prepared(&cmd);
+        return zfb_rolldown_prototype::run_prepared(&cmd).map_err(|err| {
+            let message = format!("{err:#}");
+            let located: BTreeSet<&Path> = message
+                .lines()
+                .filter_map(esbuild_location_path)
+                .map(Path::new)
+                .collect();
+            crate::jsx_pragma::emit_foreign_pragma_warnings(&input.project_root, located);
+            let friendly = friendly_esbuild_error(
+                &message,
+                shadow,
+                &input.project_root,
+                first_party_root,
+                work_root,
+            );
+            anyhow!("bundler: Rolldown could not bundle: {friendly}")
+        });
     }
 
     let output =

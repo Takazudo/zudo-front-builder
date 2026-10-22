@@ -141,6 +141,6 @@ Known limitations of the direct host:
 
 A label-triggered, non-required CI lane (`direct-v8.yml`) records native rows on Linux x64, Linux arm64 and Windows x64. Darwin rows are run by hand on a Mac. The contributor-side details are in [`prototypes/direct-v8/CLI.md`](https://github.com/Takazudo/zudo-front-builder/blob/main/prototypes/direct-v8/CLI.md).
 
-Rolldown is a separate non-default bundler prototype (`rolldown-prototype` feature). The `direct-v8-rolldown` lane builds it together with the direct V8 host; esbuild stays the bundler of the default build.
+Rolldown bundles pages and islands by default (the `rolldown-prototype` feature is in the default feature set). Set `ZFB_BUNDLER=esbuild` to use the embedded esbuild for those bundles instead; esbuild also still compiles `zfb.config.ts` and plugins. The `direct-v8-rolldown` lane builds Rolldown together with direct V8.
 
 `zfb preview` does not rebuild: it serves built output, or delegates to Wrangler with the Cloudflare adapter. It does not generally render pages through the embedded V8 host.

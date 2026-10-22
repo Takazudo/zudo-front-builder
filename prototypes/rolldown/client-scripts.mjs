@@ -58,7 +58,7 @@ function environment(backend) {
   delete env.ZFB_DEV_EAGER;
   delete env.ZFB_LAZY_DEV_RENDER;
   delete env.ZFB_DEV_DEFER_BUNDLE;
-  if (backend === "rolldown") env.ZFB_ROLLDOWN_PROTOTYPE = "1";
+  env.ZFB_BUNDLER = backend;
   return env;
 }
 

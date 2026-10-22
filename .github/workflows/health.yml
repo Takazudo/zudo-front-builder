@@ -197,6 +197,12 @@ jobs:
     # 90 seconds for Rust fixture compile/execution. Allow bounded headroom
     # for browser installation and cold-cache variance on the same runner.
     timeout-minutes: 90
+    # Rolldown in zfb's default features (#318) links oxc/Rolldown into every
+    # workspace test binary. With full debuginfo, `cargo build --workspace
+    # --all-targets` filled the runner's 92 GB (run 39731523288). Line tables
+    # keep file:line backtraces for test failures.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:

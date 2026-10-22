@@ -117,6 +117,10 @@ impl Request {
             } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
                 jsx.import_source = Some(value.to_string());
                 has_jsx = true;
+            } else if let Some(value) = arg.strip_prefix("--conditions=") {
+                // Esbuild adds custom conditions to its defaults; Rolldown's
+                // resolver extends its own defaults the same way.
+                resolve.condition_names = Some(value.split(',').map(str::to_string).collect());
             } else if let Some(value) = arg.strip_prefix("--main-fields=") {
                 resolve.main_fields = Some(value.split(',').map(str::to_string).collect());
             } else {
@@ -135,7 +139,20 @@ impl Request {
                     }
                     "--splitting" | "--splitting=true" => {
                         options.code_splitting =
-                            Some(rolldown_common::CodeSplittingMode::Bool(true))
+                            Some(rolldown_common::CodeSplittingMode::Bool(true));
+                        // Esbuild never makes a chunk import an entry, and zfb renames
+                        // entries after bundling. Rolldown keeps code shared with an
+                        // already-loaded entry inside that entry unless this is off.
+                        options
+                            .experimental
+                            .get_or_insert_default()
+                            .chunk_optimization =
+                            Some(rolldown_common::ChunkOptimizationOption::Options(
+                                rolldown_common::ChunkOptimizationOptions {
+                                    merge_common_chunks: true,
+                                    avoid_redundant_chunk_loads: false,
+                                },
+                            ));
                     }
                     "--splitting=false" => {
                         options.code_splitting =

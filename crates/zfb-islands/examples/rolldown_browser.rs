@@ -11,7 +11,7 @@ use zfb_islands::{
 };
 fn main() -> Result<()> {
     let root = PathBuf::from(std::env::args().nth(1).expect("project root")).canonicalize()?;
-    let backend = if std::env::var("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Ok("1") {
+    let backend = if std::env::var("ZFB_BUNDLER").as_deref() != Ok("esbuild") {
         "rolldown"
     } else {
         "esbuild"

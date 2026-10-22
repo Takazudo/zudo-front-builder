@@ -35,23 +35,26 @@ import {
 const scriptPath = fileURLToPath(import.meta.url);
 
 export const IDENTITY_NORMALIZED_METRIC = "gzip-identity-normalized";
-export const IDENTITY_NORMALIZATION_VERSION = 1;
+export const IDENTITY_NORMALIZATION_VERSION = 2;
 export const IDENTITY_PLACEHOLDER = "0000000000000000";
 export const NORMALIZED_SIDECAR = "measurement.normalized.json";
 export const NORMALIZER_FILE = "normalize-identity.mjs";
 // Compiler-owned sites per chunk role, measured on the v4.3.1 Linux x64
 // artifact (health run 38075998971): every islands entry carries exactly two
 // `build:"<token>"` sites and no other 16-hex run; shared and lazy chunks
-// carry none. A different count is a product change that needs a new
-// normalization version, not a silent accept.
+// carry none. v2 (#4408): Rolldown's minifier prints the same sites as
+// build:`<token>`, so either quote is accepted when it closes the literal.
+// A different count is a product change that needs a new normalization
+// version, not a silent accept.
 export const IDENTITY_SITES_BY_ROLE = Object.freeze({ entry: 2, shared: 0, lazy: 0 });
 export const IDENTITY_NORMALIZATION_RULES =
-  "v1: read the zudo_react_build token from every data-zfb-build attribute in the saved " +
+  "v2: read the zudo_react_build token from every data-zfb-build attribute in the saved " +
   "index.html (all must be one identical 16-character lowercase hex value); in each emitted JS " +
-  'file replace only exact build:"<that token>" occurrences in the emitted registration ' +
-  'identity:{component,build} and mount-local let identity shapes (outside comments and strings) with build:"' +
+  'file replace only exact build:"<that token>" or build:`<that token>` occurrences (same quote ' +
+  "on both sides) in the emitted registration " +
+  "identity:{component,build} and mount-local let identity shapes (outside comments and strings) with the " +
   IDENTITY_PLACEHOLDER +
-  '" (same length, so raw is unchanged); require exactly 2 sites in the islands entry and 0 in ' +
+  " placeholder inside the same quotes (same length, so raw is unchanged); require exactly 2 sites in the islands entry and 0 in " +
   "shared/lazy chunks; reject any recognized compiler identity site carrying another token; a dist with no JS " +
   "must carry no token; gzipNormalized is node:zlib gzipSync level=9 mtime=0 of the normalized " +
   "bytes, summed per entry/shared/lazy role exactly like the actual gzip.";
@@ -62,8 +65,8 @@ const htmlTokenPattern = /data-zfb-build="([^"]*)"/g;
 // arbitrary object with a property named build. The first is the registration
 // identity; the second is the mount closure's local identity.
 const buildSitePatterns = [
-  /identity:\{component:[\w$]+,build:"([0-9a-f]{16})"/g,
-  /let [\w$]+=\{component:[\w$]+,build:"([0-9a-f]{16})"/g,
+  /identity:\{component:[\w$]+,build:(["`])([0-9a-f]{16})\1/g,
+  /let [\w$]+=\{component:[\w$]+,build:(["`])([0-9a-f]{16})\1/g,
 ];
 
 // A candidate inside a comment or string is not executable compiler output.
@@ -145,7 +148,7 @@ export function buildTokenFromHtml(htmlText, label = "index.html") {
   return tokens[0];
 }
 
-// Replaces the exact `build:"<token>"` sites with the placeholder and reports
+// Replaces the exact `build:"<token>"` (or backtick) sites with the placeholder and reports
 // how many were replaced. Works on latin1 so every byte round-trips unchanged.
 export function normalizeIdentitySites(bytes, token, expectedSites, label) {
   const text = bytes.toString("latin1");
@@ -153,7 +156,7 @@ export function normalizeIdentitySites(bytes, token, expectedSites, label) {
   const sites = buildSitePatterns
     .flatMap((pattern) => [...text.matchAll(pattern)])
     .filter((match) => codeMask[match.index] !== " ");
-  const foreign = sites.map((match) => match[1]).filter((found) => found !== token);
+  const foreign = sites.map((match) => match[2]).filter((found) => found !== token);
   if (foreign.length > 0) {
     throw new Error(
       label +

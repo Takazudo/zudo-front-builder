@@ -47,7 +47,7 @@ mod probe {
     }
     pub fn run() -> Result<()> {
         let root = PathBuf::from(std::env::args().nth(1).expect("project root")).canonicalize()?;
-        let backend = if std::env::var("ZFB_ROLLDOWN_PROTOTYPE").as_deref() == Ok("1") {
+        let backend = if zfb_rolldown_prototype::enabled() {
             "rolldown"
         } else {
             "esbuild"
