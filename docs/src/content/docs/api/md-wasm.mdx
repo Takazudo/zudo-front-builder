@@ -250,7 +250,7 @@ The root (`.`) remains the complete compatibility API. Existing root and
 `zfb-render` while intentionally retaining `zfb-content` and `syntect-fancy`.
 Parse is not syntect-free.
 
-| Subpath | gzip-9 wasm (4.6.0) | Exact runtime values | Exact type surface | Use when |
+| Subpath | gzip-9 wasm (4.7.0) | Exact runtime values | Exact type surface | Use when |
 | --- | ---: | --- | --- | --- |
 | `.` | 1,536,072 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, `MdastAdapterError`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | Full current compile/render/parse/raw-mdast/highlight types | Compile MDX or use several current APIs |
 | `./highlight` | 821,783 B | `init`, `highlightCode`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` | Highlight code only; public API/resources stay compatible |
@@ -350,7 +350,7 @@ highlight entries have independent recovery state.
 
 ### Shipped artifact sizes and locked ceilings
 
-These are the shipped **4.6.0** artifact rows — optimized final wasm after
+These are the shipped **4.7.0** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
@@ -368,7 +368,7 @@ Locked gzip-9 ceilings are root 1,600,000 B, highlight 880,000 B, render
 1,125,000 B, and parse 325,000 B; the complete packed tarball ceiling is
 3,900,000 B. All four ship inside their ceilings, with 63,928 B (root),
 58,217 B (highlight), 10,121 B (render), and 24,475 B (parse) of headroom.
-These are 4.6.0 measurements, not permanent promises — re-measure against
+These are 4.7.0 measurements, not permanent promises — re-measure against
 the version you actually install.
 
 **Sizes are guarded; content digests are not.** The byte sizes above are held by

@@ -1,0 +1,33 @@
+---
+title: v4.7.0
+sidebar_position: 157
+---
+
+# v4.7.0
+
+Released: 2026-10-23
+
+## Breaking Changes
+
+- Source builds only: the `embed_v8` Cargo feature and the `deno_core` host are removed (c0f16f31). The default build uses `direct-v8`. `--no-default-features` still builds the slim, V8-free CLI. The V8-off error now names `direct-v8 = off` instead of `embed_v8 = off`. npm and Homebrew users are not affected.
+- Source builds only: `deno_core`, `deno_ops`, `deno_error`, `serde_v8` and 17 other crates leave the dependency graph (21 records in total). No remaining crate's version changed.
+
+## Features
+
+- Engine: zfb now runs JavaScript (config evaluation, SSR, plugins) on its own direct V8 host (`zfb-js-host`, `v8` 147.4.0) instead of the `deno_core`-based host (9b7fbdad, c0f16f31). npm and Homebrew users need to do nothing: commands, config and output are unchanged.
+- Engine: the ICU 77 data that V8 needs is vendored and embedded in the binary. No environment variable or download is needed at build or run time (b8699c6e).
+- Bundler: zfb now bundles pages/SSR and islands with Rolldown, in process, instead of the embedded esbuild (#4408). Set `ZFB_BUNDLER=esbuild` to go back to esbuild. `ZFB_BUNDLER` accepts only `rolldown` or `esbuild`, and any other value fails at startup. `zfb.config.ts` and plugins still compile with esbuild.
+- Island JS output changes: Rolldown's island bundles are about 4% larger raw and about 4% smaller gzipped than esbuild's, so asset hashes change on the first build after upgrading (#4408).
+
+## Bug Fixes
+
+- Islands: chunks that hold a plugin virtual module, such as zudo-doc's shadowed `zdtp-loader` stub, keep the same `islands-chunk-[hash]` name across identical rebuilds. The virtual-module file is now named after its content (7460a65d, 8d7f581a).
+- Windows: an island build that imports a `?url` resource, such as `@takazudo/zfb-md-wasm/highlight`, no longer fails with `read esbuild resolved graph input …?url` (os error 123) on the esbuild path (#4419, fixes #4413).
+- Windows: `zfb dev` re-renders a page when the target of its `:::include` changes. Verbatim (`\\?\C:\…`) dependency paths keep `\` separators, and virtual-module remapping handles verbatim imports (a8432f84, 38c251ab).
+
+## Other Changes
+
+- Dependencies: YAML frontmatter uses `noyalib` / `noyalib-serde-yaml` 0.0.58 (cf92bfa5). Parsing very large frontmatter is about 2.3–2.9x slower than with 0.0.55. Typical pages are unaffected.
+- Dependencies: RUSTSEC-2025-0141 (`bincode` 1) is now reached only through `syntect`, and RUSTSEC-2024-0436 (`paste`) only through `v8`. Both stay recorded as accepted exceptions in `deny.toml` (929ed12c).
+- Known limitation: the direct host does not interrupt CPU-bound JavaScript (for example a page stuck in an endless loop) and sets no hard heap limit. On shutdown the CLI waits up to 10 seconds for its V8 thread, then detaches it.
+- Known limitation: Rolldown refuses two inputs it does not support yet, with a message naming `ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED` or `ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED`: a `tsconfig.json` that sets `compilerOptions.rootDirs` together with a `paths` target ending in a directory, and raw CSS loaded into a JavaScript bundle. Set `ZFB_BUNDLER=esbuild` to build such a project.

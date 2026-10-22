@@ -1,0 +1,13 @@
+---
+title: v4.7.0
+sidebar_position: 43
+---
+
+# v4.7.0
+
+Released: 2026-10-23
+
+## Other Changes
+
+- Dependencies: YAML frontmatter parsing moves to `noyalib` 0.0.58 (cf92bfa5). The API is unchanged. The artifacts grow: `render` by about 33 KB (`finalWasm` 2,208,228 → 2,241,653 bytes), `parse` by about 34 KB and the root entry by about 35 KB. `highlight` stays within a few bytes. The `render` size ceiling moves from 1,100,000 to 1,125,000 gzip-9 bytes (20757516).
+- Digests: all four SHA-256 digests change in this release, as they do in every release. Each `.wasm` embeds `ZFB_RELEASE_VERSION`, so the digests move even where the compiled code and the byte sizes do not. Consumers that pin digests must re-verify the released files: the four digests are in the GitHub Release asset `zfb-md-wasm-4.7.0-shipped-artifacts.json` and in the package export `@takazudo/zfb-md-wasm/shipped-artifacts.json`.
