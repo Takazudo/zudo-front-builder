@@ -36,8 +36,8 @@
 //   printed (issue #700).
 //
 // All helpers are pure JS; the host does not register any Rust ops
-// for them. That keeps the deno_core op-version coupling out of this
-// crate's surface.
+// for them, so this file adds nothing to the native bridge's
+// surface.
 
 // ## Why the body is wrapped in an IIFE
 //
@@ -142,9 +142,9 @@
 
   // Console capture (issue #700).
   //
-  // The bare deno_core runtime installs a minimal `console` whose
-  // levelled methods print straight to the zfb process's stdout via
-  // `op_print`. That live passthrough is preserved (each patched method
+  // The host (`native/bootstrap.rs`) installs a minimal `console` whose
+  // levelled methods print straight to the zfb process's stderr. That
+  // live passthrough is preserved (each patched method
   // forwards to the original binding), but every line is ALSO buffered
   // here so the Rust side can drain it and attach the worker's console
   // output to render-failure diagnostics — without the buffer, a failed
@@ -224,8 +224,8 @@
   // replacing the console object) so any extra members the runtime
   // installed — e.g. inspector-only APIs copied from V8's console —
   // survive untouched. Originals are snapshotted BEFORE patching so a
-  // missing level's fallback (`console.info` does not exist on
-  // deno_core's CoreConsole) forwards to the ORIGINAL `log`, not the
+  // missing level's fallback (a level the installed console lacks)
+  // forwards to the ORIGINAL `log`, not the
   // patched one (which would double-capture).
   (() => {
     if (!globalThis.console || typeof globalThis.console !== "object") {

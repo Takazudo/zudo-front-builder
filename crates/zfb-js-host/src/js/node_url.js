@@ -2,7 +2,7 @@
 //
 // Note: `node:url` is distinct from the global `URL` constructor —
 // `node:url` is Node's deprecated string-based URL utilities.
-// The bundle should be using `globalThis.URL` from `deno_web` for
+// The bundle should be using the global `URL` (web_polyfills.js) for
 // real URL parsing; this stub is only for code paths that
 // happened to import the Node namespace.
 import { makeNodeStubProxy } from "ext:zfb_node_stubs/node_stub.js";

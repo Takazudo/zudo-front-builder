@@ -10,9 +10,8 @@
 //
 // - `Request` / `Response` / `Headers` constructible from the shapes
 //   they document.
-// - `URL` / `URLSearchParams` (deno_core re-exports the WHATWG URL
-//   parser via the `url` Rust crate, but does not expose it as a
-//   global; we wrap it here).
+// - `URL` / `URLSearchParams` (bare V8 has no WHATWG URL global; we
+//   provide a minimal one here).
 // - `TextEncoder` / `TextDecoder` for body encoding.
 // - `atob` / `btoa` for base64.
 // - `structuredClone` for object cloning (workerd ships it; some
@@ -951,9 +950,9 @@
     );
   }
 
-  // deno_core rebuilds an op's Rust-side error in JS through its own
-  // `buildCustomError` (`00_infra.js`), which can only construct classes
-  // present in its `errorMap` — the six ECMAScript builtins. A
+  // The host rebuilds a native callback's Rust-side error in JS through
+  // its error registry (`native/values.rs`), which can only construct
+  // classes registered in it — the six ECMAScript builtins by default. A
   // `JsErrorBox` carrying ANY other class is rebuilt as
   // `TypeError: invalid_argument`, losing BOTH the name and the
   // message. The transport's deadline uses `TimeoutError` (contract row
@@ -969,9 +968,8 @@
     const core = globalThis.__zfbHost;
     if (!core || typeof core.registerErrorClass !== "function") return;
     // Every non-builtin error class a Rust op can raise MUST be listed
-    // here. deno_core rebuilds an op's error through its own
-    // `buildCustomError`, which can only construct classes in its
-    // `errorMap`; an unregistered class arrives in JS as a thrown
+    // here. The host's error registry can only construct registered
+    // classes; an unregistered class arrives in JS as a thrown
     // `undefined` — no name, no message, no diagnostic at all.
     //
     // - `TimeoutError`: the fetch transport's deadline (#2015/#2016).
@@ -1622,8 +1620,7 @@
 
   // ---- setTimeout / clearTimeout --------------------------------
   //
-  // The embedded V8 host has NO event loop timers (deno_core's
-  // timer ops are not wired in). Server code may use `setTimeout` when
+  // The embedded V8 host has NO event loop timers. Server code may use `setTimeout` when
   // reporting an SSR error on a later turn. Without the global, that
   // path could surface `ReferenceError: setTimeout is not defined` and
   // mask the original error. We back it with `queueMicrotask` (a pure-V8/
