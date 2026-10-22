@@ -18,6 +18,14 @@ spec = importlib.util.spec_from_file_location("runner_protocol", Path(__file__).
 protocol = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(protocol)
 
+# The baseline is the deno_core rollback runner. direct-v8 is the default since
+# #4390, so build it with the pinned rollback features or it exits 2.
+BASELINE_ENGINE = "deno_core 0.399.0 / v8 147.4.0"
+BASELINE_BUILD_FEATURES = "--no-default-features --features embed_v8,syntect-onig"
+BASELINE_HELP = ("direct_v8_baseline example built with `cargo build --locked -p zfb-render "
+                 + BASELINE_BUILD_FEATURES + " --example direct_v8_baseline`")
+CANDIDATE_ENGINE = "direct v8 147.4.0"
+
 
 def category(message):
     if message == "default export must be a plain object":
@@ -97,7 +105,7 @@ def validate_cases(cases):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--baseline", type=Path, required=True, help=BASELINE_HELP)
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--kind", choices=["config", "script"], default="config")
     parser.add_argument("--cases", type=Path)
@@ -111,9 +119,9 @@ def main():
         report["corpus_sha256"] = hashlib.sha256(corpus_bytes).hexdigest()
         cases = protocol.parse_json(corpus_bytes)
         validate_cases(cases)
-        report["results"].append(run(args.baseline, "deno_core 0.399.0 / v8 147.4.0", cases, args.kind))
+        report["results"].append(run(args.baseline, BASELINE_ENGINE, cases, args.kind))
         if args.candidate:
-            report["results"].append(run(args.candidate, "direct v8 147.4.0", cases, args.kind))
+            report["results"].append(run(args.candidate, CANDIDATE_ENGINE, cases, args.kind))
         report["corpus_sha256_after"] = hashlib.sha256(corpus.read_bytes()).hexdigest()
         if report["corpus_sha256_after"] != report["corpus_sha256"]:
             raise ValueError("config corpus bytes changed during execution")
