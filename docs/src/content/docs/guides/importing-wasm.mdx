@@ -204,7 +204,7 @@ The primitive on this page is for **server-side** `.wasm` imports (SSG build
 time, or SSR at request time via a page/route module graph). Client-side
 `"use client"` island code, and packages compiled to WebAssembly specifically
 for the browser (like `@takazudo/zfb-md-wasm`), also ship `.wasm` resources —
-but they go through the islands esbuild pass, not this import primitive, and
+but they go through the islands bundler pass, not this import primitive, and
 are emitted as `islands-resource-<name>-<hash>.wasm` files alongside their JS
 glue rather than as a compiled-module import into a page. See
 [Browser Markdown Preview](./browser-markdown-preview.mdx) for a worked

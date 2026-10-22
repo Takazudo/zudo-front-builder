@@ -22,7 +22,7 @@ actually looks like, read [SSR on a Worker](./ssr-on-a-worker.mdx).
 ## One application contract
 
 The generated application exposes a Request/Response handler. When you run a
-build, esbuild compiles your TSX pages, layouts, and components into a single
+build, the bundler (Rolldown by default) compiles your TSX pages, layouts, and components into a single
 worker bundle shaped as a Cloudflare Workers module:
 
 ```ts

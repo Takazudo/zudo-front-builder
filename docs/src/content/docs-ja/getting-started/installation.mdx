@@ -113,9 +113,9 @@ cargo install --path crates/zfb
 
 ## Node なしでインストール
 
-zfb は自己完結型の Rust バイナリとして配布されます。**インストールにも実行にも Node.js は不要です。** esbuild は `zfb` 実行ファイルの vendor snapshot に埋め込まれ、実行時に展開されてサブプロセスとして呼び出されます。zudo-wind は zfb バイナリ自体にコンパイルされており、別の CSS エンジンプロセスを起動しません。どちらも `zfb` の隣に別の release tarball バイナリとして配布されません。Node が必要なのは一部の機能をオプトインで使う場合だけです（下記の [Node が依然として必要なケース](#node-が依然として必要なケース) を参照してください）。
+zfb は自己完結型の Rust バイナリとして配布されます。**インストールにも実行にも Node.js は不要です。** ページと islands のデフォルトのバンドラーである Rolldown と zudo-wind は zfb バイナリ自体にコンパイルされており、プロセス内で動作します。esbuild は `zfb` 実行ファイルの vendor snapshot に埋め込まれ、実行時に展開されてサブプロセスとして呼び出され、`zfb.config.ts` とプラグインをコンパイルします（`ZFB_BUNDLER=esbuild` を設定した場合はページと islands のバンドルも担当します）。いずれも `zfb` の隣に別の release tarball バイナリとして配布されません。Node が必要なのは一部の機能をオプトインで使う場合だけです（下記の [Node が依然として必要なケース](#node-が依然として必要なケース) を参照してください）。
 
-Node なしでも、コンテンツサイト向けの Markdown、MDX、HTML ページ、**islands** を利用できます。esbuild は zfb が展開するネイティブバイナリとして動作し、zudo-wind はバイナリ自身の一部です。クライアントサイドのハイドレーションと CSS 処理にも Node は不要です。CSS エンジンと手書き CSS の契約は [スタイリング](../architecture/styling.mdx#zudo-wind-zfb-に組み込まれたエンジン) を参照してください。
+Node なしでも、コンテンツサイト向けの Markdown、MDX、HTML ページ、**islands** を利用できます。Rolldown と zudo-wind はバイナリ自身の一部で、esbuild は zfb が展開するネイティブバイナリとして動作します。クライアントサイドのハイドレーションと CSS 処理にも Node は不要です。CSS エンジンと手書き CSS の契約は [スタイリング](../architecture/styling.mdx#zudo-wind-zfb-に組み込まれたエンジン) を参照してください。
 
 ## スタンドアロンの対応プラットフォーム
 

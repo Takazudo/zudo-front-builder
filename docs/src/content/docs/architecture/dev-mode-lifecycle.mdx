@@ -118,8 +118,9 @@ are also documented in `zfb dev --help`.
    once.)
 2. **CSS pipeline.** When `rerun_css` is true, zudo-wind and lightningcss run. If the
    CSS output is byte-identical to the previous tick, no `Css` event is emitted.
-3. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
-   subprocess is invoked. It bundles every `"use client"` component and writes a
+3. **Islands re-bundle.** When `rerun_islands` is true, the bundler runs:
+   Rolldown in process by default, or the esbuild subprocess with
+   `ZFB_BUNDLER=esbuild`. It bundles every `"use client"` component and writes a
    single combined module to a **stable filename** — `.zfb-build/dev-assets/assets/islands.js`, served at `/assets/islands.js` (the
    `STABLE_ISLANDS_FILENAME` constant in `crates/zfb-types/src/asset_urls.rs`,
    re-exported and consumed by the islands bundler). No content hash in the
@@ -182,7 +183,7 @@ would have no cached reference to swap from.
 Content hashing is the production pipeline's responsibility. In dev the stable name
 is correct by design, not an oversight.
 
-Lazy island chunks are the exception to that stable entry name: esbuild gives
+Lazy island chunks are the exception to that stable entry name: the bundler gives
 `islands-chunk-<hash>.js` files content-hashed names. Within one dev process, after
 lazy-render obligations have resolved, the server keeps the companion files from the
 two previous islands generations on disk. This lets a document that was already open

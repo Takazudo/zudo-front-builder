@@ -93,7 +93,7 @@ This is what actually renders your pages.
 ### Compiled Wasm modules
 
 When an SSR route imports Wasm, zfb emits a `<name>-<hash>.wasm` file (e.g.
-`index_bg-a1b2c3d4.wasm` — esbuild's own `--asset-names=[name]-[hash]`
+`index_bg-a1b2c3d4.wasm` — the bundler's `[name]-[hash]` asset-name
 convention, not a zfb-specific scheme) beside these two JavaScript files.
 `_zfb_inner.mjs` imports it as a compiled `WebAssembly.Module`, while
 `.assetsignore` prevents it from becoming a public asset. See
@@ -103,7 +103,7 @@ dev/SSG/SSR behavior — and the
 [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route)
 for the Satori/Resvg setup, Wrangler rule, and package-size details.
 
-The two-file layout avoids a second esbuild pass inside the adapter. Workerd's
+The two-file layout avoids a second bundler pass inside the adapter. Workerd's
 module loader resolves relative ESM imports from the deployed worker directory,
 so `_worker.js` can simply `import inner from "./_zfb_inner.mjs"` and both files
 stay independent.
@@ -292,7 +292,7 @@ Two categories of output are intentionally absent from `dist/_worker.js` and
 `dist/_zfb_inner.mjs`:
 
 **Islands** — components marked with `"use client"` are compiled by a separate
-esbuild step into a **single combined** browser-shipped bundle. In dev the bundle
+bundler step into a **single combined** browser-shipped bundle. In dev the bundle
 lands at `dist/assets/islands.js` (stable filename, no hash); in production
 `ProductionAssetPipeline` writes it as `dist/assets/islands-<hash>.js` and
 rewrites every reference in the rendered HTML to the hashed URL. The bundle is

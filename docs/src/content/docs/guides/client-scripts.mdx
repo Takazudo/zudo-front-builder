@@ -67,7 +67,8 @@ production build pipeline rewrites this to the hashed URL
 
 `zfb build` runs three steps for each discovered entry:
 
-1. **Bundle** — each `.client.*` file is passed to esbuild and bundled
+1. **Bundle** — each `.client.*` file is passed to the bundler (Rolldown by
+   default, or esbuild with `ZFB_BUNDLER=esbuild`) and bundled
    independently as an ESM module. The bundle includes only the entry and its
    transitive imports. If the entry imports a package, its dependencies are
    included in that entry's bundle as well.
@@ -92,8 +93,8 @@ workers, and the page/SSR bundle:
 | `zfb build` | `false` | `true` | `"production"` |
 
 The [`bundle.loaders` and `bundle.define` settings](../api/define-config.mdx#bundle-settings)
-also apply to client scripts and their workers. Define values are raw esbuild
-expressions and become browser-visible when referenced; do not use them for
+also apply to client scripts and their workers. Define values are raw
+JavaScript expressions and become browser-visible when referenced; do not use them for
 secrets.
 
 TypeScript does not infer these bundler contracts. Add the

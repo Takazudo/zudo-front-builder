@@ -114,16 +114,18 @@ cargo install --path crates/zfb
 ## Install without Node
 
 zfb ships as a self-contained Rust binary. **Node.js is not required to
-install or run it.** esbuild is embedded in the `zfb` executable's vendor
-snapshot, extracted at runtime, and invoked as a subprocess; zudo-wind is
-compiled into the zfb binary and runs without a separate CSS-engine process. Neither is
-shipped as a separate release-tarball binary next to `zfb`. You only need Node
+install or run it.** Rolldown, the default bundler for pages and islands, and
+zudo-wind are compiled into the zfb binary and run in process. esbuild is
+embedded in the `zfb` executable's vendor snapshot, extracted at runtime, and
+invoked as a subprocess to compile `zfb.config.ts` and plugins (and to bundle
+pages and islands when `ZFB_BUNDLER=esbuild` is set). None of them is shipped
+as a separate release-tarball binary next to `zfb`. You only need Node
 as an opt-in escape hatch for specific features (see
 [When Node is still needed](#when-node-is-still-needed) below).
 
 The Node-free path supports the full feature set for content sites: Markdown,
-MDX, HTML pages, **and islands** — esbuild runs as a standalone native binary
-extracted by `zfb`, while zudo-wind is part of the binary itself. Client-side
+MDX, HTML pages, **and islands** — Rolldown and zudo-wind are part of the
+binary itself, and esbuild runs as a standalone native binary extracted by `zfb`. Client-side
 hydration and CSS processing therefore work with zero Node involvement. See
 [Styling](../architecture/styling.mdx#zudo-wind-built-into-zfb) for the CSS engine
 and authored-stylesheet contract.

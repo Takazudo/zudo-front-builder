@@ -425,7 +425,7 @@ export default function ThemeToggle() {
 }
 ```
 
-## What esbuild produces for N islands
+## What the bundler produces for N islands
 
 For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the islands build step emits **one shared bundle**:
 
@@ -433,13 +433,13 @@ For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the is
 dist/assets/islands.js
 ```
 
-All islands are statically imported into a single esbuild entry point, so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
+All islands are statically imported into a single bundler entry point (Rolldown by default, or esbuild with `ZFB_BUNDLER=esbuild`), so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
 
 ```
 dist/assets/islands-<hash>.js
 ```
 
-If any island uses a dynamic `import()` internally, esbuild may also emit code-split chunks alongside it:
+If any island uses a dynamic `import()` internally, the bundler may also emit code-split chunks alongside it:
 
 ```
 dist/assets/islands-chunk-<hash>.js
@@ -714,7 +714,7 @@ or its edits will not produce a dev filesystem event.
 ## Module workers
 
 Use the literal module-worker constructor that zfb can discover before
-esbuild runs:
+the bundler runs:
 
 ```tsx
 "use client";
@@ -772,7 +772,7 @@ part of this contract and should not be expected to be rewritten.
 
 ## `import.meta.glob` support
 
-zfb supports Vite's `import.meta.glob(...)` macro — importing every file matching a pattern in one call, handy for auto-registering a directory of sub-components or data files. Support is intentionally narrow: esbuild (which bundles islands) has no native knowledge of this Vite-only macro, so zfb expands it Rust-side, at build time, before esbuild ever sees the file. Only the one shape that expansion understands is accepted; anything else is a build error rather than a silent miscompile.
+zfb supports Vite's `import.meta.glob(...)` macro — importing every file matching a pattern in one call, handy for auto-registering a directory of sub-components or data files. Support is intentionally narrow: zfb expands this Vite-only macro Rust-side, at build time, before the islands bundler ever sees the file, so the result does not depend on which bundler runs. Only the one shape that expansion understands is accepted; anything else is a build error rather than a silent miscompile.
 
 ### Supported form
 
@@ -811,7 +811,7 @@ Requirements for the supported form:
 
 Before #1404, *any* `import.meta.glob` reachable from an island — even the supported eager + string-literal form — was a hard build error (a stopgap from issue #1387). The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same trick the SSR bundler has used for server-only modules since issues #665/#670.
 
-There is one important boundary: the shadow also raw-mirrors files under each island-reachable glob module's directory so matched target files exist for esbuild, but those raw-mirrored target/subtree files are not recursively expanded. If one of those files contains its own `import.meta.glob(...)`, zfb rejects it instead of shipping an unexpanded Vite-only macro to the browser. If the same file is also imported from the island graph in the normal way, it is a real expanded shadow copy and its supported glob keeps working.
+There is one important boundary: the shadow also raw-mirrors files under each island-reachable glob module's directory so matched target files exist for the bundler, but those raw-mirrored target/subtree files are not recursively expanded. If one of those files contains its own `import.meta.glob(...)`, zfb rejects it instead of shipping an unexpanded Vite-only macro to the browser. If the same file is also imported from the island graph in the normal way, it is a real expanded shadow copy and its supported glob keeps working.
 
 ### Unsupported forms fail the build (or, in dev, warn and skip)
 
@@ -825,7 +825,7 @@ Any of the following fails `zfb build` with a message naming the offending file.
 - a glob module that lives outside the project root, or under `node_modules`, while still being reachable from an island (nothing to mirror into the shadow copy)
 - an `import.meta.glob(...)` call inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion
 
-The raw-mirrored check is intentionally conservative. An unused JS-like sibling (`.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, or `.cts`) under a globbed subtree is still flagged if it contains a real glob call, because the shadow cannot prove whether esbuild will read that raw file later. Hoist the glob into an island-reachable module, move it out of the globbed subtree, or replace it with explicit static imports.
+The raw-mirrored check is intentionally conservative. An unused JS-like sibling (`.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, or `.cts`) under a globbed subtree is still flagged if it contains a real glob call, because the shadow cannot prove whether the bundler will read that raw file later. Hoist the glob into an island-reachable module, move it out of the globbed subtree, or replace it with explicit static imports.
 
 ### Client scripts: not supported, and not caught at build time
 
@@ -866,7 +866,7 @@ Standard script attributes such as `defer`, `async`, and `nonce` are supported d
 <script src="https://cdn.example.com/lib.js" defer />
 ```
 
-**Client scripts or custom build steps** — zfb automatically bundles [`*.client.*` entries](../guides/client-scripts.mdx) as a second browser-entry pipeline. For any other TypeScript module, add a separate esbuild or Rollup step and reference its output from a `<script src>`. Modules that are not reachable from a `"use client"` graph or a `.client.*` entry remain server-only.
+**Client scripts or custom build steps** — zfb automatically bundles [`*.client.*` entries](../guides/client-scripts.mdx) as a second browser-entry pipeline. For any other TypeScript module, add a separate esbuild, Rolldown or Rollup step and reference its output from a `<script src>`. Modules that are not reachable from a `"use client"` graph or a `.client.*` entry remain server-only.
 
 What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. Modules without the directive are server-only — SWC compiles and evaluates them at build time, and none of their bytes are included in the output.
 
