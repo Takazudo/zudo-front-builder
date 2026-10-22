@@ -1195,7 +1195,13 @@ export function diffCargoLocks(oldText, newText) {
   const duplicates = added.filter(
     (id, i) => added.indexOf(id) !== i || (oldIds.has(id) && !changed.includes(id)),
   );
-  return { problems, added, changed, removed, duplicates: [...new Set(duplicates)] };
+  return {
+    problems,
+    added,
+    changed,
+    removed,
+    duplicates: [...new Set(duplicates)],
+  };
 }
 
 function decodeLock(bytes) {
@@ -1705,7 +1711,10 @@ export function checkRewireDeclaration(declaration) {
       removedDependencies: sortedUnique(entry.removedDependencies),
       addedDependencies: sortedUnique(entry.addedDependencies),
     })),
-    closure: { added: sortedUnique(closure.added), changed: sortedUnique(closure.changed) },
+    closure: {
+      added: sortedUnique(closure.added),
+      changed: sortedUnique(closure.changed),
+    },
     ...(externalMode ? { externalEdges: externalEdges.map((edge) => ({ ...edge })) } : {}),
   };
 }
@@ -1752,7 +1761,10 @@ export function parseLockRecord(body, label) {
 // version, and `name version (source)` exactly one source.
 export function resolveDependencyEntry(entry, records, lock = "new") {
   const match = DEPENDENCY_ENTRY.exec(entry);
-  if (!match) return { problem: "dependency entry " + JSON.stringify(entry) + " is malformed" };
+  if (!match)
+    return {
+      problem: "dependency entry " + JSON.stringify(entry) + " is malformed",
+    };
   const [, name, version, source] = match;
   let candidates = records.filter((record) => record.name === name);
   if (version !== undefined) candidates = candidates.filter((r) => r.version === version);
@@ -1903,7 +1915,10 @@ function readClosureReceipt(receipt, { label, producer, target, lockSha, lockRec
   const fail = (message) => label + " closure receipt " + message;
   const problems = [];
   if (!isRecord(receipt) || receipt.schemaVersion !== 1) {
-    return { problems: [fail("is not a schemaVersion 1 receipt")], rows: new Map() };
+    return {
+      problems: [fail("is not a schemaVersion 1 receipt")],
+      rows: new Map(),
+    };
   }
   if (receipt.producer !== producer) {
     problems.push(
@@ -2020,7 +2035,11 @@ function declaredLockMoveProblems({
   const oldSha = sha256(oldText ?? "");
   const newSha = sha256(newText ?? "");
   const source = isRecord(oldLockSource)
-    ? { commit: oldLockSource.commit, path: oldLockSource.path, sha256: oldLockSource.sha256 }
+    ? {
+        commit: oldLockSource.commit,
+        path: oldLockSource.path,
+        sha256: oldLockSource.sha256,
+      }
     : null;
   if (
     !source ||
@@ -2088,7 +2107,12 @@ function pairLockRecords(oldText, newText, problems, fail) {
   const withFields = (lock, label) =>
     lock.packages.map((record) => {
       const [name, version] = record.id.split("@");
-      return { ...record, name, version, fields: parseLockRecord(record.body, label) };
+      return {
+        ...record,
+        name,
+        version,
+        fields: parseLockRecord(record.body, label),
+      };
     });
   let oldRecords;
   let newRecords;
@@ -2443,7 +2467,11 @@ export function proveCargoInternalRewire({
     }
     for (const [key, row] of newRows) {
       if (!oldRows.has(key))
-        closure.added.push({ key, id: row.name + "@" + row.version, features: row.features });
+        closure.added.push({
+          key,
+          id: row.name + "@" + row.version,
+          features: row.features,
+        });
     }
     if (closure.removed.length > 0) {
       closureProblems.push("rows left the producer closure: " + closure.removed.join(", "));
@@ -2495,7 +2523,10 @@ export function proveCargoInternalRewire({
     newSha: expectedNewSha,
     oldLockSource: source,
     newLockSource: newSource,
-    declaration: { path: declarationSource.path, sha256: declarationSource.sha256 },
+    declaration: {
+      path: declarationSource.path,
+      sha256: declarationSource.sha256,
+    },
     producer: declared.producer,
     // Manifests are read from the checkout; `manifestsAtCommit` names the
     // --new-cargo-ref commit whose blobs they were proven byte-identical to,
@@ -2509,9 +2540,20 @@ export function proveCargoInternalRewire({
       target,
       oldSha256: closures.old.sha256,
       newSha256: closures.new.sha256,
-      rows: { old: oldRows.size, new: newRows.size, unchanged: closure.unchanged },
-      added: closure.added.map((row) => ({ id: row.id, features: row.features })),
-      changed: closure.changed.map((row) => ({ id: row.id, from: row.from, to: row.to })),
+      rows: {
+        old: oldRows.size,
+        new: newRows.size,
+        unchanged: closure.unchanged,
+      },
+      added: closure.added.map((row) => ({
+        id: row.id,
+        features: row.features,
+      })),
+      changed: closure.changed.map((row) => ({
+        id: row.id,
+        from: row.from,
+        to: row.to,
+      })),
     },
   };
 }
@@ -3127,6 +3169,20 @@ export function proveCargoRemoval({
       const { problem } = resolveDependencyEntry(dependency, oldRecords, "old");
       if (problem) problems.push("pruned " + entry.id + ": " + problem);
     }
+    const prunedByRemoval = oldRecords.some(
+      (removed) =>
+        declaredRemoved.has(removed.id) &&
+        (removed.fields.dependencies ?? []).some(
+          (dependency) => resolveDependencyEntry(dependency, oldRecords, "old").record === record,
+        ),
+    );
+    if (!prunedByRemoval) {
+      problems.push(
+        "declared pruned " +
+          entry.id +
+          " has no declared-removed dependent in the old Cargo.lock (only a removal may prune an external record)",
+      );
+    }
     prunedExternal.push({
       id: entry.id,
       oldSha256: entry.oldSha256,
@@ -3218,7 +3274,10 @@ export function proveCargoRemoval({
     newSha: expectedNewSha,
     oldLockSource: source,
     newLockSource: newSource,
-    declaration: { path: declarationSource.path, sha256: declarationSource.sha256 },
+    declaration: {
+      path: declarationSource.path,
+      sha256: declarationSource.sha256,
+    },
     producer: declared.producer,
     // As for cargoRewire: the --new-cargo-ref (or HEAD) commit the manifests
     // were proven byte-identical to, or null when only the working tree was read.
@@ -3566,12 +3625,19 @@ export function contractReferenceRecord(reference) {
     );
   }
   return Object.hasOwn(reference, "commit")
-    ? { sha256: reference.sha256, commit: reference.commit, path: reference.path }
+    ? {
+        sha256: reference.sha256,
+        commit: reference.commit,
+        path: reference.path,
+      }
     : { sha256: reference.sha256 };
 }
 
 export function repinnedFromRecord(contract, reference) {
-  return { ...predecessorRecord(contract), contract: contractReferenceRecord(reference) };
+  return {
+    ...predecessorRecord(contract),
+    contract: contractReferenceRecord(reference),
+  };
 }
 
 // Actual gzip movement between the previous contract and the new measurement,
@@ -4357,7 +4423,11 @@ export async function computeWithHelperSource(source, root, lockText, currentVer
   writeFileSync(path, source);
   try {
     const helper = await import(pathToFileURL(path).href);
-    return helper.computeLockFingerprint({ lockText, currentVersion, repoRoot: resolve(root) });
+    return helper.computeLockFingerprint({
+      lockText,
+      currentVersion,
+      repoRoot: resolve(root),
+    });
   } finally {
     rmSync(path, { force: true });
   }
@@ -4378,7 +4448,12 @@ const GIT_REDIRECT_ENV = [
 function gitOptions(root) {
   const env = { ...process.env };
   for (const key of GIT_REDIRECT_ENV) delete env[key];
-  return { cwd: root, env, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] };
+  return {
+    cwd: root,
+    env,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  };
 }
 
 function git(root, args) {
@@ -4772,7 +4847,10 @@ export function regenerateInventory(root, pinned, helper, reason = DEPENDENCY_GR
     throw fail("the checkout's fingerprint is not the one the re-pinned contract pins");
   }
   const explain = helperExplainBytes(root);
-  const expected = { ...contractFingerprint(proof), inventory: proof.inventory };
+  const expected = {
+    ...contractFingerprint(proof),
+    inventory: proof.inventory,
+  };
   if (!isDeepStrictEqual(JSON.parse(explain.toString("utf8")), expected)) {
     throw fail(
       "the checkout's lock-fingerprint.mjs --explain output disagrees with the fingerprint proof",
@@ -5072,8 +5150,14 @@ export function pairedTransition(previous, next) {
 // platforms to one declaration and lock pair, and the baselineEvidence record
 // it is read from.
 const DECLARATION_BINDINGS = Object.freeze({
-  [CARGO_INTERNAL_REWIRE_REASON]: Object.freeze({ runKey: "rewire", evidenceKey: "cargoRewire" }),
-  [CARGO_REMOVAL_REASON]: Object.freeze({ runKey: "removal", evidenceKey: "cargoRemoval" }),
+  [CARGO_INTERNAL_REWIRE_REASON]: Object.freeze({
+    runKey: "rewire",
+    evidenceKey: "cargoRewire",
+  }),
+  [CARGO_REMOVAL_REASON]: Object.freeze({
+    runKey: "removal",
+    evidenceKey: "cargoRemoval",
+  }),
 });
 const DECLARATION_BINDING_KEYS = Object.freeze([
   "declarationSha256",
@@ -5303,7 +5387,11 @@ export function applyStage(
   // Each destination's real file, so a symlinked destination is written through.
   const targets = paths.map((path) => {
     const target = realTarget(resolve(root, path));
-    return { path, target, original: existsSync(target) ? readFileSync(target) : null };
+    return {
+      path,
+      target,
+      original: existsSync(target) ? readFileSync(target) : null,
+    };
   });
   const moved = targets
     .filter(
@@ -5500,7 +5588,11 @@ export function readCargoLockEvidence(args, root) {
     added: parseAddedPackages(args["added-packages"]),
     oldText: blob.bytes,
     newText: readFileSync(join(root, "Cargo.lock")),
-    oldLockSource: { commit: blob.commit, path: blob.path, sha256: sha256(blob.bytes) },
+    oldLockSource: {
+      commit: blob.commit,
+      path: blob.path,
+      sha256: sha256(blob.bytes),
+    },
     ...(args["reviewed-cargo-transition"]
       ? {
           reviewedTransitionText: readFileSync(args["reviewed-cargo-transition"], "utf8"),
@@ -5623,7 +5715,11 @@ function readDeclaredCargoEvidence(args, root, target, declarationArg, fail) {
     expectedNewSha: args["expected-new-cargo-sha"],
     oldText: blob.bytes,
     newText,
-    oldLockSource: { commit: blob.commit, path: blob.path, sha256: sha256(blob.bytes) },
+    oldLockSource: {
+      commit: blob.commit,
+      path: blob.path,
+      sha256: sha256(blob.bytes),
+    },
     newLockSource,
     declaration: declaration.value,
     // The declaration is cited by its repository path when it lives in the
@@ -5754,10 +5850,14 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
         ? { cargoLock: readCargoLockEvidence(args, root) }
         : {}),
       ...(args.reason === CARGO_INTERNAL_REWIRE_REASON
-        ? { cargoRewire: readCargoRewireEvidence(args, root, LINUX_PRODUCER_TARGET) }
+        ? {
+            cargoRewire: readCargoRewireEvidence(args, root, LINUX_PRODUCER_TARGET),
+          }
         : {}),
       ...(args.reason === CARGO_REMOVAL_REASON
-        ? { cargoRemoval: readCargoRemovalEvidence(args, root, LINUX_PRODUCER_TARGET) }
+        ? {
+            cargoRemoval: readCargoRemovalEvidence(args, root, LINUX_PRODUCER_TARGET),
+          }
         : {}),
       ...(REPINNED_FROM_REASONS.includes(args.reason)
         ? {
