@@ -14,7 +14,7 @@ assert.equal(`${process.platform}/${process.arch}`, process.env.CSS_EXPECTED_RUN
 const cssModule = fileURLToPath(import.meta.resolve("@takazudo/zfb/css"));
 assert.equal(realpathSync(cssModule), join(room, "node_modules/@takazudo/zfb/dist/css.js"));
 const carrier = `@takazudo/zfb-${process.env.CSS_CARRIER}`;
-assert.equal(require(`${carrier}/package.json`).version, "4.4.0");
+assert.equal(require(`${carrier}/package.json`).version, process.env.CSS_PACKAGE_VERSION);
 const addon = realpathSync(require.resolve(`${carrier}/zfb-css.node`));
 assert.ok(relative(room, addon).startsWith("node_modules"));
 assert.equal(

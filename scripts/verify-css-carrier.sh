@@ -4,8 +4,11 @@ umask 022
 # Hosted verification only. Never invoke a publisher or build on a user's Mac.
 mode="${1:?native|fast-mac|ingestion|linux-size}"
 export CSS_VERIFY_MODE="$mode"
+# The lockstep packages share one version; verify the source's own, never a pinned literal (#4415).
+CSS_PACKAGE_VERSION=$(node -p 'require("./packages/zfb/package.json").version')
+export CSS_PACKAGE_VERSION
 if [[ "$mode" == native || "$mode" == fast-mac ]]; then
-  export ZFB_RELEASE_VERSION=4.4.0
+  export ZFB_RELEASE_VERSION="$CSS_PACKAGE_VERSION"
 elif [[ ${ZFB_RELEASE_VERSION+x} ]]; then
   echo 'Non-release verification must retain the unstamped health environment' >&2
   exit 1
@@ -58,7 +61,7 @@ import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 const [out, tooling] = process.argv.slice(2);
 for (const name of ['zfb', 'zfb-slugify', 'zfb-darwin-arm64', 'zfb-darwin-x64', 'zfb-linux-arm64-gnu', 'zfb-linux-x64-gnu', 'zfb-win32-x64-msvc']) {
-  if (JSON.parse(fs.readFileSync(`packages/${name}/package.json`)).version !== '4.4.0') throw Error(`${name} must be4.4.0`);
+  if (JSON.parse(fs.readFileSync(`packages/${name}/package.json`)).version !== process.env.CSS_PACKAGE_VERSION) throw Error(`${name} must be ${process.env.CSS_PACKAGE_VERSION}`);
 }
 const sha = path => crypto.createHash('sha256').update(fs.readFileSync(path)).digest('hex');
 fs.writeFileSync(`${out}/identity.json`, JSON.stringify({
@@ -69,7 +72,7 @@ fs.writeFileSync(`${out}/identity.json`, JSON.stringify({
   target: process.env.CSS_TARGET ?? null, carrier: process.env.CSS_CARRIER ?? null,
   profile: process.env.CSS_VERIFY_MODE === 'linux-size' ? 'debug' : process.env.CSS_VERIFY_MODE === 'ingestion' ? 'not-built' : 'release',
   features: process.env.CSS_VERIFY_MODE === 'linux-size' ? 'workspace defaults; all-targets; existing health size recipe' : process.env.CSS_VERIFY_MODE === 'ingestion' ? 'received native tarballs; no compilation' : 'CLI defaults; addon no-default-features; cdylib; dedicated graph',
-  packageVersion:'4.4.0',
+  packageVersion:process.env.CSS_PACKAGE_VERSION,
   node:process.version, npm:execFileSync('npm',['--version'],{encoding:'utf8',shell:process.platform==='win32'}).trim(),
   platform:process.platform, arch:process.arch, python:execFileSync(process.env.RUNNER_OS==='Windows'?'python':'python3',['--version'],{encoding:'utf8'}).trim(),
   helperHashes:Object.fromEntries(['verify-css-carrier.sh','css-carrier-verification.py','css-carrier-public-smoke.mjs'].map(name => [name,sha(`${tooling}/${name}`)])),
@@ -165,7 +168,7 @@ pack_sdk() {
 pack_carrier() {
   local package="$1" binary="$2" addon="$3"
   run carrier-pack npm pack "$package" --ignore-scripts --pack-destination "$out/pack"
-  check pack "$out/pack/takazudo-zfb-${CSS_CARRIER}-4.4.0.tgz" "$CSS_CARRIER" "$binary" "$addon" "$out/packed-carrier.json"
+  check pack "$out/pack/takazudo-zfb-${CSS_CARRIER}-${CSS_PACKAGE_VERSION}.tgz" "$CSS_CARRIER" "$binary" "$addon" "$out/packed-carrier.json"
 }
 load_consumer() {
   local binary="$1" addon="$2"
@@ -190,10 +193,10 @@ load_consumer() {
     image=$(docker image inspect --format '{{.Id}}' node:22.0.0-bookworm-slim)
     run raw-native-load docker run --rm --platform "$platform" -v "$PWD:/w:ro" -w /w "$image" node scripts/smoke-css-node.mjs "packages/zfb-${CSS_CARRIER}/zfb-css.node"
     run packed-public-load docker run --rm --platform "$platform" -v "$room:/consumer" -w /consumer \
-      -e "CSS_CARRIER=$CSS_CARRIER" -e "CSS_ADDON_SHA=$CSS_ADDON_SHA" -e "CSS_EXPECTED_RUNTIME=$CSS_EXPECTED_RUNTIME" \
+      -e "CSS_CARRIER=$CSS_CARRIER" -e "CSS_ADDON_SHA=$CSS_ADDON_SHA" -e "CSS_EXPECTED_RUNTIME=$CSS_EXPECTED_RUNTIME" -e "CSS_PACKAGE_VERSION=$CSS_PACKAGE_VERSION" \
       "$image" node consumer.mjs
     run cli-version docker run --rm --platform "$platform" -v "$PWD:/w:ro" -w /w "$image" "$binary" -V
-    test "$(docker run --rm --platform "$platform" -v "$PWD:/w:ro" -w /w "$image" "$binary" -V)" = 'zfb 4.4.0'
+    test "$(docker run --rm --platform "$platform" -v "$PWD:/w:ro" -w /w "$image" "$binary" -V)" = "zfb $CSS_PACKAGE_VERSION"
     if [[ "$CSS_CARRIER" == linux-arm64-gnu ]]; then
       echo 'execution=emulated-linux-arm64-QEMU' > "$out/execution.txt"
     else
@@ -204,7 +207,7 @@ load_consumer() {
     run raw-native-load "$ZFB_LOAD_NODE" scripts/smoke-css-node.mjs "$addon"
     run packed-public-load "$ZFB_LOAD_NODE" "$room/consumer.mjs"
     run cli-version "$binary" -V
-    test "$("$binary" -V)" = 'zfb 4.4.0'
+    test "$("$binary" -V)" = "zfb $CSS_PACKAGE_VERSION"
     echo 'execution=native' > "$out/execution.txt"
   fi
 }
