@@ -9,7 +9,7 @@ category: Concepts
 
 The build-time-vs-browser JS split, a diagram of the full build-time pipeline,
 why the worker bundle is shaped as a Cloudflare Workers module, and the
-layering principle that keeps esbuild and the JS runtime swappable. For the
+layering principle that keeps the bundler and the JS runtime swappable. For the
 step-by-step build pipeline, read [Build pipeline](./build-pipeline.mdx).
 
 </Info>
@@ -26,7 +26,8 @@ architecture fall into place.
 
 **Worker bundle — build-time only, never shipped to users.**
 
-When you run `zfb build`, the first thing that happens is that esbuild compiles
+When you run `zfb build`, the first thing that happens is that the bundler
+(Rolldown by default, or esbuild with `ZFB_BUNDLER=esbuild`) compiles
 your TSX pages, layouts, and components into a single worker bundle. This bundle
 is shaped as a Cloudflare Workers module — it exports a `fetch` handler and
 nothing else:
@@ -52,7 +53,7 @@ program spawns `zfb dev` as a local content server, are described in
 
 **Browser output — shipped to end users, as up to two independent bundles.**
 
-Components marked with `"use client"` are one source of browser JavaScript. esbuild
+Components marked with `"use client"` are one source of browser JavaScript. The bundler
 bundles all of them together into a single shared ESM module
 (`dist/assets/islands-<hash>.js`), which lands in `dist/assets/` alongside the HTML
 files. A single `<script type="module">` tag referencing this bundle is injected
@@ -88,10 +89,10 @@ flowchart TD
     src["TSX / MDX source files\n(pages/, components/, content/)"]
 
     subgraph build["zfb build — your machine"]
-        esbuild_worker["esbuild\n(worker bundle)"]
+        esbuild_worker["bundler\n(worker bundle)"]
         v8["embedded V8\n(synthetic HTTP requests → HTML)"]
-        esbuild_islands["esbuild\n(shared island bundle)"]
-        esbuild_client["esbuild\n(one bundle per .client.* entry)"]
+        esbuild_islands["bundler\n(shared island bundle)"]
+        esbuild_client["bundler\n(one bundle per .client.* entry)"]
         dist_html["dist/\nHTML files"]
         dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
         dist_client["dist/assets/client/\n&lt;name&gt;-&lt;hash&gt;.js"]
@@ -162,12 +163,12 @@ Three layers, each with a distinct job:
 |-------|-------------|----------------------|
 | **Your source** | Pages, components, content, styles | Build mechanics |
 | **zfb** | The build contract — route table, page props shape, island protocol, client-script pipeline, `dist/` layout | Which bundler, which JS runtime |
-| **Tools** | esbuild (bundling), embedded V8 (build-time evaluation) | Your code's semantics |
+| **Tools** | Rolldown or esbuild (bundling), embedded V8 (build-time evaluation) | Your code's semantics |
 
 zfb owns the contract — what inputs it accepts, what the output looks like, and
-what invariants hold across the build. esbuild and the embedded V8 runtime are
-implementation details that can be swapped behind the `RenderHost` trait without
-touching user code.
+what invariants hold across the build. The bundler and the embedded V8 runtime
+are implementation details that can be swapped without touching user code: the
+bundler behind `ZFB_BUNDLER`, the runtime behind the `RenderHost` trait.
 
 The bundler is the cheap, fast saw. zfb is the carpenter.
 

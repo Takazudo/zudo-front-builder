@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Known failure modes with concrete fixes — install errors, bundle config, import queries, module workers, out-of-root imports, and missing esbuild binaries.
+description: Known failure modes with concrete fixes — install errors, bundle config, import queries, module workers, out-of-root imports, bundler selection, and missing esbuild binaries.
 sidebar_position: 9
 ---
 
@@ -232,7 +232,7 @@ module. Tracked at https://github.com/Takazudo/zudo-front-builder/issues/1385
 and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 ```
 
-**Cause:** `import.meta.glob` is a Vite-only build-time macro; esbuild (which bundles islands) has no native understanding of it, so zfb expands the one supported shape itself before esbuild ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported when the glob call is in an island-reachable module that zfb writes as a real expanded shadow-copy file. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected. zfb also rejects a glob inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion, because that file would otherwise ship to the browser unexpanded and throw during hydration.
+**Cause:** `import.meta.glob` is a Vite-only build-time macro, so zfb expands the one supported shape itself before the islands bundler ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported when the glob call is in an island-reachable module that zfb writes as a real expanded shadow-copy file. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected. zfb also rejects a glob inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion, because that file would otherwise ship to the browser unexpanded and throw during hydration.
 
 **Fix:** see [Islands: `import.meta.glob` support](../architecture/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives. Use the eager string-literal form where applicable, hoist nested globs into island-reachable modules, move raw-mirrored glob target/subtree files out of the globbed subtree, or replace the glob with explicit static imports. Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
 
@@ -245,7 +245,7 @@ bundle.loaders key ".asset" uses unsupported loader "file"; inline-only v1 accep
 bundle.define key "import.meta.env.DEV" is reserved by zfb's bundle mode ...
 ```
 
-An invalid raw define expression can instead surface as an esbuild parse error
+An invalid raw define expression can instead surface as a bundler parse error
 when the first affected bundle runs.
 
 **Cause:** loader keys must start with `.`, use one of `text`, `json`,
@@ -253,7 +253,7 @@ when the first affected bundle runs.
 `.module.css`, `.mdx`, or `.md`. The asset-emitting `file` and `copy` loaders
 are not supported. zfb also owns `import.meta.env.DEV`,
 `import.meta.env.PROD`, and `process.env.NODE_ENV`, so user defines cannot
-replace them. Define values are raw esbuild expressions, not automatically
+replace them. Define values are raw JavaScript expressions, not automatically
 quoted strings.
 
 **Fix:** choose an inline loader and an unreserved extension/key. For a string
@@ -313,11 +313,19 @@ unsupported shapes or third-party transitive workers, bundle them with
 package-specific tooling. See
 [Islands: Module workers](../architecture/islands.mdx#module-workers).
 
+## A build fails with `ZFB_BUNDLER` or `ZFB_ROLLDOWN_*` in the message
+
+**Symptom:** `zfb` exits before building with `` ZFB_BUNDLER=…: expected `rolldown` or `esbuild` ``, or a build that passed with esbuild fails with a message starting `ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED` or `ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED`.
+
+**Cause:** Rolldown bundles pages, islands, client scripts and module workers by default. `ZFB_BUNDLER` accepts only `rolldown` and `esbuild`; any other value is a usage error. Rolldown also refuses two inputs it does not support yet: a `tsconfig.json` that sets `compilerOptions.rootDirs` together with a `paths` target ending in a directory, and raw CSS loaded into a JavaScript bundle.
+
+**Fix:** set `ZFB_BUNDLER=esbuild` for that project to build with the embedded esbuild, as releases before Rolldown became the default did. Unset it, or fix its value, to clear the usage error. If esbuild and Rolldown produce different output for the same project, report it with both builds' output.
+
 ## A relative import "Could not resolve" outside the project root
 
-**Symptom:** `zfb build` (or `zfb dev`) fails with an esbuild `Could not resolve "../../../somewhere/outside.ts"` error, and the accompanying zfb note explains a "shadow-copy build boundary."
+**Symptom:** `zfb build` (or `zfb dev`) fails with a `Could not resolve "../../../somewhere/outside.ts"` error, and the accompanying zfb note explains a "shadow-copy build boundary."
 
-**Cause:** zfb builds by shadow-copying the project root into a temporary directory before running esbuild. A relative import that walks above the project root (e.g. `../../../../packages/ui/src/button.tsx`) resolves outside that shadow copy and cannot be found. This is diagnose-only, not a resolvable bug — the underlying escape stays unsupported; zfb only makes the *reported* error name the real (non-shadow) path and explain the workaround instead of leaking a meaningless temp-directory path.
+**Cause:** zfb builds by shadow-copying the project root into a temporary directory before running the bundler. A relative import that walks above the project root (e.g. `../../../../packages/ui/src/button.tsx`) resolves outside that shadow copy and cannot be found. This is diagnose-only, not a resolvable bug — the underlying escape stays unsupported; zfb only makes the *reported* error name the real (non-shadow) path and explain the workaround instead of leaking a meaningless temp-directory path.
 
 **Fix:** expose the out-of-root target as a package import instead of a relative one — add a wildcard `exports` entry to the target package's `package.json` (e.g. `"./src/*": "./src/*"`) and import it by package specifier (e.g. `@scope/pkg/src/button.tsx`). `node_modules` (including `file:`/workspace-linked packages) IS included in the shadow copy, so package-specifier imports resolve normally. Full details: [`defineConfig`: Watching paths outside the project root](../api/define-config.mdx#watching-paths-outside-the-project-root); tracked at [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385).
 
@@ -370,7 +378,7 @@ export default async function Handler() {
 
 ## I need to inspect zfb's shadow build directory
 
-**Symptom:** `zfb build` or `zfb dev` fails, or behaves unexpectedly, in a way that points at what zfb generates before handing off to esbuild — a generated injected-route shim, the resolved `node_modules` layout, a synthetic `tsconfig.json`. By the time the process exits (even on a failing build), the temporary directory that held all of that is already gone.
+**Symptom:** `zfb build` or `zfb dev` fails, or behaves unexpectedly, in a way that points at what zfb generates before handing off to the bundler — a generated injected-route shim, the resolved `node_modules` layout, a synthetic `tsconfig.json`. By the time the process exits (even on a failing build), the temporary directory that held all of that is already gone.
 
 **Cause:** zfb builds by materialising a shadow copy of the relevant tree into a `tempfile`-managed directory and deleting it once the process exits — normal operation, and the reason you can't just find it afterward under `/tmp`.
 
@@ -381,4 +389,4 @@ export default async function Handler() {
 | `ZFB_KEEP_BUILD_SHADOW=1` | `zfb build` only | The bundler's shadow root, its exact-`node_modules` isolation root, and the package-routes overlay (when the project registers package routes). Survives a failing build too. Each kept path is printed once to stderr. See [`zfb build`: Environment variables](../api/cli.mdx#zfb-build). |
 | `ZFB_KEEP_SHADOW_SESSION=1` | `zfb dev` only | The dev server's one persistent shadow session tempdir for the whole process. A later `zfb dev` boot without the flag reaps a previously-kept dir once it passes an internal age floor — keep the flag exported for the whole debugging session, not just the boot that created the dir. See [`zfb dev`: Environment variables](../api/cli.mdx#zfb-dev). |
 
-Both are narrowly scoped: neither covers every `zfb build`/`zfb dev` temp producer (config loading, islands/esbuild, CSS, plugin resolution are outside both), and setting one never affects the other subcommand — `ZFB_KEEP_BUILD_SHADOW` leaves `zfb dev` untouched, and `ZFB_KEEP_SHADOW_SESSION` leaves `zfb build` untouched.
+Both are narrowly scoped: neither covers every `zfb build`/`zfb dev` temp producer (config loading, the islands bundler, CSS, plugin resolution are outside both), and setting one never affects the other subcommand — `ZFB_KEEP_BUILD_SHADOW` leaves `zfb dev` untouched, and `ZFB_KEEP_SHADOW_SESSION` leaves `zfb build` untouched.

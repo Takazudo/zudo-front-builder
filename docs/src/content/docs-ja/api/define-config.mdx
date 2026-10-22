@@ -111,8 +111,8 @@ declare module "zfb/zudo-react/testing" {
 - `minifyHtml?: boolean` — プロダクション HTML ミニファイを有効にします。デフォルト: `false`（オフ）。ミニファイは Rust 側の後処理として実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。`zfb build --minify-html` / `--no-minify-html` で 1 回のビルドだけ設定値を上書きできます。
 - `strictBrokenLinks?: boolean` — マークダウンのリンク検証が出す壊れたリンクの診断をエラーに引き上げ、警告にとどめる代わりに `zfb build` を非ゼロ終了で失敗させます。デフォルト: `false`（オフ。キー自体を省略しても構いません）。`markdown.features.linkValidation` がない場合、これを `true` にすると何もしないのではなく、デフォルト設定でリンク検証を**強制的に有効化**します。すでにある場合は、その `failOnBroken` だけが上書きされ、他の設定はすべて保持されます。`zfb build --strict-broken` / `--no-strict-broken` で 1 回のビルドだけ設定値を上書きできます。build 専用で、`zfb dev` は影響を受けません。対象は `linkValidation` の仕組みのみで、後述の別物である `resolveMarkdownLinks.onBrokenLinks` のつまみには影響しません。[リンク検証](../markdown-features/link-validation.mdx)を参照してください。
 - `strictContentBridge?: boolean` — コンテンツコレクションの `.md` / `.mdx` エントリのコンパイル済み JSX が MDX ブリッジ用にパースできず、`Content` が `<pre data-zfb-content-fallback>` を描画する場合に `zfb build` を失敗させます（非ゼロ終了）。デフォルト: `false`。`zfb build --strict-content-bridge` / `--no-strict-content-bridge` でそのビルドのみ設定を上書きできます。両フラグは同時指定できず、指定した CLI フラグが設定値より優先されます。build 専用で、`zfb dev` は引き続き警告を出してフォールバックを配信します。フォールバックの挙動は [MDX Components](../architecture/mdx-components.mdx) を参照してください。
-- `strictPlainCssImports?: boolean` — esbuild が JavaScript または TypeScript からのプレーンな `.css` import を解決したものの、その CSS のバイト列が出力されない場合に `zfb build` を失敗させます。デフォルト: `false`。`zfb build --strict-plain-css-imports` / `--no-strict-plain-css-imports` でそのビルドのみ設定を上書きできます。両フラグは同時指定できず、指定した CLI フラグが設定値より優先されます。build 専用で、`zfb dev` は警告のみです。import の方法は [スタイリング](../architecture/styling.mdx)を参照してください。
-- `bundle?: BundleConfig` — ページ / SSR、islands、クライアントスクリプト、module worker の各パスで共有される esbuild 設定。`exclude`、`mainFields`、`external` は `--platform=neutral` のページ / SSR パス向けのエスケープハッチで、`loaders` と `define` は 4 つのパスすべてに適用されます。[bundle 設定](#bundle-設定)を参照してください。
+- `strictPlainCssImports?: boolean` — バンドラーが JavaScript または TypeScript からのプレーンな `.css` import を解決したものの、その CSS のバイト列が出力されない場合に `zfb build` を失敗させます。デフォルト: `false`。`zfb build --strict-plain-css-imports` / `--no-strict-plain-css-imports` でそのビルドのみ設定を上書きできます。両フラグは同時指定できず、指定した CLI フラグが設定値より優先されます。build 専用で、`zfb dev` は警告のみです。import の方法は [スタイリング](../architecture/styling.mdx)を参照してください。
+- `bundle?: BundleConfig` — ページ / SSR、islands、クライアントスクリプト、module worker の各パスで共有されるバンドラー設定。`exclude`、`mainFields`、`external` は `--platform=neutral` のページ / SSR パス向けのエスケープハッチで、`loaders` と `define` は 4 つのパスすべてに適用されます。[bundle 設定](#bundle-設定)を参照してください。
 - `plugins?: PluginConfig[]` — ユーザー提供のプラグイン。各エントリは `name`（npm の specifier または `./` 相対パス）と任意の `options`（プラグインのフックに渡される任意の JSON オブジェクト）を持ちます。フックのコントラクト（`setup`、`preBuild`、`postBuild`、`devMiddleware`、`previewMiddleware`）の全体、および仮想モジュール・インポートエイリアス・開発専用の注入ルートについては [Plugins](../architecture/plugins.mdx) を参照してください。
 - `presets?: Partial<ZfbConfig>[]` — バリデーション前にマージされる設定プリセット。各プリセットは部分的な `ZfbConfig` 形状のオブジェクトで、通常はプリセットパッケージのファクトリ関数の戻り値です。配列フィールド（`plugins`、`collections`、`extraWatchPaths`、`allowedHosts`）はプリセットから先頭に付与され、メイン設定のエントリは相対的な順序を維持します。スカラーおよびオブジェクトフィールドはキーの有無に基づきます。メイン設定がキーを提供している場合は、その値が組み込みデフォルトと同じでもメイン設定が勝ち、キーを省略した場合はそれを提供する最初のプリセットから補完されます。明示的な `null` はプリセット値をブロックします。プリセット内のネストした `presets` は再帰的に展開されません。プリセット作者は相対パスプラグインが正しく解決されるよう [`definePreset`](./define-preset.mdx) を使ってください。
 - `adapter?: string` — デプロイ先アダプタのパッケージ名。純粋な静的ビルドの場合は省略します。`"@takazudo/zfb-adapter-cloudflare"` のようなパッケージは SSR バンドルをデプロイ可能なエントリ（例: Cloudflare Workers Static Assets 向け、Pages 互換の `dist/_worker.js`）にラップします。
@@ -164,6 +164,8 @@ declare module "zfb/zudo-react/testing" {
 
 ブラウザ向けの islands、クライアントスクリプト、module worker の各パスは、ページ / SSR パスと同じモード・loader・define 設定を使います。これにより、サーバーとブラウザのグラフで共有されるコードの意味が、バンドル境界をまたいでも変わりません。
 
+これらの設定は esbuild のオプション名とセマンティクス（`--platform=neutral`、`--main-fields`、loader、生の `define` 式）を使います。デフォルトの Rolldown バンドラーは同じ設定を受け取ってすべてのパスに適用し、`ZFB_BUNDLER=esbuild` の場合はそのまま esbuild に渡されます。
+
 ### バンドルモード
 
 zfb は次の 3 つのコンパイル時置換を所有します。値は minify の有無ではなく、実行するコマンドによって決まります。
@@ -179,7 +181,7 @@ zfb は次の 3 つのコンパイル時置換を所有します。値は minify
 
 ページ / SSR パスは esbuild の `--platform=neutral` でバンドルします。これは意図的に最小限で、`main-fields` の解決リストはデフォルトで空であり、CJS 専用の `require()` 経路でしか解決できないパッケージを拒否します。これら 3 つのフィールドは、neutral パスに到達する CJS 専用の依存（直接インポートされるか、eager な `import.meta.glob(...)` の展開で新たに取り込まれるもの）向けのエスケープハッチです。3 つともデフォルトでは未設定 / 空であり、このつまみを使わないビルドとバイト単位で同一です。
 
-`bundle.exclude` — バンドラーが esbuild グラフへ決して取り込んではいけないソースファイルを指定する、プロジェクト相対の glob パターン（gitignore スタイル。プロジェクトルートからの相対パスに対して POSIX 形式でマッチ）。マッチしたファイルはシャドウツリーへステージングされることも、eager な `import.meta.glob(...)` で展開されることもありません。`CollectionDef.exclude`（バンドルではなくコンテンツのフィルタリング）とは無関係です。
+`bundle.exclude` — バンドラーがバンドルグラフへ決して取り込んではいけないソースファイルを指定する、プロジェクト相対の glob パターン（gitignore スタイル。プロジェクトルートからの相対パスに対して POSIX 形式でマッチ）。マッチしたファイルはシャドウツリーへステージングされることも、eager な `import.meta.glob(...)` で展開されることもありません。`CollectionDef.exclude`（バンドルではなくコンテンツのフィルタリング）とは無関係です。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -223,7 +225,7 @@ export default defineConfig({
 
 ### `bundle.loaders`
 
-`loaders` を使うと、追加の esbuild loader をファイル拡張子へ割り当てられます。
+`loaders` を使うと、追加の loader（esbuild と同じ名前）をファイル拡張子へ割り当てられます。
 
 ```ts
 import { defineConfig } from "zfb/config";
@@ -266,7 +268,7 @@ export default defineConfig({
 
 <Warning title="bundle.define のすべての値を公開コードとして扱ってください">
 
-`bundle.define` は信頼された運用者が記述するビルド入力であり、secret store や入力サニタイズの境界ではありません。設定した各定義はブラウザバンドルから利用できます。到達可能なコードが使わない定義は esbuild が削除する場合もありますが、tree-shaking は機密性を保証しません。認証情報、非公開トークン、信頼できない式をこのマップへ入れないでください。
+`bundle.define` は信頼された運用者が記述するビルド入力であり、secret store や入力サニタイズの境界ではありません。設定した各定義はブラウザバンドルから利用できます。到達可能なコードが使わない定義はバンドラーが削除する場合もありますが、tree-shaking は機密性を保証しません。認証情報、非公開トークン、信頼できない式をこのマップへ入れないでください。
 
 </Warning>
 
@@ -302,7 +304,7 @@ declare const __BUILD_META__: { channel: string };
 
 ファイル名とディレクトリ自体に特別な意味はなく、`tsconfig.json` の `include` に含まれていれば十分です。プロジェクトルートの `zfb-env.d.ts` を使う場合は、そのパスを `include` に明示的に追加してください。`include` の外にある宣言ファイルは `tsc` から見えません。
 
-これらの宣言は型情報だけを提供します。esbuild を設定したり、ランタイム値を注入したり、zfb がサポートしない import を有効にしたりするものではありません。カスタム module pattern とグローバルの型は、`bundle.loaders` および `bundle.define` と一致させてください。一致していないと、`zfb check` や `tsc` が誤ったランタイム上の前提を受け入れたり、zfb がバンドルできるコードを拒否したりします。raw import の結果は zfb の固定コントラクトであるため、`*?raw` は常に `string` を返すものとして宣言できます。
+これらの宣言は型情報だけを提供します。バンドラーを設定したり、ランタイム値を注入したり、zfb がサポートしない import を有効にしたりするものではありません。カスタム module pattern とグローバルの型は、`bundle.loaders` および `bundle.define` と一致させてください。一致していないと、`zfb check` や `tsc` が誤ったランタイム上の前提を受け入れたり、zfb がバンドルできるコードを拒否したりします。raw import の結果は zfb の固定コントラクトであるため、`*?raw` は常に `string` を返すものとして宣言できます。
 
 ## プロジェクトルート外のパスを監視する
 
@@ -333,7 +335,7 @@ export default defineConfig({
 
 <Warning title="ルート外のパスを監視することと、そこからインポートできることは別問題です">
 
-`extraWatchPaths` は、プロジェクトルート外のファイル変更を dev ウォッチャーが**検知**できるようにするだけで、そのファイルを**インポート可能**にするわけではありません。zfb はビルド時にプロジェクトルートを一時ディレクトリへシャドウコピーしてから esbuild を実行します。プロジェクトルートの外へ抜け出る相対インポート（例：`../../../../packages/ui/src/button.tsx`）は、このシャドウコピーの外側を指すことになり、ビルドは `Could not resolve "..."` エラーで失敗します。エラーメッセージには、インポート元ファイルの実際の（シャドウではない）パスと、このシャドウコピーの境界に関する説明が含まれます。
+`extraWatchPaths` は、プロジェクトルート外のファイル変更を dev ウォッチャーが**検知**できるようにするだけで、そのファイルを**インポート可能**にするわけではありません。zfb はビルド時にプロジェクトルートを一時ディレクトリへシャドウコピーしてからバンドラーを実行します。プロジェクトルートの外へ抜け出る相対インポート（例：`../../../../packages/ui/src/button.tsx`）は、このシャドウコピーの外側を指すことになり、ビルドは `Could not resolve "..."` エラーで失敗します。エラーメッセージには、インポート元ファイルの実際の（シャドウではない）パスと、このシャドウコピーの境界に関する説明が含まれます。
 
 **回避策：** ルート外のターゲットを相対インポートではなくパッケージインポートとして公開してください。ターゲットパッケージの `package.json` にワイルドカードの `exports` エントリ（例：`"./src/*": "./src/*"`）を追加し、パッケージ specifier（例：`@scope/pkg/src/button.tsx`）でインポートします — `node_modules`（`file:` / workspace リンクされたパッケージを含む）はシャドウコピーに含まれるため、パッケージ specifier によるインポートは通常どおり解決されます。詳しい背景は [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385) を参照してください。現時点では診断メッセージの改善のみで、この抜け道自体は引き続きサポート対象外です。
 

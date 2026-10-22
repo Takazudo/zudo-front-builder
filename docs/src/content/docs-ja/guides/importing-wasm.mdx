@@ -200,7 +200,7 @@ import "@takazudo/zfb";
 クライアントサイドの `"use client"` アイランドコードや、ブラウザ向けに特別に
 WebAssembly へコンパイルされたパッケージ（`@takazudo/zfb-md-wasm` など）も `.wasm`
 リソースを提供します — ただし、それらはこのインポートプリミティブではなく islands の
-esbuild パスを通り、ページへのコンパイル済みモジュールのインポートとしてではなく、
+バンドラーパスを通り、ページへのコンパイル済みモジュールのインポートとしてではなく、
 JS グルーと並んで `islands-resource-<name>-<hash>.wasm` ファイルとして出力されます。
 ブラウザ向けの Wasm パッケージの具体例については、[ブラウザでの Markdown
 プレビュー](./browser-markdown-preview.mdx) を参照してください。

@@ -4,7 +4,7 @@ Almost all everyday frontend development in one CLI: create, develop, check, bui
 
 ## Install without Node
 
-No Node.js required. zfb ships as a self-contained binary with its esbuild executable embedded; CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
+No Node.js required. zfb ships as a self-contained binary: Rolldown bundles pages and islands in process, an embedded esbuild executable compiles `zfb.config.ts` and plugins, and CSS generation uses the Rust-native zudo-wind engine. For the full install guide including Homebrew, Windows, and which features still need Node as an escape hatch, see the **[Install without Node](https://zfb.takazudomodular.com/docs/getting-started/installation/#standalone-installation)** docs page.
 
 **Linux / macOS (curl):**
 
@@ -72,7 +72,7 @@ See [`architecture/choosing-zfb.mdx`](./docs/src/content/docs/architecture/choos
 
 **Known limits of the direct host:** interrupting CPU-bound JavaScript is not supported, and the qualification harness drains a killed child's output only on a best-effort basis ([#4289](https://github.com/Takazudo/zudo-front-builder/issues/4289)). See [`prototypes/direct-v8/WATCHDOG-4289.md`](prototypes/direct-v8/WATCHDOG-4289.md).
 
-**Platform coverage of the direct host:** native qualification and the deno_core removal are done ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). A label-triggered, non-required CI lane (`direct-v8.yml`) records Linux x64, Linux arm64 and Windows x64 rows; Darwin rows are run on a Mac. Rolldown stays a non-default prototype.
+**Platform coverage of the direct host:** native qualification and the deno_core removal are done ([#4302](https://github.com/Takazudo/zudo-front-builder/issues/4302), [#4303](https://github.com/Takazudo/zudo-front-builder/issues/4303)). A label-triggered, non-required CI lane (`direct-v8.yml`) records Linux x64, Linux arm64 and Windows x64 rows; Darwin rows are run on a Mac. Rolldown is the default page and island bundler on `main` ([#4408](https://github.com/Takazudo/zudo-front-builder/pull/4408)); `ZFB_BUNDLER=esbuild` switches back to esbuild.
 
 ## Docs site
 

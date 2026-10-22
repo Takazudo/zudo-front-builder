@@ -193,8 +193,8 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
   plus the bundled SSR routes) that serves your `prerender = false`
   routes, and
 - `<name>-<hash>.wasm` files for every Wasm module imported by the SSR
-  bundle (e.g. `index_bg-a1b2c3d4.wasm` — this is esbuild's own
-  `--asset-names=[name]-[hash]` convention, not a zfb-specific scheme),
+  bundle (e.g. `index_bg-a1b2c3d4.wasm` — this is the bundler's
+  `[name]-[hash]` asset-name convention, not a zfb-specific scheme),
   plus `.assetsignore`. The ignore file lists `_worker.js`,
   `_zfb_inner.mjs`, and every emitted Wasm basename, so the asset server
   never serves server code or compiled modules as public files (a request

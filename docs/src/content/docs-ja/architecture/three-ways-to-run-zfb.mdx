@@ -21,7 +21,7 @@ HTML へのプリレンダリング、Cloudflare Workers での配信、そし�
 ## 1 つのアプリケーションコントラクト
 
 生成されるアプリケーションは Request/Response ハンドラを公開します。ビルドを実行すると、
-esbuild はあなたの TSX ページ・レイアウト・コンポーネントを、Cloudflare Workers モジュールの
+バンドラー（デフォルトは Rolldown）はあなたの TSX ページ・レイアウト・コンポーネントを、Cloudflare Workers モジュールの
 形をした単一のワーカーバンドルにコンパイルします。
 
 ```ts

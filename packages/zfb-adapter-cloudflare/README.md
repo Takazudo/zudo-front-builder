@@ -78,7 +78,7 @@ two-loop setup.
 2. Hand the SSR bundle to this adapter, which writes `dist/_worker.js`
    (the wrapper), `dist/_zfb_inner.mjs` (the bundle), copied
    `<name>-<hash>.wasm` modules (e.g. `index_bg-a1b2c3d4.wasm` — this is
-   esbuild's own `--asset-names=[name]-[hash]` convention, not a
+   the bundler's `[name]-[hash]` asset-name convention, not a
    zfb-specific scheme), and `dist/.assetsignore` (see below) — ready
    for Workers Static Assets.
 
@@ -189,7 +189,7 @@ a supported deployment target until it has a dedicated smoke test.
 
 The wrapper imports the inner bundle by relative path
 (`./_zfb_inner.mjs`) instead of inlining it, so the adapter package
-itself does not need to ship an esbuild binary. Workerd's Module
+itself does not need to ship a bundler. Workerd's Module
 loader resolves relative ESM imports inside the `_worker.js` directory
 layout.
 

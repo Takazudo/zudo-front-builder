@@ -8,7 +8,7 @@ category: Concepts
 <Info title="このページで扱う内容">
 
 ビルド時とブラウザの JS の分割、ビルド時パイプライン全体の図、なぜワーカーバンドルが
-Cloudflare Workers モジュールの形をしているのか、そして esbuild と JS ランタイムを
+Cloudflare Workers モジュールの形をしているのか、そしてバンドラーと JS ランタイムを
 差し替え可能に保つレイヤリングの原則。ステップごとのビルドパイプラインについては
 [Build pipeline](./build-pipeline.mdx) を参照してください。
 
@@ -25,7 +25,7 @@ zfb の JavaScript 出力は、*いつ・どこで* 動くかによって 2 つ�
 
 **ワーカーバンドル — ビルド時専用、ユーザーには決して配信されません。**
 
-`zfb build` を実行すると、最初に起こるのは esbuild があなたの TSX ページ・レイアウト・
+`zfb build` を実行すると、最初に起こるのはバンドラー（デフォルトは Rolldown、`ZFB_BUNDLER=esbuild` なら esbuild）があなたの TSX ページ・レイアウト・
 コンポーネントを単一のワーカーバンドルにコンパイルすることです。このバンドルは
 Cloudflare Workers モジュールの形をしています。`fetch` ハンドラだけをエクスポートし、
 それ以外には何もエクスポートしません。
@@ -52,7 +52,7 @@ Rust オーケストレーターはこのバンドルを組み込み V8 アイ�
 **ブラウザ出力 — エンドユーザーに配信される、最大 2 つの独立したバンドル。**
 
 `"use client"` でマークされたコンポーネントは、ブラウザ JavaScript の 1 つの発生源です。
-esbuild はそれらすべてをまとめて単一の共有 ESM モジュール（`dist/assets/islands-<hash>.js`）
+バンドラーはそれらすべてをまとめて単一の共有 ESM モジュール（`dist/assets/islands-<hash>.js`）
 にバンドルし、それは HTML ファイルと並んで `dist/assets/` に配置されます。アイランドを含む
 ビルドでは、このバンドルを参照する単一の `<script type="module">` タグがプロジェクト全体に
 注入されます。バンドルは読み込み時に `mountIslands()` を呼び出し、ページ上のすべての
@@ -89,10 +89,10 @@ flowchart TD
     src["TSX / MDX source files\n(pages/, components/, content/)"]
 
     subgraph build["zfb build — your machine"]
-        esbuild_worker["esbuild\n(worker bundle)"]
+        esbuild_worker["bundler\n(worker bundle)"]
         v8["embedded V8\n(synthetic HTTP requests → HTML)"]
-        esbuild_islands["esbuild\n(shared island bundle)"]
-        esbuild_client["esbuild\n(one bundle per .client.* entry)"]
+        esbuild_islands["bundler\n(shared island bundle)"]
+        esbuild_client["bundler\n(one bundle per .client.* entry)"]
         dist_html["dist/\nHTML files"]
         dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
         dist_client["dist/assets/client/\n&lt;name&gt;-&lt;hash&gt;.js"]
@@ -163,11 +163,11 @@ Hono/Workers のバンドル形を選んだのは、ビルド時と本番の実�
 |-------|-------------|----------------------|
 | **あなたのソース** | ページ、コンポーネント、コンテンツ、スタイル | ビルドの仕組み |
 | **zfb** | ビルドコントラクト — ルートテーブル、ページ props の形、アイランドプロトコル、クライアントスクリプトパイプライン、`dist/` のレイアウト | どのバンドラ、どの JS ランタイムか |
-| **ツール** | esbuild（バンドル）、組み込み V8（ビルド時評価） | あなたのコードのセマンティクス |
+| **ツール** | Rolldown または esbuild（バンドル）、組み込み V8（ビルド時評価） | あなたのコードのセマンティクス |
 
 zfb はコントラクトを所有します。どんな入力を受け付けるのか、出力がどう見えるのか、ビルドを
-通してどんな不変条件が成り立つのか。esbuild と組み込み V8 ランタイムは実装の詳細であり、
-ユーザーコードに触れることなく `RenderHost` トレイトの背後で差し替えられます。
+通してどんな不変条件が成り立つのか。バンドラーと組み込み V8 ランタイムは実装の詳細であり、
+ユーザーコードに触れることなく差し替えられます。バンドラーは `ZFB_BUNDLER` で、ランタイムは `RenderHost` トレイトの背後で切り替わります。
 
 バンドラは安くて速いノコギリです。zfb は大工です。
 

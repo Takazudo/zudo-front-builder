@@ -63,9 +63,9 @@ export default async function AccountPage(): Promise<Response> {
 
 ### コンパイル済み Wasm モジュール
 
-SSR ルートが Wasm をインポートすると、zfb はこれら 2 つの JavaScript ファイルの隣に `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これは esbuild 自身の `--asset-names=[name]-[hash]` の命名規則であり、zfb 固有の仕様ではありません）を出力します。`_zfb_inner.mjs` はこれをコンパイル済みの `WebAssembly.Module` としてインポートし、`.assetsignore` はそれが公開アセットにならないようにします。Satori/Resvg の設定、Wrangler のルール、パッケージサイズの詳細は [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) にあります。
+SSR ルートが Wasm をインポートすると、zfb はこれら 2 つの JavaScript ファイルの隣に `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これはバンドラーの `[name]-[hash]` というアセット名の命名規則であり、zfb 固有の仕様ではありません）を出力します。`_zfb_inner.mjs` はこれをコンパイル済みの `WebAssembly.Module` としてインポートし、`.assetsignore` はそれが公開アセットにならないようにします。Satori/Resvg の設定、Wrangler のルール、パッケージサイズの詳細は [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) にあります。
 
-この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
+この 2 ファイル構成は、アダプター内での 2 回目のバンドラーパスを回避します。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
 
 より広い 2 バンドルのメンタルモデル（ワーカーバンドル対 islands バンドル）については [Architecture overview](./architecture-overview.mdx) を読んでください。
 
@@ -175,7 +175,7 @@ compatibility_flags = ["nodejs_compat"]
 
 2 つのカテゴリの出力が、`dist/_worker.js` と `dist/_zfb_inner.mjs` から意図的に欠けています。
 
-**Islands** — `"use client"` でマークされたコンポーネントは、別の esbuild ステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
+**Islands** — `"use client"` でマークされたコンポーネントは、別のバンドラーステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
 
 **プリレンダリングされたページ** — `prerender = true` をエクスポートする（またはエクスポートを省略する。デフォルトは true）任意のページは、ビルド時に静的 HTML へレンダリングされます。リクエスト時には、アセット層が `.html` ファイルを直接配信します — Workers Static Assets（`run_worker_first = false`）ではプラットフォームのエッジアセットルーターが、Cloudflare Pages では内側の `env.ASSETS` プローブが配信します — そのため、それらのルートに対して内側の Worker の `fetch` ハンドラは **呼ばれません**。
 

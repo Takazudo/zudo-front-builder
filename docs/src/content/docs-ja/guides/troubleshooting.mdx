@@ -1,6 +1,6 @@
 ---
 title: トラブルシューティング
-description: 具体的な修正方法つきの既知の失敗モード — インストール、bundle 設定、import query、module worker、プロジェクトルート外の import、esbuild バイナリのエラー。
+description: 具体的な修正方法つきの既知の失敗モード — インストール、bundle 設定、import query、module worker、プロジェクトルート外の import、バンドラーの選択、esbuild バイナリのエラー。
 sidebar_position: 9
 ---
 
@@ -229,7 +229,7 @@ module. Tracked at https://github.com/Takazudo/zudo-front-builder/issues/1385
 and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 ```
 
-**原因:** `import.meta.glob` は Vite 専用のビルド時マクロです。島をバンドルする esbuild はこれをネイティブには理解しないため、zfb は esbuild がファイルを目にする前に、サポートされる唯一の形式を自分で展開します。サポートされるのは、glob 呼び出しが島から到達可能なモジュール内にあり、そのモジュールが展開済みの実体あるシャドウコピーファイルとして書き出される場合の `import.meta.glob("<string-literal>", { eager: true })` だけです。パターンはインポート元ファイル自身のディレクトリ配下に解決される必要があります。それ以外のすべて — デフォルトの lazy 形式、`{ eager: false }`、リテラルでないパターン、`import`/`query`/`as` オプション、`../` でディレクトリを抜け出すパターン — は拒否されます。JS 風のファイルが raw-mirrored な glob ターゲット、またはサブツリー内の companion ファイルとしてだけ到達していて、その中に glob がある場合も拒否されます。そうしなければ、そのファイルは未展開のままブラウザへ配信され、hydration 中に例外を投げるためです。
+**原因:** `import.meta.glob` は Vite 専用のビルド時マクロです。そのため zfb は、島のバンドラーがファイルを目にする前に、サポートされる唯一の形式を自分で展開します。サポートされるのは、glob 呼び出しが島から到達可能なモジュール内にあり、そのモジュールが展開済みの実体あるシャドウコピーファイルとして書き出される場合の `import.meta.glob("<string-literal>", { eager: true })` だけです。パターンはインポート元ファイル自身のディレクトリ配下に解決される必要があります。それ以外のすべて — デフォルトの lazy 形式、`{ eager: false }`、リテラルでないパターン、`import`/`query`/`as` オプション、`../` でディレクトリを抜け出すパターン — は拒否されます。JS 風のファイルが raw-mirrored な glob ターゲット、またはサブツリー内の companion ファイルとしてだけ到達していて、その中に glob がある場合も拒否されます。そうしなければ、そのファイルは未展開のままブラウザへ配信され、hydration 中に例外を投げるためです。
 
 **対処:** 完全なサポートマトリクスと代替手段は [Islands: `import.meta.glob` のサポート](../architecture/islands.mdx#import-meta-glob-のサポート) を参照してください。使える場所では eager + 文字列リテラル形式に直し、ネストした glob は島から到達可能なモジュールへ hoist するか、raw-mirrored な glob ターゲット／サブツリー内ファイルを glob されたサブツリーの外へ移動するか、明示的な静的インポートへ置き換えてください。なお **クライアントスクリプト**（`*.client.ts`）は `import.meta.glob` を一切サポートせず、しかも島とは異なり、その失敗はビルド時には検出され *ません*。[クライアントスクリプト: `import.meta.glob` はサポートされていません](./client-scripts.mdx#import-meta-glob-はサポートされていません) を参照してください。
 
@@ -242,9 +242,9 @@ bundle.loaders key ".asset" uses unsupported loader "file"; inline-only v1 accep
 bundle.define key "import.meta.env.DEV" is reserved by zfb's bundle mode ...
 ```
 
-生の define 式が不正な場合は、最初に影響を受けるバンドルの実行時に esbuild のパースエラーとして現れることもあります。
+生の define 式が不正な場合は、最初に影響を受けるバンドルの実行時に バンドラーのパースエラーとして現れることもあります。
 
-**原因:** loader のキーは `.` で始まり、`text`、`json`、`base64`、`dataurl`、`binary`、`empty` のいずれかを使い、`.css`、`.module.css`、`.mdx`、`.md` を上書きしない必要があります。アセットを生成する `file` と `copy` loader はサポートされません。また zfb は `import.meta.env.DEV`、`import.meta.env.PROD`、`process.env.NODE_ENV` を所有するため、ユーザーの define から置き換えることはできません。define の値は、自動的に引用符が付く文字列ではなく esbuild の生の式です。
+**原因:** loader のキーは `.` で始まり、`text`、`json`、`base64`、`dataurl`、`binary`、`empty` のいずれかを使い、`.css`、`.module.css`、`.mdx`、`.md` を上書きしない必要があります。アセットを生成する `file` と `copy` loader はサポートされません。また zfb は `import.meta.env.DEV`、`import.meta.env.PROD`、`process.env.NODE_ENV` を所有するため、ユーザーの define から置き換えることはできません。define の値は、自動的に引用符が付く文字列ではなく生の JavaScript 式です。
 
 **対処:** inline loader と予約されていない拡張子 / キーを選んでください。文字列の define では、置換式に JSON の引用符を含めます（例: `__APP_NAME__: '"my-app"'`）。完全なコントラクトとブラウザへの公開に関する警告は [`defineConfig`: `bundle` 設定](../api/define-config.mdx#bundle-設定)を参照してください。
 
@@ -279,11 +279,19 @@ const worker = new Worker(
 
 island の worker は `/assets/worker-*.js`、クライアントスクリプトの worker は `/assets/client/worker-*.js` に置かれます。書き換え後の URL はその安定名を維持し、厳密に 8 文字の小文字 16 進数である `?v=` グラフハッシュを追加します。サポートされない形式や third-party の推移的 worker は、パッケージ固有のツールでバンドルしてください。[Islands: Module worker](../architecture/islands.mdx#module-worker)を参照してください。
 
+## `ZFB_BUNDLER` または `ZFB_ROLLDOWN_*` を含むメッセージでビルドが失敗する
+
+**症状:** `zfb` がビルド前に `` ZFB_BUNDLER=…: expected `rolldown` or `esbuild` `` で終了する。または esbuild では通っていたビルドが、`ZFB_ROLLDOWN_TRAILING_ROOT_DIRS_UNSUPPORTED` か `ZFB_ROLLDOWN_RAW_CSS_UNSUPPORTED` で始まるメッセージで失敗する。
+
+**原因:** ページ、islands、クライアントスクリプト、module worker はデフォルトで Rolldown がバンドルします。`ZFB_BUNDLER` が受け付けるのは `rolldown` と `esbuild` だけで、それ以外の値は使い方のエラーです。また Rolldown は、まだサポートしていない 2 つの入力を拒否します。`compilerOptions.rootDirs` と、ディレクトリで終わる `paths` のターゲットを併用する `tsconfig.json` と、JavaScript バンドルへ読み込まれる生の CSS です。
+
+**対処:** そのプロジェクトで `ZFB_BUNDLER=esbuild` を設定し、Rolldown がデフォルトになる前のリリースと同じく組み込みの esbuild でビルドします。使い方のエラーは、変数を外すか値を直せば解消します。同じプロジェクトで esbuild と Rolldown の出力が異なる場合は、両方のビルド出力を添えて報告してください。
+
 ## プロジェクトルート外への相対インポートが "Could not resolve" になる
 
-**症状:** `zfb build`（または `zfb dev`）が esbuild の `Could not resolve "../../../somewhere/outside.ts"` エラーで失敗し、付随する zfb の注記が「シャドウコピーのビルド境界」を説明する。
+**症状:** `zfb build`（または `zfb dev`）が `Could not resolve "../../../somewhere/outside.ts"` エラーで失敗し、付随する zfb の注記が「シャドウコピーのビルド境界」を説明する。
 
-**原因:** zfb は、esbuild を実行する前にプロジェクトルートを一時ディレクトリへシャドウコピーしてビルドします。プロジェクトルートより上へ歩く相対インポート（例: `../../../../packages/ui/src/button.tsx`）は、そのシャドウコピーの外に解決されるため見つかりません。これは診断専用であり、解決可能なバグではありません。根本的な脱出は依然としてサポートされません。zfb は、意味のない一時ディレクトリのパスを漏らす代わりに、*報告される* エラーが実際の（シャドウでない）パスを示し、回避策を説明するようにするだけです。
+**原因:** zfb は、バンドラーを実行する前にプロジェクトルートを一時ディレクトリへシャドウコピーしてビルドします。プロジェクトルートより上へ歩く相対インポート（例: `../../../../packages/ui/src/button.tsx`）は、そのシャドウコピーの外に解決されるため見つかりません。これは診断専用であり、解決可能なバグではありません。根本的な脱出は依然としてサポートされません。zfb は、意味のない一時ディレクトリのパスを漏らす代わりに、*報告される* エラーが実際の（シャドウでない）パスを示し、回避策を説明するようにするだけです。
 
 **対処:** ルート外のターゲットを相対インポートではなくパッケージインポートとして公開してください。ターゲットパッケージの `package.json` にワイルドカードの `exports` エントリ（例: `"./src/*": "./src/*"`）を追加し、パッケージ指定子でインポートします（例: `@scope/pkg/src/button.tsx`）。`node_modules`（`file:`/ワークスペースリンクされたパッケージを含む）はシャドウコピーに含まれるため、パッケージ指定子のインポートは通常どおり解決されます。詳細は [`defineConfig`: プロジェクトルート外のパスを監視する](../api/define-config.mdx#プロジェクトルート外のパスを監視する) を参照してください。追跡は [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385) で行われています。
 
@@ -336,7 +344,7 @@ export default async function Handler() {
 
 ## zfb の shadow ビルドディレクトリを調査したい
 
-**症状:** `zfb build` または `zfb dev` が失敗する、あるいは想定外の挙動をし、その原因が esbuild に渡す前に zfb が生成するもの — 生成された injected route の shim、解決済みの `node_modules` レイアウト、合成された `tsconfig.json` — に関係していそうだと分かった。しかしプロセスが終了する頃には（ビルド失敗時であっても）、それらを保持していた一時ディレクトリはすでに消えている。
+**症状:** `zfb build` または `zfb dev` が失敗する、あるいは想定外の挙動をし、その原因がバンドラーに渡す前に zfb が生成するもの — 生成された injected route の shim、解決済みの `node_modules` レイアウト、合成された `tsconfig.json` — に関係していそうだと分かった。しかしプロセスが終了する頃には（ビルド失敗時であっても）、それらを保持していた一時ディレクトリはすでに消えている。
 
 **原因:** zfb は該当するツリーの shadow コピーを `tempfile` 管理の一時ディレクトリに生成してビルドし、プロセス終了時にそれを削除します — これは通常の動作であり、後から `/tmp` を探しても見つからない理由です。
 
@@ -347,4 +355,4 @@ export default async function Handler() {
 | `ZFB_KEEP_BUILD_SHADOW=1` | `zfb build` のみ | バンドラの shadow ルート、その exact-`node_modules` 分離ルート、そしてパッケージルートのオーバーレイ（プロジェクトがパッケージルートを登録している場合）。ビルド失敗時も保持されます。保持された各パスは stderr に一度だけ出力されます。[`zfb build`: 環境変数](../api/cli.mdx#zfb-build) を参照してください。 |
 | `ZFB_KEEP_SHADOW_SESSION=1` | `zfb dev` のみ | dev サーバーがプロセス全体で使い回す、唯一の永続的な shadow セッション一時ディレクトリ。このフラグを設定せずに後で `zfb dev` を起動すると、内部の経過時間しきい値を超えた時点で以前保持したディレクトリが回収されます — デバッグセッション全体でフラグをエクスポートし続けてください（そのディレクトリを作成した起動時だけでは不十分です）。[`zfb dev`: 環境変数](../api/cli.mdx#zfb-dev) を参照してください。 |
 
-どちらも対象範囲は狭く限定されています。`zfb build`/`zfb dev` のすべての一時ファイル生成元を網羅しているわけではありません（設定の読み込み、islands/esbuild、CSS、プラグイン解決はどちらの対象外です）。また、一方を設定してももう一方のサブコマンドには影響しません — `ZFB_KEEP_BUILD_SHADOW` は `zfb dev` に影響せず、`ZFB_KEEP_SHADOW_SESSION` は `zfb build` に影響しません。
+どちらも対象範囲は狭く限定されています。`zfb build`/`zfb dev` のすべての一時ファイル生成元を網羅しているわけではありません（設定の読み込み、islands のバンドラー、CSS、プラグイン解決はどちらの対象外です）。また、一方を設定してももう一方のサブコマンドには影響しません — `ZFB_KEEP_BUILD_SHADOW` は `zfb dev` に影響せず、`ZFB_KEEP_SHADOW_SESSION` は `zfb build` に影響しません。

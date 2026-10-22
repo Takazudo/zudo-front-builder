@@ -139,7 +139,7 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 
 - すべての SSG ページの静的 HTML、
 - `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Worker エントリ（薄いラッパーと、バンドルされた SSR ルート）、そして
-- SSR バンドルがインポートする Wasm モジュールごとの `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これは esbuild 自身の `--asset-names=[name]-[hash]` の命名規則であり、zfb 固有の仕様ではありません）と `.assetsignore`。この ignore ファイルは `_worker.js`、`_zfb_inner.mjs`、生成された Wasm の basename をすべて列挙し、アセットサーバーがサーバーコードやコンパイル済みモジュールを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
+- SSR バンドルがインポートする Wasm モジュールごとの `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これはバンドラーの `[name]-[hash]` というアセット名の命名規則であり、zfb 固有の仕様ではありません）と `.assetsignore`。この ignore ファイルは `_worker.js`、`_zfb_inner.mjs`、生成された Wasm の basename をすべて列挙し、アセットサーバーがサーバーコードやコンパイル済みモジュールを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
 
 この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべて — プロジェクトにあれば `public/_redirects` ファイルも含めて — を処理します。ルール構文については [Static Assets — `_redirects`](../architecture/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照してください。
 
