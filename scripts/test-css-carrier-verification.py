@@ -13,6 +13,7 @@ import unittest
 spec = importlib.util.spec_from_file_location("verification", Path(__file__).with_name("css-carrier-verification.py"))
 verification = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verification)
+VERSION = verification.VERSION
 
 
 def archive(path, entries):
@@ -50,8 +51,8 @@ class Contracts(unittest.TestCase):
             shutil.copytree(sys.argv[1], self.received)
         else:
             self.received.mkdir()
-            archive(self.received / "zfb-4.4.0-x86_64-apple-darwin.tar.gz", [("zfb", b"native CLI fixture", 0o755)])
-            (self.received / "zfb-css-4.4.0-x86_64-apple-darwin.node").write_bytes(b"native addon fixture")
+            archive(self.received / f"zfb-{VERSION}-x86_64-apple-darwin.tar.gz", [("zfb", b"native CLI fixture", 0o755)])
+            (self.received / f"zfb-css-{VERSION}-x86_64-apple-darwin.node").write_bytes(b"native addon fixture")
             for name in list(self.received.iterdir()):
                 checksum(self.received, name.name)
 
@@ -108,32 +109,32 @@ class Contracts(unittest.TestCase):
         cli, addon, hashes = verification.fast_mac_bytes(self.received)
         self.assertTrue(cli)
         self.assertEqual(hashes["addon"], verification.digest(addon))
-        addon_path = self.received / "zfb-css-4.4.0-x86_64-apple-darwin.node"
+        addon_path = self.received / f"zfb-css-{VERSION}-x86_64-apple-darwin.node"
         addon_path.write_bytes(addon + b"corrupt")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
             verification.fast_mac_bytes(self.received)
 
     def test_missing_addon_rejects_before_staging(self):
-        (self.received / "zfb-css-4.4.0-x86_64-apple-darwin.node").unlink()
+        (self.received / f"zfb-css-{VERSION}-x86_64-apple-darwin.node").unlink()
         with self.assertRaises(FileNotFoundError):
             verification.main(["ingest", str(self.received), str(self.room / "unused-package"), str(self.room / "must-not-exist")])
         self.assertFalse((self.room / "must-not-exist").exists())
 
     def test_missing_checksum_rejects_before_staging(self):
-        (self.received / "zfb-css-4.4.0-x86_64-apple-darwin.node.sha256").unlink()
+        (self.received / f"zfb-css-{VERSION}-x86_64-apple-darwin.node.sha256").unlink()
         with self.assertRaises(FileNotFoundError):
             verification.main(["ingest", str(self.received), str(self.room / "unused-package"), str(self.room / "must-not-exist")])
         self.assertFalse((self.room / "must-not-exist").exists())
 
     def test_corrupt_addon_rejects_before_staging(self):
-        with (self.received / "zfb-css-4.4.0-x86_64-apple-darwin.node").open("ab") as output:
+        with (self.received / f"zfb-css-{VERSION}-x86_64-apple-darwin.node").open("ab") as output:
             output.write(b"invalid")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
             verification.main(["ingest", str(self.received), str(self.room / "unused-package"), str(self.room / "must-not-exist")])
         self.assertFalse((self.room / "must-not-exist").exists())
 
     def test_archive_requires_sole_regular_executable_root_cli(self):
-        name = "zfb-4.4.0-x86_64-apple-darwin.tar.gz"
+        name = f"zfb-{VERSION}-x86_64-apple-darwin.tar.gz"
         for entries in [
             [("zfb", b"CLI", 0o644)],
             [("zfb", b"CLI", 0o755), ("extra", b"unexpected", 0o644)],
@@ -145,7 +146,7 @@ class Contracts(unittest.TestCase):
                 verification.fast_mac_bytes(self.received)
 
     def test_corrupt_archive_checksum_is_rejected(self):
-        name = "zfb-4.4.0-x86_64-apple-darwin.tar.gz"
+        name = f"zfb-{VERSION}-x86_64-apple-darwin.tar.gz"
         with (self.received / name).open("ab") as output:
             output.write(b"corrupt")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
@@ -176,7 +177,7 @@ class Contracts(unittest.TestCase):
         addon = self.room / "addon"
         cli.write_bytes(b"CLI")
         addon.write_bytes(b"addon")
-        manifest = json.dumps({"name": "@takazudo/zfb-darwin-x64", "version": "4.4.0"}).encode()
+        manifest = json.dumps({"name": "@takazudo/zfb-darwin-x64", "version": VERSION}).encode()
         entries = [("package/package.json", manifest, 0o644), ("package/zfb", b"CLI", 0o755), ("package/zfb-css.node", b"addon", 0o644)]
         packed = self.room / "packed.tgz"
         archive(packed, entries)
@@ -191,7 +192,7 @@ class Contracts(unittest.TestCase):
         packs = self.room / "packs"
         packs.mkdir()
         for name in ["zfb", "zfb-slugify", "zfb-darwin-x64"]:
-            manifest = {"name": "@takazudo/" + name, "version": "4.4.0"}
+            manifest = {"name": "@takazudo/" + name, "version": VERSION}
             if name == "zfb":
                 manifest["exports"] = {"./css": {"default": "./dist/css.js"}}
             entries = [("package/package.json", json.dumps(manifest).encode(), 0o644)]
@@ -199,22 +200,22 @@ class Contracts(unittest.TestCase):
                 entries.append(("package/dist/css.js", b"export const compileCss = () => {};", 0o644))
             if name == "zfb-darwin-x64":
                 entries += [("package/zfb", b"CLI", 0o755), ("package/zfb-css.node", b"addon", 0o644)]
-            archive(packs / f"takazudo-{name}-4.4.0.tgz", entries)
+            archive(packs / f"takazudo-{name}-{VERSION}.tgz", entries)
         consumer = self.room / "consumer"
         verification.stage_consumer(packs, "darwin-x64", consumer)
         self.assertTrue((consumer / "node_modules/@takazudo/zfb/dist/css.js").is_file())
         self.assertEqual((consumer / "node_modules/@takazudo/zfb-darwin-x64/zfb-css.node").read_bytes(), b"addon")
         self.assertTrue((consumer / "consumer.mjs").is_file())
         self.assertFalse(any(path.is_symlink() for path in consumer.rglob("*")))
-        wrong_manifest = {"name": "@takazudo/zfb", "version": "4.4.0", "exports": {"./css": {"default": "./src/css.ts"}}}
-        archive(packs / "takazudo-zfb-4.4.0.tgz", [("package/package.json", json.dumps(wrong_manifest).encode(), 0o644)])
+        wrong_manifest = {"name": "@takazudo/zfb", "version": VERSION, "exports": {"./css": {"default": "./src/css.ts"}}}
+        archive(packs / f"takazudo-zfb-{VERSION}.tgz", [("package/package.json", json.dumps(wrong_manifest).encode(), 0o644)])
         with self.assertRaisesRegex(ValueError, "emitted dist/css.js"):
             verification.stage_consumer(packs, "darwin-x64", self.room / "wrong-consumer")
 
     def test_successful_ingestion_is_disposable_and_byte_identical(self):
         package = self.room / "package"
         package.mkdir()
-        (package / "package.json").write_text('{"name":"@takazudo/zfb-darwin-x64","version":"4.4.0"}')
+        (package / "package.json").write_text(f'{{"name":"@takazudo/zfb-darwin-x64","version":"{VERSION}"}}')
         destination = self.room / "staged"
         verification.main(["ingest", str(self.received), str(package), str(destination)])
         cli, addon, _ = verification.fast_mac_bytes(self.received)

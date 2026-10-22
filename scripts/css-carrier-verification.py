@@ -14,7 +14,9 @@ import subprocess
 import sys
 import tarfile
 
-VERSION = "4.4.0"
+# verify-css-carrier.sh exports the verified source's version; standalone runs read this checkout's.
+VERSION = os.environ.get("CSS_PACKAGE_VERSION") or json.loads(
+    (Path(__file__).resolve().parents[1] / "packages/zfb/package.json").read_text())["version"]
 CARRIERS = ("darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-x64-gnu", "win32-x64-msvc")
 CARRIER_ROWS = [
     {"host": "macos-15", "target": "aarch64-apple-darwin", "carrier": "darwin-arm64", "builder": "cargo", "library": "libzfb_css_node.dylib", "runtime": "darwin/arm64", "node_arch": "arm64"},
