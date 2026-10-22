@@ -88,9 +88,9 @@ pub async fn maybe_spawn_host_with_diagnostic_sink(
 /// build their own mode-specific wrappers (islands config, dev middleware,
 /// injected-route set, etc.) from the data it carries.
 ///
-/// Gated on `embed_v8` because [`v8_plugin_hooks`] requires the V8 render
+/// Gated on `direct-v8` because [`v8_plugin_hooks`] requires the V8 render
 /// host to be compiled in.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 pub(crate) struct PluginSetupResult {
     /// V8 plugin-registry hooks derived from `setup_registries` +
     /// `virtual_sources`.  Passed to the embedded V8 host so the runtime
@@ -130,9 +130,9 @@ pub(crate) struct PluginSetupResult {
 /// pass.  Steps that differ further (preBuild out_dir, islands config, dev
 /// middleware, injected routes) happen after this function returns.
 ///
-/// Gated on `embed_v8` because the returned [`PluginSetupResult::v8_plugin_hooks`]
+/// Gated on `direct-v8` because the returned [`PluginSetupResult::v8_plugin_hooks`]
 /// requires the embedded V8 render host.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 pub(crate) async fn run_plugin_setup(
     plugin_host: &Option<PluginHost>,
     project_root: &Path,

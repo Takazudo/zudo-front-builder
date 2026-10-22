@@ -428,7 +428,7 @@ async fn boot_and_handshake(
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[out_of_root_e2e] `zfb dev` exited with a known-skip indicator \
                      (V8/esbuild unavailable); skipping test.\n{}",

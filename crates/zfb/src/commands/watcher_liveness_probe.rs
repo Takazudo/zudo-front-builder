@@ -9,13 +9,10 @@
 
 // V8-off (issue #371, sub-task 4.1a): this module's only call site
 // (`spawn_watcher_liveness_probe`, from `commands::dev::run`) lives entirely
-// behind `#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]`, so on the `!any(feature = "embed_v8", feature = "direct-v8")`
+// behind `#[cfg(feature = "direct-v8")]`, so on the `!feature = "direct-v8"`
 // path every item here looks unused — silence the lints in that
 // configuration, mirroring `dev.rs`'s own module-level attribute.
-#![cfg_attr(
-    not(any(feature = "embed_v8", feature = "direct-v8")),
-    allow(unused_imports, dead_code)
-)]
+#![cfg_attr(not(feature = "direct-v8"), allow(unused_imports, dead_code))]
 
 use std::path::{Path, PathBuf};
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! host. The resolver contract test from the same module moved to
 //! `zfb-js-host/src/modules.rs`, which owns `BundleModuleLoader`.
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use std::path::Path;
 

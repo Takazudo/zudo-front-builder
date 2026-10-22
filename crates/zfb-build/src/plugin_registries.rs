@@ -455,7 +455,7 @@ pub enum SetupCommand {
     Dev,
     /// `zfb preview` (Preview Parity epic #1541 / sub-issue #1542).
     /// Drives the minimal non-V8 [`run_preview_setup`] path rather than
-    /// the `embed_v8`-gated `run_plugin_setup`
+    /// the `direct-v8`-gated `run_plugin_setup`
     /// (`crates/zfb/src/commands/plugins.rs`) that `build`/`dev` use.
     Preview,
 }
@@ -714,13 +714,13 @@ impl SetupRegistries {
 /// `zfb preview` serves an ALREADY-BUILT `dist/` verbatim (or hands off
 /// entirely to `wrangler dev` in adapter mode) — it never re-enters the
 /// scan → bundle → render pipeline, so none of `run_plugin_setup`'s
-/// (`crates/zfb/src/commands/plugins.rs`, `embed_v8`-gated) V8 hook
+/// (`crates/zfb/src/commands/plugins.rs`, `direct-v8`-gated) V8 hook
 /// translation or virtual-module prefetch loop is meaningful here.
 /// Reusing that function would needlessly pull the embedded V8 host
 /// into `zfb preview`'s dependency surface for zero benefit — hence a
 /// distinct, deliberately thin function that lives in this crate's
 /// V8-free half (`plugin_registries.rs` / `plugin_runner.rs`, neither
-/// of which is gated on the `embed_v8` feature) and compiles/runs
+/// of which is gated on the `direct-v8` feature) and compiles/runs
 /// identically under `--no-default-features`.
 ///
 /// This function fires each plugin's `setup(ctx)` with

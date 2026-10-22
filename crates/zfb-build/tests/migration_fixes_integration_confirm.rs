@@ -692,7 +692,7 @@ fn zzmod_all_five_migration_fixes_compose() {
     // -----------------------------------------------------------------------
     // Part A — #663 config-eval URL polyfill (no esbuild binary required).
     // -----------------------------------------------------------------------
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    #[cfg(feature = "direct-v8")]
     {
         use zfb_render::ThreadedConfigEvaluator;
 

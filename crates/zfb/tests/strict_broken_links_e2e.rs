@@ -69,7 +69,7 @@
 //!
 //! ## Skip behaviour
 //!
-//! Uses the embedded esbuild/V8 runtime (`embed_v8` default feature) — no
+//! Uses the embedded esbuild/V8 runtime (`direct-v8` default feature) — no
 //! `ZFB_ESBUILD_BIN` pinning needed, matching `end_to_end_basic_blog_build.rs`
 //! / `content_snapshot_no_deferred.rs`. Guards a non-zero exit for a
 //! known-skip indicator (missing embedded runtime) before treating it as a
@@ -145,7 +145,7 @@ fn write_fixture(root: &Path, config_json: &str) {
 /// V8/esbuild unavailable) rather than a genuine failure — same pattern as
 /// `content_snapshot_no_deferred.rs` / `end_to_end_basic_blog_build.rs`.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8") || combined.contains("no esbuild")
+    combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
 fn combined_output(output: &Output) -> String {

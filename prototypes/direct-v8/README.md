@@ -2,7 +2,11 @@
 
 > Phase 2 status: the actual CLI integration is on `main` (merged by
 > #4368 from `feat/4301-direct-v8-cli`), and since #4390 `direct-v8` is the default
-> feature with `embed_v8` as the source-build rollback until Gate B; see [CLI.md](CLI.md)
+> feature. Gate B (#4395) removed the deno_core host, the `embed_v8` rollback and the
+> `direct_v8_baseline`/`direct_v8_outer_config` examples. The baseline-comparison harness
+> (`accept.py`, and `--baseline` in `check-config.py`/`check-generated.py`/`check-http.py`/
+> `check-modules.py`/`check-outer-config.py`) is archived source-bound history: it only runs
+> against a checkout before the removal (e.g. `2abb238`). See [CLI.md](CLI.md)
 > for selection, ownership and current verification status. The phase-1 observations below remain historical
 > and source-bound; an old hold is neither a current implementation claim nor
 > proof of phase-2 acceptance. Phase 3 (#4302) platform rows and their

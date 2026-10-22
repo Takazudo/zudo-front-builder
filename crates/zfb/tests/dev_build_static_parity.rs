@@ -222,7 +222,7 @@ async fn boot_and_get_port(session: &mut DevSession) -> Option<u16> {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path)
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[dev_build_static_parity] `zfb dev` exited with known-skip indicator; \
                      skipping.\n{}",
@@ -346,7 +346,7 @@ fn run_build(root: &Path, esbuild: &Path, config_override: Option<&str>) -> bool
     let combined = format!("{stdout}{stderr}");
 
     if !output.status.success() {
-        if combined.contains("embed_v8") || combined.contains("no esbuild") {
+        if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
             eprintln!(
                 "[dev_build_static_parity] `zfb build` exited with known-skip indicator; \
                  skipping.\nstdout: {stdout}\nstderr: {stderr}"

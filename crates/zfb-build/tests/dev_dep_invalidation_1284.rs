@@ -3,7 +3,7 @@
 //!
 //! NOTE: build/run these with `--no-default-features` to avoid the V8 first
 //! compile — the orchestrator/plan/policy code under test does not need
-//! `embed_v8`:
+//! `direct-v8`:
 //!
 //! ```sh
 //! cargo test -p zfb-build --no-default-features --test dev_dep_invalidation_1284

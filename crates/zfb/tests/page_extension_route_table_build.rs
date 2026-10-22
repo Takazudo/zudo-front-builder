@@ -203,7 +203,7 @@ fn widened_script_page_extensions_render_end_to_end_via_real_build() {
     let combined = format!("{stdout}{stderr}");
 
     if !status.success() {
-        if combined.contains("embed_v8") || combined.contains("no esbuild") {
+        if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
             eprintln!(
                 "[page_extension_route_table_build] zfb build exited non-zero with \
                  a known-skip indicator (V8/esbuild unavailable); \

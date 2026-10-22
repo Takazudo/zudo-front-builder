@@ -212,10 +212,10 @@ fn named_client_router_import_in_ssr_layout_ships_runtime_with_zero_islands() {
     let combined = format!("{stdout}{stderr}");
 
     // Skip gracefully when the embedded runtime is unavailable (e.g. a build
-    // without the embed_v8 feature) — same skip pattern as
+    // without the direct-v8 feature) — same skip pattern as
     // content_snapshot_no_deferred.rs.
     if !output.status.success()
-        && (combined.contains("embed_v8") || combined.contains("no esbuild"))
+        && (combined.contains("direct-v8 = off") || combined.contains("no esbuild"))
     {
         eprintln!(
             "[client_router_autoinclude_build] zfb build exited non-zero with a \

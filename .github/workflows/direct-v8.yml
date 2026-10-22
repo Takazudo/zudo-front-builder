@@ -139,8 +139,8 @@ jobs:
         run: python3 prototypes/direct-v8/prepare-icu.py --verify
 
       # Every target is resolved and recorded; any failing target fails the step
-      # at the end. The default selection resolves the Deno-backed default until
-      # the default flips, so there it reports FAIL on purpose.
+      # at the end. Both selections must resolve no deno_*/serde_v8 record and
+      # exactly one v8 147.4.0 (the deno_core host was removed in #4395).
       - name: Dependency resolution rows (all shipping targets; no build)
         id: graph
         run: |

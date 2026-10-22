@@ -38,15 +38,12 @@
 //! The other caller contracts (project-root sanity check and
 //! `✓ N pages built in X.XXs` summary) are unchanged.
 
-// V8-off (issue #371, sub-task 4.1a): on the `!any(feature = "embed_v8", feature = "direct-v8")`
+// V8-off (issue #371, sub-task 4.1a): on the `!feature = "direct-v8"`
 // path the `pub async fn run` body and `DefaultRunner` are compiled
 // out. The imports and helper functions they reference then look
 // unused — silence the lints in that configuration so V8-off builds
 // stay warning-clean.
-#![cfg_attr(
-    not(any(feature = "embed_v8", feature = "direct-v8")),
-    allow(unused_imports, dead_code)
-)]
+#![cfg_attr(not(feature = "direct-v8"), allow(unused_imports, dead_code))]
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -101,10 +98,10 @@ use zfb_types::build_diagnostics::{codes, BuildDiagnostic, DiagnosticSeverity};
 
 /// Entry point for `zfb build`.
 ///
-/// Available only when the `embed_v8` cargo feature is on (issue #371,
+/// Available only when the `direct-v8` cargo feature is on (issue #371,
 /// sub-task 4.1a). The V8-off counterpart further down in this file
 /// surfaces a clear runtime error.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 pub async fn run(args: &BuildArgs) -> Result<()> {
     let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
     let started = Instant::now();
@@ -136,7 +133,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     }
 }
 
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 async fn run_inner(
     args: &BuildArgs,
     sink: &zfb_types::build_diagnostic_sink::BuildDiagnosticSink,
@@ -628,17 +625,17 @@ fn format_build_phase_timing_line(phase: &str, elapsed_ms: u128) -> String {
 ///
 /// The build pipeline needs the embedded V8 host to evaluate dynamic
 /// `paths()`, render SSG pages, and to bridge SSR routes through the
-/// runtime. Without `embed_v8` none of that wiring exists, so we
+/// runtime. Without `direct-v8` none of that wiring exists, so we
 /// surface a clear error at the call site rather than partially
 /// running a doomed pipeline.
-#[cfg(not(any(feature = "embed_v8", feature = "direct-v8")))]
+#[cfg(not(feature = "direct-v8"))]
 pub async fn run(args: &BuildArgs) -> Result<()> {
     let sink = zfb_types::build_diagnostic_sink::BuildDiagnosticSink::default();
     let error = anyhow!(
         "zfb was built without V8 support (`--no-default-features` / \
-         `embed_v8 = off`); `zfb build` requires the embedded V8 host \
+         `direct-v8 = off`); `zfb build` requires the embedded V8 host \
          to render SSG pages. Rebuild with default features \
-         (`cargo build`) or with `--features embed_v8` to enable this command."
+         (`cargo build`) or with `--features direct-v8` to enable this command."
     );
     if let Some(path) = &args.warnings_json {
         write_diagnostic_report(path, &sink, false).map_err(|report| {
@@ -663,7 +660,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
 /// routes. The value itself is computed and surfaced (so tests can pin
 /// the decision tree) but the SSG render path still boots the embedded
 /// V8 host unconditionally on the V8-on `zfb` binary — there is no
-/// V8-less SSG renderer in this workspace today. `embed_v8 = off` is
+/// V8-less SSG renderer in this workspace today. `direct-v8 = off` is
 /// already a hard fail at `pub async fn run` because the V8-off binary
 /// can't render SSG pages.
 ///
@@ -1039,11 +1036,11 @@ pub(crate) struct IslandsPluginConfig {
 /// Production runner — straight pass-throughs to the real bundler /
 /// renderer APIs.
 ///
-/// Compiled in only when the `embed_v8` cargo feature is on (issue
+/// Compiled in only when the `direct-v8` cargo feature is on (issue
 /// #371, sub-task 4.1a). The runner's `eval_deferred_paths` impl
 /// constructs `Backend::EmbeddedV8`, which only exists on the V8-on
 /// path.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 struct DefaultRunner {
     timing_enabled: bool,
     /// Pre-fetched plugin setup registries to wire into the islands bundler.
@@ -1058,7 +1055,7 @@ struct DefaultRunner {
     /// into the discovered `*.client.*` set before bundling.
     registered_client_entries: zfb_build::ClientEntryList,
 }
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 impl BuildRunner for DefaultRunner {
     fn timing_enabled(&self) -> bool {
         self.timing_enabled
@@ -7369,7 +7366,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //
     // The resolved `_v8_mode` value is otherwise observational on the
     // shipping binary: the SSG render path always boots V8 (it's the
-    // only renderer in this workspace), and `embed_v8 = off` is
+    // only renderer in this workspace), and `direct-v8 = off` is
     // already a hard `bail!` at `pub async fn run`. The mode is
     // computed here so future shipping paths (Tauri sidecar /
     // standalone SSR server) and the unit tests can read the same
@@ -12743,7 +12740,7 @@ mod tests {
     /// lives in `crates/zfb-css/tests/hi_role_parity.rs`; that crate
     /// cannot see `CODE_HIGHLIGHT_ROLES` without depending on `zfb`, which
     /// would be a cycle. This full three-way test is `zfb`-tier: the `zfb`
-    /// crate's test binaries link the embedded V8 host (the `embed_v8`
+    /// crate's test binaries link the embedded V8 host (the `direct-v8`
     /// default feature), so they run in CI via `health.yml`'s
     /// `cargo nextest run --workspace` rather than in a lightweight local
     /// subset. The `zfb-css` partial above is V8-free and covers the
@@ -18089,8 +18086,8 @@ mod tests {
     /// using an explicitly configured color token.
     // Requires `DefaultRunner` which carries `PluginRegistryHooks` and
     // constructs `Backend::EmbeddedV8` — only available when the
-    // `embed_v8` feature is on (issue #371, sub-task 4.1a).
-    #[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+    // `direct-v8` feature is on (issue #371, sub-task 4.1a).
+    #[cfg(feature = "direct-v8")]
     #[test]
     fn default_runner_emit_prod_assets_returns_non_empty_css_for_real_project() {
         let tmp = tempdir().unwrap();

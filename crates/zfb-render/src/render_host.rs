@@ -2,20 +2,20 @@
 //! underlying JS runtime.
 //!
 //! In production, build-time TSX→HTML rendering is
-//! delegated to an embedded V8 host (`deno_core` in-process) driven by
-//! `@takazudo/zfb-runtime`. The concrete host implementation lives in
-//! [`crate::embedded_v8`]. The Rust side communicates with the host via the
+//! delegated to an embedded V8 host driven by
+//! `@takazudo/zfb-runtime`. The concrete host implementation is the direct-V8
+//! host in `zfb-js-host` (re-exported as `EmbeddedV8RenderHost`). The Rust side communicates with the host via the
 //! `RenderHost` trait, which is the abstraction seam so caller code in this
 //! crate can be aimed at whatever concrete host the orchestrator wires up.
 //!
 //! In-crate tests use lightweight in-process fakes that satisfy `RenderHost`
-//! directly; integration tests against the real `embedded_v8` module live in
-//! `tests/embedded_v8_*.rs`.
+//! directly; integration tests against the real host live in
+//! `tests/direct_v8_*.rs`.
 //!
 //! ## Async design
 //!
 //! All three operations on `RenderHost` are `async`. The embedded V8 host
-//! drives `deno_core::JsRuntime::run_event_loop`; giving those calls an async
+//! drives its own event loop; giving those calls an async
 //! signature lets the orchestrator schedule other work while a request is in
 //! flight. In-process test fakes implement the trait methods as trivially-
 //! ready futures (just `async { ... }`).

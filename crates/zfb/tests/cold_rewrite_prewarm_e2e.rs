@@ -250,7 +250,7 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
                 read_log(&session.stdout_path),
                 read_log(&session.stderr_path),
             );
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[cold_rewrite_prewarm_e2e] known unavailable dependency; skipping.\n{}",
                     session.logs(),

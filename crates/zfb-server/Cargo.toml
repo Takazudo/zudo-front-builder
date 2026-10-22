@@ -12,27 +12,24 @@ description = "zfb dev server: axum + WebSocket live-reload + CSS hot-swap"
 # `zfb-server` is a leaf consumer of `zfb-build` — it doesn't touch any
 # V8-bearing surface itself (no `EmbeddedV8Host`, no `Backend::EmbeddedV8`),
 # but cargo's workspace-wide feature unification means that if this
-# crate enables `zfb-build`'s default features, the `embed_v8` cascade
+# crate enables `zfb-build`'s default features, the `direct-v8` cascade
 # turns on for every other consumer too — defeating the V8-off path
 # at the workspace level.
 #
 # Default features off here; the top-level `zfb` crate is the single
-# place that decides V8 inclusion via its own runtime features
-# (`direct-v8` by default, `embed_v8` as the rollback).
+# place that decides V8 inclusion via its `direct-v8` feature.
 [features]
-# zfb-server has no default runtime; zfb selects direct-v8 (its default, #4390)
-# or the opt-in embed_v8 rollback. With both enabled the Deno facade wins.
+# zfb-server has no default runtime; zfb selects direct-v8 (its default, #4390).
 direct-v8 = ["zfb-build/direct-v8", "zfb-config-loader/direct-v8"]
 
 default = []
-embed_v8 = ["zfb-build/embed_v8", "zfb-config-loader/embed_v8"]
 
 [dependencies]
 zfb-build = { path = "../zfb-build", default-features = false }
 # TS-config evaluator hoisted into a leaf crate (issue #1037) so the embed
 # API's `config_path(...ts)` can resolve TS configs the same way the `zfb`
 # CLI does, without a dependency cycle. `default-features = false` for the V8
-# gate — the `embed_v8` feature above propagates the toggle into one place.
+# gate — the `direct-v8` feature above propagates the toggle into one place.
 zfb-config-loader = { path = "../zfb-config-loader", default-features = false }
 zfb-islands = { path = "../zfb-islands" }
 # Issue #229: shared `base` → mount-prefix normalisation lives in

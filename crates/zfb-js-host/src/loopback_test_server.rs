@@ -17,9 +17,8 @@
 //! `local_addr`) — never hard-coded, which would collide across the
 //! parallel test binaries this crate already runs.
 //!
-//! Moved out of `zfb-render/src/embedded_v8/` for #4393 (S6a) so the
-//! direct-V8 tests keep it after that directory is deleted; the embed_v8
-//! copy stays until S7a removes it with the rest of the Deno host.
+//! Moved out of `zfb-render/src/embedded_v8/` for #4393 (S6a); the Deno host
+//! and its copy were removed in #4395.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

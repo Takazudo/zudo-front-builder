@@ -49,7 +49,7 @@
 //! ## Skip behaviour
 //!
 //! Guards against missing embedded V8 or esbuild using the same known-skip
-//! indicators as sibling build-command tests: `"embed_v8"` and `"no esbuild"`.
+//! indicators as sibling build-command tests: `"direct-v8 = off"` and `"no esbuild"`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -132,7 +132,7 @@ fn template_dir() -> PathBuf {
 /// esbuild binary), matching the skip pattern used
 /// across the sibling build-command tests.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8") || combined.contains("no esbuild")
+    combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
 /// Recursive directory copy (files only; creates target subdirs as needed).

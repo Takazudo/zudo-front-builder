@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "producer": "zfb",
+  "oldCargoLockSha256": "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
+  "newCargoLockSha256": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216",
+  "removed": [
+    {
+      "id": "az@1.3.0",
+      "sha256": "fac6a281f9379bb50d2b1972e20fec8e5b7b61229af6c7d923b145baf69c7334"
+    },
+    {
+      "id": "boxed_error@0.2.3",
+      "sha256": "075a099f38b331de62818fd1253b5fdd093eb2b492e040319a844c77e4ea6e2b"
+    },
+    {
+      "id": "capacity_builder@0.5.0",
+      "sha256": "eeff234ad469ebe804310d46930d9c5af9f67014533343ac206a83004162a33d"
+    },
+    {
+      "id": "capacity_builder_macros@0.3.0",
+      "sha256": "80cd271f6e2bbe6becb366af46d3fb347501bb89807455ade99d52b112bfce92"
+    },
+    {
+      "id": "cooked-waker@5.0.0",
+      "sha256": "b56d9809ee335200ee152f39430f99788ec02aed34916be7101b6dc77a8d3db9"
+    },
+    {
+      "id": "deno_core@0.399.0",
+      "sha256": "1738ea69e9740205e1ccd42cdc8582ef9f7b7b5e39e76a06fd008faaf06a0498"
+    },
+    {
+      "id": "deno_core_icudata@0.77.0",
+      "sha256": "6cc79a89643ce0f11c6ae243a291ade5d0eba9561aa29bbe6de3ca5c9959c7e0"
+    },
+    {
+      "id": "deno_error@0.7.1",
+      "sha256": "f9fa55cd70a07a41d092a56996c7c89a4bf5eacd07312554c3d1109ed828341a"
+    },
+    {
+      "id": "deno_error_macro@0.7.1",
+      "sha256": "7d98930cc05b034ebf9510133fa3e7e1afbd92d8e87027ff3c76b0008fcd3440"
+    },
+    {
+      "id": "deno_ops@0.275.0",
+      "sha256": "2616729025bd2e964921e021d34c1d3c7aef684cdcfcb99359c4f1d053961d0c"
+    },
+    {
+      "id": "deno_path_util@0.6.4",
+      "sha256": "7e8c7415feef07ff4b2ea6b8b751e6d4f392f2a0b3c34880e1e67d41e1bd78ed"
+    },
+    {
+      "id": "deno_unsync@0.4.4",
+      "sha256": "a55b5ce0ec21afe85ecc5bf2244635b0af75ea3cbebe7ef55b4f2d19c9586e1f"
+    },
+    {
+      "id": "inventory@0.3.24",
+      "sha256": "cddef6ac793d8c17b81b2804c25e1344e3dabe0c49cf9c68644f713f7838e472"
+    },
+    {
+      "id": "serde_v8@0.308.0",
+      "sha256": "b93e384332e4080144db20c7b5d3944a02ac11143303c2e24dcf07f464400f24"
+    },
+    {
+      "id": "stringcase@0.4.0",
+      "sha256": "a4694c36a76a661bf86b1cb864ffd54f53b9dfe2d62854cb1a150df510ad0de0"
+    },
+    {
+      "id": "strum@0.27.2",
+      "sha256": "c2140aacb22056906aa5ca1f5b4a9ac6f77e45f6f00406efcd72f82a8f18ff44"
+    },
+    {
+      "id": "strum_macros@0.27.2",
+      "sha256": "32b86635af61c72e70dd1bb79d30a4110b1198d5fc3375390b75d98bf526cb8a"
+    },
+    {
+      "id": "syn-match@0.3.1",
+      "sha256": "5b32afee40bbbf298a6b6b8d7f7d554ffc095b0522ce287dec36b47291f94547"
+    },
+    {
+      "id": "sys_traits@0.1.27",
+      "sha256": "00d404c08f7a2c0f274679f30856874bba40ea13636416b23a3b40a1098c9bdd"
+    },
+    {
+      "id": "sys_traits_macros@0.1.0",
+      "sha256": "7520d45828aa689e53cf38a9a1ef9d7d5f88d9d042a1b2755486ae297588fec4"
+    },
+    {
+      "id": "wasm_dep_analyzer@0.4.0",
+      "sha256": "e9d9240fb973e69077fc72fdc462fcd5368855d7cfd93cd504c551e9724b378a"
+    }
+  ],
+  "changed": [
+    {
+      "id": "zfb-js-host@0.0.0",
+      "manifest": "crates/zfb-js-host/Cargo.toml",
+      "oldSha256": "dc29c5474a924913310f10979e35704ade131df30d7db0eab802e6a182899a82",
+      "newSha256": "5f02be259fc6ee127ef8ee2da7f179f41c9bc2636f22d036da2b800e32987d3b",
+      "removedDependencies": ["deno_core"]
+    },
+    {
+      "id": "zfb-render@0.0.0",
+      "manifest": "crates/zfb-render/Cargo.toml",
+      "oldSha256": "ac163abe391c942887f03553960d104837c874d5d3ca33cbe26b71829d92ed67",
+      "newSha256": "1a61027f977ed8145cd7bc358dd6c615fd4a5e654f1730c2a486acf73107ff99",
+      "removedDependencies": ["deno_core", "deno_error", "getrandom 0.3.4", "reqwest"]
+    }
+  ],
+  "prunedExternal": [
+    {
+      "id": "num-bigint@0.4.6",
+      "oldSha256": "a8022505f23963756b1880c7f1cf1ebe4749af11959790970919595cc68999e8",
+      "newSha256": "6fb08e6b3f97d76565a25e2758d46b8e311126eff0308b7068d357a8a2e899df",
+      "removedDependencies": ["rand 0.8.6"]
+    },
+    {
+      "id": "tokio@1.52.3",
+      "oldSha256": "503f5ef9d20b22c14e623f3a0cff83765a205f6e22f5a0b5a64ed0fbc48a5231",
+      "newSha256": "06f3bdf8ffdb4caa31d7fb018d41fbb96f1e10b249e1946a35dc6b1c3d7efdd4",
+      "removedDependencies": ["parking_lot"]
+    },
+    {
+      "id": "url@2.5.8",
+      "oldSha256": "95d27f296698c9d4ab159f3b91ee9d73b144f3db1636ff6235d0e04ea6437206",
+      "newSha256": "141c6f2c71a00fad73ec565421ddee030ccd1e85e7a2a587c7f0b08051be29bf",
+      "removedDependencies": ["serde_derive"]
+    }
+  ],
+  "closure": {
+    "removed": []
+  }
+}

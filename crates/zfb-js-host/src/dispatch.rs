@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 // Re-exported so `zfb_render::embedded_v8::dispatch::DispatchMode`
 // resolves (the spelling the #2013 contract names) even though the enum
-// itself must live outside the `embed_v8` gate — see
+// itself must live outside the `direct-v8` gate — see
 // `crate::dispatch_mode` for why.
 pub use crate::dispatch_mode::DispatchMode;
 

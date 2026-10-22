@@ -16,9 +16,9 @@
 //! Keeping the loader config-shape-agnostic is what lets the same evaluator
 //! serve both consumers — neither config struct is reachable from this leaf.
 //!
-//! ## Evaluation path (feature `embed_v8`)
+//! ## Evaluation path (feature `direct-v8`)
 //!
-//! - **Default builds** (`embed_v8`): the bundle is evaluated **in-process**
+//! - **Default builds** (`direct-v8`): the bundle is evaluated **in-process**
 //!   by the embedded V8 isolate that ships with `zfb-render`. No runtime Node
 //!   dependency. esbuild bundles with `--platform=neutral`, so `node:*`
 //!   imports are bundle-time errors — `zfb.config.ts` is a self-contained

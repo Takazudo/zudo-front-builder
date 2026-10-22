@@ -407,7 +407,7 @@ async fn boot_or_skip(session: &mut ServerSession) -> Option<u16> {
     loop {
         if let Some(status) = session.guard.try_exit_status() {
             let combined = session.logs();
-            if combined.contains("embed_v8") || combined.contains("no esbuild") {
+            if combined.contains("direct-v8 = off") || combined.contains("no esbuild") {
                 eprintln!(
                     "[workerd_parity_e2e] {} exited with a known environment gate; skipping.\n{combined}",
                     session.guard.label,

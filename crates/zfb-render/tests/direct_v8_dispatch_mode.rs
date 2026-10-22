@@ -35,7 +35,7 @@
 //! and the trait seam's build-time default is pinned in
 //! `crates/zfb-build/src/renderer.rs`.
 
-#![cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#![cfg(feature = "direct-v8")]
 
 use zfb_render::{BundleModuleLoader, DispatchMode, EmbeddedV8RenderHost, HttpRequestLike};
 

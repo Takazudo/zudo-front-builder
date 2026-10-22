@@ -3,14 +3,13 @@
 //! Module slots:
 //! - [`render_host`] — `RenderHost` trait (abstraction seam; the
 //!   production host is an embedded V8 host wired in by the build orchestrator).
-//! - [`embedded_v8`] — in-process V8 host (`embed_v8` cargo feature, default-on).
 //! - [`swc_pipeline`] — SWC parse + transform (TS strip + JSX) into ES module JS.
 //! - [`paths`] — `paths()` runtime resolution.
 //! - [`paths_extract`] — static `paths()` literal extractor; the
 //!   build-time fast path that pairs with [`paths::resolve_paths`] when
 //!   the page's `paths()` return value is statically analyzable.
 //! - [`dispatch_mode`] — `DispatchMode` (build-time SSG vs request-time
-//!   SSR), carried per dispatch. Deliberately NOT behind `embed_v8`:
+//!   SSR), carried per dispatch. Deliberately NOT behind `direct-v8`:
 //!   `zfb_build::renderer::EmbeddedV8Host` names it unconditionally.
 //! - [`error`] — crate-wide `RenderError`.
 
@@ -22,19 +21,10 @@ pub mod render_host;
 pub mod sourcemap;
 pub mod swc_pipeline;
 
-#[cfg(feature = "embed_v8")]
-pub mod embedded_v8;
-
-#[cfg(feature = "embed_v8")]
-pub use embedded_v8::{
-    AliasHook, BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, HttpResponseLike,
-    PluginRegistryHooks, VirtualModuleHook,
-};
-
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 pub mod config_eval;
 
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 pub use config_eval::{ConfigEvalError, ThreadedConfigEvaluator};
 
 pub use dispatch_mode::DispatchMode;
@@ -42,7 +32,7 @@ pub use error::{RenderError, Result};
 pub use render_host::{ModuleHandle, RenderHost};
 pub use swc_pipeline::{CompileOptions, CompiledModule, SwcPipeline};
 
-#[cfg(all(feature = "direct-v8", not(feature = "embed_v8")))]
+#[cfg(feature = "direct-v8")]
 pub use zfb_js_host::{
     dispatch::{HttpRequestLike, HttpResponseLike},
     modules::{AliasHook, BundleModuleLoader, PluginRegistryHooks, VirtualModuleHook},
@@ -50,8 +40,5 @@ pub use zfb_js_host::{
 };
 
 /// Call on the process main thread before starting any host threads.
-#[cfg(any(feature = "embed_v8", feature = "direct-v8"))]
+#[cfg(feature = "direct-v8")]
 pub use zfb_js_host::process::initialize as initialize_v8;
-
-#[cfg(all(feature = "embed_v8", feature = "direct-v8"))]
-mod shared_runtime;

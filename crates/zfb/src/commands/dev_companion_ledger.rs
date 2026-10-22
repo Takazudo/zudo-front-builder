@@ -1,9 +1,6 @@
 //! Publication state for generated islands companion files.
 
-#![cfg_attr(
-    not(any(feature = "embed_v8", feature = "direct-v8")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(feature = "direct-v8"), allow(dead_code))]
 
 use std::collections::{HashSet, VecDeque};
 

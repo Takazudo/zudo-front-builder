@@ -1,5 +1,5 @@
 // AUTO-LOADED by zfb::config during `zfb.config.ts` evaluation.
-// Used on both the default (embed_v8) in-process path and the slim-build
+// Used on both the default (direct-v8) in-process path and the slim-build
 // subprocess fallback (`load_ts_via_subprocess`). Do not edit unless you
 // also update the Rust callers in `crates/zfb/src/config.rs`.
 //

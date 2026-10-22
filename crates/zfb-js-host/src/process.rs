@@ -1,11 +1,10 @@
-//! Shared process initialization and thread ownership for both embedded hosts.
+//! Process initialization and thread ownership for the embedded V8 host.
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
 /// Pinned ICU 77 common data (see `icu/README.md`); refresh only with V8.
-#[cfg(feature = "direct-v8")]
 const ICU_DATA: &[u8; 10_822_192] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icu/icudtl.dat"));
 
@@ -15,37 +14,27 @@ pub fn initialize() -> Result<(), String> {
     static INITIALIZE: OnceLock<Result<(), String>> = OnceLock::new();
     INITIALIZE
         .get_or_init(|| {
-            #[cfg(feature = "direct-v8")]
             let platform = {
                 #[repr(align(16))]
                 struct AlignedIcu<const N: usize>([u8; N]);
                 static ICU: AlignedIcu<{ ICU_DATA.len() }> = AlignedIcu(*ICU_DATA);
                 v8::icu::set_common_data_77(&ICU.0)
                     .map_err(|code| format!("ICU77 data initialization failed: {code}"))?;
-                Some(
-                    v8::new_custom_platform(
-                        0,
-                        false,
-                        cfg!(test),
-                        crate::native::platform::NativePlatform,
-                    )
-                    .make_shared(),
+                v8::new_custom_platform(
+                    0,
+                    false,
+                    cfg!(test),
+                    crate::native::platform::NativePlatform,
                 )
+                .make_shared()
             };
-            #[cfg(not(feature = "direct-v8"))]
-            let platform = None;
-            #[cfg(feature = "deno-platform")]
-            deno_core::JsRuntime::init_platform(platform);
-            #[cfg(not(feature = "deno-platform"))]
-            {
-                v8::V8::set_flags_from_string(concat!(
-                    "--wasm-test-streaming --no-validate-asm --turbo_fast_api_calls ",
-                    "--harmony-temporal --js-float16array --js-explicit-resource-management ",
-                    "--js-source-phase-imports"
-                ));
-                v8::V8::initialize_platform(platform.expect("direct-V8 platform"));
-                v8::V8::initialize();
-            }
+            v8::V8::set_flags_from_string(concat!(
+                "--wasm-test-streaming --no-validate-asm --turbo_fast_api_calls ",
+                "--harmony-temporal --js-float16array --js-explicit-resource-management ",
+                "--js-source-phase-imports"
+            ));
+            v8::V8::initialize_platform(platform);
+            v8::V8::initialize();
             Ok(())
         })
         .clone()

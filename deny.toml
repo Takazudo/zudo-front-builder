@@ -38,8 +38,8 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 # Accepted exceptions (decided by Takazudo on 2026-10-21, issue #1373): each
 # entry below has no safe upgrade path we control and is an accepted,
-# documented exception rather than pending work. Re-verified on 2026-10-21
-# with `cargo tree --locked --target all -i <crate@version>`. The rationale
+# documented exception rather than pending work. Re-verified on 2026-10-22
+# after the Deno exit (#4395) with `cargo tree --locked --target all -i <crate@version>`. The rationale
 # and the upstream release that would lift each entry are recorded in
 # SECURITY-DEPS.md ("Accepted cargo-deny exceptions"). Remove an entry once
 # its upstream trigger fires and `cargo deny check advisories` stops
@@ -47,8 +47,8 @@ yanked = "deny"
 # This cargo-deny release's ignore-entry schema only accepts `id` and
 # `reason` (no separate `url` key), so links are folded into each reason.
 ignore = [
-    { id = "RUSTSEC-2025-0141", reason = "Accepted exception (#1373): bincode 1.3.3 (unmaintained) reaches the graph via deno_core 0.399.0 and via syntect 5.3.0's dump-load feature (default-syntaxes/default-themes); dropping deno_core alone cannot lift it because syntect's newest release still requires bincode 1. Lift when syntect releases without bincode 1: https://github.com/trishume/syntect" },
-    { id = "RUSTSEC-2024-0436", reason = "Accepted exception (#1373): paste 1.0.15 (unmaintained, compile-time proc-macro only) is a non-optional dependency of every released v8 crate (147.4.0 through 152.2.0), reached via deno_core/serde_v8 and directly via zfb-js-host. Lift when rusty_v8 releases without paste: https://github.com/denoland/rusty_v8" },
+    { id = "RUSTSEC-2025-0141", reason = "Accepted exception (#1373): bincode 1.3.3 (unmaintained) reaches the graph only via syntect 5.3.0's dump-load feature (default-syntaxes/default-themes) since the deno_core host was removed (#4395); syntect's newest release still requires bincode 1. Lift when syntect releases without bincode 1: https://github.com/trishume/syntect" },
+    { id = "RUSTSEC-2024-0436", reason = "Accepted exception (#1373): paste 1.0.15 (unmaintained, compile-time proc-macro only) is a non-optional dependency of every released v8 crate (147.4.0 through 152.2.0), reached directly via zfb-js-host (the deno_core/serde_v8 path was removed in #4395). Lift when rusty_v8 releases without paste: https://github.com/denoland/rusty_v8" },
     { id = "RUSTSEC-2026-0235", reason = "Accepted exception (#1373): rkyv 0.7.46 (OOB read when deserializing a forged archive) via parcel_sourcemap 2.1.1 (only release, hard-pins rkyv ^0.7.38) <- lightningcss 1.0.0-alpha.71 sourcemap feature, required both by zfb-css's own lightningcss Bundler use and by minify-html 0.18.1's default features; no identified zfb code path deserializes attacker-supplied rkyv archives through parcel_sourcemap. Lift when parcel_sourcemap moves to rkyv >=0.8.17 or lightningcss drops it: https://github.com/parcel-bundler/source-map" },
 ]
 

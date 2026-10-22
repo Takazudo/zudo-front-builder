@@ -14,18 +14,15 @@ publish = false
 # crate (issue #1037) so BOTH `zfb` and `zfb-server` can call it without a
 # circular dependency (`zfb` depends on `zfb-server`, not the reverse).
 #
-# The V8 runtime features (`direct-v8` by default, `embed_v8` as the rollback)
-# pull in the in-process V8 isolate via the matching `zfb-render` feature. With `--no-default-features` the
+# The default `direct-v8` feature pulls in the in-process V8 isolate via the matching `zfb-render` feature. With `--no-default-features` the
 # evaluator falls back to the `node` subprocess path. `default-features =
 # false` on `zfb-render` keeps the toggle decided in exactly one place per
 # consumer (mirrors `zfb-server` / `zfb-build`).
 [features]
-# Default JS runtime (#4390). embed_v8 stays an opt-in rollback; with both
-# features enabled the Deno facade wins.
+# Default JS runtime (#4390); the deno_core host was removed in #4395.
 direct-v8 = ["zfb-render/direct-v8"]
 
 default = ["direct-v8"]
-embed_v8 = ["zfb-render/embed_v8"]
 
 [dependencies]
 # Shared esbuild binary resolver (resolve_esbuild_binary_with_env) and the

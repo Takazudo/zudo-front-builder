@@ -118,7 +118,7 @@ use zfb_test_utils::zfb_binary;
 /// esbuild binary), matching the skip pattern used
 /// across the sibling build-command tests.
 fn is_known_skip(combined: &str) -> bool {
-    combined.contains("embed_v8") || combined.contains("no esbuild")
+    combined.contains("direct-v8 = off") || combined.contains("no esbuild")
 }
 
 fn write_fixture(root: &Path) {
