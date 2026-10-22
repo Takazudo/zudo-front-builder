@@ -810,7 +810,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("4.6.0");
+    expect(linuxContract.toolchain.packageVersion).toBe("4.7.0");
     expect(linuxContract.toolchain.pnpmLockSha256).toBe(
       sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
     );
