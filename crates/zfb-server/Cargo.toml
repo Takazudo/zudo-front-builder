@@ -17,7 +17,8 @@ description = "zfb dev server: axum + WebSocket live-reload + CSS hot-swap"
 # at the workspace level.
 #
 # Default features off here; the top-level `zfb` crate is the single
-# place that decides V8 inclusion via its own `embed_v8` feature.
+# place that decides V8 inclusion via its own runtime features
+# (`direct-v8` by default, `embed_v8` as the rollback).
 [features]
 # zfb-server has no default runtime; zfb selects direct-v8 (its default, #4390)
 # or the opt-in embed_v8 rollback. With both enabled the Deno facade wins.

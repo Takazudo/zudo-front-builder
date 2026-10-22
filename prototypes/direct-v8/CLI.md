@@ -25,9 +25,10 @@ cargo test --locked -p zfb --no-default-features --features direct-v8 --lib v8_h
 cargo test --locked -p zfb-render --no-default-features --features direct-v8,syntect-onig --test config_eval
 ```
 
-There is no runtime config field or CLI switch. `embed_v8` remains the default
-Deno implementation. When both features unify, the existing Deno render/config
-facade wins; direct-only commands must explicitly disable defaults. Slim builds
+There is no runtime config field or CLI switch. Since #4390 `direct-v8` is the
+default and `embed_v8` is the source-build rollback. When both features unify,
+the existing Deno render/config facade wins; rollback-only commands must
+explicitly disable defaults. Slim builds
 with neither feature retain their existing Node config evaluator and no-V8
 render behavior. Markdown/Wasm and CSS-addon feature choices remain unchanged.
 
@@ -51,7 +52,7 @@ starts after queue registration. The shared-engine example exercises both
 initialization orders in separate executions and concurrent finite work:
 
 ```sh
-cargo build --locked -p zfb-render --features direct-v8 --example direct_v8_shared
+cargo build --locked -p zfb-render --features embed_v8 --example direct_v8_shared
 target/debug/examples/direct_v8_shared native-first
 target/debug/examples/direct_v8_shared deno-first
 ```

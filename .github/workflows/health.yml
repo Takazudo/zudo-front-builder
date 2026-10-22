@@ -1292,6 +1292,13 @@ jobs:
       - name: cargo test (zfb-render, embed_v8)
         run: cargo test --locked -p zfb-render --no-default-features --features embed_v8,syntect-onig
 
+      # The deno-backed config evaluator and zfb's `v8_host_adapter` only run
+      # through the deno_core host when `direct-v8` is off.
+      - name: cargo test (zfb-config-loader, zfb lib, embed_v8)
+        run: |
+          cargo test --locked -p zfb-config-loader --no-default-features --features embed_v8
+          cargo test --locked -p zfb --no-default-features --features embed_v8 --lib
+
       - name: cargo test (zfb-build embed_v8 e2e)
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
