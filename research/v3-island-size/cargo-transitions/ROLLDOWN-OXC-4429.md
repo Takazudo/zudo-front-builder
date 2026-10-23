@@ -18,7 +18,7 @@ move. Takazudo approved this edge-only transition on 2026-10-23.
   [`rolldown-oxc-4429/`](rolldown-oxc-4429/) are row-for-row identical at both locks for
   `x86_64-unknown-linux-gnu` (580 rows) and `aarch64-apple-darwin` (564 rows). Both endpoints
   are already in them, and `oxc` keeps its feature set (`ast_visit` was already enabled), so
-  nothing that is built changes; `closure.changed` is empty. Receipts were recorded on Linux
+  no package or feature in the closure changes; `closure.changed` is empty. Receipts were recorded on Linux
   (`cargo metadata --filter-platform` resolves the Darwin target without its toolchain).
 - `proveCargoInternalRewire` proves the declaration for both targets
   (`scripts/__tests__/cargo-existing-external-edge.test.mjs`).
