@@ -68,7 +68,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
