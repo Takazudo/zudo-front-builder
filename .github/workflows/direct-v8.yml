@@ -130,7 +130,7 @@ jobs:
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile time.
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!docs'
 
       - name: Offline harness controls
         run: python3 -m unittest discover -s prototypes/direct-v8 -p 'test_*.py'
@@ -349,7 +349,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!docs'
 
       - name: Verify vendored ICU data
         id: icu

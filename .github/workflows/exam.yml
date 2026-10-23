@@ -190,7 +190,7 @@ jobs:
             crates/zfb/binaries/esbuild/esbuild
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!docs'
 
       # Compiles every target AND triggers crates/zfb's build.rs to download +
       # SHA-verify + stage the pinned esbuild binary into
@@ -429,7 +429,7 @@ jobs:
 
       # Install dependencies before cargo build so the build script can read
       # Hono from node_modules/.pnpm/ — same ordering as release.yml's macOS leg.
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!docs'
 
       # Compiles every target AND triggers crates/zfb's build.rs to stage the
       # pinned esbuild binary — same as health.yml and this

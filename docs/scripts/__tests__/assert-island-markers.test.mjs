@@ -180,3 +180,20 @@ test("manifest registration accepts dollar identifiers without accepting stray s
     false,
   );
 });
+
+// Rolldown (zfb >= 4.7 default bundler) emits template literals, e.g.
+// __zfb_register(Z,`default`,`ThemeToggle`,`components/theme-toggle.tsx`).
+test("manifest registration accepts Rolldown's template-literal strings", () => {
+  assert.equal(
+    hasIslandManifestEntry(
+      "__zfb_register(Z,`default`,`ThemeToggle`,`components/theme-toggle.tsx`)",
+      "ThemeToggle",
+    ),
+    true,
+  );
+  assert.equal(hasIslandManifestEntry("let e=`ThemeToggle`;", "ThemeToggle"), false);
+  assert.equal(
+    hasIslandManifestEntry("__zfb_register(Z,`ThemeToggle`,`Other`,`src`)", "ThemeToggle"),
+    false,
+  );
+});

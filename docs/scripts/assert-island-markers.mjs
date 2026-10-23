@@ -73,21 +73,24 @@ function escapeRegExp(value) {
  * The first expression is the stable generated shape before minification:
  * `__zfb_register(namespace, exportName, markerName, moduleLabel)`. The same
  * shape is emitted as `R(ns, "default", "Marker", "...")` in production.
+ * Rolldown (the zfb >= 4.7 default bundler) prints string literals as
+ * template literals, so every quote position accepts `"`, `'` or a backtick.
  * The object/bracket forms cover runtime/fixture manifests that are not passed
  * through the call-based shared-bundle generator.
  */
 export function hasIslandManifestEntry(bundleText, marker) {
   const escapedMarker = escapeRegExp(marker);
-  const literal = `"${escapedMarker}"`;
+  const quote = "[\"'`]";
+  const literal = `${quote}${escapedMarker}${quote}`;
   const registrationCall = new RegExp(
-    `(?<![\\w$])[A-Za-z_$][\\w$]*\\(\\s*[^,()]+\\s*,\\s*["'][^"']+["']\\s*,\\s*${literal}\\s*,`,
+    `(?<![\\w$])[A-Za-z_$][\\w$]*\\(\\s*[^,()]+\\s*,\\s*${quote}[^"'\`]+${quote}\\s*,\\s*${literal}\\s*,`,
   );
   if (registrationCall.test(bundleText)) return true;
 
-  const objectKey = new RegExp(`(?:["'])${escapedMarker}(?:["'])\\s*:`);
+  const objectKey = new RegExp(`${literal}\\s*:`);
   if (objectKey.test(bundleText)) return true;
 
-  const bracketKey = new RegExp(`\\[\\s*(?:["'])${escapedMarker}(?:["'])\\s*\\]\\s*[:=]`);
+  const bracketKey = new RegExp(`\\[\\s*${literal}\\s*\\]\\s*[:=]`);
   return bracketKey.test(bundleText);
 }
 

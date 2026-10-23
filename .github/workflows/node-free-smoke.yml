@@ -274,9 +274,11 @@ jobs:
           cache: "pnpm"
 
       # build.rs reads Hono from node_modules at build time.
+      # `--filter '!docs'` (#4433): this job never uses the docs member, whose
+      # zudo-doc requires Node >=24 <25 and fails engineStrict on Node 22.
       - name: Install dependencies
         if: ${{ env.BUILD_BINARY == 'true' }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
         if: ${{ env.BUILD_BINARY == 'true' }}
@@ -539,8 +541,10 @@ jobs:
           node-version: "22"
           cache: "pnpm"
 
+      # `--filter '!docs'` (#4433): this job never uses the docs member, whose
+      # zudo-doc requires Node >=24 <25 and fails engineStrict on Node 22.
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       # Only the packages this job packs need a fresh dist/ — not the whole
       # workspace (e.g. docs), which pnpm -r build would also touch.
@@ -1028,8 +1032,10 @@ jobs:
       # Only @playwright/test (a root devDependency) is needed to run the
       # suite — the fixture site itself is built by the standalone zfb
       # binary below and needs no pnpm-installed deps of its own.
+      # `--filter '!docs'` (#4433): this job never uses the docs member, whose
+      # zudo-doc requires Node >=24 <25 and fails engineStrict on Node 22.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       # Chromium only — no WebKit/Firefox. `--with-deps` pulls the system
       # libraries the browser needs on a bare ubuntu runner.
