@@ -113,8 +113,8 @@ describe("health.yml docs-only skip", () => {
     expect(health.jobs["rollback-embed-v8"]).toBeUndefined();
   });
 
-  it("keeps the optional md-wasm and Node 22 package jobs off docs-only PRs", () => {
-    for (const name of ["wasm-md", "wasm-md-browser", "node22-packages"]) {
+  it("keeps the optional md-wasm jobs off docs-only PRs", () => {
+    for (const name of ["wasm-md", "wasm-md-browser"]) {
       expect(bareIf(health.jobs[name])).toContain(
         "needs.changed-files.outputs.docs_only != 'true'",
       );
