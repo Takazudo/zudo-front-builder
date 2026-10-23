@@ -141,15 +141,18 @@ impl Request {
                         options.code_splitting =
                             Some(rolldown_common::CodeSplittingMode::Bool(true));
                         // Esbuild never makes a chunk import an entry, and zfb renames
-                        // entries after bundling. Rolldown keeps code shared with an
-                        // already-loaded entry inside that entry unless this is off.
+                        // only the entry after bundling (islands.js -> islands-<hash>.js,
+                        // chunks verbatim). Merging common chunks folds code shared by
+                        // the entry and a dynamic import into the entry chunk, so the
+                        // lazy chunk imports "./islands.js" and 404s (#4444/#4448);
+                        // redundant-load avoidance does the same for already-loaded code.
                         options
                             .experimental
                             .get_or_insert_default()
                             .chunk_optimization =
                             Some(rolldown_common::ChunkOptimizationOption::Options(
                                 rolldown_common::ChunkOptimizationOptions {
-                                    merge_common_chunks: true,
+                                    merge_common_chunks: false,
                                     avoid_redundant_chunk_loads: false,
                                 },
                             ));
