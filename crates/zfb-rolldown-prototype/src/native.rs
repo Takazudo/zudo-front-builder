@@ -8,6 +8,7 @@ mod handled_imports;
 mod jsx_tsconfig_tests;
 #[cfg(test)]
 mod metafile_order_tests;
+pub(crate) mod module_specifiers;
 mod prepared;
 #[cfg(test)]
 mod splitting_tests;
