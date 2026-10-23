@@ -140,7 +140,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: "22"
+          node-version: 24.14.0
           # No pnpm in this job — the two harvest/summarize scripts are
           # dependency-free ESM over node builtins, so nothing is installed.
           # setup-node@v5 defaults package-manager-cache to true, reads the

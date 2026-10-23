@@ -42,7 +42,7 @@ of main `183402a4afe30a68d86b894810be285c9cc54b3b` into implementation
   arm64 uses
   `ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:1811a69aab16f39de09df72a991b4d7b33a0337686a827bea4890ccc399ff8f0`.
 - pnpm: repository `packageManager` is **12.8.2**. SDK compatibility remains
-  Node **>=22.0.0**; test the actual 22.0.0 runtime as well as the build runtime.
+  Node **>=24.0.0** (raised from 22.0.0 in v4.7.1); test the actual 24.0.0 runtime as well as the build runtime.
 
 **The manager selected the Linux execution toolchain:** Rust 1.99.0 via
 `RUSTUP_TOOLCHAIN=1.99.0`, dedicated `CARGO_HOME`/`RUSTUP_HOME` under

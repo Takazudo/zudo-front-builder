@@ -572,14 +572,14 @@ jobs:
             debian:stable-slim \
             ./target/aarch64-unknown-linux-gnu/release/zfb --version
 
-      - name: Load Linux CSS addon on Node 22.0.0 (native or QEMU)
+      - name: Load Linux CSS addon on Node 24.0.0 (native or QEMU)
         if: ${{ matrix.settings.use_cross == true && hashFiles('crates/zfb-css-node/Cargo.toml') != '' }}
         shell: bash
         env:
           NODE_PLATFORM: ${{ matrix.settings.qemu && 'linux/arm64' || 'linux/amd64' }}
         run: |
           docker run --rm --platform "$NODE_PLATFORM" -v "$PWD:/w:ro" -w /w \
-            node:22.0.0-bookworm-slim node scripts/smoke-css-node.mjs \
+            node:24.0.0-bookworm-slim node scripts/smoke-css-node.mjs \
             packages/zfb-${{ matrix.settings.platform }}/zfb-css.node
 
       # Per-platform short-version guard (Unix — all non-Windows platforms).

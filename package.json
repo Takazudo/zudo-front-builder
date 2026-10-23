@@ -7,7 +7,7 @@
   "description": "zudo-front-builder — frontend build orchestrator (private workspace)",
   "packageManager": "pnpm@12.8.2",
   "engines": {
-    "node": "^22.18.0 || ^24.11.0 || >=26.0.0",
+    "node": "^24.11.0 || >=26.0.0",
     "pnpm": ">=12.0.0"
   },
   "scripts": {
@@ -34,8 +34,6 @@
     "//// === WORKSPACE TEST CONTRACTS (md-wasm excluded from fast lanes; coverage in wasm-md) ===": "",
     "//// md-wasm needs generated wasm dist artifacts; its build-then-test coverage lives in the wasm-md CI job and test:md-wasm lane": "",
     "test:workspace": "pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test",
-    "//// test:packages = test:workspace minus the root and docs, for the Node 22 lane (#4433)": "",
-    "test:packages": "pnpm -r --filter '!docs' --filter '!@takazudo/zfb-md-wasm' test",
     "typecheck:workspace": "pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --if-present typecheck",
     "test:md-wasm": "pnpm --filter @takazudo/zfb-md-wasm build && pnpm --filter @takazudo/zfb-md-wasm test",
     "//// test:md-wasm:local downgrades gzip-ceiling breaches to warnings for Mac/CI codegen drift (zfb#3054) via --allow-over-ceiling (zfb#3060); CI refuses the flag, so it can't green a PR gate": "",

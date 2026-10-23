@@ -1125,49 +1125,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Node 22 floor for the published packages (#4433). `health` above runs
-  # on Node 24.14.0 because the docs member (zudo-doc, engines ">=24 <25")
-  # needs it, so this job keeps a real lane on the lowest supported Node
-  # line (the packages declare `node: >=22.0.0`; the root accepts
-  # ^22.18.0). Docs are excluded at install, so only packages/* tests run:
-  # the root scripts/** suites import docs/node_modules/@takazudo/zudo-doc
-  # and keep running in `health` on Node 24. `test:packages` is
-  # `test:workspace` minus the root and docs; `health` and run-b4push.sh keep
-  # the canonical script.
-  node22-packages:
-    name: JS packages (Node 22)
-    # Same docs-only skip as `health` (#4372).
-    needs: changed-files
-    if: ${{ !cancelled() && needs.changed-files.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 22
-          cache: pnpm
-
-      # tests/unit/*.sh invoke `node`; run them on the Node 22 floor too.
-      - name: Run offline shell unit tests
-        run: |
-          for t in tests/unit/*.sh; do
-            echo "+ sh $t"
-            sh "$t"
-          done
-
-      - run: pnpm install --frozen-lockfile --filter '!docs'
-
-      # docs has no `typecheck` script, so the canonical command already
-      # covers exactly the packages here.
-      - run: pnpm typecheck:workspace
-
-      - name: Package tests (Node 22, docs and root excluded)
-        run: pnpm test:packages
-
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
   # Without this job the `direct-v8` runtime feature gate can rot
