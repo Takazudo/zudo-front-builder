@@ -148,9 +148,6 @@ tar = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Parses emitted browser modules in build_reproducibility_e2e (#4449) to check
-# every import specifier; same pin as zfb-rolldown-prototype.
-oxc = { version = "0.153.0", default-features = false, features = ["ast_visit"] }
 cssparser = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 # Async client for the dev E2E harness (dev_serve_e2e.rs, #1018): HTTP

@@ -4,16 +4,6 @@
 //! a chunk importing `./islands.js` 404s in production (#4444/#4448).
 //! The bundles below are the oracle; nothing here predicts Rolldown's chunking.
 use super::prepared::Request;
-use oxc::{
-    allocator::Allocator,
-    ast::ast::{
-        ExportAllDeclaration, ExportFromDeclaration, Expression, ImportDeclaration,
-        ImportExpression,
-    },
-    ast_visit::{walk, Visit},
-    parser::Parser,
-    span::SourceType,
-};
 use std::{collections::BTreeMap, fs, process::Command};
 
 const ENTRY: &str = "islands.js";
@@ -38,46 +28,9 @@ fn split_builds_do_not_fold_shared_code_into_an_already_loaded_entry() {
     assert!(!optimization.is_merge_common_chunks_enabled());
 }
 
-/// Literal module specifiers of every static import, side-effect import,
-/// re-export and dynamic `import()` in one emitted file.
-#[derive(Default)]
-struct Specifiers(Vec<String>);
-
-impl<'a> Visit<'a> for Specifiers {
-    fn visit_import_declaration(&mut self, decl: &ImportDeclaration<'a>) {
-        self.0.push(decl.source.value.as_str().to_owned());
-    }
-
-    fn visit_export_from_declaration(&mut self, decl: &ExportFromDeclaration<'a>) {
-        self.0.push(decl.source.value.as_str().to_owned());
-    }
-
-    fn visit_export_all_declaration(&mut self, decl: &ExportAllDeclaration<'a>) {
-        self.0.push(decl.source.value.as_str().to_owned());
-    }
-
-    fn visit_import_expression(&mut self, import: &ImportExpression<'a>) {
-        match import.source.without_parentheses() {
-            Expression::StringLiteral(literal) => self.0.push(literal.value.as_str().to_owned()),
-            Expression::TemplateLiteral(template) if template.expressions.is_empty() => self
-                .0
-                .push(template.quasis[0].value.raw.as_str().to_owned()),
-            _ => {}
-        }
-        walk::walk_import_expression(self, import);
-    }
-}
-
 fn specifiers(name: &str, source: &str) -> Vec<String> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, SourceType::mjs()).parse();
-    assert!(
-        !parsed.fatal_error && !parsed.diagnostics.has_errors(),
-        "emitted {name} must parse as an ES module:\n{source}"
-    );
-    let mut found = Specifiers::default();
-    found.visit_program(&parsed.program);
-    found.0
+    super::module_specifiers::module_specifiers(source)
+        .unwrap_or_else(|error| panic!("emitted {name}: {error}:\n{source}"))
 }
 
 /// Bundles `entry.js` from `files` exactly as zfb's shared islands pass asks

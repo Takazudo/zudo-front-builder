@@ -18,16 +18,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use oxc::{
-    allocator::Allocator,
-    ast::ast::{
-        ExportAllDeclaration, ExportFromDeclaration, Expression, ImportDeclaration,
-        ImportExpression,
-    },
-    ast_visit::{walk, Visit},
-    parser::Parser,
-    span::SourceType,
-};
 use zfb_test_utils::{locate_esbuild, zfb_binary};
 
 const ISLAND_LABEL: &str = "components/counter.tsx";
@@ -973,238 +963,206 @@ export default {
 // chunk importing the entry 404s. The emitted `dist/` is the oracle; nothing
 // here predicts how either bundler splits the graph.
 // ---------------------------------------------------------------------------
-
-/// Literal module specifiers of every static import, side-effect import,
-/// re-export and dynamic `import()` in one emitted file.
-#[derive(Default)]
-struct EmittedSpecifiers(Vec<String>);
-
-impl<'a> Visit<'a> for EmittedSpecifiers {
-    fn visit_import_declaration(&mut self, decl: &ImportDeclaration<'a>) {
-        self.0.push(decl.source.value.as_str().to_owned());
-    }
-
-    fn visit_export_from_declaration(&mut self, decl: &ExportFromDeclaration<'a>) {
-        self.0.push(decl.source.value.as_str().to_owned());
-    }
-
-    fn visit_export_all_declaration(&mut self, decl: &ExportAllDeclaration<'a>) {
-        self.0.push(decl.source.value.as_str().to_owned());
-    }
-
-    fn visit_import_expression(&mut self, import: &ImportExpression<'a>) {
-        match import.source.without_parentheses() {
-            Expression::StringLiteral(literal) => self.0.push(literal.value.as_str().to_owned()),
-            // Minifiers may spell a literal specifier as a substitution-free template.
-            Expression::TemplateLiteral(template) if template.expressions.is_empty() => self
-                .0
-                .push(template.quasis[0].value.raw.as_str().to_owned()),
-            _ => {}
-        }
-        walk::walk_import_expression(self, import);
-    }
-}
-
-fn emitted_specifiers(path: &Path, source: &str) -> Vec<String> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, SourceType::mjs()).parse();
-    assert!(
-        !parsed.fatal_error && !parsed.diagnostics.has_errors(),
-        "emitted {} must parse as an ES module",
-        path.display()
-    );
-    let mut found = EmittedSpecifiers::default();
-    found.visit_program(&parsed.program);
-    found.0
-}
-
-/// Lexically joins a relative specifier onto the importer's dist directory.
-fn resolve_in_dist(importer: &Path, specifier: &str) -> PathBuf {
-    let mut resolved = importer.parent().unwrap_or(Path::new("")).to_path_buf();
-    for segment in specifier.split('/') {
-        match segment {
-            "." | "" => {}
-            ".." => {
-                assert!(
-                    resolved.pop(),
-                    "{} climbs out of dist with {specifier:?}",
-                    importer.display()
-                );
-            }
-            other => resolved.push(other),
-        }
-    }
-    resolved
-}
-
-/// The islands entry under any of its names: the stable bundler output or a
-/// fingerprinted `islands-<hash>.js` (never a self-hashed `islands-chunk-*`).
-fn names_islands_entry(specifier: &str, entry_file: &str) -> bool {
-    let file = specifier.rsplit('/').next().unwrap_or(specifier);
-    let file = file.split(['?', '#']).next().unwrap_or(file);
-    file == "islands.js"
-        || file == entry_file
-        || (file.starts_with("islands-")
-            && !file.starts_with("islands-chunk-")
-            && file.ends_with(".js"))
-}
-
-fn run_lazy_shared_build(root: &Path, esbuild: &Path, bundler: &str) {
-    let output = Command::new(zfb_binary!())
-        .arg("build")
-        .current_dir(root)
-        .env("ZFB_ESBUILD_BIN", esbuild)
-        .env("ZFB_BUNDLER", bundler)
-        .env_remove("ZFB_ROLLDOWN_PROTOTYPE")
-        .output()
-        .expect("spawn real `zfb build`");
-    assert!(
-        output.status.success(),
-        "`zfb build` ({bundler}) must succeed for {}\nstatus: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        root.display(),
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-fn assert_no_chunk_imports_the_islands_entry(bundler: &str, esbuild: &Path) {
-    let temp = tempfile::tempdir().expect("create lazy-shared tempdir");
-    let root = temp.path().join("app");
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lazy-shared-island");
-    copy_fixture(&fixture, &root).expect("copy lazy-shared-island fixture");
-    run_lazy_shared_build(&root, esbuild, bundler);
-    let dist = read_dist_inventory(&root);
-    let render_js = || -> String {
-        dist.iter()
-            .filter(|(path, _)| {
-                path.extension()
-                    .is_some_and(|ext| ext == "js" || ext == "mjs")
-            })
-            .map(|(path, bytes)| {
-                format!(
-                    "--- {} ---\n{}",
-                    path.display(),
-                    String::from_utf8_lossy(bytes)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    // (iii) the entry is fingerprinted and referenced from HTML; chunks keep
-    // their bundler-owned content names.
-    let html = String::from_utf8(
-        dist.get(Path::new("index.html"))
-            .expect("fixture build must emit dist/index.html")
-            .clone(),
-    )
-    .expect("prerendered HTML is UTF-8");
-    assert!(
-        html.contains("data-lazy-host"),
-        "{bundler}: island SSR missing:\n{html}"
-    );
-    let entry = html_islands_entry(&html);
-    let entry_file = entry
-        .file_name()
-        .and_then(|name| name.to_str())
-        .expect("islands entry filename")
-        .to_owned();
-    assert!(
-        entry_file.starts_with("islands-")
-            && !entry_file.starts_with("islands-chunk-")
-            && entry_file.len() > "islands-.js".len(),
-        "{bundler}: HTML must reference a fingerprinted entry, got {}",
-        entry.display()
-    );
-    assert!(
-        dist.contains_key(&entry),
-        "{bundler}: HTML entry {} was not written",
-        entry.display()
-    );
-    assert!(
-        !dist.contains_key(Path::new("assets/islands.js")),
-        "{bundler}: production must not publish a stable assets/islands.js"
-    );
-    let chunks: Vec<&PathBuf> = dist
-        .keys()
-        .filter(|path| {
-            path.starts_with("assets")
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("islands-chunk-") && name.ends_with(".js"))
-        })
-        .collect();
-    assert!(
-        !chunks.is_empty(),
-        "{bundler}: the lazy import() must emit at least one islands-chunk-*.js:\n{}",
-        render_js()
-    );
-
-    // (i) + (ii) over every emitted browser module under dist/assets.
-    let mut checked = 0usize;
-    for (path, bytes) in &dist {
-        let is_js = path
-            .extension()
-            .is_some_and(|ext| ext == "js" || ext == "mjs");
-        if !path.starts_with("assets") || !is_js {
-            continue;
-        }
-        let source = String::from_utf8(bytes.clone())
-            .unwrap_or_else(|_| panic!("{} is not UTF-8", path.display()));
-        for specifier in emitted_specifiers(path, &source) {
-            if path != &entry {
-                assert!(
-                    !names_islands_entry(&specifier, &entry_file),
-                    "{bundler}: {} imports the islands entry as {specifier:?}; production only \
-                     publishes {entry_file}\n{}",
-                    path.display(),
-                    render_js()
-                );
-            }
-            if specifier.starts_with("./") || specifier.starts_with("../") {
-                let target = resolve_in_dist(path, &specifier);
-                assert!(
-                    dist.contains_key(&target),
-                    "{bundler}: {} imports {specifier:?}, but {} was not written\n{}",
-                    path.display(),
-                    target.display(),
-                    render_js()
-                );
-                checked += 1;
-            }
-        }
-    }
-    assert!(
-        checked > 0,
-        "{bundler}: no relative specifier was checked in dist/assets\n{}",
-        render_js()
-    );
-    eprintln!(
-        "[build_reproducibility_e2e] lazy-shared-island ({bundler}): {} chunk(s), {checked} relative specifier(s) resolved",
-        chunks.len()
-    );
-}
-
+// The specifier oracle is the Rolldown crate's parser helper, re-exported by
+// zfb-islands only when `rolldown-prototype` (a default feature) is on.
 #[cfg(feature = "rolldown-prototype")]
-#[test]
-fn rolldown_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
-    let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-        return;
-    };
-    assert_no_chunk_imports_the_islands_entry("rolldown", &esbuild);
-}
+mod lazy_shared_island {
+    use super::*;
 
-#[test]
-fn esbuild_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
-    let _guard = BUILD_LOCK.lock().unwrap();
-    let Some(esbuild) = locate_esbuild() else {
-        eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
-        return;
-    };
-    assert_no_chunk_imports_the_islands_entry("esbuild", &esbuild);
+    fn emitted_specifiers(path: &Path, source: &str) -> Vec<String> {
+        zfb_islands::module_specifiers(source)
+            .unwrap_or_else(|error| panic!("emitted {}: {error}", path.display()))
+    }
+
+    /// Lexically joins a relative specifier onto the importer's dist directory.
+    fn resolve_in_dist(importer: &Path, specifier: &str) -> PathBuf {
+        let mut resolved = importer.parent().unwrap_or(Path::new("")).to_path_buf();
+        for segment in specifier.split('/') {
+            match segment {
+                "." | "" => {}
+                ".." => {
+                    assert!(
+                        resolved.pop(),
+                        "{} climbs out of dist with {specifier:?}",
+                        importer.display()
+                    );
+                }
+                other => resolved.push(other),
+            }
+        }
+        resolved
+    }
+
+    /// The islands entry under any of its names: the stable bundler output or a
+    /// fingerprinted `islands-<hash>.js` (never a self-hashed `islands-chunk-*`).
+    fn names_islands_entry(specifier: &str, entry_file: &str) -> bool {
+        let file = specifier.rsplit('/').next().unwrap_or(specifier);
+        let file = file.split(['?', '#']).next().unwrap_or(file);
+        file == "islands.js"
+            || file == entry_file
+            || (file.starts_with("islands-")
+                && !file.starts_with("islands-chunk-")
+                && file.ends_with(".js"))
+    }
+
+    fn run_lazy_shared_build(root: &Path, esbuild: &Path, bundler: &str) {
+        let output = Command::new(zfb_binary!())
+            .arg("build")
+            .current_dir(root)
+            .env("ZFB_ESBUILD_BIN", esbuild)
+            .env("ZFB_BUNDLER", bundler)
+            .env_remove("ZFB_ROLLDOWN_PROTOTYPE")
+            .output()
+            .expect("spawn real `zfb build`");
+        assert!(
+            output.status.success(),
+            "`zfb build` ({bundler}) must succeed for {}\nstatus: {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            root.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    fn assert_no_chunk_imports_the_islands_entry(bundler: &str, esbuild: &Path) {
+        let temp = tempfile::tempdir().expect("create lazy-shared tempdir");
+        let root = temp.path().join("app");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lazy-shared-island");
+        copy_fixture(&fixture, &root).expect("copy lazy-shared-island fixture");
+        run_lazy_shared_build(&root, esbuild, bundler);
+        let dist = read_dist_inventory(&root);
+        let render_js = || -> String {
+            dist.iter()
+                .filter(|(path, _)| {
+                    path.extension()
+                        .is_some_and(|ext| ext == "js" || ext == "mjs")
+                })
+                .map(|(path, bytes)| {
+                    format!(
+                        "--- {} ---\n{}",
+                        path.display(),
+                        String::from_utf8_lossy(bytes)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // (iii) the entry is fingerprinted and referenced from HTML; chunks keep
+        // their bundler-owned content names.
+        let html = String::from_utf8(
+            dist.get(Path::new("index.html"))
+                .expect("fixture build must emit dist/index.html")
+                .clone(),
+        )
+        .expect("prerendered HTML is UTF-8");
+        assert!(
+            html.contains("data-lazy-host"),
+            "{bundler}: island SSR missing:\n{html}"
+        );
+        let entry = html_islands_entry(&html);
+        let entry_file = entry
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("islands entry filename")
+            .to_owned();
+        assert!(
+            entry_file.starts_with("islands-")
+                && !entry_file.starts_with("islands-chunk-")
+                && entry_file.len() > "islands-.js".len(),
+            "{bundler}: HTML must reference a fingerprinted entry, got {}",
+            entry.display()
+        );
+        assert!(
+            dist.contains_key(&entry),
+            "{bundler}: HTML entry {} was not written",
+            entry.display()
+        );
+        assert!(
+            !dist.contains_key(Path::new("assets/islands.js")),
+            "{bundler}: production must not publish a stable assets/islands.js"
+        );
+        let chunks: Vec<&PathBuf> = dist
+            .keys()
+            .filter(|path| {
+                path.starts_with("assets")
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name.starts_with("islands-chunk-") && name.ends_with(".js")
+                        })
+            })
+            .collect();
+        assert!(
+            !chunks.is_empty(),
+            "{bundler}: the lazy import() must emit at least one islands-chunk-*.js:\n{}",
+            render_js()
+        );
+
+        // (i) + (ii) over every emitted browser module under dist/assets.
+        let mut checked = 0usize;
+        for (path, bytes) in &dist {
+            let is_js = path
+                .extension()
+                .is_some_and(|ext| ext == "js" || ext == "mjs");
+            if !path.starts_with("assets") || !is_js {
+                continue;
+            }
+            let source = String::from_utf8(bytes.clone())
+                .unwrap_or_else(|_| panic!("{} is not UTF-8", path.display()));
+            for specifier in emitted_specifiers(path, &source) {
+                if path != &entry {
+                    assert!(
+                        !names_islands_entry(&specifier, &entry_file),
+                        "{bundler}: {} imports the islands entry as {specifier:?}; production only \
+                         publishes {entry_file}\n{}",
+                        path.display(),
+                        render_js()
+                    );
+                }
+                if specifier.starts_with("./") || specifier.starts_with("../") {
+                    let target = resolve_in_dist(path, &specifier);
+                    assert!(
+                        dist.contains_key(&target),
+                        "{bundler}: {} imports {specifier:?}, but {} was not written\n{}",
+                        path.display(),
+                        target.display(),
+                        render_js()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "{bundler}: no relative specifier was checked in dist/assets\n{}",
+            render_js()
+        );
+        eprintln!(
+            "[build_reproducibility_e2e] lazy-shared-island ({bundler}): {} chunk(s), {checked} relative specifier(s) resolved",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn rolldown_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
+        let _guard = BUILD_LOCK.lock().unwrap();
+        let Some(esbuild) = locate_esbuild() else {
+            eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
+            return;
+        };
+        assert_no_chunk_imports_the_islands_entry("rolldown", &esbuild);
+    }
+
+    #[test]
+    fn esbuild_lazy_chunks_never_import_the_fingerprinted_islands_entry() {
+        let _guard = BUILD_LOCK.lock().unwrap();
+        let Some(esbuild) = locate_esbuild() else {
+            eprintln!("[build_reproducibility_e2e] no esbuild binary available; skipping");
+            return;
+        };
+        assert_no_chunk_imports_the_islands_entry("esbuild", &esbuild);
+    }
 }
