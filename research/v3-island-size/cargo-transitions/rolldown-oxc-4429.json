@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "producer": "zfb",
+  "oldCargoLockSha256": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216",
+  "newCargoLockSha256": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+  "added": [],
+  "changed": [
+    {
+      "id": "zfb-rolldown-prototype@0.0.0",
+      "manifest": "crates/zfb-rolldown-prototype/Cargo.toml",
+      "oldSha256": "b3c82a767e7effa4dea951cbbb24610929da89c0078583ae6bd706a083d0e627",
+      "newSha256": "7df689888089946ab70be6dacc817c7bbb71d3eb420acc1545ca23417418d54d",
+      "removedDependencies": [],
+      "addedDependencies": ["oxc"]
+    }
+  ],
+  "externalEdges": [
+    {
+      "from": "zfb-rolldown-prototype@0.0.0",
+      "dependency": "oxc",
+      "to": "oxc@0.153.0",
+      "sha256": "a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593"
+    }
+  ],
+  "closure": {
+    "added": [],
+    "changed": []
+  }
+}

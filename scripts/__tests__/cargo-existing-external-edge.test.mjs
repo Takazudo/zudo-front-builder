@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vite-plus/test";
 import {
   cargoRewireMarkdown,
@@ -487,5 +490,44 @@ describe("explicit existing-external-edge admission capability (not application)
         });
       }),
     ).toThrow(/repeats an added external target/);
+  });
+});
+
+describe("committed #4429 oxc edge declaration (rolldown-oxc-4429.json)", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const dir = join(root, "research/v3-island-size/cargo-transitions");
+
+  it("proves the declaration against the frozen old lock and the live Cargo.lock for both targets", () => {
+    const oldText = readFileSync(join(dir, "rolldown-oxc-4429.old.lock"), "utf8");
+    const newText = readFileSync(join(root, "Cargo.lock"), "utf8");
+    const declarationBytes = readFileSync(join(dir, "rolldown-oxc-4429.json"));
+    for (const target of [LINUX_TARGET, DARWIN_TARGET]) {
+      const receipt = (side) => {
+        const bytes = readFileSync(join(dir, `rolldown-oxc-4429/closure-${side}-${target}.json`));
+        return { receipt: JSON.parse(bytes), sha256: sha(bytes) };
+      };
+      const proof = proveCargoInternalRewire({
+        contractSha: sha(oldText),
+        artifactSha: sha(newText),
+        expectedOldSha: sha(oldText),
+        expectedNewSha: sha(newText),
+        oldText,
+        newText,
+        oldLockSource: {
+          commit: "7b062415c002151adf20b52aaf77019a90adfa0e",
+          path: "Cargo.lock",
+          sha256: sha(oldText),
+        },
+        newLockSource: { sha256: sha(newText) },
+        declaration: JSON.parse(declarationBytes),
+        declarationSource: { path: "rolldown-oxc-4429.json", sha256: sha(declarationBytes) },
+        closures: { old: receipt("old"), new: receipt("new") },
+        target,
+        readManifest: (path) => readFileSync(join(root, path)),
+      });
+      expect(proof.externalEdges).toEqual([
+        expect.objectContaining({ from: "zfb-rolldown-prototype@0.0.0", to: "oxc@0.153.0" }),
+      ]);
+    }
   });
 });

@@ -1196,7 +1196,8 @@ describe("cargo-removal prunedExternal (#4396)", () => {
   it("proves the committed Deno-exit declaration for both producer targets", () => {
     const dir = join(root, "research/v3-island-size/cargo-transitions");
     const liveOld = readFileSync(join(dir, "deno-exit-4303.old.lock"), "utf8");
-    const liveNew = readFileSync(join(root, "Cargo.lock"), "utf8");
+    // The Deno-exit new lock is the #4429 transition's frozen old lock.
+    const liveNew = readFileSync(join(dir, "rolldown-oxc-4429.old.lock"), "utf8");
     const declarationBytes = readFileSync(join(dir, "deno-exit-4303.json"));
     for (const target of ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]) {
       const receipt = (side) => {

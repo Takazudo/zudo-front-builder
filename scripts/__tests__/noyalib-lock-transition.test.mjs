@@ -43,19 +43,20 @@ describe("exact noyalib 0.0.58 adoption", () => {
   it("starts from the lock the webpki transition produced", () => {
     expect(NOYALIB_LOCK_TRANSITION.oldLockSha256).toBe(sha(webpkiSecurityLock().newText));
   });
-  it("leads to the committed Cargo.lock through the reviewed Deno-exit removal (#4396)", () => {
-    const denoExit = JSON.parse(
-      readFileSync(
-        new URL(
-          "../../research/v3-island-size/cargo-transitions/deno-exit-4303.json",
-          import.meta.url,
+  it("leads to the committed Cargo.lock through the Deno-exit removal (#4396) and the #4429 oxc edge", () => {
+    const declaration = (name) =>
+      JSON.parse(
+        readFileSync(
+          new URL(`../../research/v3-island-size/cargo-transitions/${name}`, import.meta.url),
+          "utf8",
         ),
-        "utf8",
-      ),
-    );
+      );
+    const denoExit = declaration("deno-exit-4303.json");
+    const oxcEdge = declaration("rolldown-oxc-4429.json");
     const live = readFileSync(new URL("../../Cargo.lock", import.meta.url), "utf8");
     expect(denoExit.oldCargoLockSha256).toBe(NOYALIB_LOCK_TRANSITION.newLockSha256);
-    expect(sha(live)).toBe(denoExit.newCargoLockSha256);
+    expect(oxcEdge.oldCargoLockSha256).toBe(denoExit.newCargoLockSha256);
+    expect(sha(live)).toBe(oxcEdge.newCargoLockSha256);
   });
   it("admits only the approved pair and records the decision", () => {
     expect(proof()).toMatchObject({

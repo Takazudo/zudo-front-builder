@@ -7278,6 +7278,7 @@ name = "zfb-rolldown-prototype"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "oxc",
  "rolldown",
  "rolldown_common",
  "rolldown_resolver",
