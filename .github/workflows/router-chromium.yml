@@ -94,7 +94,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       # Chromium only — no WebKit/Firefox. `--with-deps` pulls the system
       # libraries the browser needs on a bare ubuntu runner.
