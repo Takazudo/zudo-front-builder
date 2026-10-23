@@ -1134,9 +1134,9 @@ jobs:
   # line (the packages declare `node: >=22.0.0`; the root accepts
   # ^22.18.0). Docs are excluded at install, so only packages/* tests run:
   # the root scripts/** suites import docs/node_modules/@takazudo/zudo-doc
-  # and keep running in `health` on Node 24. The test command is
-  # `test:workspace` from package.json minus --include-workspace-root, plus
-  # `--filter '!docs'`; `health` and run-b4push.sh keep the canonical script.
+  # and keep running in `health` on Node 24. `test:packages` is
+  # `test:workspace` minus the root and docs; `health` and run-b4push.sh keep
+  # the canonical script.
   node22-packages:
     name: JS packages (Node 22)
     # Same docs-only skip as `health` (#4372).
@@ -1169,7 +1169,7 @@ jobs:
       - run: pnpm typecheck:workspace
 
       - name: Package tests (Node 22, docs and root excluded)
-        run: pnpm -r --filter '!docs' --filter '!@takazudo/zfb-md-wasm' test
+        run: pnpm test:packages
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #

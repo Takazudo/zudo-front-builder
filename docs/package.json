@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "typescript": "7.0.2",
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "html-validate": "^10.0.0",
     "wrangler": "4.85.0",
     "vite-plus": "catalog:"

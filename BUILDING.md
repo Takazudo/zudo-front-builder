@@ -15,7 +15,7 @@ This document covers the toolchain and one-time setup needed to build, test, and
 
 CI uses Rust stable on `ubuntu-latest` and two Node lines (#4433):
 
-- **Node 24.14.0** for every job that installs the `docs` workspace member: `health`, the docs build, deploy and preview jobs, and the docs-only lane. The docs site depends on `@takazudo/zudo-doc`, which declares `engines.node: ">=24 <25"`, so with `engineStrict: true` an unfiltered `pnpm install` fails on Node 22. `pnpm test:workspace` includes the docs tests and root suites that import zudo-doc, so it runs on Node 24 too.
+- **Node 24.14.0** for every job that installs the `docs` workspace member, such as `health`, the docs build, deploy and preview jobs, the docs-only lane and the weekly security audit. The docs site depends on `@takazudo/zudo-doc`, which declares `engines.node: ">=24 <25"`, so with `engineStrict: true` an unfiltered `pnpm install` fails on Node 22. `pnpm test:workspace` includes the docs tests and root suites that import zudo-doc, so it runs on Node 24 too.
 - **Node 22** (setup-node resolves the newest 22.x) for product jobs that don't need docs. They install with `pnpm install --frozen-lockfile --filter '!docs'`. `health.yml`'s `JS packages (Node 22)` job runs `pnpm typecheck:workspace` and the `packages/*` test suites on this line, so the published packages' Node 22 floor keeps real test coverage.
 
 Locally, an unfiltered `pnpm install` (and so `pnpm b4push`) needs Node 24. On Node 22, `pnpm install --filter '!docs'` installs everything except the docs site.
