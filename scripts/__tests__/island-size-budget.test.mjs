@@ -1405,15 +1405,15 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v4.7.0 release bump cites the #4417 Rolldown contract at its probe head.
+    // The Linux v4.7.0 runtime-identity re-pin cites the v4.7.0 release contract on main.
     file: "decision-linux-x64.json",
-    commit: "9f2a25a6354f564ba54fbf1d7f37b02ed2a8ef48",
-    sha256: "6ced75c96736805e0fb5b58adb39f4f72298c48086fce8e6c16d7372a73bfe79",
-    fixture: "fixtures/island-size-linux-x64-v4.6.0-rolldown.json",
-    outcome: "rolldown-ceiling-transition",
-    packageVersion: "4.6.0",
-    baselineSourceSha: "9e48145db73f95fc5a83140465d85c136e504602",
-    baselineRunId: 39739634110,
+    commit: "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+    sha256: "a70b4377c7011f4e483f9d3416d248aa86ee96232d0758402fec85897fe86794",
+    fixture: "fixtures/island-size-linux-x64-v4.7.0-release.json",
+    outcome: "release-version-stamp",
+    packageVersion: "4.7.0",
+    baselineSourceSha: "9f2a25a6354f564ba54fbf1d7f37b02ed2a8ef48",
+    baselineRunId: 39823049816,
   },
   {
     // The Darwin v4.7.0 release bump cites the #4417 Rolldown contract on main.
@@ -2296,9 +2296,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
     );
   });
 
-  it("moves the live Linux contract from the frozen Rolldown bytes only by the v4.7.0 release bump", () => {
+  // Verbatim bytes of decision-linux-x64.json at b65b83aa, the v4.7.0 release
+  // state the runtime-identity re-pin moved.
+  const linuxRelease = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v4.7.0-release.json",
+      "a70b4377c7011f4e483f9d3416d248aa86ee96232d0758402fec85897fe86794",
+    );
+
+  it("moves the frozen v4.7.0 Linux contract from the frozen Rolldown bytes only by the v4.7.0 release bump", () => {
     const predecessor = linuxRolldown();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxRelease();
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("4.7.0");
     expect(live.baselineSourceSha).toBe("9f2a25a6354f564ba54fbf1d7f37b02ed2a8ef48");
@@ -2338,9 +2346,6 @@ describe("live contracts preserve released evidence and authentic predecessors",
         { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
       );
       expect(sha(blob)).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
-      expect(
-        previousDistinctContractSha256("research/v3-island-size/decision-linux-x64.json"),
-      ).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
     }
     // actualGzip is transfer-size evidence that a version stamp may move, so only
     // its fixture coverage is pinned, not its values.
@@ -2359,6 +2364,38 @@ describe("live contracts preserve released evidence and authentic predecessors",
         delete copy[key];
       }
       copy.toolchain.packageVersion = null;
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(predecessor));
+  });
+
+  it("moves the live Linux contract from the frozen v4.7.0 bytes only by the runtime-identity pnpm-lock re-pin", () => {
+    const predecessor = linuxRelease();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("runtime-identity-repin");
+    expect(live.toolchain.packageVersion).toBe("4.7.0");
+    expect(live.baselineSourceSha).toBe("b65b83aa7b089145a4d6eef75f83224e8f1cf64a");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 39929245247,
+      jobId: 120333413541,
+      sourceSha: "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The pnpm-lock.yaml at b65b83aa, after #4439 moved it.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "66b1209c8966475f6c96b40fb11a3815a03e92e521118aee4aa80420476fde5b",
+    );
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+    // This re-pin moves only the pnpm-lock.yaml provenance and the evidence.
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"]) {
+        delete copy[key];
+      }
       copy.toolchain.pnpmLockSha256 = null;
       return copy;
     };
