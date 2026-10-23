@@ -34,7 +34,7 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: tests/published-preset-identity/site/src/styleguide/sg-registry.ts, tests/published-preset-identity/site/src/styleguide/token-manifest.ts
 - source: packages/styleguide (the `gen-registry` / `gen-token-manifest` CLI)
 - track: releases
-- pinned: 03a726f64ff0b26ac9f1aa746eb068a8ea7f4d03 (v0.5.4)
-- updated: 2026-10-15
+- pinned: a800c0adbaaf0584ee5089b0d853322c3bc39b33 (v0.5.6)
+- updated: 2026-10-23
 - sync: in an isolated copy of `tests/published-preset-identity/site/` (see its README), `npx zudo-sg gen-registry && npx zudo-sg gen-token-manifest`, then copy changed `src/styleguide/*.ts` back
-- notes: regenerated with 0.5.4 on 2026-10-15 in an isolated registry-installed copy with no output change (0.5.4 publishes no `gitHead`, so the pin is the `v0.5.4` release tag commit); `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
+- notes: regenerated with 0.5.6 on 2026-10-23 in an isolated registry-installed copy (Node 22.22.0; zudo-doc 7 declares `engines.node >=24 <25`, which npm only warns on) with no output change (1 story, 102 token entries); both `--check` runs pass. `v0.5.6` is a lightweight tag, so the pin is its tag commit (resolved with `git ls-remote`). `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
