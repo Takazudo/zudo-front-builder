@@ -10,10 +10,10 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: docs/tsconfig.json
 - source: packages/zudo-doc/tsconfig.base.json
 - track: releases
-- pinned: 6542b8300f4a554247563a3bac53e415a63ded51 (v6.2.0)
-- updated: 2026-10-15
+- pinned: 7761cf2fa7dfb32cc24df4a8f54f3006b1db2fef (v7.1.0)
+- updated: 2026-10-23
 - sync: diff `docs/node_modules/@takazudo/zudo-doc/tsconfig.base.json` against `docs/tsconfig.json` after a bump
-- notes: reconciled against the installed 6.2.0 tarball (tsconfig SHA-256 `2f71d96614fd68f9b16caf307b4b1267ebf1988880e4fd0a08f1cd8a93ddeea6`); the package publishes no `gitHead`, so the pin is the release tag commit. Upstream removed `baseUrl`, leaving the adapted file unchanged. Local customizations: add `types: ["node"]`, add host `include` (`src`, `pages`, `zfb.config.ts`) and relocate `files` under `./node_modules/@takazudo/zudo-doc/`, keep `jsxImportSource: "@takazudo/zfb/zudo-react"`, and add no React→Preact `paths`
+- notes: reconciled against the 7.1.0 tarball (tsconfig SHA-256 `2f71d96614fd68f9b16caf307b4b1267ebf1988880e4fd0a08f1cd8a93ddeea6`, byte-identical to 6.2.0); the package publishes no `gitHead`, so the pin is the release tag commit. Upstream removed `baseUrl` in 6.2.0, leaving the adapted file unchanged. Local customizations: add `types: ["node"]`, add host `include` (`src`, `pages`, `zfb.config.ts`) and relocate `files` under `./node_modules/@takazudo/zudo-doc/`, keep `jsxImportSource: "@takazudo/zfb/zudo-react"`, and add no React→Preact `paths`
 
 ## zudo-doc route stubs
 
@@ -23,9 +23,9 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - source: packages/create-zudo-doc/templates/base/pages/docs/[[...slug]].tsx
 - track: releases
 - pinned: unknown
-- observed-head: 6542b8300f4a554247563a3bac53e415a63ded51 (v6.2.0, recorded 2026-10-15; non-authoritative)
-- updated: 2026-10-15
-- notes: the template is byte-identical between v6.1.1 and v6.2.0; the original adaptation pin remains unknown. The v6.2.0 generator still has no locale counterpart. Local customizations: the static `../src/chrome-bindings` island-scanner seed import, the `DocHistoryBoundary` merge over `chromeBindings`, and in the locale stub the per-locale content dir, EN fallback `isFallback` and EN `docsDir` for doc history. `docs/pages/index.tsx` and `docs/pages/[locale].tsx` are host-authored, not copies
+- observed-head: 7761cf2fa7dfb32cc24df4a8f54f3006b1db2fef (v7.1.0, recorded 2026-10-23; non-authoritative)
+- updated: 2026-10-23
+- notes: the template is byte-identical between v6.1.1, v6.2.0 and v7.1.0; the original adaptation pin remains unknown. The v7.1.0 generator still has no locale counterpart. Local customizations: the static `../src/chrome-bindings` island-scanner seed import, the `DocHistoryBoundary` merge over `chromeBindings`, and in the locale stub the per-locale content dir, EN fallback `isFallback` and EN `docsDir` for doc history. `docs/pages/index.tsx` and `docs/pages/[locale].tsx` are host-authored, not copies
 
 ## zudo-sg generated styleguide outputs
 
