@@ -32,6 +32,11 @@ pub mod html_tree;
 pub mod manifest;
 pub mod scanner;
 
+/// Test oracle for emitted bundler output (#4449); not a public API.
+#[cfg(feature = "rolldown-prototype")]
+#[doc(hidden)]
+pub use zfb_rolldown_prototype::module_specifiers;
+
 pub use bundler::{
     build_production_islands_asset, bundle_link_href, BundleChunk, BundleConfig, BundleMode,
     BundleOutput, BundleResource, ClientBundler, Island, IslandsChunk, IslandsResource, ModuleId,

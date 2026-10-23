@@ -466,6 +466,9 @@ impl ModuleWorkerBundleEntry {
 /// verbatim and MUST NOT rename it: the entry's `import("./<filename>")`
 /// references are relative and resolve only when entry and chunk share
 /// a directory under the un-renamed chunk name.
+///
+/// A chunk never imports the entry: only the entry is renamed downstream,
+/// so its stable `islands.js` name does not exist in production.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleChunk {
     /// Flat, self-hashed chunk basename (e.g. `islands-chunk-WOEGGERP.js`).
@@ -546,11 +549,18 @@ pub struct BundleOutput {
     ///   hash is esbuild's, those names are content-stable across identical
     ///   rebuilds and the imports resolve as long as entry and chunks share
     ///   a directory.
-    /// - **Downstream MUST NOT rename chunk files.** Only the *entry* may
-    ///   later be renamed by the prod pipeline (`islands.js` →
+    /// - **Downstream MUST NOT rename chunk files.** Only the *entry* is
+    ///   later renamed by the prod pipeline (`islands.js` →
     ///   `islands-<hash>.js`); its relative chunk imports still resolve
     ///   because the chunks sit beside it under their un-renamed names.
     ///   Renaming a chunk would break the baked-in relative import.
+    /// - **No chunk may import the entry.** Edges run entry → chunk and
+    ///   chunk → chunk only. Chunks are written verbatim, so a chunk that
+    ///   imported `./islands.js` would name a file production never
+    ///   publishes (#4444). Code shared by the entry and a lazily imported
+    ///   module therefore lives in a common chunk, never in the entry; a
+    ///   bundler backend must be configured to keep it that way (the
+    ///   Rolldown backend disables `merge_common_chunks`, #4448).
     /// - Filenames here are validated flat (no path separators / `..`) and
     ///   `islands-chunk-*`-shaped before they reach this field; consumers
     ///   may write them under the entry's directory verbatim.
