@@ -124,3 +124,7 @@ The commands above now use the immutable `--old-cargo-ref` input from #4219. The
 ## Exact noyalib 0.0.58 adoption (#4268)
 
 [NOYALIB-4268.md](NOYALIB-4268.md) records the owner-approved noyalib / noyalib-serde-yaml 0.0.55 → 0.0.58 lock pair. It uses the same exact-byte checker and reviewed-transition entry point as the #4314 replacements, and does not broaden this historical #318 authorization.
+
+## Rolldown oxc edge (#4429)
+
+[ROLLDOWN-OXC-4429.md](ROLLDOWN-OXC-4429.md) records the owner-approved edge-only move in which `zfb-rolldown-prototype` gains an edge to the already-locked `oxc@0.153.0`. It is a schema 2 `cargo-internal-rewire` declaration, not a reviewed producer-lock transition, and does not broaden this historical #318 authorization.
