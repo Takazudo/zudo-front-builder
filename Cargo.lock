@@ -6996,6 +6996,7 @@ dependencies = [
  "lol_html",
  "minify-html",
  "owo-colors",
+ "oxc",
  "reqwest",
  "serde",
  "serde_json",
