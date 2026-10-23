@@ -76,7 +76,7 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver as swc_resolver;
 use thiserror::Error;
-use zfb_content::swc_parse_error::describe_parse_error;
+use zfb_build::swc_parse_error::describe_parse_error;
 use zfb_plugin_resolver::{
     read_tsconfig_paths, resolve_raw_target_with_aliases, RawImportAliasContext, TsConfigPaths,
     TsPathAlias,

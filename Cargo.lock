@@ -7181,7 +7181,6 @@ dependencies = [
  "tracing",
  "walkdir",
  "zfb-build",
- "zfb-content",
  "zfb-plugin-resolver",
  "zfb-rolldown-prototype",
  "zfb-test-utils",
