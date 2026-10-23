@@ -489,8 +489,12 @@ jobs:
 
       # Install node_modules before cargo build so that build.rs can read
       # Hono from node_modules/.pnpm/.
+      # `--filter '!docs'`: the docs member's @takazudo/zudo-doc requires Node
+      # >=24 <25 and engineStrict fails the whole install on this Node 22
+      # publish toolchain. No release job uses docs (#4434); same for the other
+      # installs and the recursive build below.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
         with:
@@ -764,7 +768,7 @@ jobs:
           prefix-key: "v2-zfb-wasm-md"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       - name: Resolve version
         shell: bash
@@ -1126,13 +1130,14 @@ jobs:
           path: ${{ runner.temp }}/wasm-md-shipped-artifacts
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       # @takazudo/zfb-md-wasm is excluded: its dist/ was already built by the
       # build-wasm-md job and downloaded above; this job has no Rust wasm32
       # toolchain, so re-running its `build` script here would fail.
+      # docs is excluded because the install above skips it (it is not published).
       - name: Build TypeScript packages
-        run: pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' build
+        run: pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --filter '!docs' build
 
       - name: Sync platform package versions (lockstep verification — should be no-op)
         shell: bash
