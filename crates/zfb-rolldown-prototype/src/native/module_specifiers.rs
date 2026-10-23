@@ -49,9 +49,11 @@ impl<'a> Visit<'a> for Specifiers {
         match import.source.without_parentheses() {
             Expression::StringLiteral(literal) => self.0.push(literal.value.as_str().to_owned()),
             // Minifiers may spell a literal specifier as a substitution-free template.
-            Expression::TemplateLiteral(template) if template.expressions.is_empty() => self
-                .0
-                .push(template.quasis[0].value.raw.as_str().to_owned()),
+            Expression::TemplateLiteral(template) if template.expressions.is_empty() => {
+                if let Some(cooked) = &template.quasis[0].value.cooked {
+                    self.0.push(cooked.as_str().to_owned());
+                }
+            }
             _ => {}
         }
         walk::walk_import_expression(self, import);
@@ -67,7 +69,7 @@ mod tests {
         let found = module_specifiers(
             "import a from \"./a.js\";\nimport \"./side.js\";\nexport { b } from \"./b.js\";\n\
              export * from \"./c.js\";\nconst d = () => import(\"./d.js\");\n\
-             const e = () => import(`./e.js`);\nconst f = (x) => import(x);\nexport { d, e, f, a };\n",
+             const e = () => import(`./\\x65.js`);\nconst f = (x) => import(x);\nexport { d, e, f, a };\n",
         )
         .unwrap();
         assert_eq!(

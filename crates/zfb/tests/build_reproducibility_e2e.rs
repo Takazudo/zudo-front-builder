@@ -994,7 +994,8 @@ mod lazy_shared_island {
     }
 
     /// The islands entry under any of its names: the stable bundler output or a
-    /// fingerprinted `islands-<hash>.js` (never a self-hashed `islands-chunk-*`).
+    /// fingerprinted `islands-<hash>.js` (never a self-hashed `islands-chunk-*`
+    /// or a copied `islands-resource-*`).
     fn names_islands_entry(specifier: &str, entry_file: &str) -> bool {
         let file = specifier.rsplit('/').next().unwrap_or(specifier);
         let file = file.split(['?', '#']).next().unwrap_or(file);
@@ -1002,6 +1003,7 @@ mod lazy_shared_island {
             || file == entry_file
             || (file.starts_with("islands-")
                 && !file.starts_with("islands-chunk-")
+                && !file.starts_with("islands-resource-")
                 && file.ends_with(".js"))
     }
 
