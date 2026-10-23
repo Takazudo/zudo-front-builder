@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterAll, afterEach, describe, expect, it } from "vite-plus/test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -483,14 +483,122 @@ function writeSidecar(jsonPath) {
   );
 }
 
+// Building a synthetic state writes and re-reads dozens of small files, and a
+// single small-file open costs milliseconds on a security-scanned macOS host.
+// Each distinct (platform, contract, version, lock) state is therefore built
+// and loaded from disk once as a pristine template; every makeState() call
+// returns an isolated in-memory copy and only touches the disk when a test
+// reads or rewrites the saved files (see cloneState).
+const stateTemplates = new Map();
+const templateRoots = [];
+let stateCounter = 0;
+
 function makeState(
   platform = baseContract.platform,
   base = baseContract,
   packageVersion = base.toolchain.packageVersion,
   historicalCargoSha = null,
 ) {
-  const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-test-"));
-  tempRoots.push(root);
+  const key = JSON.stringify([platform, base, packageVersion, historicalCargoSha]);
+  if (!stateTemplates.has(key)) {
+    const template = buildState(platform, base, packageVersion, historicalCargoSha);
+    templateRoots.push(template.root);
+    stateTemplates.set(key, template);
+  }
+  return cloneState(stateTemplates.get(key), packageVersion);
+}
+
+// A copy of a loaded run that is safe to mutate, relocated from the template
+// root to `root`. The root only appears in measurement.json (provenance paths),
+// so the text hash and the sidecar's source hash are re-derived from it.
+function relocatedRun(run, templateRoot, root) {
+  const measurementText = run.measurementText.replaceAll(templateRoot, root);
+  const { artifacts, measurement, measurementText: _text, normalized, ...rest } = run;
+  void measurement;
+  void _text;
+  const copy = structuredClone(rest);
+  copy.measurementText = measurementText;
+  copy.measurement = JSON.parse(measurementText);
+  copy.measurementSha256 = sha(Buffer.from(measurementText, "utf8"));
+  if (normalized) {
+    copy.normalized = structuredClone(normalized);
+    copy.normalized.source.sha256 = copy.measurementSha256;
+  }
+  copy.artifacts = {};
+  for (const [caseDir, entry] of Object.entries(artifacts)) {
+    copy.artifacts[caseDir] = {
+      passDirectories: [...entry.passDirectories],
+      passes: Object.fromEntries(
+        Object.entries(entry.passes).map(([pass, value]) => [
+          pass,
+          {
+            entries: structuredClone(value.entries),
+            files: Object.fromEntries(
+              Object.entries(value.files).map(([path, bytes]) => [path, Buffer.from(bytes)]),
+            ),
+          },
+        ]),
+      ),
+    };
+  }
+  return copy;
+}
+
+function writeRunToDisk(run, directory) {
+  mkdirSync(directory, { recursive: true });
+  for (const [fixture, entry] of Object.entries(run.artifacts)) {
+    for (const [pass, value] of Object.entries(entry.passes)) {
+      writePass(join(directory, fixture, "pass-" + pass), value.files);
+    }
+  }
+  writeFileSync(join(directory, "report.md"), "synthetic measurement report\n");
+  writeFileSync(join(directory, "measurement.json"), run.measurementText);
+  if (run.normalized) {
+    writeFileSync(
+      join(directory, NORMALIZED_SIDECAR),
+      JSON.stringify(run.normalized, null, 2) + "\n",
+    );
+  }
+}
+
+function cloneState(template, packageVersion) {
+  const root = join(tmpdir(), "zfb-island-budget-test-" + process.pid + "-" + ++stateCounter);
+  const state = {
+    sourceSha: template.sourceSha,
+    platform: structuredClone(template.platform),
+    localInputs: structuredClone(template.localInputs),
+    contract: structuredClone(template.contract),
+    workspace: relocatedRun(template.workspace, template.root, root),
+    packed: relocatedRun(template.packed, template.root, root),
+  };
+  let disk = null;
+  const materialize = () => {
+    if (disk) return disk;
+    tempRoots.push(root);
+    mkdirSync(root, { recursive: true });
+    const packageInputs = makePackageInputs(root, packageVersion);
+    // Written from fresh pristine copies, never from the test's mutated state.
+    writeRunToDisk(relocatedRun(template.workspace, template.root, root), join(root, "workspace"));
+    writeRunToDisk(relocatedRun(template.packed, template.root, root), join(root, "packed"));
+    disk = {
+      root,
+      packageInputs,
+      workspacePath: join(root, "workspace", "measurement.json"),
+      packedPath: join(root, "packed", "measurement.json"),
+    };
+    return disk;
+  };
+  for (const name of ["root", "packageInputs", "workspacePath", "packedPath"]) {
+    Object.defineProperty(state, name, {
+      enumerable: true,
+      get: () => materialize()[name],
+    });
+  }
+  return state;
+}
+
+function buildState(platform, base, packageVersion, historicalCargoSha) {
+  const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-template-"));
   const sourceSha = "1".repeat(40);
   const normalized = normalizedSchema(base.schemaVersion);
   const localInputs = currentLocalInputs(base, packageVersion);
@@ -639,6 +747,10 @@ function v3State() {
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  for (const root of templateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("island shipped-size budget", () => {
@@ -1465,26 +1577,118 @@ const rustlsTransitions = [
   },
 ];
 
+// Git reads are spawned synchronously and each costs tens of milliseconds, so
+// every answer is computed once per process. A failure is memoized and
+// rethrown, exactly as the uncached call would have thrown it.
+function memoized(cache, key, compute) {
+  if (!cache.has(key)) {
+    try {
+      cache.set(key, { value: compute() });
+    } catch (error) {
+      cache.set(key, { error });
+    }
+  }
+  const entry = cache.get(key);
+  if (entry.error) throw entry.error;
+  return entry.value;
+}
+
+const gitBlobCache = new Map();
+const gitCommitCache = new Map();
+const gitAncestorCache = new Map();
+const previousContractCache = new Map();
+
+function gitShowBlob(commit, path) {
+  return memoized(gitBlobCache, commit + ":" + path, () =>
+    execFileSync("git", ["show", commit + ":" + path], {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    }),
+  );
+}
+
+// False in a shallow checkout that lacks the commit.
+function gitCommitAvailable(commit) {
+  return memoized(gitCommitCache, commit, () => {
+    try {
+      execFileSync("git", ["cat-file", "-e", commit + "^{commit}"], {
+        cwd: repoRoot,
+        stdio: "ignore",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Throws when `commit` is not an ancestor of HEAD.
+function assertGitAncestorOfHead(commit) {
+  memoized(gitAncestorCache, commit, () => {
+    execFileSync("git", ["merge-base", "--is-ancestor", commit, "HEAD"], {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
+    return true;
+  });
+}
+
+// One `git cat-file --batch` answers every `commit:path` request in order. Each
+// response is `<oid> blob <size>\n<size bytes>\n`, or `<request> missing\n`.
+function gitShowBlobs(commits, path) {
+  const output = execFileSync("git", ["cat-file", "--batch"], {
+    cwd: repoRoot,
+    input: commits.map((commit) => commit + ":" + path + "\n").join(""),
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const blobs = [];
+  let offset = 0;
+  for (const commit of commits) {
+    const end = output.indexOf(0x0a, offset);
+    if (end === -1) throw new Error("git cat-file --batch: truncated response for " + commit);
+    const header = output.toString("utf8", offset, end);
+    offset = end + 1;
+    const match = /^[0-9a-f]+ blob (\d+)$/.exec(header);
+    if (!match) {
+      // Missing path or any other non-blob answer: fail where `git show` would.
+      blobs.push({ error: new Error("git cat-file --batch: " + header) });
+      if (!header.endsWith(" missing")) break;
+      continue;
+    }
+    const size = Number(match[1]);
+    if (offset + size + 1 > output.length) {
+      throw new Error("git cat-file --batch: truncated blob for " + commit);
+    }
+    blobs.push({ blob: output.subarray(offset, offset + size) });
+    offset += size + 1;
+  }
+  return blobs;
+}
+
 // SHA-256 of the newest committed bytes of `path` that differ from the working
 // tree, following history simplification so a merged prerequisite is walked
 // through the parent that actually supplied the file.
 function previousDistinctContractSha256(path) {
-  const current = sha(readFileSync(join(repoRoot, path)));
-  const commits = execFileSync(
-    "git",
-    ["log", "--topo-order", "--format=%H", "-n", "50", "--", path],
-    { cwd: repoRoot, encoding: "utf8" },
-  )
-    .split("\n")
-    .filter(Boolean);
-  for (const commit of commits) {
-    const blob = execFileSync("git", ["show", commit + ":" + path], {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    if (sha(blob) !== current) return sha(blob);
-  }
-  return null;
+  return memoized(previousContractCache, path, () => {
+    const current = sha(readFileSync(join(repoRoot, path)));
+    const commits = execFileSync(
+      "git",
+      ["log", "--topo-order", "--format=%H", "-n", "50", "--", path],
+      { cwd: repoRoot, encoding: "utf8" },
+    )
+      .split("\n")
+      .filter(Boolean);
+    if (commits.length === 0) return null;
+    const results = gitShowBlobs(commits, path);
+    for (let index = 0; index < commits.length; index += 1) {
+      const result = results[index];
+      if (!result) throw new Error("git cat-file --batch: no response for " + commits[index]);
+      if (result.error) throw result.error;
+      const digest = sha(result.blob);
+      if (digest !== current) return digest;
+    }
+    return null;
+  });
 }
 
 // A contract without the keys a reviewed Cargo.lock transition may move.
@@ -1546,21 +1750,9 @@ describe("live contracts preserve released evidence and authentic predecessors",
         commit,
         path: "research/v3-island-size/" + file,
       });
-      let commitAvailable = false;
-      try {
-        execFileSync("git", ["cat-file", "-e", commit + "^{commit}"], {
-          cwd: repoRoot,
-          stdio: "ignore",
-        });
-        commitAvailable = true;
-      } catch {
-        // Shallow checkout: the pinned constants above remain mandatory.
-      }
-      if (commitAvailable) {
-        const blob = execFileSync("git", ["show", commit + ":" + repinnedFrom.contract.path], {
-          cwd: repoRoot,
-          maxBuffer: 64 * 1024 * 1024,
-        });
+      // Shallow checkout: the pinned constants above remain mandatory.
+      if (gitCommitAvailable(commit)) {
+        const blob = gitShowBlob(commit, repinnedFrom.contract.path);
         expect(createHash("sha256").update(blob).digest("hex")).toBe(sha256);
         const predecessor = JSON.parse(blob.toString("utf8"));
         expect(repinnedFrom).toEqual({
@@ -2008,26 +2200,10 @@ describe("live contracts preserve released evidence and authentic predecessors",
     // The cited probe head f2e157a5 is off main; the same blob entered main at
     // 5b5f2152, so a full checkout anchors the citation there.
     const mainlineCommit = "5b5f21523818634f8982e0dd3d7fc14885141f2c";
-    let mainlineAvailable = false;
-    try {
-      execFileSync("git", ["cat-file", "-e", mainlineCommit + "^{commit}"], {
-        cwd: repoRoot,
-        stdio: "ignore",
-      });
-      mainlineAvailable = true;
-    } catch {
-      // Shallow checkout: the frozen fixture digest above remains mandatory.
-    }
-    if (mainlineAvailable) {
-      execFileSync("git", ["merge-base", "--is-ancestor", mainlineCommit, "HEAD"], {
-        cwd: repoRoot,
-        stdio: "ignore",
-      });
-      const blob = execFileSync(
-        "git",
-        ["show", mainlineCommit + ":research/v3-island-size/decision-linux-x64.json"],
-        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
-      );
+    // Shallow checkout: the frozen fixture digest above remains mandatory.
+    if (gitCommitAvailable(mainlineCommit)) {
+      assertGitAncestorOfHead(mainlineCommit);
+      const blob = gitShowBlob(mainlineCommit, "research/v3-island-size/decision-linux-x64.json");
       expect(sha(blob)).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
     }
     // actualGzip is transfer-size evidence that a version stamp may move, so only
@@ -2326,26 +2502,10 @@ describe("live contracts preserve released evidence and authentic predecessors",
     // The cited probe head 9f2a25a6 is off main; the same blob entered main at
     // fb4c7335, so a full checkout anchors the citation there.
     const mainlineCommit = "fb4c73351247b32adef8db11062a9c5cf1dc05a1";
-    let mainlineAvailable = false;
-    try {
-      execFileSync("git", ["cat-file", "-e", mainlineCommit + "^{commit}"], {
-        cwd: repoRoot,
-        stdio: "ignore",
-      });
-      mainlineAvailable = true;
-    } catch {
-      // Shallow checkout: the frozen fixture digest above remains mandatory.
-    }
-    if (mainlineAvailable) {
-      execFileSync("git", ["merge-base", "--is-ancestor", mainlineCommit, "HEAD"], {
-        cwd: repoRoot,
-        stdio: "ignore",
-      });
-      const blob = execFileSync(
-        "git",
-        ["show", mainlineCommit + ":research/v3-island-size/decision-linux-x64.json"],
-        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
-      );
+    // Shallow checkout: the frozen fixture digest above remains mandatory.
+    if (gitCommitAvailable(mainlineCommit)) {
+      assertGitAncestorOfHead(mainlineCommit);
+      const blob = gitShowBlob(mainlineCommit, "research/v3-island-size/decision-linux-x64.json");
       expect(sha(blob)).toBe(live.baselineEvidence.repinnedFrom.contract.sha256);
     }
     // actualGzip is transfer-size evidence that a version stamp may move, so only
