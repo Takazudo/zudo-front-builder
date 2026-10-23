@@ -199,8 +199,11 @@ function localizedNote(value, locale, field) {
 // #4395/#4396 Deno exit: Cargo.lock only (21 deno_core-only records leave); crates/zudo-wind
 // and Cargo.toml are unchanged and all 164 lock records reachable from zudo-wind (every
 // edge kind) are byte-identical versus main 2abb238.
+// #4429 Rolldown handled import(): Cargo.lock only (zfb-rolldown-prototype gains an edge to the
+// already-locked oxc 0.153.0); zudo-wind depends on no zfb-* crate, and all 164 lock records
+// reachable from it (every edge kind) are byte-identical versus main 7b06241.
 export const REVIEWED_WIND_SOURCE_DIGEST =
-  "133dc5f9fbd1ad364b15ddf8a9c143c25f1fc2fac28470894b8866d09d17ae56";
+  "2666de1655687a7ae3fead47ec76c323827882c8bbcb8e46355acf5741f2790f";
 export function assertCurrentWindSource(root, pin, expectedDigest = REVIEWED_WIND_SOURCE_DIGEST) {
   if (pin !== WIND_SOURCE_SHA) throw Error(`Unreviewed Wind support pin ${pin}`);
   const paths = [];
