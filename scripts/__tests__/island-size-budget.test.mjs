@@ -501,18 +501,22 @@ function makeState(
 ) {
   const key = JSON.stringify([platform, base, packageVersion, historicalCargoSha]);
   if (!stateTemplates.has(key)) {
-    const template = buildState(platform, base, packageVersion, historicalCargoSha);
-    templateRoots.push(template.root);
-    stateTemplates.set(key, template);
+    stateTemplates.set(key, buildState(platform, base, packageVersion, historicalCargoSha));
   }
   return cloneState(stateTemplates.get(key), packageVersion);
 }
 
+// The root only appears in measurement.json's provenance paths, as JSON string
+// content, so it is matched in its JSON-escaped form (backslashes on Windows).
+function relocatedText(text, templateRoot, root) {
+  const escape = (path) => JSON.stringify(path).slice(1, -1);
+  return text.replaceAll(escape(templateRoot), escape(root));
+}
+
 // A copy of a loaded run that is safe to mutate, relocated from the template
-// root to `root`. The root only appears in measurement.json (provenance paths),
-// so the text hash and the sidecar's source hash are re-derived from it.
+// root to `root`; the text hash and the sidecar's source hash are re-derived.
 function relocatedRun(run, templateRoot, root) {
-  const measurementText = run.measurementText.replaceAll(templateRoot, root);
+  const measurementText = relocatedText(run.measurementText, templateRoot, root);
   const { artifacts, measurement, measurementText: _text, normalized, ...rest } = run;
   void measurement;
   void _text;
@@ -544,20 +548,22 @@ function relocatedRun(run, templateRoot, root) {
   return copy;
 }
 
-function writeRunToDisk(run, directory) {
+// Written straight from the pristine template, never from the test's mutated
+// state; only the relocated text and its sidecar source hash differ.
+function writeRunToDisk(templateRun, templateRoot, root, directory) {
   mkdirSync(directory, { recursive: true });
-  for (const [fixture, entry] of Object.entries(run.artifacts)) {
+  for (const [fixture, entry] of Object.entries(templateRun.artifacts)) {
     for (const [pass, value] of Object.entries(entry.passes)) {
       writePass(join(directory, fixture, "pass-" + pass), value.files);
     }
   }
+  const measurementText = relocatedText(templateRun.measurementText, templateRoot, root);
   writeFileSync(join(directory, "report.md"), "synthetic measurement report\n");
-  writeFileSync(join(directory, "measurement.json"), run.measurementText);
-  if (run.normalized) {
-    writeFileSync(
-      join(directory, NORMALIZED_SIDECAR),
-      JSON.stringify(run.normalized, null, 2) + "\n",
-    );
+  writeFileSync(join(directory, "measurement.json"), measurementText);
+  if (templateRun.normalized) {
+    const normalized = structuredClone(templateRun.normalized);
+    normalized.source.sha256 = sha(Buffer.from(measurementText, "utf8"));
+    writeFileSync(join(directory, NORMALIZED_SIDECAR), JSON.stringify(normalized, null, 2) + "\n");
   }
 }
 
@@ -575,11 +581,13 @@ function cloneState(template, packageVersion) {
   const materialize = () => {
     if (disk) return disk;
     tempRoots.push(root);
-    mkdirSync(root, { recursive: true });
+    // The name is predictable (pid + counter), so clear a leftover from a killed
+    // run with a reused pid and refuse to adopt a directory created meanwhile.
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root);
     const packageInputs = makePackageInputs(root, packageVersion);
-    // Written from fresh pristine copies, never from the test's mutated state.
-    writeRunToDisk(relocatedRun(template.workspace, template.root, root), join(root, "workspace"));
-    writeRunToDisk(relocatedRun(template.packed, template.root, root), join(root, "packed"));
+    writeRunToDisk(template.workspace, template.root, root, join(root, "workspace"));
+    writeRunToDisk(template.packed, template.root, root, join(root, "packed"));
     disk = {
       root,
       packageInputs,
@@ -599,6 +607,7 @@ function cloneState(template, packageVersion) {
 
 function buildState(platform, base, packageVersion, historicalCargoSha) {
   const root = mkdtempSync(join(tmpdir(), "zfb-island-budget-template-"));
+  templateRoots.push(root);
   const sourceSha = "1".repeat(40);
   const normalized = normalizedSchema(base.schemaVersion);
   const localInputs = currentLocalInputs(base, packageVersion);
