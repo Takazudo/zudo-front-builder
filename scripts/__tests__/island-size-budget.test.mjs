@@ -811,10 +811,11 @@ describe("island shipped-size budget", () => {
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
     expect(linuxContract.toolchain.packageVersion).toBe("4.7.0");
-    expect(linuxContract.toolchain.pnpmLockSha256).toBe(
-      sha(readFileSync(join(repoRoot, "pnpm-lock.yaml"))),
-    );
+    // A schemaVersion-3 contract tracks the dependency fingerprint, the same
+    // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
+    // is baseline provenance, pinned by the live release-bump test below.
     expect(linuxContract.schemaVersion).toBe(3);
+    expect(linuxContract.dependencyFingerprint).toEqual(checkoutFingerprint());
     expect(linuxContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(linuxContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(linuxContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
