@@ -22,6 +22,7 @@ use swc_core::common::{FileName, SourceMap, Spanned};
 use swc_core::ecma::ast::{Callee, Expr, ImportSpecifier, Module, ModuleDecl, ModuleItem};
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::visit::{Visit, VisitWith};
+use zfb_content::swc_parse_error::describe_parse_error;
 use zfb_plugin_resolver::is_relative_specifier;
 pub use zfb_plugin_resolver::{
     resolve_raw_target, resolve_raw_target_with_aliases, validate_raw_candidate,
@@ -122,9 +123,12 @@ fn parse_module(importer: &Path, source: &str) -> Result<(Module, u32)> {
         None,
     );
     let mut parser = Parser::new_from(lexer);
-    let module = parser
-        .parse_module()
-        .map_err(|e| anyhow!("zfb bundler: failed to parse module for ?raw expansion: {e:?}"))?;
+    let module = parser.parse_module().map_err(|e| {
+        anyhow!(
+            "zfb bundler: failed to parse module for ?raw expansion: {}",
+            describe_parse_error(&cm, &e)
+        )
+    })?;
     Ok((module, base))
 }
 

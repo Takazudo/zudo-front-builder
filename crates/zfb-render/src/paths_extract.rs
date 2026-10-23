@@ -62,6 +62,7 @@ use swc_core::ecma::ast::{
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
+use zfb_content::swc_parse_error::describe_parse_error;
 
 /// Outcome of [`extract_paths`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,7 +122,7 @@ pub fn extract_paths(source: &str, file_name: &str) -> Result<PathsExtraction, P
         .parse_module()
         .map_err(|e| PathsExtractError::Parse {
             file: file_name.to_string(),
-            message: format!("{e:?}"),
+            message: describe_parse_error(&cm, &e),
         })?;
 
     // Direct exported declarations retain the existing fast path:

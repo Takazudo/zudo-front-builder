@@ -73,6 +73,8 @@ pub mod plugin_registries;
 pub mod plugin_runner;
 pub mod policy;
 pub mod raw_import_expand;
+// Re-exported so zfb-islands formats SWC parse errors without its own zfb-content edge (#4427).
+pub use zfb_content::swc_parse_error;
 pub mod renderer;
 
 pub use adapter::{

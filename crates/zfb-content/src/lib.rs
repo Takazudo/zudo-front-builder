@@ -19,6 +19,8 @@ pub mod plugins;
 pub mod render_metadata;
 pub mod schema;
 pub mod serializer;
+#[cfg(feature = "compiler")]
+pub mod swc_parse_error;
 pub mod syntect_highlight;
 #[cfg(feature = "compiler")]
 pub mod tsx_frontmatter;

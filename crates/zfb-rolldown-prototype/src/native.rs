@@ -216,29 +216,53 @@ fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
     for diagnostic in rendered {
         let (_, rest) = diagnostic.split_once("[UNRESOLVED_IMPORT] Could not resolve '")?;
         let (specifier, rest) = rest.split_once("' in ")?;
-        let (path, row, col) = match diagnostic.split_once("╭─[ ") {
+        let (path, row, col, frame) = match diagnostic.split_once("╭─[ ") {
             Some((_, location)) => {
                 let (location, _) = location.split_once(" ]")?;
                 let mut parts = location.rsplitn(3, ':');
-                let col = parts.next()?.to_string();
-                let row = parts.next()?.to_string();
-                (lexical_normal(&process_cwd.join(parts.next()?)), row, col)
+                // Rolldown's column is 1-based; esbuild's is 0-based.
+                let col = parts.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+                let row = parts.next()?.parse::<usize>().ok()?;
+                let path = lexical_normal(&process_cwd.join(parts.next()?));
+                let frame = esbuild_code_frame(&path, row, col, specifier.chars().count() + 2);
+                (path, row, col, frame)
             }
             // An automatic-runtime import has no source span; name the pragma when present.
             None => {
                 let importer = rest.lines().next()?.trim();
                 let path = lexical_normal(&process_cwd.join(importer));
                 let (row, col) = jsx_import_source_position(&path);
-                (path, row.to_string(), col.to_string())
+                (path, row, col, String::new())
             }
         };
         let shown = path.strip_prefix(cwd).unwrap_or(&path);
         report.push_str(&format!(
-            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n\n",
+            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n{frame}\n",
             shown.display()
         ));
     }
     (!report.is_empty()).then(|| report.trim_end().to_string())
+}
+
+/// esbuild's source excerpt under a location: the 1-based `row` of `path`, then a
+/// `~` underline of `width` characters from the 0-based `col`. Empty when the
+/// file or row cannot be read.
+fn esbuild_code_frame(path: &Path, row: usize, col: usize, width: usize) -> String {
+    let source = std::fs::read_to_string(path).unwrap_or_default();
+    let Some(line) = row
+        .checked_sub(1)
+        .and_then(|index| source.lines().nth(index))
+    else {
+        return String::new();
+    };
+    let gutter = row.to_string().len().max(3);
+    let width = width.min(line.chars().count().saturating_sub(col)).max(1);
+    format!(
+        "    {row:>gutter$} \u{2502} {line}\n    {:gutter$} \u{2575} {:col$}{}\n",
+        "",
+        "",
+        "~".repeat(width)
+    )
 }
 
 fn jsx_import_source_position(path: &Path) -> (usize, usize) {

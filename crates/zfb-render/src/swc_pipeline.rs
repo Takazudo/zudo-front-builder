@@ -22,6 +22,7 @@ use swc_core::ecma::transforms::base::hygiene::hygiene;
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::transforms::react::{react, Options as ReactOptions, Runtime};
 use swc_core::ecma::transforms::typescript::strip;
+use zfb_content::swc_parse_error::describe_parse_error;
 
 use crate::error::{RenderError, Result};
 
@@ -97,9 +98,12 @@ impl SwcPipeline {
         );
         let mut parser = Parser::new_from(lexer);
 
-        let module = parser
-            .parse_module()
-            .map_err(|e| RenderError::compile(&opts.filename, format!("parse failed: {e:?}")))?;
+        let module = parser.parse_module().map_err(|e| {
+            RenderError::compile(
+                &opts.filename,
+                format!("parse failed: {}", describe_parse_error(&cm, &e)),
+            )
+        })?;
 
         // Run all transforms inside a fresh `Globals` scope so `Mark`s are
         // isolated and don't leak across compiles.
