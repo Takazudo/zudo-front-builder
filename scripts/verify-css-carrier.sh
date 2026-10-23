@@ -187,10 +187,10 @@ load_consumer() {
       interpreter=$(awk '$1 == "interpreter" {print $2}' "$out/qemu-registration.txt")
       run qemu-version docker run --rm --entrypoint "$interpreter" "$binfmt" --version
     fi
-    run load-image docker pull --platform "$platform" node:22.0.0-bookworm-slim
-    docker image inspect node:22.0.0-bookworm-slim > "$out/load-image.json"
+    run load-image docker pull --platform "$platform" node:24.0.0-bookworm-slim
+    docker image inspect node:24.0.0-bookworm-slim > "$out/load-image.json"
     local image
-    image=$(docker image inspect --format '{{.Id}}' node:22.0.0-bookworm-slim)
+    image=$(docker image inspect --format '{{.Id}}' node:24.0.0-bookworm-slim)
     run raw-native-load docker run --rm --platform "$platform" -v "$PWD:/w:ro" -w /w "$image" node scripts/smoke-css-node.mjs "packages/zfb-${CSS_CARRIER}/zfb-css.node"
     run packed-public-load docker run --rm --platform "$platform" -v "$room:/consumer" -w /consumer \
       -e "CSS_CARRIER=$CSS_CARRIER" -e "CSS_ADDON_SHA=$CSS_ADDON_SHA" -e "CSS_EXPECTED_RUNTIME=$CSS_EXPECTED_RUNTIME" -e "CSS_PACKAGE_VERSION=$CSS_PACKAGE_VERSION" \
@@ -203,7 +203,7 @@ load_consumer() {
       echo 'execution=native-linux-x64' > "$out/execution.txt"
     fi
   else
-    "$ZFB_LOAD_NODE" -e 'if (process.version !== "v22.0.0" || `${process.platform}/${process.arch}` !== process.env.CSS_EXPECTED_RUNTIME) throw Error("native Node22.0.0 architecture mismatch")'
+    "$ZFB_LOAD_NODE" -e 'if (process.version !== "v24.0.0" || `${process.platform}/${process.arch}` !== process.env.CSS_EXPECTED_RUNTIME) throw Error("native Node24.0.0 architecture mismatch")'
     run raw-native-load "$ZFB_LOAD_NODE" scripts/smoke-css-node.mjs "$addon"
     run packed-public-load "$ZFB_LOAD_NODE" "$room/consumer.mjs"
     run cli-version "$binary" -V

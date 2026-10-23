@@ -21,7 +21,7 @@
 #                 is printed for you to run manually.
 #
 # --out-dir DIR   Where to write the archive, separate addon, and checksums. Default: repo root.
-# ZFB_X64_NODE    Path to x64 Node >=22 for addon verification (required on ARM-only Node hosts).
+# ZFB_X64_NODE    Path to x64 Node >=24 for addon verification (required on ARM-only Node hosts).
 #
 # Prerequisites (matches release.yml's build job):
 #   - Rust toolchain (rustup); the script runs `rustup target add
@@ -152,9 +152,7 @@ echo "==> Installing node dependencies (pnpm install --frozen-lockfile)"
 # confirmation — which aborted under no-TTY. pnpm 12 purges without a prompt,
 # but the GHA runner gets CI=true for free, so set it here to replicate that
 # environment for local builds.
-# `--filter '!docs'` (#4433): docs' zudo-doc requires Node >=24 <25 and fails
-# engineStrict on a Node 22 host; this build never uses the docs member.
-CI=true pnpm install --frozen-lockfile --filter '!docs'
+CI=true pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -191,7 +189,7 @@ bash scripts/build-css-node.sh "$target"
 # Fast-Mac bypasses the CI x64 build leg, so verify the actual addon here.
 # Apple Silicon hosts must supply an x64 Node binary (run through Rosetta).
 x64_node="${ZFB_X64_NODE:-node}"
-"$x64_node" -e 'if (process.arch !== "x64" || Number(process.versions.node.split(".")[0]) < 22) { console.error("CSS addon verification requires x64 Node >=22; set ZFB_X64_NODE to its executable path"); process.exit(1) }'
+"$x64_node" -e 'if (process.arch !== "x64" || Number(process.versions.node.split(".")[0]) < 24) { console.error("CSS addon verification requires x64 Node >=24; set ZFB_X64_NODE to its executable path"); process.exit(1) }'
 "$x64_node" scripts/smoke-css-node.mjs packages/zfb-darwin-x64/zfb-css.node
 
 _slot_restore_status=0

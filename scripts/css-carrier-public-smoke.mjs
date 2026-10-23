@@ -1,4 +1,4 @@
-// Run only from the disposable packed-tarball extraction, using native Node22.0.0.
+// Run only from the disposable packed-tarball extraction, using native Node24.0.0.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { compileCss } from "@takazudo/zfb/css";
 
 const room = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-assert.equal(process.version, "v22.0.0");
+assert.equal(process.version, "v24.0.0");
 assert.equal(`${process.platform}/${process.arch}`, process.env.CSS_EXPECTED_RUNTIME);
 const cssModule = fileURLToPath(import.meta.resolve("@takazudo/zfb/css"));
 assert.equal(realpathSync(cssModule), join(room, "node_modules/@takazudo/zfb/dist/css.js"));
