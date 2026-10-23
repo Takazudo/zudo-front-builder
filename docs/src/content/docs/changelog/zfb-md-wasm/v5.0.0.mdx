@@ -1,0 +1,13 @@
+---
+title: v5.0.0
+sidebar_position: 44
+---
+
+# v5.0.0
+
+Released: 2026-10-23
+
+## Other Changes
+
+- Sizes: the root entry grows by 169 bytes (`finalWasm`) from the shared SWC parse-error formatter (8f4a5f3e, 1efcdbd7). The API is unchanged. The package still declares `engines.node` `>=20.0.0`.
+- Digests: all four SHA-256 digests change in this release, as they do in every release. Each `.wasm` embeds `ZFB_RELEASE_VERSION`, so the digests move even where the compiled code and the byte sizes do not. Consumers that pin digests must re-verify the released files: the four digests are in the GitHub Release asset `zfb-md-wasm-5.0.0-shipped-artifacts.json` and in the package export `@takazudo/zfb-md-wasm/shipped-artifacts.json`.

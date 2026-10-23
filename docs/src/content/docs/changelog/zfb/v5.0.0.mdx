@@ -1,0 +1,19 @@
+---
+title: v5.0.0
+sidebar_position: 158
+---
+
+# v5.0.0
+
+Released: 2026-10-23
+
+## Breaking Changes
+
+- Node.js 24 is now required. `@takazudo/zfb` and `@takazudo/zfb-slugify` declare `engines.node` `>=24.0.0` (was `>=22.0.0`). Projects still on Node 22 must upgrade Node before installing this version (ae87cd20).
+
+## Bug Fixes
+
+- Rolldown: an unresolvable bare `import()` whose rejection is handled (a `.catch(...)` or a two-argument `.then(...)` in its chain, as used to probe an optional peer) stays external with a warning again, as it does with esbuild. Before, the build failed with `Could not resolve` (#4429, d0343576). An unhandled `import()`, a static import, a re-export or a `require` of a missing package is still an error.
+- Rolldown: dependencies reached through a symlinked package outside the project resolve through the inherited `NODE_PATH` again, as with the esbuild path. Before, such builds failed with `Could not resolve` (#4430, 906394c6).
+- Rolldown: unresolved-import errors use esbuild's 0-based column and print the code frame again (#4426, 8f4a5f3e).
+- Diagnostics: SWC parse failures in the islands scanner, frontmatter and `paths` extraction, render compile and the bundler's glob, `?raw` and module-worker passes report the line, column and SWC's message instead of a debug dump with byte offsets (#4427, 8f4a5f3e, b1d2ced2).
