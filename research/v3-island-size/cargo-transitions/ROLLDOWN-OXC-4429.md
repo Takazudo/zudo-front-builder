@@ -27,3 +27,9 @@ Application is the paired Linux/Darwin `cargo-internal-rewire` stage and apply: 
 artifact for the PR plus owner-attested local Darwin evidence. Ceilings, allowances and the
 dependency fingerprint do not move. The declaration binds the new lock hash, so any later
 `Cargo.lock` change before the paired re-pin needs a re-declared transition and fresh receipts.
+
+**Applied (2026-10-23).** The paired stage and apply ran on ball-lightning (PR #4440
+comments [6363308800](https://github.com/Takazudo/zudo-front-builder/pull/4440#issuecomment-6363308800)
+and 6363309262): Linux from health run 39936298013 (job 120356622912, artifact 12495526177) at merge
+source `162d3192`, Darwin from owner-attested local evidence at probe head `ebe890c0` (receipt
+`bb9baad7`). Both contracts moved only `toolchain.cargoLockSha256`; every total is unchanged.

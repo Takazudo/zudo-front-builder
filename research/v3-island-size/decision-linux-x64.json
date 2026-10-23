@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "runtime-identity-repin",
+  "outcome": "cargo-internal-rewire-transition",
   "selectedOptimizations": [],
-  "baselineSourceSha": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+  "baselineSourceSha": "ebe890c02c7e949855774c672da71681ab8944cb",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -38,7 +38,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "66b1209c8966475f6c96b40fb11a3815a03e92e521118aee4aa80420476fde5b",
-    "cargoLockSha256": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216"
+    "cargoLockSha256": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,22 +116,75 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v4.7.0 ceilings on metric gzip-identity-normalized v2, re-pinned from health run 39929245247 at source b65b83aa7b089145a4d6eef75f83224e8f1cf64a. Every raw and gzipNormalized total is unchanged. This records a runtime-identity re-pin; equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v4.7.0 ceilings on metric gzip-identity-normalized v2, re-pinned from workflow run 39936298013 at PR merge source 162d31920337b4a7fa1cb60eccc1aeb294129c58 (probe head ebe890c02c7e949855774c672da71681ab8944cb) after a reviewed internal Cargo.lock rewire (Cargo.lock f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216 to e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-rolldown-prototype@0.0.0 -[] +[\"oxc\"]); every other [[package]] record and the header are byte-identical, declared in research/v3-island-size/cargo-transitions/rolldown-oxc-4429.json (SHA-256 5f6052da3bfc56c6fc9452be08162eca755598123fdc988870f8ee99442ddc63), proved against Cargo.lock at commit 7b062415c002151adf20b52aaf77019a90adfa0e (SHA-256 f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216); the zfb producer closure for x86_64-unknown-linux-gnu keeps 580 rows unchanged, adds 0 and changes 0 internal row(s) with no external drift; declared edges to unchanged external records: zfb-rolldown-prototype@0.0.0 oxc -> oxc@0.153.0 (SHA-256 a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593)). The producer version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 39929245247,
-    "jobId": 120333413541,
-    "sourceSha": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+    "runId": 39936298013,
+    "jobId": 120356622912,
+    "sourceSha": "162d31920337b4a7fa1cb60eccc1aeb294129c58",
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "release-version-stamp",
+      "outcome": "runtime-identity-repin",
       "packageVersion": "4.7.0",
-      "baselineSourceSha": "9f2a25a6354f564ba54fbf1d7f37b02ed2a8ef48",
-      "baselineRunId": 39823049816,
+      "baselineSourceSha": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+      "baselineRunId": 39929245247,
       "contract": {
-        "sha256": "a70b4377c7011f4e483f9d3416d248aa86ee96232d0758402fec85897fe86794",
-        "commit": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+        "sha256": "295f7e8c40bfa6a08839d1dabfc2b474808fc18295b436475c9e4cc0d9c2932e",
+        "commit": "ebe890c02c7e949855774c672da71681ab8944cb",
         "path": "research/v3-island-size/decision-linux-x64.json"
+      }
+    },
+    "cargoRewire": {
+      "oldSha": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216",
+      "newSha": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+      "oldLockSource": {
+        "commit": "7b062415c002151adf20b52aaf77019a90adfa0e",
+        "path": "Cargo.lock",
+        "sha256": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216"
+      },
+      "newLockSource": {
+        "sha256": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+        "commit": "ebe890c02c7e949855774c672da71681ab8944cb",
+        "path": "Cargo.lock"
+      },
+      "declaration": {
+        "path": "research/v3-island-size/cargo-transitions/rolldown-oxc-4429.json",
+        "sha256": "5f6052da3bfc56c6fc9452be08162eca755598123fdc988870f8ee99442ddc63"
+      },
+      "producer": "zfb",
+      "manifestsAtCommit": "ebe890c02c7e949855774c672da71681ab8944cb",
+      "added": [],
+      "changed": [
+        {
+          "id": "zfb-rolldown-prototype@0.0.0",
+          "manifest": "crates/zfb-rolldown-prototype/Cargo.toml",
+          "manifestSha256": "a6f3a9cae8a7bed15e9ffd154f5f8f95a9a6ed2490529c938c3b50ffa4ef6df3",
+          "oldSha256": "b3c82a767e7effa4dea951cbbb24610929da89c0078583ae6bd706a083d0e627",
+          "newSha256": "7df689888089946ab70be6dacc817c7bbb71d3eb420acc1545ca23417418d54d",
+          "removedDependencies": [],
+          "addedDependencies": ["oxc"]
+        }
+      ],
+      "removed": [],
+      "externalEdges": [
+        {
+          "from": "zfb-rolldown-prototype@0.0.0",
+          "dependency": "oxc",
+          "to": "oxc@0.153.0",
+          "sha256": "a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593"
+        }
+      ],
+      "closure": {
+        "target": "x86_64-unknown-linux-gnu",
+        "oldSha256": "ad36b8bd3cbe36e22608faac6cad3f0e9116be3a1f612ce7b52c24d961c430ac",
+        "newSha256": "62642df74fa0a0dc7c04db770b0d190b896217f8687c69ec7406630e3f661c03",
+        "rows": {
+          "old": 580,
+          "new": 580,
+          "unchanged": 580
+        },
+        "added": [],
+        "changed": []
       }
     },
     "actualGzip": {
@@ -156,6 +209,6 @@
         "show-for": 21358
       }
     },
-    "note": "Runtime-identity re-pin run at v4.7.0 at source b65b83aa7b089145a4d6eef75f83224e8f1cf64a. Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.7.0 contract; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Cargo internal-rewire transition run at v4.7.0 at PR merge source 162d31920337b4a7fa1cb60eccc1aeb294129c58 (probe head ebe890c02c7e949855774c672da71681ab8944cb). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed internal Cargo.lock rewire at unchanged v4.7.0 (Cargo.lock f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216 to e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-rolldown-prototype@0.0.0 -[] +[\"oxc\"]); every other [[package]] record and the header are byte-identical, declared in research/v3-island-size/cargo-transitions/rolldown-oxc-4429.json (SHA-256 5f6052da3bfc56c6fc9452be08162eca755598123fdc988870f8ee99442ddc63), proved against Cargo.lock at commit 7b062415c002151adf20b52aaf77019a90adfa0e (SHA-256 f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216); the zfb producer closure for x86_64-unknown-linux-gnu keeps 580 rows unchanged, adds 0 and changes 0 internal row(s) with no external drift; declared edges to unchanged external records: zfb-rolldown-prototype@0.0.0 oxc -> oxc@0.153.0 (SHA-256 a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593)); every other reviewed identity input is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

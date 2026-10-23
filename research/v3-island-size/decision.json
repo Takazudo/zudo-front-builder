@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "release-version-stamp",
+  "outcome": "cargo-internal-rewire-transition",
   "selectedOptimizations": [],
-  "baselineSourceSha": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+  "baselineSourceSha": "ebe890c02c7e949855774c672da71681ab8944cb",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -38,7 +38,7 @@
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
     "pnpmLockSha256": "66b1209c8966475f6c96b40fb11a3815a03e92e521118aee4aa80420476fde5b",
-    "cargoLockSha256": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216"
+    "cargoLockSha256": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
   "allowance": {
@@ -116,18 +116,18 @@
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml (dispatch-only; the temporary pull_request bootstrap was removed under #4170). Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v4.7.0 ceilings on metric gzip-identity-normalized v2, re-pinned (release-bump) from owner-attested local native evidence 26ae987f990a46563399f65bc2e5eb04207253aba8b016fedc4736ddb968fb94 at source b65b83aa7b089145a4d6eef75f83224e8f1cf64a. Every raw and gzipNormalized total is unchanged from the v4.6.0 contract; equal totals alone do not prove byte-identical product code. 14 actual gzip totals moved (workspace json-api -928, show-for -933, multi-island -934, model -940, event-only -943, blog-theme -947, scalar-signal -954; packed multi-island -939, show-for -940, scalar-signal -942, json-api -948, model -949, event-only -951, blog-theme -958; evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v4.7.0 ceilings on metric gzip-identity-normalized v2, re-pinned from owner-attested local native evidence bb9baad7bab9fb0bcd647b28102f5fbcf4ca0e1239a4598875a777813835974a at source ebe890c02c7e949855774c672da71681ab8944cb after a reviewed internal Cargo.lock rewire (Cargo.lock f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216 to e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d adds 0 internal record(s) (none) and rewires 1 internal record(s) (zfb-rolldown-prototype@0.0.0 -[] +[\"oxc\"]); every other [[package]] record and the header are byte-identical, declared in research/v3-island-size/cargo-transitions/rolldown-oxc-4429.json (SHA-256 5f6052da3bfc56c6fc9452be08162eca755598123fdc988870f8ee99442ddc63), proved against Cargo.lock at commit 7b062415c002151adf20b52aaf77019a90adfa0e (SHA-256 f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216); the zfb producer closure for aarch64-apple-darwin keeps 564 rows unchanged, adds 0 and changes 0 internal row(s) with no external drift; declared edges to unchanged external records: zfb-rolldown-prototype@0.0.0 oxc -> oxc@0.153.0 (SHA-256 a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593)). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "local-native",
     "localReceipt": {
-      "sha256": "26ae987f990a46563399f65bc2e5eb04207253aba8b016fedc4736ddb968fb94",
+      "sha256": "bb9baad7bab9fb0bcd647b28102f5fbcf4ca0e1239a4598875a777813835974a",
       "receipt": {
         "schemaVersion": 1,
         "kind": "local-native-darwin",
         "operator": "Takazudo (owner), run by Claude Code Remote Control on ball-lightning",
-        "collectedAt": "2026-10-23T09:26:56.811Z",
+        "collectedAt": "2026-10-23T10:55:44.334Z",
         "source": {
-          "commit": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+          "commit": "ebe890c02c7e949855774c672da71681ab8944cb",
           "clean": true
         },
         "platform": {
@@ -146,7 +146,7 @@
             "packages/zfb-slugify",
             "pack",
             "--pack-destination",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack"
           ],
           [
             "pnpm",
@@ -154,7 +154,7 @@
             "packages/zfb",
             "pack",
             "--pack-destination",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack"
           ],
           [
             "pnpm",
@@ -162,28 +162,28 @@
             "packages/zfb-runtime",
             "pack",
             "--pack-destination",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack"
           ],
           [
             "tar",
             "-xzf",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-slugify-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-slugify-4.7.0.tgz",
             "-C",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/packed-slugify"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/packed-slugify"
           ],
           [
             "tar",
             "-xzf",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-4.7.0.tgz",
             "-C",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/packed-package"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/packed-package"
           ],
           [
             "tar",
             "-xzf",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-runtime-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-runtime-4.7.0.tgz",
             "-C",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/packed-runtime"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/packed-runtime"
           ],
           [
             "node",
@@ -199,17 +199,17 @@
             "--hono-package",
             "packages/zfb-runtime/node_modules/hono",
             "--zfb-tarball",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-4.7.0.tgz",
             "--runtime-tarball",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-runtime-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-runtime-4.7.0.tgz",
             "--zfb",
             "target/debug/zfb",
             "--esbuild",
             "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+            "ebe890c02c7e949855774c672da71681ab8944cb",
             "--out",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/real-workspace"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/real-workspace"
           ],
           [
             "node",
@@ -217,63 +217,63 @@
             "--mode",
             "packed",
             "--package",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/packed-package/package",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/packed-package/package",
             "--runtime-package",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/packed-runtime/package",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/packed-runtime/package",
             "--slugify-package",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/packed-slugify/package",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/packed-slugify/package",
             "--hono-package",
             "packages/zfb-runtime/node_modules/hono",
             "--zfb-tarball",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-4.7.0.tgz",
             "--runtime-tarball",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/pack/takazudo-zfb-runtime-4.7.0.tgz",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/pack/takazudo-zfb-runtime-4.7.0.tgz",
             "--zfb",
             "target/debug/zfb",
             "--esbuild",
             "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+            "ebe890c02c7e949855774c672da71681ab8944cb",
             "--out",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/real-packed"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/real-packed"
           ],
           [
             "node",
             "research/v3-island-size/normalize-identity.mjs",
             "--measurement",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/real-workspace/measurement.json"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/real-workspace/measurement.json"
           ],
           [
             "node",
             "research/v3-island-size/normalize-identity.mjs",
             "--measurement",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/real-packed/measurement.json"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/real-packed/measurement.json"
           ],
           [
             "node",
             "research/v3-island-size/check-budget.mjs",
             "--workspace",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/real-workspace/measurement.json",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/real-workspace/measurement.json",
             "--packed",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size/real-packed/measurement.json"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size/real-packed/measurement.json"
           ],
           [
             "cp",
             "-Rp",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/src/target/island-size",
-            "/Users/takazudo/zfb-evidence/4429-darwin-release-bump/bundle"
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/src/target/island-size",
+            "/Users/takazudo/zfb-evidence/4429-oxc-rewire/bundle"
           ]
         ],
         "bundle": {
-          "location": "ball-lightning:/Users/takazudo/zfb-evidence/4429-darwin-release-bump/bundle (copy of the checkout's target/island-size)",
-          "sha256": "98b866387c9bc1fa08d082e36eee8c8183caaf1179fe9b6dad57a6dd576111f7"
+          "location": "ball-lightning:/Users/takazudo/zfb-evidence/4429-oxc-rewire/bundle (copy of the checkout's target/island-size)",
+          "sha256": "8518f08dbe1c39ea43d70049044115ed007e6c684de0e9a44c70647772115c22"
         }
       }
     },
     "stagingTool": {
-      "commit": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a"
+      "commit": "ebe890c02c7e949855774c672da71681ab8944cb"
     },
-    "sourceSha": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+    "sourceSha": "ebe890c02c7e949855774c672da71681ab8944cb",
     "nativeRunner": {
       "platform": "darwin-arm64",
       "macOS": "27.0.1 (26A434)",
@@ -284,7 +284,7 @@
       "pnpm": "12.8.2",
       "esbuild": "0.25.12",
       "hono": "4.12.25",
-      "zfbBinarySha256": "943a2871f70ab94be84f9834a7b317909bfc9bc1fc37677927ec6e0899e702e3",
+      "zfbBinarySha256": "8a5be6d76a3cbf0a86fbbfbfa09a76038e89cd19ead65f5bb8d3a93070b71161",
       "esbuildBinarySha256": "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5",
       "zfbTarballSha256": "5afb37d68c0161335df7ec052f51d441fa0476a76c7a76a07e75796d91c7fe94",
       "runtimeTarballSha256": "07de64b6a36a2bd4595c101672621211a3a416dbfe247365e4dda871fe5b69bc",
@@ -292,18 +292,71 @@
     },
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "rolldown-ceiling-transition",
-      "packageVersion": "4.6.0",
-      "baselineSourceSha": "2735135c7634dca7129ae084123d59313365a6d3",
+      "outcome": "release-version-stamp",
+      "packageVersion": "4.7.0",
+      "baselineSourceSha": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
       "contract": {
-        "sha256": "4a6ed98cb765b74ec8ee13303f7aac55ec24cfdbe740bf14826bf5ead8d11d8e",
-        "commit": "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+        "sha256": "04a4d32600ac4e3bc92db559019348d6fe85039615a8b669f0fb9486e2beb505",
+        "commit": "ebe890c02c7e949855774c672da71681ab8944cb",
         "path": "research/v3-island-size/decision.json"
       }
     },
+    "cargoRewire": {
+      "oldSha": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216",
+      "newSha": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+      "oldLockSource": {
+        "commit": "7b062415c002151adf20b52aaf77019a90adfa0e",
+        "path": "Cargo.lock",
+        "sha256": "f004a0680082afbfa29e215dc88bacff751da71f0aa80f9362a30c1248630216"
+      },
+      "newLockSource": {
+        "sha256": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+        "commit": "ebe890c02c7e949855774c672da71681ab8944cb",
+        "path": "Cargo.lock"
+      },
+      "declaration": {
+        "path": "research/v3-island-size/cargo-transitions/rolldown-oxc-4429.json",
+        "sha256": "5f6052da3bfc56c6fc9452be08162eca755598123fdc988870f8ee99442ddc63"
+      },
+      "producer": "zfb",
+      "manifestsAtCommit": "ebe890c02c7e949855774c672da71681ab8944cb",
+      "added": [],
+      "changed": [
+        {
+          "id": "zfb-rolldown-prototype@0.0.0",
+          "manifest": "crates/zfb-rolldown-prototype/Cargo.toml",
+          "manifestSha256": "a6f3a9cae8a7bed15e9ffd154f5f8f95a9a6ed2490529c938c3b50ffa4ef6df3",
+          "oldSha256": "b3c82a767e7effa4dea951cbbb24610929da89c0078583ae6bd706a083d0e627",
+          "newSha256": "7df689888089946ab70be6dacc817c7bbb71d3eb420acc1545ca23417418d54d",
+          "removedDependencies": [],
+          "addedDependencies": ["oxc"]
+        }
+      ],
+      "removed": [],
+      "externalEdges": [
+        {
+          "from": "zfb-rolldown-prototype@0.0.0",
+          "dependency": "oxc",
+          "to": "oxc@0.153.0",
+          "sha256": "a311e1d67c51098200c7b702e2c051aa59eaac185c67606ff50cb0dc12d5f593"
+        }
+      ],
+      "closure": {
+        "target": "aarch64-apple-darwin",
+        "oldSha256": "21c9b168b5fc98c7c301f8e8f57ba5a9cf1422d923b2a9ffb93fd56bea40b1d9",
+        "newSha256": "708204a59e953dd81a84c768fb589a0b3a1c9c2a18ba86d88340417e8af1c8c9",
+        "rows": {
+          "old": 564,
+          "new": 564,
+          "unchanged": 564
+        },
+        "added": [],
+        "changed": []
+      }
+    },
     "originalCheckerResult": {
-      "exitCode": 0,
-      "logSha256": "8ad91a5b009d22f1aa2413744d69a736e52882d1d558fab896e85be215088459"
+      "exitCode": 1,
+      "logSha256": "1baf392543d207586494ad559b34791638ef5291c705b70a725b9912c8346ab8"
     },
     "actualGzip": {
       "workspace": {
@@ -327,6 +380,6 @@
         "show-for": 21358
       }
     },
-    "note": "Re-pin (release-bump) from owner-attested local native Darwin arm64 evidence at source b65b83aa7b089145a4d6eef75f83224e8f1cf64a. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.6.0 contract; 14 actual gzip totals moved (workspace json-api -928, show-for -933, multi-island -934, model -940, event-only -943, blog-theme -947, scalar-signal -954; packed multi-island -939, show-for -940, scalar-signal -942, json-api -948, model -949, event-only -951, blog-theme -958; evidence only, not a ceiling). Only package version, the pnpm-lock.yaml hash and the normalizer digest were re-pinned; Cargo.lock is unchanged. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Cargo internal-rewire transition from owner-attested local native Darwin arm64 evidence at source ebe890c02c7e949855774c672da71681ab8944cb. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v4.7.0 contract; no actual gzip total moved. The artifact's own check-budget run compared it with the previous Cargo.lock pin and is preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
