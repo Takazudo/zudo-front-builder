@@ -55,7 +55,7 @@ jobs:
       # No rust-cache, as in direct-v8.yml: a V8-linked Windows target tree
       # would compete with health's caches for the repo's Actions cache budget.
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!docs'
 
       # One test thread, matching the native run that produced #4371's list;
       # the whole zfb-build suite ran in under 10 s that way.

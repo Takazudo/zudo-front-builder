@@ -667,7 +667,7 @@ jobs:
         with:
           prefix-key: v2-zfb
           shared-key: workspace-all-targets
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --filter '!docs'
       - name: Record toolchain and lock identities
         run: |
           { rustc -Vv; cargo -V; cargo clippy -V; cargo nextest --version; node --version; pnpm --version; } > "$RUST_EVIDENCE_DIR/tools.txt"

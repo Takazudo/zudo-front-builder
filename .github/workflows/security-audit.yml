@@ -45,7 +45,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          # 24.14.0, not 22: the unfiltered install keeps docs (zudo-doc engines
+          # >=24 <25, engineStrict) in the audited graph; a '!docs' filter would not.
+          node-version: 24.14.0
           cache: pnpm
 
       - name: Install dependencies

@@ -89,7 +89,7 @@ jobs:
           prefix-key: "v2-wind-computed-style-zfb-ssr"
 
       - name: Install project dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter '!docs'
 
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
