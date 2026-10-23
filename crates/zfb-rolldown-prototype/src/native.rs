@@ -3,6 +3,7 @@ mod canonical_path_tests;
 mod copy_reference;
 #[cfg(test)]
 mod css_tests;
+mod handled_imports;
 #[cfg(test)]
 mod jsx_tsconfig_tests;
 #[cfg(test)]
@@ -334,9 +335,15 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         }
     })?;
     closed.map_err(|e| anyhow::anyhow!("Rolldown close diagnostic: {e:?}"))?;
+    let process_cwd = std::env::current_dir().unwrap_or_default();
     for warning in &result.warnings {
         if warning.kind().to_string() == "UNRESOLVED_IMPORT" {
             let rendered = [warning.to_diagnostic().convert_to_string(false)];
+            // Esbuild leaves such an import() external and only warns (#4429);
+            // the warning is still reported with the others below.
+            if handled_imports::handled_unresolved(&rendered[0], &process_cwd) {
+                continue;
+            }
             match esbuild_style_unresolved(&rendered, &cwd) {
                 Some(report) => bail!("{report}"),
                 None => bail!("Rolldown refused unresolved import: {}", rendered[0]),
