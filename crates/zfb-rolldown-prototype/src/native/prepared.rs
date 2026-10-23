@@ -184,16 +184,12 @@ impl Request {
             }
         }
         // Esbuild's NODE_PATH fallback is an ordered additional module search path.
-        for (k, v) in cmd.get_envs() {
-            if k == "NODE_PATH" {
-                if let Some(v) = v {
-                    let modules = resolve
-                        .modules
-                        .get_or_insert_with(|| vec!["node_modules".into()]);
-                    for path in std::env::split_paths(v) {
-                        modules.push(engine_spelling(path.to_string_lossy().into_owned())?);
-                    }
-                }
+        if let Some(value) = subprocess_node_path(cmd, std::env::var_os("NODE_PATH")) {
+            let modules = resolve
+                .modules
+                .get_or_insert_with(|| vec!["node_modules".into()]);
+            for path in std::env::split_paths(&value) {
+                modules.push(engine_spelling(path.to_string_lossy().into_owned())?);
             }
         }
         options.input = Some(vec![entry.context("prepared entry")?.into()]);
@@ -240,6 +236,22 @@ impl Request {
             file_extensions,
         })
     }
+}
+
+/// The `NODE_PATH` the esbuild subprocess would see: the command's own setting
+/// or removal, otherwise the inherited value. The package manager's bin shim
+/// exports one naming its hidden-hoist store (`node_modules/.pnpm/node_modules`),
+/// which is how esbuild under `--preserve-symlinks` finds a dependency of a
+/// package reached through a symlink outside the project (#4430).
+fn subprocess_node_path(
+    cmd: &Command,
+    inherited: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    match cmd.get_envs().find(|(key, _)| *key == "NODE_PATH") {
+        Some((_, value)) => value.map(ToOwned::to_owned),
+        None => inherited,
+    }
+    .filter(|value| !value.is_empty())
 }
 
 /// Esbuild applies a `--tsconfig` override's JSX settings to every module,
@@ -443,6 +455,27 @@ mod tests {
         let dir = TsconfigDir::new("plain", r#"{"compilerOptions":{"baseUrl":"."}}"#);
         let request = dir.decode(&[]).unwrap();
         assert!(request.options.transform.as_ref().unwrap().jsx.is_none());
+    }
+
+    #[test]
+    fn node_path_follows_what_the_esbuild_subprocess_would_inherit() {
+        use super::subprocess_node_path;
+        let inherited = || Some(std::ffi::OsString::from("/store/.pnpm/node_modules"));
+        let plain = Command::new("esbuild");
+        assert_eq!(subprocess_node_path(&plain, inherited()), inherited());
+        assert_eq!(subprocess_node_path(&plain, None), None);
+        let mut set = Command::new("esbuild");
+        set.env("NODE_PATH", "/lease/node_modules");
+        assert_eq!(
+            subprocess_node_path(&set, inherited()),
+            Some("/lease/node_modules".into())
+        );
+        let mut removed = Command::new("esbuild");
+        removed.env_remove("NODE_PATH");
+        assert_eq!(subprocess_node_path(&removed, inherited()), None);
+        let mut empty = Command::new("esbuild");
+        empty.env("NODE_PATH", "");
+        assert_eq!(subprocess_node_path(&empty, inherited()), None);
     }
 
     #[test]
