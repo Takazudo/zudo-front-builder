@@ -7,7 +7,7 @@ The host runs on the released owned-engine stack: exact published `@takazudo/zfb
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
-The docs member requires Node 24 (`engines.node` is `>=24 <25`, matching zudo-doc 7); on Node 22, install with `pnpm install --filter '!docs'`.
+The docs member requires Node 24 (`engines.node` is `>=24 <25`, matching zudo-doc 7), and the repo develops on Node 24.
 
 ## Tech Stack
 

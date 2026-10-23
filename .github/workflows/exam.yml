@@ -144,7 +144,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24.14.0
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
@@ -190,7 +190,7 @@ jobs:
             crates/zfb/binaries/esbuild/esbuild
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
-      - run: pnpm install --frozen-lockfile --filter '!docs'
+      - run: pnpm install --frozen-lockfile
 
       # Compiles every target AND triggers crates/zfb's build.rs to download +
       # SHA-verify + stage the pinned esbuild binary into
@@ -392,7 +392,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24.14.0
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
@@ -429,7 +429,7 @@ jobs:
 
       # Install dependencies before cargo build so the build script can read
       # Hono from node_modules/.pnpm/ — same ordering as release.yml's macOS leg.
-      - run: pnpm install --frozen-lockfile --filter '!docs'
+      - run: pnpm install --frozen-lockfile
 
       # Compiles every target AND triggers crates/zfb's build.rs to stage the
       # pinned esbuild binary — same as health.yml and this

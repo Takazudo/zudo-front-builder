@@ -9,16 +9,13 @@ This document covers the toolchain and one-time setup needed to build, test, and
 | Tool   | Version            | Notes                                             |
 | ------ | ------------------ | ------------------------------------------------- |
 | Rust   | stable             | Selected by [`rust-toolchain.toml`](./rust-toolchain.toml) (`channel = "stable"`, with `rustfmt` and `clippy`); `rustup` installs it on first use. Do not change the machine default to build zfb; see [Selecting a toolchain per command](#selecting-a-toolchain-per-command). |
-| Node   | `^22.18.0 \|\| ^24.11.0 \|\| >=26.0.0` | The fetch script and Node-side glue use ESM + `fetch`; `engineStrict: true` is set in `pnpm-workspace.yaml`. The root `engines.node` declares the range Vite+ (`vp test`, the contributor test runner) requires; other versions fail `pnpm install`. The `docs` member narrows a full workspace install to Node 24 (see below). |
+| Node   | `^22.18.0 \|\| ^24.11.0 \|\| >=26.0.0` | The fetch script and Node-side glue use ESM + `fetch`; `engineStrict: true` is set in `pnpm-workspace.yaml`. The root `engines.node` declares the range Vite+ (`vp test`, the contributor test runner) requires; other versions fail `pnpm install`. Development uses Node 24, which the `docs` member requires (see below). |
 | pnpm   | as pinned          | The repo declares `packageManager` in `package.json`; use Corepack (`corepack enable`) or install the matching pnpm version directly. |
 | Python | >=3.11 as `python3` | Not used to build or run the CLI. The offline `tests/unit/*.sh` suite run by `pnpm b4push` and `health.yml` calls `python3` on [`scripts/capture-nextest-evidence.py`](./scripts/capture-nextest-evidence.py), which imports `tomllib` (3.11+). The [direct-V8 prototype](prototypes/direct-v8/README.md) scripts also need 3.11+ (`hashlib.file_digest`). |
 
-CI uses Rust stable on `ubuntu-latest` and two Node lines (#4433):
+Development and CI use **Node 24** (CI pins 24.14.0) and Rust stable on `ubuntu-latest`. The docs site depends on `@takazudo/zudo-doc`, which requires Node 24, so with `engineStrict: true` a full `pnpm install` (and so `pnpm b4push`) needs Node 24 locally too.
 
-- **Node 24.14.0** for every job that installs the `docs` workspace member, such as `health`, the docs build, deploy and preview jobs, the docs-only lane and the weekly security audit. The docs site depends on `@takazudo/zudo-doc`, which declares `engines.node: ">=24 <25"`, so with `engineStrict: true` an unfiltered `pnpm install` fails on Node 22. `pnpm test:workspace` includes the docs tests and root suites that import zudo-doc, so it runs on Node 24 too.
-- **Node 22** (setup-node resolves the newest 22.x) for product jobs that don't need docs. They install with `pnpm install --frozen-lockfile --filter '!docs'`. `health.yml`'s `JS packages (Node 22)` job runs `pnpm typecheck:workspace` and the `packages/*` test suites on this line, so the published packages' Node 22 floor keeps real test coverage.
-
-Locally, an unfiltered `pnpm install` (and so `pnpm b4push`) needs Node 24. On Node 22, `pnpm install --filter '!docs'` installs everything except the docs site.
+The one exception is `health.yml`'s `JS packages (Node 22)` job, which keeps the published packages' Node 22 floor covered: it installs with `pnpm install --frozen-lockfile --filter '!docs'` and runs `pnpm typecheck:workspace` and the `packages/*` test suites on Node 22.
 
 ### Selecting a toolchain per command
 

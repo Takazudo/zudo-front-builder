@@ -265,11 +265,8 @@ jobs:
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
-      # Node 24.14.0 (#4433): this job installs the whole workspace, docs
-      # included, and `pnpm test:workspace` runs the docs member's tests plus
-      # root suites that import docs/node_modules/@takazudo/zudo-doc, whose
-      # `engines.node` is ">=24 <25" under `engineStrict: true`. The Node 22
-      # floor is kept by the `node22-packages` job below.
+      # Node 24.14.0: the workspace toolchain line. The docs member's
+      # @takazudo/zudo-doc requires Node 24 under `engineStrict: true`.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24.14.0
@@ -1200,7 +1197,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24.14.0
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
@@ -1232,9 +1229,7 @@ jobs:
 
       # crates/zfb/build.rs embeds Hono from node_modules/.pnpm at compile
       # time. Without this install, the build script cannot find the Hono tree.
-      # `--filter '!docs'` (#4433): this job never uses the docs member, whose
-      # zudo-doc requires Node >=24 <25 and fails engineStrict on Node 22.
-      - run: pnpm install --frozen-lockfile --filter '!docs'
+      - run: pnpm install --frozen-lockfile
 
       - name: cargo build (zfb, --no-default-features)
         run: cargo build --release --no-default-features -p zfb
@@ -1318,7 +1313,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24.14.0
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
@@ -1340,9 +1335,7 @@ jobs:
           # same cache before default can persist its useful build artifacts.
           prefix-key: "v2-zfb-wasm-md"
 
-      # `--filter '!docs'` (#4433): this job never uses the docs member, whose
-      # zudo-doc requires Node >=24 <25 and fails engineStrict on Node 22.
-      - run: pnpm install --frozen-lockfile --filter '!docs'
+      - run: pnpm install --frozen-lockfile
 
       - name: cargo check (${{ matrix.label }}, wasm32-unknown-unknown)
         run: cargo check --target wasm32-unknown-unknown -p zfb-md-wasm ${{ matrix.cargo_args }}
@@ -1493,16 +1486,14 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24.14.0
           cache: pnpm
 
       # @playwright/test is a root devDependency. The fixture's package is
       # installed separately below from the downloaded tarball, never from a
       # workspace/source dependency.
-      # `--filter '!docs'` (#4433): this job never uses the docs member, whose
-      # zudo-doc requires Node >=24 <25 and fails engineStrict on Node 22.
       - name: Install project dependencies
-        run: pnpm install --frozen-lockfile --filter '!docs'
+        run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium

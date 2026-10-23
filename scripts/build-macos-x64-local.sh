@@ -152,9 +152,7 @@ echo "==> Installing node dependencies (pnpm install --frozen-lockfile)"
 # confirmation — which aborted under no-TTY. pnpm 12 purges without a prompt,
 # but the GHA runner gets CI=true for free, so set it here to replicate that
 # environment for local builds.
-# `--filter '!docs'` (#4433): docs' zudo-doc requires Node >=24 <25 and fails
-# engineStrict on a Node 22 host; this build never uses the docs member.
-CI=true pnpm install --frozen-lockfile --filter '!docs'
+CI=true pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
