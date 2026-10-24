@@ -25,6 +25,7 @@
 
 pub mod bundler;
 pub mod client_scripts;
+mod entry_import_guard;
 pub mod esbuild;
 pub mod future_rust_native;
 mod graph_identity;
