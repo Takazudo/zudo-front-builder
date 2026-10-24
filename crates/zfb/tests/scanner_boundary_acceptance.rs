@@ -575,6 +575,57 @@ fn appended_logs(session: &DevSession, old_stdout: &str, old_stderr: &str) -> St
     )
 }
 
+const TICK_FAILURE_PREFIX: &str = "[zfb] rebuild tick failed; watcher staying alive:";
+const TICK_INTAKE_PREFIX: &str = "[zfb-timing] intake paths:";
+const TICK_ISLANDS_PUBLISHED: &str = "[zfb-timing] tick: islands published";
+
+/// Checks the user-facing failure contract over a stderr window and returns
+/// the number of failed ticks in it. One edit can reach the orchestrator as
+/// more than one watcher batch on macOS, and every tick rereads the source,
+/// so a window may legitimately hold several failed ticks (#4458). What must
+/// hold is per tick: each failure prints exactly one prefixed line carrying
+/// its diagnostic, and no other line repeats that diagnostic. With timing on,
+/// the orchestrator's sequential `intake paths:` lines delimit ticks, so each
+/// tick is additionally checked to report at most one failure.
+fn assert_one_diagnostic_per_failed_tick(
+    stderr_window: &str,
+    diagnostic: &str,
+    timing: bool,
+) -> usize {
+    let lines: Vec<&str> = stderr_window.lines().collect();
+    for line in lines.iter().filter(|line| line.contains(diagnostic)) {
+        assert!(
+            line.starts_with(TICK_FAILURE_PREFIX),
+            "the diagnostic must only reach the user through the tick failure line: {stderr_window}"
+        );
+    }
+    let mut failures = 0;
+    for line in lines
+        .iter()
+        .filter(|line| line.contains(TICK_FAILURE_PREFIX))
+    {
+        assert_eq!(
+            line.matches(TICK_FAILURE_PREFIX).count(),
+            1,
+            "one user-facing diagnostic per failed tick: {stderr_window}"
+        );
+        assert!(
+            line.starts_with(TICK_FAILURE_PREFIX) && line.contains(diagnostic),
+            "each failed tick must carry its diagnostic: {stderr_window}"
+        );
+        failures += 1;
+    }
+    if timing {
+        for tick in stderr_window.split(TICK_INTAKE_PREFIX) {
+            assert!(
+                tick.matches(TICK_FAILURE_PREFIX).count() <= 1,
+                "one user-facing diagnostic per failed tick: {stderr_window}"
+            );
+        }
+    }
+    failures
+}
+
 async fn wait_for_dev_log(
     session: &mut DevSession,
     old_stdout: &str,
@@ -1428,6 +1479,42 @@ async fn dev_invalid_registration_rebuild_preserves_registry_and_recovers_withou
     invalid_registration_recovery(false).await;
 }
 
+/// Attributes every failed tick in the recovery window (stderr since just
+/// before the corrected write) to the invalid source. The orchestrator runs
+/// ticks sequentially and logs `intake paths:` before each, so lines ahead of
+/// the window's first intake belong to the one tick already in flight at the
+/// snapshot. That tick may have read either source: it fails late on the
+/// invalid one or publishes the corrected one (#4458). A tick taken in after
+/// the snapshot must never fail, and a failure in flight must cite a location
+/// that exists only in the invalid source (pages are rescanned from disk
+/// every tick).
+fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Path) {
+    let invalid_location = format!("{}:5:48", root.join("pages/index.tsx").display());
+    let lines: Vec<&str> = recovery_stderr.lines().collect();
+    let first_intake = lines
+        .iter()
+        .position(|line| line.starts_with(TICK_INTAKE_PREFIX))
+        .unwrap_or(lines.len());
+    assert!(
+        lines.contains(&TICK_ISLANDS_PUBLISHED),
+        "corrected dev rebuild should publish: {recovery_stderr}"
+    );
+    assert_one_diagnostic_per_failed_tick(recovery_stderr, "ambiguous owned island marker", true);
+    for (index, line) in lines.iter().enumerate() {
+        if !line.starts_with(TICK_FAILURE_PREFIX) {
+            continue;
+        }
+        assert!(
+            index < first_intake,
+            "corrected dev rebuild should succeed: {recovery_stderr}"
+        );
+        assert!(
+            line.contains(&invalid_location),
+            "a late failure must come from a read of the invalid source ({invalid_location}): {recovery_stderr}"
+        );
+    }
+}
+
 async fn invalid_registration_recovery(timing: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let esbuild = locate_esbuild().expect(
@@ -1530,19 +1617,13 @@ export default function Home() {
     assert!(failure_logs.contains("duplicate-a.tsx"), "{failure_logs}");
     assert!(failure_logs.contains("duplicate-b.tsx"), "{failure_logs}");
     let appended_stderr = &session.stderr()[before_invalid_stderr.len()..];
-    let failure_prefix = "[zfb] rebuild tick failed; watcher staying alive:";
     assert!(
-        appended_stderr.contains(failure_prefix),
+        assert_one_diagnostic_per_failed_tick(
+            appended_stderr,
+            "ambiguous owned island marker",
+            timing
+        ) >= 1,
         "{appended_stderr}"
-    );
-    assert!(
-        appended_stderr.contains("ambiguous owned island marker"),
-        "{appended_stderr}"
-    );
-    assert_eq!(
-        appended_stderr.matches(failure_prefix).count(),
-        1,
-        "one user-facing diagnostic per failed tick: {appended_stderr}"
     );
     if !timing {
         assert!(
@@ -1599,16 +1680,16 @@ export default function Home() {
 "#,
     );
     if timing {
-        let recovery_logs = wait_for_dev_log(
+        wait_for_dev_log(
             &mut session,
             &before_recovery_stdout,
             &before_recovery_stderr,
-            "[zfb-timing] tick: islands published",
+            TICK_ISLANDS_PUBLISHED,
         )
         .await;
-        assert!(
-            !recovery_logs.contains("ambiguous owned island marker"),
-            "corrected dev rebuild should succeed: {recovery_logs}"
+        assert_recovery_failures_read_invalid_source(
+            &session.stderr()[before_recovery_stderr.len()..],
+            &root,
         );
     }
     let recovered_html =
@@ -1627,6 +1708,12 @@ export default function Home() {
         "{recovered_asset}"
     );
     assert!(!recovered_asset.contains("DevTwin"), "{recovered_asset}");
+    if timing {
+        assert_recovery_failures_read_invalid_source(
+            &session.stderr()[before_recovery_stderr.len()..],
+            &root,
+        );
+    }
 
     if !timing {
         // A genuinely new page stays Created and enters discovery. An
