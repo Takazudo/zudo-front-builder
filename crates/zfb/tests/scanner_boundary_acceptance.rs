@@ -1617,14 +1617,30 @@ export default function Home() {
     assert!(failure_logs.contains("duplicate-a.tsx"), "{failure_logs}");
     assert!(failure_logs.contains("duplicate-b.tsx"), "{failure_logs}");
     let appended_stderr = &session.stderr()[before_invalid_stderr.len()..];
-    assert!(
-        assert_one_diagnostic_per_failed_tick(
-            appended_stderr,
-            "ambiguous owned island marker",
-            timing
-        ) >= 1,
-        "{appended_stderr}"
+    let invalid_failures = assert_one_diagnostic_per_failed_tick(
+        appended_stderr,
+        "ambiguous owned island marker",
+        timing,
     );
+    assert!(invalid_failures >= 1, "{appended_stderr}");
+    // Bound the failures so a replayed edit or a failing-tick loop still trips:
+    // every failed tick must have taken in the edited page (timing), or the
+    // one write may split into at most the two batches observed on macOS (#4458).
+    if timing {
+        let page_intakes = appended_stderr
+            .lines()
+            .filter(|line| line.starts_with(TICK_INTAKE_PREFIX) && line.contains("pages/index.tsx"))
+            .count();
+        assert!(
+            invalid_failures <= page_intakes,
+            "each failed tick must come from an intake of the edited page: {appended_stderr}"
+        );
+    } else {
+        assert!(
+            invalid_failures <= 2,
+            "one edit must not fail more than the two watcher batches it can split into: {appended_stderr}"
+        );
+    }
     if !timing {
         assert!(
             !session.logs().contains("[zfb-timing]"),
@@ -1742,18 +1758,13 @@ export default function New() {
         assert!(discovery_logs.contains("DevTwin"), "{discovery_logs}");
         let discovery_stderr = session.stderr();
         let appended = &discovery_stderr[before_discovery_stderr.len()..];
-        assert!(
-            appended.contains("[zfb] rebuild tick failed; watcher staying alive:"),
-            "{appended}"
-        );
+        assert!(appended.contains(TICK_FAILURE_PREFIX), "{appended}");
         assert!(
             appended.contains("ambiguous owned island marker"),
             "{appended}"
         );
         assert_eq!(
-            appended
-                .matches("[zfb] rebuild tick failed; watcher staying alive:")
-                .count(),
+            appended.matches(TICK_FAILURE_PREFIX).count(),
             1,
             "one user-facing discovery failure diagnostic per failed tick: {appended}"
         );
