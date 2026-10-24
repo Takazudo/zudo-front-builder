@@ -5,6 +5,7 @@ pub use http_probe::{http_get_before, poll_before, HttpBodyReadFailure};
 mod cross_binary_lock;
 mod html_normalize;
 mod module_entry_probe;
+pub mod process_guard;
 mod sse;
 mod sse_client;
 mod test_phase;
@@ -12,6 +13,7 @@ mod watcher_handshake;
 pub use cross_binary_lock::CrossBinaryE2eLock;
 pub use html_normalize::normalize_html;
 pub use module_entry_probe::{module_entry_urls, probe_module_entries, ModuleEntryProbe};
+pub use process_guard::{ProcessTreeGuard, ProcessTreeSpawner};
 pub use sse::{
     assert_frame_has_data, decode_utf8_incremental, next_sse_event_name, next_sse_frame,
     wait_for_subscribers, wait_for_subscribers_polled, SseFrame,

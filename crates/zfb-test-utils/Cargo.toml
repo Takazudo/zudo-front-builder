@@ -31,6 +31,20 @@ futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
 
+# Kill-tree process guard (`process_guard.rs`, #4483): process groups on
+# Unix, job objects on Windows. windows-sys 0.61 is already in Cargo.lock.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # `locate_esbuild_self.rs` builds a throwaway nested-worktree topology on
 # disk (issue #2178) instead of mutating process cwd.
