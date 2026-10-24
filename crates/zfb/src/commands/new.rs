@@ -424,7 +424,7 @@ enum PnpmOutcome {
 }
 
 async fn try_pnpm_install(dest: &Path) -> PnpmOutcome {
-    let mut cmd = Command::new("pnpm");
+    let mut cmd = Command::new(zfb_build::PNPM_PROGRAM);
     cmd.arg("install").current_dir(dest);
 
     let mut child = match cmd.spawn() {
