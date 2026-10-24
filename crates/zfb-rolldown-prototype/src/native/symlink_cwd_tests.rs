@@ -193,7 +193,11 @@ fn relative_and_absolute_output_arguments_keep_the_callers_spelling() {
         let meta: Value =
             serde_json::from_slice(&fs::read(outdir.join("meta.json")).unwrap()).unwrap();
         let bundle = outdir.join("bundle.mjs").to_string_lossy().into_owned();
-        assert_eq!(keys(&meta["outputs"]), [bundle.clone()], "{outfile}");
+        assert_eq!(
+            keys(&meta["outputs"]),
+            std::slice::from_ref(&bundle),
+            "{outfile}"
+        );
         assert_eq!(meta["outputs"][&bundle]["entryPoint"], "heavy.js");
         assert_eq!(keys(&meta["inputs"]), ["heavy.js"], "{outfile}");
     }
