@@ -7,6 +7,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
+import { realpathSync as realpathSyncForMain } from "node:fs";
 import { Worker } from "node:worker_threads";
 
 const DEFAULT_RUNS = 5;
@@ -602,6 +604,9 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  realpathSyncForMain(process.argv[1]) === realpathSyncForMain(fileURLToPath(import.meta.url))
+) {
   await main();
 }

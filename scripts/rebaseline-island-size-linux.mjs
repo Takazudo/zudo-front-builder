@@ -180,6 +180,8 @@ import { verifyLocalStageEvidence } from "./island-size-local-evidence.mjs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
+import { realpathSync as realpathSyncForMain } from "node:fs";
 
 import { sameHashMaps } from "../research/v3-island-size/check-budget.mjs";
 import {
@@ -5836,8 +5838,8 @@ export async function main(argv = process.argv.slice(2), root = ".", stageIo = u
   );
 }
 
-const invokedPath = process.argv[1] && resolve(process.argv[1]);
-if (invokedPath === fileURLToPath(import.meta.url)) {
+const invokedPath = process.argv[1] && realpathSyncForMain(process.argv[1]);
+if (invokedPath === realpathSyncForMain(fileURLToPath(import.meta.url))) {
   try {
     await main();
   } catch (error) {
