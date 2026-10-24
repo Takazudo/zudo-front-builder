@@ -19,7 +19,7 @@ fn automatic_runtime_import_without_a_span_points_at_the_pragma() {
         "[UNRESOLVED_IMPORT] Could not resolve 'preact/jsx-runtime' in {}\n  │ \n  │ Help: ignored",
         importer.display()
     )];
-    let report = esbuild_style_unresolved(&rendered, &cwd).unwrap();
+    let report = esbuild_style_unresolved(&rendered, &[cwd.clone()]).unwrap();
     fs::remove_dir_all(&cwd).unwrap();
     assert_eq!(
         report,
@@ -44,7 +44,7 @@ fn spanned_import_gets_a_zero_based_column_and_an_esbuild_code_frame() {
         "[UNRESOLVED_IMPORT] Could not resolve './does-not-exist' in {0}\n   ╭─[ {0}:2:18 ]\n   │\n 2 │ import nope from \"./does-not-exist\";\n───╯",
         importer.display()
     )];
-    let report = esbuild_style_unresolved(&rendered, &cwd).unwrap();
+    let report = esbuild_style_unresolved(&rendered, &[cwd.clone()]).unwrap();
     fs::remove_dir_all(&cwd).unwrap();
     // Byte-for-byte what esbuild printed for the same import in 4.6.0 (#4426).
     assert_eq!(

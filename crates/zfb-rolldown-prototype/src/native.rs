@@ -15,6 +15,8 @@ pub(crate) mod module_specifiers;
 mod prepared;
 #[cfg(test)]
 mod splitting_tests;
+#[cfg(all(test, unix))]
+mod symlink_cwd_tests;
 mod trailing_paths;
 #[cfg(test)]
 mod unresolved_tests;
@@ -215,7 +217,8 @@ pub fn run_prepared(cmd: &Command) -> Result<()> {
 /// job's working directory, so the callers' existing esbuild diagnostic mapping
 /// (shadow path to project path, out-of-root hints) applies unchanged. Returns
 /// `None` unless every diagnostic is an unresolved import it can parse.
-fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
+/// `cwds` holds the job's spellings of that directory, the caller's first.
+fn esbuild_style_unresolved(rendered: &[String], cwds: &[PathBuf]) -> Option<String> {
     let process_cwd = std::env::current_dir().ok()?;
     let mut report = String::new();
     for diagnostic in rendered {
@@ -240,7 +243,10 @@ fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
                 (path, row, col, String::new())
             }
         };
-        let shown = path.strip_prefix(cwd).unwrap_or(&path);
+        let shown = cwds
+            .iter()
+            .find_map(|cwd| path.strip_prefix(cwd).ok())
+            .unwrap_or(&path);
         report.push_str(&format!(
             "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n{frame}\n",
             shown.display()
@@ -302,13 +308,7 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         file_extensions: request.file_extensions,
         copy_outputs: copy_outputs.clone(),
     };
-    let outdir = request
-        .options
-        .file
-        .as_ref()
-        .map(|p| Path::new(p).parent().unwrap().to_path_buf())
-        .or_else(|| request.options.dir.as_ref().map(PathBuf::from))
-        .context("output location")?;
+    let outdir = request.outdir.clone().context("output location")?;
     let trailing_paths = trailing_paths::TrailingPaths::new(&request.options);
     let mut bundler = Bundler::with_plugins(
         request.options,
@@ -326,14 +326,14 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     // close also clears the pinned driver's retained state on returned errors;
     // a cleanup error must never replace the original generation diagnostic.
     let closed = bundler.close().await;
-    let cwd = request.cwd.clone();
+    let cwds = [request.cwd.clone(), request.physical_cwd.clone()];
     let result = generated.map_err(|e| {
         let rendered: Vec<_> = e
             .into_vec()
             .iter()
             .map(|d| d.to_diagnostic().convert_to_string(false))
             .collect();
-        match esbuild_style_unresolved(&rendered, &cwd) {
+        match esbuild_style_unresolved(&rendered, &cwds) {
             Some(report) => anyhow::anyhow!("{report}"),
             None => anyhow::anyhow!("Rolldown native diagnostic: {}", rendered.join("\n")),
         }
@@ -348,7 +348,7 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
             if handled_imports::handled_unresolved(&rendered[0], &process_cwd) {
                 continue;
             }
-            match esbuild_style_unresolved(&rendered, &cwd) {
+            match esbuild_style_unresolved(&rendered, &cwds) {
                 Some(report) => bail!("{report}"),
                 None => bail!("Rolldown refused unresolved import: {}", rendered[0]),
             }
@@ -443,13 +443,13 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     // The existing audit/dependency schema keys staged routes relative to cwd.
     // Change only representation, preserving the engine's exact resolved edges.
     // Rolldown ids are canonical, so a symlinked cwd is matched physically too.
-    let physical_cwd = std::fs::canonicalize(&request.cwd).unwrap_or_else(|_| request.cwd.clone());
+    let physical_cwd = &request.physical_cwd;
     let key = |id: &str| {
         let id = Path::new(id);
         let base = if id.starts_with(&request.cwd) {
             &request.cwd
         } else {
-            &physical_cwd
+            physical_cwd
         };
         esbuild_relative(id, base)
     };
