@@ -155,7 +155,6 @@ fn copy_reference_import_is_unchanged() {
     let entry = import_entry(
         "__ROLLDOWN_COPY_MODULE__#ref",
         "import-statement",
-        "entry.js",
         &emitted(&[]),
         &copies,
         Path::new("/out"),
@@ -168,17 +167,19 @@ fn copy_reference_import_is_unchanged() {
 }
 
 #[test]
-fn external_id_spelled_like_an_emitted_chunk_fails_naming_the_id() {
-    let error = import_entry(
-        "islands.js",
+fn self_named_import_is_internal() {
+    // Rolldown lists a chunk's own filename among its imports (the SSR bundle does);
+    // a guard that rejected it broke every `zfb build` (smoke run 40107596010).
+    let entry = import_entry(
+        "bundle.mjs",
         "dynamic-import",
-        "islands.js",
-        &emitted(&["islands.js"]),
+        &emitted(&["bundle.mjs"]),
         &BTreeMap::new(),
         Path::new("/out"),
     )
-    .unwrap_err();
-    assert!(format!("{error:#}").contains("\"islands.js\""), "{error:#}");
+    .unwrap();
+    assert_eq!(entry["external"], false);
+    assert_eq!(entry["path"], "/out/bundle.mjs");
 }
 
 #[test]
@@ -186,7 +187,6 @@ fn import_of_another_emitted_chunk_is_not_a_collision() {
     let entry = import_entry(
         "islands.js",
         "import-statement",
-        "entry.js",
         &emitted(&["islands.js"]),
         &BTreeMap::new(),
         Path::new("/out"),
@@ -197,7 +197,9 @@ fn import_of_another_emitted_chunk_is_not_a_collision() {
 }
 
 #[test]
-fn real_build_with_an_external_spelled_like_the_entry_fails_naming_the_id() {
+fn real_build_with_an_external_spelled_like_the_entry_is_indistinguishable() {
+    // Known limitation (#4490): without external provenance from Rolldown, a kept
+    // external spelled like an emitted chunk is recorded as that internal chunk.
     let (result, _) = prepared_build(
         "collide",
         &[(
@@ -209,6 +211,5 @@ fn real_build_with_an_external_spelled_like_the_entry_fails_naming_the_id() {
             "--external:./islands.js".to_string(),
         ],
     );
-    let error = format!("{:#}", result.unwrap_err());
-    assert!(error.contains("\"islands.js\""), "{error}");
+    result.expect("an external spelled like the entry no longer fails the build");
 }
