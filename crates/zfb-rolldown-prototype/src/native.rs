@@ -3,6 +3,9 @@ mod canonical_path_tests;
 mod copy_reference;
 #[cfg(test)]
 mod css_tests;
+mod external_imports;
+#[cfg(test)]
+mod external_imports_tests;
 mod handled_imports;
 #[cfg(test)]
 mod jsx_tsconfig_tests;
@@ -12,6 +15,8 @@ pub(crate) mod module_specifiers;
 mod prepared;
 #[cfg(test)]
 mod splitting_tests;
+#[cfg(all(test, unix))]
+mod symlink_cwd_tests;
 mod trailing_paths;
 #[cfg(test)]
 mod unresolved_tests;
@@ -31,7 +36,7 @@ use rolldown_common::{EmittedAsset, ModuleType, Output};
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -212,7 +217,8 @@ pub fn run_prepared(cmd: &Command) -> Result<()> {
 /// job's working directory, so the callers' existing esbuild diagnostic mapping
 /// (shadow path to project path, out-of-root hints) applies unchanged. Returns
 /// `None` unless every diagnostic is an unresolved import it can parse.
-fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
+/// `cwds` holds the job's spellings of that directory, the caller's first.
+fn esbuild_style_unresolved(rendered: &[String], cwds: &[PathBuf]) -> Option<String> {
     let process_cwd = std::env::current_dir().ok()?;
     let mut report = String::new();
     for diagnostic in rendered {
@@ -237,7 +243,10 @@ fn esbuild_style_unresolved(rendered: &[String], cwd: &Path) -> Option<String> {
                 (path, row, col, String::new())
             }
         };
-        let shown = path.strip_prefix(cwd).unwrap_or(&path);
+        let shown = cwds
+            .iter()
+            .find_map(|cwd| path.strip_prefix(cwd).ok())
+            .unwrap_or(&path);
         report.push_str(&format!(
             "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n{frame}\n",
             shown.display()
@@ -299,13 +308,7 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         file_extensions: request.file_extensions,
         copy_outputs: copy_outputs.clone(),
     };
-    let outdir = request
-        .options
-        .file
-        .as_ref()
-        .map(|p| Path::new(p).parent().unwrap().to_path_buf())
-        .or_else(|| request.options.dir.as_ref().map(PathBuf::from))
-        .context("output location")?;
+    let outdir = request.outdir.clone().context("output location")?;
     let trailing_paths = trailing_paths::TrailingPaths::new(&request.options);
     let mut bundler = Bundler::with_plugins(
         request.options,
@@ -323,14 +326,14 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     // close also clears the pinned driver's retained state on returned errors;
     // a cleanup error must never replace the original generation diagnostic.
     let closed = bundler.close().await;
-    let cwd = request.cwd.clone();
+    let cwds = [request.cwd.clone(), request.physical_cwd.clone()];
     let result = generated.map_err(|e| {
         let rendered: Vec<_> = e
             .into_vec()
             .iter()
             .map(|d| d.to_diagnostic().convert_to_string(false))
             .collect();
-        match esbuild_style_unresolved(&rendered, &cwd) {
+        match esbuild_style_unresolved(&rendered, &cwds) {
             Some(report) => anyhow::anyhow!("{report}"),
             None => anyhow::anyhow!("Rolldown native diagnostic: {}", rendered.join("\n")),
         }
@@ -345,7 +348,7 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
             if handled_imports::handled_unresolved(&rendered[0], &process_cwd) {
                 continue;
             }
-            match esbuild_style_unresolved(&rendered, &cwd) {
+            match esbuild_style_unresolved(&rendered, &cwds) {
                 Some(report) => bail!("{report}"),
                 None => bail!("Rolldown refused unresolved import: {}", rendered[0]),
             }
@@ -358,6 +361,14 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let mut copied_sources = BTreeMap::new();
     let copy_outputs = copy_outputs.lock().unwrap().clone();
     let mut inputs = inputs.lock().unwrap().clone();
+    let emitted_chunks: BTreeSet<String> = result
+        .assets
+        .iter()
+        .filter_map(|output| match output {
+            Output::Chunk(chunk) => Some(chunk.filename.to_string()),
+            Output::Asset(_) => None,
+        })
+        .collect();
     for output in result.assets {
         let path = outdir.join(output.filename());
         files.push((path.clone(), output.content_as_bytes().to_vec()));
@@ -379,8 +390,13 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
                             .map(|id| (id, "dynamic-import")),
                     )
                     .map(|(id, kind)| {
-                        let path = copy_reference::output_name(id.as_str(), &copy_outputs)?;
-                        Ok(json!({"path":outdir.join(path),"kind":kind}))
+                        external_imports::import_entry(
+                            id.as_str(),
+                            kind,
+                            &emitted_chunks,
+                            &copy_outputs,
+                            &outdir,
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?;
                 outputs.insert(path.to_string_lossy().into_owned(),json!({"bytes":chunk.code.len(),"inputs":provenance,"imports":imports,"entryPoint":chunk.facade_module_id.as_ref().map(|id|id.as_str())}));
@@ -427,13 +443,13 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     // The existing audit/dependency schema keys staged routes relative to cwd.
     // Change only representation, preserving the engine's exact resolved edges.
     // Rolldown ids are canonical, so a symlinked cwd is matched physically too.
-    let physical_cwd = std::fs::canonicalize(&request.cwd).unwrap_or_else(|_| request.cwd.clone());
+    let physical_cwd = &request.physical_cwd;
     let key = |id: &str| {
         let id = Path::new(id);
         let base = if id.starts_with(&request.cwd) {
             &request.cwd
         } else {
-            &physical_cwd
+            physical_cwd
         };
         esbuild_relative(id, base)
     };

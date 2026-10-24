@@ -403,3 +403,79 @@ fn aliased_tmpdir_and_project_root_preserve_graph_tokens_and_raw_outputs() {
         }
     }
 }
+
+/// Issue #4480: scan a project through a symlinked directory and through its
+/// physical path. Each spelling yields exactly one raw edge in that spelling,
+/// and the scan -> token -> bundle chain built from it is identical for both.
+#[cfg(unix)]
+#[test]
+fn symlinked_project_scan_records_one_raw_edge_and_stable_graph_token() {
+    use zfb_islands::{scan_islands_with_meta, FsResolver};
+
+    let temp = tempfile::tempdir().unwrap();
+    let physical_parent = temp.path().join("physical");
+    fs::create_dir_all(&physical_parent).unwrap();
+    let logical_parent = temp.path().join("logical");
+    std::os::unix::fs::symlink(&physical_parent, &logical_parent).unwrap();
+    let logical = logical_parent.join("project");
+    let physical = physical_parent.join("project");
+    fs::create_dir_all(physical.join("raw")).unwrap();
+    fs::write(
+        physical.join("counter.ts"),
+        "\"use client\";\nimport text from './raw/demo.txt?raw';\n\
+         export function Counter() { return text; }\n",
+    )
+    .unwrap();
+
+    let build = |root: &Path| {
+        let importer = root.join("counter.ts");
+        let resolver = FsResolver::new().with_project_root(root);
+        let (_, meta) = scan_islands_with_meta(std::slice::from_ref(&importer), &resolver).unwrap();
+        let edges = &meta.raw_import_edges_from_islands;
+        assert_eq!(edges.len(), 1, "one raw edge per physical file: {edges:#?}");
+        assert_eq!(edges[0].importer, importer);
+        assert_eq!(edges[0].target, root.join("raw/demo.txt"));
+
+        let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+            &fs::read_to_string(&edges[0].importer).unwrap(),
+            &edges[0].importer,
+            root,
+            &|_| false,
+        )
+        .unwrap();
+        let shadow = root.join(".shadow");
+        let _ = fs::remove_dir_all(&shadow);
+        fs::create_dir_all(&shadow).unwrap();
+        fs::write(shadow.join("counter.ts"), expansion.expanded_source).unwrap();
+        for module in expansion.generated_modules {
+            fs::write(shadow.join(module.filename), module.source).unwrap();
+        }
+        let bundler = bundler(root, vec![], "browser");
+        let islands = [Island::new("Counter", shadow.join("counter.ts"))];
+        let token = bundler
+            .derive_build_token(&islands, &BundleConfig::production(), "test-compiler-v1")
+            .unwrap();
+        let output = bundler
+            .bundle(
+                &islands,
+                &BundleConfig::production().with_zudo_react_build(Some(token.clone())),
+            )
+            .unwrap();
+        (token, output.bytes)
+    };
+
+    fs::write(physical.join("raw/demo.txt"), "ZFB_RAW_ALIAS_ONE\n").unwrap();
+    let logical_before = build(&logical);
+    let physical_before = build(&physical);
+    assert_eq!(logical_before, physical_before);
+    assert!(String::from_utf8_lossy(&logical_before.1).contains("ZFB_RAW_ALIAS_ONE"));
+
+    fs::write(physical.join("raw/demo.txt"), "ZFB_RAW_ALIAS_TWO\n").unwrap();
+    let logical_after = build(&logical);
+    assert_ne!(
+        logical_before.0, logical_after.0,
+        "authored raw source must invalidate the token"
+    );
+    assert!(String::from_utf8_lossy(&logical_after.1).contains("ZFB_RAW_ALIAS_TWO"));
+    assert_eq!(logical_after, build(&physical));
+}

@@ -72,10 +72,25 @@ fn copy_dir(source: &Path, destination: &Path) {
     }
 }
 
+/// Atomic replace: a live dev watcher must never observe a truncated or
+/// partial source (`fs::write` truncates, then writes, and FSEvents can
+/// surface that as two batches). The temp file is staged beside the project
+/// root, never inside it: the watcher classifies paths by their root segment
+/// (`pages/`, `components/`, …) regardless of extension, so a temp file under
+/// a watched root would surface as its own page/module change.
 fn write(root: &Path, relative: &str, body: &str) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
     let path = root.join(relative);
     fs::create_dir_all(path.parent().expect("fixture path parent")).expect("create parent");
-    fs::write(path, body).expect("write fixture source");
+    let temp = root.parent().unwrap_or(root).join(format!(
+        ".zfb-fixture-tmp-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temp, body).expect("write fixture temp file");
+    fs::rename(&temp, &path).expect("rename fixture temp file over target");
 }
 
 /// Copy the binary's embedded packages into the consumer's real node_modules
@@ -355,6 +370,7 @@ fn assert_no_published_islands(root: &Path) {
     );
 }
 
+// Pre-start setup: no dev watcher is running yet, so plain `fs::write` cannot race one.
 fn make_minimal_project(root: &Path) {
     fs::create_dir_all(root).expect("create invalid fixture project");
     fs::write(
@@ -1479,6 +1495,14 @@ async fn dev_invalid_registration_rebuild_preserves_registry_and_recovers_withou
     invalid_registration_recovery(false).await;
 }
 
+const INVALID_INDEX_SOURCE: &str = r#"import { Island } from "@takazudo/zfb";
+import { DevTwin as First } from "../components/duplicate-a";
+import { DevTwin as Second } from "../components/duplicate-b";
+export default function Home() {
+  return <html><body><Island><First /></Island><Island><Second /></Island></body></html>;
+}
+"#;
+
 /// Attributes every failed tick in the recovery window (stderr since just
 /// before the corrected write) to the invalid source. The orchestrator runs
 /// ticks sequentially and logs `intake paths:` before each, so lines ahead of
@@ -1489,7 +1513,22 @@ async fn dev_invalid_registration_rebuild_preserves_registry_and_recovers_withou
 /// that exists only in the invalid source (pages are rescanned from disk
 /// every tick).
 fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Path) {
-    let invalid_location = format!("{}:5:48", root.join("pages/index.tsx").display());
+    // Location of the second `<Island` in the invalid fixture (1-based line:column).
+    let second_island = INVALID_INDEX_SOURCE
+        .match_indices("<Island")
+        .nth(1)
+        .map(|(offset, _)| offset)
+        .expect("invalid fixture has a second <Island");
+    let before = &INVALID_INDEX_SOURCE[..second_island];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .expect("line prefix")
+        .chars()
+        .count()
+        + 1;
+    let invalid_location = format!("{}:{line}:{column}", root.join("pages/index.tsx").display());
     let lines: Vec<&str> = recovery_stderr.lines().collect();
     let first_intake = lines
         .iter()
@@ -1595,17 +1634,7 @@ export default function Home() {
     // prior complete client registry remains on disk and served.
     let before_invalid_stdout = session.stdout();
     let before_invalid_stderr = session.stderr();
-    write(
-        &root,
-        "pages/index.tsx",
-        r#"import { Island } from "@takazudo/zfb";
-import { DevTwin as First } from "../components/duplicate-a";
-import { DevTwin as Second } from "../components/duplicate-b";
-export default function Home() {
-  return <html><body><Island><First /></Island><Island><Second /></Island></body></html>;
-}
-"#,
-    );
+    write(&root, "pages/index.tsx", INVALID_INDEX_SOURCE);
     let failure_logs = wait_for_dev_log(
         &mut session,
         &before_invalid_stdout,
