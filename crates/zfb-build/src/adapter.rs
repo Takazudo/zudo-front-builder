@@ -267,10 +267,16 @@ impl AdapterRunner for DefaultAdapterRunner {
     }
 }
 
+/// Program name for spawning pnpm. On Windows pnpm is installed as the
+/// `pnpm.cmd` shim, which `Command::new("pnpm")` does not resolve (it only
+/// appends `.exe`); std runs a `.cmd` through cmd.exe with argument escaping
+/// (#4366 row f: `zfb build` failed to spawn the adapter on windows-latest).
+pub const PNPM_PROGRAM: &str = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+
 /// Construct the adapter CLI command independently from process execution so
 /// the repeated asset forwarding contract stays unit-testable.
 fn adapter_command(bin_name: &str, input: &AdapterBundleInput) -> Command {
-    let mut cmd = Command::new("pnpm");
+    let mut cmd = Command::new(PNPM_PROGRAM);
     cmd.current_dir(&input.project_root);
     cmd.arg("exec");
     cmd.arg(bin_name);
@@ -713,7 +719,11 @@ mod tests {
         };
 
         let command = adapter_command("zfb-adapter-cloudflare", &input);
-        assert_eq!(command.get_program(), std::ffi::OsStr::new("pnpm"));
+        let expected_program = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new(expected_program)
+        );
         assert_eq!(command.get_current_dir(), Some(tmp.path()));
         let args: Vec<String> = command
             .get_args()

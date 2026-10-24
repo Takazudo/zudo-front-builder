@@ -35,9 +35,11 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{
-    locate_esbuild, zfb_binary, CrossBinaryE2eLock, ProcessTreeGuard, ProcessTreeSpawner,
-};
+#[path = "support/process_guard.rs"]
+mod process_guard;
+
+use process_guard::{ProcessTreeGuard, ProcessTreeSpawner};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -260,13 +262,14 @@ fn spawn_dev(root: &Path, esbuild: &Path, extra_args: &[&str]) -> DevSession {
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
-        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS")
-        .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
-        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
     // `interruptible()` so the graceful stop below reaches dev even when the
     // runner inherited SIGINT-ignored (background job) or runs on Windows.
+    // Stdio goes through the spawner: on Windows dev runs under a helper.
     let guard = ProcessTreeSpawner::new()
         .interruptible()
+        .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
         .spawn(&mut command)
         .expect("spawn `zfb dev`");
     DevSession {
