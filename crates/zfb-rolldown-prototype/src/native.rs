@@ -3,6 +3,9 @@ mod canonical_path_tests;
 mod copy_reference;
 #[cfg(test)]
 mod css_tests;
+mod external_imports;
+#[cfg(test)]
+mod external_imports_tests;
 mod handled_imports;
 #[cfg(test)]
 mod jsx_tsconfig_tests;
@@ -31,7 +34,7 @@ use rolldown_common::{EmittedAsset, ModuleType, Output};
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -358,6 +361,14 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let mut copied_sources = BTreeMap::new();
     let copy_outputs = copy_outputs.lock().unwrap().clone();
     let mut inputs = inputs.lock().unwrap().clone();
+    let emitted_chunks: BTreeSet<String> = result
+        .assets
+        .iter()
+        .filter_map(|output| match output {
+            Output::Chunk(chunk) => Some(chunk.filename.to_string()),
+            Output::Asset(_) => None,
+        })
+        .collect();
     for output in result.assets {
         let path = outdir.join(output.filename());
         files.push((path.clone(), output.content_as_bytes().to_vec()));
@@ -379,8 +390,14 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
                             .map(|id| (id, "dynamic-import")),
                     )
                     .map(|(id, kind)| {
-                        let path = copy_reference::output_name(id.as_str(), &copy_outputs)?;
-                        Ok(json!({"path":outdir.join(path),"kind":kind}))
+                        external_imports::import_entry(
+                            id.as_str(),
+                            kind,
+                            chunk.filename.as_str(),
+                            &emitted_chunks,
+                            &copy_outputs,
+                            &outdir,
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?;
                 outputs.insert(path.to_string_lossy().into_owned(),json!({"bytes":chunk.code.len(),"inputs":provenance,"imports":imports,"entryPoint":chunk.facade_module_id.as_ref().map(|id|id.as_str())}));
