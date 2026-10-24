@@ -130,7 +130,7 @@
       "baselineRunId": 40040309616,
       "contract": {
         "sha256": "7839bbe6e9de96258e48d29796db5e560ba0c4a001913d39c5659da539d487a9",
-        "commit": "edc6c102d8768b70aacdc64ff2734f6338e58582",
+        "commit": "c9ba39a53a32a53d16c4006c4ac2b9f649d837e5",
         "path": "research/v3-island-size/decision-linux-x64.json"
       }
     },
