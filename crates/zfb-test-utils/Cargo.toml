@@ -33,6 +33,7 @@ tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "m
 
 # Kill-tree process guard (`process_guard.rs`, #4483): process groups on
 # Unix, job objects on Windows. windows-sys 0.61 is already in Cargo.lock.
+# Win32_System_Console: graceful console Ctrl-C interrupt (#4484).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -40,6 +41,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
