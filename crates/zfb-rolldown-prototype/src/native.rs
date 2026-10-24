@@ -393,7 +393,6 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
                         external_imports::import_entry(
                             id.as_str(),
                             kind,
-                            chunk.filename.as_str(),
                             &emitted_chunks,
                             &copy_outputs,
                             &outdir,

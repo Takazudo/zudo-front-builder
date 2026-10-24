@@ -4,7 +4,7 @@
 //! filename set decides which is which (never filesystem existence or `./`
 //! stripping).
 use super::copy_reference;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,7 +14,6 @@ use std::{
 pub(super) fn import_entry(
     id: &str,
     kind: &str,
-    own_filename: &str,
     emitted: &BTreeSet<String>,
     copy_outputs: &BTreeMap<String, String>,
     outdir: &Path,
@@ -26,10 +25,8 @@ pub(super) fn import_entry(
     if !emitted.contains(id) {
         return Ok(json!({"path":id,"kind":kind,"external":true}));
     }
-    // The API carries no external provenance, but a chunk never imports itself:
-    // its own filename here is an external id spelled like the chunk (#4471).
-    if id == own_filename {
-        bail!("external import {id:?} has the same id as the emitted chunk that imports it; the metafile cannot tell them apart");
-    }
+    // Rolldown does list a chunk's own filename here (the SSR bundle imports
+    // itself), so an emitted name is internal even when it is the importer's own;
+    // an external spelled like an emitted chunk is indistinguishable (#4490).
     Ok(json!({"path":outdir.join(id),"kind":kind,"external":false}))
 }
