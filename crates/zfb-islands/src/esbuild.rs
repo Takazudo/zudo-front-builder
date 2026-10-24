@@ -1445,10 +1445,9 @@ impl EsbuildSubprocessBundler {
     /// source to a temp file (because esbuild expects entry points on
     /// disk), runs the subprocess, and returns its JS and companion outputs.
     ///
-    /// `job_label` identifies this invocation for
-    /// [`EsbuildSubprocessConfig::stage_audit`] failure messages (e.g.
-    /// `"shared entry"`); it is unused
-    /// when no stage-audit policy is configured.
+    /// `job_label` identifies this invocation in
+    /// [`EsbuildSubprocessConfig::stage_audit`] and splitting-pass
+    /// entry-import audit failure messages (e.g. `"shared entry"`).
     fn bundle_one_entry(
         &self,
         entry_source: &str,
@@ -1733,6 +1732,17 @@ impl EsbuildSubprocessBundler {
                     .to_path_buf()
             };
             run_stage_escape_audit(policy, &metafile_path, &self.config.working_dir, job_label)?;
+        }
+
+        // Entry-import guard (#4464): the splitting pass's `meta.json`, written
+        // by either backend, must show no output importing the islands entry.
+        if splitting {
+            crate::entry_import_guard::audit_entry_imports_at_path(
+                &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+                &self.config.working_dir,
+                entry_tmp.path(),
+            )
+            .with_context(|| format!("zfb-islands: entry-import audit failed for {job_label}"))?;
         }
 
         let mut graph_digests = Vec::new();
@@ -2504,7 +2514,7 @@ fn metafile_input_matches_resource(input_path: &str, expected_source_suffix: &st
 /// default. Resolve and canonicalize each key before comparing it with the
 /// regular staging output we just read, so the comparison stays exact without
 /// relying on a non-contract `--abs-paths=metafile` flag.
-fn metafile_output_path(output_path: &str, working_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn metafile_output_path(output_path: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = Path::new(output_path);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
