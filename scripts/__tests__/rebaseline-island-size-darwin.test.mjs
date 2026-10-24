@@ -3761,11 +3761,53 @@ describe("local rustls security evidence with separate tooling", () => {
     Object.entries(values)
       .filter(([, v]) => v !== undefined)
       .flatMap(([key, value]) => ["--" + key, value]);
+  // The plain tooling checkout is immutable preparation: build it once and hand each test its own
+  // copy, since tests dirty their checkout and advance its commit.
+  let toolsTemplate;
+  let rendererTemplate;
+  const templateRoots = [];
+  beforeAll(() => {
+    toolsTemplate = makeGitCheckout(templateRoots);
+    // The same checkout with the CLI and its helpers committed on top.
+    const root = mkdtempSync(join(tmpdir(), "zfb-island-checkout-"));
+    templateRoots.push(root);
+    cpSync(toolsTemplate.root, root, { recursive: true });
+    const git = gitIn(root);
+    const sourceRoot = join(testDir, "../..");
+    for (const name of [
+      "rebaseline-island-size-darwin.mjs",
+      "rebaseline-island-size-linux.mjs",
+      "island-size-local-evidence.mjs",
+      "rustls-security-transition.mjs",
+      "security-lock-transitions.mjs",
+    ])
+      write(root, "scripts/" + name, readFileSync(join(sourceRoot, "scripts", name)));
+    for (const name of readdirSync(join(sourceRoot, "research/v3-island-size")))
+      if (name.endsWith(".mjs"))
+        write(
+          root,
+          "research/v3-island-size/" + name,
+          readFileSync(join(sourceRoot, "research/v3-island-size", name)),
+        );
+    git("add", ".");
+    git("commit", "-qm", "fixture renderer");
+    rendererTemplate = { ...toolsTemplate, root, git, commit: git("rev-parse", "HEAD") };
+  });
+  const makeToolsCheckout = (withRenderer) => {
+    const template = withRenderer ? rendererTemplate : toolsTemplate;
+    const root = mkdtempSync(join(tmpdir(), "zfb-island-checkout-"));
+    localRoots.push(root);
+    cpSync(template.root, root, { recursive: true });
+    return { ...template, root, git: gitIn(root) };
+  };
+  afterAll(() => {
+    for (const root of templateRoots) rmSync(root, { recursive: true, force: true });
+  });
   afterEach(() => {
     for (const root of localRoots.splice(0)) rmSync(root, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
-  function setup(tweak = () => {}, changeContract = () => {}) {
+  function setup(tweak = () => {}, changeContract = () => {}, withRenderer = false) {
     const lock = rustlsSecurityLock();
     let pinned;
     const repo = makeGitCheckout(localRoots, {
@@ -3805,7 +3847,7 @@ describe("local rustls security evidence with separate tooling", () => {
     repo.git("add", "Cargo.lock");
     repo.git("commit", "-qm", "fixture candidate");
     const source = repo.git("rev-parse", "HEAD").trim();
-    const tools = makeGitCheckout(localRoots);
+    const tools = makeToolsCheckout(withRenderer);
     const toolSha = tools.git("rev-parse", "HEAD").trim();
     const artifact = realpathSync(
       makeArtifact({
@@ -3986,30 +4028,13 @@ describe("local rustls security evidence with separate tooling", () => {
   });
 
   it("runs the real CLI from a separate committed tooling checkout", () => {
-    const f = setup();
-    const sourceRoot = join(testDir, "../..");
-    for (const name of [
-      "rebaseline-island-size-darwin.mjs",
-      "rebaseline-island-size-linux.mjs",
-      "island-size-local-evidence.mjs",
-      "rustls-security-transition.mjs",
-      "security-lock-transitions.mjs",
-    ])
-      write(f.tools.root, "scripts/" + name, readFileSync(join(sourceRoot, "scripts", name)));
-    for (const name of readdirSync(join(sourceRoot, "research/v3-island-size")))
-      if (name.endsWith(".mjs"))
-        write(
-          f.tools.root,
-          "research/v3-island-size/" + name,
-          readFileSync(join(sourceRoot, "research/v3-island-size", name)),
-        );
-    f.tools.git("add", ".");
-    f.tools.git("commit", "-qm", "fixture renderer");
+    const f = setup(undefined, undefined, true);
     const toolSha = f.tools.git("rev-parse", "HEAD").trim();
     const result = spawnSync(
       process.execPath,
       [
-        join(f.tools.root, "scripts/rebaseline-island-size-darwin.mjs"),
+        // The CLI only runs when argv[1] equals its realpath; macOS tmpdir is a /var -> /private/var symlink.
+        join(realpathSync(f.tools.root), "scripts/rebaseline-island-size-darwin.mjs"),
         ...argv({ ...f.values, "tool-sha": toolSha }),
       ],
       { cwd: f.tools.root, encoding: "utf8" },
