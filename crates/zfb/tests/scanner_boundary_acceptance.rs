@@ -16,17 +16,14 @@
 //! the companion Playwright test. Its browser run is a separate guarded step so
 //! the real build and Chromium never compete for machine resources.
 
-#![cfg(unix)]
-
 use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock, ProcessTreeGuard};
 
 const EXPECTED_MARKERS: &[&str] = &[
     "AliasCounter",
@@ -111,6 +108,15 @@ fn materialize_embedded_node_modules(root: &Path) {
     }
 }
 
+fn npm_program() -> &'static str {
+    // npm ships as a .cmd shim on Windows, which CreateProcess does not resolve from a bare name.
+    if cfg!(windows) {
+        "npm.cmd"
+    } else {
+        "npm"
+    }
+}
+
 fn node_available(program: &str) -> bool {
     Command::new(program)
         .arg("--version")
@@ -122,7 +128,7 @@ fn install_packed_widgets(root: &Path) -> PathBuf {
     let package_source = root.join("package-source");
     let tarballs = root.join(".scanner-boundary-tarballs");
     fs::create_dir_all(&tarballs).expect("create tarball directory");
-    let packed = Command::new("npm")
+    let packed = Command::new(npm_program())
         .args(["pack", "--json", "--pack-destination"])
         .arg(&tarballs)
         .current_dir(&package_source)
@@ -148,7 +154,7 @@ fn install_packed_widgets(root: &Path) -> PathBuf {
     );
     let archive = archives.pop().expect("packed fixture tarball");
 
-    let installed = Command::new("npm")
+    let installed = Command::new(npm_program())
         .args([
             "install",
             "--offline",
@@ -384,22 +390,12 @@ fn make_minimal_project(root: &Path) {
 }
 
 struct DevServerGuard {
-    child: Child,
-    pgid: libc::pid_t,
+    tree: ProcessTreeGuard,
 }
 
 impl DevServerGuard {
     fn try_exit_status(&mut self) -> Option<std::process::ExitStatus> {
-        self.child.try_wait().expect("try_wait on zfb dev")
-    }
-}
-
-impl Drop for DevServerGuard {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.pgid, libc::SIGKILL);
-        }
-        let _ = self.child.wait();
+        self.tree.try_wait().expect("try_wait on zfb dev")
     }
 }
 
@@ -477,11 +473,9 @@ fn spawn_dev_with_forced_created(
     } else {
         command.env_remove("ZFB_DEV_TIMING");
     }
-    command.process_group(0);
-    let child = command.spawn().expect("spawn zfb dev");
-    let pgid = child.id() as libc::pid_t;
+    let tree = ProcessTreeGuard::spawn(&mut command).expect("spawn zfb dev");
     DevSession {
-        guard: DevServerGuard { child, pgid },
+        guard: DevServerGuard { tree },
         stdout_path,
         stderr_path,
     }
@@ -721,7 +715,7 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         "scanner boundary acceptance requires Node.js"
     );
     assert!(
-        node_available("npm"),
+        node_available(npm_program()),
         "scanner boundary acceptance requires npm"
     );
 
@@ -1528,7 +1522,7 @@ fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Pa
         .chars()
         .count()
         + 1;
-    let invalid_location = format!("{}:{line}:{column}", root.join("pages/index.tsx").display());
+    let invalid_location = format!("{}:{line}:{column}", root.join("pages").join("index.tsx").display());
     let lines: Vec<&str> = recovery_stderr.lines().collect();
     let first_intake = lines
         .iter()
@@ -1820,7 +1814,7 @@ export default function New() {
 /// active directory so disk-prune assertions inspect the actual served tree.
 fn dev_session_output(root: &Path, session: &DevSession, relative: &str) -> PathBuf {
     let parent = root.join(".zfb-build/dev-pages");
-    let prefix = format!("session-{}-", session.guard.child.id());
+    let prefix = format!("session-{}-", session.guard.tree.id());
     let matches: Vec<PathBuf> = fs::read_dir(&parent)
         .unwrap_or_else(|error| panic!("read dev HTML parent {}: {error}", parent.display()))
         .map(|entry| entry.unwrap().path())
