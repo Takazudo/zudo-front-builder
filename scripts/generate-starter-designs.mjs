@@ -6,6 +6,8 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+// Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
+import { realpathSync as realpathSyncForMain } from "node:fs";
 import {
   createState,
   getSeedFiles,
@@ -57,7 +59,10 @@ export async function generate({ check = false, projectRoot = root } = {}) {
   }
   return drift;
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  realpathSyncForMain(process.argv[1]) === realpathSyncForMain(fileURLToPath(import.meta.url))
+) {
   const check = process.argv.includes("--check");
   const drift = await generate({ check });
   if (drift.length) {

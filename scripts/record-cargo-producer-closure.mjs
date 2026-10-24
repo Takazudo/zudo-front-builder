@@ -30,6 +30,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+// Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
+import { realpathSync as realpathSyncForMain } from "node:fs";
 
 export const CLOSURE_RECEIPT_SCHEMA = 1;
 export const CLOSURE_EDGES = "normal,build";
@@ -161,8 +163,8 @@ export function main(argv = process.argv.slice(2)) {
   );
 }
 
-const invokedPath = process.argv[1] && resolve(process.argv[1]);
-if (invokedPath === fileURLToPath(import.meta.url)) {
+const invokedPath = process.argv[1] && realpathSyncForMain(process.argv[1]);
+if (invokedPath === realpathSyncForMain(fileURLToPath(import.meta.url))) {
   try {
     main();
   } catch (error) {
