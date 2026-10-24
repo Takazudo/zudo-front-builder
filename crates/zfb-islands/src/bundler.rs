@@ -560,7 +560,10 @@ pub struct BundleOutput {
     ///   publishes (#4444). Code shared by the entry and a lazily imported
     ///   module therefore lives in a common chunk, never in the entry; a
     ///   bundler backend must be configured to keep it that way (the
-    ///   Rolldown backend disables `merge_common_chunks`, #4448).
+    ///   Rolldown backend disables `merge_common_chunks`, #4448). The build
+    ///   enforces this: after the splitting pass, an audit of the bundler's
+    ///   metafile fails the build when any output, dynamic-entry facades
+    ///   included, imports the entry (#4464).
     /// - Filenames here are validated flat (no path separators / `..`) and
     ///   `islands-chunk-*`-shaped before they reach this field; consumers
     ///   may write them under the entry's directory verbatim.
