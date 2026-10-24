@@ -79,9 +79,8 @@ jobs:
         run: cargo test --locked -p zfb-islands --test graph_identity -- --test-threads=1
 
   # #4366 rows e/f: native Windows process-tree kill + graceful-interrupt guard
-  # (zfb-test-utils) and the real-process e2e binaries. scratch_dir_concurrent_e2e
-  # is `#![cfg(unix)]` (selects 0 tests on Windows), so it is deliberately not run
-  # here rather than reported as a green no-op. The e2e binaries self-skip when
+  # (zfb-test-utils) and the real-process e2e binaries, including the graceful
+  # Ctrl-C stop in scratch_dir_concurrent_e2e. The e2e binaries self-skip when
   # esbuild/node/pnpm are missing; the pnpm install and setup-node above provide
   # all three on PATH, and the log is kept so a skip would be visible.
   windows-e2e:
@@ -117,7 +116,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           mkdir -p e2e-logs
-          cargo test --locked -p zfb --test scanner_boundary_acceptance --test build_reproducibility_e2e -- --test-threads=1 --nocapture 2>&1 | tee e2e-logs/zfb-e2e.log
+          cargo test --locked -p zfb --test scanner_boundary_acceptance --test build_reproducibility_e2e --test scratch_dir_concurrent_e2e -- --test-threads=1 --nocapture 2>&1 | tee e2e-logs/zfb-e2e.log
 
       - name: Upload e2e logs
         if: failure()
