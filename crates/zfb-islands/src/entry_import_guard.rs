@@ -183,6 +183,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    type MetafileEdit<'a> = Box<dyn Fn(&mut Value) + 'a>;
+
     /// A staging layout like the real splitting pass: `cwd` holds the
     /// synthesized entry input and an `out/` dir with the emitted files.
     struct Layout {
@@ -446,7 +448,7 @@ mod tests {
         let spelling = Spelling::Esbuild;
         let chunk = layout.out(spelling, "islands-chunk-AAA.js");
         let entry = layout.out(spelling, "islands.js");
-        let cases: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        let cases: Vec<(&str, MetafileEdit<'_>)> = vec![
             (
                 "missing `outputs`",
                 Box::new(|m| *m = json!({"inputs": {}})),
