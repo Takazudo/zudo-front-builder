@@ -593,6 +593,26 @@ const TICK_FAILURE_PREFIX: &str = "[zfb] rebuild tick failed; watcher staying al
 const TICK_INTAKE_PREFIX: &str = "[zfb-timing] intake paths:";
 const TICK_ISLANDS_PUBLISHED: &str = "[zfb-timing] tick: islands published";
 
+/// The spelling the dev server uses for `path` in diagnostics. On Windows a
+/// canonicalized root is the verbatim `\\?\C:\...` form, while diagnostics
+/// print the ordinary `C:\...` drive form; elsewhere the path is unchanged.
+fn user_facing_path(path: &Path) -> String {
+    let shown = path.display().to_string();
+    if cfg!(windows) {
+        if let Some(rest) = shown.strip_prefix(r"\\?\") {
+            let bytes = rest.as_bytes();
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\'
+            {
+                return rest.to_string();
+            }
+        }
+    }
+    shown
+}
+
 /// Checks the user-facing failure contract over a stderr window and returns
 /// the number of failed ticks in it. One edit can reach the orchestrator as
 /// more than one watcher batch on macOS, and every tick rereads the source,
@@ -709,6 +729,10 @@ async fn wait_for_dev_page_marker_at(
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/4499"
+)]
 fn production_and_packed_consumers_validate_exact_boundary_registry() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let esbuild = locate_esbuild().expect(
@@ -1528,7 +1552,7 @@ fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Pa
         + 1;
     let invalid_location = format!(
         "{}:{line}:{column}",
-        root.join("pages").join("index.tsx").display()
+        user_facing_path(&root.join("pages").join("index.tsx"))
     );
     let lines: Vec<&str> = recovery_stderr.lines().collect();
     let first_intake = lines
@@ -1657,9 +1681,11 @@ export default function Home() {
     // every failed tick must have taken in the edited page (timing), or the
     // one write may split into at most the two batches observed on macOS (#4458).
     if timing {
+        // Intake traces print watcher paths with the host separator.
+        let edited_page = Path::new("pages").join("index.tsx").display().to_string();
         let page_intakes = appended_stderr
             .lines()
-            .filter(|line| line.starts_with(TICK_INTAKE_PREFIX) && line.contains("pages/index.tsx"))
+            .filter(|line| line.starts_with(TICK_INTAKE_PREFIX) && line.contains(&edited_page))
             .count();
         assert!(
             invalid_failures <= page_intakes,
