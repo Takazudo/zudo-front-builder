@@ -29,16 +29,15 @@
 //! The other tests cover the placement rule (R2) at process level and a
 //! Cloudflare-adapter build whose scratch dir lies outside the project.
 
-#![cfg(unix)]
-
 use std::fs;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    locate_esbuild, zfb_binary, CrossBinaryE2eLock, ProcessTreeGuard, ProcessTreeSpawner,
+};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -64,6 +63,9 @@ const PUBLIC_PROBE_LIVE: &str = "zfb-4233-public-v2-live";
 /// dev's own `/assets/styles.css`.
 const DEV_CSS_MARKER: &str = "--zfb-4233-dev-css";
 
+// pnpm ships as `pnpm.cmd` on Windows; `Command` only auto-appends `.exe`.
+const PNPM_PROGRAM: &str = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -76,6 +78,38 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Creates a directory link at `link` pointing at the absolute `target`.
+#[cfg(unix)]
+fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    // Symlink creation needs a privilege that is not guaranteed; a junction
+    // needs none, so fall back to `mklink /J`.
+    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+        return Ok(());
+    }
+    let status = Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .stdout(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "mklink /J {} {} failed: {status}",
+            link.display(),
+            target.display()
+        )))
+    }
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
@@ -191,20 +225,8 @@ fn assert_origin(html: &str, island_bundle: &str, expected: &str, other: &str, c
     );
 }
 
-struct DevGuard {
-    child: std::process::Child,
-    pgid: libc::pid_t,
-}
-
-impl Drop for DevGuard {
-    fn drop(&mut self) {
-        unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
-        let _ = self.child.wait();
-    }
-}
-
 struct DevSession {
-    guard: DevGuard,
+    guard: ProcessTreeGuard,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
 }
@@ -241,11 +263,14 @@ fn spawn_dev(root: &Path, esbuild: &Path, extra_args: &[&str]) -> DevSession {
         .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS")
         .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
         .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()));
-    command.process_group(0);
-    let child = command.spawn().expect("spawn `zfb dev`");
-    let pgid = child.id() as libc::pid_t;
+    // `interruptible()` so the graceful stop below reaches dev even when the
+    // runner inherited SIGINT-ignored (background job) or runs on Windows.
+    let guard = ProcessTreeSpawner::new()
+        .interruptible()
+        .spawn(&mut command)
+        .expect("spawn `zfb dev`");
     DevSession {
-        guard: DevGuard { child, pgid },
+        guard,
         stdout_path,
         stderr_path,
     }
@@ -266,7 +291,7 @@ fn parse_ready_port(log: &str) -> Option<u16> {
 async fn wait_for_ready_port(session: &mut DevSession) -> u16 {
     let started = Instant::now();
     loop {
-        if let Some(status) = session.guard.child.try_wait().expect("try_wait `zfb dev`") {
+        if let Some(status) = session.guard.try_wait().expect("try_wait `zfb dev`") {
             panic!(
                 "`zfb dev` exited early ({status:?}) before its ready banner.\n{}",
                 session.logs()
@@ -779,16 +804,18 @@ async fn concurrent_scenario() {
     );
 
     // Graceful stop persists the graph inside the session, not in `.zfb/`.
-    unsafe { libc::kill(session.guard.child.id() as libc::pid_t, libc::SIGINT) };
-    let stopped = Instant::now();
-    while session.guard.child.try_wait().unwrap().is_none() {
-        assert!(
-            stopped.elapsed() < SHUTDOWN_DEADLINE,
-            "dev did not exit on SIGINT\n{}",
-            session.logs()
-        );
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
+    let stopped = tokio::task::block_in_place(|| {
+        session
+            .guard
+            .interrupt_and_wait(SHUTDOWN_DEADLINE)
+            .expect("interrupt `zfb dev`")
+    });
+    assert!(
+        stopped.is_some(),
+        "dev did not exit within {}s of a graceful interrupt\n{}",
+        SHUTDOWN_DEADLINE.as_secs(),
+        session.logs()
+    );
     assert!(
         session_a.join("graph.bin").is_file(),
         "graph.bin must be persisted under session-a; found {:?}",
@@ -935,7 +962,7 @@ async fn cloudflare_adapter_build_with_out_of_project_scratch_dir_runs_the_emitt
         eprintln!("[scratch_dir_concurrent_e2e] no esbuild binary available; skipping.");
         return;
     };
-    let pnpm_ok = Command::new("pnpm")
+    let pnpm_ok = Command::new(PNPM_PROGRAM)
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -968,15 +995,23 @@ async fn cloudflare_adapter_build_with_out_of_project_scratch_dir_runs_the_emitt
         zfb::render_pipeline::embedded_node_modules().expect("extract embedded node_modules");
     let scope = node_modules.join("@takazudo");
     fs::create_dir_all(&scope).unwrap();
-    std::os::unix::fs::symlink(&adapter, scope.join("zfb-adapter-cloudflare")).unwrap();
+    link_dir(&adapter, &scope.join("zfb-adapter-cloudflare")).unwrap();
     let bin_dir = node_modules.join(".bin");
     fs::create_dir_all(&bin_dir).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(
         "../@takazudo/zfb-adapter-cloudflare/bin/cli.mjs",
         bin_dir.join("zfb-adapter-cloudflare"),
     )
     .unwrap();
-    std::os::unix::fs::symlink(&node_modules, root.join("node_modules")).unwrap();
+    // Windows has no executable symlinks; pnpm exec resolves a `.cmd` shim via PATHEXT.
+    #[cfg(windows)]
+    fs::write(
+        bin_dir.join("zfb-adapter-cloudflare.cmd"),
+        "@node \"%~dp0\\..\\@takazudo\\zfb-adapter-cloudflare\\bin\\cli.mjs\" %*\r\n",
+    )
+    .unwrap();
+    link_dir(&node_modules, &root.join("node_modules")).unwrap();
 
     let scratch_arg = scratch.to_str().unwrap();
     run_zfb_ok(&root, &esbuild, &["build", "--scratch-dir", scratch_arg]);
