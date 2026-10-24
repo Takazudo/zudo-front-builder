@@ -786,6 +786,10 @@ impl Visit for FactoryReferenceCollector {
 struct Discovery<'a, R: Resolver> {
     resolver: &'a R,
     modules: BTreeMap<PathBuf, Rc<SourceModule>>,
+    /// [`Resolver::file_identity`] -> the `modules` key that loaded it, so a
+    /// definition's canonical module path reuses the scan's own spelling
+    /// instead of loading the file again as a demanded module (#4480).
+    module_keys: HashMap<PathBuf, PathBuf>,
     resolving: HashSet<(PathBuf, String)>,
     summarizing: HashSet<Definition>,
     summary_cache: BTreeMap<Definition, WrapperSummary>,
@@ -817,8 +821,15 @@ struct Discovery<'a, R: Resolver> {
 
 impl<'a, R: Resolver> Discovery<'a, R> {
     fn new(resolver: &'a R, modules: BTreeMap<PathBuf, SourceModule>) -> Self {
+        let mut module_keys = HashMap::new();
+        for path in modules.keys() {
+            module_keys
+                .entry(resolver.file_identity(path))
+                .or_insert_with(|| path.clone());
+        }
         Self {
             resolver,
+            module_keys,
             modules: modules
                 .into_iter()
                 .map(|(path, module)| (path, Rc::new(module)))
@@ -853,8 +864,16 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         }
     }
 
+    fn loaded(&self, path: &Path) -> Option<&Rc<SourceModule>> {
+        self.modules.get(path).or_else(|| {
+            self.module_keys
+                .get(&self.resolver.file_identity(path))
+                .and_then(|key| self.modules.get(key))
+        })
+    }
+
     fn module(&mut self, path: &Path) -> ScanResult<Rc<SourceModule>> {
-        if let Some(module) = self.modules.get(path) {
+        if let Some(module) = self.loaded(path) {
             return Ok(module.clone());
         }
         if !is_scannable_source(path) {
@@ -880,12 +899,15 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             source,
             client,
         });
+        self.module_keys
+            .entry(self.resolver.file_identity(path))
+            .or_insert_with(|| path.to_path_buf());
         self.modules.insert(path.to_path_buf(), module.clone());
         Ok(module)
     }
 
     fn diagnostic(&self, path: &Path, span: Span, message: impl Into<String>) -> ScanError {
-        let source = self.modules.get(path).map(|module| module.source.as_str());
+        let source = self.loaded(path).map(|module| module.source.as_str());
         let (line, column) = line_column(source, span.lo.0);
         ScanError::Registration {
             path: path.to_path_buf(),
@@ -900,11 +922,10 @@ impl<'a, R: Resolver> Discovery<'a, R> {
 
     fn definition_location(&self, definition: &Definition) -> String {
         let source = self
-            .modules
-            .get(&definition.module)
+            .loaded(&definition.module)
             .map(|module| module.source.as_str());
         let (line, column) = line_column(source, definition.position);
-        format!("{}:{line}:{column}", definition.module.display())
+        format!("{}:{line}:{column}", user_facing_path(&definition.module))
     }
 
     fn resolve_source(&self, from: &Path, specifier: &str) -> Option<PathBuf> {
@@ -1192,7 +1213,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
     }
 
     fn site_location(&self, path: &Path, span: Span) -> String {
-        let source = self.modules.get(path).map(|module| module.source.as_str());
+        let source = self.loaded(path).map(|module| module.source.as_str());
         let (line, column) = line_column(source, span.lo.0);
         format!("{}:{line}:{column}", path.display())
     }
@@ -1281,7 +1302,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         };
         // The function span, rather than the declaration identifier, is the
         // identity returned by resolve_local and followed through imports.
-        let module = self.modules.get(path).expect("factory module loaded");
+        let module = self.loaded(path).expect("factory module loaded");
         let mut span = None;
         for item in &module.ast.body {
             let declaration = match item {
@@ -3544,9 +3565,59 @@ pub(super) fn discover<R: Resolver>(
     Ok((selected, demanded_paths))
 }
 
+/// Diagnostic spelling of a resolved (canonicalized) module path. On Windows
+/// `canonicalize` adds the `\\?\` verbatim prefix; a drive path reads as the
+/// same file without it, so users see `C:\...` like every other path in the
+/// message. Off Windows `\\?\` is an ordinary file name and stays.
+fn user_facing_path(path: &Path) -> String {
+    let shown = path.display().to_string();
+    if cfg!(windows) {
+        if let Some(ordinary) = strip_verbatim_drive_prefix(&shown) {
+            return ordinary.to_string();
+        }
+    }
+    shown
+}
+
+fn strip_verbatim_drive_prefix(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(r"\\?\")?;
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\')
+        .then_some(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_paths_drop_only_a_verbatim_drive_prefix() {
+        assert_eq!(
+            strip_verbatim_drive_prefix(r"\\?\C:\site\components\a.tsx"),
+            Some(r"C:\site\components\a.tsx")
+        );
+        for unchanged in [
+            r"C:\site\components\a.tsx",
+            r"\\?\UNC\server\share\a.tsx",
+            r"\\?\C:",
+            "/site/components/a.tsx",
+        ] {
+            assert_eq!(strip_verbatim_drive_prefix(unchanged), None, "{unchanged}");
+        }
+        assert_eq!(
+            user_facing_path(Path::new("/site/components/a.tsx")),
+            "/site/components/a.tsx"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnostic_paths_show_canonical_windows_modules_without_the_verbatim_prefix() {
+        assert_eq!(
+            user_facing_path(Path::new(r"\\?\C:\site\components\a.tsx")),
+            r"C:\site\components\a.tsx"
+        );
+    }
 
     fn scan(files: &[(&str, &str)]) -> ScanResult<IslandsSet> {
         let mut resolver = InMemoryResolver::new();

@@ -476,12 +476,52 @@ pub trait Resolver {
         None
     }
 
+    /// Return the identity of the physical file `path` names.
+    ///
+    /// Two paths with the same identity are one module: a scan keeps the
+    /// first spelling it meets (the caller's root spelling wins) and treats
+    /// later aliases of the same file as already visited, so a project
+    /// reached through a symlinked directory records each edge once
+    /// (issue #4480). The identity is only compared, never reported. The
+    /// default is the path itself, which keeps exact-path resolvers such as
+    /// [`InMemoryResolver`] unchanged.
+    fn file_identity(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+
     /// Read the source content for a previously-resolved path.
     ///
     /// The error type is `String` (rather than `std::io::Error` or a
     /// trait-specific type) so test resolvers and FS resolvers can both
     /// produce the same shape without lossy conversions.
     fn read(&self, path: &Path) -> std::result::Result<String, String>;
+}
+
+/// One reported spelling per [`Resolver::file_identity`] within one scan
+/// (issue #4480). Seed it with the caller's roots first so their spelling is
+/// the one every later alias maps back to.
+#[derive(Debug, Default)]
+struct ScanSpellings {
+    by_identity: HashMap<PathBuf, PathBuf>,
+    /// Memo of `spell` results, so each distinct spelling pays for one
+    /// `file_identity` (a `realpath` for [`FsResolver`]) per scan.
+    by_path: HashMap<PathBuf, PathBuf>,
+}
+
+impl ScanSpellings {
+    fn spell<R: Resolver>(&mut self, resolver: &R, path: PathBuf) -> PathBuf {
+        if let Some(spelled) = self.by_path.get(&path) {
+            return spelled.clone();
+        }
+        let identity = resolver.file_identity(&path);
+        let spelled = self
+            .by_identity
+            .entry(identity)
+            .or_insert_with(|| path.clone())
+            .clone();
+        self.by_path.insert(path, spelled.clone());
+        spelled
+    }
 }
 
 /// Whether a specifier is bare (no `./`, `../`, or `/` prefix).
@@ -1676,6 +1716,13 @@ impl Resolver for FsResolver {
         pkg_dir.canonicalize().ok()
     }
 
+    fn file_identity(&self, path: &Path) -> PathBuf {
+        if is_virtual_scan_path(path) {
+            return path.to_path_buf();
+        }
+        canonicalize_or_self(path)
+    }
+
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
         if let Some(source) = self.virtual_sources.get(path) {
             return Ok(source.clone());
@@ -1942,6 +1989,23 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
     resolver: &R,
     first_party_root: Option<&Path>,
 ) -> ScanResult<ReachableModulesMeta> {
+    scan_reachable_modules_with_spellings(
+        roots,
+        resolver,
+        first_party_root,
+        &mut ScanSpellings::default(),
+    )
+}
+
+/// [`scan_reachable_modules_with_meta_and_first_party_root`] sharing an
+/// existing scan's spellings, so a follow-up walk reports the same spelling
+/// for a file the earlier walk already reached.
+fn scan_reachable_modules_with_spellings<R: Resolver>(
+    roots: &[PathBuf],
+    resolver: &R,
+    first_party_root: Option<&Path>,
+    spellings: &mut ScanSpellings,
+) -> ScanResult<ReachableModulesMeta> {
     let canonical_first_party_root = first_party_root.map(canonicalize_or_self);
     let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
     let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
@@ -1952,7 +2016,10 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
     // resolver itself would leak edges between calls.
     let mut workspace_package_edges: BTreeSet<WorkspacePackageImportEdge> = BTreeSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut stack: Vec<PathBuf> = roots.to_vec();
+    let mut stack: Vec<PathBuf> = roots
+        .iter()
+        .map(|root| spellings.spell(resolver, root.clone()))
+        .collect();
 
     while let Some(current) = stack.pop() {
         if !visited.insert(current.clone()) {
@@ -2004,6 +2071,7 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
                                 });
                             }
                         }
+                        let resolved = spellings.spell(resolver, resolved);
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
                         }
@@ -2032,8 +2100,12 @@ pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
     }
 
     let modules: Vec<PathBuf> = reachable.into_iter().collect();
-    let worker_discovery =
-        discover_module_workers(&modules, resolver, canonical_first_party_root.as_deref())?;
+    let worker_discovery = discover_module_workers(
+        &modules,
+        resolver,
+        canonical_first_party_root.as_deref(),
+        spellings,
+    )?;
     raw_import_edges.extend(worker_discovery.raw_import_edges);
     workspace_package_edges.extend(worker_discovery.workspace_package_edges);
     Ok(ReachableModulesMeta {
@@ -2075,8 +2147,13 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
     let mut parsed_modules: BTreeMap<PathBuf, (Module, String)> = BTreeMap::new();
     // Visited file set so cyclic imports terminate.
     let mut visited: HashSet<PathBuf> = HashSet::new();
+    // Issue #4480: one spelling per physical file, the caller's first.
+    let mut spellings = ScanSpellings::default();
     // DFS stack.
-    let mut stack: Vec<PathBuf> = pages.to_vec();
+    let mut stack: Vec<PathBuf> = pages
+        .iter()
+        .map(|page| spellings.spell(resolver, page.clone()))
+        .collect();
     // Per-module `<ClientRouter />` opt-in facts (#289, #307), keyed by
     // resolved path — the same key space as `visited`. The cross-module
     // verdict (following `export *` re-export edges) is computed from
@@ -2146,8 +2223,11 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
         // Gathered for every reachable module, not just `"use client"`
         // files — the import typically lives in an SSR-only layout that
         // carries no directive.
-        let cr_facts =
-            collect_client_router_facts(&module, |spec| resolver.resolve(&importer_dir, spec));
+        let cr_facts = collect_client_router_facts(&module, |spec| {
+            resolver
+                .resolve(&importer_dir, spec)
+                .map(|path| spellings.spell(resolver, path))
+        });
 
         // Issue #1387: record whether THIS module's source contains an
         // `import.meta.glob(...)` call anywhere, keyed by its resolved
@@ -2209,6 +2289,7 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
                     if let Some(resolved) =
                         resolve_module_edge(resolver, &current, &importer_dir, &specifier)
                     {
+                        let resolved = spellings.spell(resolver, resolved);
                         // Issue #1387: record the edge regardless of whether
                         // `resolved` was already visited — the island-reachability
                         // walk below needs the full edge set, not just the edges
@@ -2327,6 +2408,7 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
         &island_reachable_modules,
         resolver,
         canonical_first_party_root.as_deref(),
+        &mut spellings,
     )?;
     raw_import_edges_from_islands.extend(worker_discovery.raw_import_edges);
     workspace_package_edges_from_islands.extend(worker_discovery.workspace_package_edges);
@@ -2346,10 +2428,11 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
     if !demanded_paths.is_empty() {
         // A demanded target can cross the ordinary package traversal gate.
         // Its imported helper/resource closure still belongs to ScanMeta.
-        let extra = scan_reachable_modules_with_meta_and_first_party_root(
+        let extra = scan_reachable_modules_with_spellings(
             &demanded_paths,
             resolver,
             first_party_root,
+            &mut spellings,
         )?;
         for path in &extra.modules {
             if is_scannable_source(path) {
@@ -2362,7 +2445,9 @@ pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
                 client_router_facts.insert(
                     path.clone(),
                     collect_client_router_facts(&module, |spec| {
-                        resolver.resolve(importer_dir, spec)
+                        resolver
+                            .resolve(importer_dir, spec)
+                            .map(|path| spellings.spell(resolver, path))
                     }),
                 );
                 if contains_import_meta_glob(&module) {
@@ -2676,6 +2761,7 @@ fn discover_module_workers<R: Resolver>(
     roots: &[PathBuf],
     resolver: &R,
     first_party_root: Option<&Path>,
+    spellings: &mut ScanSpellings,
 ) -> ScanResult<ModuleWorkerDiscovery> {
     let mut found: BTreeSet<ModuleWorkerEdge> = BTreeSet::new();
     let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
@@ -2683,7 +2769,10 @@ fn discover_module_workers<R: Resolver>(
     // `raw_import_edges` above — never accumulated on the resolver itself.
     let mut workspace_package_edges: BTreeSet<WorkspacePackageImportEdge> = BTreeSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut stack = roots.to_vec();
+    let mut stack: Vec<PathBuf> = roots
+        .iter()
+        .map(|root| spellings.spell(resolver, root.clone()))
+        .collect();
 
     while let Some(current) = stack.pop() {
         if !visited.insert(current.clone())
@@ -2736,6 +2825,7 @@ fn discover_module_workers<R: Resolver>(
                     ),
                 });
             }
+            let source_path = spellings.spell(resolver, source_path);
             found.insert(ModuleWorkerEdge {
                 importer: current.clone(),
                 source_path: source_path.clone(),
@@ -2767,6 +2857,7 @@ fn discover_module_workers<R: Resolver>(
                                 });
                             }
                         }
+                        let resolved = spellings.spell(resolver, resolved);
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
                         }
@@ -2794,6 +2885,7 @@ fn discover_module_workers<R: Resolver>(
         }
         for specifier in collect_global_require_specifiers(&module, unresolved_ctxt) {
             if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                let resolved = spellings.spell(resolver, resolved);
                 if !visited.contains(&resolved) {
                     stack.push(resolved);
                 }
@@ -9864,9 +9956,13 @@ mod tests {
         let project = dir.path();
         let resolver = write_virtual_fixture(project);
 
-        let discovery =
-            discover_module_workers(&[project.join("pages/home.tsx")], &resolver, Some(project))
-                .unwrap();
+        let discovery = discover_module_workers(
+            &[project.join("pages/home.tsx")],
+            &resolver,
+            Some(project),
+            &mut ScanSpellings::default(),
+        )
+        .unwrap();
         assert_eq!(
             discovery.worker_edges,
             vec![ModuleWorkerEdge {
