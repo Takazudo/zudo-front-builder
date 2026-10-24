@@ -173,9 +173,10 @@
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
 # .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/V8-host usage. The
 # mechanical guard classifies every integration-test source: 53 heavy binaries,
-# five documented exclusions (`check_command`,
+# six documented exclusions (`check_command`,
 # `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`,
-# `embedded_node_modules_cache`, and `version_report`), plus `version_stamp`,
+# `embedded_node_modules_cache`, `process_guard_support`, and
+# `version_report`), plus `version_stamp`,
 # whose single heavy test is assigned
 # by the exact-name predicate documented below. Of the exclusions, only
 # `check_command` is an intentional source-heuristic false positive; it also
