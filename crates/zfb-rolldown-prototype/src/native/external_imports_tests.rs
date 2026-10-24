@@ -9,8 +9,13 @@ use std::{
     process::Command,
 };
 
-/// Bundles `entry.js` with splitting and returns every metafile output import.
-fn bundle_imports(name: &str, files: &[(&str, &str)], externals: &[&str]) -> Vec<Value> {
+/// Runs a splitting ESM build of `entry.js` in a fresh temp dir and returns
+/// the build result plus the metafile text (empty when none was written).
+fn prepared_build(
+    name: &str,
+    files: &[(&str, &str)],
+    extra_args: &[String],
+) -> (anyhow::Result<()>, String) {
     let dir = std::env::temp_dir().join(format!("zfb-native-ext-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir(&dir).unwrap();
@@ -26,15 +31,24 @@ fn bundle_imports(name: &str, files: &[(&str, &str)], externals: &[&str]) -> Vec
         "--platform=neutral",
         "--splitting=true",
         "--outdir=out",
-        "--chunk-names=chunk-[hash]",
         "--metafile=out/meta.json",
     ]);
-    for external in externals {
-        cmd.arg(format!("--external:{external}"));
-    }
+    cmd.args(extra_args);
     let result = super::run_prepared(&cmd);
     let meta = fs::read_to_string(dir.join("out/meta.json")).unwrap_or_default();
     fs::remove_dir_all(&dir).unwrap();
+    (result, meta)
+}
+
+/// Bundles `entry.js` with splitting and returns every metafile output import.
+fn bundle_imports(name: &str, files: &[(&str, &str)], externals: &[&str]) -> Vec<Value> {
+    let mut args = vec!["--chunk-names=chunk-[hash]".to_string()];
+    args.extend(
+        externals
+            .iter()
+            .map(|external| format!("--external:{external}")),
+    );
+    let (result, meta) = prepared_build(name, files, &args);
     result.unwrap();
     let meta: Value = serde_json::from_str(&meta).unwrap();
     meta["outputs"]
@@ -184,29 +198,17 @@ fn import_of_another_emitted_chunk_is_not_a_collision() {
 
 #[test]
 fn real_build_with_an_external_spelled_like_the_entry_fails_naming_the_id() {
-    let dir = std::env::temp_dir().join(format!("zfb-native-ext-collide-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir).unwrap();
-    let dir = fs::canonicalize(dir).unwrap();
-    fs::write(
-        dir.join("entry.js"),
-        "export const load = () => import(\"./islands.js\");\n",
-    )
-    .unwrap();
-    let mut cmd = Command::new("unused-prepared-esbuild");
-    cmd.current_dir(&dir).args([
-        "entry.js",
-        "--bundle",
-        "--format=esm",
-        "--platform=neutral",
-        "--splitting=true",
-        "--outdir=out",
-        "--entry-names=islands",
-        "--metafile=out/meta.json",
-        "--external:./islands.js",
-    ]);
-    let result = super::run_prepared(&cmd);
-    fs::remove_dir_all(&dir).unwrap();
+    let (result, _) = prepared_build(
+        "collide",
+        &[(
+            "entry.js",
+            "export const load = () => import(\"./islands.js\");\n",
+        )],
+        &[
+            "--entry-names=islands".to_string(),
+            "--external:./islands.js".to_string(),
+        ],
+    );
     let error = format!("{:#}", result.unwrap_err());
     assert!(error.contains("\"islands.js\""), "{error}");
 }

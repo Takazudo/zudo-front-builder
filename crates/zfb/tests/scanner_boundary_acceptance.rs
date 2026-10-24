@@ -74,31 +74,22 @@ fn copy_dir(source: &Path, destination: &Path) {
 
 /// Atomic replace: a live dev watcher must never observe a truncated or
 /// partial source (`fs::write` truncates, then writes, and FSEvents can
-/// surface that as two batches). The temp name is dot-prefixed with a
-/// numeric final extension, so it classifies as an unrelated file (not a
-/// page/module/content source) and is never scanned.
+/// surface that as two batches). The temp file is staged beside the project
+/// root, never inside it: the watcher classifies paths by their root segment
+/// (`pages/`, `components/`, …) regardless of extension, so a temp file under
+/// a watched root would surface as its own page/module change.
 fn write(root: &Path, relative: &str, body: &str) {
-    use std::io::Write as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static SEQ: AtomicUsize = AtomicUsize::new(0);
 
     let path = root.join(relative);
-    let parent = path.parent().expect("fixture path parent");
-    fs::create_dir_all(parent).expect("create parent");
-    let name = path
-        .file_name()
-        .expect("fixture file name")
-        .to_string_lossy();
-    let temp = parent.join(format!(
-        ".{name}.zfb-tmp-{}-{}",
+    fs::create_dir_all(path.parent().expect("fixture path parent")).expect("create parent");
+    let temp = root.parent().unwrap_or(root).join(format!(
+        ".zfb-fixture-tmp-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let mut file = fs::File::create(&temp).expect("create fixture temp file");
-    file.write_all(body.as_bytes())
-        .expect("write fixture temp file");
-    file.sync_all().expect("flush fixture temp file");
-    drop(file);
+    fs::write(&temp, body).expect("write fixture temp file");
     fs::rename(&temp, &path).expect("rename fixture temp file over target");
 }
 
