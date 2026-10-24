@@ -925,7 +925,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             .loaded(&definition.module)
             .map(|module| module.source.as_str());
         let (line, column) = line_column(source, definition.position);
-        format!("{}:{line}:{column}", definition.module.display())
+        format!("{}:{line}:{column}", user_facing_path(&definition.module))
     }
 
     fn resolve_source(&self, from: &Path, specifier: &str) -> Option<PathBuf> {
@@ -3565,9 +3565,59 @@ pub(super) fn discover<R: Resolver>(
     Ok((selected, demanded_paths))
 }
 
+/// Diagnostic spelling of a resolved (canonicalized) module path. On Windows
+/// `canonicalize` adds the `\\?\` verbatim prefix; a drive path reads as the
+/// same file without it, so users see `C:\...` like every other path in the
+/// message. Off Windows `\\?\` is an ordinary file name and stays.
+fn user_facing_path(path: &Path) -> String {
+    let shown = path.display().to_string();
+    if cfg!(windows) {
+        if let Some(ordinary) = strip_verbatim_drive_prefix(&shown) {
+            return ordinary.to_string();
+        }
+    }
+    shown
+}
+
+fn strip_verbatim_drive_prefix(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(r"\\?\")?;
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\')
+        .then_some(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_paths_drop_only_a_verbatim_drive_prefix() {
+        assert_eq!(
+            strip_verbatim_drive_prefix(r"\\?\C:\site\components\a.tsx"),
+            Some(r"C:\site\components\a.tsx")
+        );
+        for unchanged in [
+            r"C:\site\components\a.tsx",
+            r"\\?\UNC\server\share\a.tsx",
+            r"\\?\C:",
+            "/site/components/a.tsx",
+        ] {
+            assert_eq!(strip_verbatim_drive_prefix(unchanged), None, "{unchanged}");
+        }
+        assert_eq!(
+            user_facing_path(Path::new("/site/components/a.tsx")),
+            "/site/components/a.tsx"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnostic_paths_show_canonical_windows_modules_without_the_verbatim_prefix() {
+        assert_eq!(
+            user_facing_path(Path::new(r"\\?\C:\site\components\a.tsx")),
+            r"C:\site\components\a.tsx"
+        );
+    }
 
     fn scan(files: &[(&str, &str)]) -> ScanResult<IslandsSet> {
         let mut resolver = InMemoryResolver::new();
