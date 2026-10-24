@@ -77,3 +77,55 @@ jobs:
       - name: zfb-islands graph identity integration tests
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-islands --test graph_identity -- --test-threads=1
+
+  # #4366 rows e/f: native Windows process-tree kill + graceful-interrupt guard
+  # (zfb-test-utils) and the real-process e2e binaries. scratch_dir_concurrent_e2e
+  # is `#![cfg(unix)]` (selects 0 tests on Windows), so it is deliberately not run
+  # here rather than reported as a green no-op. The e2e binaries self-skip when
+  # esbuild/node/pnpm are missing; the pnpm install and setup-node above provide
+  # all three on PATH, and the log is kept so a skip would be visible.
+  windows-e2e:
+    name: Windows e2e (zfb-test-utils process guard, scanner/reproducibility e2e)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: zfb-test-utils (kill-tree + graceful interrupt)
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p e2e-logs
+          cargo test --locked -p zfb-test-utils -- --test-threads=1 --nocapture 2>&1 | tee e2e-logs/zfb-test-utils.log
+
+      - name: zfb e2e binaries
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p e2e-logs
+          cargo test --locked -p zfb --test scanner_boundary_acceptance --test build_reproducibility_e2e -- --test-threads=1 --nocapture 2>&1 | tee e2e-logs/zfb-e2e.log
+
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-e2e-logs
+          path: |
+            e2e-logs/
+            target/tmp/
+          retention-days: 7
+          if-no-files-found: ignore
