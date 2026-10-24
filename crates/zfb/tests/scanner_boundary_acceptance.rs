@@ -715,7 +715,7 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         "scanner boundary acceptance requires Node.js"
     );
     assert!(
-        node_available("npm"),
+        node_available(npm_program()),
         "scanner boundary acceptance requires npm"
     );
 
