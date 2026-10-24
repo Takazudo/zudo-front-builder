@@ -931,7 +931,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("5.0.1");
+    expect(linuxContract.toolchain.packageVersion).toBe("5.1.0");
     // A schemaVersion-3 contract tracks the dependency fingerprint, the same
     // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
     // is baseline provenance, pinned by the live release-bump test below.
@@ -1526,15 +1526,15 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v5.0.1 release bump cites the v5.0.0 release contract on main.
+    // The v5.1.0 release bump cites the v5.0.1 release contract on main.
     file: "decision-linux-x64.json",
-    commit: "8c092294279339fc71212a0781f9f41a26754af8",
-    sha256: "bc63f1169867dfac2ccb96bcbb0aec474655196a9082f5d41dfe314fabb7c6bc",
-    fixture: "fixtures/island-size-linux-x64-v5.0.0-release.json",
+    commit: "c9ba39a53a32a53d16c4006c4ac2b9f649d837e5",
+    sha256: "7839bbe6e9de96258e48d29796db5e560ba0c4a001913d39c5659da539d487a9",
+    fixture: "fixtures/island-size-linux-x64-v5.0.1-release.json",
     outcome: "release-version-stamp",
-    packageVersion: "5.0.0",
-    baselineSourceSha: "01833922a79368dc0898f9e0c1e1544daaa3267c",
-    baselineRunId: 39947910044,
+    packageVersion: "5.0.1",
+    baselineSourceSha: "2f1c821ede49fe0b3faa8c227fdc988c6157d3aa",
+    baselineRunId: 40040309616,
   },
   {
     // The #4429 oxc edge (cargo-internal-rewire) cites the Darwin v4.7.0 release
@@ -2754,9 +2754,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expectReleaseBumpOnly(predecessor, live);
   });
 
-  it("moves the live Linux contract from the frozen v5.0.0 bytes only by the v5.0.1 release bump", () => {
+  // Verbatim bytes of decision-linux-x64.json at c9ba39a5 (the v5.0.1 release
+  // re-pin on main), the state the v5.1.0 release bump moved.
+  const linuxV501 = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.0.1-release.json",
+      "7839bbe6e9de96258e48d29796db5e560ba0c4a001913d39c5659da539d487a9",
+    );
+
+  it("moves the frozen v5.0.1 Linux contract from the frozen v5.0.0 bytes only by the v5.0.1 release bump", () => {
     const predecessor = linuxV500();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV501();
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.0.1");
     expect(live.baselineSourceSha).toBe("2f1c821ede49fe0b3faa8c227fdc988c6157d3aa");
@@ -2772,6 +2780,28 @@ describe("live contracts preserve released evidence and authentic predecessors",
     // The v5.0.1 pnpm-lock.yaml the release probe measured.
     expect(live.toolchain.pnpmLockSha256).toBe(
       "9739bcb3f6ed5eda2b3132029c783465e3d5fd9f7843a805e904bd3e5766bb7b",
+    );
+    expectReleaseBumpOnly(predecessor, live);
+  });
+
+  it("moves the live Linux contract from the frozen v5.0.1 bytes only by the v5.1.0 release bump", () => {
+    const predecessor = linuxV501();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.1.0");
+    expect(live.baselineSourceSha).toBe("edc6c102d8768b70aacdc64ff2734f6338e58582");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 40091457859,
+      jobId: 120864848114,
+      sourceSha: "fffde2e698bd9bcb0f4a468679a0573d5b7ceee6",
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The v5.1.0 pnpm-lock.yaml the release probe measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "be97c4c8d50d64cf5ae64e14095a348e89fd7bced1683687bfe98f5dabed9f9b",
     );
     expectReleaseBumpOnly(predecessor, live);
   });

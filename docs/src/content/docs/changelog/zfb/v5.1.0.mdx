@@ -1,0 +1,12 @@
+---
+title: v5.1.0
+sidebar_position: 160
+---
+
+# v5.1.0
+
+Released: 2026-10-24
+
+## Features
+
+- Islands: the build now fails with a clear error when an emitted output imports the islands entry (e78c09152, 5595044c4, #4454). Production renames the entry (`islands.js` → `islands-<hash>.js`) but writes chunks verbatim, so a chunk that imports `./islands.js` 404s in the browser. That was the #4444 failure, which v5.0.1 fixed for today's chunk shapes. The new check reads the bundler's own metafile after every splitting islands build, on both the Rolldown (default) and esbuild bundlers. If a future bundler change reintroduces such an edge, the build fails, in production and dev alike, instead of shipping a broken site. Valid builds are unaffected: emitted bytes and chunking options are unchanged.
