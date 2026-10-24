@@ -686,6 +686,13 @@ fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir
 /// PLUS at least one self-hashed chunk, and the dynamically-imported code
 /// lives in the chunk, NOT in the entry. Determinism: an identical rebuild
 /// produces the same chunk filename(s).
+///
+/// Also the real-backend proof for the entry-import guard (#4464): `bundle`
+/// fails unless exactly one output in the real `meta.json` resolves to the
+/// synthesized islands entry and no other output imports it, so a passing
+/// run shows the backend's real metafile spelling classifies correctly. A
+/// default build is esbuild; with `--features rolldown-prototype` the same
+/// test runs on Rolldown native.
 #[test]
 #[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
             (ZFB_ESBUILD_BIN, absolute path, or the staged \

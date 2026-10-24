@@ -28,7 +28,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+// Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
+import { realpathSync as realpathSyncForMain } from "node:fs";
 import {
   PRESETS,
   createState,
@@ -401,7 +403,10 @@ export function verifyDesignSeedExports(env = process.env) {
   }
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  realpathSyncForMain(process.argv[1]) === realpathSyncForMain(fileURLToPath(import.meta.url))
+) {
   try {
     verifyDesignSeedExports();
   } catch (error) {

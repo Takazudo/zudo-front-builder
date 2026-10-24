@@ -3,6 +3,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// Compare canonical paths: a symlinked invocation path (macOS /var -> /private/var) must still run main() (#4465).
+import { realpathSync as realpathSyncForMain } from "node:fs";
 
 const RELEASE_PAGE_NAME = /^v.*\.mdx$/;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
@@ -100,9 +102,9 @@ function main() {
   process.stdout.write(`${nextChangelogSidebarPosition(args[0])}\n`);
 }
 
-const invokedPath = process.argv[1] && resolve(process.argv[1]);
+const invokedPath = process.argv[1] && realpathSyncForMain(process.argv[1]);
 const thisPath = fileURLToPath(import.meta.url);
-if (invokedPath === thisPath) {
+if (invokedPath === realpathSyncForMain(thisPath)) {
   try {
     main();
   } catch (error) {
