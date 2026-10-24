@@ -70,3 +70,10 @@ jobs:
       - name: zfb-islands graph identity tests
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-islands --lib graph_identity::tests -- --test-threads=1
+
+      # Real-esbuild integration binary; locate_esbuild resolves esbuild.exe from the
+      # pnpm store installed above. The two symlink tests are cfg(unix), so Windows
+      # selects the remaining 6.
+      - name: zfb-islands graph identity integration tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p zfb-islands --test graph_identity -- --test-threads=1
