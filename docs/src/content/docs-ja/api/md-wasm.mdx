@@ -249,7 +249,7 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 `./parse` は独立した **SWC-free** グラフです。`swc_core` と `zfb-render` を除外しつつ、
 `zfb-content` と `syntect-fancy` は意図的に保持します。parse は syntect-free ではありません。
 
-| サブパス | gzip-9 wasm（5.0.0） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
+| サブパス | gzip-9 wasm（5.0.1） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
 | --- | ---: | --- | --- | --- |
 | `.` | 1,536,139 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | 現在の compile/render/parse/raw-mdast/highlight の完全な型セット | MDX のコンパイル、または複数の現在の API を使う場合 |
 | `./highlight` | 821,783 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換のまま |
@@ -349,7 +349,7 @@ wasm トラップが発生すると、代替インスタンスの準備ができ
 
 ### 出荷アーティファクトのサイズと上限
 
-出荷された **5.0.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+出荷された **5.0.1** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
 wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
 グルーコードのバイト数とその gzip です:
 
@@ -365,7 +365,7 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 [153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 880,000 B、
 render 1,125,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
 いずれも上限の内側で出荷されており、上限までの余裕は root 63,861 B、highlight 58,217 B、
-render 10,118 B、parse 24,476 B です。これらは永続的な保証ではなく 5.0.0 の測定値です —
+render 10,118 B、parse 24,476 B です。これらは永続的な保証ではなく 5.0.1 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 **サイズは保証されますが、コンテンツダイジェストは保証されません。** 上記のバイトサイズは

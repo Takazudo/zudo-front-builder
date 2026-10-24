@@ -1,0 +1,12 @@
+---
+title: v5.0.1
+sidebar_position: 159
+---
+
+# v5.0.1
+
+Released: 2026-10-24
+
+## Bug Fixes
+
+- Islands (Rolldown, the default bundler): a lazy `import()` chunk no longer imports the unfingerprinted `./islands.js` entry. Production publishes only `islands-<hash>.js`, so a lazily loaded island that shared exported code with the eagerly loaded islands failed in the browser with `GET /assets/islands.js 404` and `Failed to fetch dynamically imported module` (1d4f53282, fixes #4444). Code shared between the entry and a lazy chunk now goes to an `islands-chunk-[hash]` common chunk, the same shape esbuild produces. Affected sites can drop the `ZFB_BUNDLER=esbuild` workaround. Asset hashes may change for sites with that shape.
