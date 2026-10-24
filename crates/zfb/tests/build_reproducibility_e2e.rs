@@ -229,7 +229,10 @@ fn scaffold_project(root: &Path) {
     fs::create_dir_all(&scope).expect("create @takazudo package scope");
     let adapter_link = scope.join("zfb-adapter-cloudflare");
     if fs::symlink_metadata(&adapter_link).is_ok() {
-        fs::remove_file(&adapter_link).expect("remove existing adapter link");
+        // A Windows directory symlink or junction is removed with remove_dir.
+        fs::remove_file(&adapter_link)
+            .or_else(|_| fs::remove_dir(&adapter_link))
+            .expect("remove existing adapter link");
     }
     link_dir(&adapter, &adapter_link).expect("link workspace adapter package");
     let bin_dir = node_modules.join(".bin");
@@ -686,9 +689,7 @@ fn two_checkout_roots_emit_identical_dist_bytes() {
         );
         let source = fs::read_to_string(logical_entry).unwrap();
         assert!(
-            source.contains(
-                &serde_json::to_string(&store_entry.to_string_lossy().into_owned()).unwrap()
-            ),
+            source.contains(&serde_json::to_string(&js_path_specifier(store_entry)).unwrap()),
             "logical entry must re-export from this root's private store entry"
         );
     }

@@ -1522,7 +1522,10 @@ fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Pa
         .chars()
         .count()
         + 1;
-    let invalid_location = format!("{}:{line}:{column}", root.join("pages").join("index.tsx").display());
+    let invalid_location = format!(
+        "{}:{line}:{column}",
+        root.join("pages").join("index.tsx").display()
+    );
     let lines: Vec<&str> = recovery_stderr.lines().collect();
     let first_intake = lines
         .iter()
