@@ -22,8 +22,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/process_guard.rs"]
+mod process_guard;
+
+use process_guard::ProcessTreeGuard;
 use serde_json::json;
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock, ProcessTreeGuard};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 const EXPECTED_MARKERS: &[&str] = &[
     "AliasCounter",
