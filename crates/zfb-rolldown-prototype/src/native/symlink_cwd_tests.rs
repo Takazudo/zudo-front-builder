@@ -224,6 +224,26 @@ fn the_engine_gets_the_physical_cwd_and_the_caller_keeps_its_own() {
     );
 }
 
+/// Only the cwd prefix is made physical: a symlinked directory inside the
+/// project (how shadow staging lays out a subtree) keeps its spelling, so the
+/// entry's relative imports resolve beside the staged files, not the originals.
+#[test]
+fn a_symlinked_subdirectory_inside_the_cwd_keeps_its_spelling() {
+    let project = Project::new("nested", &[]);
+    let staged = project.root.join("staged-src");
+    fs::create_dir(&staged).unwrap();
+    fs::write(staged.join("entry.js"), "export const A = 1;\n").unwrap();
+    symlink(&staged, project.real.join("src")).unwrap();
+    let mut cmd = Command::new("unused-prepared-esbuild");
+    cmd.current_dir(&project.link)
+        .args(["src/entry.js", "--bundle", "--outdir=out"]);
+    let request = Request::decode(&cmd).unwrap();
+    assert_eq!(
+        request.options.input.as_ref().unwrap()[0].import,
+        project.real.join("src/entry.js").to_string_lossy()
+    );
+}
+
 /// #4429 reads a warning's importer against the process cwd, which here is
 /// the crate directory, not the symlinked project.
 #[test]

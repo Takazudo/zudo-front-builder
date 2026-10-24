@@ -58,12 +58,17 @@ impl Request {
         let engine_spelling = |value: String| engine_spelling(value, windows);
         let logical_join =
             |value: &str| engine_spelling(cwd.join(value).to_string_lossy().into_owned());
+        // Only the cwd prefix moves to its physical spelling: a symlinked
+        // directory inside the project (a shadow-staged subtree) stays as
+        // spelled, so relative imports still resolve beside the staged files.
         let engine_join = |value: &str| {
-            let joined = physical_cwd.join(value);
+            let logical = cwd.join(value);
             let joined = if windows {
-                joined
+                physical_cwd.join(value)
+            } else if let Ok(rest) = logical.strip_prefix(&cwd) {
+                physical_cwd.join(rest)
             } else {
-                physical_spelling(&joined)
+                physical_spelling(&logical)
             };
             engine_spelling(joined.to_string_lossy().into_owned())
         };

@@ -503,12 +503,24 @@ pub trait Resolver {
 #[derive(Debug, Default)]
 struct ScanSpellings {
     by_identity: HashMap<PathBuf, PathBuf>,
+    /// Memo of `spell` results, so each distinct spelling pays for one
+    /// `file_identity` (a `realpath` for [`FsResolver`]) per scan.
+    by_path: HashMap<PathBuf, PathBuf>,
 }
 
 impl ScanSpellings {
     fn spell<R: Resolver>(&mut self, resolver: &R, path: PathBuf) -> PathBuf {
+        if let Some(spelled) = self.by_path.get(&path) {
+            return spelled.clone();
+        }
         let identity = resolver.file_identity(&path);
-        self.by_identity.entry(identity).or_insert(path).clone()
+        let spelled = self
+            .by_identity
+            .entry(identity)
+            .or_insert_with(|| path.clone())
+            .clone();
+        self.by_path.insert(path, spelled.clone());
+        spelled
     }
 }
 
@@ -2813,11 +2825,11 @@ fn discover_module_workers<R: Resolver>(
                     ),
                 });
             }
+            let source_path = spellings.spell(resolver, source_path);
             found.insert(ModuleWorkerEdge {
                 importer: current.clone(),
                 source_path: source_path.clone(),
             });
-            let source_path = spellings.spell(resolver, source_path);
             if !visited.contains(&source_path) {
                 stack.push(source_path);
             }
