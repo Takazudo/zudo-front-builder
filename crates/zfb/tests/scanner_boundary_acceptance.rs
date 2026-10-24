@@ -729,10 +729,6 @@ async fn wait_for_dev_page_marker_at(
 }
 
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/4499"
-)]
 fn production_and_packed_consumers_validate_exact_boundary_registry() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let esbuild = locate_esbuild().expect(
@@ -889,10 +885,23 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     let reactive_runtime_definitions = browser_source
         .matches(r#"@takazudo/zfb/zudo-react/runtime-definition-v1":!0"#)
         .count();
-    assert_eq!(
-        reactive_runtime_definitions, 1,
-        "minified client bundle must have one zudo-react reactive core; duplicate runtime definitions break packed-island subscriptions"
-    );
+    // Windows duplicates the reactive core (#4499, likely 8.3 short-name module
+    // ids). Bound it to the observed count so the rest of this test keeps
+    // running there; a worse count still fails and a fixed one is announced.
+    if cfg!(windows) {
+        assert!(
+            matches!(reactive_runtime_definitions, 1 | 2),
+            "Windows reactive-core count left the known #4499 state (1 or 2): {reactive_runtime_definitions}"
+        );
+        if reactive_runtime_definitions == 1 {
+            eprintln!("[scanner_boundary_acceptance] one reactive core on Windows: #4499 may be fixed; restore the unconditional assertion");
+        }
+    } else {
+        assert_eq!(
+            reactive_runtime_definitions, 1,
+            "minified client bundle must have one zudo-react reactive core; duplicate runtime definitions break packed-island subscriptions"
+        );
+    }
     let build_tokens: BTreeSet<_> = html
         .split("data-zfb-build=\"")
         .skip(1)
@@ -1575,6 +1584,11 @@ fn assert_recovery_failures_read_invalid_source(recovery_stderr: &str, root: &Pa
         assert!(
             line.contains(&invalid_location),
             "a late failure must come from a read of the invalid source ({invalid_location}): {recovery_stderr}"
+        );
+        // `contains` alone would also match a `\\?\`-prefixed spelling.
+        assert!(
+            !cfg!(windows) || !line.contains(r"\\?\"),
+            "the user-facing diagnostic must not print a verbatim path: {line}"
         );
     }
 }
