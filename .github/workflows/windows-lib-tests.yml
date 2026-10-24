@@ -151,7 +151,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           mkdir -p e2e-logs
-          cargo test --locked -p zfb --test scanner_boundary_acceptance --test build_reproducibility_e2e --test scratch_dir_concurrent_e2e -- --test-threads=1 --nocapture 2>&1 | tee e2e-logs/zfb-e2e.log
+          cargo test --locked -p zfb --test scanner_boundary_acceptance --test build_reproducibility_e2e --test scratch_dir_concurrent_e2e --no-fail-fast -- --test-threads=1 --nocapture 2>&1 | tee e2e-logs/zfb-e2e.log
 
       - name: Upload e2e logs
         if: failure()
