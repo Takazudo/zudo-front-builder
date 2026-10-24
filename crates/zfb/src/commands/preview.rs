@@ -60,7 +60,7 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use zfb_build::AdapterChoice;
+use zfb_build::{AdapterChoice, PNPM_PROGRAM};
 use zfb_server::{
     dispatch_plugin, origin_gate, DevMiddlewareSet, HostValidation, PluginDispatchAttempt,
     RedirectOutcome, Redirects, ServerMode,
@@ -846,7 +846,7 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let output = tokio::process::Command::new("pnpm")
+    let output = tokio::process::Command::new(PNPM_PROGRAM)
         .arg("exec")
         .arg("wrangler")
         .arg("--version")
@@ -1113,7 +1113,7 @@ where
 /// project's own wrangler config, resolved relative to `cwd`
 /// (`project_root`, set below).
 fn build_wrangler_command(project_root: &Path, host: &str, port: u16) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("pnpm");
+    let mut cmd = tokio::process::Command::new(PNPM_PROGRAM);
     cmd.arg("exec")
         .arg("wrangler")
         .arg("dev")
@@ -1646,7 +1646,8 @@ mod tests {
         let cmd = build_wrangler_command(project_root, DEFAULT_PREVIEW_HOST, 8788);
 
         let std_cmd = cmd.as_std();
-        assert_eq!(std_cmd.get_program(), "pnpm");
+        let expected_program = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+        assert_eq!(std_cmd.get_program(), expected_program);
 
         let args: Vec<&std::ffi::OsStr> = std_cmd.get_args().collect();
         // Expect: exec wrangler dev --port <port> — no positional outdir;

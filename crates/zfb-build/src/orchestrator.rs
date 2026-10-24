@@ -240,6 +240,28 @@ fn dev_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Comparison spelling for the `ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE`
+/// seam. A test passes a `canonicalize`d path, which on Windows is the
+/// verbatim `\\?\C:\...` form where `/` is not a separator, while the
+/// watcher reports `C:\...\pages\index.tsx`; both sides drop a verbatim
+/// drive prefix so `Path` equality sees the same components. Elsewhere `\\?\`
+/// is an ordinary file name and the path is compared as given.
+fn forced_created_match_key(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        if let Some(ordinary) = path.to_str().and_then(strip_verbatim_drive_prefix) {
+            return PathBuf::from(ordinary);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn strip_verbatim_drive_prefix(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(r"\\?\")?;
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\')
+        .then_some(rest)
+}
+
 /// Pure parse for `ZFB_DEV_TEST_ORCH_PANIC_ON_TICK` (issue #2100, Dev
 /// Supervision epic #2099 Sub #2100 — deterministic fault-injection knobs).
 /// Mirrors the tolerant boolean idiom `dev_timing_enabled` above uses: unset,
@@ -1675,7 +1697,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     if dev_timing_enabled() {
                         match &result {
                             Ok(_) => eprintln!("[zfb-timing] discovery: ok"),
-                            Err(error) => eprintln!("[zfb-timing] discovery: err={error:#}"),
+                            // The error itself is the tick's result; echoing it here
+                            // would print the user-facing diagnostic twice.
+                            Err(_) => {
+                                eprintln!("[zfb-timing] discovery: err (reported by the tick)")
+                            }
                         }
                     }
                     result?
@@ -2164,8 +2190,8 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // Opt-in process-test seam for the macOS FSEvents Created shape.
         // Match one exact source path and never rewrite Removed, so genuine
         // deletion invalidation and every other watcher input stay intact.
-        let force_created_page =
-            std::env::var_os("ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE").map(PathBuf::from);
+        let force_created_page = std::env::var_os("ZFB_DEV_TEST_FORCE_CREATED_FOR_PAGE_SOURCE")
+            .map(|path| forced_created_match_key(Path::new(&path)));
         let panic_on_tick_armed = orch_panic_on_tick_armed(
             std::env::var("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK")
                 .ok()
@@ -2261,7 +2287,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             let mut changes = retain_unsuppressed_changes(&this.config, changes);
             if let Some(target) = force_created_page.as_ref() {
                 for (path, kind) in &mut changes {
-                    if path == target && *kind != ChangeKind::Removed {
+                    if forced_created_match_key(path) == *target && *kind != ChangeKind::Removed {
                         if dev_timing_enabled() {
                             eprintln!(
                                 "[zfb-timing] test-forced Created: {} (from {kind:?})",
@@ -6583,6 +6609,44 @@ mod tests {
     // coverage for the two fault-injection knobs' pure parse/decision
     // functions, per zudo-test-wisdom — these don't need a booted dev
     // server to exercise the parse/decision logic.
+
+    #[test]
+    fn verbatim_drive_prefix_strips_only_drive_paths() {
+        assert_eq!(
+            strip_verbatim_drive_prefix(r"\\?\C:\site\pages/index.tsx"),
+            Some(r"C:\site\pages/index.tsx")
+        );
+        assert_eq!(strip_verbatim_drive_prefix(r"\\?\d:\"), Some(r"d:\"));
+        for unchanged in [
+            r"C:\site\pages\index.tsx",
+            r"\\?\UNC\server\share\index.tsx",
+            r"\\?\C:",
+            r"\\?\Volume{0123}\index.tsx",
+            "/site/pages/index.tsx",
+        ] {
+            assert_eq!(strip_verbatim_drive_prefix(unchanged), None, "{unchanged}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn forced_created_key_matches_the_watcher_spelling_of_a_canonical_path() {
+        assert_eq!(
+            forced_created_match_key(Path::new(r"\\?\C:\site\pages/index.tsx")),
+            forced_created_match_key(Path::new(r"C:\site\pages\index.tsx"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn forced_created_key_is_the_given_path_off_windows() {
+        for path in ["/site/pages/index.tsx", r"\\?\C:\site\pages\index.tsx"] {
+            assert_eq!(
+                forced_created_match_key(Path::new(path)),
+                PathBuf::from(path)
+            );
+        }
+    }
 
     #[test]
     fn orch_panic_on_tick_armed_unset_is_not_armed() {

@@ -115,10 +115,10 @@ impl Request {
                 loaders.insert(k.to_string(), v.to_string());
             } else if let Some(value) = arg.strip_prefix("--alias:") {
                 let (k, v) = value.split_once('=').context("alias")?;
-                resolve
-                    .alias
-                    .get_or_insert_default()
-                    .push((k.to_string(), vec![Some(engine_spelling(v.to_string())?)]));
+                let aliases = resolve.alias.get_or_insert_default();
+                for (key, target) in alias_entries(k, engine_spelling(v.to_string())?, windows) {
+                    aliases.push((key, vec![Some(target)]));
+                }
             } else if let Some(value) = arg.strip_prefix("--external:") {
                 if value.strip_suffix('*').unwrap_or(value).contains('*') {
                     bail!("Rolldown prototype only supports suffix external wildcards: {value}");
@@ -376,6 +376,26 @@ fn physical_spelling(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Rolldown entries for one esbuild `--alias:<key>=<target>` (exact key plus
+/// `<key>/` subpaths). Its resolver appends a prefix alias's subpath with
+/// `Path::push`, so on Windows `zfb/zudo-react` under `zfb=@takazudo/zfb`
+/// becomes the bare specifier `@takazudo\zfb\zudo-react`, which no package
+/// resolves (`Matched alias not found`, run 40122653116). A bare-package
+/// target is split into an exact entry and a `*` wildcard entry, whose
+/// subpath is substituted as text. Path targets keep the prefix entry.
+fn alias_entries(key: &str, target: String, windows: bool) -> Vec<(String, String)> {
+    let bare_package = !target.is_empty()
+        && !target.starts_with(['.', '/', '\\'])
+        && !target.contains(['\\', ':', '*']);
+    if !windows || !bare_package || key.is_empty() || key.ends_with('$') || key.contains('*') {
+        return vec![(key.to_string(), target)];
+    }
+    vec![
+        (format!("{key}$"), target.clone()),
+        (format!("{key}/*"), format!("{target}/*")),
+    ]
+}
+
 /// Every path Rolldown resolves against must be in the ordinary spelling on
 /// Windows; elsewhere `\\?\` is an ordinary file name and stays untouched.
 fn engine_spelling(value: String, windows: bool) -> Result<String> {
@@ -434,6 +454,92 @@ mod tests {
         assert_eq!(
             options.resolve.as_ref().unwrap().alias.as_ref().unwrap()[0].1,
             vec![Some(r"C:\shadow\alias.mjs".to_string())]
+        );
+    }
+
+    fn aliases(cmd: &Command, windows: bool) -> Vec<(String, Vec<Option<String>>)> {
+        let request = Request::decode_for_host(cmd, windows).unwrap();
+        request.options.resolve.unwrap().alias.unwrap()
+    }
+
+    #[test]
+    fn windows_host_splits_a_bare_package_alias_into_exact_and_wildcard_entries() {
+        let mut cmd = prepared(r"\\?\C:\shadow");
+        cmd.arg("--alias:zfb=@takazudo/zfb");
+        let entry = |key: &str, target: &str| (key.to_string(), vec![Some(target.to_string())]);
+        assert_eq!(
+            aliases(&cmd, true),
+            vec![
+                entry("#shadow", r"C:\shadow\alias.mjs"),
+                entry("zfb$", "@takazudo/zfb"),
+                entry("zfb/*", "@takazudo/zfb/*"),
+            ]
+        );
+        assert_eq!(
+            aliases(&cmd, false),
+            vec![
+                entry("#shadow", r"\\?\C:\shadow\alias.mjs"),
+                entry("zfb", "@takazudo/zfb"),
+            ]
+        );
+    }
+
+    #[test]
+    fn alias_entries_keep_path_and_already_shaped_targets_whole() {
+        for (key, target) in [
+            ("#shadow", r"C:\shadow\alias.mjs"),
+            ("#rel", "./alias.mjs"),
+            ("#abs", "/srv/alias.mjs"),
+            ("#unc", r"\\server\share\alias.mjs"),
+            ("exact$", "@scope/pkg"),
+            ("wild/*", "@scope/pkg/*"),
+            ("#glob", "@scope/pkg/*"),
+        ] {
+            assert_eq!(
+                super::alias_entries(key, target.to_string(), true),
+                vec![(key.to_string(), target.to_string())]
+            );
+        }
+    }
+
+    /// The split shape must still resolve the exact key and its subpaths
+    /// through a real installed package (exercised on every host).
+    #[test]
+    fn exact_and_wildcard_alias_entries_resolve_an_installed_package() {
+        let dir = std::env::temp_dir().join(format!("zfb-native-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pkg = dir.join("node_modules/@scope/pkg");
+        std::fs::create_dir_all(pkg.join("sub")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@scope/pkg","exports":{".":"./index.js","./sub":"./sub/index.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("index.js"), "export const root = 'PKG_ROOT';\n").unwrap();
+        std::fs::write(pkg.join("sub/index.js"), "export const sub = 'PKG_SUB';\n").unwrap();
+        let cwd = std::fs::canonicalize(&dir).unwrap();
+        std::fs::write(
+            cwd.join("entry.mjs"),
+            "import { root } from 'short';\nimport { sub } from 'short/sub';\nconsole.log(root, sub);\n",
+        )
+        .unwrap();
+        let mut cmd = Command::new("unused-prepared-esbuild");
+        cmd.current_dir(&cwd).args([
+            "entry.mjs",
+            "--bundle",
+            "--format=esm",
+            "--platform=neutral",
+            "--outfile=out/bundle.mjs",
+            "--alias:short$=@scope/pkg",
+            "--alias:short/*=@scope/pkg/*",
+        ]);
+        let result = super::super::run_prepared(&cmd);
+        let output = std::fs::read_to_string(cwd.join("out/bundle.mjs")).unwrap_or_default();
+        std::fs::remove_dir_all(&cwd).unwrap();
+        result.unwrap();
+        assert!(
+            output.contains("PKG_ROOT") && output.contains("PKG_SUB"),
+            "{output}"
         );
     }
 

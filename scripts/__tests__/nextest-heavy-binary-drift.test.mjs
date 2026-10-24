@@ -36,6 +36,9 @@ const EXCLUSIONS = new Set([
   "embedded_node_modules_cache",
   // Spawns only the cheap already-built `zfb --version` / `zfb -V` paths.
   "version_report",
+  // Tests the shared support/process_guard.rs kill-tree guard; spawns only
+  // `sh` / `powershell.exe`, never zfb, V8, or esbuild (#4481).
+  "process_guard_support",
 ]);
 
 const PREDICATE_CLASSIFIED_STEMS = new Set(["version_stamp"]);
