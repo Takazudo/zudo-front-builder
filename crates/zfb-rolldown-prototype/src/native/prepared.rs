@@ -15,7 +15,15 @@ use std::{
 /// Owned boundary: the already prepared job's policies, not a public backend API.
 /// The argv decoder intentionally rejects options outside this prototype's scope.
 pub(super) struct Request {
+    /// The caller's spelling of the working directory. Every user-visible path
+    /// (output files, metafile keys) keeps it.
     pub(super) cwd: PathBuf,
+    /// The engine's working directory, `BundlerOptions.cwd`: physical outside
+    /// Windows, because Rolldown's module ids are, and it spells ids relative
+    /// to its cwd inside the hashed chunk bytes (`//#region <id>`, #4479).
+    pub(super) physical_cwd: PathBuf,
+    /// The output directory in the caller's spelling.
+    pub(super) outdir: Option<PathBuf>,
     pub(super) options: BundlerOptions,
     pub(super) metafile: Option<PathBuf>,
     pub(super) file_extensions: Vec<String>,
@@ -42,11 +50,31 @@ impl Request {
         } else {
             cwd
         };
+        let physical_cwd = if windows {
+            cwd.clone()
+        } else {
+            std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone())
+        };
         let engine_spelling = |value: String| engine_spelling(value, windows);
-        let engine_join =
+        let logical_join =
             |value: &str| engine_spelling(cwd.join(value).to_string_lossy().into_owned());
+        // Only the cwd prefix moves to its physical spelling: a symlinked
+        // directory inside the project (a shadow-staged subtree) stays as
+        // spelled, so relative imports still resolve beside the staged files.
+        let engine_join = |value: &str| {
+            let logical = cwd.join(value);
+            let joined = if windows {
+                physical_cwd.join(value)
+            } else if let Ok(rest) = logical.strip_prefix(&cwd) {
+                physical_cwd.join(rest)
+            } else {
+                physical_spelling(&logical)
+            };
+            engine_spelling(joined.to_string_lossy().into_owned())
+        };
+        let mut outdir = None;
         let mut options = BundlerOptions {
-            cwd: Some(cwd.clone()),
+            cwd: Some(physical_cwd.clone()),
             code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
             // Resource admission separates the source name from its hash at
             // the final '-'. Base64 hashes can themselves end in '-' or
@@ -98,8 +126,12 @@ impl Request {
                 external.push(value.to_string());
             } else if let Some(value) = arg.strip_prefix("--outfile=") {
                 options.file = Some(engine_join(value)?);
+                outdir = PathBuf::from(logical_join(value)?)
+                    .parent()
+                    .map(Path::to_path_buf);
             } else if let Some(value) = arg.strip_prefix("--outdir=") {
                 options.dir = Some(engine_join(value)?);
+                outdir = Some(PathBuf::from(logical_join(value)?));
             } else if let Some(value) = arg.strip_prefix("--entry-names=") {
                 options.entry_filenames = Some(format!("{value}.js").into());
             } else if let Some(value) = arg.strip_prefix("--chunk-names=") {
@@ -234,6 +266,8 @@ impl Request {
         options.transform = Some(transform);
         Ok(Self {
             cwd,
+            physical_cwd,
+            outdir,
             options,
             metafile,
             file_extensions,
@@ -317,6 +351,29 @@ fn promote_tsconfig_jsx(path: &Path, jsx: &mut rolldown_common::JsxOptions) -> R
         }
     }
     Ok(promoted)
+}
+
+/// `path` with its directory in physical spelling: the longest existing
+/// ancestor of its parent canonicalized, the rest appended as spelled. The
+/// final component itself is never resolved, so a symlinked entry or output
+/// keeps its own name, as esbuild's `--preserve-symlinks` expects.
+fn physical_spelling(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
+    };
+    let mut rest = vec![name];
+    let mut ancestor = path.parent();
+    while let Some(dir) = ancestor {
+        if let Ok(real) = std::fs::canonicalize(dir) {
+            return rest.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match dir.file_name() {
+            Some(part) => rest.push(part),
+            None => break,
+        }
+        ancestor = dir.parent();
+    }
+    path.to_path_buf()
 }
 
 /// Every path Rolldown resolves against must be in the ordinary spelling on
