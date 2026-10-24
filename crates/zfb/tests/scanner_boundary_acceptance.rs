@@ -1299,7 +1299,7 @@ export default function Home() {
         "the opaque map wrapper diagnostic changed: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("pages/_mdx-components.tsx"),
+        diagnostic.contains(&native_path("pages/_mdx-components.tsx")),
         "the opaque map wrapper diagnostic must locate its source: {diagnostic}"
     );
     assert_no_published_islands(&opaque_map_wrapper);
@@ -1339,7 +1339,7 @@ export default function Home() {
         "{diagnostic}"
     );
     assert!(
-        diagnostic.contains("pages/index.tsx"),
+        diagnostic.contains(&native_path("pages/index.tsx")),
         "diagnostic must locate the source site: {diagnostic}"
     );
     assert!(
@@ -1444,7 +1444,7 @@ export default function Home() {{
                 "{name} must keep the source-located outer diagnostic: {diagnostic}"
             );
             assert!(
-                diagnostic.contains("pages/index.tsx")
+                diagnostic.contains(&native_path("pages/index.tsx"))
                     && diagnostic.contains("; see concepts/islands#boundary-discovery-and-migration"),
                 "{name} must retain the source location and migration anchor: {diagnostic}"
             );
