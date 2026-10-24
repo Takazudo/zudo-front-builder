@@ -10,8 +10,6 @@
 //! and require that no chunk imports the fingerprinted islands entry and that
 //! every relative specifier names a written file, on both bundler backends.
 
-#![cfg(unix)]
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,8 +56,11 @@ fn node_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+// pnpm ships as `pnpm.cmd` on Windows; `Command` only auto-appends `.exe`.
+const PNPM_PROGRAM: &str = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+
 fn pnpm_available() -> bool {
-    Command::new("pnpm")
+    Command::new(PNPM_PROGRAM)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -83,6 +84,93 @@ fn toolchain() -> Option<PathBuf> {
     Some(esbuild)
 }
 
+/// Lexically resolves `.` and `..` so a relative link target can be turned
+/// into the absolute path a Windows junction requires.
+#[cfg(windows)]
+fn lexical_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Creates a directory link at `link` pointing at `target` (absolute, or
+/// relative to `link`'s parent on unix and for copied relative links).
+#[cfg(unix)]
+fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    // Symlink creation needs a privilege that is not guaranteed; a junction
+    // needs none, so fall back to `mklink /J` with an absolute target.
+    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+        return Ok(());
+    }
+    let absolute = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        lexical_normalize(&link.parent().unwrap_or(Path::new("")).join(target))
+    };
+    let status = Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(&absolute)
+        .stdout(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "mklink /J {} {} failed: {status}",
+            link.display(),
+            absolute.display()
+        )))
+    }
+}
+
+/// Recreates the symlink `source_path` at `target_path`, keeping its target.
+fn copy_symlink(source_path: &Path, target_path: &Path) -> std::io::Result<()> {
+    let link_target = fs::read_link(source_path)?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(link_target, target_path)
+    }
+    #[cfg(windows)]
+    {
+        let resolved = source_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(&link_target);
+        if resolved.is_dir() {
+            link_dir(&link_target, target_path)
+        } else {
+            std::os::windows::fs::symlink_file(link_target, target_path)
+        }
+    }
+}
+
+/// Spelling of an absolute path inside a JavaScript import specifier.
+fn js_path_specifier(path: &Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        text.trim_start_matches(r"\\?\").replace('\\', "/")
+    } else {
+        text
+    }
+}
+
 fn copy_tree_preserving_symlinks(source: &Path, target: &Path) -> std::io::Result<()> {
     fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
@@ -91,8 +179,7 @@ fn copy_tree_preserving_symlinks(source: &Path, target: &Path) -> std::io::Resul
         let target_path = target.join(entry.file_name());
         let kind = fs::symlink_metadata(&source_path)?.file_type();
         if kind.is_symlink() {
-            let link_target = fs::read_link(&source_path)?;
-            std::os::unix::fs::symlink(link_target, target_path)?;
+            copy_symlink(&source_path, &target_path)?;
         } else if kind.is_dir() {
             copy_tree_preserving_symlinks(&source_path, &target_path)?;
         } else if kind.is_file() {
@@ -110,8 +197,7 @@ fn copy_fixture(source: &Path, target: &Path) -> std::io::Result<()> {
         let target_path = target.join(entry.file_name());
         let kind = fs::symlink_metadata(&source_path)?.file_type();
         if kind.is_symlink() {
-            let link_target = fs::read_link(&source_path)?;
-            std::os::unix::fs::symlink(link_target, target_path)?;
+            copy_symlink(&source_path, &target_path)?;
         } else if kind.is_dir() {
             copy_fixture(&source_path, &target_path)?;
         } else if kind.is_file() {
@@ -145,16 +231,24 @@ fn scaffold_project(root: &Path) {
     if fs::symlink_metadata(&adapter_link).is_ok() {
         fs::remove_file(&adapter_link).expect("remove existing adapter link");
     }
-    std::os::unix::fs::symlink(&adapter, &adapter_link).expect("link workspace adapter package");
+    link_dir(&adapter, &adapter_link).expect("link workspace adapter package");
     let bin_dir = node_modules.join(".bin");
     fs::create_dir_all(&bin_dir).expect("create local node_modules bin directory");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(
         "../@takazudo/zfb-adapter-cloudflare/bin/cli.mjs",
         bin_dir.join("zfb-adapter-cloudflare"),
     )
     .expect("link local adapter executable");
+    // Windows has no executable symlinks; pnpm exec resolves a `.cmd` shim via PATHEXT.
+    #[cfg(windows)]
+    fs::write(
+        bin_dir.join("zfb-adapter-cloudflare.cmd"),
+        "@node \"%~dp0\\..\\@takazudo\\zfb-adapter-cloudflare\\bin\\cli.mjs\" %*\r\n",
+    )
+    .expect("write local adapter executable shim");
 
-    let adapter_preflight = Command::new("pnpm")
+    let adapter_preflight = Command::new(PNPM_PROGRAM)
         .args(["exec", "zfb-adapter-cloudflare", "--help"])
         .current_dir(root)
         .output()
@@ -243,7 +337,7 @@ fn ensure_repro_dependency(root: &Path) {
         &logical_package_manifest,
     )
     .expect("write logical dependency package manifest");
-    let store_entry_specifier = store_entry_realpath.to_string_lossy().into_owned();
+    let store_entry_specifier = js_path_specifier(&store_entry_realpath);
     let quoted_store_entry_specifier = serde_json::to_string(&store_entry_specifier)
         .expect("encode pnpm store entry as a JavaScript string");
     let logical_entry = logical_package.join("index.js");
@@ -473,17 +567,58 @@ fn assert_island_label(snapshot: &BuildSnapshot, component: &str, label: &str) {
     );
 }
 
+/// Every spelling a machine-local path can take in emitted bytes. On Windows
+/// that adds forward-slash, backslash, JSON-escaped (`\\\\`) and `\\?\\`-prefixed
+/// forms in both drive-letter cases; on unix the path is the only spelling.
+fn path_spellings(text: &str) -> Vec<String> {
+    let mut out = vec![text.to_owned()];
+    if !cfg!(windows) {
+        return out;
+    }
+    let bare = text.trim_start_matches(r"\\?\");
+    let forward = bare.replace('\\', "/");
+    let backslash = forward.replace('/', "\\");
+    let mut bases = vec![forward, backslash];
+    let bytes = bare.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let flipped_letter = if bytes[0].is_ascii_uppercase() {
+            bytes[0].to_ascii_lowercase()
+        } else {
+            bytes[0].to_ascii_uppercase()
+        } as char;
+        let flipped: Vec<String> = bases
+            .iter()
+            .map(|base| format!("{flipped_letter}{}", &base[1..]))
+            .collect();
+        bases.extend(flipped);
+    }
+    for base in bases {
+        if base.contains('\\') {
+            out.push(base.replace('\\', "\\\\"));
+            out.push(format!(r"\\?\{base}"));
+        }
+        out.push(base);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn assert_no_path_leaks(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Option<&Path>) {
     let mut forbidden = Vec::<String>::new();
-    let mut add_path = |path: &Path| {
-        let text = path.to_string_lossy().into_owned();
+    let mut add_text = |text: String| {
         if !text.is_empty() && !forbidden.contains(&text) {
             forbidden.push(text);
         }
+    };
+    let mut add_path = |path: &Path| {
+        let mut texts = vec![path.to_string_lossy().into_owned()];
         if let Ok(canonical) = fs::canonicalize(path) {
-            let text = canonical.to_string_lossy().into_owned();
-            if !text.is_empty() && !forbidden.contains(&text) {
-                forbidden.push(text);
+            texts.push(canonical.to_string_lossy().into_owned());
+        }
+        for text in texts {
+            for spelling in path_spellings(&text) {
+                add_text(spelling);
             }
         }
     };
@@ -492,8 +627,10 @@ fn assert_no_path_leaks(snapshot: &BuildSnapshot, root: &Path, scratch_dir: Opti
         add_path(scratch_dir);
     }
     add_path(&std::env::temp_dir());
-    if let Some(home) = std::env::var_os("HOME") {
-        add_path(Path::new(&home));
+    for var in ["HOME", "USERPROFILE"] {
+        if let Some(home) = std::env::var_os(var) {
+            add_path(Path::new(&home));
+        }
     }
     forbidden.push("// ../".to_owned());
 
