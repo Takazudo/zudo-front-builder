@@ -55,7 +55,8 @@ fn audit_entry_imports(metafile: &Value, cwd: &Path, entry_input: &Path) -> Resu
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("malformed metafile: missing `outputs` object"))?;
 
-    let entry_input_forms = path_forms(&entry_input.to_string_lossy(), cwd);
+    let bases = path_bases(cwd);
+    let entry_input_forms = path_forms(&entry_input.to_string_lossy(), &bases);
     let mut entries = Vec::new();
     for (key, output) in outputs {
         let output = output
@@ -63,8 +64,11 @@ fn audit_entry_imports(metafile: &Value, cwd: &Path, entry_input: &Path) -> Resu
             .ok_or_else(|| anyhow!("malformed metafile: output {key:?} is not an object"))?;
         match output.get("entryPoint") {
             None | Some(Value::Null) => {}
+            // esbuild tags a JS entry's CSS sidecar with the same entryPoint;
+            // the read-back rejects that output with its own #1395 message.
+            Some(Value::String(_)) if key.ends_with(".css") => {}
             Some(Value::String(entry_point)) => {
-                if intersects(&path_forms(entry_point, cwd), &entry_input_forms) {
+                if intersects(&path_forms(entry_point, &bases), &entry_input_forms) {
                     entries.push(key.as_str());
                 }
             }
@@ -85,7 +89,7 @@ fn audit_entry_imports(metafile: &Value, cwd: &Path, entry_input: &Path) -> Resu
             entry_input.display()
         ),
     };
-    let entry_forms = path_forms(entry_key, cwd);
+    let entry_forms = path_forms(entry_key, &bases);
 
     let mut inspected = 0;
     let mut violations = Vec::new();
@@ -99,7 +103,8 @@ fn audit_entry_imports(metafile: &Value, cwd: &Path, entry_input: &Path) -> Resu
                 bail!("malformed metafile: output {key:?} has non-array imports {other}")
             }
             // A chunk always lists its imports; only a copied asset (a Rolldown
-            // file-loader resource or sourcemap) has neither field.
+            // file-loader resource such as `.zfb-resource.mjs`, or a sourcemap)
+            // has neither field, so the extension cannot tell them apart.
             None if output.get("entryPoint").is_some() => {
                 bail!("malformed metafile: chunk output {key:?} has no imports array")
             }
@@ -123,7 +128,7 @@ fn audit_entry_imports(metafile: &Value, cwd: &Path, entry_input: &Path) -> Resu
                 continue;
             }
             inspected += 1;
-            if intersects(&path_forms(path, cwd), &entry_forms) {
+            if intersects(&path_forms(path, &bases), &entry_forms) {
                 violations.push(format!("`{key}` imports `{entry_key}` ({kind})"));
             }
         }
@@ -138,17 +143,21 @@ fn audit_entry_imports(metafile: &Value, cwd: &Path, entry_input: &Path) -> Resu
     Ok(inspected)
 }
 
-/// Every spelling a metadata path can take: resolved against `cwd` (and the
-/// physical cwd, which Rolldown may relativize against) then normalized
-/// lexically, plus the canonical path when it exists, so a symlinked prefix
-/// such as macOS `/var` -> `/private/var` still compares equal.
-fn path_forms(raw: &str, cwd: &Path) -> Vec<PathBuf> {
+/// `cwd` plus the physical cwd, which Rolldown may relativize against.
+fn path_bases(cwd: &Path) -> Vec<PathBuf> {
     let mut bases = vec![cwd.to_path_buf()];
     if let Ok(physical) = std::fs::canonicalize(cwd) {
         bases.push(physical);
     }
+    bases
+}
+
+/// Every spelling a metadata path can take: resolved against each of `bases`
+/// then normalized lexically, plus the canonical path when it exists, so a
+/// symlinked prefix such as macOS `/var` -> `/private/var` still compares equal.
+fn path_forms(raw: &str, bases: &[PathBuf]) -> Vec<PathBuf> {
     let mut forms = Vec::new();
-    for base in &bases {
+    for base in bases {
         let path = Path::new(raw);
         let resolved = if path.is_absolute() {
             path.to_path_buf()
@@ -409,6 +418,15 @@ mod tests {
             "islands-chunk-AAA.js",
             "import-statement",
         );
+    }
+
+    #[test]
+    fn css_sidecar_sharing_the_entry_point_is_not_a_second_entry() {
+        let layout = layout();
+        let mut metafile = layout.metafile(Spelling::Esbuild, vec![]);
+        metafile["outputs"][layout.out(Spelling::Esbuild, "islands.css")] =
+            json!({"imports": [], "entryPoint": ".zfb-esbuild-entry-x.tsx"});
+        assert_eq!(layout.audit(&metafile).unwrap(), 0);
     }
 
     #[test]

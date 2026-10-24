@@ -1736,7 +1736,8 @@ impl EsbuildSubprocessBundler {
 
         // Entry-import guard (#4464): the splitting pass's `meta.json`, written
         // by either backend, must show no output importing the islands entry.
-        if splitting {
+        // The identity probe runs unsplit and never ships, so it is skipped.
+        if splitting && !identity_probe {
             crate::entry_import_guard::audit_entry_imports_at_path(
                 &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
                 &self.config.working_dir,
