@@ -596,6 +596,11 @@ const TICK_ISLANDS_PUBLISHED: &str = "[zfb-timing] tick: islands published";
 /// The spelling the dev server uses for `path` in diagnostics. On Windows a
 /// canonicalized root is the verbatim `\\?\C:\...` form, while diagnostics
 /// print the ordinary `C:\...` drive form; elsewhere the path is unchanged.
+/// A forward-slash relative path in this host's separator, as diagnostics print it.
+fn native_path(relative: &str) -> String {
+    relative.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 fn user_facing_path(path: &Path) -> String {
     let shown = path.display().to_string();
     if cfg!(windows) {
@@ -1068,7 +1073,7 @@ export default function Home() {
         "both local definitions must be located: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("pages/index.tsx"),
+        diagnostic.contains(&native_path("pages/index.tsx")),
         "both boundary sites must be located: {diagnostic}"
     );
     assert_no_published_islands(&local_collision);
@@ -1103,15 +1108,15 @@ export default function Home() {
     );
     assert!(diagnostic.contains("PackedTwin"), "{diagnostic}");
     assert!(
-        diagnostic.contains("conflicts/one.js"),
+        diagnostic.contains(&native_path("conflicts/one.js")),
         "first packaged definition missing: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("conflicts/two.js"),
+        diagnostic.contains(&native_path("conflicts/two.js")),
         "second packaged definition missing: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("pages/index.tsx"),
+        diagnostic.contains(&native_path("pages/index.tsx")),
         "packed boundary sites must be located: {diagnostic}"
     );
     assert_no_published_islands(&package_collision);
@@ -1145,7 +1150,10 @@ export default function Home() {
     let diagnostic = combined_output(&rejected);
     assert!(diagnostic.contains("ambiguous export *"), "{diagnostic}");
     assert!(diagnostic.contains("StarChoice"), "{diagnostic}");
-    assert!(diagnostic.contains("pages/index.tsx"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(&native_path("pages/index.tsx")),
+        "{diagnostic}"
+    );
     assert_no_published_islands(&ambiguous_star);
     eprintln!(
         "[scanner_boundary_acceptance] demanded star conflict rejected from {}",
@@ -1184,8 +1192,14 @@ export default function Home() {
         "{diagnostic}"
     );
     assert!(diagnostic.contains("SourceDistTwin"), "{diagnostic}");
-    assert!(diagnostic.contains("components/source.tsx"), "{diagnostic}");
-    assert!(diagnostic.contains("compiled/source.js"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(&native_path("components/source.tsx")),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains(&native_path("compiled/source.js")),
+        "{diagnostic}"
+    );
     assert_no_published_islands(&source_dist);
 
     // A known conflicting literal displayName must stay fail-closed in the
