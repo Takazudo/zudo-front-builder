@@ -53,6 +53,8 @@ const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const TICK_DEADLINE: Duration = Duration::from_secs(45);
 const SERVE_DEADLINE: Duration = Duration::from_secs(60);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
+// Mirrors `format_shutdown_graph_saved_line` in crates/zfb/src/commands/dev.rs.
+const SHUTDOWN_GRAPH_SAVED_LINE: &str = "[zfb-timing] shutdown: graph saved";
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 const SESSION_A: &str = ".zfb-build/session-a";
@@ -789,10 +791,26 @@ async fn concurrent_scenario() {
         SHUTDOWN_DEADLINE.as_secs(),
         session.logs()
     );
+    // #4511: the interrupt reaches dev's whole process group, so prove the
+    // shutdown save itself completed, not just that some graph.bin exists.
     assert!(
-        session_a.join("graph.bin").is_file(),
-        "graph.bin must be persisted under session-a; found {:?}",
-        dir_entry_names(&session_a)
+        read_log(&session.stderr_path).contains(SHUTDOWN_GRAPH_SAVED_LINE),
+        "dev must log `{SHUTDOWN_GRAPH_SAVED_LINE}` after its shutdown graph save\n{}",
+        session.logs()
+    );
+    let graph_len = fs::metadata(session_a.join("graph.bin"))
+        .map(|meta| meta.len())
+        .unwrap_or_else(|err| {
+            panic!(
+                "graph.bin must be persisted under session-a ({err}); found {:?}\n{}",
+                dir_entry_names(&session_a),
+                session.logs()
+            )
+        });
+    assert!(
+        graph_len > 0,
+        "the shutdown graph.bin must not be empty\n{}",
+        session.logs()
     );
     assert!(
         !root.join(".zfb").exists(),
