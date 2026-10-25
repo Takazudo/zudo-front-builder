@@ -790,6 +790,10 @@ struct Discovery<'a, R: Resolver> {
     /// definition's canonical module path reuses the scan's own spelling
     /// instead of loading the file again as a demanded module (#4480).
     module_keys: HashMap<PathBuf, PathBuf>,
+    /// Alternate spellings (e.g. a logical path under a symlinked root) that
+    /// already resolved through `file_identity` -> their `modules` key, so a
+    /// repeat lookup skips the realpath (#4503).
+    module_aliases: HashMap<PathBuf, PathBuf>,
     resolving: HashSet<(PathBuf, String)>,
     summarizing: HashSet<Definition>,
     summary_cache: BTreeMap<Definition, WrapperSummary>,
@@ -812,6 +816,8 @@ struct Discovery<'a, R: Resolver> {
     #[cfg(test)]
     factory_proof_evaluations: usize,
     #[cfg(test)]
+    loaded_identity_lookups: std::cell::Cell<usize>,
+    #[cfg(test)]
     factory_resolver_operations: usize,
     #[cfg(test)]
     spread_source_evaluations: usize,
@@ -830,6 +836,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         Self {
             resolver,
             module_keys,
+            module_aliases: HashMap::new(),
             modules: modules
                 .into_iter()
                 .map(|(path, module)| (path, Rc::new(module)))
@@ -856,6 +863,8 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             #[cfg(test)]
             factory_proof_evaluations: 0,
             #[cfg(test)]
+            loaded_identity_lookups: std::cell::Cell::new(0),
+            #[cfg(test)]
             factory_resolver_operations: 0,
             #[cfg(test)]
             spread_source_evaluations: 0,
@@ -864,17 +873,33 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         }
     }
 
+    fn loaded_entry(&self, path: &Path) -> Option<(&PathBuf, &Rc<SourceModule>)> {
+        if let Some(entry) = self.modules.get_key_value(path) {
+            return Some(entry);
+        }
+        if let Some(key) = self.module_aliases.get(path) {
+            return self.modules.get_key_value(key);
+        }
+        #[cfg(test)]
+        self.loaded_identity_lookups
+            .set(self.loaded_identity_lookups.get() + 1);
+        self.module_keys
+            .get(&self.resolver.file_identity(path))
+            .and_then(|key| self.modules.get_key_value(key))
+    }
+
     fn loaded(&self, path: &Path) -> Option<&Rc<SourceModule>> {
-        self.modules.get(path).or_else(|| {
-            self.module_keys
-                .get(&self.resolver.file_identity(path))
-                .and_then(|key| self.modules.get(key))
-        })
+        self.loaded_entry(path).map(|(_, module)| module)
     }
 
     fn module(&mut self, path: &Path) -> ScanResult<Rc<SourceModule>> {
-        if let Some(module) = self.loaded(path) {
-            return Ok(module.clone());
+        if let Some((key, module)) = self.loaded_entry(path) {
+            let module = module.clone();
+            if key.as_path() != path && !self.module_aliases.contains_key(path) {
+                let key = key.clone();
+                self.module_aliases.insert(path.to_path_buf(), key);
+            }
+            return Ok(module);
         }
         if !is_scannable_source(path) {
             return Err(ScanError::Registration {
@@ -5610,6 +5635,62 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(markers(&islands), ["Counter"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_spelling_lookup_is_memoized_after_the_first_identity_fallback() {
+        struct IdentityCounter {
+            identity_calls: std::cell::Cell<usize>,
+        }
+        impl Resolver for IdentityCounter {
+            fn resolve(&self, _dir: &Path, _specifier: &str) -> Option<PathBuf> {
+                None
+            }
+            fn file_identity(&self, path: &Path) -> PathBuf {
+                self.identity_calls.set(self.identity_calls.get() + 1);
+                canonicalize_or_self(path)
+            }
+            fn read(&self, path: &Path) -> Result<String, String> {
+                std::fs::read_to_string(path).map_err(|e| e.to_string())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let physical = temp.path().canonicalize().unwrap().join("real");
+        std::fs::create_dir(&physical).unwrap();
+        let logical = temp.path().join("alias");
+        std::os::unix::fs::symlink(&physical, &logical).unwrap();
+        let source = "export const value = 1;";
+        let real_path = physical.join("a.ts");
+        std::fs::write(&real_path, source).unwrap();
+        let alias_path = logical.join("a.ts");
+
+        let resolver = IdentityCounter {
+            identity_calls: std::cell::Cell::new(0),
+        };
+        let (ast, _) = resolve_worker_bindings(parse_module(&real_path, source).unwrap());
+        let mut discovery = Discovery::new(
+            &resolver,
+            BTreeMap::from([(
+                real_path.clone(),
+                SourceModule {
+                    ast,
+                    source: source.to_string(),
+                    client: false,
+                },
+            )]),
+        );
+        let after_new = resolver.identity_calls.get();
+
+        let first = discovery.module(&alias_path).unwrap();
+        assert_eq!(resolver.identity_calls.get(), after_new + 1);
+        assert_eq!(discovery.loaded_identity_lookups.get(), 1);
+        let second = discovery.module(&alias_path).unwrap();
+        assert!(Rc::ptr_eq(&first, &second));
+        assert!(discovery.loaded(&alias_path).is_some());
+        assert_eq!(resolver.identity_calls.get(), after_new + 1);
+        assert_eq!(discovery.loaded_identity_lookups.get(), 1);
+        assert_eq!(discovery.modules.len(), 1);
     }
 
     #[test]
