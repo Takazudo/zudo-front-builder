@@ -15550,12 +15550,10 @@ fn could_not_resolve_specifier(line: &str) -> Option<&str> {
 /// Extracts the file-path portion of an esbuild source-location line, e.g.
 /// `"    pages/foo.tsx:1:19:"` -> `Some("pages/foo.tsx")`.
 ///
-/// Esbuild's location lines are `<indent><path>:<line>:<col>:`; a POSIX
-/// path has no other colons, so splitting from the right by `:` twice
-/// isolates the path. Windows drive-letter paths (`C:\...`) are not
-/// handled — this is a diagnostic-message nicety, not a resolution-
-/// affecting code path, and zfb has no CI coverage running the Rust suite
-/// on Windows yet (see the T3 cutover manifest).
+/// Esbuild's location lines are `<indent><path>:<line>:<col>:`. Splitting
+/// from the right by `:` at most twice isolates the path, so any colon
+/// inside it — a Windows drive letter (`C:\...`) included — is kept.
+/// Relative locations use `/` on every platform, Windows included.
 fn esbuild_location_path(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let without_trailing_colon = trimmed.strip_suffix(':')?;
@@ -15628,12 +15626,13 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 ///    offending block in stderr is walked and named, not just the first
 ///    batch.
 ///
-/// Windows note: `esbuild_location_path` (used to parse each offender's
-/// source location) does not handle drive-letter paths (`C:\...`), so the
-/// "never leak a tempdir path" guarantee below is only verified for the
-/// POSIX-style paths esbuild reports on the platforms zfb's Rust suite
-/// actually runs on (ubuntu/macOS — see the T3 cutover manifest); it is not
-/// exercised on Windows.
+/// Windows note: relative locations arrive `/`-separated and are joined onto
+/// `shadow` through `Path`, so they map to native project paths. The
+/// catch-all is a literal string replace of each root's native spelling, so
+/// an absolute location only has its tempdir prefix rewritten when it is
+/// spelled natively — which is how the Rolldown backend's absolute fallback
+/// renders it. Both shapes are unit-tested on `windows-latest`
+/// (`windows-lib-tests.yml`).
 fn friendly_esbuild_error(
     stderr: &str,
     shadow: &Path,
@@ -18175,6 +18174,79 @@ mod tests {
         // Not a location line: no trailing colon / non-numeric row-col.
         assert_eq!(esbuild_location_path("1 error"), None);
         assert_eq!(esbuild_location_path(""), None);
+    }
+
+    #[test]
+    fn esbuild_location_path_keeps_drive_letter_colon() {
+        assert_eq!(
+            esbuild_location_path("    C:\\work\\pages\\foo.tsx:3:6:"),
+            Some("C:\\work\\pages\\foo.tsx")
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_maps_slash_separated_location_onto_host_project_path() {
+        // Host-absolute roots (a drive-letter path on Windows) with the
+        // `/`-separated relative location esbuild and the Rolldown backend
+        // both print on every platform.
+        let base = std::env::temp_dir();
+        let shadow = base.join("zfb-bundler-sep123");
+        let project_root = base.join("my-project");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    components/box.tsx:3:6:\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, &shadow, &project_root, &project_root, &shadow);
+
+        let expected = project_root.join("components").join("box.tsx");
+        assert!(
+            friendly.contains(&format!("(imported from {})", expected.display())),
+            "should name the native project path: {friendly}"
+        );
+        assert!(
+            !friendly.contains("zfb-bundler-sep123"),
+            "should not leak the shadow tempdir name: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_maps_native_absolute_fallback_location() {
+        // The Rolldown backend's absolute fallback (importer outside every
+        // job cwd, e.g. a workspace sibling) prints the native spelling.
+        let base = std::env::temp_dir();
+        let work_root = base.join("zfb-bundler-abs123");
+        let shadow = work_root.join("sub-packages").join("host");
+        let project_root = base.join("workspace").join("sub-packages").join("host");
+        let first_party_root = base.join("workspace");
+        let importer = work_root.join("lib").join("shared").join("helper.ts");
+        let stderr = format!(
+            "\u{2718} [ERROR] Could not resolve \"../../../outside/escaped.ts\"\n\n    {}:1:19:\n\n1 error",
+            importer.display()
+        );
+
+        let friendly = friendly_esbuild_error(
+            &stderr,
+            &shadow,
+            &project_root,
+            &first_party_root,
+            &work_root,
+        );
+
+        let expected = first_party_root
+            .join("lib")
+            .join("shared")
+            .join("helper.ts");
+        assert!(
+            friendly.contains(&format!("(imported from {})", expected.display())),
+            "should name the real workspace-sibling path: {friendly}"
+        );
+        assert!(
+            friendly.contains(&format!("    {}:1:19:", expected.display())),
+            "the catch-all should rewrite the native absolute location: {friendly}"
+        );
+        assert!(
+            !friendly.contains("zfb-bundler-abs123"),
+            "should not leak the work_root tempdir name: {friendly}"
+        );
     }
 
     #[test]

@@ -41,18 +41,23 @@ fn prepared_build(
     (result, meta)
 }
 
-/// Bundles `entry.js` with splitting and returns every metafile output import.
-fn bundle_imports(name: &str, files: &[(&str, &str)], externals: &[&str]) -> Vec<Value> {
+/// Bundles `entry.js` with splitting and returns the parsed metafile.
+fn bundle_meta(name: &str, files: &[(&str, &str)], extra_args: &[&str]) -> Value {
     let mut args = vec!["--chunk-names=chunk-[hash]".to_string()];
-    args.extend(
-        externals
-            .iter()
-            .map(|external| format!("--external:{external}")),
-    );
+    args.extend(extra_args.iter().map(|arg| arg.to_string()));
     let (result, meta) = prepared_build(name, files, &args);
     result.unwrap();
-    let meta: Value = serde_json::from_str(&meta).unwrap();
-    meta["outputs"]
+    serde_json::from_str(&meta).unwrap()
+}
+
+/// Bundles `entry.js` with splitting and returns every metafile output import.
+fn bundle_imports(name: &str, files: &[(&str, &str)], externals: &[&str]) -> Vec<Value> {
+    let args: Vec<_> = externals
+        .iter()
+        .map(|external| format!("--external:{external}"))
+        .collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    bundle_meta(name, files, &args)["outputs"]
         .as_object()
         .unwrap()
         .values()
@@ -143,6 +148,72 @@ fn emitted_chunk_import_is_internal_with_an_outdir_joined_path() {
     }
 }
 
+#[test]
+fn every_internal_output_import_is_its_output_key_byte_for_byte() {
+    // #4542: static chunk, dynamic chunk and copy-asset imports reuse the target's
+    // `outputs` key spelling exactly; kept externals keep their raw id instead.
+    let meta = bundle_meta(
+        "output-keys",
+        &[
+            (
+                "entry.js",
+                "import logo from \"./logo.svg\";\nimport { s } from \"./shared.js\";\n\
+                 export const a = [logo, s];\n\
+                 export const lazy = () => import(\"./lazy.js\");\n\
+                 export const ext = () => import(\"ext-pkg\");\n",
+            ),
+            ("shared.js", "export const s = { n: 1 };\n"),
+            (
+                "lazy.js",
+                "import { s } from \"./shared.js\";\nexport default s.n;\n",
+            ),
+            ("logo.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n"),
+        ],
+        &["--loader:.svg=file", "--external:ext-pkg"],
+    );
+    let outputs = meta["outputs"].as_object().unwrap();
+    let (mut statics, mut dynamics, mut copies, mut externals) = (0, 0, 0, 0);
+    for import in outputs
+        .values()
+        .filter_map(|output| output["imports"].as_array())
+        .flatten()
+    {
+        if import.get("external").is_some() {
+            assert_eq!(import["external"], true, "{import}");
+            externals += 1;
+            continue;
+        }
+        let path = import["path"].as_str().unwrap();
+        let target = outputs
+            .get(path)
+            .unwrap_or_else(|| panic!("{path} is not an outputs key: {:?}", outputs.keys()));
+        if target.get("imports").is_none() {
+            copies += 1;
+        } else if import["kind"] == "dynamic-import" {
+            dynamics += 1;
+        } else {
+            statics += 1;
+        }
+    }
+    assert!(
+        statics > 0 && dynamics > 0 && copies > 0 && externals > 0,
+        "static={statics} dynamic={dynamics} copy={copies} external={externals}: {meta}"
+    );
+}
+
+/// The outdir-joined, natively separated spelling of an output under `/out` (#4542).
+fn native_out(name: &str) -> String {
+    Path::new("/out").join(name).to_str().unwrap().to_owned()
+}
+
+#[test]
+fn output_paths_keep_the_host_separator() {
+    #[cfg(windows)]
+    assert_eq!(native_out("logo.svg"), r"/out\logo.svg");
+    #[cfg(not(windows))]
+    assert_eq!(native_out("logo.svg"), "/out/logo.svg");
+}
+
 fn emitted(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|name| name.to_string()).collect()
 }
@@ -185,11 +256,11 @@ fn every_edge_kind_marks_only_external_edges() {
     };
     assert_eq!(
         output("__ROLLDOWN_COPY_MODULE__#ref"),
-        json!({"path":"/out/logo.svg","kind":"import-statement"})
+        json!({"path":native_out("logo.svg"),"kind":"import-statement"})
     );
     assert_eq!(
         output("chunk.js"),
-        json!({"path":"/out/chunk.js","kind":"import-statement"})
+        json!({"path":native_out("chunk.js"),"kind":"import-statement"})
     );
     assert_eq!(
         output("ext-pkg"),
@@ -210,7 +281,7 @@ fn self_named_import_is_internal() {
     )
     .unwrap();
     assert!(entry.get("external").is_none(), "{entry}");
-    assert_eq!(entry["path"], "/out/bundle.mjs");
+    assert_eq!(entry["path"], native_out("bundle.mjs"));
 }
 
 #[test]
@@ -224,7 +295,7 @@ fn import_of_another_emitted_chunk_is_not_a_collision() {
     )
     .unwrap();
     assert!(entry.get("external").is_none(), "{entry}");
-    assert_eq!(entry["path"], "/out/islands.js");
+    assert_eq!(entry["path"], native_out("islands.js"));
 }
 
 #[test]

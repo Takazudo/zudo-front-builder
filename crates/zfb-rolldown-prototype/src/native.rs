@@ -249,13 +249,14 @@ fn esbuild_style_unresolved(rendered: &[String], cwds: &[PathBuf]) -> Option<Str
                 (path, row, col, String::new())
             }
         };
-        let shown = cwds
-            .iter()
-            .find_map(|cwd| path.strip_prefix(cwd).ok())
-            .unwrap_or(&path);
+        // esbuild prints cwd-relative locations with `/` even on Windows (#4541).
+        let shown = match cwds.iter().find(|cwd| path.starts_with(cwd)) {
+            Some(cwd) => esbuild_relative(&path, cwd),
+            // Absolute fallback stays native: zfb-build's catch-all replaces native roots literally.
+            None => path.display().to_string(),
+        };
         report.push_str(&format!(
-            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n{frame}\n",
-            shown.display()
+            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {shown}:{row}:{col}:\n{frame}\n"
         ));
     }
     (!report.is_empty()).then(|| report.trim_end().to_string())
@@ -376,8 +377,11 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
         })
         .collect();
     for output in result.assets {
-        let path = outdir.join(output.filename());
-        files.push((path.clone(), output.content_as_bytes().to_vec()));
+        let output_key = external_imports::output_key(&outdir, output.filename());
+        files.push((
+            outdir.join(output.filename()),
+            output.content_as_bytes().to_vec(),
+        ));
         match &output {
             Output::Chunk(chunk) => {
                 let provenance: BTreeMap<_, _> = chunk
@@ -405,7 +409,7 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
                         )
                     })
                     .collect::<Result<Vec<_>>>()?;
-                outputs.insert(path.to_string_lossy().into_owned(),json!({"bytes":chunk.code.len(),"inputs":provenance,"imports":imports,"entryPoint":chunk.facade_module_id.as_ref().map(|id|id.as_str())}));
+                outputs.insert(output_key,json!({"bytes":chunk.code.len(),"inputs":provenance,"imports":imports,"entryPoint":chunk.facade_module_id.as_ref().map(|id|id.as_str())}));
             }
             Output::Asset(asset) => {
                 if !asset.filename.ends_with(".map") && asset.original_file_names.is_empty() {
@@ -431,7 +435,7 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
                     })
                     .collect();
                 outputs.insert(
-                    path.to_string_lossy().into_owned(),
+                    output_key,
                     json!({"bytes":asset.source.as_bytes().len(),"inputs":provenance}),
                 );
             }

@@ -50,6 +50,17 @@ pub(super) fn copied_input_edge(id: &str, kind: &str, filename: String) -> Value
     entry
 }
 
+/// The one spelling of an output's `outputs` key and of its internal imports (#4542).
+/// Absolute, like esbuild v0.25.12's `MakePrettyPaths(..).Abs`, which keeps native separators.
+pub(super) fn output_key(outdir: &Path, filename: &str) -> String {
+    // Rolldown filenames always use '/', even for a directory in a name template.
+    filename
+        .split('/')
+        .fold(outdir.to_path_buf(), |path, segment| path.join(segment))
+        .to_string_lossy()
+        .into_owned()
+}
+
 pub(super) fn import_entry(
     id: &str,
     kind: &str,
@@ -59,7 +70,7 @@ pub(super) fn import_entry(
 ) -> Result<Value> {
     if copy_reference::reference(id)?.is_some() {
         let path = copy_reference::output_name(id, copy_outputs)?;
-        return Ok(edge(json!(outdir.join(path)), kind, false));
+        return Ok(edge(json!(output_key(outdir, path)), kind, false));
     }
     if !emitted.contains(id) {
         return Ok(edge(json!(id), kind, true));
@@ -67,5 +78,5 @@ pub(super) fn import_entry(
     // Rolldown does list a chunk's own filename here (the SSR bundle imports
     // itself), so an emitted name is internal even when it is the importer's own;
     // an external spelled like an emitted chunk is indistinguishable (#4490).
-    Ok(edge(json!(outdir.join(id)), kind, false))
+    Ok(edge(json!(output_key(outdir, id)), kind, false))
 }
