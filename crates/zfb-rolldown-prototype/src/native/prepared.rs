@@ -369,7 +369,17 @@ fn physical_spelling(path: &Path) -> PathBuf {
     let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
         return path.to_path_buf();
     };
-    let mut resolved = PathBuf::new();
+    // A relative spelling starts from the physical cwd so a leading `..` is not dropped.
+    let mut resolved = if dir.has_root() {
+        PathBuf::new()
+    } else if dir.as_os_str().is_empty() {
+        return path.to_path_buf();
+    } else {
+        match std::fs::canonicalize(".") {
+            Ok(cwd) => cwd,
+            Err(_) => return path.to_path_buf(),
+        }
+    };
     let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
     for component in dir.components() {
         match component {

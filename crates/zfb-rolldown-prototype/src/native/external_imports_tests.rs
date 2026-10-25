@@ -1,7 +1,7 @@
 //! Kept-external chunk imports are marked `external: true` with the raw id,
 //! emitted chunk imports omit `external` and carry the outdir-joined path
 //! (#4476, #4506).
-use super::external_imports::{checked_import_entry, copied_input_edge, edge, import_entry};
+use super::external_imports::{copied_input_edge, edge, import_entry};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -246,42 +246,16 @@ fn real_build_with_an_external_spelled_like_the_entry_is_indistinguishable() {
 }
 
 #[test]
-fn external_spelled_like_an_emitted_asset_fails_loudly() {
-    // Rolldown never lists an asset in chunk imports (#4505), so a kept external
-    // with an asset's name must not become a bare external for an outdir file.
-    let error = checked_import_entry(
+fn external_spelled_like_an_emitted_asset_stays_external() {
+    // Rolldown never lists an asset in chunk imports (#4505), so an id spelled
+    // like an emitted asset is a kept external; esbuild reports it the same way.
+    let entry = import_entry(
         "logo.svg",
         "import-statement",
         &emitted(&["entry.js"]),
-        &emitted(&["logo.svg"]),
-        &BTreeMap::new(),
-        Path::new("/out"),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("logo.svg"), "{error}");
-}
-
-#[test]
-fn asset_set_leaves_chunk_and_external_imports_unchanged() {
-    let assets = emitted(&["logo.svg"]);
-    let chunk = checked_import_entry(
-        "chunk.js",
-        "import-statement",
-        &emitted(&["chunk.js"]),
-        &assets,
         &BTreeMap::new(),
         Path::new("/out"),
     )
     .unwrap();
-    assert!(chunk.get("external").is_none(), "{chunk}");
-    let external = checked_import_entry(
-        "ext-pkg",
-        "import-statement",
-        &emitted(&["chunk.js"]),
-        &assets,
-        &BTreeMap::new(),
-        Path::new("/out"),
-    )
-    .unwrap();
-    assert_eq!(external["external"], true);
+    assert_eq!(entry["external"], true, "{entry}");
 }

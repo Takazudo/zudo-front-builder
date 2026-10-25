@@ -367,13 +367,14 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let mut copied_sources = BTreeMap::new();
     let copy_outputs = copy_outputs.lock().unwrap().clone();
     let mut inputs = inputs.lock().unwrap().clone();
-    let (mut emitted_chunks, mut emitted_assets) = (BTreeSet::new(), BTreeSet::new());
-    for output in &result.assets {
-        match output {
-            Output::Chunk(chunk) => emitted_chunks.insert(chunk.filename.to_string()),
-            Output::Asset(asset) => emitted_assets.insert(asset.filename.to_string()),
-        };
-    }
+    let emitted_chunks: BTreeSet<String> = result
+        .assets
+        .iter()
+        .filter_map(|output| match output {
+            Output::Chunk(chunk) => Some(chunk.filename.to_string()),
+            Output::Asset(_) => None,
+        })
+        .collect();
     for output in result.assets {
         let path = outdir.join(output.filename());
         files.push((path.clone(), output.content_as_bytes().to_vec()));
@@ -395,11 +396,10 @@ async fn run(request: Request) -> Result<Vec<(PathBuf, Vec<u8>)>> {
                             .map(|id| (id, "dynamic-import")),
                     )
                     .map(|(id, kind)| {
-                        external_imports::checked_import_entry(
+                        external_imports::import_entry(
                             id.as_str(),
                             kind,
                             &emitted_chunks,
-                            &emitted_assets,
                             &copy_outputs,
                             &outdir,
                         )

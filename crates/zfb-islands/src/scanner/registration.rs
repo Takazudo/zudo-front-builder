@@ -873,33 +873,41 @@ impl<'a, R: Resolver> Discovery<'a, R> {
         }
     }
 
-    fn loaded_entry(&self, path: &Path) -> Option<(&PathBuf, &Rc<SourceModule>)> {
-        if let Some(entry) = self.modules.get_key_value(path) {
-            return Some(entry);
-        }
-        if let Some(key) = self.module_aliases.get(path) {
-            return self.modules.get_key_value(key);
-        }
+    fn loaded_by_spelling(&self, path: &Path) -> Option<&Rc<SourceModule>> {
+        self.modules.get(path).or_else(|| {
+            self.module_aliases
+                .get(path)
+                .and_then(|key| self.modules.get(key))
+        })
+    }
+
+    fn identity(&self, path: &Path) -> PathBuf {
         #[cfg(test)]
         self.loaded_identity_lookups
             .set(self.loaded_identity_lookups.get() + 1);
-        self.module_keys
-            .get(&self.resolver.file_identity(path))
-            .and_then(|key| self.modules.get_key_value(key))
+        self.resolver.file_identity(path)
     }
 
     fn loaded(&self, path: &Path) -> Option<&Rc<SourceModule>> {
-        self.loaded_entry(path).map(|(_, module)| module)
+        self.loaded_by_spelling(path).or_else(|| {
+            self.module_keys
+                .get(&self.identity(path))
+                .and_then(|key| self.modules.get(key))
+        })
     }
 
     fn module(&mut self, path: &Path) -> ScanResult<Rc<SourceModule>> {
-        if let Some((key, module)) = self.loaded_entry(path) {
-            let module = module.clone();
-            if key.as_path() != path && !self.module_aliases.contains_key(path) {
+        if let Some(module) = self.loaded_by_spelling(path) {
+            return Ok(module.clone());
+        }
+        // One realpath per spelling: reused for the alias memo or the new key.
+        let identity = self.identity(path);
+        if let Some(key) = self.module_keys.get(&identity) {
+            if let Some(module) = self.modules.get(key).cloned() {
                 let key = key.clone();
                 self.module_aliases.insert(path.to_path_buf(), key);
+                return Ok(module);
             }
-            return Ok(module);
         }
         if !is_scannable_source(path) {
             return Err(ScanError::Registration {
@@ -925,7 +933,7 @@ impl<'a, R: Resolver> Discovery<'a, R> {
             client,
         });
         self.module_keys
-            .entry(self.resolver.file_identity(path))
+            .entry(identity)
             .or_insert_with(|| path.to_path_buf());
         self.modules.insert(path.to_path_buf(), module.clone());
         Ok(module)
