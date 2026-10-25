@@ -187,6 +187,127 @@ def assert_required_rows(report):
     assert not missing, f"required rows missing: {', '.join(missing)}"
 
 
+KEPT_TEMPDIR = re.compile(r"kept (.+?) tempdir at (.+?) \(cleanup is manual\)")
+
+
+def describe_link(path):
+    """Reparse attributes/tag, readlink, realpath and (Windows) `fsutil reparsepoint query` of one entry."""
+    path = Path(path)
+    lines = [f"  entry {path}"]
+    try:
+        info = os.lstat(path)
+        attributes = getattr(info, "st_file_attributes", None)
+        tag = getattr(info, "st_reparse_tag", None)
+        lines.append(f"    lstat mode={oct(info.st_mode)} attributes={attributes if attributes is None else hex(attributes)}"
+                     f" reparse_tag={tag if tag is None else hex(tag)} is_link={is_link(path)}")
+    except OSError as error:
+        lines.append(f"    lstat error: {error}")
+    for label, probe in [("readlink", os.readlink), ("realpath", os.path.realpath)]:
+        try:
+            lines.append(f"    {label}: {probe(path)}")
+        except OSError as error:
+            lines.append(f"    {label} error: {error}")
+    if os.name == "nt":
+        result = subprocess.run(["fsutil", "reparsepoint", "query", str(path)], capture_output=True, text=True,
+                                errors="replace")
+        lines.append(f"    fsutil reparsepoint query (exit {result.returncode}):")
+        lines += [f"      {line}" for line in (result.stdout + result.stderr).splitlines()]
+    return "\n".join(lines) + "\n"
+
+
+def list_entries(directory):
+    directory = Path(directory)
+    lines = [f"  listing {directory}"]
+    try:
+        for entry in sorted(os.scandir(directory), key=lambda entry: entry.name):
+            kind = "link" if is_link(entry.path) else "dir" if entry.is_dir(follow_symlinks=False) else "file"
+            lines.append(f"    {kind:4} {entry.name}")
+    except OSError as error:
+        lines.append(f"    error: {error}")
+    return "\n".join(lines) + "\n"
+
+
+def linked_build_diagnostics(log, pnpm, linked_site, packages_ws, build_env):
+    """Temporary #4545 evidence, collected only after the linked build already failed; never changes the verdict.
+
+    Records how pnpm wrote the out-of-root `link:` entries, then reruns the build with ZFB_KEEP_BUILD_SHADOW=1
+    and records the kept shadow's node_modules link plus a verbose esbuild resolve probe run inside it. Kept
+    directories are left for the ephemeral runner: they hold junctions into the live site.
+    """
+    def section(title, action):
+        log.write(f"--- [#4545] {title} ---\n")
+        try:
+            action()
+        except Exception as error:
+            log.write(f"  (diagnostic failed: {type(error).__name__}: {error})\n")
+        log.flush()
+
+    def site_links():
+        log.write(list_entries(linked_site / "node_modules"))
+        log.write(list_entries(linked_site / "node_modules/@takazudo"))
+        for package in LINKED_SITE_PACKAGES:
+            log.write(describe_link(linked_site / "node_modules/@takazudo" / package))
+
+    def workspace_links():
+        for package in LINKED_SITE_PACKAGES:
+            scope = packages_ws / package / "node_modules/@takazudo"
+            if scope.is_dir():
+                log.write(list_entries(scope))
+                for entry in sorted(scope.iterdir()):
+                    log.write(describe_link(entry))
+
+    kept = []
+
+    def rerun_keeping_shadow():
+        env = dict(build_env, ZFB_KEEP_BUILD_SHADOW="1")
+        result = subprocess.run([pnpm, "build"], cwd=linked_site, env=env, capture_output=True, text=True,
+                                errors="replace")
+        output = result.stdout + result.stderr
+        log.write(f"  pnpm build with ZFB_KEEP_BUILD_SHADOW=1 exit {result.returncode}\n{output}\n")
+        kept.extend((role, Path(path)) for role, path in KEPT_TEMPDIR.findall(output))
+
+    def kept_shadows():
+        if not kept:
+            log.write("  no kept tempdir was reported\n")
+        for role, path in kept:
+            log.write(f"  kept {role}: {path}\n")
+            log.write(list_entries(path))
+            if os.path.lexists(path / "node_modules"):
+                log.write(describe_link(path / "node_modules"))
+                log.write(list_entries(path / "node_modules/@takazudo"))
+                for package in LINKED_SITE_PACKAGES:
+                    log.write(describe_link(path / "node_modules/@takazudo" / package))
+
+    def esbuild_probe():
+        slot = ROOT / "crates/zfb/binaries/esbuild"
+        binaries = [Path(os.environ["ZFB_ESBUILD_BIN"])] if os.environ.get("ZFB_ESBUILD_BIN") else []
+        binaries += [path for path in slot.glob("esbuild*") if path.is_file() and path.stem == "esbuild"]
+        shadows = [path for _, path in kept if os.path.lexists(path / "node_modules")]
+        if not binaries or not shadows:
+            log.write(f"  skipped: esbuild in {slot}: {binaries}; shadows with node_modules: {shadows}\n")
+            return
+        shadow = shadows[0]
+        probe = shadow / "zfb-4545-probe.mjs"
+        probe.write_text('import * as zfb from "@takazudo/zfb";\n'
+                         'import * as server from "@takazudo/zfb-runtime/server";\n'
+                         'console.log(zfb, server);\n')
+        out_dir = Path(tempfile.mkdtemp(prefix="zfb-4545-probe-"))
+        for extra in ([], ["--preserve-symlinks"]):
+            command = [str(binaries[0]), "--bundle", "--platform=neutral", "--format=esm", "--log-level=verbose",
+                       f"--outfile={out_dir / 'probe-out.mjs'}", *extra, probe.name]
+            result = subprocess.run(command, cwd=shadow, capture_output=True, text=True, errors="replace")
+            log.write(f"  $ {' '.join(command)}  (in {shadow})\n  exit {result.returncode}\n"
+                      f"{result.stdout}{result.stderr}\n")
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    log.write("[#4545] the linked build failed; collecting link diagnostics (the row still fails)\n")
+    section("site node_modules links", site_links)
+    section("linked workspace package links", workspace_links)
+    section("rerun with ZFB_KEEP_BUILD_SHADOW=1", rerun_keeping_shadow)
+    section("kept shadow links", kept_shadows)
+    section("verbose esbuild probe in the kept shadow", esbuild_probe)
+
+
 def extract_package(tarball, destination):
     """`tar -xzf <tarball> -C <destination> --strip-components=1`."""
     destination.mkdir(parents=True)
@@ -218,7 +339,7 @@ def main():
     if args.rolldown:
         build_env.update(ZFB_ROLLDOWN_PROTOTYPE="1", ZFB_DEV_TIMING="1")
     injected, preexisting, workdir = [], {}, None
-    with (output / "packed-consumer.log").open("w") as log:
+    with (output / "packed-consumer.log").open("w", encoding="utf-8", errors="replace") as log:
         try:
             manifest = json.loads((carrier_dir / "package.json").read_text())
             carrier_name = report["carrier"] = manifest["name"]
@@ -330,7 +451,11 @@ def main():
             assert linked_binary.is_file(), f"linked zfb does not reach the platform binary at {linked_binary}"
             assert sha256_file(linked_binary) == sha256_file(args.binary), \
                 f"linked zfb does not reach the injected binary (got {linked_binary.resolve()})"
-            linked_output = run(log, [pnpm, "build"], linked_site, env=build_env, combined=True)
+            try:
+                linked_output = run(log, [pnpm, "build"], linked_site, env=build_env, combined=True)
+            except AssertionError:
+                linked_build_diagnostics(log, pnpm, linked_site, packages_ws, build_env)
+                raise
             if args.rolldown:
                 assert ROLLDOWN_TIMING_LINE in linked_output, "the linked build printed no Rolldown backend timing line"
             parity = assert_dist_parity(site / "dist", linked_site / "dist", REQUIRED_DIST_GLOBS, log)

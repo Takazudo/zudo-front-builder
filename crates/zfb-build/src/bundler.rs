@@ -1328,6 +1328,8 @@ fn shadow_parent_dir_with_env(project_root: &Path, env: &ShadowParentEnv) -> Res
 }
 
 mod shadow_parent_path;
+#[cfg(all(test, windows))]
+mod windows_linked_package_tests;
 
 fn usable_shadow_parent_candidate(
     project_root: &Path,
@@ -1996,6 +1998,163 @@ fn ensure_dependency_link(target: &Path, link: &Path) -> std::io::Result<bool> {
     }
     remove_shadow_entry(link)?;
     zfb_types::directory_link::create(target, link)?;
+    Ok(true)
+}
+
+/// Marks a `<shadow>/node_modules` built by [`ensure_dependency_entry_view`].
+const DEPENDENCY_ENTRY_VIEW_MARKER: &str = ".zfb-dependency-entry-view";
+
+/// Whether `<shadow>/node_modules` must be an entry view rather than one link
+/// to `node_modules` (#4545). Windows resolves a relative symlink's target
+/// against the path as traversed, so pnpm's relative `link:` entry
+/// (`..\..\..\packages-ws\pkg`) reached through the shadow's junction climbs
+/// out of the shadow instead of the project. Unix resolves it physically.
+fn dependency_root_needs_entry_view(node_modules: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        dependency_root_entries(node_modules).iter().any(|entry| {
+            fs::read_link(entry).is_ok_and(|target| {
+                target.is_relative()
+                    && entry
+                        .parent()
+                        .and_then(|parent| parent.strip_prefix(node_modules).ok())
+                        .is_some_and(|parent| {
+                            relative_link_climbs_out(parent.components().count(), &target)
+                        })
+            })
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = node_modules;
+        false
+    }
+}
+
+/// Whether the relative link `target`, stored in a directory `depth` levels
+/// below the dependency root, climbs above that root at ANY hop. Windows
+/// resolves each `..` against the traversed spelling, so a target that leaves
+/// and lexically re-enters (`..\..\..\site\node_modules\x`) still escapes the
+/// shadow junction; only the running depth tells.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn relative_link_climbs_out(depth: usize, target: &Path) -> bool {
+    let mut depth = depth;
+    for component in target.components() {
+        match component {
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return true,
+            },
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+    }
+    false
+}
+
+/// Every top-level entry of `node_modules` plus each entry of a real `@scope`
+/// directory, in sorted order. A linked `@scope` is itself one entry.
+fn dependency_root_entries(node_modules: &Path) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    let Ok(children) = fs::read_dir(node_modules) else {
+        return entries;
+    };
+    for child in children.flatten() {
+        let path = child.path();
+        let is_scope = child.file_name().to_string_lossy().starts_with('@')
+            && fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
+        if is_scope {
+            if let Ok(scoped) = fs::read_dir(&path) {
+                entries.extend(scoped.flatten().map(|entry| entry.path()));
+            }
+        } else {
+            entries.push(path);
+        }
+    }
+    entries.sort();
+    entries
+}
+
+/// `(path relative to node_modules, canonical directory)` for every entry the
+/// view links. Files and dangling links are left out: package resolution only
+/// descends into directories.
+fn dependency_entry_view_targets(node_modules: &Path) -> BTreeMap<PathBuf, PathBuf> {
+    dependency_root_entries(node_modules)
+        .into_iter()
+        .filter_map(|entry| {
+            let relative = entry.strip_prefix(node_modules).ok()?.to_path_buf();
+            let canonical = fs::canonicalize(&entry).ok().filter(|path| path.is_dir())?;
+            Some((relative, canonical))
+        })
+        .collect()
+}
+
+fn is_dependency_entry_view(link: &Path) -> bool {
+    fs::symlink_metadata(link).is_ok_and(|m| m.is_dir())
+        && link.join(DEPENDENCY_ENTRY_VIEW_MARKER).is_file()
+}
+
+/// The links an existing entry view holds, or `None` when `link` is not an
+/// entry view or holds anything else.
+fn existing_dependency_entry_view(link: &Path) -> Option<BTreeMap<PathBuf, PathBuf>> {
+    if !is_dependency_entry_view(link) {
+        return None;
+    }
+    let mut links = BTreeMap::new();
+    for child in fs::read_dir(link).ok()? {
+        let child = child.ok()?;
+        if child.file_name() == DEPENDENCY_ENTRY_VIEW_MARKER {
+            continue;
+        }
+        let path = child.path();
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        let entries = if metadata.is_dir() {
+            fs::read_dir(&path)
+                .ok()?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()
+                .ok()?
+        } else {
+            vec![path]
+        };
+        for entry in entries {
+            if !fs::symlink_metadata(&entry).ok()?.file_type().is_symlink() {
+                return None;
+            }
+            let relative = entry.strip_prefix(link).ok()?.to_path_buf();
+            links.insert(relative, fs::canonicalize(&entry).ok()?);
+        }
+    }
+    Some(links)
+}
+
+/// Make `link` a real directory whose entries are directory links to the
+/// canonical directory of each `node_modules` entry (#4545). The canonical
+/// targets are what esbuild reaches through the whole-directory link on Unix,
+/// so resolution and metafile inputs are unchanged; only the relative hop that
+/// Windows mis-resolves is gone. Returns `false` when the view already matches.
+fn ensure_dependency_entry_view(node_modules: &Path, link: &Path) -> std::io::Result<bool> {
+    if !fs::canonicalize(node_modules)?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "dependency root is not a directory",
+        ));
+    }
+    let targets = dependency_entry_view_targets(node_modules);
+    if existing_dependency_entry_view(link).as_ref() == Some(&targets) {
+        return Ok(false);
+    }
+    remove_shadow_entry(link)?;
+    fs::create_dir(link)?;
+    fs::write(link.join(DEPENDENCY_ENTRY_VIEW_MARKER), "")?;
+    for (relative, canonical) in &targets {
+        let entry = link.join(relative);
+        if let Some(parent) = entry.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        zfb_types::directory_link::create(canonical, &entry)?;
+    }
     Ok(true)
 }
 
@@ -5208,13 +5367,20 @@ pub fn bundle_with_session(
         .as_ref()
         .filter(|_| bundle_exclude.is_empty() && !isolated_dependency_view_active)
     {
-        if ensure_dependency_link(nm_dir, &shadow_nm)? {
+        let relinked = if dependency_root_needs_entry_view(nm_dir) {
+            ensure_dependency_entry_view(nm_dir, &shadow_nm)?
+        } else {
+            ensure_dependency_link(nm_dir, &shadow_nm)?
+        };
+        if relinked {
             writer.forget_dependency_root(&shadow_nm);
         }
     } else {
         match fs::symlink_metadata(&shadow_nm) {
             Ok(metadata)
-                if metadata.file_type().is_symlink() || input.node_modules_dir.is_none() =>
+                if metadata.file_type().is_symlink()
+                    || input.node_modules_dir.is_none()
+                    || is_dependency_entry_view(&shadow_nm) =>
             {
                 remove_shadow_entry(&shadow_nm)?;
                 writer.forget_dependency_root(&shadow_nm);
@@ -15550,12 +15716,10 @@ fn could_not_resolve_specifier(line: &str) -> Option<&str> {
 /// Extracts the file-path portion of an esbuild source-location line, e.g.
 /// `"    pages/foo.tsx:1:19:"` -> `Some("pages/foo.tsx")`.
 ///
-/// Esbuild's location lines are `<indent><path>:<line>:<col>:`; a POSIX
-/// path has no other colons, so splitting from the right by `:` twice
-/// isolates the path. Windows drive-letter paths (`C:\...`) are not
-/// handled — this is a diagnostic-message nicety, not a resolution-
-/// affecting code path, and zfb has no CI coverage running the Rust suite
-/// on Windows yet (see the T3 cutover manifest).
+/// Esbuild's location lines are `<indent><path>:<line>:<col>:`. Splitting
+/// from the right by `:` at most twice isolates the path, so any colon
+/// inside it — a Windows drive letter (`C:\...`) included — is kept.
+/// Relative locations use `/` on every platform, Windows included.
 fn esbuild_location_path(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let without_trailing_colon = trimmed.strip_suffix(':')?;
@@ -15628,12 +15792,13 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 ///    offending block in stderr is walked and named, not just the first
 ///    batch.
 ///
-/// Windows note: `esbuild_location_path` (used to parse each offender's
-/// source location) does not handle drive-letter paths (`C:\...`), so the
-/// "never leak a tempdir path" guarantee below is only verified for the
-/// POSIX-style paths esbuild reports on the platforms zfb's Rust suite
-/// actually runs on (ubuntu/macOS — see the T3 cutover manifest); it is not
-/// exercised on Windows.
+/// Windows note: relative locations arrive `/`-separated and are joined onto
+/// `shadow` through `Path`, so they map to native project paths. The
+/// catch-all is a literal string replace of each root's native spelling, so
+/// an absolute location only has its tempdir prefix rewritten when it is
+/// spelled natively — which is how the Rolldown backend's absolute fallback
+/// renders it. Both shapes are unit-tested on `windows-latest`
+/// (`windows-lib-tests.yml`).
 fn friendly_esbuild_error(
     stderr: &str,
     shadow: &Path,
@@ -18175,6 +18340,79 @@ mod tests {
         // Not a location line: no trailing colon / non-numeric row-col.
         assert_eq!(esbuild_location_path("1 error"), None);
         assert_eq!(esbuild_location_path(""), None);
+    }
+
+    #[test]
+    fn esbuild_location_path_keeps_drive_letter_colon() {
+        assert_eq!(
+            esbuild_location_path("    C:\\work\\pages\\foo.tsx:3:6:"),
+            Some("C:\\work\\pages\\foo.tsx")
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_maps_slash_separated_location_onto_host_project_path() {
+        // Host-absolute roots (a drive-letter path on Windows) with the
+        // `/`-separated relative location esbuild and the Rolldown backend
+        // both print on every platform.
+        let base = std::env::temp_dir();
+        let shadow = base.join("zfb-bundler-sep123");
+        let project_root = base.join("my-project");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    components/box.tsx:3:6:\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, &shadow, &project_root, &project_root, &shadow);
+
+        let expected = project_root.join("components").join("box.tsx");
+        assert!(
+            friendly.contains(&format!("(imported from {})", expected.display())),
+            "should name the native project path: {friendly}"
+        );
+        assert!(
+            !friendly.contains("zfb-bundler-sep123"),
+            "should not leak the shadow tempdir name: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_maps_native_absolute_fallback_location() {
+        // The Rolldown backend's absolute fallback (importer outside every
+        // job cwd, e.g. a workspace sibling) prints the native spelling.
+        let base = std::env::temp_dir();
+        let work_root = base.join("zfb-bundler-abs123");
+        let shadow = work_root.join("sub-packages").join("host");
+        let project_root = base.join("workspace").join("sub-packages").join("host");
+        let first_party_root = base.join("workspace");
+        let importer = work_root.join("lib").join("shared").join("helper.ts");
+        let stderr = format!(
+            "\u{2718} [ERROR] Could not resolve \"../../../outside/escaped.ts\"\n\n    {}:1:19:\n\n1 error",
+            importer.display()
+        );
+
+        let friendly = friendly_esbuild_error(
+            &stderr,
+            &shadow,
+            &project_root,
+            &first_party_root,
+            &work_root,
+        );
+
+        let expected = first_party_root
+            .join("lib")
+            .join("shared")
+            .join("helper.ts");
+        assert!(
+            friendly.contains(&format!("(imported from {})", expected.display())),
+            "should name the real workspace-sibling path: {friendly}"
+        );
+        assert!(
+            friendly.contains(&format!("    {}:1:19:", expected.display())),
+            "the catch-all should rewrite the native absolute location: {friendly}"
+        );
+        assert!(
+            !friendly.contains("zfb-bundler-abs123"),
+            "should not leak the work_root tempdir name: {friendly}"
+        );
     }
 
     #[test]
@@ -28568,6 +28806,137 @@ mod tests {
         assert!(fs::symlink_metadata(&link).is_err());
         assert_eq!(fs::read(first.join("sentinel")).unwrap(), b"first");
         assert_eq!(fs::read(second.join("sentinel")).unwrap(), b"second");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_entry_view_links_entries_to_canonical_targets_and_is_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("node_modules");
+        let outside = temp.path().join("packages-ws/linked");
+        let shadow = temp.path().join("shadow");
+        for path in [
+            &install.join(".pnpm/dep@1/node_modules/dep"),
+            &install.join("@acme"),
+            &outside,
+            &shadow,
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::write(install.join(".pnpm/dep@1/node_modules/dep/sentinel"), "dep").unwrap();
+        fs::write(outside.join("sentinel"), "linked").unwrap();
+        fs::write(install.join(".modules.yaml"), "file entries are not linked").unwrap();
+        zfb_types::directory_link::create(
+            &install.join(".pnpm/dep@1/node_modules/dep"),
+            &install.join("dep"),
+        )
+        .unwrap();
+        zfb_types::directory_link::create(&outside, &install.join("@acme/linked")).unwrap();
+
+        let link = shadow.join("node_modules");
+        assert!(ensure_dependency_entry_view(&install, &link).unwrap());
+        assert!(is_dependency_entry_view(&link));
+        assert!(fs::symlink_metadata(&link).unwrap().is_dir());
+        for entry in ["dep", "@acme/linked", ".pnpm"] {
+            assert!(fs::symlink_metadata(link.join(entry))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+        assert_eq!(fs::read(link.join("dep/sentinel")).unwrap(), b"dep");
+        assert_eq!(
+            fs::read(link.join("@acme/linked/sentinel")).unwrap(),
+            b"linked"
+        );
+        assert_eq!(
+            fs::canonicalize(link.join("@acme/linked")).unwrap(),
+            fs::canonicalize(&outside).unwrap()
+        );
+        assert!(!link.join(".modules.yaml").exists());
+
+        // An unchanged install keeps the view; a new entry rebuilds it.
+        assert!(!ensure_dependency_entry_view(&install, &link).unwrap());
+        fs::create_dir(install.join("fresh")).unwrap();
+        assert!(ensure_dependency_entry_view(&install, &link).unwrap());
+        assert!(link.join("fresh").is_dir());
+        assert!(!ensure_dependency_entry_view(&install, &link).unwrap());
+
+        // Switching back to a whole-directory link, and wiping, never touch the install.
+        assert!(ensure_dependency_link(&install, &link).unwrap());
+        assert!(!is_dependency_entry_view(&link));
+        assert!(ensure_dependency_entry_view(&install, &link).unwrap());
+        wipe_dir_contents(&shadow).unwrap();
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"linked");
+        assert_eq!(
+            fs::read(install.join(".pnpm/dep@1/node_modules/dep/sentinel")).unwrap(),
+            b"dep"
+        );
+        assert!(install.join("fresh").is_dir());
+        assert!(fs::symlink_metadata(install.join("@acme/linked"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn relative_link_climbs_out_tracks_every_hop_not_the_final_position() {
+        let path = |parts: &[&str]| parts.iter().collect::<PathBuf>();
+        assert!(!relative_link_climbs_out(
+            0,
+            &path(&[".pnpm", "dep@1", "node_modules", "dep"])
+        ));
+        assert!(!relative_link_climbs_out(1, &path(&["..", "dep"])));
+        assert!(relative_link_climbs_out(0, &path(&["..", "x"])));
+        assert!(relative_link_climbs_out(
+            1,
+            &path(&["..", "..", "..", "packages-ws", "linked"])
+        ));
+        // Leaves node_modules and lexically re-enters it: still an escape.
+        assert!(relative_link_climbs_out(
+            1,
+            &path(&["..", "..", "..", "site", "node_modules", "x"])
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_entry_view_is_never_selected_off_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("site/node_modules/@acme");
+        fs::create_dir_all(&install).unwrap();
+        fs::create_dir_all(temp.path().join("packages-ws/linked")).unwrap();
+        std::os::unix::fs::symlink("../../../packages-ws/linked", install.join("linked")).unwrap();
+        assert!(!dependency_root_needs_entry_view(
+            &temp.path().join("site/node_modules")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dependency_entry_view_is_selected_only_for_escaping_relative_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let node_modules = temp.path().join("site/node_modules");
+        let linked = temp.path().join("packages-ws/linked");
+        let store = node_modules.join(".pnpm/dep@1/node_modules/dep");
+        for path in [&node_modules.join("@acme"), &linked, &store] {
+            fs::create_dir_all(path).unwrap();
+        }
+        // Junctions (absolute) and relative links that stay inside node_modules
+        // resolve the same through the shadow junction.
+        zfb_types::directory_link::create(&linked, &node_modules.join("@acme/junction")).unwrap();
+        std::os::windows::fs::symlink_dir(
+            r".pnpm\dep@1\node_modules\dep",
+            node_modules.join("dep"),
+        )
+        .unwrap();
+        assert!(!dependency_root_needs_entry_view(&node_modules));
+        std::os::windows::fs::symlink_dir(
+            r"..\..\..\packages-ws\linked",
+            node_modules.join("@acme/linked"),
+        )
+        .unwrap();
+        assert!(dependency_root_needs_entry_view(&node_modules));
     }
 
     #[cfg(any(unix, windows))]
