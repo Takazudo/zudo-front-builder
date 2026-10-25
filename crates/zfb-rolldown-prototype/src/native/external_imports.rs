@@ -53,7 +53,12 @@ pub(super) fn copied_input_edge(id: &str, kind: &str, filename: String) -> Value
 /// The one spelling of an output's `outputs` key and of its internal imports (#4542).
 /// Absolute, like esbuild v0.25.12's `MakePrettyPaths(..).Abs`, which keeps native separators.
 pub(super) fn output_key(outdir: &Path, filename: &str) -> String {
-    outdir.join(filename).to_string_lossy().into_owned()
+    // Rolldown filenames always use '/', even for a directory in a name template.
+    filename
+        .split('/')
+        .fold(outdir.to_path_buf(), |path, segment| path.join(segment))
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub(super) fn import_entry(

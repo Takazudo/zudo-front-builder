@@ -250,12 +250,8 @@ fn esbuild_style_unresolved(rendered: &[String], cwds: &[PathBuf]) -> Option<Str
             }
         };
         // esbuild prints cwd-relative locations with `/` even on Windows (#4541).
-        let shown = match cwds.iter().find_map(|cwd| path.strip_prefix(cwd).ok()) {
-            Some(relative) => relative
-                .components()
-                .map(|component| component.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
+        let shown = match cwds.iter().find(|cwd| path.starts_with(cwd)) {
+            Some(cwd) => esbuild_relative(&path, cwd),
             // Absolute fallback stays native: zfb-build's catch-all replaces native roots literally.
             None => path.display().to_string(),
         };
