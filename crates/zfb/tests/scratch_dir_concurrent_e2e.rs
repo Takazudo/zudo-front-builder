@@ -777,12 +777,12 @@ async fn concurrent_scenario() {
     );
 
     // Graceful stop persists the graph inside the session, not in `.zfb/`.
-    let stopped = tokio::task::block_in_place(|| {
-        session
-            .guard
-            .interrupt_and_wait(SHUTDOWN_DEADLINE)
-            .expect("interrupt `zfb dev`")
-    });
+    let interrupted =
+        tokio::task::block_in_place(|| session.guard.interrupt_and_wait(SHUTDOWN_DEADLINE));
+    let stopped = match interrupted {
+        Ok(stopped) => stopped,
+        Err(err) => panic!("interrupt `zfb dev`: {err}\n{}", session.logs()),
+    };
     assert!(
         stopped.is_some(),
         "dev did not exit within {}s of a graceful interrupt\n{}",
