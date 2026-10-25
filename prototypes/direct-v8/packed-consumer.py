@@ -280,7 +280,8 @@ def linked_build_diagnostics(log, pnpm, linked_site, packages_ws, build_env):
 
     def esbuild_probe():
         slot = ROOT / "crates/zfb/binaries/esbuild"
-        binaries = [path for path in slot.glob("esbuild*") if path.is_file() and path.stem == "esbuild"]
+        binaries = [Path(os.environ["ZFB_ESBUILD_BIN"])] if os.environ.get("ZFB_ESBUILD_BIN") else []
+        binaries += [path for path in slot.glob("esbuild*") if path.is_file() and path.stem == "esbuild"]
         shadows = [path for _, path in kept if os.path.lexists(path / "node_modules")]
         if not binaries or not shadows:
             log.write(f"  skipped: esbuild in {slot}: {binaries}; shadows with node_modules: {shadows}\n")
