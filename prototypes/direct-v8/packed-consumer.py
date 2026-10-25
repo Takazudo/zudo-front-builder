@@ -339,7 +339,7 @@ def main():
     if args.rolldown:
         build_env.update(ZFB_ROLLDOWN_PROTOTYPE="1", ZFB_DEV_TIMING="1")
     injected, preexisting, workdir = [], {}, None
-    with (output / "packed-consumer.log").open("w") as log:
+    with (output / "packed-consumer.log").open("w", encoding="utf-8", errors="replace") as log:
         try:
             manifest = json.loads((carrier_dir / "package.json").read_text())
             carrier_name = report["carrier"] = manifest["name"]
