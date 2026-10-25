@@ -353,27 +353,57 @@ fn promote_tsconfig_jsx(path: &Path, jsx: &mut rolldown_common::JsxOptions) -> R
     Ok(promoted)
 }
 
-/// `path` with its directory in physical spelling: the longest existing
-/// ancestor of its parent canonicalized, the rest appended as spelled. The
-/// final component itself is never resolved, so a symlinked entry or output
-/// keeps its own name, as esbuild's `--preserve-symlinks` expects.
+/// `path` with its directory in physical spelling. The directory is walked
+/// component by component: existing components are canonicalized, a missing
+/// one starts a not-yet-existing tail (which cannot hold a symlink) where `..`
+/// cancels lexically, and a `..` that climbs back out of that tail resumes
+/// physical resolution from the existing prefix. The final component itself is
+/// never resolved, so a symlinked entry or output keeps its own name, as
+/// esbuild's `--preserve-symlinks` expects. Anything other than plain absence
+/// (permission error, dangling symlink, non-directory component) cannot be
+/// resolved soundly, so the logical spelling is returned unchanged.
 fn physical_spelling(path: &Path) -> PathBuf {
-    let Some(name) = path.file_name() else {
+    use std::io::ErrorKind;
+    use std::path::Component;
+
+    let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else {
         return path.to_path_buf();
     };
-    let mut rest = vec![name];
-    let mut ancestor = path.parent();
-    while let Some(dir) = ancestor {
-        if let Ok(real) = std::fs::canonicalize(dir) {
-            return rest.iter().rev().fold(real, |acc, part| acc.join(part));
+    let mut resolved = PathBuf::new();
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    for component in dir.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if missing.pop().is_none() {
+                    // `resolved` is canonical, so its lexical parent is its physical parent.
+                    resolved.pop();
+                }
+            }
+            Component::Normal(part) => {
+                if !missing.is_empty() {
+                    missing.push(part);
+                    continue;
+                }
+                let candidate = resolved.join(part);
+                match std::fs::canonicalize(&candidate) {
+                    Ok(real) if real.is_dir() => resolved = real,
+                    Ok(_) => return path.to_path_buf(),
+                    Err(error) if error.kind() == ErrorKind::NotFound => {
+                        match std::fs::symlink_metadata(&candidate) {
+                            Err(error) if error.kind() == ErrorKind::NotFound => missing.push(part),
+                            _ => return path.to_path_buf(),
+                        }
+                    }
+                    Err(_) => return path.to_path_buf(),
+                }
+            }
         }
-        match dir.file_name() {
-            Some(part) => rest.push(part),
-            None => break,
-        }
-        ancestor = dir.parent();
     }
-    path.to_path_buf()
+    let mut out = resolved;
+    out.extend(missing);
+    out.join(name)
 }
 
 /// Rolldown entries for one esbuild `--alias:<key>=<target>` (exact key plus
@@ -669,5 +699,104 @@ mod tests {
                 .1,
             vec![Some(r"\\?\C:\shadow\alias.mjs".to_string())]
         );
+    }
+
+    #[cfg(unix)]
+    mod physical_spelling_fixture {
+        use super::super::physical_spelling;
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::path::{Path, PathBuf};
+
+        struct Tree(PathBuf);
+        impl Tree {
+            fn new(name: &str) -> Self {
+                let root = std::env::temp_dir().join(format!(
+                    "zfb-physical-spelling-{name}-{}",
+                    std::process::id()
+                ));
+                let _ = fs::remove_dir_all(&root);
+                fs::create_dir(&root).unwrap();
+                // Only the fixture's own parent is canonicalized; the subject is `link`.
+                let root = fs::canonicalize(root).unwrap();
+                fs::create_dir(root.join("real")).unwrap();
+                symlink(root.join("real"), root.join("link")).unwrap();
+                Self(root)
+            }
+            fn at(&self, rel: &str) -> PathBuf {
+                self.0.join(rel)
+            }
+        }
+        impl Drop for Tree {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[test]
+        fn dotdot_after_a_missing_component_cancels_lexically_under_a_symlinked_root() {
+            let tree = Tree::new("missing-dotdot");
+            let spelled = tree.at("link/build/../dist/out.js");
+            assert_eq!(physical_spelling(&spelled), tree.at("real/dist/out.js"));
+        }
+
+        #[test]
+        fn dotdot_climbing_back_into_existing_directories_resumes_physical_resolution() {
+            let tree = Tree::new("resume");
+            fs::create_dir_all(tree.at("elsewhere/sub")).unwrap();
+            symlink(tree.at("elsewhere/sub"), tree.at("real/hop")).unwrap();
+            // missing/.. cancels, `hop` is a symlink into elsewhere/sub, so
+            // the following `..` is elsewhere, not real.
+            let spelled = tree.at("link/missing/../hop/../out/f.js");
+            assert_eq!(physical_spelling(&spelled), tree.at("elsewhere/out/f.js"));
+        }
+
+        #[test]
+        fn existing_ancestor_and_final_symlink_component_keep_their_spelling() {
+            let tree = Tree::new("final");
+            fs::write(tree.at("real/target.js"), "").unwrap();
+            symlink(tree.at("real/target.js"), tree.at("real/entry.js")).unwrap();
+            assert_eq!(
+                physical_spelling(&tree.at("link/newdir/f.js")),
+                tree.at("real/newdir/f.js")
+            );
+            assert_eq!(
+                physical_spelling(&tree.at("link/entry.js")),
+                tree.at("real/entry.js")
+            );
+        }
+
+        #[test]
+        fn dangling_symlink_and_non_directory_components_stay_logical() {
+            let tree = Tree::new("uncertain");
+            symlink(tree.at("nowhere"), tree.at("real/dangling")).unwrap();
+            fs::write(tree.at("real/file"), "").unwrap();
+            for spelled in [
+                tree.at("link/dangling/../x/f.js"),
+                tree.at("link/file/../x/f.js"),
+            ] {
+                assert_eq!(physical_spelling(&spelled), spelled);
+            }
+        }
+
+        #[test]
+        fn decode_spells_an_outside_cwd_outdir_physically() {
+            let tree = Tree::new("decode");
+            fs::create_dir(tree.at("cwd")).unwrap();
+            let outdir = tree.at("link/build/../dist");
+            let mut cmd = super::Command::new("esbuild");
+            cmd.current_dir(tree.at("cwd"))
+                .args(["entry.mjs", "--bundle"])
+                .arg(format!("--outdir={}", outdir.display()));
+            let request = super::Request::decode_for_host(&cmd, false).unwrap();
+            let expected = tree.at("real/dist");
+            assert_eq!(
+                request.options.dir.as_deref(),
+                Some(&*expected.to_string_lossy())
+            );
+            // The user-visible outdir keeps the caller's spelling.
+            assert_eq!(request.outdir.as_deref(), Some(outdir.as_path()));
+            let _: &Path = &expected;
+        }
     }
 }
