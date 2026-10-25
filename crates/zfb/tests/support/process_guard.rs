@@ -294,6 +294,10 @@ impl ProcessTreeGuard {
         if err.raw_os_error() == Some(libc::ESRCH) {
             return Ok(());
         }
+        // macOS answers EPERM, not ESRCH, when only the zombie leader is left.
+        if err.raw_os_error() == Some(libc::EPERM) && self.leader_exited().unwrap_or(false) {
+            return Ok(());
+        }
         Err(err)
     }
 
