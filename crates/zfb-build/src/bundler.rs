@@ -2128,12 +2128,13 @@ impl DependencyRootScan {
                         self.read_dir(root, child_rel, next);
                     }
                 }
-                Ok(file_type) if file_type.is_symlink() => {
-                    if fs::read_link(child.path()).is_ok_and(|target| {
-                        target.is_relative() && relative_link_climbs_out(depth, &target)
-                    }) {
-                        self.escaping.push(child_rel);
-                    }
+                Ok(file_type)
+                    if file_type.is_symlink()
+                        && fs::read_link(child.path()).is_ok_and(|target| {
+                            target.is_relative() && relative_link_climbs_out(depth, &target)
+                        }) =>
+                {
+                    self.escaping.push(child_rel);
                 }
                 _ => {}
             }
