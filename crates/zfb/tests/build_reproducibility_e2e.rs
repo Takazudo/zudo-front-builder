@@ -102,9 +102,30 @@ fn copy_symlink(source_path: &Path, target_path: &Path) -> std::io::Result<()> {
         if resolved.is_dir() {
             link_dir(&link_target, target_path)
         } else {
-            std::os::windows::fs::symlink_file(link_target, target_path)
+            match std::os::windows::fs::symlink_file(&link_target, target_path) {
+                Err(err) if is_symlink_privilege_error(&err) => {
+                    fs::copy(&resolved, target_path).map(|_| ())
+                }
+                other => other,
+            }
         }
     }
+}
+
+/// Windows `ERROR_PRIVILEGE_NOT_HELD`: creating a symlink needs Developer Mode or elevation.
+fn is_symlink_privilege_error(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(1314)
+}
+
+#[test]
+fn symlink_privilege_error_is_recognised_by_raw_os_code() {
+    assert!(is_symlink_privilege_error(
+        &std::io::Error::from_raw_os_error(1314)
+    ));
+    assert!(!is_symlink_privilege_error(
+        &std::io::Error::from_raw_os_error(5)
+    ));
+    assert!(!is_symlink_privilege_error(&std::io::Error::other("x")));
 }
 
 /// Spelling of an absolute path inside a JavaScript import specifier.
