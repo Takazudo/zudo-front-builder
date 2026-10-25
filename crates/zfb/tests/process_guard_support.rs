@@ -294,7 +294,8 @@ fn long_running_command() -> Command {
     cmd
 }
 
-/// A leader that starts a long-lived grandchild in its own process group,
+/// A leader that starts a long-lived grandchild in the leader's process group
+/// (no job control in `sh -c`),
 /// writes the grandchild's pid to `pid_file`, and exits 0 — leaving the
 /// grandchild running — once `go` exists.
 #[cfg(unix)]

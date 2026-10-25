@@ -83,6 +83,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-build --lib -- --test-threads=1
 
+      # #4517: Windows 8.3 long-path spelling for the project root (#4499).
+      - name: zfb-types lib tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p zfb-types --lib -- --test-threads=1
+
       # #4512: the lock and HTTP-probe helpers shared by the e2e binaries.
       - name: zfb-test-utils lib tests
         if: ${{ !cancelled() }}

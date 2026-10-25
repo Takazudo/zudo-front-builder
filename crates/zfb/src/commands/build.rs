@@ -45,7 +45,6 @@
 // stay warning-clean.
 #![cfg_attr(not(feature = "direct-v8"), allow(unused_imports, dead_code))]
 
-use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -140,7 +139,8 @@ async fn run_inner(
 ) -> Result<usize> {
     let timing_enabled = build_timing_enabled();
 
-    let project_root = env::current_dir().context("failed to read current working directory")?;
+    let project_root =
+        zfb_types::current_dir_long().context("failed to read current working directory")?;
 
     // The conventional pages root. The `pages/` dir requirement is
     // relaxed below (#1193): a project with package-owned build routes

@@ -202,6 +202,111 @@ fn run_build(root: &Path, esbuild: &Path) -> Output {
         .expect("spawn production zfb build")
 }
 
+/// Grep-able prefix for the duplicate reactive-core failure diagnostics (#4499/#4515).
+const DIAG: &str = "[#4499-diag]";
+
+/// `run_build` with the off-by-default `ZFB_DEBUG_ISLANDS_METAFILE_DIR` knob,
+/// which keeps each shared islands metafile so module ids can be printed.
+fn run_build_keeping_islands_metafile(root: &Path, esbuild: &Path, metafiles: &Path) -> Output {
+    Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .env("ZFB_DEBUG_ISLANDS_METAFILE_DIR", metafiles)
+        .output()
+        .expect("spawn production zfb build")
+}
+
+const REACTIVE_DEFINITION_MARKER: &str = r#"@takazudo/zfb/zudo-react/runtime-definition-v1":!0"#;
+
+/// Reactive-core definition count in every emitted `islands-*.js` file.
+fn reactive_counts_per_islands_file(root: &Path) -> Vec<(String, usize)> {
+    let mut counts: Vec<_> = fs::read_dir(root.join("dist/assets"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (name.starts_with("islands-") && name.ends_with(".js")).then(|| {
+                let source = fs::read_to_string(entry.path()).unwrap_or_default();
+                (name, source.matches(REACTIVE_DEFINITION_MARKER).count())
+            })
+        })
+        .collect();
+    counts.sort();
+    counts
+}
+
+/// Print every zudo-react module id the kept islands metafiles record, plus
+/// which output each reactive-core copy (`zudo-react/reactive`) landed in.
+/// `all_inputs` also prints every other input id, for a duplicate whose id
+/// does not contain `zudo-react/`.
+fn print_islands_metafile_module_ids(label: &str, metafiles: &Path, all_inputs: bool) {
+    let mut files: Vec<_> = fs::read_dir(metafiles)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        eprintln!(
+            "{DIAG} {label}: no islands metafile kept under {}",
+            metafiles.display()
+        );
+    }
+    let is_zudo_react = |id: &str| id.replace('\\', "/").contains("zudo-react/");
+    let is_reactive_core = |id: &str| id.replace('\\', "/").contains("zudo-react/reactive");
+    for file in files {
+        let name = file.file_name().unwrap_or_default().to_string_lossy();
+        let Some(meta) = fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        else {
+            eprintln!("{DIAG} {label}: unreadable metafile {name}");
+            continue;
+        };
+        let inputs = meta["inputs"].as_object();
+        eprintln!(
+            "{DIAG} {label}: metafile {name} backend={} inputs={}",
+            meta["zfbBackend"].as_str().unwrap_or("esbuild"),
+            inputs.map_or(0, |inputs| inputs.len())
+        );
+        for id in inputs.into_iter().flat_map(|inputs| inputs.keys()) {
+            if !is_zudo_react(id) {
+                if all_inputs {
+                    eprintln!("{DIAG} {label}: input {id}");
+                }
+            } else {
+                let core = if is_reactive_core(id) {
+                    " REACTIVE-CORE"
+                } else {
+                    ""
+                };
+                eprintln!("{DIAG} {label}: input{core} {id}");
+            }
+        }
+        for (output, info) in meta["outputs"].as_object().into_iter().flatten() {
+            let output_name = Path::new(output)
+                .file_name()
+                .map_or_else(|| output.clone(), |n| n.to_string_lossy().into_owned());
+            for id in info["inputs"]
+                .as_object()
+                .into_iter()
+                .flat_map(|i| i.keys())
+            {
+                if is_reactive_core(id) {
+                    eprintln!("{DIAG} {label}: output {output_name} carries REACTIVE-CORE {id}");
+                }
+            }
+        }
+    }
+}
+
 fn combined_output(output: &Output) -> String {
     format!(
         "{}\n{}",
@@ -754,7 +859,8 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     install_packed_widgets(&positive);
     materialize_embedded_node_modules(&positive);
     write_factory_override_control_page(&positive);
-    let built = run_build(&positive, &esbuild);
+    let diag_metafiles = scratch.path().join("diag-islands-metafiles");
+    let built = run_build_keeping_islands_metafile(&positive, &esbuild, &diag_metafiles);
     assert!(
         built.status.success(),
         "positive packed-consumer production build failed\n{}",
@@ -882,26 +988,23 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         })
         .expect("production build emits the shared islands bundle");
     let browser_source = fs::read_to_string(&browser_bundle).expect("read minified islands bundle");
-    let reactive_runtime_definitions = browser_source
-        .matches(r#"@takazudo/zfb/zudo-react/runtime-definition-v1":!0"#)
-        .count();
-    // Windows duplicates the reactive core (#4499, likely 8.3 short-name module
-    // ids). Bound it to the observed count so the rest of this test keeps
-    // running there; a worse count still fails and a fixed one is announced.
-    if cfg!(windows) {
-        assert!(
-            matches!(reactive_runtime_definitions, 1 | 2),
-            "Windows reactive-core count left the known #4499 state (1 or 2): {reactive_runtime_definitions}"
+    let reactive_runtime_definitions = browser_source.matches(REACTIVE_DEFINITION_MARKER).count();
+    // A duplicate core (#4499: two spellings of one installed module) prints
+    // the kept islands metafiles' module ids before the assertion fails.
+    if reactive_runtime_definitions != 1 {
+        eprintln!(
+            "{DIAG} positive: reactive cores in {} = {reactive_runtime_definitions}; per islands file: {:?}",
+            browser_bundle.file_name().unwrap_or_default().to_string_lossy(),
+            reactive_counts_per_islands_file(&positive)
         );
-        if reactive_runtime_definitions == 1 {
-            eprintln!("[scanner_boundary_acceptance] one reactive core on Windows: #4499 may be fixed; restore the unconditional assertion");
-        }
-    } else {
-        assert_eq!(
-            reactive_runtime_definitions, 1,
-            "minified client bundle must have one zudo-react reactive core; duplicate runtime definitions break packed-island subscriptions"
-        );
+        eprintln!("{DIAG} build cwd as spawned: {}", positive.display());
+        eprintln!("{DIAG} env::temp_dir(): {}", std::env::temp_dir().display());
+        print_islands_metafile_module_ids("positive", &diag_metafiles, true);
     }
+    assert_eq!(
+        reactive_runtime_definitions, 1,
+        "minified client bundle must have one zudo-react reactive core; duplicate runtime definitions break packed-island subscriptions"
+    );
     let build_tokens: BTreeSet<_> = html
         .split("data-zfb-build=\"")
         .skip(1)

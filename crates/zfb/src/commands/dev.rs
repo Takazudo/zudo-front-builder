@@ -1297,7 +1297,8 @@ fn leave_publication_pending_for_failures(
 #[cfg(feature = "direct-v8")]
 pub async fn run(args: &DevArgs) -> Result<()> {
     // 1. Resolve the project root and load configuration.
-    let project_root = std::env::current_dir().context("failed to read current working dir")?;
+    let project_root =
+        zfb_types::current_dir_long().context("failed to read current working dir")?;
 
     let mut cfg = config::load_from_dir(&project_root)
         .await

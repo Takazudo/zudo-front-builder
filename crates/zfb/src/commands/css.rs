@@ -55,7 +55,7 @@ impl Emitter for ProductionEmitter {
 /// Compile one stylesheet without discovering routes, rendering pages, or
 /// starting the plugin host.
 pub async fn run(args: &CssArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let cwd = zfb_types::current_dir_long().context("failed to determine current directory")?;
     run_from(args, &cwd, &ProductionEmitter).await
 }
 

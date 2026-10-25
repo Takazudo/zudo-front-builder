@@ -12,6 +12,7 @@ pub mod client_scripts;
 pub mod directory_link;
 pub mod first_party;
 pub mod helpers;
+pub mod long_path;
 pub mod module_workers;
 pub mod owned_runtime;
 pub mod page_extensions;
@@ -36,6 +37,7 @@ pub use helpers::{
     canonicalize_existing_prefix, escape_html, has_node_modules_segment, json_string,
     normalize_path_lexical, path_to_posix_string,
 };
+pub use long_path::{current_dir_long, long_path_spelling};
 pub use module_workers::{
     module_worker_content_hash, module_worker_filename, module_worker_filename_scoped,
     module_worker_url_specifier, module_worker_url_specifier_scoped, ModuleWorkerPathError,
