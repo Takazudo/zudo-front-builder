@@ -557,8 +557,7 @@ mod tests {
     /// through a real installed package (exercised on every host).
     #[test]
     fn exact_and_wildcard_alias_entries_resolve_an_installed_package() {
-        let dir = std::env::temp_dir().join(format!("zfb-native-alias-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = unique_temp_dir("zfb-native-alias");
         let pkg = dir.join("node_modules/@scope/pkg");
         std::fs::create_dir_all(pkg.join("sub")).unwrap();
         std::fs::write(
@@ -594,13 +593,29 @@ mod tests {
         );
     }
 
+    /// Creates a fresh, never-reused temp dir named `{label}-{pid}-{nanos}-{counter}`.
+    /// `create_dir` (not `create_dir_all`) so a name collision fails loudly.
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "{label}-{pid}-{nanos}-{n}",
+            pid = std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
     struct TsconfigDir(PathBuf);
     impl TsconfigDir {
         fn new(name: &str, tsconfig: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("zfb-prepared-jsx-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir(&dir).unwrap();
+            let dir = unique_temp_dir(&format!("zfb-prepared-jsx-{name}"));
             std::fs::write(dir.join("tsconfig.json"), tsconfig).unwrap();
             Self(dir)
         }
@@ -732,12 +747,7 @@ mod tests {
         struct Tree(PathBuf);
         impl Tree {
             fn new(name: &str) -> Self {
-                let root = std::env::temp_dir().join(format!(
-                    "zfb-physical-spelling-{name}-{}",
-                    std::process::id()
-                ));
-                let _ = fs::remove_dir_all(&root);
-                fs::create_dir(&root).unwrap();
+                let root = super::unique_temp_dir(&format!("zfb-physical-spelling-{name}"));
                 // Only the fixture's own parent is canonicalized; the subject is `link`.
                 let root = fs::canonicalize(root).unwrap();
                 fs::create_dir(root.join("real")).unwrap();

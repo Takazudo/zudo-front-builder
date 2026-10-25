@@ -9,7 +9,10 @@
 # reusable-smoke-clean-room.yml) against the LIVE dist-tags on a schedule,
 # independent of any release.
 #
-# Channel coverage — `latest` only; see the `next` note below.
+# Channel coverage — the registry smokes cover `latest` only; see the `next`
+# note below. The two preset-installed-carrier legs (#4533) are different: they
+# smoke the published-preset fixture's PINNED published tuple (its frozen
+# lockfile), not a dist-tag.
 # Until v1.0.0 (2026-07-31) this workflow smoked ONLY `next`, which was correct
 # then: `latest` was empty, so release.yml's dual-tag gate pushed every
 # prerelease to BOTH tags and smoking `next` incidentally covered the stable
@@ -32,7 +35,7 @@
 # tracking issue and an IFTTT alert out of a non-event. While a soak IS active,
 # release.yml smokes `next` on every publish, which is the tighter loop anyway.
 #
-# Three legs:
+# Five legs (three registry legs, then the two fixture legs described last):
 #   - latest / ubuntu-latest — matches what release.yml runs every release.
 #   - latest / macos-15 (PINNED, not macos-latest — that label drifts
 #     unpredictably across major OS versions without notice) — darwin-arm64 is
@@ -46,6 +49,17 @@
 #     `trustPolicy: no-downgrade` — and no CI leg noticed, because the packages
 #     install fine and the release went green. It surfaced only when a consumer
 #     reported it. This leg closes that gap on the same weekly cadence.
+#
+#   - preset-installed-carrier-ubuntu / -windows (#4533) — run the
+#     published-preset identity fixture against the npm-installed native carrier
+#     (ZFB_PRESET_BINARY=installed). Windows is confirmed on a windows-latest
+#     runner; there is deliberately no macOS leg (Mac is confirmed by hand).
+#
+# workflow_dispatch `legs`: `all` (default) or `preset-carrier`. preset-carrier
+# skips the three registry legs and BOTH the tracking-issue and IFTTT jobs, so a
+# partial evidence run can neither file nor close the issue. Schedules are
+# always `all`. The issue closes only when all five jobs succeed
+# (scripts/drift-net-verdict.mjs); skipped means not run and never closes.
 #
 # The provenance leg fails on regressions and on every package that has never
 # carried an attestation. All eleven published packages are subject to the
@@ -71,9 +85,17 @@ on:
     # scheduled on the hour collides into on GitHub's shared cron fleet.
     - cron: "43 3 * * 3"
   workflow_dispatch:
+    inputs:
+      legs:
+        description: "Which legs to run (preset-carrier skips the tracking issue and alert)"
+        type: choice
+        options:
+          - all
+          - preset-carrier
+        default: all
 
 concurrency:
-  group: drift-net-${{ github.ref }}
+  group: drift-net-${{ github.ref }}-${{ github.event.inputs.legs || 'all' }}
   cancel-in-progress: true
 
 # Default to least privilege; the file-or-close-issue job opts into
@@ -83,6 +105,7 @@ permissions:
 
 jobs:
   smoke-latest-ubuntu:
+    if: ${{ github.event.inputs.legs != 'preset-carrier' }}
     name: Smoke latest (ubuntu-latest)
     uses: ./.github/workflows/reusable-smoke-clean-room.yml
     with:
@@ -90,6 +113,7 @@ jobs:
       runner: ubuntu-latest
 
   smoke-latest-macos:
+    if: ${{ github.event.inputs.legs != 'preset-carrier' }}
     name: Smoke latest (macos-15, darwin-arm64)
     uses: ./.github/workflows/reusable-smoke-clean-room.yml
     with:
@@ -102,6 +126,7 @@ jobs:
     # predecessors had? Needs no pnpm install — the script and its one import
     # are dependency-free ESM over node builtins + fetch.
     name: Provenance drift (latest)
+    if: ${{ github.event.inputs.legs != 'preset-carrier' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -122,14 +147,103 @@ jobs:
       - name: Check npm provenance for regressions
         run: node scripts/check-provenance-drift.mjs
 
+  preset-installed-carrier-ubuntu:
+    # #4533: published-preset fixture against the npm-installed carrier, pinned
+    # published tuple (not a dist-tag). Hard failure.
+    name: Preset installed carrier (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      ZFB_PRESET_BINARY: installed
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Published-preset fixture (installed carrier)
+        # ZFB_PRESET_BINARY=installed comes from the job env (also valid in PowerShell).
+        # `runner` is not an allowed context in job-level env, so the dir is set here.
+        env:
+          ZFB_PRESET_EVIDENCE_DIR: ${{ runner.temp }}/published-preset-identity
+        run: node tests/published-preset-identity/run.mjs
+
+      - name: Upload published-preset identity evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preset-installed-carrier-ubuntu
+          path: ${{ runner.temp }}/published-preset-identity/
+          if-no-files-found: warn
+          retention-days: 14
+
+  preset-installed-carrier-windows:
+    # #4533: published-preset fixture against the npm-installed carrier, pinned
+    # published tuple (not a dist-tag). Hard failure.
+    name: Preset installed carrier (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      ZFB_PRESET_BINARY: installed
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Published-preset fixture (installed carrier)
+        # ZFB_PRESET_BINARY=installed comes from the job env (also valid in PowerShell).
+        # `runner` is not an allowed context in job-level env, so the dir is set here.
+        env:
+          ZFB_PRESET_EVIDENCE_DIR: ${{ runner.temp }}/published-preset-identity
+        run: node tests/published-preset-identity/run.mjs
+
+      - name: Upload published-preset identity evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preset-installed-carrier-windows
+          path: ${{ runner.temp }}/published-preset-identity/
+          if-no-files-found: warn
+          retention-days: 14
+
   file-or-close-issue:
     # Single deduped tracking issue per workflow (not per run): stays open
     # while the workflow is red, gets a comment on each subsequent red run,
     # and is closed automatically on the next green run. See
     # scripts/file-exam-issue.sh and the zudo-test-wisdom T3 exam pattern.
+    # Skipped entirely on a `legs=preset-carrier` dispatch. The decision lives in
+    # scripts/drift-net-verdict.mjs: close only when all five jobs succeeded.
     name: File/close exam tracking issue
-    needs: [smoke-latest-ubuntu, smoke-latest-macos, provenance-latest]
-    if: always()
+    needs:
+      - smoke-latest-ubuntu
+      - smoke-latest-macos
+      - provenance-latest
+      - preset-installed-carrier-ubuntu
+      - preset-installed-carrier-windows
+    if: ${{ !cancelled() && github.event.inputs.legs != 'preset-carrier' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -140,79 +254,90 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      - name: Decide file/close/none
+        id: verdict
+        env:
+          LEGS: ${{ github.event.inputs.legs }}
+          R_SMOKE_UBUNTU: ${{ needs.smoke-latest-ubuntu.result }}
+          R_SMOKE_MACOS: ${{ needs.smoke-latest-macos.result }}
+          R_PROVENANCE: ${{ needs.provenance-latest.result }}
+          R_PRESET_UBUNTU: ${{ needs.preset-installed-carrier-ubuntu.result }}
+          R_PRESET_WINDOWS: ${{ needs.preset-installed-carrier-windows.result }}
+        run: |
+          node scripts/drift-net-verdict.mjs --legs "$LEGS" \
+            --result "smoke-latest-ubuntu=$R_SMOKE_UBUNTU" \
+            --result "smoke-latest-macos=$R_SMOKE_MACOS" \
+            --result "provenance-latest=$R_PROVENANCE" \
+            --result "preset-installed-carrier-ubuntu=$R_PRESET_UBUNTU" \
+            --result "preset-installed-carrier-windows=$R_PRESET_WINDOWS" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: File or comment on tracking issue (failure)
-        if: ${{ needs.smoke-latest-ubuntu.result == 'failure' || needs.smoke-latest-macos.result == 'failure' || needs.provenance-latest.result == 'failure' }}
+        if: ${{ steps.verdict.outputs.action == 'file' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          LATEST_UBUNTU_RESULT: ${{ needs.smoke-latest-ubuntu.result }}
-          LATEST_MACOS_RESULT: ${{ needs.smoke-latest-macos.result }}
-          PROVENANCE_RESULT: ${{ needs.provenance-latest.result }}
-        # LEG is computed in shell rather than by a nested GHA ternary: even at
-        # two legs the ternary form had to special-case "both failed" to avoid
-        # mislabelling, and it stops being reviewable the moment a leg is added.
-        run: |
-          LEG=""
-          append_leg() {
-            if [ -n "$LEG" ]; then LEG="${LEG}, $1"; else LEG="$1"; fi
-          }
-          # Explicit `if` blocks, NOT `[ ... ] && append_leg ...` — under the
-          # default `bash -e` shell a false test in that form is the statement's
-          # own exit status and would fail the step.
-          if [ "$LATEST_UBUNTU_RESULT" = "failure" ]; then append_leg "latest/ubuntu-latest"; fi
-          if [ "$LATEST_MACOS_RESULT" = "failure" ]; then append_leg "latest/macos-15"; fi
-          if [ "$PROVENANCE_RESULT" = "failure" ]; then append_leg "provenance/latest"; fi
-          export LEG
-          bash scripts/file-exam-issue.sh "Drift net"
+          LEG: ${{ steps.verdict.outputs.failed }}
+        run: bash scripts/file-exam-issue.sh "Drift net"
 
-      - name: Close tracking issue (green)
-        if: ${{ needs.smoke-latest-ubuntu.result == 'success' && needs.smoke-latest-macos.result == 'success' && needs.provenance-latest.result == 'success' }}
+      - name: Close tracking issue (all five jobs green)
+        if: ${{ steps.verdict.outputs.action == 'close' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "Drift net" --green
 
   notify:
-    # Alerting guard: a red smoke leg otherwise sits unseen in the Actions
+    # Alerting guard: a red leg otherwise sits unseen in the Actions
     # tab between releases (nobody is watching a scheduled run the way a
     # release is watched live). Same IFTTT pattern as release.yml's notify
     # job (status-computed via needs.*.result, reuses IFTTT_PROD_NOTIFY) —
-    # established in issue #1335.
+    # established in issue #1335. Skipped on a `legs=preset-carrier` dispatch.
     name: Notify via IFTTT on failure
-    needs: [smoke-latest-ubuntu, smoke-latest-macos, provenance-latest]
-    if: always()
+    needs:
+      - smoke-latest-ubuntu
+      - smoke-latest-macos
+      - provenance-latest
+      - preset-installed-carrier-ubuntu
+      - preset-installed-carrier-windows
+    if: ${{ !cancelled() && github.event.inputs.legs != 'preset-carrier' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
     steps:
-      - name: Notify via IFTTT on failure
-        if: env.IFTTT_PROD_NOTIFY != ''
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Decide failed legs
+        id: verdict
         env:
-          LATEST_UBUNTU_RESULT: ${{ needs.smoke-latest-ubuntu.result }}
-          LATEST_MACOS_RESULT: ${{ needs.smoke-latest-macos.result }}
-          PROVENANCE_RESULT: ${{ needs.provenance-latest.result }}
+          LEGS: ${{ github.event.inputs.legs }}
+          R_SMOKE_UBUNTU: ${{ needs.smoke-latest-ubuntu.result }}
+          R_SMOKE_MACOS: ${{ needs.smoke-latest-macos.result }}
+          R_PROVENANCE: ${{ needs.provenance-latest.result }}
+          R_PRESET_UBUNTU: ${{ needs.preset-installed-carrier-ubuntu.result }}
+          R_PRESET_WINDOWS: ${{ needs.preset-installed-carrier-windows.result }}
+        run: |
+          node scripts/drift-net-verdict.mjs --legs "$LEGS" \
+            --result "smoke-latest-ubuntu=$R_SMOKE_UBUNTU" \
+            --result "smoke-latest-macos=$R_SMOKE_MACOS" \
+            --result "provenance-latest=$R_PROVENANCE" \
+            --result "preset-installed-carrier-ubuntu=$R_PRESET_UBUNTU" \
+            --result "preset-installed-carrier-windows=$R_PRESET_WINDOWS" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Notify via IFTTT on failure
+        if: ${{ env.IFTTT_PROD_NOTIFY != '' && steps.verdict.outputs.failed != '' }}
+        env:
+          FAILED_JOB: ${{ steps.verdict.outputs.failed }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          FAILED_JOB=""
-          append_job() {
-            if [ -n "$FAILED_JOB" ]; then FAILED_JOB="${FAILED_JOB}, $1"; else FAILED_JOB="$1"; fi
-          }
-          if [ "$LATEST_UBUNTU_RESULT" = "failure" ]; then append_job "smoke-latest-ubuntu"; fi
-          if [ "$LATEST_MACOS_RESULT" = "failure" ]; then append_job "smoke-latest-macos"; fi
-          if [ "$PROVENANCE_RESULT" = "failure" ]; then append_job "provenance-latest"; fi
-
-          if [ -z "$FAILED_JOB" ]; then
-            echo "No failed leg — skipping notification."
-            exit 0
-          fi
-
           RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
 
           curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
             -H 'Content-Type: application/json' \
             -d "{
               \"value1\": \"Drift net failed (${FAILED_JOB})\",
-              \"value2\": \"channels: latest (ubuntu+macos+provenance)\",
+              \"value2\": \"registry: latest (ubuntu+macos+provenance); fixture: pinned preset tuple (ubuntu+windows)\",
               \"value3\": \"${RUN_URL}\"
             }" || echo "::warning::IFTTT notification failed"
