@@ -1,0 +1,209 @@
+# Linux direct-v8 Rolldown probe evidence (#4528, sub of #4526).
+#
+# Purpose: Linux x64 runtime-parity evidence for #4123 (the Rolldown SSR and
+# production probes on the default direct-v8 host). It never covers Darwin;
+# the Darwin arm64 and x64 rows of #4123 stay owner-manual.
+#
+# Not a required check: it is deliberately absent from ruleset 18452968 and
+# scripts/apply-main-ruleset.sh. It is path-filtered, so it would hang
+# unrelated PRs if it were required.
+#
+# Out of scope on purpose: the lifecycle harness. Its known top-level-throw
+# link failure (`SyntaxError: Export 'routes' is not defined`) is owned by
+# #318/#4124 (prototypes/direct-v8/PLATFORMS.md). The probes run here throw
+# inside the page function, so a red step in this workflow is a new
+# regression: there is no continue-on-error and no loosened assertion.
+
+# pin-update: every `uses: <action>@<sha>` line is pinned to the same SHAs as
+# the other workflows in this repo (see the pin-update header in health.yml).
+
+name: rolldown-probes-linux
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, "base/**"]
+    paths:
+      - crates/**
+      - prototypes/rolldown/**
+      - packages/zfb/**
+      - packages/zfb-runtime/**
+      - packages/zfb-slugify/**
+      - Cargo.lock
+      - Cargo.toml
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - rust-toolchain.toml
+      - .github/workflows/rolldown-probes-linux.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rolldown-probes-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probes:
+    name: Rolldown probes (linux-x64, direct-v8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      EVIDENCE: target/rolldown-probes-linux-evidence
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      # Same fallback cleanup as health.yml (issue #687): only runners below
+      # 40 GB free pay for removing preinstalled toolchains before the V8 build.
+      - name: Free disk space for V8 build
+        run: |
+          set -euo pipefail
+          threshold_bytes=$((40 * 1000 * 1000 * 1000))
+          available_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          if [[ ! "$available_bytes" =~ ^[0-9]+$ ]]; then
+            echo "Unable to determine available disk space (got: $available_bytes)" >&2
+            exit 1
+          fi
+          echo "Disk available: ${available_bytes} bytes; cleanup threshold: ${threshold_bytes} bytes."
+          if (( available_bytes >= threshold_bytes )); then
+            echo "Skipping disk cleanup: available space is at or above the 40 GB threshold."
+            exit 0
+          fi
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          df --output=avail -B1 / | awk 'NR == 2 { print "Disk available after cleanup: " $1 " bytes" }'
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24.14.0"
+          package-manager-cache: false
+
+      # No `toolchain` input: rust-toolchain.toml selects stable, as in health.yml.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      # Own cache key. Never share workspace-all-targets with health.yml/exam.yml:
+      # this job builds with different features and no debuginfo.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: rolldown-probes-linux-debug
+          cache-on-failure: true
+
+      - name: Record source and toolchain identity
+        shell: bash
+        env:
+          PR_MERGE_REF: ${{ github.event_name == 'pull_request' && github.ref || 'n/a (not a pull_request run)' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || 'n/a' }}
+          RUNNER_IMAGE: ${{ runner.os }} ${{ runner.arch }} ${{ env.ImageOS }} ${{ env.ImageVersion }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          {
+            echo "head: $(git rev-parse HEAD)"
+            echo "pr-head-sha: $PR_HEAD_SHA"
+            echo "ref: $PR_MERGE_REF"
+            echo "runner-image: $RUNNER_IMAGE"
+            rustc -Vv
+            cargo -V
+            echo "node: $(node -v)"
+            sha256sum Cargo.lock pnpm-lock.yaml
+          } > "$EVIDENCE/identity.txt"
+
+      # Sha-checked esbuild, copied from rolldown-plugin-publication.yml.
+      - name: Prepare pinned esbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$PWD/target/rolldown-plugin-tools" --no-audit --no-fund @esbuild/linux-x64@0.25.12
+          ESBUILD="$PWD/target/rolldown-plugin-tools/node_modules/@esbuild/linux-x64/bin/esbuild"
+          echo "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014  $ESBUILD" | sha256sum -c -
+          echo "ZFB_ESBUILD_BIN=$ESBUILD" >> "$GITHUB_ENV"
+
+      - name: Prepare pnpm, packages, Hono and Playwright chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/rolldown-package-manager" --no-audit --no-fund pnpm@12.8.2
+          export PATH="$RUNNER_TEMP/rolldown-package-manager/node_modules/.bin:$PATH"
+          echo "$RUNNER_TEMP/rolldown-package-manager/node_modules/.bin" >> "$GITHUB_PATH"
+          pnpm install --frozen-lockfile
+          pnpm -C packages/zfb-slugify build
+          pnpm -C packages/zfb-runtime build
+          pnpm -C packages/zfb build
+          npm install --prefix "$PWD/target/rolldown-tools" --no-audit --no-fund hono@4.12.25 @playwright/test@1.58.2
+          "$PWD/target/rolldown-tools/node_modules/.bin/playwright" install --with-deps chromium
+          echo "ZFB_PROTOTYPE_TOOLS=$PWD/target/rolldown-tools" >> "$GITHUB_ENV"
+          {
+            echo "pnpm: $(pnpm --version)"
+            echo "playwright: $("$PWD/target/rolldown-tools/node_modules/.bin/playwright" --version)"
+          } >> "$EVIDENCE/identity.txt"
+
+      # Gives the #[cfg(unix)] physical_spelling fixture (#4527) a Linux CI run.
+      - name: Rolldown prototype library tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p zfb-rolldown-prototype --features native --lib 2>&1 | tee "$EVIDENCE/library-tests.log"
+
+      - name: Prepare probe project
+        shell: bash
+        run: |
+          set -euo pipefail
+          node prototypes/rolldown/prepare.mjs 2>&1 | tee "$EVIDENCE/prepare.log"
+
+      # Identical to prototypes/rolldown/verify-integration.sh native-build.
+      - name: Build zfb and probe examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p zfb -p zfb-build -p zfb-islands -p zfb-rolldown-prototype --features zfb/rolldown-prototype,zfb-build/rolldown-prototype,zfb-islands/rolldown-prototype,zfb-rolldown-prototype/native --bin zfb --example rolldown_production --example rolldown_ssr --example rolldown_browser --example prepared --example plugin_prebundle 2>&1 | tee "$EVIDENCE/native-build.log"
+
+      - name: Prepared SSR and browser probe (verify.mjs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset ZFB_ROLLDOWN_PROTOTYPE
+          node prototypes/rolldown/verify.mjs 2>&1 | tee "$EVIDENCE/verify.log"
+
+      - name: Production probe (production.mjs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset ZFB_ROLLDOWN_PROTOTYPE
+          node prototypes/rolldown/production.mjs 2>&1 | tee "$EVIDENCE/production.log"
+
+      - name: Record browser version and built binary hashes
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$EVIDENCE"
+          {
+            find "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}" -maxdepth 1 -name 'chromium*' 2>/dev/null | sort
+            for chrome in "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome; do
+              [ -x "$chrome" ] && "$chrome" --version || true
+            done
+          } > "$EVIDENCE/browser.txt" 2>&1 || true
+          sha256sum target/debug/zfb target/debug/examples/rolldown_production target/debug/examples/rolldown_ssr target/debug/examples/rolldown_browser target/debug/examples/prepared target/debug/examples/plugin_prebundle "$ZFB_ESBUILD_BIN" > "$EVIDENCE/binaries.txt" 2>&1 || true
+
+      - name: Retain logs and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rolldown-probes-linux-${{ github.sha }}
+          path: |
+            target/rolldown-probes-linux-evidence
+            target/rolldown-prototype/*.json
+            target/rolldown-production/*/evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
