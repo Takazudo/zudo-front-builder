@@ -3997,18 +3997,55 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // published, so a present digest implies the graph it tags is at
     // least seeded.
     let final_digest = manifest_digest_slot.lock().ok().and_then(|s| s.clone());
-    if let Some(d) = final_digest.as_ref() {
-        if let Ok(g) = graph_for_save.lock() {
-            if let Err(err) = save_to_disk(&g, d, &graph_cache_path) {
-                output::warn(format!(
-                    "graph persistence: shutdown write to {} failed (ignored): {err:#}",
-                    graph_cache_path.display()
-                ));
-            }
-        }
+    let saved = save_graph_on_shutdown(&graph_for_save, final_digest.as_ref(), &graph_cache_path);
+    if let ShutdownGraphSave::Failed(err) = &saved {
+        output::warn(format!(
+            "graph persistence: shutdown write to {} failed (ignored): {err:#}",
+            graph_cache_path.display()
+        ));
+    }
+    if let Some(line) = shutdown_graph_save_marker(&saved, dev_timing_enabled()) {
+        eprintln!("{line}");
     }
 
     result
+}
+
+/// Outcome of `run()`'s final shutdown graph save (step 8).
+#[derive(Debug)]
+enum ShutdownGraphSave {
+    Saved,
+    /// No digest was published yet (Ctrl+C before the deferred boot task
+    /// produced it, #1166) or the graph mutex was poisoned.
+    Skipped,
+    Failed(zfb_graph::GraphError),
+}
+
+fn save_graph_on_shutdown(
+    graph: &Mutex<DependencyGraph>,
+    digest: Option<&ManifestDigest>,
+    graph_cache_path: &Path,
+) -> ShutdownGraphSave {
+    let Some(digest) = digest else {
+        return ShutdownGraphSave::Skipped;
+    };
+    let Ok(graph) = graph.lock() else {
+        return ShutdownGraphSave::Skipped;
+    };
+    match save_to_disk(&graph, digest, graph_cache_path) {
+        Ok(()) => ShutdownGraphSave::Saved,
+        Err(err) => ShutdownGraphSave::Failed(err),
+    }
+}
+
+/// The success marker for the shutdown graph save (#4511). Only a completed
+/// save emits it, so an e2e test can tell this shutdown persisted the graph
+/// from an older `graph.bin` left on disk.
+fn shutdown_graph_save_marker(outcome: &ShutdownGraphSave, timing: bool) -> Option<&'static str> {
+    match outcome {
+        ShutdownGraphSave::Saved if timing => Some(format_shutdown_graph_saved_line()),
+        _ => None,
+    }
 }
 
 /// Context string every fatal `boot_handle` mapping attaches (issue
@@ -8978,6 +9015,10 @@ fn format_boot_render_complete_line() -> &'static str {
 
 fn format_boot_islands_published_line() -> &'static str {
     "[zfb-timing] boot: islands published"
+}
+
+fn format_shutdown_graph_saved_line() -> &'static str {
+    "[zfb-timing] shutdown: graph saved"
 }
 
 /// Format the lazy-render plan's input page count (issue #2097,
@@ -14295,6 +14336,43 @@ mod tests {
             format_boot_islands_published_line(),
             "[zfb-timing] boot: islands published"
         );
+        assert_eq!(
+            format_shutdown_graph_saved_line(),
+            "[zfb-timing] shutdown: graph saved"
+        );
+    }
+
+    /// #4511: the shutdown marker is emitted only after a completed save, and
+    /// only under `ZFB_DEV_TIMING`; a skipped or failed save stays silent.
+    #[test]
+    fn shutdown_graph_save_marker_follows_a_completed_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session").join("graph.bin");
+        let graph = Mutex::new(DependencyGraph::new());
+        let digest = ManifestDigest::from_bytes([7u8; 32]);
+
+        let skipped = save_graph_on_shutdown(&graph, None, &path);
+        assert!(matches!(skipped, ShutdownGraphSave::Skipped), "{skipped:?}");
+        assert!(!path.exists(), "a skipped save must not write graph.bin");
+        assert_eq!(shutdown_graph_save_marker(&skipped, true), None);
+
+        let saved = save_graph_on_shutdown(&graph, Some(&digest), &path);
+        assert!(matches!(saved, ShutdownGraphSave::Saved), "{saved:?}");
+        assert!(std::fs::metadata(&path).unwrap().len() > 0);
+        assert!(load_from_disk(&path, &digest).unwrap().is_some());
+        assert_eq!(
+            shutdown_graph_save_marker(&saved, true),
+            Some("[zfb-timing] shutdown: graph saved")
+        );
+        assert_eq!(shutdown_graph_save_marker(&saved, false), None);
+
+        // A regular file where the parent directory should be makes the
+        // save fail on every platform.
+        let blocked = tmp.path().join("blocker").join("graph.bin");
+        std::fs::write(tmp.path().join("blocker"), b"file").unwrap();
+        let failed = save_graph_on_shutdown(&graph, Some(&digest), &blocked);
+        assert!(matches!(failed, ShutdownGraphSave::Failed(_)), "{failed:?}");
+        assert_eq!(shutdown_graph_save_marker(&failed, true), None);
     }
 
     /// Constructor-selection site (b): the targeted `_redirects` watch's
