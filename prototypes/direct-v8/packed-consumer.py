@@ -10,6 +10,11 @@ with `pnpm pack`, installs create-zfb from its tarball in a temporary directory
 outside the workspace with every @takazudo package overridden to its local
 tarball, scaffolds the default site, installs and builds it, and checks dist/.
 
+Stage 7 of the smoke script is ported too (`linked-build-parity`): a pristine
+copy of the scaffold is built a second time against the same packed packages,
+extracted into a small pnpm workspace and `link:`ed into the site, and the two
+dist/ trees must be byte-identical (scripts/assert-dist-byte-parity.sh semantics).
+
 `--rolldown` builds the scaffolded site with ZFB_ROLLDOWN_PROTOTYPE=1 (the binary
 must carry the rolldown-prototype feature) and ZFB_DEV_TIMING=1, and requires the
 backend's own timing line in the build output as proof that Rolldown bundled it;
@@ -23,10 +28,14 @@ Usage:
     --output target/direct-v8-packed
 """
 import argparse
+import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -38,6 +47,11 @@ CONSUMER_OVERRIDES = ["zfb", "zfb-slugify", "zfb-runtime"]
 SITE_NAME = "packed-e2e-site"
 # Printed by crates/zfb-rolldown-prototype/src/native.rs when ZFB_DEV_TIMING is set.
 ROLLDOWN_TIMING_LINE = "[zfb-timing] rolldown-prototype:"
+# Stage 7 (smoke-packed-clean-room.sh): extracted workspace members, and the two the site `link:`s.
+LINKED_WORKSPACE_PACKAGES = ["zfb", "zfb-runtime", "zfb-slugify"]
+LINKED_SITE_PACKAGES = ["zfb", "zfb-runtime"]
+REQUIRED_DIST_GLOBS = ["assets/islands-*.js", "index.html"]
+BUILD_TOKEN = re.compile(rb'(?:data-zfb-build="|build:")([0-9a-f]{16})')
 
 
 def tool(name):
@@ -68,6 +82,120 @@ def write_overrides(directory, tarballs, names):
     lines = ["minimumReleaseAge: 0", "overrides:"]
     lines += [f'  "{name}": "{file_spec(tarballs[name])}"' for name in names]
     (directory / "pnpm-workspace.yaml").write_text("\n".join(lines) + "\n")
+
+
+def is_link(path):
+    """A symlink, or on Windows any reparse point (pnpm links directories with junctions there)."""
+    if os.path.islink(path):
+        return True
+    attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def assert_links_to(entry, target):
+    """`entry` must be a link (symlink or junction) to the directory `target`; returns its resolved path.
+
+    Identity is os.path.samefile, so Windows verbatim-prefixed and 8.3 short-name spellings (#4499)
+    cannot mismatch; the resolved paths are for the diagnostic only.
+    """
+    entry, target = Path(entry), Path(target)
+    assert os.path.lexists(entry), f"{entry} does not exist"
+    assert is_link(entry), f"{entry} is not a symlink or junction"
+    resolved = entry.resolve(strict=True)
+    assert os.path.samefile(entry, target), f"{entry} resolves to {resolved}, expected {target.resolve(strict=True)}"
+    return resolved
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dist_manifest(root):
+    """{relative `/` path: sha256} of every regular file under `root`; any link or non-regular entry fails."""
+    root = Path(root)
+    assert root.is_dir() and not is_link(root), f"not a directory: {root}"
+
+    def unreadable(error):
+        raise error
+
+    manifest = {}
+    for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
+        for name in sorted(dirnames + filenames):
+            path = Path(dirpath) / name
+            relative = path.relative_to(root).as_posix()
+            assert not is_link(path), f"{root}: dist entry is a symlink or junction: {relative}"
+            if name in filenames:
+                assert stat.S_ISREG(os.lstat(path).st_mode), f"{root}: dist entry is not a regular file: {relative}"
+                manifest[relative] = sha256_file(path)
+    return manifest
+
+
+def build_tokens(root, manifest):
+    tokens = {}
+    for relative in manifest:
+        for token in BUILD_TOKEN.findall((Path(root) / relative).read_bytes()):
+            tokens[token.decode()] = tokens.get(token.decode(), 0) + 1
+    return tokens
+
+
+def assert_dist_parity(first, second, required, log):
+    """Python port of scripts/assert-dist-byte-parity.sh: same relative file set, same sha256 per file.
+
+    Every `required` glob (fnmatch, so `*` also crosses `/`, as bash `[[ == ]]` does) must match a
+    file, and an empty tree fails. Differences are written to `log` before raising.
+    """
+    manifest_a, manifest_b = dist_manifest(first), dist_manifest(second)
+    assert manifest_a, f"{first} contains no files"
+    for glob in required:
+        assert any(fnmatch.fnmatchcase(path, glob) for path in manifest_a), \
+            f"no file in {first} matches required glob: {glob}"
+    missing = sorted(set(manifest_a) - set(manifest_b))
+    extra = sorted(set(manifest_b) - set(manifest_a))
+    mismatched = sorted(path for path in set(manifest_a) & set(manifest_b) if manifest_a[path] != manifest_b[path])
+    if missing or extra or mismatched:
+        log.write(f"[FAIL] {first} and {second} differ:\n")
+        log.writelines(f"  missing from second: {path} {manifest_a[path]}\n" for path in missing)
+        log.writelines(f"  extra in second: {path} {manifest_b[path]}\n" for path in extra)
+        log.writelines(f"  mismatched: {path} {manifest_a[path]} != {manifest_b[path]}\n" for path in mismatched)
+        for root, manifest in [(first, manifest_a), (second, manifest_b)]:
+            log.write(f"  build tokens in {root}: {build_tokens(root, manifest) or '<none>'}\n")
+        log.flush()
+        raise AssertionError(f"dist trees differ: {len(missing)} missing, {len(extra)} extra, "
+                             f"{len(mismatched)} mismatched (see the log)")
+    islands = sorted(path for path in manifest_a if fnmatch.fnmatchcase(path, "assets/islands-*.js"))
+    log.write(f"[PASS] {first} and {second} are byte-identical ({len(manifest_a)} files)\n")
+    log.writelines(f"  {manifest_a[path]}  {path}\n" for path in islands)
+    log.flush()
+    return {"files": len(manifest_a), "islands": islands}
+
+
+def required_rows(rolldown):
+    rows = ["css-addon-loads", "carrier-packed", "packages-packed", "clean-room-install", "scaffold", "site-build"]
+    return rows + (["rolldown-backend-observed"] if rolldown else []) + ["linked-build-parity"]
+
+
+def assert_required_rows(report):
+    recorded = [row["name"] for row in report["rows"] if row.get("passed") is True]
+    missing = [name for name in required_rows(report["rolldown_prototype"]) if name not in recorded]
+    assert not missing, f"required rows missing: {', '.join(missing)}"
+
+
+def extract_package(tarball, destination):
+    """`tar -xzf <tarball> -C <destination> --strip-components=1`."""
+    destination.mkdir(parents=True)
+    with tarfile.open(tarball) as archive:
+        members = []
+        for member in archive.getmembers():
+            stripped = member.name.split("/", 1)[1] if "/" in member.name else ""
+            if stripped:
+                member.name = stripped
+                members.append(member)
+        extra = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+        archive.extractall(destination, members=members, **extra)
 
 
 def main():
@@ -146,6 +274,13 @@ def main():
             assert (site / "package.json").is_file(), "scaffold did not produce package.json"
             report["rows"].append({"name": "scaffold", "passed": True})
 
+            # Stage 7 snapshot: the pristine scaffold, before any install or build output exists.
+            linked_room = workdir / "linked-room"
+            linked_site = linked_room / SITE_NAME
+            shutil.copytree(site, linked_site, symlinks=True, ignore=lambda directory, names: [
+                name for name in names
+                if Path(directory) == site and name in ("node_modules", "pnpm-lock.yaml")])
+
             # create-zfb's own best-effort install targets the registry version; start clean.
             shutil.rmtree(site / "node_modules", ignore_errors=True)
             (site / "pnpm-lock.yaml").unlink(missing_ok=True)
@@ -161,6 +296,44 @@ def main():
             if args.rolldown:
                 assert ROLLDOWN_TIMING_LINE in build_output, "the site build printed no Rolldown backend timing line"
                 report["rows"].append({"name": "rolldown-backend-observed", "passed": True})
+
+            # Stage 7: the same packed contents, extracted into a pnpm workspace and `link:`ed into the
+            # snapshot, must emit byte-identical dist/ (#4231). The site stays outside that workspace.
+            carrier_dir_name = carrier_name.split("/")[1]
+            packages_ws = linked_room / "packages-ws"
+            for package in LINKED_WORKSPACE_PACKAGES:
+                extract_package(tarballs[f"@takazudo/{package}"], packages_ws / package)
+            extract_package(tarballs[carrier_name], packages_ws / carrier_dir_name)
+            (packages_ws / "package.json").write_text(json.dumps({
+                "name": "zfb-linked-packages", "private": True, "version": "0.0.0",
+                "dependencies": {"@takazudo/zfb": "workspace:*"}}, indent=2) + "\n")
+            members = LINKED_WORKSPACE_PACKAGES + [carrier_dir_name]
+            (packages_ws / "pnpm-workspace.yaml").write_text("\n".join(
+                ["packages:"] + [f'  - "{member}"' for member in members]
+                + ["linkWorkspacePackages: true", "minimumReleaseAge: 0", "overrides:"]
+                + [f'  "@takazudo/{member}": "workspace:*"' for member in members]) + "\n")
+            run(log, [pnpm, "install", "--prod"], packages_ws)
+            (linked_site / "pnpm-workspace.yaml").write_text("\n".join(
+                ["minimumReleaseAge: 0", "overrides:"]
+                + [f'  "@takazudo/{package}": "link:{(packages_ws / package).resolve().as_posix()}"'
+                   for package in LINKED_SITE_PACKAGES]) + "\n")
+            run(log, [pnpm, "install"], linked_site)
+            links = {}
+            for package in LINKED_SITE_PACKAGES:
+                resolved = assert_links_to(linked_site / "node_modules/@takazudo" / package, packages_ws / package)
+                links[package] = str(resolved)
+                log.write(f"linked @takazudo/{package} -> {resolved}\n")
+            linked_binary = packages_ws / "zfb/node_modules/@takazudo" / carrier_dir_name / executable
+            assert linked_binary.is_file(), f"linked zfb does not reach the platform binary at {linked_binary}"
+            assert sha256_file(linked_binary) == sha256_file(args.binary), \
+                f"linked zfb does not reach the injected binary (got {linked_binary.resolve()})"
+            linked_output = run(log, [pnpm, "build"], linked_site, env=build_env, combined=True)
+            if args.rolldown:
+                assert ROLLDOWN_TIMING_LINE in linked_output, "the linked build printed no Rolldown backend timing line"
+            parity = assert_dist_parity(site / "dist", linked_site / "dist", REQUIRED_DIST_GLOBS, log)
+            report["rows"].append({"name": "linked-build-parity", "links": links,
+                                   "binary": str(linked_binary.resolve()), **parity, "passed": True})
+            assert_required_rows(report)
             report["passed"] = True
         except Exception as error:
             report["error"] = f"{type(error).__name__}: {error}"
