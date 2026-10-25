@@ -1,0 +1,17 @@
+---
+title: v5.1.1
+sidebar_position: 161
+---
+
+# v5.1.1
+
+Released: 2026-10-25
+
+## Bug Fixes
+
+- Rolldown: kept-external chunk imports are now marked `external: true` in the build metafile, with their raw import id, as esbuild already did. The islands entry-import guard and other metafile readers now treat externals the same on both bundlers (a39a8a03c, 034a71015, #4471). This also stops chunks that list their own filename among their imports from failing the build.
+- Rolldown: chunk names stay the same when the project is reached through a symlinked path, such as a macOS temp directory or a symlinked home. Before, the symlinked spelling leaked into the hashed chunk bytes. Every path you see keeps your spelling (ae8fd835f, 9bfffab7b, #4470).
+- Islands: a project scanned through a symlinked root now records one raw-import edge per file instead of one per path spelling (84ba895cd, #4470).
+- Windows: `zfb build` (adapter dispatch), `zfb preview` and `zfb new` now launch `pnpm.cmd`, so they work on Windows. Before, they failed with "spawning subprocess" (e090a3446, #4366).
+- Windows: package-name aliases such as `zfb/zudo-react` now resolve under the default Rolldown bundler. Before, the resolver joined the alias subpath with a backslash and could not find the package (54b0b92bb, #4366).
+- Windows: island registration diagnostics no longer print `\\?\`-prefixed paths. A dev-server rebuild failure is reported once instead of twice (2a3f6cdd6, #4366).
