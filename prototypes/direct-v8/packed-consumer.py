@@ -145,6 +145,9 @@ def build_tokens(root, manifest):
 def assert_dist_parity(first, second, required, log):
     """Python port of scripts/assert-dist-byte-parity.sh: same relative file set, same sha256 per file.
 
+    Stricter than the script on one point: any symlink or junction in either tree fails outright,
+    where the script compares symlink targets.
+
     Every `required` glob (fnmatch, so `*` also crosses `/`, as bash `[[ == ]]` does) must match a
     file, and an empty tree fails. Differences are written to `log` before raising.
     """

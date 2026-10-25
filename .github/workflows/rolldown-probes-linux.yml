@@ -104,7 +104,7 @@ jobs:
         env:
           PR_MERGE_REF: ${{ github.event_name == 'pull_request' && github.ref || 'n/a (not a pull_request run)' }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || 'n/a' }}
-          RUNNER_IMAGE: ${{ runner.os }} ${{ runner.arch }} ${{ env.ImageOS }} ${{ env.ImageVersion }}
+          RUNNER_IMAGE: ${{ runner.os }} ${{ runner.arch }}
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE"
@@ -112,7 +112,8 @@ jobs:
             echo "head: $(git rev-parse HEAD)"
             echo "pr-head-sha: $PR_HEAD_SHA"
             echo "ref: $PR_MERGE_REF"
-            echo "runner-image: $RUNNER_IMAGE"
+            # ImageOS/ImageVersion are runner-process env vars, invisible to the `env` expression context.
+            echo "runner-image: $RUNNER_IMAGE ${ImageOS:-unknown} ${ImageVersion:-unknown}"
             rustc -Vv
             cargo -V
             echo "node: $(node -v)"
@@ -188,8 +189,9 @@ jobs:
         run: |
           mkdir -p "$EVIDENCE"
           {
-            find "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}" -maxdepth 1 -name 'chromium*' 2>/dev/null | sort
-            for chrome in "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome; do
+            browsers="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+            find "$browsers" -maxdepth 1 -name 'chromium*' 2>/dev/null | sort
+            for chrome in "$browsers"/chromium-*/chrome-linux*/chrome; do
               [ -x "$chrome" ] && "$chrome" --version || true
             done
           } > "$EVIDENCE/browser.txt" 2>&1 || true
