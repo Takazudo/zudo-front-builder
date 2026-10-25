@@ -150,7 +150,7 @@ fn emitted_chunk_import_is_internal_with_an_outdir_joined_path() {
 
 #[test]
 fn every_internal_output_import_is_its_output_key_byte_for_byte() {
-    // #4542: static chunk, dynamic chunk and copy-asset imports reuse the target's
+    // #4542: static and dynamic chunk imports reuse the target's
     // `outputs` key spelling exactly; kept externals keep their raw id instead.
     let meta = bundle_meta(
         "output-keys",
@@ -195,8 +195,14 @@ fn every_internal_output_import_is_its_output_key_byte_for_byte() {
             statics += 1;
         }
     }
+    // Rolldown 24bc2d0b lists no emitted asset among chunk imports (#4505), so a
+    // copy-asset edge is not expected here; its absence is the #4490 asset gap.
+    assert_eq!(
+        copies, 0,
+        "a copy edge appeared; extend this test to cover it"
+    );
     assert!(
-        statics > 0 && dynamics > 0 && copies > 0 && externals > 0,
+        statics > 0 && dynamics > 0 && externals > 0,
         "static={statics} dynamic={dynamics} copy={copies} external={externals}: {meta}"
     );
 }
