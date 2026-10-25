@@ -249,13 +249,18 @@ fn esbuild_style_unresolved(rendered: &[String], cwds: &[PathBuf]) -> Option<Str
                 (path, row, col, String::new())
             }
         };
-        let shown = cwds
-            .iter()
-            .find_map(|cwd| path.strip_prefix(cwd).ok())
-            .unwrap_or(&path);
+        // esbuild prints cwd-relative locations with `/` even on Windows (#4541).
+        let shown = match cwds.iter().find_map(|cwd| path.strip_prefix(cwd).ok()) {
+            Some(relative) => relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/"),
+            // Absolute fallback stays native: zfb-build's catch-all replaces native roots literally.
+            None => path.display().to_string(),
+        };
         report.push_str(&format!(
-            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {}:{row}:{col}:\n{frame}\n",
-            shown.display()
+            "\u{2718} [ERROR] Could not resolve \"{specifier}\"\n\n    {shown}:{row}:{col}:\n{frame}\n"
         ));
     }
     (!report.is_empty()).then(|| report.trim_end().to_string())
