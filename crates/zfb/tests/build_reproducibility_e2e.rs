@@ -18,6 +18,11 @@ use std::sync::Mutex;
 
 use zfb_test_utils::{locate_esbuild, zfb_binary};
 
+#[path = "support/e2e_platform.rs"]
+mod e2e_platform;
+
+use e2e_platform::{link_dir, PNPM_PROGRAM};
+
 const ISLAND_LABEL: &str = "components/counter.tsx";
 const REALPATH_EXPORT: &str = "REALPATH_ESCAPE_EXPORT_SURVIVES";
 const ESCAPE_PACKAGE: &str = "repro-realpath-dep";
@@ -56,9 +61,6 @@ fn node_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-// pnpm ships as `pnpm.cmd` on Windows; `Command` only auto-appends `.exe`.
-const PNPM_PROGRAM: &str = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-
 fn pnpm_available() -> bool {
     Command::new(PNPM_PROGRAM)
         .arg("--version")
@@ -84,62 +86,6 @@ fn toolchain() -> Option<PathBuf> {
     Some(esbuild)
 }
 
-/// Lexically resolves `.` and `..` so a relative link target can be turned
-/// into the absolute path a Windows junction requires.
-#[cfg(windows)]
-fn lexical_normalize(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// Creates a directory link at `link` pointing at `target` (absolute, or
-/// relative to `link`'s parent on unix and for copied relative links).
-#[cfg(unix)]
-fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    // Symlink creation needs a privilege that is not guaranteed; a junction
-    // needs none, so fall back to `mklink /J` with an absolute target.
-    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
-        return Ok(());
-    }
-    let absolute = if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        lexical_normalize(&link.parent().unwrap_or(Path::new("")).join(target))
-    };
-    let status = Command::new("cmd")
-        .arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(&absolute)
-        .stdout(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "mklink /J {} {} failed: {status}",
-            link.display(),
-            absolute.display()
-        )))
-    }
-}
-
 /// Recreates the symlink `source_path` at `target_path`, keeping its target.
 fn copy_symlink(source_path: &Path, target_path: &Path) -> std::io::Result<()> {
     let link_target = fs::read_link(source_path)?;
@@ -156,9 +102,30 @@ fn copy_symlink(source_path: &Path, target_path: &Path) -> std::io::Result<()> {
         if resolved.is_dir() {
             link_dir(&link_target, target_path)
         } else {
-            std::os::windows::fs::symlink_file(link_target, target_path)
+            match std::os::windows::fs::symlink_file(&link_target, target_path) {
+                Err(err) if is_symlink_privilege_error(&err) => {
+                    fs::copy(&resolved, target_path).map(|_| ())
+                }
+                other => other,
+            }
         }
     }
+}
+
+/// Windows `ERROR_PRIVILEGE_NOT_HELD`: creating a symlink needs Developer Mode or elevation.
+fn is_symlink_privilege_error(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(1314)
+}
+
+#[test]
+fn symlink_privilege_error_is_recognised_by_raw_os_code() {
+    assert!(is_symlink_privilege_error(
+        &std::io::Error::from_raw_os_error(1314)
+    ));
+    assert!(!is_symlink_privilege_error(
+        &std::io::Error::from_raw_os_error(5)
+    ));
+    assert!(!is_symlink_privilege_error(&std::io::Error::other("x")));
 }
 
 /// Spelling of an absolute path inside a JavaScript import specifier.

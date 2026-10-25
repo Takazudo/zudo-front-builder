@@ -86,13 +86,27 @@ mod tests {
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            // Only require proof that the request reached this socket.
-            let mut request_byte = [0; 1];
-            socket.read_exact(&mut request_byte).await.unwrap();
+            // Consume the whole request head: closing a Windows socket with
+            // unread data sends RST, which the client sees as a send error
+            // instead of a truncated body.
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0, "client closed before sending the request head");
+                request.extend_from_slice(&chunk[..n]);
+            }
             socket
                 .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 100\r\n\r\nx")
                 .await
                 .unwrap();
+            // Graceful FIN after the short body, then drain until the client
+            // hangs up so the close never discards unread bytes.
+            socket.shutdown().await.unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                while matches!(socket.read(&mut chunk).await, Ok(n) if n > 0) {}
+            })
+            .await;
         });
         let result = http_get_before(
             &reqwest::Client::new(),
