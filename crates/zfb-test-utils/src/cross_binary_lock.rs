@@ -221,13 +221,10 @@ mod tests {
     /// (roughly) the first's hold duration.
     #[test]
     fn acquire_at_serializes_two_contenders() {
-        let dir = std::env::temp_dir().join(format!(
-            "zfb-test-utils-cross-binary-lock-test-{}-{:?}",
-            std::process::id(),
-            Instant::now()
-        ));
-        fs::create_dir_all(&dir).expect("create temp dir for lock test");
-        let lock_path = dir.join("contend.lock");
+        // A name built from `Instant`'s Debug output is not a valid Windows
+        // directory name (error 267), so let tempfile pick a portable one.
+        let dir = tempfile::tempdir().expect("create temp dir for lock test");
+        let lock_path = dir.path().join("contend.lock");
 
         let hold_duration = Duration::from_millis(400);
         let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
@@ -292,8 +289,6 @@ mod tests {
             "thread 2 acquired the lock suspiciously early: waited {t2_waited:?}, expected at \
              least ~{expected_min_wait:?} — mutual exclusion is not actually blocking"
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
