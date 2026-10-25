@@ -202,7 +202,7 @@ fn run_build(root: &Path, esbuild: &Path) -> Output {
         .expect("spawn production zfb build")
 }
 
-/// Grep-able prefix for the Windows reactive-core diagnostics (#4499/#4515).
+/// Grep-able prefix for the duplicate reactive-core failure diagnostics (#4499/#4515).
 const DIAG: &str = "[#4499-diag]";
 
 /// `run_build` with the off-by-default `ZFB_DEBUG_ISLANDS_METAFILE_DIR` knob,
@@ -215,17 +215,6 @@ fn run_build_keeping_islands_metafile(root: &Path, esbuild: &Path, metafiles: &P
         .env("ZFB_DEBUG_ISLANDS_METAFILE_DIR", metafiles)
         .output()
         .expect("spawn production zfb build")
-}
-
-/// `fs::canonicalize` with the Windows verbatim prefix removed, so an 8.3
-/// short spelling (`RUNNER~1`) can be compared with its long expansion.
-fn long_spelling(path: &Path) -> Option<PathBuf> {
-    let canonical = fs::canonicalize(path).ok()?;
-    let text = canonical.to_string_lossy();
-    Some(match text.strip_prefix(r"\\?\UNC\") {
-        Some(rest) => PathBuf::from(format!(r"\\{rest}")),
-        None => PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&*text)),
-    })
 }
 
 const REACTIVE_DEFINITION_MARKER: &str = r#"@takazudo/zfb/zudo-react/runtime-definition-v1":!0"#;
@@ -1004,44 +993,22 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         .expect("production build emits the shared islands bundle");
     let browser_source = fs::read_to_string(&browser_bundle).expect("read minified islands bundle");
     let reactive_runtime_definitions = browser_source.matches(REACTIVE_DEFINITION_MARKER).count();
-    // Windows duplicates the reactive core (#4499, likely 8.3 short-name module
-    // ids). Bound it to the observed count so the rest of this test keeps
-    // running there; a worse count still fails and a fixed one is announced.
-    if cfg!(windows) {
+    // A duplicate core (#4499: two spellings of one installed module) prints
+    // the kept islands metafiles' module ids before the assertion fails.
+    if reactive_runtime_definitions != 1 {
         eprintln!(
             "{DIAG} positive: reactive cores in {} = {reactive_runtime_definitions}; per islands file: {:?}",
             browser_bundle.file_name().unwrap_or_default().to_string_lossy(),
             reactive_counts_per_islands_file(&positive)
         );
         eprintln!("{DIAG} build cwd as spawned: {}", positive.display());
-        eprintln!(
-            "{DIAG} build cwd canonical long spelling: {}",
-            long_spelling(&positive).map_or_else(
-                || "<canonicalize failed>".to_string(),
-                |path| path.display().to_string()
-            )
-        );
         eprintln!("{DIAG} env::temp_dir(): {}", std::env::temp_dir().display());
-        print_islands_metafile_module_ids(
-            "positive",
-            &diag_metafiles,
-            reactive_runtime_definitions != 1,
-        );
+        print_islands_metafile_module_ids("positive", &diag_metafiles, true);
     }
-    if cfg!(windows) {
-        assert!(
-            matches!(reactive_runtime_definitions, 1 | 2),
-            "Windows reactive-core count left the known #4499 state (1 or 2): {reactive_runtime_definitions}"
-        );
-        if reactive_runtime_definitions == 1 {
-            eprintln!("[scanner_boundary_acceptance] one reactive core on Windows: #4499 may be fixed; restore the unconditional assertion");
-        }
-    } else {
-        assert_eq!(
-            reactive_runtime_definitions, 1,
-            "minified client bundle must have one zudo-react reactive core; duplicate runtime definitions break packed-island subscriptions"
-        );
-    }
+    assert_eq!(
+        reactive_runtime_definitions, 1,
+        "minified client bundle must have one zudo-react reactive core; duplicate runtime definitions break packed-island subscriptions"
+    );
     let build_tokens: BTreeSet<_> = html
         .split("data-zfb-build=\"")
         .skip(1)
@@ -1095,44 +1062,6 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         serde_json::to_vec_pretty(&metadata).expect("serialize acceptance metadata"),
     )
     .expect("write browser acceptance metadata");
-
-    // #4499 step-1 probe, Windows only and diagnostic only (never asserts):
-    // rebuild the same consumer from its long-spelled root. If the count drops
-    // to 1, the 8.3 short-name hypothesis holds. It runs after the browser
-    // artifact is preserved because it rewrites `dist/`.
-    if cfg!(windows) {
-        match long_spelling(&positive) {
-            Some(long_root) if long_root != positive => {
-                let probe_metafiles = scratch.path().join("diag-islands-metafiles-long");
-                let started = Instant::now();
-                let probe =
-                    run_build_keeping_islands_metafile(&long_root, &esbuild, &probe_metafiles);
-                eprintln!(
-                    "{DIAG} long-root probe: cwd={} exit={} elapsed={}ms",
-                    long_root.display(),
-                    probe.status,
-                    started.elapsed().as_millis()
-                );
-                if probe.status.success() {
-                    let counts = reactive_counts_per_islands_file(&long_root);
-                    eprintln!(
-                        "{DIAG} long-root probe: reactive cores per islands file: {counts:?}"
-                    );
-                    let duplicated = counts.iter().map(|(_, count)| count).sum::<usize>() != 1;
-                    print_islands_metafile_module_ids("long-root", &probe_metafiles, duplicated);
-                } else {
-                    eprintln!(
-                        "{DIAG} long-root probe build failed\n{}",
-                        combined_output(&probe)
-                    );
-                }
-            }
-            Some(_) => eprintln!(
-                "{DIAG} long-root probe skipped: spawned cwd already is its long spelling"
-            ),
-            None => eprintln!("{DIAG} long-root probe skipped: canonicalize failed"),
-        }
-    }
 
     // A reachable helper-only client module and a route with no boundary
     // targets are a valid empty registry. Preserve unrelated client-script

@@ -55,7 +55,8 @@ use crate::output;
 use crate::render_pipeline::{build_prerender_map, render_ssr_request_param_finding};
 
 pub async fn run(args: &CheckArgs) -> Result<()> {
-    let project_root = env::current_dir().context("failed to read current working directory")?;
+    let project_root =
+        zfb_types::current_dir_long().context("failed to read current working directory")?;
 
     let mut cfg = config::load_from_dir(&project_root)
         .await
