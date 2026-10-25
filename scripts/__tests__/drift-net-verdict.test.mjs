@@ -91,7 +91,7 @@ describe("drift-net.yml wiring (#4533)", () => {
     for (const name of ["file-or-close-issue", "notify"]) {
       const block = jobBlock(name);
       for (const job of DRIFT_NET_JOBS) expect(block).toContain(`- ${job}\n`);
-      expect(block).toContain("always() && github.event.inputs.legs != 'preset-carrier'");
+      expect(block).toContain("!cancelled() && github.event.inputs.legs != 'preset-carrier'");
       expect(block).toContain("drift-net-verdict.mjs");
     }
   });

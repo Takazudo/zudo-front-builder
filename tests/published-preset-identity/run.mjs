@@ -152,7 +152,7 @@ async function describeBinary(path, label, extra = {}) {
   return {
     mode: binaryMode,
     path,
-    sha256: sha256(await readFile(path)),
+    sha256: extra.sha256 ?? sha256(await readFile(path)),
     version: version.output.trim(),
     modified: statSync(path).mtime.toISOString(),
     checkoutSha: sourceSha.code === 0 ? sourceSha.output.trim() : null,
@@ -170,23 +170,26 @@ async function inspectBinary() {
   return describeBinary(path, "workspace");
 }
 
+// The npm under the running Node is the same for every case; probe it once.
+let npmVersion = null;
+
 // Resolves the zfb binary a case builds with, inside that case's own install root.
 async function binaryForCase(installRoot, label) {
   if (binaryMode === "workspace") return evidence.binary.path;
   const carrier = await installedCarrierIdentity(installRoot, siteSource);
   assert(carrier.path && isAbsolute(carrier.path), `unresolved carrier path for ${label}`);
-  const npmVersion = await runNpm(["--version"], {
-    cwd: installRoot,
-    logName: `${label}-npm-version.log`,
-  });
-  assert(npmVersion.code === 0, `npm --version exited ${npmVersion.code}`);
+  if (npmVersion === null) {
+    const run = await runNpm(["--version"], { cwd: installRoot, logName: "npm-version.log" });
+    assert(run.code === 0, `npm --version exited ${run.code}`);
+    npmVersion = run.output.trim();
+  }
   const identity = await describeBinary(carrier.path, label, {
     sha256: carrier.sha256,
     carrierPackage: carrier.packageName,
     carrierVersion: carrier.carrierVersion,
     lockIntegrity: carrier.lockIntegrity,
     nodeVersion: process.version,
-    npmVersion: npmVersion.output.trim(),
+    npmVersion,
   });
   (evidence.cases[label] ??= {}).binary = identity;
   return carrier.path;

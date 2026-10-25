@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import path, { isAbsolute, join, relative, resolve } from "node:path";
+import path, { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 // Mirrors packages/zfb/bin/zfb.mjs:20-56 (os-cpu key -> native carrier package).
 export const PLATFORM_PACKAGES = {
@@ -77,20 +77,20 @@ export async function resolveInstalledCarrier(
       `carrier ${packageName} is not installed under ${installRoot}: ${error.message}`,
     );
   }
-  const packageDir = manifestPath.replace(/[\\/]package\.json$/, "");
+  const packageDir = dirname(manifestPath);
   // No NODE_PATH / ancestor fallback: the carrier must live in this install root.
   const rel = relative(resolve(await realpath(installRoot), "node_modules"), packageDir);
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error(`carrier ${packageName} resolved outside ${installRoot}: ${packageDir}`);
   }
-  const path = join(packageDir, carrierBinaryName(platform));
-  if (!path || !existsSync(path)) throw new Error(`carrier binary does not exist: ${path}`);
+  const binaryPath = join(packageDir, carrierBinaryName(platform));
+  if (!existsSync(binaryPath)) throw new Error(`carrier binary does not exist: ${binaryPath}`);
   const carrierVersion = JSON.parse(await readFile(manifestPath, "utf8")).version;
   if (!carrierVersion) throw new Error(`carrier ${packageName} manifest has no version`);
   const sha256 = createHash("sha256")
-    .update(await readFile(path))
+    .update(await readFile(binaryPath))
     .digest("hex");
-  return { packageName, packageDir, path, carrierVersion, sha256 };
+  return { packageName, packageDir, path: binaryPath, carrierVersion, sha256 };
 }
 
 // Resolve + pin assertion + lock integrity; throws rather than returning partial identity.
