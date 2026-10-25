@@ -1,6 +1,6 @@
 //! Kept-external chunk imports are marked `external: true` with the raw id,
 //! emitted chunk imports `external: false` with the outdir-joined path (#4476).
-use super::external_imports::import_entry;
+use super::external_imports::{checked_import_entry, import_entry};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -212,4 +212,45 @@ fn real_build_with_an_external_spelled_like_the_entry_is_indistinguishable() {
         ],
     );
     result.expect("an external spelled like the entry no longer fails the build");
+}
+
+#[test]
+fn external_spelled_like_an_emitted_asset_fails_loudly() {
+    // Rolldown never lists an asset in chunk imports (#4505), so a kept external
+    // with an asset's name must not become a bare external for an outdir file.
+    let error = checked_import_entry(
+        "logo.svg",
+        "import-statement",
+        &emitted(&["entry.js"]),
+        &emitted(&["logo.svg"]),
+        &BTreeMap::new(),
+        Path::new("/out"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("logo.svg"), "{error}");
+}
+
+#[test]
+fn asset_set_leaves_chunk_and_external_imports_unchanged() {
+    let assets = emitted(&["logo.svg"]);
+    let chunk = checked_import_entry(
+        "chunk.js",
+        "import-statement",
+        &emitted(&["chunk.js"]),
+        &assets,
+        &BTreeMap::new(),
+        Path::new("/out"),
+    )
+    .unwrap();
+    assert_eq!(chunk["external"], false);
+    let external = checked_import_entry(
+        "ext-pkg",
+        "import-statement",
+        &emitted(&["chunk.js"]),
+        &assets,
+        &BTreeMap::new(),
+        Path::new("/out"),
+    )
+    .unwrap();
+    assert_eq!(external["external"], true);
 }
