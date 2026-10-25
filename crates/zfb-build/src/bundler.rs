@@ -1328,6 +1328,8 @@ fn shadow_parent_dir_with_env(project_root: &Path, env: &ShadowParentEnv) -> Res
 }
 
 mod shadow_parent_path;
+#[cfg(all(test, windows))]
+mod windows_linked_package_tests;
 
 fn usable_shadow_parent_candidate(
     project_root: &Path,
