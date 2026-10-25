@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import path, { isAbsolute, join, relative, resolve } from "node:path";
 
 // Mirrors packages/zfb/bin/zfb.mjs:20-56 (os-cpu key -> native carrier package).
 export const PLATFORM_PACKAGES = {
@@ -99,4 +99,53 @@ export async function installedCarrierIdentity(installRoot, siteRoot, options) {
   assertCarrierVersion(carrier.carrierVersion, await readPinnedVersion(siteRoot));
   const lock = await readCarrierLockIntegrity(siteRoot, carrier.packageName);
   return { ...carrier, lockIntegrity: lock.integrity, lockVersion: lock.version };
+}
+
+const pathFor = (platform) => (platform === "win32" ? path.win32 : path.posix);
+
+// Shell-free npm (#4532): `npm` is a .cmd shim on win32, so run npm-cli.js under the running Node.
+export function locateNpmCli({
+  platform = process.platform,
+  execPath = process.execPath,
+  env = process.env,
+  exists = existsSync,
+} = {}) {
+  const p = pathFor(platform);
+  const fromEnv = env.npm_execpath;
+  if (fromEnv && /[\\/]npm-cli\.js$/.test(fromEnv) && exists(fromEnv)) return fromEnv;
+  const nodeDir = p.dirname(execPath);
+  const candidate =
+    platform === "win32"
+      ? p.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js")
+      : p.join(p.dirname(nodeDir), "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  if (!exists(candidate)) {
+    throw new Error(
+      `npm-cli.js not found (npm_execpath=${fromEnv ?? "unset"}; looked for ${candidate}); ` +
+        "run the fixture with a Node that ships npm",
+    );
+  }
+  return candidate;
+}
+
+export function npmCommand(args, options = {}) {
+  const execPath = options.execPath ?? process.execPath;
+  return {
+    command: execPath,
+    args: [locateNpmCli({ ...options, execPath }), ...args],
+  };
+}
+
+// Shell-free zudo-sg (#4532): node_modules/.bin/zudo-sg is a .cmd shim on win32, so run the
+// installed package's own "bin" entry under the running Node.
+export async function zudoSgCommand(
+  installRoot,
+  args,
+  { platform = process.platform, execPath = process.execPath, readText = readFile } = {},
+) {
+  const p = pathFor(platform);
+  const packageDir = p.join(installRoot, "node_modules", "@takazudo", "zudo-sg");
+  const manifest = JSON.parse(await readText(p.join(packageDir, "package.json"), "utf8"));
+  const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.["zudo-sg"];
+  if (!bin) throw new Error(`@takazudo/zudo-sg at ${packageDir} declares no "zudo-sg" bin entry`);
+  return { command: execPath, args: [p.resolve(packageDir, bin), ...args] };
 }
