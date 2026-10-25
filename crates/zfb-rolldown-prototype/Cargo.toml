@@ -16,6 +16,3 @@ rolldown = { git = "https://github.com/rolldown/rolldown", rev = "24bc2d0b5c9a8c
 rolldown_common = { git = "https://github.com/rolldown/rolldown", rev = "24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9", optional = true }
 oxc = { version = "0.153.0", default-features = false, features = ["ast_visit"], optional = true }
 rolldown_resolver = { git = "https://github.com/rolldown/rolldown", rev = "24bc2d0b5c9a8c87ac8d1ce8cb9a2df61b8624b9", optional = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

@@ -729,30 +729,41 @@ mod tests {
         use std::os::unix::fs::symlink;
         use std::path::PathBuf;
 
-        struct Tree(tempfile::TempDir, PathBuf);
+        struct Tree(PathBuf);
         impl Tree {
-            fn new() -> Self {
-                let dir = tempfile::tempdir().unwrap();
+            fn new(name: &str) -> Self {
+                let root = std::env::temp_dir().join(format!(
+                    "zfb-physical-spelling-{name}-{}",
+                    std::process::id()
+                ));
+                let _ = fs::remove_dir_all(&root);
+                fs::create_dir(&root).unwrap();
                 // Only the fixture's own parent is canonicalized; the subject is `link`.
-                let root = fs::canonicalize(dir.path()).unwrap();
+                let root = fs::canonicalize(root).unwrap();
                 fs::create_dir(root.join("real")).unwrap();
                 symlink(root.join("real"), root.join("link")).unwrap();
-                Self(dir, root)
+                Self(root)
             }
             fn at(&self, rel: &str) -> PathBuf {
-                self.1.join(rel)
+                self.0.join(rel)
             }
         }
+        impl Drop for Tree {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
         #[test]
         fn dotdot_after_a_missing_component_cancels_lexically_under_a_symlinked_root() {
-            let tree = Tree::new();
+            let tree = Tree::new("missing-dotdot");
             let spelled = tree.at("link/build/../dist/out.js");
             assert_eq!(physical_spelling(&spelled), tree.at("real/dist/out.js"));
         }
 
         #[test]
         fn dotdot_climbing_back_into_existing_directories_resumes_physical_resolution() {
-            let tree = Tree::new();
+            let tree = Tree::new("resume");
             fs::create_dir_all(tree.at("elsewhere/sub")).unwrap();
             symlink(tree.at("elsewhere/sub"), tree.at("real/hop")).unwrap();
             // missing/.. cancels, `hop` is a symlink into elsewhere/sub, so
@@ -763,7 +774,7 @@ mod tests {
 
         #[test]
         fn existing_ancestor_and_final_symlink_component_keep_their_spelling() {
-            let tree = Tree::new();
+            let tree = Tree::new("final");
             fs::write(tree.at("real/target.js"), "").unwrap();
             symlink(tree.at("real/target.js"), tree.at("real/entry.js")).unwrap();
             assert_eq!(
@@ -778,7 +789,7 @@ mod tests {
 
         #[test]
         fn dangling_symlink_and_non_directory_components_stay_logical() {
-            let tree = Tree::new();
+            let tree = Tree::new("uncertain");
             symlink(tree.at("nowhere"), tree.at("real/dangling")).unwrap();
             fs::write(tree.at("real/file"), "").unwrap();
             for spelled in [
@@ -791,7 +802,7 @@ mod tests {
 
         #[test]
         fn decode_spells_an_outside_cwd_outdir_physically() {
-            let tree = Tree::new();
+            let tree = Tree::new("decode");
             fs::create_dir(tree.at("cwd")).unwrap();
             let outdir = tree.at("link/build/../dist");
             let mut cmd = super::Command::new("esbuild");
