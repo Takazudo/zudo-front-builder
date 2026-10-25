@@ -2,6 +2,8 @@
 // Published-preset runtime identity fixture (#3331). See README.md.
 //
 // Usage: ZFB_BIN=/abs/path/to/zfb node tests/published-preset-identity/run.mjs
+//        ZFB_PRESET_BINARY=installed node tests/published-preset-identity/run.mjs
+//        (installed mode runs the npm-installed carrier; ZFB_BIN is not used)
 //
 // Exit 0 only when the positive case passes BOTH oracles and every negative
 // control fails the assertions it targets.
@@ -26,6 +28,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { installedCarrierIdentity, parseBinaryMode } from "./carrier.mjs";
 import { consoleOracleFailures, isFatalConsoleMessage } from "./console-policy.mjs";
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +57,10 @@ const REQUIRED_SERVER_SOURCES = [
   "node_modules/@takazudo/zudo-doc/dist/details/details.js",
 ];
 
+const binaryMode = parseBinaryMode(process.env.ZFB_PRESET_BINARY);
+
 const evidence = {
+  binaryMode,
   issue: 3331,
   status: "running",
   node: process.version,
@@ -122,6 +128,27 @@ async function readJson(path) {
 // Inputs: workspace binary, exact pins, frozen lockfile
 // ---------------------------------------------------------------------------
 
+async function describeBinary(path, label, extra = {}) {
+  const version = await runLogged(path, ["--version"], {
+    cwd: repoRoot,
+    logName: label === "workspace" ? "zfb-version.log" : `${label}-zfb-version.log`,
+  });
+  assert(version.code === 0, `${path} --version exited ${version.code}`);
+  const sourceSha = await runLogged("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    logName: label === "workspace" ? "checkout-sha.log" : `${label}-checkout-sha.log`,
+  });
+  return {
+    mode: binaryMode,
+    path,
+    sha256: sha256(await readFile(path)),
+    version: version.output.trim(),
+    modified: statSync(path).mtime.toISOString(),
+    checkoutSha: sourceSha.code === 0 ? sourceSha.output.trim() : null,
+    ...extra,
+  };
+}
+
 async function inspectBinary() {
   const path = process.env.ZFB_BIN;
   assert(
@@ -129,22 +156,29 @@ async function inspectBinary() {
     "ZFB_BIN must name the absolute path of the workspace-built zfb",
   );
   assert(existsSync(path), `ZFB_BIN does not exist: ${path}`);
-  const version = await runLogged(path, ["--version"], {
-    cwd: repoRoot,
-    logName: "zfb-version.log",
+  return describeBinary(path, "workspace");
+}
+
+// Resolves the zfb binary a case builds with, inside that case's own install root.
+async function binaryForCase(installRoot, label) {
+  if (binaryMode === "workspace") return evidence.binary.path;
+  const carrier = await installedCarrierIdentity(installRoot, siteSource);
+  assert(carrier.path && isAbsolute(carrier.path), `unresolved carrier path for ${label}`);
+  const npmVersion = await runLogged("npm", ["--version"], {
+    cwd: installRoot,
+    logName: `${label}-npm-version.log`,
   });
-  assert(version.code === 0, `${path} --version exited ${version.code}`);
-  const sourceSha = await runLogged("git", ["rev-parse", "HEAD"], {
-    cwd: repoRoot,
-    logName: "checkout-sha.log",
+  assert(npmVersion.code === 0, `npm --version exited ${npmVersion.code}`);
+  const identity = await describeBinary(carrier.path, label, {
+    sha256: carrier.sha256,
+    carrierPackage: carrier.packageName,
+    carrierVersion: carrier.carrierVersion,
+    lockIntegrity: carrier.lockIntegrity,
+    nodeVersion: process.version,
+    npmVersion: npmVersion.output.trim(),
   });
-  return {
-    path,
-    sha256: sha256(await readFile(path)),
-    version: version.output.trim(),
-    modified: statSync(path).mtime.toISOString(),
-    checkoutSha: sourceSha.code === 0 ? sourceSha.output.trim() : null,
-  };
+  (evidence.cases[label] ??= {}).binary = identity;
+  return carrier.path;
 }
 
 async function verifyPinsAndLockfile() {
@@ -562,7 +596,8 @@ async function buildCase(installRoot, label) {
   await rm(join(installRoot, "dist"), { recursive: true, force: true });
   await rm(join(installRoot, ".zfb-build"), { recursive: true, force: true });
   await rm(join(installRoot, ".zudo-doc"), { recursive: true, force: true });
-  const build = await runLogged(process.env.ZFB_BIN, ["build"], {
+  const zfb = await binaryForCase(installRoot, label);
+  const build = await runLogged(zfb, ["build"], {
     cwd: installRoot,
     logName: `${label}-build.log`,
   });
@@ -723,7 +758,7 @@ let exitCode = 0;
 try {
   await rm(evidenceRoot, { recursive: true, force: true });
   await mkdir(evidenceRoot, { recursive: true });
-  evidence.binary = await inspectBinary();
+  if (binaryMode === "workspace") evidence.binary = await inspectBinary();
   const pins = await verifyPinsAndLockfile();
   evidence.pins = pins.pins;
   evidence.lockfile = { sha256: pins.lockSha256, pinned: pins.integrities };

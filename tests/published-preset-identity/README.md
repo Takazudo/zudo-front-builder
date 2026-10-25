@@ -124,11 +124,26 @@ A liveness timeout or unrelated build error does not count.
   The installed `@takazudo/zfb` still
   matters because package resolution, typing and nested-copy detection go
   through it.
-- The npm package's own native carrier binary (`@takazudo/zfb-<platform>`) is
-  installed but never executed. `evidence.json` records `ZFB_BIN`'s path,
-  SHA-256, `--version` and mtime, plus the checkout SHA. In CI the binary is
-  the one `health` just built from that SHA; a local binary may predate the
-  checkout.
+- Binary selection is `ZFB_PRESET_BINARY` (`workspace` by default, or
+  `installed`; any other value is a hard error).
+  - `workspace` (default): the npm package's native carrier binary
+    (`@takazudo/zfb-<platform>`) is installed but never executed.
+    `evidence.json` records `ZFB_BIN`'s path, SHA-256, `--version` and mtime,
+    plus the checkout SHA. In CI the binary is the one `health` just built
+    from that SHA; a local binary may predate the checkout.
+  - `installed`: `ZFB_BIN` is not used. After `npm ci`, each case (positive
+    and both negative controls) resolves the carrier inside its own install
+    root (`@takazudo/zfb-<os>-<cpu>/package.json`, then `zfb[.exe]`), asserts
+    its version equals the pinned `@takazudo/zfb`, reads its `integrity` from
+    `site/package-lock.json`, and builds with it. Each case records
+    `evidence.cases.<case>.binary`: mode, path, sha256, `--version`, carrier
+    version, lock integrity, and node/npm versions; logs are per case. A
+    missing or unresolved carrier, version mismatch or missing lock
+    integrity fails the run. Both negative controls remain hard
+    expected-failures. This is automated CI evidence of the published
+    carrier, not owner-native (Mac/Windows) acceptance.
+  - The resolver lives in `carrier.mjs` (importable; unit-tested by
+    `scripts/__tests__/published-preset-carrier.test.mjs`).
 
 ## Updating the package versions
 
