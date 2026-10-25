@@ -706,7 +706,7 @@ mod tests {
         use super::super::physical_spelling;
         use std::fs;
         use std::os::unix::fs::symlink;
-        use std::path::{Path, PathBuf};
+        use std::path::PathBuf;
 
         struct Tree(PathBuf);
         impl Tree {
@@ -796,7 +796,6 @@ mod tests {
             );
             // The user-visible outdir keeps the caller's spelling.
             assert_eq!(request.outdir.as_deref(), Some(outdir.as_path()));
-            let _: &Path = &expected;
         }
     }
 }
