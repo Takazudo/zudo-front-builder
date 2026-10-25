@@ -19,6 +19,22 @@
 //!   process and reaps it. `taskkill /T` follows parent-pid links, so a
 //!   descendant whose parent already exited is not reached.
 //!
+//! # Reap lifecycle
+//!
+//! Only the guard waits on the direct child, and every path that can reap
+//! it ([`ProcessTreeGuard::try_wait`], [`ProcessTreeGuard::wait_timeout`],
+//! [`ProcessTreeGuard::kill_tree`], drop) records the exit status; there is
+//! no mutable access to the [`Child`]. After the reap the guard never
+//! signals again: every later call returns the recorded status.
+//!
+//! On Unix an unreaped leader, even a zombie, keeps its pid and therefore
+//! the group id from being reused, while after the reap a signal to `-pgid`
+//! could reach an unrelated group. So the guard checks for the leader's exit
+//! without reaping it (`waitid` with `WNOWAIT`), sends `SIGKILL` to the
+//! group, and only then reaps. Observing the leader's exit therefore also
+//! ends any descendant still in its group: no grandchild outlives the
+//! guard, even one whose parent exited first.
+//!
 //! # Graceful interrupt
 //!
 //! [`ProcessTreeGuard::interrupt`] delivers the signal `zfb dev` treats as a
@@ -116,7 +132,7 @@ impl ProcessTreeSpawner {
             Ok(ProcessTreeGuard {
                 child,
                 pgid,
-                reaped: false,
+                status: None,
             })
         }
         #[cfg(windows)]
@@ -132,7 +148,7 @@ impl ProcessTreeSpawner {
                     child: helper,
                     inner_pid,
                     control,
-                    reaped: false,
+                    status: None,
                 });
             }
             self.apply_stdio(cmd);
@@ -142,7 +158,7 @@ impl ProcessTreeSpawner {
                 child,
                 inner_pid,
                 control: None,
-                reaped: false,
+                status: None,
             })
         }
     }
@@ -171,7 +187,9 @@ pub struct ProcessTreeGuard {
     /// The console helper's stdin; a line on it requests the Ctrl-C.
     #[cfg(windows)]
     control: Option<std::process::ChildStdin>,
-    reaped: bool,
+    /// The exit status, recorded whenever `child` is reaped. `Some` means
+    /// its pid (and on Unix its group id) may already be reused.
+    status: Option<ExitStatus>,
 }
 
 impl ProcessTreeGuard {
@@ -199,37 +217,130 @@ impl ProcessTreeGuard {
     }
 
     /// The spawned process (the console helper on an interruptible Windows
-    /// spawn, whose exit status mirrors the command's).
+    /// spawn, whose exit status mirrors the command's). Deliberately shared
+    /// only: waiting on it directly would bypass the reap lifecycle (see the
+    /// module docs).
     pub fn child(&self) -> &Child {
         &self.child
     }
 
-    /// Mutable access to the spawned process. Waiting on it directly does
-    /// not kill the rest of the tree; drop still does.
-    pub fn child_mut(&mut self) -> &mut Child {
-        &mut self.child
+    /// The recorded exit status, or `Ok(None)` while the spawned process is
+    /// running. On Unix, observing its exit kills the rest of its process
+    /// group before reaping it (see the module docs).
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        if let Some(status) = self.status {
+            return Ok(Some(status));
+        }
+        #[cfg(unix)]
+        {
+            if !self.leader_exited()? {
+                return Ok(None);
+            }
+            self.reap().map(Some)
+        }
+        #[cfg(windows)]
+        {
+            match self.child.try_wait()? {
+                Some(status) => {
+                    self.status = Some(status);
+                    Ok(Some(status))
+                }
+                None => Ok(None),
+            }
+        }
     }
 
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+    /// Whether the leader has exited, without reaping it: the unreaped
+    /// zombie keeps the pgid from being reused.
+    #[cfg(unix)]
+    fn leader_exited(&self) -> io::Result<bool> {
+        loop {
+            // SAFETY: an all-zero `siginfo_t` is valid; `waitid` writes it.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: plain syscall on our own unreaped child; `WNOWAIT`
+            // leaves it waitable for `reap`.
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.pgid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc == 0 {
+                // With `WNOHANG`, a child that has not exited leaves
+                // `si_pid` zero.
+                // SAFETY: `waitid` filled (or left zeroed) the SIGCHLD fields.
+                return Ok(unsafe { info.si_pid() } != 0);
+            }
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    }
+
+    /// Send `signal` to the process group. Only called while the leader is
+    /// unreaped, so the group id cannot belong to anyone else.
+    #[cfg(unix)]
+    fn signal_group(&self, signal: libc::c_int) -> io::Result<()> {
+        debug_assert!(self.status.is_none(), "signal after reap");
+        // SAFETY: plain syscall on the group this guard created.
+        if unsafe { libc::kill(-self.pgid, signal) } == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        // ESRCH: every member is gone (the leader at most a zombie).
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        // macOS answers EPERM, not ESRCH, when only the zombie leader is left.
+        if err.raw_os_error() == Some(libc::EPERM) && self.leader_exited().unwrap_or(false) {
+            return Ok(());
+        }
+        Err(err)
+    }
+
+    /// The single reap path: kill whatever remains of the tree while the
+    /// leader still pins its pid, then wait for the leader and record the
+    /// status.
+    fn reap(&mut self) -> io::Result<ExitStatus> {
+        if let Some(status) = self.status {
+            return Ok(status);
+        }
+        #[cfg(unix)]
+        {
+            // Best effort: a failure here must not skip the reap.
+            let _ = self.signal_group(libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        {
+            // The unreaped `Child` keeps its pid from being reused.
+            windows::taskkill_tree(self.child.id());
+        }
+        let status = self.child.wait()?;
+        self.status = Some(status);
+        Ok(status)
     }
 
     /// Ask the tree to stop gracefully: `SIGINT` to the process group on
     /// Unix, a console `CTRL_C_EVENT` on Windows (which requires
     /// [`ProcessTreeSpawner::interruptible`]). Returns once the request is
-    /// sent; it does not wait for the child to exit.
+    /// sent; it does not wait for the child to exit. Once the spawned
+    /// process has been reaped there is nothing left to interrupt, and this
+    /// is a no-op.
     pub fn interrupt(&mut self) -> io::Result<()> {
+        if self.status.is_some() {
+            return Ok(());
+        }
         #[cfg(unix)]
         {
-            // SAFETY: plain syscall on the group this guard created.
-            if unsafe { libc::kill(-self.pgid, libc::SIGINT) } != 0 {
-                let err = io::Error::last_os_error();
-                return Err(io::Error::new(
+            self.signal_group(libc::SIGINT).map_err(|err| {
+                io::Error::new(
                     err.kind(),
                     format!("SIGINT to process group {} failed: {err}", self.pgid),
-                ));
-            }
-            Ok(())
+                )
+            })
         }
         #[cfg(windows)]
         {
@@ -252,12 +363,13 @@ impl ProcessTreeGuard {
         }
     }
 
-    /// Wait up to `timeout` for the spawned process to exit. `Ok(None)` means
-    /// it is still running. The rest of the tree is still killed on drop.
+    /// Wait up to `timeout` for the spawned process to exit, through
+    /// [`try_wait`](Self::try_wait). `Ok(None)` means it is still running.
+    /// The rest of the tree is still killed on drop.
     pub fn wait_timeout(&mut self, timeout: Duration) -> io::Result<Option<ExitStatus>> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(status) = self.child.try_wait()? {
+            if let Some(status) = self.try_wait()? {
                 return Ok(Some(status));
             }
             let now = Instant::now();
@@ -272,39 +384,24 @@ impl ProcessTreeGuard {
     /// `Ok(Some(status))` is a graceful stop; `Ok(None)` means the child
     /// ignored the interrupt for `timeout` and is NOT stopped — call
     /// [`kill_tree`](Self::kill_tree) or drop the guard, and do not report
-    /// that as graceful.
+    /// that as graceful. On an already-reaped process it returns the
+    /// recorded status without signalling anything.
     pub fn interrupt_and_wait(&mut self, timeout: Duration) -> io::Result<Option<ExitStatus>> {
         self.interrupt()?;
         self.wait_timeout(timeout)
     }
 
-    /// Kill the whole tree now and reap the spawned process. Idempotent;
-    /// drop calls it too.
+    /// Kill the whole tree now and reap the spawned process. Idempotent:
+    /// once reaped it signals nothing and returns the recorded status. Drop
+    /// calls it too.
     pub fn kill_tree(&mut self) -> io::Result<ExitStatus> {
-        #[cfg(unix)]
-        {
-            // SAFETY: plain syscall; a stale or empty group yields ESRCH,
-            // which is the "already dead" case and needs no handling.
-            unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
-        }
-        #[cfg(windows)]
-        {
-            // The unreaped `Child` keeps its pid from being reused.
-            if !self.reaped {
-                windows::taskkill_tree(self.child.id());
-            }
-        }
-        let status = self.child.wait()?;
-        self.reaped = true;
-        Ok(status)
+        self.reap()
     }
 }
 
 impl Drop for ProcessTreeGuard {
     fn drop(&mut self) {
-        if !self.reaped {
-            let _ = self.kill_tree();
-        }
+        let _ = self.reap();
     }
 }
 

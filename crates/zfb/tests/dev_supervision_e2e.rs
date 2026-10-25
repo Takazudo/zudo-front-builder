@@ -831,8 +831,10 @@ async fn orch_stop_ms_takes_the_whole_process_down() {
 ///    check: none of the three graceful-teardown steps this test's name
 ///    alludes to (`DevRenderSession::shutdown_explicit`, `PluginHost::shutdown`,
 ///    the final `save_to_disk` call) emit an info-level line on their
-///    SUCCESS path today — `dev.rs` only logs on FAILURE for each of them
+///    SUCCESS path — `dev.rs` only logs on FAILURE for each of them
 ///    (e.g. `"graph persistence: shutdown write to {} failed (ignored)"`).
+///    The one success marker, `[zfb-timing] shutdown: graph saved` (#4511),
+///    is printed only under `ZFB_DEV_TIMING`.
 ///    A freshly-written `graph.bin` is the strongest signal actually
 ///    available that the graceful tail — not just the process — ran to
 ///    completion; asserting on absent log text would either be

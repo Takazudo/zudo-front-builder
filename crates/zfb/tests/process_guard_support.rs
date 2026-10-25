@@ -253,3 +253,197 @@ fn interrupt_requires_interruptible_spawn() {
         .expect_err("a plain spawn has no console helper");
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
 }
+
+/// A command that exits with `code` on its own, almost immediately.
+#[cfg(unix)]
+fn exit_command(code: i32) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", &format!("exit {code}")]);
+    cmd
+}
+
+#[cfg(windows)]
+fn exit_command(code: i32) -> Command {
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &format!("exit {code}"),
+    ]);
+    cmd
+}
+
+/// A command that runs until it is killed.
+#[cfg(unix)]
+fn long_running_command() -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "sleep 60"]);
+    cmd
+}
+
+#[cfg(windows)]
+fn long_running_command() -> Command {
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Start-Sleep -Seconds 60",
+    ]);
+    cmd
+}
+
+/// A leader that starts a long-lived grandchild in the leader's process group
+/// (no job control in `sh -c`),
+/// writes the grandchild's pid to `pid_file`, and exits 0 — leaving the
+/// grandchild running — once `go` exists.
+#[cfg(unix)]
+fn leader_exits_first_command(pid_file: &Path, go: &Path) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args([
+        "-c",
+        "sleep 60 & echo $! > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.05; done; exit 0",
+        "sh",
+    ])
+    .arg(pid_file)
+    .arg(go);
+    cmd
+}
+
+/// Wait until `pid` (a child of this process) has exited, without reaping
+/// it, so the guard still owns the zombie.
+#[cfg(unix)]
+fn wait_for_unreaped_exit(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is valid; `waitid` writes it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `WNOWAIT` leaves the child waitable for the guard.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(rc, 0, "waitid: {}", std::io::Error::last_os_error());
+        // SAFETY: `waitid` filled (or left zeroed) the SIGCHLD fields.
+        if unsafe { info.si_pid() } != 0 {
+            return;
+        }
+        assert!(Instant::now() < deadline, "leader {pid} never exited");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Spawn the leader-exits-first tree and let the leader exit. Returns the
+/// guard and the surviving grandchild's pid.
+#[cfg(unix)]
+fn spawn_and_release_leader(dir: &Path) -> (ProcessTreeGuard, u32) {
+    let pid_file = dir.join("grandchild.pid");
+    let go = dir.join("go");
+    let mut guard = ProcessTreeGuard::spawn(&mut leader_exits_first_command(&pid_file, &go))
+        .expect("spawn guarded leader");
+    let grandchild_pid: u32 = wait_for_file_text(&pid_file, &mut guard, "the grandchild started")
+        .parse()
+        .expect("grandchild pid");
+    std::fs::write(&go, "").expect("release the leader");
+    (guard, grandchild_pid)
+}
+
+#[cfg(unix)]
+#[test]
+fn drop_after_leader_exit_kills_surviving_grandchild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (guard, grandchild_pid) = spawn_and_release_leader(dir.path());
+    wait_for_unreaped_exit(guard.id());
+    assert!(pid_alive(grandchild_pid), "grandchild outlives its parent");
+
+    drop(guard);
+
+    assert_dies(grandchild_pid, "grandchild of an exited leader");
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_after_leader_exit_kills_surviving_grandchild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut guard, grandchild_pid) = spawn_and_release_leader(dir.path());
+
+    let status = guard
+        .wait_timeout(Duration::from_secs(60))
+        .expect("wait_timeout")
+        .expect("the leader exits on its own");
+
+    assert!(status.success(), "leader exit status: {status}");
+    assert_dies(grandchild_pid, "grandchild of a waited-for leader");
+    assert_eq!(
+        guard.kill_tree().expect("kill_tree after the reap"),
+        status,
+        "a reaped guard returns the recorded status"
+    );
+}
+
+#[test]
+fn repeated_kill_tree_returns_the_recorded_status() {
+    let mut guard =
+        ProcessTreeGuard::spawn(&mut long_running_command()).expect("spawn guarded child");
+    let child_pid = guard.id();
+
+    let first = guard.kill_tree().expect("first kill_tree");
+    let second = guard.kill_tree().expect("second kill_tree");
+
+    assert!(
+        !first.success(),
+        "hard kill must not look like a clean exit"
+    );
+    assert_eq!(first, second, "kill_tree is idempotent");
+    assert_eq!(guard.try_wait().expect("try_wait"), Some(first));
+    assert_eq!(
+        guard.wait_timeout(Duration::ZERO).expect("wait_timeout"),
+        Some(first)
+    );
+    // Windows lists a process until its last handle closes.
+    drop(guard);
+    assert_dies(child_pid, "guarded command");
+}
+
+#[test]
+fn wait_then_drop_keeps_the_exit_status() {
+    let mut guard = ProcessTreeGuard::spawn(&mut exit_command(3)).expect("spawn guarded child");
+
+    let status = guard
+        .wait_timeout(Duration::from_secs(60))
+        .expect("wait_timeout")
+        .expect("the child exits on its own");
+
+    assert_eq!(status.code(), Some(3), "exit status: {status}");
+    assert_eq!(guard.try_wait().expect("try_wait"), Some(status));
+    assert_eq!(guard.kill_tree().expect("kill_tree after the reap"), status);
+    drop(guard);
+}
+
+#[test]
+fn interrupt_after_exit_is_a_no_op() {
+    let mut guard = ProcessTreeSpawner::new()
+        .interruptible()
+        .spawn(&mut exit_command(0))
+        .expect("spawn interruptible child");
+    let status = guard
+        .wait_timeout(Duration::from_secs(60))
+        .expect("wait_timeout")
+        .expect("the child exits on its own");
+    assert!(status.success(), "exit status: {status}");
+
+    guard.interrupt().expect("interrupt after exit");
+    assert_eq!(
+        guard
+            .interrupt_and_wait(Duration::ZERO)
+            .expect("interrupt_and_wait after exit"),
+        Some(status),
+        "the recorded status, without signalling a reaped process"
+    );
+    drop(guard);
+}

@@ -7,8 +7,8 @@
 # untested until a manual run found 25 failures. This lane runs the two
 # crates where those surfaced, plus zfb-islands' graph-identity tests, which
 # cover the `?url` resource read that Windows rejects as an invalid filename
-# (#4413). It is path-filtered, so it is not a required
-# check; a red result still needs triage like any other check.
+# (#4413), and zfb-test-utils' lib tests (#4512). It is path-filtered, so it
+# is not a required check; a red result still needs triage like any other check.
 
 name: windows-lib-tests
 
@@ -83,6 +83,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-build --lib -- --test-threads=1
 
+      # #4517: Windows 8.3 long-path spelling for the project root (#4499).
+      - name: zfb-types lib tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p zfb-types --lib -- --test-threads=1
+
+      # #4512: the lock and HTTP-probe helpers shared by the e2e binaries.
+      - name: zfb-test-utils lib tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p zfb-test-utils --lib -- --test-threads=1
+
       - name: zfb-islands graph identity tests
         if: ${{ !cancelled() }}
         run: cargo test --locked -p zfb-islands --lib graph_identity::tests -- --test-threads=1
@@ -139,8 +149,8 @@ jobs:
           "$stage/package/esbuild.exe" --version | grep -Fx "$version"
           echo "ZFB_ESBUILD_BIN=$(cygpath -w "$stage/package/esbuild.exe")" >> "$GITHUB_ENV"
 
-      # Only the guard's binary: the other zfb-test-utils tests have known
-      # Windows failures tracked in #4498.
+      # Only the guard's binary here; zfb-test-utils' own lib tests run in the
+      # windows-lib-tests job above (#4512, fixing the #4498 failures).
       - name: process guard (kill-tree + graceful interrupt)
         if: ${{ !cancelled() }}
         run: |

@@ -39,6 +39,11 @@ use std::time::{Duration, Instant};
 mod process_guard;
 
 use process_guard::{ProcessTreeGuard, ProcessTreeSpawner};
+
+#[path = "support/e2e_platform.rs"]
+mod e2e_platform;
+
+use e2e_platform::{link_dir, PNPM_PROGRAM};
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -48,6 +53,8 @@ const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const TICK_DEADLINE: Duration = Duration::from_secs(45);
 const SERVE_DEADLINE: Duration = Duration::from_secs(60);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
+// Mirrors `format_shutdown_graph_saved_line` in crates/zfb/src/commands/dev.rs.
+const SHUTDOWN_GRAPH_SAVED_LINE: &str = "[zfb-timing] shutdown: graph saved";
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 const SESSION_A: &str = ".zfb-build/session-a";
@@ -65,9 +72,6 @@ const PUBLIC_PROBE_LIVE: &str = "zfb-4233-public-v2-live";
 /// dev's own `/assets/styles.css`.
 const DEV_CSS_MARKER: &str = "--zfb-4233-dev-css";
 
-// pnpm ships as `pnpm.cmd` on Windows; `Command` only auto-appends `.exe`.
-const PNPM_PROGRAM: &str = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -80,38 +84,6 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Creates a directory link at `link` pointing at the absolute `target`.
-#[cfg(unix)]
-fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    // Symlink creation needs a privilege that is not guaranteed; a junction
-    // needs none, so fall back to `mklink /J`.
-    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
-        return Ok(());
-    }
-    let status = Command::new("cmd")
-        .arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
-        .stdout(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "mklink /J {} {} failed: {status}",
-            link.display(),
-            target.display()
-        )))
-    }
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
@@ -807,22 +779,38 @@ async fn concurrent_scenario() {
     );
 
     // Graceful stop persists the graph inside the session, not in `.zfb/`.
-    let stopped = tokio::task::block_in_place(|| {
-        session
-            .guard
-            .interrupt_and_wait(SHUTDOWN_DEADLINE)
-            .expect("interrupt `zfb dev`")
-    });
+    let interrupted =
+        tokio::task::block_in_place(|| session.guard.interrupt_and_wait(SHUTDOWN_DEADLINE));
+    let stopped = match interrupted {
+        Ok(stopped) => stopped,
+        Err(err) => panic!("interrupt `zfb dev`: {err}\n{}", session.logs()),
+    };
     assert!(
         stopped.is_some(),
         "dev did not exit within {}s of a graceful interrupt\n{}",
         SHUTDOWN_DEADLINE.as_secs(),
         session.logs()
     );
+    // #4511: the interrupt reaches dev's whole process group, so prove the
+    // shutdown save itself completed, not just that some graph.bin exists.
     assert!(
-        session_a.join("graph.bin").is_file(),
-        "graph.bin must be persisted under session-a; found {:?}",
-        dir_entry_names(&session_a)
+        read_log(&session.stderr_path).contains(SHUTDOWN_GRAPH_SAVED_LINE),
+        "dev must log `{SHUTDOWN_GRAPH_SAVED_LINE}` after its shutdown graph save\n{}",
+        session.logs()
+    );
+    let graph_len = fs::metadata(session_a.join("graph.bin"))
+        .map(|meta| meta.len())
+        .unwrap_or_else(|err| {
+            panic!(
+                "graph.bin must be persisted under session-a ({err}); found {:?}\n{}",
+                dir_entry_names(&session_a),
+                session.logs()
+            )
+        });
+    assert!(
+        graph_len > 0,
+        "the shutdown graph.bin must not be empty\n{}",
+        session.logs()
     );
     assert!(
         !root.join(".zfb").exists(),

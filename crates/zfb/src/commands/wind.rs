@@ -36,7 +36,7 @@ async fn explain(args: &WindExplainArgs) -> Result<()> {
             &std::io::read_to_string(std::io::stdin()).context("failed to read stdin")?,
         ),
     };
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let cwd = zfb_types::current_dir_long().context("failed to determine current directory")?;
     let project_root =
         command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
     let config = load_command_config(&cwd, &project_root, args.config.as_deref())
@@ -99,7 +99,7 @@ async fn audit(args: &WindAuditArgs) -> Result<()> {
         group: args.group,
         severity: args.severity,
     };
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let cwd = zfb_types::current_dir_long().context("failed to determine current directory")?;
     let project_root =
         command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
     let project_config = load_command_config(&cwd, &project_root, args.config.as_deref())
@@ -188,7 +188,7 @@ async fn manifest(args: &WindManifestArgs) -> Result<()> {
             args.producer
         );
     }
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let cwd = zfb_types::current_dir_long().context("failed to determine current directory")?;
     let project_root =
         command_project_root(&cwd, args.project_root.as_deref(), args.config.as_deref());
     let output = zfb_types::normalize_path_lexical(&cwd.join(&args.output));
