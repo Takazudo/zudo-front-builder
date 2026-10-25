@@ -7283,6 +7283,7 @@ dependencies = [
  "rolldown_common",
  "rolldown_resolver",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
