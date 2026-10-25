@@ -2012,13 +2012,15 @@ const DEPENDENCY_ENTRY_VIEW_MARKER: &str = ".zfb-dependency-entry-view";
 fn dependency_root_needs_entry_view(node_modules: &Path) -> bool {
     #[cfg(windows)]
     {
-        let root = normalize_path_lexical(node_modules);
         dependency_root_entries(node_modules).iter().any(|entry| {
             fs::read_link(entry).is_ok_and(|target| {
                 target.is_relative()
-                    && entry.parent().is_some_and(|parent| {
-                        !normalize_path_lexical(&parent.join(&target)).starts_with(&root)
-                    })
+                    && entry
+                        .parent()
+                        .and_then(|parent| parent.strip_prefix(node_modules).ok())
+                        .is_some_and(|parent| {
+                            relative_link_climbs_out(parent.components().count(), &target)
+                        })
             })
         })
     }
@@ -2027,6 +2029,28 @@ fn dependency_root_needs_entry_view(node_modules: &Path) -> bool {
         let _ = node_modules;
         false
     }
+}
+
+/// Whether the relative link `target`, stored in a directory `depth` levels
+/// below the dependency root, climbs above that root at ANY hop. Windows
+/// resolves each `..` against the traversed spelling, so a target that leaves
+/// and lexically re-enters (`..\..\..\site\node_modules\x`) still escapes the
+/// shadow junction; only the running depth tells.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn relative_link_climbs_out(depth: usize, target: &Path) -> bool {
+    let mut depth = depth;
+    for component in target.components() {
+        match component {
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return true,
+            },
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+    }
+    false
 }
 
 /// Every top-level entry of `node_modules` plus each entry of a real `@scope`
@@ -28853,6 +28877,26 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn relative_link_climbs_out_tracks_every_hop_not_the_final_position() {
+        let path = |parts: &[&str]| parts.iter().collect::<PathBuf>();
+        assert!(!relative_link_climbs_out(
+            0,
+            &path(&[".pnpm", "dep@1", "node_modules", "dep"])
+        ));
+        assert!(!relative_link_climbs_out(1, &path(&["..", "dep"])));
+        assert!(relative_link_climbs_out(0, &path(&["..", "x"])));
+        assert!(relative_link_climbs_out(
+            1,
+            &path(&["..", "..", "..", "packages-ws", "linked"])
+        ));
+        // Leaves node_modules and lexically re-enters it: still an escape.
+        assert!(relative_link_climbs_out(
+            1,
+            &path(&["..", "..", "..", "site", "node_modules", "x"])
+        ));
     }
 
     #[cfg(unix)]
