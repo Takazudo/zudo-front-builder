@@ -15,6 +15,13 @@
 //!
 //! Every layer runs before the case fails, so one Windows run shows which hop
 //! breaks. Missing esbuild, node or 8.3 names fail the case; they never skip it.
+//!
+//! pnpm writes a `link:` entry as a RELATIVE symbolic link (`..\..\..\packages-ws\x`),
+//! and Windows resolves a relative target against the path as traversed. Reached
+//! through the `<shadow>\node_modules` junction it climbs out of the shadow, not
+//! the project (direct-v8 run 40195192600). The `relative_symlink` case pins that:
+//! its L1 rows only record what raw esbuild does through a plain junction, and
+//! its L2 rows must pass.
 
 use std::{
     collections::BTreeMap,
@@ -84,6 +91,9 @@ enum LinkCreator {
     NodeJunction,
     /// `zfb_types::directory_link::create` (canonical `\??\` target).
     DirectoryLink,
+    /// `std::os::windows::fs::symlink_dir` with a relative target, the link
+    /// pnpm writes for `link:` on Windows (reparse tag 0xA000000C).
+    RelativeSymlink,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -165,6 +175,22 @@ fn spell(path: &Path, spelling: Spelling) -> PathBuf {
     }
 }
 
+/// `to` relative to the directory `from`; both are absolute and share a prefix.
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    assert!(common > 0, "no common prefix between {from:?} and {to:?}");
+    let mut relative = PathBuf::new();
+    for _ in common..from.len() {
+        relative.push("..");
+    }
+    for component in &to[common..] {
+        relative.push(component.as_os_str());
+    }
+    relative
+}
+
 fn create_link(creator: LinkCreator, target: &Path, link: &Path) {
     match creator {
         LinkCreator::NodeJunction => {
@@ -191,6 +217,23 @@ fn create_link(creator: LinkCreator, target: &Path, link: &Path) {
                 target.display()
             )
         }),
+        LinkCreator::RelativeSymlink => {
+            let relative = relative_path(link.parent().unwrap(), target);
+            std::os::windows::fs::symlink_dir(&relative, link).unwrap_or_else(|e| {
+                panic!(
+                    "symlink_dir {} -> {} failed (symlink creation is required, never skipped): {e}",
+                    link.display(),
+                    relative.display()
+                )
+            });
+            let stored = fs::read_link(link).unwrap();
+            assert!(
+                stored.is_relative(),
+                "{} must store a relative target, got {}",
+                link.display(),
+                stored.display()
+            );
+        }
     }
     let metadata = fs::symlink_metadata(link).unwrap();
     assert!(
@@ -606,26 +649,44 @@ fn run_case(case: Case) {
     assert_short_names_available(room.path());
     let fixture = write_fixture(room.path(), case);
 
+    // A relative symlink reached through a plain junction is broken by Windows
+    // itself, so its raw-esbuild rows are recorded, not required.
+    let l1_required = !matches!(case.creator, LinkCreator::RelativeSymlink);
     let results = [
-        ("L1 raw esbuild", raw_esbuild(&esbuild, &fixture, false)),
+        (
+            "L1 raw esbuild",
+            l1_required,
+            raw_esbuild(&esbuild, &fixture, false),
+        ),
         (
             "L1 raw esbuild --preserve-symlinks",
+            l1_required,
             raw_esbuild(&esbuild, &fixture, true),
         ),
-        ("L2 zfb", zfb_layer(&esbuild, &fixture)),
+        ("L2 zfb", true, zfb_layer(&esbuild, &fixture)),
     ];
     let summary = results
         .iter()
-        .map(|(layer, result)| format!("{layer}={}", if result.is_ok() { "PASS" } else { "FAIL" }))
+        .map(|(layer, required, result)| {
+            let verdict = if result.is_ok() { "PASS" } else { "FAIL" };
+            let note = if *required { "" } else { " (recorded)" };
+            format!("{layer}={verdict}{note}")
+        })
         .collect::<Vec<_>>()
         .join(" ");
     eprintln!(
         "[#4545] {case:?} project={} {summary}",
         fixture.site.display()
     );
+    for (layer, _, result) in results.iter().filter(|(_, required, _)| !required) {
+        if let Err(e) = result {
+            eprintln!("[#4545] {case:?} recorded {layer} failure:\n{e}");
+        }
+    }
     let details = results
         .iter()
-        .filter_map(|(layer, result)| {
+        .filter(|(_, required, _)| *required)
+        .filter_map(|(layer, _, result)| {
             result
                 .as_ref()
                 .err()
@@ -669,6 +730,14 @@ fn directory_link_short_target() {
 fn directory_link_long_target() {
     run_case(Case {
         creator: LinkCreator::DirectoryLink,
+        target: Spelling::Long,
+    });
+}
+
+#[test]
+fn relative_symlink() {
+    run_case(Case {
+        creator: LinkCreator::RelativeSymlink,
         target: Spelling::Long,
     });
 }
