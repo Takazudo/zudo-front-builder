@@ -1526,15 +1526,16 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v5.1.2 release bump cites the v5.1.1 release contract on main.
+    // The v5.1.3 release bump cites the v5.1.2 release contract, read at the
+    // release probe head (refs/pull/4551/head), whose bytes equal main's 708ca65d.
     file: "decision-linux-x64.json",
-    commit: "f860dd4848e9940cf91a8d2a0b07d8078d3b888e",
-    sha256: "d7c43d861211010793e243f65b593b04eed3ff1aaeb852763c58349078181ccf",
-    fixture: "fixtures/island-size-linux-x64-v5.1.1-release.json",
+    commit: "b4cd6c6d58e5f6bac0baadda7fbe6ebc6cbf1745",
+    sha256: "6d22f7befb1b69a2f310edaa64466477dc8beececf9aa1cfb8636d6d5ee2ae03",
+    fixture: "fixtures/island-size-linux-x64-v5.1.2-release.json",
     outcome: "release-version-stamp",
-    packageVersion: "5.1.1",
-    baselineSourceSha: "95ef7d72b733e02f0448027b7027d75e706f64b6",
-    baselineRunId: 40145045250,
+    packageVersion: "5.1.2",
+    baselineSourceSha: "6679531ec8c4029b94285015e9775e2d0a135f43",
+    baselineRunId: 40172646987,
   },
   {
     // The #4429 oxc edge (cargo-internal-rewire) cites the Darwin v4.7.0 release
@@ -2844,9 +2845,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expectReleaseBumpOnly(predecessor, live);
   });
 
-  it("moves the live Linux contract from the frozen v5.1.1 bytes only by the v5.1.2 release bump", () => {
+  // Verbatim bytes of decision-linux-x64.json at 708ca65d (the v5.1.2 release
+  // bump on main), the state the v5.1.3 release bump moved.
+  const linuxV512 = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.1.2-release.json",
+      "6d22f7befb1b69a2f310edaa64466477dc8beececf9aa1cfb8636d6d5ee2ae03",
+    );
+
+  it("moves the frozen v5.1.2 Linux contract from the frozen v5.1.1 bytes only by the v5.1.2 release bump", () => {
     const predecessor = linuxV511();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV512();
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.1.2");
     expect(live.baselineSourceSha).toBe("6679531ec8c4029b94285015e9775e2d0a135f43");
@@ -2862,6 +2871,28 @@ describe("live contracts preserve released evidence and authentic predecessors",
     // The v5.1.2 pnpm-lock.yaml the release probe measured.
     expect(live.toolchain.pnpmLockSha256).toBe(
       "fdf2ed0c91a21e555c46f3a3a521a13878c50a289751d136042ca5c04fbc1b00",
+    );
+    expectReleaseBumpOnly(predecessor, live);
+  });
+
+  it("moves the live Linux contract from the frozen v5.1.2 bytes only by the v5.1.3 release bump", () => {
+    const predecessor = linuxV512();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.1.3");
+    expect(live.baselineSourceSha).toBe("b4cd6c6d58e5f6bac0baadda7fbe6ebc6cbf1745");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 40205487926,
+      jobId: 121205423304,
+      sourceSha: "ec965d8c4e6535d85553a4198cbb9873bc22a36a",
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The v5.1.3 pnpm-lock.yaml the release probe measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "dfc3c1e291c1afb9119363989396184b58be9b461aff53a0756d0145b7ece170",
     );
     expectReleaseBumpOnly(predecessor, live);
   });
