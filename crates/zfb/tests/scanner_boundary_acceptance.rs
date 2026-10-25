@@ -202,6 +202,122 @@ fn run_build(root: &Path, esbuild: &Path) -> Output {
         .expect("spawn production zfb build")
 }
 
+/// Grep-able prefix for the Windows reactive-core diagnostics (#4499/#4515).
+const DIAG: &str = "[#4499-diag]";
+
+/// `run_build` with the off-by-default `ZFB_DEBUG_ISLANDS_METAFILE_DIR` knob,
+/// which keeps each shared islands metafile so module ids can be printed.
+fn run_build_keeping_islands_metafile(root: &Path, esbuild: &Path, metafiles: &Path) -> Output {
+    Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .env("ZFB_DEBUG_ISLANDS_METAFILE_DIR", metafiles)
+        .output()
+        .expect("spawn production zfb build")
+}
+
+/// `fs::canonicalize` with the Windows verbatim prefix removed, so an 8.3
+/// short spelling (`RUNNER~1`) can be compared with its long expansion.
+fn long_spelling(path: &Path) -> Option<PathBuf> {
+    let canonical = fs::canonicalize(path).ok()?;
+    let text = canonical.to_string_lossy();
+    Some(match text.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => PathBuf::from(format!(r"\\{rest}")),
+        None => PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&*text)),
+    })
+}
+
+const REACTIVE_DEFINITION_MARKER: &str = r#"@takazudo/zfb/zudo-react/runtime-definition-v1":!0"#;
+
+/// Reactive-core definition count in every emitted `islands-*.js` file.
+fn reactive_counts_per_islands_file(root: &Path) -> Vec<(String, usize)> {
+    let mut counts: Vec<_> = fs::read_dir(root.join("dist/assets"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (name.starts_with("islands-") && name.ends_with(".js")).then(|| {
+                let source = fs::read_to_string(entry.path()).unwrap_or_default();
+                (name, source.matches(REACTIVE_DEFINITION_MARKER).count())
+            })
+        })
+        .collect();
+    counts.sort();
+    counts
+}
+
+/// Print every zudo-react module id the kept islands metafiles record, plus
+/// which output each reactive-core copy (`zudo-react/reactive`) landed in.
+/// `all_inputs` also prints every other input id, for a duplicate whose id
+/// does not contain `zudo-react/`.
+fn print_islands_metafile_module_ids(label: &str, metafiles: &Path, all_inputs: bool) {
+    let mut files: Vec<_> = fs::read_dir(metafiles)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        eprintln!(
+            "{DIAG} {label}: no islands metafile kept under {}",
+            metafiles.display()
+        );
+    }
+    let is_zudo_react = |id: &str| id.replace('\\', "/").contains("zudo-react/");
+    let is_reactive_core = |id: &str| id.replace('\\', "/").contains("zudo-react/reactive");
+    for file in files {
+        let name = file.file_name().unwrap_or_default().to_string_lossy();
+        let Some(meta) = fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        else {
+            eprintln!("{DIAG} {label}: unreadable metafile {name}");
+            continue;
+        };
+        let inputs = meta["inputs"].as_object();
+        eprintln!(
+            "{DIAG} {label}: metafile {name} backend={} inputs={}",
+            meta["zfbBackend"].as_str().unwrap_or("esbuild"),
+            inputs.map_or(0, |inputs| inputs.len())
+        );
+        for id in inputs.into_iter().flat_map(|inputs| inputs.keys()) {
+            if !is_zudo_react(id) {
+                if all_inputs {
+                    eprintln!("{DIAG} {label}: input {id}");
+                }
+            } else {
+                let core = if is_reactive_core(id) {
+                    " REACTIVE-CORE"
+                } else {
+                    ""
+                };
+                eprintln!("{DIAG} {label}: input{core} {id}");
+            }
+        }
+        for (output, info) in meta["outputs"].as_object().into_iter().flatten() {
+            let output_name = Path::new(output)
+                .file_name()
+                .map_or_else(|| output.clone(), |n| n.to_string_lossy().into_owned());
+            for id in info["inputs"]
+                .as_object()
+                .into_iter()
+                .flat_map(|i| i.keys())
+            {
+                if is_reactive_core(id) {
+                    eprintln!("{DIAG} {label}: output {output_name} carries REACTIVE-CORE {id}");
+                }
+            }
+        }
+    }
+}
+
 fn combined_output(output: &Output) -> String {
     format!(
         "{}\n{}",
@@ -754,7 +870,12 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     install_packed_widgets(&positive);
     materialize_embedded_node_modules(&positive);
     write_factory_override_control_page(&positive);
-    let built = run_build(&positive, &esbuild);
+    let diag_metafiles = scratch.path().join("diag-islands-metafiles");
+    let built = if cfg!(windows) {
+        run_build_keeping_islands_metafile(&positive, &esbuild, &diag_metafiles)
+    } else {
+        run_build(&positive, &esbuild)
+    };
     assert!(
         built.status.success(),
         "positive packed-consumer production build failed\n{}",
@@ -882,12 +1003,31 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         })
         .expect("production build emits the shared islands bundle");
     let browser_source = fs::read_to_string(&browser_bundle).expect("read minified islands bundle");
-    let reactive_runtime_definitions = browser_source
-        .matches(r#"@takazudo/zfb/zudo-react/runtime-definition-v1":!0"#)
-        .count();
+    let reactive_runtime_definitions = browser_source.matches(REACTIVE_DEFINITION_MARKER).count();
     // Windows duplicates the reactive core (#4499, likely 8.3 short-name module
     // ids). Bound it to the observed count so the rest of this test keeps
     // running there; a worse count still fails and a fixed one is announced.
+    if cfg!(windows) {
+        eprintln!(
+            "{DIAG} positive: reactive cores in {} = {reactive_runtime_definitions}; per islands file: {:?}",
+            browser_bundle.file_name().unwrap_or_default().to_string_lossy(),
+            reactive_counts_per_islands_file(&positive)
+        );
+        eprintln!("{DIAG} build cwd as spawned: {}", positive.display());
+        eprintln!(
+            "{DIAG} build cwd canonical long spelling: {}",
+            long_spelling(&positive).map_or_else(
+                || "<canonicalize failed>".to_string(),
+                |path| path.display().to_string()
+            )
+        );
+        eprintln!("{DIAG} env::temp_dir(): {}", std::env::temp_dir().display());
+        print_islands_metafile_module_ids(
+            "positive",
+            &diag_metafiles,
+            reactive_runtime_definitions != 1,
+        );
+    }
     if cfg!(windows) {
         assert!(
             matches!(reactive_runtime_definitions, 1 | 2),
@@ -955,6 +1095,44 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
         serde_json::to_vec_pretty(&metadata).expect("serialize acceptance metadata"),
     )
     .expect("write browser acceptance metadata");
+
+    // #4499 step-1 probe, Windows only and diagnostic only (never asserts):
+    // rebuild the same consumer from its long-spelled root. If the count drops
+    // to 1, the 8.3 short-name hypothesis holds. It runs after the browser
+    // artifact is preserved because it rewrites `dist/`.
+    if cfg!(windows) {
+        match long_spelling(&positive) {
+            Some(long_root) if long_root != positive => {
+                let probe_metafiles = scratch.path().join("diag-islands-metafiles-long");
+                let started = Instant::now();
+                let probe =
+                    run_build_keeping_islands_metafile(&long_root, &esbuild, &probe_metafiles);
+                eprintln!(
+                    "{DIAG} long-root probe: cwd={} exit={} elapsed={}ms",
+                    long_root.display(),
+                    probe.status,
+                    started.elapsed().as_millis()
+                );
+                if probe.status.success() {
+                    let counts = reactive_counts_per_islands_file(&long_root);
+                    eprintln!(
+                        "{DIAG} long-root probe: reactive cores per islands file: {counts:?}"
+                    );
+                    let duplicated = counts.iter().map(|(_, count)| count).sum::<usize>() != 1;
+                    print_islands_metafile_module_ids("long-root", &probe_metafiles, duplicated);
+                } else {
+                    eprintln!(
+                        "{DIAG} long-root probe build failed\n{}",
+                        combined_output(&probe)
+                    );
+                }
+            }
+            Some(_) => eprintln!(
+                "{DIAG} long-root probe skipped: spawned cwd already is its long spelling"
+            ),
+            None => eprintln!("{DIAG} long-root probe skipped: canonicalize failed"),
+        }
+    }
 
     // A reachable helper-only client module and a route with no boundary
     // targets are a valid empty registry. Preserve unrelated client-script
