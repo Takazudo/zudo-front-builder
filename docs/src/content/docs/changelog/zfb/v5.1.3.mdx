@@ -1,0 +1,14 @@
+---
+title: v5.1.3
+sidebar_position: 163
+---
+
+# v5.1.3
+
+Released: 2026-10-26
+
+## Bug Fixes
+
+- Windows: `zfb build` and `zfb dev` now resolve packages installed as pnpm `link:` dependencies that point outside the project, such as a locally linked `@takazudo/zfb`. pnpm creates these as relative symbolic links. Windows resolves such a link against the path as traversed, so reached through the bundler shadow's `node_modules` junction it pointed at a directory that does not exist, and esbuild reported `Could not resolve`. When a top-level or scoped `node_modules` entry is a relative link that leaves `node_modules`, the shadow's `node_modules` is now a real directory, and each entry in it is a junction to that entry's real target. Linux and macOS are unchanged (33ff33d7c, 58bfcdf01, #4537).
+- Rolldown: unresolved-import diagnostics now print locations relative to the project with `/` separators on Windows (for example `components/box.tsx:3:6:`), as esbuild does. An absolute fallback location keeps its native spelling (4398090a5, 1b7efe049, #4538).
+- Rolldown: the build metafile's `outputs` keys and the paths of internal output imports (emitted chunks and copied files) now come from one helper. They match byte for byte on every platform, keeping native separators like esbuild v0.25.12's absolute metafile paths, including for chunk names that contain a directory (b52f4de81, 1b7efe049, #4538).
