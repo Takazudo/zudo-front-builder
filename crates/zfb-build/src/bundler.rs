@@ -2061,8 +2061,9 @@ fn relative_link_climbs_out(depth: usize, target: &Path) -> bool {
 }
 
 /// Where a directory sits in pnpm's layout. The scan descends only along
-/// `<root>/@scope`, `<root>/.pnpm/<pkg>/node_modules` and
-/// `<root>/.pnpm/<pkg>/node_modules/@scope`; it is never an unbounded walk.
+/// `<root>/@scope`, `<root>/.pnpm/<pkg>/node_modules`,
+/// `<root>/.pnpm/<pkg>/node_modules/@scope` and pnpm's hidden hoist directory
+/// `<root>/.pnpm/node_modules/@scope`; it is never an unbounded walk.
 #[derive(Clone, Copy)]
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 enum DependencyLayoutLevel {
@@ -2082,6 +2083,10 @@ impl DependencyLayoutLevel {
             Self::Root if name == ".pnpm" => Some(Self::Store),
             Self::Store => Some(Self::StorePackage),
             Self::StorePackage if name == "node_modules" => Some(Self::StoreNodeModules),
+            // `.pnpm/node_modules` (the hidden hoist dir, where
+            // `hoist-workspace-packages` links workspace packages) sits at
+            // the StorePackage level; its `@scope` dirs hold links too.
+            Self::StorePackage if scope => Some(Self::Leaf),
             Self::StoreNodeModules if scope => Some(Self::Leaf),
             _ => None,
         }
@@ -5441,7 +5446,8 @@ pub fn bundle_with_session(
     // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
     //     part 1; contract inverted by #1693). In a pnpm workspace the deps
     //     are hoisted to the workspace root, so the work mirror gets its own
-    //     `<work>/node_modules` symlink — the SECOND install root above the
+    //     `<work>/node_modules` link (on Windows, an entry view when a
+    //     relative link escapes the install, #4553) — the SECOND install root above the
     //     project's own nested install (linked at `<shadow>/node_modules` by
     //     2b below). esbuild walks up from a project-mirror file to
     //     `<shadow>/node_modules` first, then to `<work>/node_modules`,
@@ -6457,7 +6463,8 @@ pub fn bundle_with_session(
     // module docs for the full decision table): every currently-armed build
     // stays armed, and a root-claimed workspace with a reachable first-party
     // `node_modules` link now arms too. `work.join("node_modules")` is the
-    // wholesale symlink set up above (to `first_party_root`'s live install),
+    // dependency root set up above (a wholesale link to `first_party_root`'s
+    // live install, or on Windows its entry view, #4553),
     // so it is what the predicate scans — mirroring the islands/client site's
     // `stage_escape_audit_policy` (`crates/zfb/src/commands/build.rs`), which
     // scans its own stage root's `node_modules` the same way.
@@ -29158,6 +29165,20 @@ mod tests {
             )),
         );
         (nm, linked)
+    }
+
+    #[test]
+    fn dependency_layout_scans_scopes_in_the_hidden_hoist_dir() {
+        let level = |path: &str| {
+            path.split('/')
+                .try_fold(DependencyLayoutLevel::Root, |level, name| {
+                    level.descend(std::ffi::OsStr::new(name))
+                })
+        };
+        assert!(level(".pnpm/node_modules/@acme").is_some());
+        assert!(level(".pnpm/host@1/node_modules/@ws").is_some());
+        assert!(level(".pnpm/host@1/node_modules/host").is_none());
+        assert!(level(".pnpm/node_modules/@acme/ui").is_none());
     }
 
     #[test]
