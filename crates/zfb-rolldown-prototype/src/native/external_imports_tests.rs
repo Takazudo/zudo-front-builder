@@ -1,6 +1,7 @@
 //! Kept-external chunk imports are marked `external: true` with the raw id,
-//! emitted chunk imports `external: false` with the outdir-joined path (#4476).
-use super::external_imports::{checked_import_entry, import_entry};
+//! emitted chunk imports omit `external` and carry the outdir-joined path
+//! (#4476, #4506).
+use super::external_imports::{checked_import_entry, copied_input_edge, edge, import_entry};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -133,7 +134,7 @@ fn emitted_chunk_import_is_internal_with_an_outdir_joined_path() {
     );
     assert!(!imports.is_empty());
     for import in &imports {
-        assert_eq!(import["external"], false, "{import}");
+        assert!(import.get("external").is_none(), "{import}");
         let path = Path::new(import["path"].as_str().unwrap());
         assert!(
             path.is_absolute() && path.parent().unwrap().ends_with("out"),
@@ -147,22 +148,52 @@ fn emitted(names: &[&str]) -> BTreeSet<String> {
 }
 
 #[test]
-fn copy_reference_import_is_unchanged() {
+fn every_edge_kind_marks_only_external_edges() {
+    // Esbuild v0.25.12 writes `"external": true` on external edges and omits the
+    // field elsewhere, on inputs and outputs alike; it never writes `false` (#4506).
+    assert_eq!(
+        edge(json!("dep.ts"), "import-statement", false),
+        json!({"path":"dep.ts","kind":"import-statement"})
+    );
+    assert_eq!(
+        edge(json!("ext-pkg"), "dynamic-import", true),
+        json!({"path":"ext-pkg","kind":"dynamic-import","external":true})
+    );
+    // Input copy edge: internal, with the private marker restored later.
+    assert_eq!(
+        copied_input_edge(
+            "__ROLLDOWN_COPY_MODULE__#ref",
+            "import-statement",
+            "logo.svg".to_string()
+        ),
+        json!({"path":"__ROLLDOWN_COPY_MODULE__#ref","kind":"import-statement","zfbCopiedOutput":"logo.svg"})
+    );
+    // Output imports: copy reference, emitted chunk, kept external.
     let copies = BTreeMap::from([(
         "__ROLLDOWN_COPY_MODULE__#ref".to_string(),
         "logo.svg".to_string(),
     )]);
-    let entry = import_entry(
-        "__ROLLDOWN_COPY_MODULE__#ref",
-        "import-statement",
-        &emitted(&[]),
-        &copies,
-        Path::new("/out"),
-    )
-    .unwrap();
+    let output = |id| {
+        import_entry(
+            id,
+            "import-statement",
+            &emitted(&["chunk.js"]),
+            &copies,
+            Path::new("/out"),
+        )
+        .unwrap()
+    };
     assert_eq!(
-        entry,
+        output("__ROLLDOWN_COPY_MODULE__#ref"),
         json!({"path":"/out/logo.svg","kind":"import-statement"})
+    );
+    assert_eq!(
+        output("chunk.js"),
+        json!({"path":"/out/chunk.js","kind":"import-statement"})
+    );
+    assert_eq!(
+        output("ext-pkg"),
+        json!({"path":"ext-pkg","kind":"import-statement","external":true})
     );
 }
 
@@ -178,7 +209,7 @@ fn self_named_import_is_internal() {
         Path::new("/out"),
     )
     .unwrap();
-    assert_eq!(entry["external"], false);
+    assert!(entry.get("external").is_none(), "{entry}");
     assert_eq!(entry["path"], "/out/bundle.mjs");
 }
 
@@ -192,7 +223,7 @@ fn import_of_another_emitted_chunk_is_not_a_collision() {
         Path::new("/out"),
     )
     .unwrap();
-    assert_eq!(entry["external"], false);
+    assert!(entry.get("external").is_none(), "{entry}");
     assert_eq!(entry["path"], "/out/islands.js");
 }
 
@@ -242,7 +273,7 @@ fn asset_set_leaves_chunk_and_external_imports_unchanged() {
         Path::new("/out"),
     )
     .unwrap();
-    assert_eq!(chunk["external"], false);
+    assert!(chunk.get("external").is_none(), "{chunk}");
     let external = checked_import_entry(
         "ext-pkg",
         "import-statement",

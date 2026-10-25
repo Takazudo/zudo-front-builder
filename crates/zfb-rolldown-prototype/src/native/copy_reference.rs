@@ -111,8 +111,7 @@ mod tests {
     }
     #[test]
     fn restores_authoritative_source_and_preserves_ordinary_edges() {
-        let mut inputs =
-            graph(json!({"path":COPY,"zfbCopiedOutput":"asset.wasm","external":false}));
+        let mut inputs = graph(json!({"path":COPY,"zfbCopiedOutput":"asset.wasm"}));
         restore_sources(
             &mut inputs,
             &BTreeMap::from([("asset.wasm".into(), vec!["/stage/source.wasm".into()])]),
@@ -120,7 +119,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             inputs["entry.ts"]["imports"][0],
-            json!({"path":"/stage/source.wasm","external":false})
+            json!({"path":"/stage/source.wasm"})
         );
         let mut ordinary = graph(json!({"path":"external-pkg","external":true}));
         let original = ordinary.clone();

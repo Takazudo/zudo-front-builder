@@ -161,14 +161,20 @@ impl Plugin for GraphPlugin {
                     if let Some(reference) = copy_reference::reference(imported.as_str())? {
                         let filename = ctx.get_file_name(reference)?.to_string();
                         copy_outputs.insert(imported.to_string(), filename.clone());
-                        imports.push(json!({"path": imported.as_str(), "kind":kind, "external":false, "zfbCopiedOutput":filename}));
+                        imports.push(external_imports::copied_input_edge(
+                            imported.as_str(),
+                            kind,
+                            filename,
+                        ));
                     } else {
                         let external = ctx
                             .get_module_info(imported)
                             .is_none_or(|info| info.code.is_none());
-                        imports.push(
-                            json!({"path": imported.as_str(), "kind":kind, "external": external}),
-                        );
+                        imports.push(external_imports::edge(
+                            json!(imported.as_str()),
+                            kind,
+                            external,
+                        ));
                     }
                 }
             }
