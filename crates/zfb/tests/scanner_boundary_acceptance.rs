@@ -860,11 +860,7 @@ fn production_and_packed_consumers_validate_exact_boundary_registry() {
     materialize_embedded_node_modules(&positive);
     write_factory_override_control_page(&positive);
     let diag_metafiles = scratch.path().join("diag-islands-metafiles");
-    let built = if cfg!(windows) {
-        run_build_keeping_islands_metafile(&positive, &esbuild, &diag_metafiles)
-    } else {
-        run_build(&positive, &esbuild)
-    };
+    let built = run_build_keeping_islands_metafile(&positive, &esbuild, &diag_metafiles);
     assert!(
         built.status.success(),
         "positive packed-consumer production build failed\n{}",

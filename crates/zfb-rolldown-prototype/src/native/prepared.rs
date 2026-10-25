@@ -398,8 +398,8 @@ fn physical_spelling(path: &Path) -> PathBuf {
                 }
                 let candidate = resolved.join(part);
                 // `resolved` is already canonical, so only a symlink needs
-                // resolving; Windows also canonicalizes plain directories to
-                // expand 8.3 short names.
+                // resolving. Unix-only in practice: Windows takes `engine_join`'s
+                // `physical_cwd` branch and never reaches this function.
                 let metadata = match std::fs::symlink_metadata(&candidate) {
                     Ok(metadata) => metadata,
                     Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -408,7 +408,7 @@ fn physical_spelling(path: &Path) -> PathBuf {
                     }
                     Err(_) => return path.to_path_buf(),
                 };
-                if !metadata.file_type().is_symlink() && !cfg!(windows) {
+                if !metadata.file_type().is_symlink() {
                     if !metadata.is_dir() {
                         return path.to_path_buf();
                     }

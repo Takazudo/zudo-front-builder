@@ -1743,6 +1743,11 @@ impl EsbuildSubprocessBundler {
             ));
         }
 
+        // Kept before the audits so a failing build still leaves its metafile.
+        if splitting && !identity_probe {
+            keep_debug_islands_metafile(&out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME));
+        }
+
         // Guard (b) wiring (#1705): audit immediately after this subprocess
         // succeeds, before touching its output. The resource-contract pass
         // (`splitting == true`) already wrote `meta.json` above regardless
@@ -1773,7 +1778,6 @@ impl EsbuildSubprocessBundler {
                 entry_tmp.path(),
             )
             .with_context(|| format!("zfb-islands: entry-import audit failed for {job_label}"))?;
-            keep_debug_islands_metafile(&out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME));
         }
 
         let mut graph_digests = Vec::new();
