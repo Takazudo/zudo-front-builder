@@ -25,6 +25,10 @@ use std::time::{Duration, Instant};
 #[path = "support/process_guard.rs"]
 mod process_guard;
 
+#[path = "support/e2e_platform.rs"]
+mod e2e_platform;
+
+use e2e_platform::npm_program;
 use process_guard::ProcessTreeGuard;
 use serde_json::json;
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
@@ -109,15 +113,6 @@ fn materialize_embedded_node_modules(root: &Path) {
             root.join("node_modules").join(package).is_file(),
             "embedded runtime package was not preserved: {package}"
         );
-    }
-}
-
-fn npm_program() -> &'static str {
-    // npm ships as a .cmd shim on Windows, which CreateProcess does not resolve from a bare name.
-    if cfg!(windows) {
-        "npm.cmd"
-    } else {
-        "npm"
     }
 }
 
