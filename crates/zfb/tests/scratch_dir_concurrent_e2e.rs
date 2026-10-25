@@ -39,6 +39,11 @@ use std::time::{Duration, Instant};
 mod process_guard;
 
 use process_guard::{ProcessTreeGuard, ProcessTreeSpawner};
+
+#[path = "support/e2e_platform.rs"]
+mod e2e_platform;
+
+use e2e_platform::{link_dir, PNPM_PROGRAM};
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -65,9 +70,6 @@ const PUBLIC_PROBE_LIVE: &str = "zfb-4233-public-v2-live";
 /// dev's own `/assets/styles.css`.
 const DEV_CSS_MARKER: &str = "--zfb-4233-dev-css";
 
-// pnpm ships as `pnpm.cmd` on Windows; `Command` only auto-appends `.exe`.
-const PNPM_PROGRAM: &str = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -80,38 +82,6 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Creates a directory link at `link` pointing at the absolute `target`.
-#[cfg(unix)]
-fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn link_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    // Symlink creation needs a privilege that is not guaranteed; a junction
-    // needs none, so fall back to `mklink /J`.
-    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
-        return Ok(());
-    }
-    let status = Command::new("cmd")
-        .arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
-        .stdout(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "mklink /J {} {} failed: {status}",
-            link.display(),
-            target.display()
-        )))
-    }
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
