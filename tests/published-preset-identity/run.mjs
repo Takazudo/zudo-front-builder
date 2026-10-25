@@ -28,7 +28,12 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
-import { installedCarrierIdentity, parseBinaryMode } from "./carrier.mjs";
+import {
+  installedCarrierIdentity,
+  npmCommand,
+  parseBinaryMode,
+  zudoSgCommand,
+} from "./carrier.mjs";
 import { consoleOracleFailures, isFatalConsoleMessage } from "./console-policy.mjs";
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url));
@@ -85,6 +90,7 @@ function assert(condition, message) {
 async function runLogged(command, args, { cwd, logName, env }) {
   const logPath = join(evidenceRoot, logName);
   const log = createWriteStream(logPath, { flags: "w" });
+  log.write(`$ argv: ${JSON.stringify([command, ...args])}\n`);
   const child = spawn(command, args, {
     cwd,
     env: { ...process.env, ...env },
@@ -118,6 +124,11 @@ async function runLogged(command, args, { cwd, logName, env }) {
   if (timedOut)
     throw new Error(`${command} ${args.join(" ")} exceeded ${SUBPROCESS_DEADLINE_MS} ms`);
   return { code, output, log: logPath };
+}
+
+function runNpm(args, options) {
+  const { command, args: argv } = npmCommand(args);
+  return runLogged(command, argv, options);
 }
 
 async function readJson(path) {
@@ -164,7 +175,7 @@ async function binaryForCase(installRoot, label) {
   if (binaryMode === "workspace") return evidence.binary.path;
   const carrier = await installedCarrierIdentity(installRoot, siteSource);
   assert(carrier.path && isAbsolute(carrier.path), `unresolved carrier path for ${label}`);
-  const npmVersion = await runLogged("npm", ["--version"], {
+  const npmVersion = await runNpm(["--version"], {
     cwd: installRoot,
     logName: `${label}-npm-version.log`,
   });
@@ -235,8 +246,7 @@ async function prepareInstall(workRoot) {
       `ancestor ${dir}/node_modules/@takazudo would allow a hoisted fallback`,
     );
   }
-  const install = await runLogged(
-    "npm",
+  const install = await runNpm(
     ["ci", "--ignore-scripts", "--no-audit", "--no-fund", `--registry=${REGISTRY}`],
     { cwd: installRoot, logName: "npm-ci.log", env: { npm_config_workspaces: "false" } },
   );
@@ -281,9 +291,9 @@ async function verifyInstalledPackages(installRoot, pins) {
 
 async function runPackageHooks(installRoot, label) {
   // The zudo-sg CLI is part of the published package surface the fixture consumes.
-  const bin = join(installRoot, "node_modules", ".bin", "zudo-sg");
   for (const command of ["gen-registry", "gen-token-manifest"]) {
-    const run = await runLogged(bin, [command, "--check"], {
+    const sg = await zudoSgCommand(installRoot, [command, "--check"]);
+    const run = await runLogged(sg.command, sg.args, {
       cwd: installRoot,
       logName: `${label}-zudo-sg-${command}.log`,
     });
