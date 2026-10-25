@@ -2001,34 +2001,41 @@ fn ensure_dependency_link(target: &Path, link: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Marks a `<shadow>/node_modules` built by [`ensure_dependency_entry_view`].
+/// Marks a dependency root built by [`ensure_dependency_entry_view_from`].
 const DEPENDENCY_ENTRY_VIEW_MARKER: &str = ".zfb-dependency-entry-view";
 
-/// Whether `<shadow>/node_modules` must be an entry view rather than one link
-/// to `node_modules` (#4545). Windows resolves a relative symlink's target
-/// against the path as traversed, so pnpm's relative `link:` entry
-/// (`..\..\..\packages-ws\pkg`) reached through the shadow's junction climbs
-/// out of the shadow instead of the project. Unix resolves it physically.
-fn dependency_root_needs_entry_view(node_modules: &Path) -> bool {
+/// Reconcile `link` as the dependency root over `node_modules`: one
+/// whole-directory link, or on Windows an entry view when a relative link in
+/// pnpm's layout climbs out of `node_modules` (#4545, #4553). Windows resolves
+/// a relative symlink's target against the path as traversed, so pnpm's
+/// relative `link:` entry (`..\..\..\packages-ws\pkg`) reached through a
+/// whole-directory junction climbs out of the shadow instead of the project.
+/// Unix resolves it physically and always gets the plain link. Returns whether
+/// `link` changed.
+fn ensure_dependency_root(node_modules: &Path, link: &Path) -> std::io::Result<bool> {
+    match dependency_root_entry_view_scan(node_modules) {
+        Some(scan) => ensure_dependency_entry_view_from(node_modules, &scan, link),
+        None => ensure_dependency_link(node_modules, link),
+    }
+}
+
+/// The scan that plans an entry view, when `node_modules` needs one.
+fn dependency_root_entry_view_scan(node_modules: &Path) -> Option<DependencyRootScan> {
     #[cfg(windows)]
     {
-        dependency_root_entries(node_modules).iter().any(|entry| {
-            fs::read_link(entry).is_ok_and(|target| {
-                target.is_relative()
-                    && entry
-                        .parent()
-                        .and_then(|parent| parent.strip_prefix(node_modules).ok())
-                        .is_some_and(|parent| {
-                            relative_link_climbs_out(parent.components().count(), &target)
-                        })
-            })
-        })
+        let scan = DependencyRootScan::read(node_modules);
+        (!scan.escaping.is_empty()).then_some(scan)
     }
     #[cfg(not(windows))]
     {
         let _ = node_modules;
-        false
+        None
     }
+}
+
+#[cfg(test)]
+fn dependency_root_needs_entry_view(node_modules: &Path) -> bool {
+    dependency_root_entry_view_scan(node_modules).is_some()
 }
 
 /// Whether the relative link `target`, stored in a directory `depth` levels
@@ -2036,7 +2043,7 @@ fn dependency_root_needs_entry_view(node_modules: &Path) -> bool {
 /// resolves each `..` against the traversed spelling, so a target that leaves
 /// and lexically re-enters (`..\..\..\site\node_modules\x`) still escapes the
 /// shadow junction; only the running depth tells.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn relative_link_climbs_out(depth: usize, target: &Path) -> bool {
     let mut depth = depth;
     for component in target.components() {
@@ -2053,41 +2060,171 @@ fn relative_link_climbs_out(depth: usize, target: &Path) -> bool {
     false
 }
 
-/// Every top-level entry of `node_modules` plus each entry of a real `@scope`
-/// directory, in sorted order. A linked `@scope` is itself one entry.
-fn dependency_root_entries(node_modules: &Path) -> Vec<PathBuf> {
-    let mut entries = Vec::new();
-    let Ok(children) = fs::read_dir(node_modules) else {
-        return entries;
-    };
-    for child in children.flatten() {
-        let path = child.path();
-        let is_scope = child.file_name().to_string_lossy().starts_with('@')
-            && fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
-        if is_scope {
-            if let Ok(scoped) = fs::read_dir(&path) {
-                entries.extend(scoped.flatten().map(|entry| entry.path()));
-            }
-        } else {
-            entries.push(path);
-        }
-    }
-    entries.sort();
-    entries
+/// Where a directory sits in pnpm's layout. The scan descends only along
+/// `<root>/@scope`, `<root>/.pnpm/<pkg>/node_modules`,
+/// `<root>/.pnpm/<pkg>/node_modules/@scope` and pnpm's hidden hoist directory
+/// `<root>/.pnpm/node_modules/@scope`; it is never an unbounded walk.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+enum DependencyLayoutLevel {
+    Root,
+    Store,
+    StorePackage,
+    StoreNodeModules,
+    Leaf,
 }
 
-/// `(path relative to node_modules, canonical directory)` for every entry the
-/// view links. Files and dangling links are left out: package resolution only
-/// descends into directories.
-fn dependency_entry_view_targets(node_modules: &Path) -> BTreeMap<PathBuf, PathBuf> {
-    dependency_root_entries(node_modules)
-        .into_iter()
-        .filter_map(|entry| {
-            let relative = entry.strip_prefix(node_modules).ok()?.to_path_buf();
-            let canonical = fs::canonicalize(&entry).ok().filter(|path| path.is_dir())?;
-            Some((relative, canonical))
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+impl DependencyLayoutLevel {
+    fn descend(self, name: &std::ffi::OsStr) -> Option<Self> {
+        let scope = name.to_string_lossy().starts_with('@');
+        match self {
+            Self::Root if scope => Some(Self::Leaf),
+            Self::Root if name == ".pnpm" => Some(Self::Store),
+            Self::Store => Some(Self::StorePackage),
+            Self::StorePackage if name == "node_modules" => Some(Self::StoreNodeModules),
+            // `.pnpm/node_modules` (the hidden hoist dir, where
+            // `hoist-workspace-packages` links workspace packages) sits at
+            // the StorePackage level; its `@scope` dirs hold links too.
+            Self::StorePackage if scope => Some(Self::Leaf),
+            Self::StoreNodeModules if scope => Some(Self::Leaf),
+            _ => None,
+        }
+    }
+}
+
+/// One bounded read of a dependency root (#4553), shared by entry-view
+/// detection and planning so neither walks the install twice.
+#[derive(Debug, Default)]
+struct DependencyRootScan {
+    /// Sorted child names of each directory read, keyed by its path relative
+    /// to the root (`""` is the root itself).
+    listings: BTreeMap<PathBuf, Vec<OsString>>,
+    /// Root-relative paths of relative links whose target climbs above the
+    /// root at any hop ([`relative_link_climbs_out`]).
+    escaping: Vec<PathBuf>,
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+impl DependencyRootScan {
+    fn read(root: &Path) -> Self {
+        let mut scan = Self::default();
+        scan.read_dir(root, PathBuf::new(), DependencyLayoutLevel::Root);
+        scan
+    }
+
+    fn read_dir(&mut self, root: &Path, rel: PathBuf, level: DependencyLayoutLevel) {
+        let Ok(children) = fs::read_dir(root.join(&rel)) else {
+            return;
+        };
+        let depth = rel.components().count();
+        let mut names = Vec::new();
+        for child in children.flatten() {
+            let name = child.file_name();
+            let child_rel = rel.join(&name);
+            match child.file_type() {
+                Ok(file_type) if file_type.is_dir() => {
+                    if let Some(next) = level.descend(&name) {
+                        self.read_dir(root, child_rel, next);
+                    }
+                }
+                Ok(file_type)
+                    if file_type.is_symlink()
+                        && fs::read_link(child.path()).is_ok_and(|target| {
+                            target.is_relative() && relative_link_climbs_out(depth, &target)
+                        }) =>
+                {
+                    self.escaping.push(child_rel);
+                }
+                _ => {}
+            }
+            names.push(name);
+        }
+        names.sort();
+        self.listings.insert(rel, names);
+    }
+}
+
+/// The shape of an entry view, as root-relative paths.
+#[derive(Debug, PartialEq, Eq)]
+struct DependencyEntryViewPlan {
+    /// Real directories below the view root, parents before children.
+    dirs: BTreeSet<PathBuf>,
+    /// Entries that become directory links to their canonical directory.
+    links: Vec<PathBuf>,
+}
+
+/// Minimal split view (#4553): every entry stays one directory link EXCEPT
+/// the full ancestor chain of each escaping link, whose directories become
+/// real and hold one link per child. Splitting only the immediate parent is
+/// not enough: a junction anywhere above the escaping link puts its `..` hops
+/// back on the shadow spelling. Real top-level `@scope` directories are split
+/// as before (#4545).
+fn plan_dependency_entry_view(scan: &DependencyRootScan) -> DependencyEntryViewPlan {
+    let root_scope = |rel: &Path| {
+        let mut components = rel.components();
+        matches!(
+            (components.next(), components.next()),
+            (Some(Component::Normal(name)), None) if name.to_string_lossy().starts_with('@')
+        )
+    };
+    let mut dirs: BTreeSet<PathBuf> = scan
+        .listings
+        .keys()
+        .filter(|rel| root_scope(rel))
+        .cloned()
+        .collect();
+    for link in &scan.escaping {
+        dirs.extend(
+            link.ancestors()
+                .skip(1)
+                .filter(|ancestor| !ancestor.as_os_str().is_empty())
+                .map(Path::to_path_buf),
+        );
+    }
+    let links = std::iter::once(Path::new(""))
+        .chain(dirs.iter().map(PathBuf::as_path))
+        .flat_map(|dir| {
+            scan.listings
+                .get(dir)
+                .into_iter()
+                .flatten()
+                .map(move |name| dir.join(name))
         })
-        .collect()
+        .filter(|rel| !dirs.contains(rel))
+        .collect();
+    DependencyEntryViewPlan { dirs, links }
+}
+
+/// One entry of an entry view, keyed by its path relative to the view root.
+#[derive(Debug, PartialEq, Eq)]
+enum DependencyEntryViewNode {
+    Dir,
+    Link(PathBuf),
+}
+
+/// The planned view with each link resolved to its canonical directory. Files
+/// and dangling links are left out: package resolution only descends into
+/// directories.
+fn dependency_entry_view_nodes(
+    node_modules: &Path,
+    scan: &DependencyRootScan,
+) -> BTreeMap<PathBuf, DependencyEntryViewNode> {
+    let plan = plan_dependency_entry_view(scan);
+    let mut nodes: BTreeMap<_, _> = plan
+        .dirs
+        .into_iter()
+        .map(|dir| (dir, DependencyEntryViewNode::Dir))
+        .collect();
+    for relative in plan.links {
+        if let Some(canonical) = fs::canonicalize(node_modules.join(&relative))
+            .ok()
+            .filter(|path| path.is_dir())
+        {
+            nodes.insert(relative, DependencyEntryViewNode::Link(canonical));
+        }
+    }
+    nodes
 }
 
 fn is_dependency_entry_view(link: &Path) -> bool {
@@ -2095,67 +2232,90 @@ fn is_dependency_entry_view(link: &Path) -> bool {
         && link.join(DEPENDENCY_ENTRY_VIEW_MARKER).is_file()
 }
 
-/// The links an existing entry view holds, or `None` when `link` is not an
-/// entry view or holds anything else.
-fn existing_dependency_entry_view(link: &Path) -> Option<BTreeMap<PathBuf, PathBuf>> {
+/// Whether `link` is an entry view with exactly `nodes`: every real directory
+/// and link in the planned role and to the planned target, and nothing else.
+/// Only directories verified real are read, so it never descends through a
+/// link into the install.
+fn dependency_entry_view_matches(
+    link: &Path,
+    nodes: &BTreeMap<PathBuf, DependencyEntryViewNode>,
+) -> bool {
     if !is_dependency_entry_view(link) {
-        return None;
+        return false;
     }
-    let mut links = BTreeMap::new();
-    for child in fs::read_dir(link).ok()? {
-        let child = child.ok()?;
-        if child.file_name() == DEPENDENCY_ENTRY_VIEW_MARKER {
-            continue;
-        }
-        let path = child.path();
-        let metadata = fs::symlink_metadata(&path).ok()?;
-        let entries = if metadata.is_dir() {
-            fs::read_dir(&path)
-                .ok()?
-                .map(|entry| entry.map(|entry| entry.path()))
-                .collect::<std::io::Result<Vec<_>>>()
-                .ok()?
-        } else {
-            vec![path]
+    let mut seen = 0usize;
+    let mut pending = vec![PathBuf::new()];
+    while let Some(dir) = pending.pop() {
+        let Ok(children) = fs::read_dir(link.join(&dir)) else {
+            return false;
         };
-        for entry in entries {
-            if !fs::symlink_metadata(&entry).ok()?.file_type().is_symlink() {
-                return None;
+        for child in children {
+            let Ok(child) = child else {
+                return false;
+            };
+            if dir.as_os_str().is_empty() && child.file_name() == DEPENDENCY_ENTRY_VIEW_MARKER {
+                continue;
             }
-            let relative = entry.strip_prefix(link).ok()?.to_path_buf();
-            links.insert(relative, fs::canonicalize(&entry).ok()?);
+            let relative = dir.join(child.file_name());
+            let Ok(file_type) = child.file_type() else {
+                return false;
+            };
+            match nodes.get(&relative) {
+                Some(DependencyEntryViewNode::Dir) if file_type.is_dir() => {
+                    pending.push(relative);
+                }
+                Some(DependencyEntryViewNode::Link(canonical))
+                    if file_type.is_symlink()
+                        && fs::canonicalize(child.path()).is_ok_and(|p| p == *canonical) => {}
+                _ => return false,
+            }
+            seen += 1;
         }
     }
-    Some(links)
+    seen == nodes.len()
 }
 
-/// Make `link` a real directory whose entries are directory links to the
-/// canonical directory of each `node_modules` entry (#4545). The canonical
-/// targets are what esbuild reaches through the whole-directory link on Unix,
-/// so resolution and metafile inputs are unchanged; only the relative hop that
-/// Windows mis-resolves is gone. Returns `false` when the view already matches.
-fn ensure_dependency_entry_view(node_modules: &Path, link: &Path) -> std::io::Result<bool> {
+/// Make `link` a marked real directory laid out by
+/// [`plan_dependency_entry_view`], whose links point at canonical directories
+/// (#4545, #4553). The canonical targets are what esbuild reaches through the
+/// whole-directory link on Unix, so resolution and metafile inputs are
+/// unchanged; only the relative hops that Windows mis-resolves are gone.
+/// Returns `false` when the view already matches.
+fn ensure_dependency_entry_view_from(
+    node_modules: &Path,
+    scan: &DependencyRootScan,
+    link: &Path,
+) -> std::io::Result<bool> {
     if !fs::canonicalize(node_modules)?.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
             "dependency root is not a directory",
         ));
     }
-    let targets = dependency_entry_view_targets(node_modules);
-    if existing_dependency_entry_view(link).as_ref() == Some(&targets) {
+    let nodes = dependency_entry_view_nodes(node_modules, scan);
+    if dependency_entry_view_matches(link, &nodes) {
         return Ok(false);
     }
     remove_shadow_entry(link)?;
     fs::create_dir(link)?;
     fs::write(link.join(DEPENDENCY_ENTRY_VIEW_MARKER), "")?;
-    for (relative, canonical) in &targets {
+    for (relative, node) in &nodes {
         let entry = link.join(relative);
-        if let Some(parent) = entry.parent() {
-            fs::create_dir_all(parent)?;
+        match node {
+            DependencyEntryViewNode::Dir => fs::create_dir(&entry)?,
+            DependencyEntryViewNode::Link(canonical) => {
+                zfb_types::directory_link::create(canonical, &entry)?;
+            }
         }
-        zfb_types::directory_link::create(canonical, &entry)?;
     }
     Ok(true)
+}
+
+/// Build or reuse an entry view regardless of platform (tests only; the
+/// reconcile sites go through [`ensure_dependency_root`]).
+#[cfg(test)]
+fn ensure_dependency_entry_view(node_modules: &Path, link: &Path) -> std::io::Result<bool> {
+    ensure_dependency_entry_view_from(node_modules, &DependencyRootScan::read(node_modules), link)
 }
 
 /// Remove every entry inside `dir` without removing `dir` itself.
@@ -5287,7 +5447,8 @@ pub fn bundle_with_session(
     // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
     //     part 1; contract inverted by #1693). In a pnpm workspace the deps
     //     are hoisted to the workspace root, so the work mirror gets its own
-    //     `<work>/node_modules` symlink — the SECOND install root above the
+    //     `<work>/node_modules` link (on Windows, an entry view when a
+    //     relative link escapes the install, #4553) — the SECOND install root above the
     //     project's own nested install (linked at `<shadow>/node_modules` by
     //     2b below). esbuild walks up from a project-mirror file to
     //     `<shadow>/node_modules` first, then to `<work>/node_modules`,
@@ -5330,8 +5491,11 @@ pub fn bundle_with_session(
         let workspace_node_modules = first_party_root.join("node_modules");
         if workspace_node_modules.is_dir() {
             let work_nm = work.join("node_modules");
-            if ensure_dependency_link(&workspace_node_modules, &work_nm)? {
-                writer.forget_verified_under(&work_nm);
+            // Same link-vs-entry-view decision as `<shadow>/node_modules`
+            // below (#4553), but none of its removal policy: this root stays
+            // under an active `bundle.exclude` (see above).
+            if ensure_dependency_root(&workspace_node_modules, &work_nm)? {
+                writer.forget_dependency_root(&work_nm);
             }
         }
     }
@@ -5367,12 +5531,7 @@ pub fn bundle_with_session(
         .as_ref()
         .filter(|_| bundle_exclude.is_empty() && !isolated_dependency_view_active)
     {
-        let relinked = if dependency_root_needs_entry_view(nm_dir) {
-            ensure_dependency_entry_view(nm_dir, &shadow_nm)?
-        } else {
-            ensure_dependency_link(nm_dir, &shadow_nm)?
-        };
-        if relinked {
+        if ensure_dependency_root(nm_dir, &shadow_nm)? {
             writer.forget_dependency_root(&shadow_nm);
         }
     } else {
@@ -6305,7 +6464,8 @@ pub fn bundle_with_session(
     // module docs for the full decision table): every currently-armed build
     // stays armed, and a root-claimed workspace with a reachable first-party
     // `node_modules` link now arms too. `work.join("node_modules")` is the
-    // wholesale symlink set up above (to `first_party_root`'s live install),
+    // dependency root set up above (a wholesale link to `first_party_root`'s
+    // live install, or on Windows its entry view, #4553),
     // so it is what the predicate scans — mirroring the islands/client site's
     // `stage_escape_audit_policy` (`crates/zfb/src/commands/build.rs`), which
     // scans its own stage root's `node_modules` the same way.
@@ -28937,6 +29097,458 @@ mod tests {
         )
         .unwrap();
         assert!(dependency_root_needs_entry_view(&node_modules));
+    }
+
+    /// `a/b/c` as path components, so a verbatim (`\\?\`) Windows root never
+    /// sees a literal `/`.
+    fn slash_path(path: &str) -> PathBuf {
+        path.split('/').collect()
+    }
+
+    /// A relative directory link stored verbatim, as pnpm writes `link:`
+    /// entries (unlike `directory_link::create`, which links absolutely).
+    #[cfg(any(unix, windows))]
+    fn relative_dir_link(target: &str, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(target.replace('/', r"\"), link).unwrap();
+    }
+
+    /// A pnpm install whose relative links escape it at all four bounded
+    /// layout positions (#4553), plus non-escaping store links and one
+    /// escaping link below the bounded layout. Returns `(node_modules,
+    /// linked package dir)`.
+    #[cfg(any(unix, windows))]
+    fn deep_escaping_pnpm_install(root: &Path) -> (PathBuf, PathBuf) {
+        let nm = root.join(slash_path("site/node_modules"));
+        let linked = root.join(slash_path("packages-ws/bar"));
+        for dir in [
+            linked.clone(),
+            nm.join("@acme"),
+            nm.join(slash_path(".pnpm/dep@1/node_modules/dep")),
+            nm.join(slash_path(".pnpm/other@1/node_modules")),
+            nm.join(slash_path(".pnpm/host@1/node_modules/host/node_modules")),
+            nm.join(slash_path(".pnpm/host@1/node_modules/@ws")),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(linked.join("sentinel"), "linked").unwrap();
+        fs::write(
+            nm.join(slash_path(".pnpm/dep@1/node_modules/dep/sentinel")),
+            "dep",
+        )
+        .unwrap();
+        fs::write(nm.join(slash_path(".pnpm/lock.yaml")), "file").unwrap();
+        relative_dir_link("../../packages-ws/bar", &nm.join("top"));
+        relative_dir_link(
+            "../../../packages-ws/bar",
+            &nm.join(slash_path("@acme/linked")),
+        );
+        relative_dir_link(
+            "../../../../../packages-ws/bar",
+            &nm.join(slash_path(".pnpm/host@1/node_modules/bar")),
+        );
+        relative_dir_link(
+            "../../../../../../packages-ws/bar",
+            &nm.join(slash_path(".pnpm/host@1/node_modules/@ws/scoped")),
+        );
+        relative_dir_link(
+            "../../dep@1/node_modules/dep",
+            &nm.join(slash_path(".pnpm/other@1/node_modules/dep")),
+        );
+        relative_dir_link(".pnpm/dep@1/node_modules/dep", &nm.join("dep"));
+        // Below the bounded layout: never scanned.
+        relative_dir_link(
+            "../../../../../../../packages-ws/bar",
+            &nm.join(slash_path(
+                ".pnpm/host@1/node_modules/host/node_modules/deep",
+            )),
+        );
+        (nm, linked)
+    }
+
+    #[test]
+    fn dependency_layout_scans_scopes_in_the_hidden_hoist_dir() {
+        let level = |path: &str| {
+            path.split('/')
+                .try_fold(DependencyLayoutLevel::Root, |level, name| {
+                    level.descend(std::ffi::OsStr::new(name))
+                })
+        };
+        assert!(level(".pnpm/node_modules/@acme").is_some());
+        assert!(level(".pnpm/host@1/node_modules/@ws").is_some());
+        assert!(level(".pnpm/host@1/node_modules/host").is_none());
+        assert!(level(".pnpm/node_modules/@acme/ui").is_none());
+    }
+
+    #[test]
+    fn dependency_entry_view_plan_splits_the_whole_ancestor_chain_only() {
+        let names = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
+        let rel = |path: &str| path.split('/').collect::<PathBuf>();
+        let listings = BTreeMap::from([
+            (
+                PathBuf::new(),
+                names(&[".modules.yaml", ".pnpm", "@acme", "dep", "top"]),
+            ),
+            (rel("@acme"), names(&["a", "b"])),
+            (rel(".pnpm"), names(&["dep@1", "host@1", "lock.yaml"])),
+            (rel(".pnpm/dep@1"), names(&["node_modules"])),
+            (rel(".pnpm/dep@1/node_modules"), names(&["dep"])),
+            (rel(".pnpm/host@1"), names(&["node_modules"])),
+            (
+                rel(".pnpm/host@1/node_modules"),
+                names(&["@ws", "bar", "host"]),
+            ),
+            (
+                rel(".pnpm/host@1/node_modules/@ws"),
+                names(&["plain", "scoped"]),
+            ),
+        ]);
+        let plan = |escaping: &[&str]| {
+            let plan = plan_dependency_entry_view(&DependencyRootScan {
+                listings: listings.clone(),
+                escaping: escaping.iter().map(|path| rel(path)).collect(),
+            });
+            let links: BTreeSet<_> = plan.links.iter().cloned().collect();
+            assert_eq!(links.len(), plan.links.len(), "each entry is planned once");
+            (plan.dirs, links)
+        };
+        let set = |paths: &[&str]| paths.iter().map(|path| rel(path)).collect::<BTreeSet<_>>();
+
+        // No escaping link: only the real top-level scope is split.
+        assert_eq!(
+            plan(&[]),
+            (
+                set(&["@acme"]),
+                set(&[".modules.yaml", ".pnpm", "dep", "top", "@acme/a", "@acme/b"])
+            )
+        );
+        // Top-level and scoped escapes need no further split.
+        assert_eq!(plan(&["top", "@acme/b"]), plan(&[]));
+        // A deep unscoped escape splits `.pnpm`, its package and its node_modules.
+        assert_eq!(
+            plan(&[".pnpm/host@1/node_modules/bar"]),
+            (
+                set(&[
+                    "@acme",
+                    ".pnpm",
+                    ".pnpm/host@1",
+                    ".pnpm/host@1/node_modules"
+                ]),
+                set(&[
+                    ".modules.yaml",
+                    "dep",
+                    "top",
+                    "@acme/a",
+                    "@acme/b",
+                    ".pnpm/dep@1",
+                    ".pnpm/lock.yaml",
+                    ".pnpm/host@1/node_modules/@ws",
+                    ".pnpm/host@1/node_modules/bar",
+                    ".pnpm/host@1/node_modules/host",
+                ])
+            )
+        );
+        // A deep scoped escape splits its scope directory as well.
+        let (dirs, links) = plan(&[".pnpm/host@1/node_modules/@ws/scoped"]);
+        assert!(dirs.contains(&rel(".pnpm/host@1/node_modules/@ws")));
+        assert!(links.contains(&rel(".pnpm/host@1/node_modules/@ws/scoped")));
+        assert!(links.contains(&rel(".pnpm/host@1/node_modules/@ws/plain")));
+        assert!(!links.contains(&rel(".pnpm/host@1/node_modules/@ws")));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_scan_is_bounded_to_the_pnpm_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = deep_escaping_pnpm_install(temp.path());
+        let rel = |path: &str| path.split('/').collect::<PathBuf>();
+        let scan = DependencyRootScan::read(&nm);
+        let escaping: BTreeSet<_> = scan.escaping.iter().cloned().collect();
+        assert_eq!(
+            escaping,
+            [
+                "top",
+                "@acme/linked",
+                ".pnpm/host@1/node_modules/bar",
+                ".pnpm/host@1/node_modules/@ws/scoped",
+            ]
+            .into_iter()
+            .map(rel)
+            .collect::<BTreeSet<_>>()
+        );
+        assert!(scan
+            .listings
+            .contains_key(&rel(".pnpm/host@1/node_modules/@ws")));
+        assert!(!scan
+            .listings
+            .contains_key(&rel(".pnpm/host@1/node_modules/host")));
+    }
+
+    /// The split view over real relative links (#4553): sentinels read
+    /// through the shadow spelling, the whole ancestor chain is real, the
+    /// rest stays one link per entry, reuse compares structure, and teardown
+    /// never touches the install.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_entry_view_splits_deep_links_and_reuses_by_structure() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, linked) = deep_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let is_link = |path: &Path| fs::symlink_metadata(path).unwrap().file_type().is_symlink();
+        let is_real_dir = |path: &Path| fs::symlink_metadata(path).unwrap().is_dir();
+
+        assert!(ensure_dependency_entry_view(&nm, &view).unwrap());
+        for dir in [
+            "@acme",
+            ".pnpm",
+            ".pnpm/host@1",
+            ".pnpm/host@1/node_modules",
+            ".pnpm/host@1/node_modules/@ws",
+        ] {
+            assert!(
+                is_real_dir(&view.join(slash_path(dir))),
+                "{dir} must be split"
+            );
+        }
+        for entry in [
+            "top",
+            "dep",
+            "@acme/linked",
+            ".pnpm/dep@1",
+            ".pnpm/other@1",
+            ".pnpm/host@1/node_modules/bar",
+            ".pnpm/host@1/node_modules/host",
+            ".pnpm/host@1/node_modules/@ws/scoped",
+        ] {
+            assert!(
+                is_link(&view.join(slash_path(entry))),
+                "{entry} must be one link"
+            );
+        }
+        assert!(!view.join(slash_path(".pnpm/lock.yaml")).exists());
+        for through in [
+            "top",
+            "@acme/linked",
+            ".pnpm/host@1/node_modules/bar",
+            ".pnpm/host@1/node_modules/@ws/scoped",
+        ] {
+            assert_eq!(
+                fs::read(view.join(slash_path(through)).join("sentinel")).unwrap(),
+                b"linked",
+                "{through}"
+            );
+        }
+        // A non-escaping relative store link, reached through the view's link
+        // to its package, resolves back into the view.
+        assert_eq!(
+            fs::read(view.join(slash_path(".pnpm/other@1/node_modules/dep/sentinel"))).unwrap(),
+            b"dep"
+        );
+
+        // Unchanged: reused. An unexpected entry or a wrong role rejects reuse.
+        assert!(!ensure_dependency_entry_view(&nm, &view).unwrap());
+        fs::write(view.join(slash_path(".pnpm/host@1/stray")), "x").unwrap();
+        assert!(ensure_dependency_entry_view(&nm, &view).unwrap());
+        assert!(!view.join(slash_path(".pnpm/host@1/stray")).exists());
+        zfb_types::directory_link::remove(&view.join(slash_path(".pnpm/dep@1"))).unwrap();
+        fs::create_dir(view.join(slash_path(".pnpm/dep@1"))).unwrap();
+        assert!(ensure_dependency_entry_view(&nm, &view).unwrap());
+        assert!(is_link(&view.join(slash_path(".pnpm/dep@1"))));
+        assert!(!ensure_dependency_entry_view(&nm, &view).unwrap());
+
+        // A retargeted deep link rebuilds the view.
+        let other = temp.path().join(slash_path("packages-ws/other"));
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("sentinel"), "other").unwrap();
+        let deep = nm.join(slash_path(".pnpm/host@1/node_modules/bar"));
+        zfb_types::directory_link::remove(&deep).unwrap();
+        relative_dir_link("../../../../../packages-ws/other", &deep);
+        assert!(ensure_dependency_entry_view(&nm, &view).unwrap());
+        assert_eq!(
+            fs::read(view.join(slash_path(".pnpm/host@1/node_modules/bar/sentinel"))).unwrap(),
+            b"other"
+        );
+
+        // Removing the deep links collapses `.pnpm` back to one link.
+        zfb_types::directory_link::remove(&deep).unwrap();
+        zfb_types::directory_link::remove(
+            &nm.join(slash_path(".pnpm/host@1/node_modules/@ws/scoped")),
+        )
+        .unwrap();
+        assert!(ensure_dependency_entry_view(&nm, &view).unwrap());
+        assert!(is_link(&view.join(".pnpm")));
+        assert!(!ensure_dependency_entry_view(&nm, &view).unwrap());
+
+        // View -> whole link -> view -> wipe never touches the install.
+        assert!(ensure_dependency_link(&nm, &view).unwrap());
+        assert!(ensure_dependency_entry_view(&nm, &view).unwrap());
+        wipe_dir_contents(&shadow).unwrap();
+        assert!(fs::symlink_metadata(&view).is_err());
+        assert_eq!(fs::read(linked.join("sentinel")).unwrap(), b"linked");
+        assert_eq!(fs::read(other.join("sentinel")).unwrap(), b"other");
+        assert_eq!(
+            fs::read(nm.join(slash_path(".pnpm/dep@1/node_modules/dep/sentinel"))).unwrap(),
+            b"dep"
+        );
+        assert!(is_link(&nm.join(slash_path("@acme/linked"))));
+        assert!(is_link(
+            &nm.join(slash_path(".pnpm/other@1/node_modules/dep"))
+        ));
+    }
+
+    /// #4549/#4553 (ii): an escaping link only deep in `.pnpm` selects the
+    /// view on Windows, and an unchanged reconcile reuses it.
+    #[cfg(windows)]
+    #[test]
+    fn dependency_root_selects_split_view_for_deep_store_links_on_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let nm = temp.path().join(slash_path("site/node_modules"));
+        let linked = temp.path().join(slash_path("packages-ws/bar"));
+        for dir in [
+            &nm.join(slash_path(".pnpm/host@1/node_modules/@ws")),
+            &linked,
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(linked.join("sentinel"), "linked").unwrap();
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        assert!(!dependency_root_needs_entry_view(&nm));
+        assert!(ensure_dependency_root(&nm, &view).unwrap());
+        assert!(!is_dependency_entry_view(&view));
+
+        for (link, target) in [
+            (
+                ".pnpm/host@1/node_modules/bar",
+                "../../../../../packages-ws/bar",
+            ),
+            (
+                ".pnpm/host@1/node_modules/@ws/scoped",
+                "../../../../../../packages-ws/bar",
+            ),
+        ] {
+            relative_dir_link(target, &nm.join(slash_path(link)));
+            assert!(dependency_root_needs_entry_view(&nm), "{link}");
+        }
+        assert!(ensure_dependency_root(&nm, &view).unwrap());
+        assert!(is_dependency_entry_view(&view));
+        for through in [
+            ".pnpm/host@1/node_modules/bar",
+            ".pnpm/host@1/node_modules/@ws/scoped",
+        ] {
+            assert_eq!(
+                fs::read(view.join(slash_path(through)).join("sentinel")).unwrap(),
+                b"linked"
+            );
+        }
+        assert!(!ensure_dependency_root(&nm, &view).unwrap());
+        wipe_dir_contents(&shadow).unwrap();
+        assert_eq!(fs::read(linked.join("sentinel")).unwrap(), b"linked");
+    }
+
+    /// #4549's done-when gate (#4553 (i)): a nested workspace member whose
+    /// workspace-root `node_modules` holds escaping relative links gets an
+    /// entry view at `<work>/node_modules` through the real `workspace_rel`
+    /// reconcile, keeps it under an active `bundle.exclude`, reuses it on an
+    /// unchanged tick, and never touches the install.
+    #[cfg(windows)]
+    #[test]
+    fn nested_workspace_node_modules_gets_split_entry_view_on_windows() {
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let ws_nm = ws_root.join("node_modules");
+        let linked = ws_root.join(slash_path("packages-ws/bar"));
+        for dir in [
+            ws_nm.join("@acme"),
+            ws_nm.join(slash_path(".pnpm/host@1/node_modules")),
+            ws_nm.join(slash_path(".pnpm/dep@1/node_modules/dep")),
+            ws_nm.join(slash_path(".pnpm/other@1/node_modules")),
+            linked.clone(),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(linked.join("sentinel"), "linked").unwrap();
+        fs::write(
+            ws_nm.join(slash_path(".pnpm/dep@1/node_modules/dep/sentinel")),
+            "dep",
+        )
+        .unwrap();
+        relative_dir_link(
+            "../../packages-ws/bar",
+            &ws_nm.join(slash_path("@acme/linked")),
+        );
+        relative_dir_link(
+            "../../../../packages-ws/bar",
+            &ws_nm.join(slash_path(".pnpm/host@1/node_modules/bar")),
+        );
+        relative_dir_link(
+            "../../dep@1/node_modules/dep",
+            &ws_nm.join(slash_path(".pnpm/other@1/node_modules/dep")),
+        );
+        let project = ws_root.join(slash_path("sub-packages/host"));
+        for dir in ["pages", "content", "components", "layouts"] {
+            fs::create_dir_all(project.join(slash_path(dir))).unwrap();
+        }
+        fs::write(
+            project.join(slash_path("pages/index.tsx")),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        let work_nm = session.shadow_root().join("node_modules");
+        let assert_view = |label: &str| {
+            assert!(is_dependency_entry_view(&work_nm), "{label}");
+            for through in ["@acme/linked", ".pnpm/host@1/node_modules/bar"] {
+                assert_eq!(
+                    fs::read(work_nm.join(slash_path(through)).join("sentinel")).unwrap(),
+                    b"linked",
+                    "{label}: {through}"
+                );
+            }
+            assert_eq!(
+                fs::read(work_nm.join(slash_path(".pnpm/other@1/node_modules/dep/sentinel")))
+                    .unwrap(),
+                b"dep",
+                "{label}"
+            );
+        };
+
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session)).unwrap();
+        assert_view("tick 1");
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session)).unwrap();
+        assert_view("tick 2");
+        assert!(
+            !ensure_dependency_root(&ws_nm, &work_nm).unwrap(),
+            "an unchanged reconcile reuses the view"
+        );
+        let excluded = BundlerInput {
+            bundle_exclude: vec!["**/*.secret".to_string()],
+            ..mock_ssr_input(&project)
+        };
+        bundle_with_session(excluded, Some(&mut session)).unwrap();
+        assert_view("active bundle.exclude keeps the work-root view (#1693)");
+
+        drop(session);
+        assert_eq!(fs::read(linked.join("sentinel")).unwrap(), b"linked");
+        assert_eq!(
+            fs::read(ws_nm.join(slash_path(".pnpm/dep@1/node_modules/dep/sentinel"))).unwrap(),
+            b"dep"
+        );
+        assert!(fs::symlink_metadata(ws_nm.join(slash_path("@acme/linked")))
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[cfg(any(unix, windows))]
