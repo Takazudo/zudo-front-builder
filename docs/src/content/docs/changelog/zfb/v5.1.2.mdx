@@ -1,0 +1,22 @@
+---
+title: v5.1.2
+sidebar_position: 162
+---
+
+# v5.1.2
+
+Released: 2026-10-25
+
+## Bug Fixes
+
+- Windows: a project reached through an 8.3 short path, such as `C:\Users\RUNNER~1\…` (the default `%TEMP%` on GitHub runners), now builds a client bundle with a single zudo-react reactive core. Before, the same `reactive.ts` reached Rolldown under a short and a long spelling and shipped twice, so islands from an installed package and from the host subscribed to different signal cores. `zfb build`, `dev`, `check`, `preview`, `css` and `wind` now read the project root in its Windows long spelling; junctions and subst drives keep their spelling (8ca1a201f, 5409fc25b, #4499).
+- Rolldown: an output path containing `..` under a directory that does not exist yet (for example `--outdir=build/../dist` with `build/` absent, outside the project) now resolves to its physical spelling instead of keeping the logical one (52436652e, c8a0afefd, #4504).
+- Rolldown: the build metafile's `external` field now follows esbuild v0.25.12. External edges carry `"external": true`, every other edge omits the field, and `false` is never written. Input edges and emitted-chunk imports no longer carry `external: false`; readers that treat a missing field as false are unaffected (d17baf27b, #4506).
+- Rolldown: an import id spelled like an emitted asset filename is reported as an external, as esbuild does. The pinned Rolldown revision never lists assets in chunk imports (41f5dc3a7, c8a0afefd, #4505).
+
+## Other Changes
+
+- Islands scanner: lookups by a symlinked (alias) spelling are memoized after the first identity lookup, so a scan through a symlinked root no longer pays a `realpath` per lookup (73d7335b6, c8a0afefd, #4503).
+- `physical_spelling` checks each path component with one `symlink_metadata` call and canonicalizes only symlinks (on Unix), instead of re-canonicalizing the whole prefix per component (f15f10b7d, #4521).
+- `zfb dev` prints `[zfb-timing] shutdown: graph saved` under `ZFB_DEV_TIMING` once the shutdown graph save completes (59754a2ae, #4511).
+- New off-by-default diagnostic: set `ZFB_DEBUG_ISLANDS_METAFILE_DIR` to keep a copy of the shared islands bundle's metafile, including for a build an audit rejects (2735c6b3c, 5409fc25b, #4499).
