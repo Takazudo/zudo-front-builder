@@ -1284,6 +1284,35 @@ fn stage_audit_metafile(
         .map(Some)
 }
 
+/// Diagnostic opt-in (#4499), off unless `ZFB_DEBUG_ISLANDS_METAFILE_DIR`
+/// names a directory: copy the shared islands `meta.json` there before the
+/// staging dir is dropped, so a test can map bundled code back to module ids.
+/// A copy failure is reported on stderr and never fails the build.
+fn keep_debug_islands_metafile(metafile: &Path) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    let Some(dir) = std::env::var_os("ZFB_DEBUG_ISLANDS_METAFILE_DIR").filter(|d| !d.is_empty())
+    else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let target = dir.join(format!(
+        "islands-meta-{}-{}.json",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(error) =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::copy(metafile, &target))
+    {
+        eprintln!(
+            "[zfb] ZFB_DEBUG_ISLANDS_METAFILE_DIR: could not keep {} at {}: {error}",
+            metafile.display(),
+            target.display()
+        );
+    }
+}
+
 /// Run the guard (b) stage-escape audit against a just-emitted metafile and
 /// attach the owning job's identity to any failure. Called immediately after
 /// each real esbuild subprocess succeeds (never for mock subprocesses, and
@@ -1744,6 +1773,7 @@ impl EsbuildSubprocessBundler {
                 entry_tmp.path(),
             )
             .with_context(|| format!("zfb-islands: entry-import audit failed for {job_label}"))?;
+            keep_debug_islands_metafile(&out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME));
         }
 
         let mut graph_digests = Vec::new();
