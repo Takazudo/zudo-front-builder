@@ -106,7 +106,8 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     //    `Config::default()`. Any *real* error (invalid JSON, an
     //    unsupported `.ts` config) is surfaced via `output::error` by
     //    `main()` after we propagate it.
-    let project_root = std::env::current_dir().context("failed to read current working dir")?;
+    let project_root =
+        zfb_types::current_dir_long().context("failed to read current working dir")?;
     let cfg = config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
