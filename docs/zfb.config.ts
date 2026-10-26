@@ -97,6 +97,8 @@ Start with [your first site](/docs/getting-started/your-first-site/), [Build wit
       "changelog",
       "claude",
     ],
+    // The 56-page "Utility reference" group otherwise dominates the home tree.
+    siteTreeNavInitiallyCollapsed: ["zudo-wind/utilities"],
     headerNav: [
       { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
       { label: "Build with zfb", path: "/docs/build-with-zfb", categoryMatch: "build-with-zfb" },
