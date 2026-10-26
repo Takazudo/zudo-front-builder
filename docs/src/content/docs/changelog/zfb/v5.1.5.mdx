@@ -1,0 +1,16 @@
+---
+title: v5.1.5
+sidebar_position: 165
+---
+
+# v5.1.5
+
+Released: 2026-10-27
+
+## Bug Fixes
+
+- Security: the native `zfb` binary now builds against tokio 1.54.1, which fixes RUSTSEC-2026-0386 (tokio `AsyncFd` constructors violate I/O safety). zfb has no `AsyncFd` callers; only tokio's locked version and checksum changed (982fb960a, 2b44a6d5b, #4569).
+
+## Other Changes
+
+- perf(zfb-build): on Windows, `zfb build` and `zfb dev` cache the dependency-root scan per session. While the pnpm install fingerprint (`.modules.yaml`, `.pnpm/lock.yaml`, and the root and `.pnpm` directory mtimes) is unchanged, a reconcile reuses the link-vs-view decision and the planned entry view instead of re-reading the whole pnpm layout. Workspace members without their own `.modules.yaml` are never cached. Linux and macOS are unchanged (db73ca7bd, #4565).
