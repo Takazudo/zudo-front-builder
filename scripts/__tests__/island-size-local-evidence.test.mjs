@@ -21,6 +21,7 @@ import {
 } from "../rustls-security-transition.mjs";
 import {
   NOYALIB_LOCK_TRANSITION,
+  TOKIO_SECURITY_TRANSITION,
   WEBPKI_SECURITY_TRANSITION,
 } from "../security-lock-transitions.mjs";
 const source = "a".repeat(40);
@@ -448,6 +449,42 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       { cargoLockSha256: transition.newSha },
     );
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
+  });
+  const tokio = {
+    oldSha: TOKIO_SECURITY_TRANSITION.oldLockSha256,
+    newSha: TOKIO_SECURITY_TRANSITION.newLockSha256,
+    review: {
+      id: TOKIO_SECURITY_TRANSITION.id,
+      manifestSha256: TOKIO_SECURITY_TRANSITION.decisionSha256,
+    },
+  };
+  it("accepts the #4569 tokio security transition as far as the retained-file read", () => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: tokio },
+      { cargoLockSha256: tokio.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+  });
+  it.each([
+    ["noyalib id on tokio locks", { ...tokio, review: noyalib.review }],
+    ["tokio id on noyalib locks", { ...noyalib, review: tokio.review }],
+    ["noyalib old lock with tokio new lock", { ...tokio, oldSha: noyalib.oldSha }],
+  ])("rejects a mixed tokio decision: %s", (_label, transition) => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: transition },
+      { cargoLockSha256: transition.newSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("exact approved #4314");
+  });
+  it("rejects the tokio profile pinning its old lock", () => {
+    const s = staged(
+      "cargo-producer-lock",
+      { cargoTransition: tokio },
+      { cargoLockSha256: tokio.oldSha },
+    );
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow("wrong security lock");
   });
   it("rejects the webpki profile pinning the rustls lock", () => {
     const s = staged("cargo-producer-lock", { cargoTransition: webpki });

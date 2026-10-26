@@ -158,8 +158,8 @@
 // into place, restoring already-renamed files if a rename fails. There is no
 // force or ignore-provenance option of any kind.
 // Optional --reviewed-cargo-transition recognizes only the separately reviewed
-// #318 non-additive lock pair, an exact #4314 security replacement, or the exact
-// #4268 noyalib adoption (security-lock-transitions.mjs). It does not
+// #318 non-additive lock pair, an exact #4314 or #4569 security replacement, or
+// the exact #4268 noyalib adoption (security-lock-transitions.mjs). It does not
 // bypass artifact, platform, identity or unchanged-total validation.
 
 import { securityLockTransitionById } from "./security-lock-transitions.mjs";
