@@ -1526,16 +1526,16 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The Linux v5.1.4 runtime-identity re-pin cites the v5.1.4 release contract
-    // on main (c8a44a5d5, byte-identical to the 1e0cda646 release bump).
+    // The Linux tokio-security-4569 producer-lock transition cites the v5.1.4
+    // runtime-identity contract at 0cfe0d6f0 on the #4569 branch.
     file: "decision-linux-x64.json",
-    commit: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
-    sha256: "96284cc873de3924091b677ebbbd8b49c07c0143b30e12bb4f5044a4e759a1a2",
-    fixture: "fixtures/island-size-linux-x64-v5.1.4-release.json",
-    outcome: "release-version-stamp",
+    commit: "0cfe0d6f0afb728890d275bee6839a93e809de65",
+    sha256: "0aeadcf44ec603fa9068dd5cf626ee66044e763c7393c0c62219f8cca142bbf9",
+    fixture: "fixtures/island-size-linux-x64-v5.1.4-pnpm.json",
+    outcome: "runtime-identity-repin",
     packageVersion: "5.1.4",
-    baselineSourceSha: "4c50217422354f4ee187233e12203cbf60c557c2",
-    baselineRunId: 40242005703,
+    baselineSourceSha: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+    baselineRunId: 40294886927,
   },
   {
     // The #4429 oxc edge (cargo-internal-rewire) cites the Darwin v4.7.0 release
@@ -2935,9 +2935,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expectReleaseBumpOnly(predecessor, live);
   });
 
-  it("moves the live Linux contract from the frozen v5.1.4 bytes only by the runtime-identity pnpm-lock re-pin", () => {
+  // Verbatim bytes of decision-linux-x64.json at 0cfe0d6f0 (#4569 branch), the
+  // runtime-identity state the tokio-security-4569 transition moved.
+  const linuxV514Pnpm = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.1.4-pnpm.json",
+      "0aeadcf44ec603fa9068dd5cf626ee66044e763c7393c0c62219f8cca142bbf9",
+    );
+
+  it("moves the frozen pnpm Linux contract from the frozen v5.1.4 bytes only by the runtime-identity pnpm-lock re-pin", () => {
     const predecessor = linuxV514();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV514Pnpm();
     expect(live.outcome).toBe("runtime-identity-repin");
     expect(live.toolchain.packageVersion).toBe("5.1.4");
     expect(live.baselineSourceSha).toBe("c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283");
@@ -2965,6 +2973,49 @@ describe("live contracts preserve released evidence and authentic predecessors",
       return copy;
     };
     expect(fixed(live)).toEqual(fixed(predecessor));
+  });
+
+  // The tokio-security-4569 transition (#4569): Linux from health run
+  // 40306538134 at merge source 3bfa2e02 (probe head 66541302).
+  it("moves the live Linux contract from the frozen pnpm bytes only by the tokio-security-4569 transition", () => {
+    const predecessor = linuxV514Pnpm();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("cargo-producer-lock-transition");
+    expect(predecessor.toolchain.cargoLockSha256).toBe(
+      "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+    );
+    expect(live.toolchain.cargoLockSha256).toBe(
+      "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
+    );
+    expect(live.baselineEvidence.cargoTransition).toEqual({
+      oldSha: predecessor.toolchain.cargoLockSha256,
+      newSha: live.toolchain.cargoLockSha256,
+      added: ["tokio@1.54.1"],
+      changed: [],
+      removed: ["tokio@1.52.3"],
+      oldLockSource: {
+        commit: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+        path: "Cargo.lock",
+        sha256: predecessor.toolchain.cargoLockSha256,
+      },
+      review: {
+        id: "tokio-security-4569",
+        manifestSha256: "c399eadde02b884221fbecea61ea6ee51263451be0dcc968d3cdba0a21a20a87",
+        sourceSha: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+      },
+    });
+    for (const key of ["cargoRewire", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expect(live.baselineSourceSha).toBe("665413028815504af7c53a0b11ef58d43e2237e4");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      sourceSha: "3bfa2e022a60a97f3f60ac733b970b51f671d5fd",
+      runId: 40306538134,
+      jobId: 121516985404,
+    });
+    expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
   });
 
   it("moves the live Darwin contract from the frozen v4.7.0 bytes only by the #4429 oxc edge", () => {
