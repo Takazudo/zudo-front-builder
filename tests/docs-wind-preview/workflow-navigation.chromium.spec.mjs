@@ -35,7 +35,11 @@ for (const width of [1440, 390]) {
         await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
       }
       const sidebar = page.locator(width < 1024 ? "[data-zd-mobile-sidebar]" : "#desktop-sidebar");
-      await expect(sidebar.locator(`a[href="${route("build-with-zfb", ja)}"]`)).toBeVisible();
+      // Architecture owns Routing even when it is reached from Build with zfb.
+      await expect(
+        sidebar.locator(`a[href="${route("architecture/pages-content", ja)}"]`),
+      ).toBeVisible();
+      await expect(sidebar.locator(`a[href="${route("build-with-zfb", ja)}"]`)).toHaveCount(0);
       if (width < 1024) {
         await sidebar.locator(`a[lang="${ja ? "en" : "ja"}"]`).click();
       } else {

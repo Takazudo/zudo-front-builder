@@ -123,12 +123,24 @@ explicit expand/collapse choices (`zd-sidebar-scope`, version 2): automatic path
 stored, a deliberate collapse survives hash changes, filtering and same-page reload, the next page
 reveals its own path, Restore clears the selection and choices but keeps the filter, and older
 unversioned expansion is discarded once. `sidebar_initial_expansion: collapsed` on both Wind
-index pages keeps those views compact. Build with zfb and Deploy & Embed use explicit native sidebar membership from the same
-editorial data. The chrome factory classifies practical architecture/guide articles by membership
-without moving their URLs; their URL-based breadcrumbs and pagination remain native.
-Architecture keeps its four category groups via
-`sidebarsConfig.architecture`. `tests/docs-navigation-structure/verify.mjs` asserts this contract
-on the served host.
+index pages keeps those views compact. Architecture and Build with zfb get the same treatment:
+`buildEditorialForest` gives each a dedicated single-root forest of real pages (the section
+landing page → its group landing pages → their articles), so every group row is a linked parent
+row with a separate disclosure and no repeated link to its own index. Explicit `type: "category"`
+items cannot do this: they are synthetic no-page nodes. Architecture pages start at the four group
+rows (`initialPathMode: "children"`) and Broaden reaches the real Architecture page, which is a
+node-mode root view of its own; `sidebar_initial_expansion: collapsed` on both Architecture indexes
+reveals only the current group. Build with zfb keeps its landing row above its six groups (node
+mode); Troubleshooting intentionally appears in two groups, and cross-links such as Markdown
+Features and zudo-wind stay leaves. Deploy & Embed keeps explicit native membership. Section
+ownership is `canonicalNavSection`: Architecture owns every `architecture/*` route even when Build
+or Deploy lists it; practical guides are classified by membership without moving their URLs.
+URL-based breadcrumbs and pagination remain native. The chrome factory caches each Header/Sidebar
+pair by locale and scope id, and each scope id maps to exactly one forest and baseline.
+`tests/docs-navigation-structure/verify.mjs` asserts the Wind contract on the served host;
+`scripts/__tests__/docs-navigation-structure.test.mjs` checks all three against the installed
+zudo-doc resolver, and `tests/docs-wind-preview/page-backed-navigation.chromium.spec.mjs` checks it on the
+built site.
 
 **Extension seam:** to customize a package-owned component (chrome, a specific route, etc.), run
 `npx zudo-doc eject <component>` — this copies the package's implementation into the host tree so
