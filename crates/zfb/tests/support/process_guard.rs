@@ -9,15 +9,21 @@
 //! `Cargo.lock`, whose digest is pinned by governed contracts (#4481).
 //!
 //! [`ProcessTreeGuard`] spawns a [`std::process::Command`] so that the child
-//! *and every descendant it creates* can be killed together, and kills that
-//! whole tree when the guard drops:
+//! and the descendants it can still reach are killed together, and kills
+//! that tree when the guard drops, unless the child's exit status was
+//! already recorded (see "Reap lifecycle"). What "the tree" covers differs
+//! per platform:
 //!
 //! - **Unix:** the child is spawned in a new process group
 //!   (`process_group(0)`, so its pgid equals its pid). Drop sends `SIGKILL`
-//!   to the group and reaps the direct child.
+//!   to the group and reaps the direct child. Only descendants still in that
+//!   group are reached; one that moved to another group or session
+//!   (`setpgid`/`setsid`) escapes.
 //! - **Windows:** Drop runs `taskkill /T /F /PID <pid>` on the spawned
-//!   process and reaps it. `taskkill /T` follows parent-pid links, so a
-//!   descendant whose parent already exited is not reached.
+//!   process and reaps it. `taskkill /T` follows parent-pid links from a
+//!   live process, so it reaches only the tree still connected to it: a
+//!   descendant whose parent already exited is not reached, and once the
+//!   spawned process itself has exited no descendant cleanup is guaranteed.
 //!
 //! # Reap lifecycle
 //!
@@ -32,8 +38,19 @@
 //! could reach an unrelated group. So the guard checks for the leader's exit
 //! without reaping it (`waitid` with `WNOWAIT`), sends `SIGKILL` to the
 //! group, and only then reaps. Observing the leader's exit therefore also
-//! ends any descendant still in its group: no grandchild outlives the
-//! guard, even one whose parent exited first.
+//! ends any descendant still in its group, even one whose parent exited
+//! first; a descendant that left the group is not covered.
+//!
+//! Windows has no such step: [`ProcessTreeGuard::try_wait`] records an
+//! observed exit without running `taskkill`, and because the guard sends
+//! nothing after the status is recorded, Drop then kills nothing. Only a
+//! reap the guard initiates itself ([`ProcessTreeGuard::kill_tree`], or Drop
+//! of a still-running child) runs `taskkill /T` first, while the process
+//! still pins its pid.
+//!
+//! On both platforms the direct child's exit status says nothing about its
+//! descendants: a clean status is not proof that every descendant shut down
+//! gracefully, or at all.
 //!
 //! # Graceful interrupt
 //!
@@ -173,8 +190,9 @@ impl ProcessTreeSpawner {
     }
 }
 
-/// A spawned child whose whole process tree is killed on drop. See the
-/// module docs for the per-platform mechanism.
+/// A spawned child whose reachable process tree is killed on drop, unless
+/// its exit was already recorded. See the module docs for the per-platform
+/// mechanism and its limits.
 #[derive(Debug)]
 pub struct ProcessTreeGuard {
     /// The spawned process: the command itself, or on an interruptible
@@ -226,7 +244,8 @@ impl ProcessTreeGuard {
 
     /// The recorded exit status, or `Ok(None)` while the spawned process is
     /// running. On Unix, observing its exit kills the rest of its process
-    /// group before reaping it (see the module docs).
+    /// group before reaping it. On Windows it only records the status; no
+    /// `taskkill` runs, then or on Drop (see the module docs).
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         if let Some(status) = self.status {
             return Ok(Some(status));
@@ -364,8 +383,10 @@ impl ProcessTreeGuard {
     }
 
     /// Wait up to `timeout` for the spawned process to exit, through
-    /// [`try_wait`](Self::try_wait). `Ok(None)` means it is still running.
-    /// The rest of the tree is still killed on drop.
+    /// [`try_wait`](Self::try_wait). `Ok(None)` means it is still running,
+    /// and Drop will kill its reachable tree. `Ok(Some(_))` has already
+    /// recorded the status, so Drop sends nothing more: on Unix the group was
+    /// killed when the exit was observed, on Windows no descendant cleanup ran.
     pub fn wait_timeout(&mut self, timeout: Duration) -> io::Result<Option<ExitStatus>> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -381,7 +402,9 @@ impl ProcessTreeGuard {
     }
 
     /// [`interrupt`](Self::interrupt), then [`wait_timeout`](Self::wait_timeout).
-    /// `Ok(Some(status))` is a graceful stop; `Ok(None)` means the child
+    /// `Ok(Some(status))` means the spawned process stopped (its descendants
+    /// are handled as in [`try_wait`](Self::try_wait), and the status alone
+    /// does not show that they stopped gracefully); `Ok(None)` means the child
     /// ignored the interrupt for `timeout` and is NOT stopped — call
     /// [`kill_tree`](Self::kill_tree) or drop the guard, and do not report
     /// that as graceful. On an already-reaped process it returns the
@@ -391,7 +414,8 @@ impl ProcessTreeGuard {
         self.wait_timeout(timeout)
     }
 
-    /// Kill the whole tree now and reap the spawned process. Idempotent:
+    /// Kill the reachable tree now (the process group on Unix, the
+    /// `taskkill /T` tree on Windows) and reap the spawned process. Idempotent:
     /// once reaped it signals nothing and returns the recorded status. Drop
     /// calls it too.
     pub fn kill_tree(&mut self) -> io::Result<ExitStatus> {
