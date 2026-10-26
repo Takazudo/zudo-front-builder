@@ -856,23 +856,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("4.7.0");
+    expect(darwinContract.toolchain.packageVersion).toBe("5.1.4");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("ebe890c02c7e949855774c672da71681ab8944cb");
+    expect(darwinContract.baselineSourceSha).toBe("c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "bb9baad7bab9fb0bcd647b28102f5fbcf4ca0e1239a4598875a777813835974a" },
+      localReceipt: { sha256: "991d743972ed88c311764fa654559c39984602f5bc243114984e74a42c016565" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
     // owner-attested local evidence); the ceilings below follow the Rolldown
     // default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "66b1209c8966475f6c96b40fb11a3815a03e92e521118aee4aa80420476fde5b",
+      "fa2cbec1b79e90cd7ba6f9a7304ad7ed77a18b4a19e924b83c2924eca1ad44d2",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
@@ -1538,15 +1538,14 @@ const repinnedFromContracts = [
     baselineRunId: 40294886927,
   },
   {
-    // The #4429 oxc edge (cargo-internal-rewire) cites the Darwin v4.7.0 release
-    // contract at the PR #4440 probe head.
+    // The Darwin v5.1.4 release bump cites the #4429 oxc-edge contract on main.
     file: "decision.json",
-    commit: "ebe890c02c7e949855774c672da71681ab8944cb",
-    sha256: "04a4d32600ac4e3bc92db559019348d6fe85039615a8b669f0fb9486e2beb505",
-    fixture: "fixtures/island-size-darwin-v4.7.0-release.json",
-    outcome: "release-version-stamp",
+    commit: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+    sha256: "70e441108ce553cdd1e5f6aa0679877e269ab993f84ef270df1ea0cf75df3a78",
+    fixture: "fixtures/island-size-darwin-v4.7.0-oxc.json",
+    outcome: "cargo-internal-rewire-transition",
     packageVersion: "4.7.0",
-    baselineSourceSha: "b65b83aa7b089145a4d6eef75f83224e8f1cf64a",
+    baselineSourceSha: "ebe890c02c7e949855774c672da71681ab8944cb",
     baselineRunId: undefined,
   },
 ];
@@ -3018,8 +3017,16 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
   });
 
-  it("moves the live Darwin contract from the frozen v4.7.0 bytes only by the #4429 oxc edge", () => {
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+  // Verbatim bytes of decision.json at c8a44a5d (main), the #4429 oxc-edge state
+  // the Darwin v5.1.4 release bump moved.
+  const darwinOxc = () =>
+    frozenDenoExit(
+      "fixtures/island-size-darwin-v4.7.0-oxc.json",
+      "70e441108ce553cdd1e5f6aa0679877e269ab993f84ef270df1ea0cf75df3a78",
+    );
+
+  it("moves the frozen oxc Darwin contract from the frozen v4.7.0 bytes only by the #4429 oxc edge", () => {
+    const live = darwinOxc();
     oxcEdge(darwinRelease(), live);
     expect(live.baselineEvidence).toMatchObject({
       event: "local-native",
@@ -3027,6 +3034,29 @@ describe("live contracts preserve released evidence and authentic predecessors",
       stagingTool: { commit: "ebe890c02c7e949855774c672da71681ab8944cb" },
       localReceipt: { sha256: "bb9baad7bab9fb0bcd647b28102f5fbcf4ca0e1239a4598875a777813835974a" },
     });
+  });
+
+  it("moves the live Darwin contract from the frozen oxc bytes only by the v5.1.4 release bump", () => {
+    const predecessor = darwinOxc();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.1.4");
+    expect(live.baselineSourceSha).toBe("c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+      stagingTool: { commit: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283" },
+      localReceipt: { sha256: "991d743972ed88c311764fa654559c39984602f5bc243114984e74a42c016565" },
+      originalCheckerResult: { exitCode: 0 },
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The pnpm-lock.yaml at c8a44a5d, measured natively on Darwin.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "fa2cbec1b79e90cd7ba6f9a7304ad7ed77a18b4a19e924b83c2924eca1ad44d2",
+    );
+    expectReleaseBumpOnly(predecessor, live);
   });
 
   it("keeps the dated README corrections", () => {
