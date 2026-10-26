@@ -1,0 +1,12 @@
+---
+title: v5.1.4
+sidebar_position: 164
+---
+
+# v5.1.4
+
+Released: 2026-10-26
+
+## Bug Fixes
+
+- Windows: `zfb build` and `zfb dev` now resolve pnpm `link:` dependencies through the bundler shadow in two more layouts. The first is a nested workspace member, whose workspace root `node_modules` holds a relative link that leaves it. The second is a relative link deeper in pnpm's store: `.pnpm/<pkg>/node_modules/<dep>`, its scoped form, and scoped entries in the hidden `.pnpm/node_modules` hoist directory. v5.1.3 covered only top-level and scoped entries of the project's own `node_modules`. Now only the directories leading to each escaping link become real directories, and every other entry stays a single junction to its real target. Linux and macOS are unchanged (52029a82f, e5f334710, 7b5bfaa49, #4549).
