@@ -9,7 +9,6 @@ import {
   createSidebarWithDefaults,
   type SidebarWithDefaultsProps,
 } from "@takazudo/zudo-doc/sidebar-with-defaults";
-import { DEPLOY_SLUGS } from "./config/navigation-groups.mjs";
 import type { SidebarsConfig } from "@takazudo/zudo-doc/sidebar-utils";
 import {
   canonicalNavSection,
@@ -35,7 +34,6 @@ export function createNavigationChrome(baseBindings: ChromeHostBindings) {
     if (existing) return existing;
     const sidebarsConfig: SidebarsConfig = {
       ...baseBindings.sidebarsConfig,
-      "deploy-embed": ["deploy-embed", ...DEPLOY_SLUGS],
       // A scope's dedicated forest has one real landing-page root; the native
       // builder keeps all of it as navigation roots and starts at the scope's
       // configured view, so group rows link to their pages and Broaden reaches
@@ -66,7 +64,10 @@ export function createNavigationChrome(baseBindings: ChromeHostBindings) {
   function editorialProps<T extends HeaderWithDefaultsProps | SidebarWithDefaultsProps>(
     props: T,
   ): T {
-    return { ...props, navSection: canonicalNavSection(props.currentSlug, props.navSection) };
+    return {
+      ...props,
+      navSection: canonicalNavSection(props.currentSlug, props.navSection),
+    };
   }
   return {
     Header: (props: HeaderWithDefaultsProps) =>

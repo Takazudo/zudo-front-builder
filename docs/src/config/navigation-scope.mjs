@@ -10,6 +10,7 @@ import {
 const WIND_ROOT_SLUG = "zudo-wind";
 const ARCHITECTURE_ROOT_SLUG = "architecture";
 const BUILD_ROOT_SLUG = "build-with-zfb";
+const DEPLOY_ROOT_SLUG = "deploy-embed";
 
 // Editorial parent → ordered members. Members are often URL siblings of their
 // parent (`utilities/background` under `utilities/surfaces-borders`), so the
@@ -31,6 +32,7 @@ function groupedMembers(rootSlug, groups) {
 }
 const ARCHITECTURE_EDITORIAL_MEMBERS = groupedMembers(ARCHITECTURE_ROOT_SLUG, ARCHITECTURE_GROUPS);
 const BUILD_EDITORIAL_MEMBERS = groupedMembers(BUILD_ROOT_SLUG, BUILD_GROUPS);
+const DEPLOY_EDITORIAL_MEMBERS = new Map([[DEPLOY_ROOT_SLUG, DEPLOY_SLUGS]]);
 
 function slugsOf(members) {
   return new Set([...members].flatMap(([parent, children]) => [parent, ...children]));
@@ -91,11 +93,22 @@ const buildScope = {
   path: [],
   initialPathMode: "node",
 };
+// Deploy & Embed is its own highest scope: the real landing row above its four
+// leaves. Three ways to run zfb stays listed here but is owned by Architecture.
+const deployScope = {
+  id: "deploy",
+  navSection: DEPLOY_ROOT_SLUG,
+  rootSlug: DEPLOY_ROOT_SLUG,
+  editorialRootSlug: DEPLOY_ROOT_SLUG,
+  path: [],
+  initialPathMode: "node",
+};
 
 const EDITORIAL_MEMBERS = new Map([
   [WIND_ROOT_SLUG, WIND_EDITORIAL_MEMBERS],
   [ARCHITECTURE_ROOT_SLUG, ARCHITECTURE_EDITORIAL_MEMBERS],
   [BUILD_ROOT_SLUG, BUILD_EDITORIAL_MEMBERS],
+  [DEPLOY_ROOT_SLUG, DEPLOY_EDITORIAL_MEMBERS],
 ]);
 
 /**
@@ -109,7 +122,7 @@ export function canonicalNavSection(currentSlug = "", navSection) {
     currentSlug.startsWith(`${ARCHITECTURE_ROOT_SLUG}/`)
   )
     return ARCHITECTURE_ROOT_SLUG;
-  if (DEPLOY_SLUGS.includes(currentSlug)) return "deploy-embed";
+  if (DEPLOY_SLUGS.includes(currentSlug)) return DEPLOY_ROOT_SLUG;
   if (currentSlug.startsWith("guides/") && BUILD_SLUGS.has(currentSlug)) return BUILD_ROOT_SLUG;
   return navSection;
 }
@@ -120,6 +133,11 @@ export function resolveNavigationScope(currentSlug, navSection) {
     return ARCHITECTURE_SLUGS.has(currentSlug) ? architectureScope : undefined;
   }
   if (navSection === BUILD_ROOT_SLUG) return BUILD_SLUGS.has(currentSlug) ? buildScope : undefined;
+  if (navSection === DEPLOY_ROOT_SLUG)
+    return (currentSlug === DEPLOY_ROOT_SLUG || DEPLOY_SLUGS.includes(currentSlug)) &&
+      canonicalNavSection(currentSlug, navSection) === DEPLOY_ROOT_SLUG
+      ? deployScope
+      : undefined;
   if (navSection !== WIND_ROOT_SLUG) return undefined;
   // Coming from Tailwind keeps the entry view without being one of its menu members.
   if (

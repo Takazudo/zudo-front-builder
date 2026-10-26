@@ -1,13 +1,18 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { ARCHITECTURE_GROUPS, BUILD_GROUPS } from "../../docs/src/config/navigation-groups.mjs";
+import {
+  ARCHITECTURE_GROUPS,
+  BUILD_GROUPS,
+  DEPLOY_SLUGS,
+} from "../../docs/src/config/navigation-groups.mjs";
 
 const prefix = process.env.WIND_DOCS_BASE ?? "/";
 const route = (slug, ja = false) => `${prefix}${ja ? "ja/" : ""}docs/${slug}`;
 // Built hrefs carry a trailing slash; accept either spelling.
 const linkTo = (slug, ja) => `a[href="${route(slug, ja)}/"], a[href="${route(slug, ja)}"]`;
 const strip = (href) => href.replace(/\/$/, "");
+const DEPLOY_GUIDES = DEPLOY_SLUGS.filter((slug) => slug.startsWith("guides/"));
 
 // Open the visible navigation surface for this width: the desktop sidebar or
 // the mobile drawer. Both can coexist in the DOM, so every count is scoped.
@@ -34,6 +39,8 @@ async function treeHrefs(side) {
       .evaluateAll((links) => links.map((a) => a.getAttribute("href")))
   ).map(strip);
 }
+// Client transitions update the URL before the sidebar swap settles, so poll.
+const expectTree = (side, hrefs) => expect.poll(() => treeHrefs(side)).toEqual(hrefs);
 function watchErrors(page) {
   const failures = [];
   page.on("pageerror", (error) => failures.push(error.message));
@@ -229,8 +236,32 @@ for (const ja of [false, true]) {
       .first()
       .click();
     await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
+    const expectDeploy = async (slug) => {
+      await expect(page).toHaveURL(new RegExp(`${slug}/?$`));
+      await expect(rowOf(side, "deploy-embed", ja)).toHaveCount(1);
+      await expect(treeOf(side).locator(linkTo(slug, ja))).toHaveAttribute("aria-current", "page");
+      for (const group of ARCHITECTURE_GROUPS)
+        await expect(rowOf(side, group.slug, ja)).toHaveCount(0);
+    };
+    await page.goBack();
+    await expectDeploy("deploy-embed");
+    await page.goForward();
+    await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
     await page.goto(route("deploy-embed", ja));
     await treeOf(side).locator(linkTo("architecture/three-ways-to-run-zfb", ja)).click();
+    await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
+    await page.goBack();
+    await expectDeploy("deploy-embed");
+    await page.goForward();
+    await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
+    // The same from a Deploy-owned guide's sidebar.
+    await page.goto(route("guides/desktop-deployment", ja));
+    await expectDeploy("guides/desktop-deployment");
+    await treeOf(side).locator(linkTo("architecture/three-ways-to-run-zfb", ja)).click();
+    await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
+    await page.goBack();
+    await expectDeploy("guides/desktop-deployment");
+    await page.goForward();
     await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
     await page.goto(route("architecture/three-ways-to-run-zfb", ja));
     await expectArchitecture("architecture/three-ways-to-run-zfb", fundamentals);
@@ -277,7 +308,172 @@ for (const ja of [false, true]) {
   });
 }
 
-test("section trees stay correct across Architecture, Build, Wind and back", async ({ page }) => {
+for (const width of [1440, 390]) {
+  for (const ja of [false, true]) {
+    test(`Deploy & Embed is one linked root over four leaves ${ja ? "JA" : "EN"} ${width}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 950 });
+      const failures = watchErrors(page);
+      const deployTree = DEPLOY_SLUGS.map((slug) => route(slug, ja));
+      const expanded = (value) =>
+        expect(toggleOf(side, "deploy-embed", ja)).toHaveAttribute("aria-expanded", value);
+      await page.goto(route("deploy-embed", ja));
+      let side = await sidebarOf(page, width);
+
+      // Fresh state: the real landing page once, as a linked parent row, then
+      // its four members in DEPLOY_SLUGS order. No repeated Overview child.
+      expect(await treeHrefs(side)).toEqual([route("deploy-embed", ja), ...deployTree]);
+      await expect(rowOf(side, "deploy-embed", ja)).toHaveCount(1);
+      await expect(focusOf(side, "deploy-embed", ja)).toHaveCount(1);
+      await expanded("true");
+      await expect(rowOf(side, "deploy-embed", ja).locator(":scope > a")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      // The members are leaves, visibly nested under the root row: their label
+      // text starts right of and below the root label (measured in one frame;
+      // the mobile drawer may still be sliding in).
+      for (const slug of DEPLOY_SLUGS) {
+        await expect(treeOf(side).locator(linkTo(slug, ja))).toHaveCount(1);
+        await expect(toggleOf(side, slug, ja)).toHaveCount(0);
+        await expect(focusOf(side, slug, ja)).toHaveCount(0);
+      }
+      const textBoxes = await treeOf(side).evaluate((tree) =>
+        [...tree.querySelectorAll("a[href]")].map((a) => {
+          const range = document.createRange();
+          range.selectNodeContents(a);
+          const { left, top } = range.getBoundingClientRect();
+          return { left, top };
+        }),
+      );
+      const [rootText, ...leafTexts] = textBoxes;
+      expect(leafTexts).toHaveLength(DEPLOY_SLUGS.length);
+      for (const [index, leaf] of leafTexts.entries()) {
+        expect(leaf.left, DEPLOY_SLUGS[index]).toBeGreaterThan(rootText.left + 4);
+        expect(leaf.top, DEPLOY_SLUGS[index]).toBeGreaterThan(rootText.top);
+      }
+      // The root is the highest scope: the native toolbar stays hidden.
+      await expect(side.locator("[data-sidebar-scope-toolbar]")).toHaveCount(0);
+
+      // Disclosure toggles children without navigating or moving the reader.
+      const url = page.url();
+      await page.evaluate(() => scrollTo(0, 200));
+      const scrollY = await page.evaluate(() => scrollY);
+      await toggleOf(side, "deploy-embed", ja).click();
+      await expanded("false");
+      expect(await treeHrefs(side)).toEqual([route("deploy-embed", ja)]);
+      await expect(side.locator("[data-sidebar-scope-toolbar]")).toHaveCount(0);
+      await toggleOf(side, "deploy-embed", ja).click();
+      await expanded("true");
+      expect(await treeHrefs(side)).toEqual([route("deploy-embed", ja), ...deployTree]);
+      expect(page.url()).toBe(url);
+      expect(await page.evaluate(() => scrollY)).toBe(scrollY);
+
+      if (width >= 1024) {
+        // An explicit collapse survives same-page hash changes, filtering and reload.
+        await toggleOf(side, "deploy-embed", ja).click();
+        await expanded("false");
+        await page.evaluate(() => {
+          location.hash = "sidebar-hash-check";
+        });
+        await expanded("false");
+        const filter = side.getByRole("textbox", { name: "Filter navigation" });
+        await filter.fill("zz-no-such-article-zz");
+        await expect(treeOf(side).locator("a[href]")).toHaveCount(0);
+        await filter.fill("");
+        await expanded("false");
+        await page.reload();
+        side = await sidebarOf(page, width);
+        await expanded("false");
+        await expect(side.locator("[data-sidebar-scope-toolbar]")).toHaveCount(0);
+        // Filtering finds a member of the collapsed root.
+        await filter.fill(ja ? "デスクトップ" : "Desktop");
+        await expect(treeOf(side).locator(linkTo("guides/desktop-deployment", ja))).toHaveCount(1);
+        await filter.fill("");
+        await expanded("false");
+        // Keyboard: the disclosure is a focusable button with an accessible name.
+        await expect(toggleOf(side, "deploy-embed", ja)).toHaveAttribute("aria-label", /Expand/);
+        await toggleOf(side, "deploy-embed", ja).focus();
+        await page.keyboard.press("Enter");
+        await expanded("true");
+        await expect(toggleOf(side, "deploy-embed", ja)).toHaveAttribute("aria-label", /Collapse/);
+        await page.keyboard.press("Enter");
+        await expanded("false");
+        // Soft navigation to another owned page reveals its path.
+        await page
+          .locator(`main :is(${linkTo("guides/embed-as-library", ja)})`)
+          .first()
+          .click();
+        await expect(page).toHaveURL(/guides\/embed-as-library\/?$/);
+        await expanded("true");
+        await expect(treeOf(side).locator(linkTo("guides/embed-as-library", ja))).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+        // The root label is a real link back to the landing page.
+        await rowOf(side, "deploy-embed", ja).locator(":scope > a").click();
+        await expect(page).toHaveURL(/deploy-embed\/?$/);
+        await expect(rowOf(side, "deploy-embed", ja).locator(":scope > a")).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+      } else {
+        // The mobile drawer carries the same tree as the desktop sidebar, and a
+        // leaf link navigates to a page that keeps the Deploy tree.
+        expect(await treeHrefs(page.locator("#desktop-sidebar"))).toEqual(await treeHrefs(side));
+        await treeOf(side).locator(linkTo("guides/desktop-deployment", ja)).click();
+        await expect(page).toHaveURL(/guides\/desktop-deployment\/?$/);
+        side = await sidebarOf(page, width);
+        await expectTree(side, [route("deploy-embed", ja), ...deployTree]);
+        await expect(treeOf(side).locator(linkTo("guides/desktop-deployment", ja))).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+        await expect(side.locator("[data-sidebar-scope-toolbar]")).toHaveCount(0);
+      }
+      expect(failures).toEqual([]);
+    });
+  }
+}
+
+for (const ja of [false, true]) {
+  test(`Deploy owns its three guides on direct entry and locale switch ${ja ? "JA" : "EN"}`, async ({
+    page,
+  }) => {
+    const failures = watchErrors(page);
+    const side = page.locator("#desktop-sidebar");
+    const expectDeploy = async (slug, locale) => {
+      await expect(page).toHaveURL(new RegExp(`${slug}/?$`));
+      await expectTree(side, [
+        route("deploy-embed", locale),
+        ...DEPLOY_SLUGS.map((member) => route(member, locale)),
+      ]);
+      await expect(toggleOf(side, "deploy-embed", locale)).toHaveAttribute("aria-expanded", "true");
+      await expect(treeOf(side).locator(linkTo(slug, locale))).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      for (const group of [...ARCHITECTURE_GROUPS, ...BUILD_GROUPS])
+        await expect(rowOf(side, group.slug, locale)).toHaveCount(0);
+      await expect(side.locator("[data-sidebar-scope-toolbar]")).toHaveCount(0);
+    };
+    for (const slug of DEPLOY_GUIDES) {
+      await page.goto(route(slug, ja));
+      await expectDeploy(slug, ja);
+      const lang = page.locator("header [data-language-switcher]:visible").first();
+      await lang.locator("[data-language-toggle]").click();
+      await lang.locator(`a[lang="${ja ? "en" : "ja"}"]`).click();
+      await expect(page.locator("html")).toHaveAttribute("lang", ja ? "en" : "ja");
+      await expectDeploy(slug, !ja);
+    }
+    expect(failures).toEqual([]);
+  });
+}
+
+test("section trees stay correct across Architecture, Build, Wind, Deploy and back", async ({
+  page,
+}) => {
   const failures = watchErrors(page);
   const side = page.locator("#desktop-sidebar");
   const views = {
@@ -296,6 +492,13 @@ test("section trees stay correct across Architecture, Build, Wind and back", asy
       expect((await treeHrefs(side))[0]).toBe(route("zudo-wind/learn"));
       await expect(rowOf(side, "build-with-zfb/styles-assets")).toHaveCount(0);
     },
+    deploy: async () => {
+      await page.goto(route("guides/ssr-and-cloudflare-bindings"));
+      expect(await treeHrefs(side)).toEqual([
+        route("deploy-embed"),
+        ...DEPLOY_SLUGS.map((slug) => route(slug)),
+      ]);
+    },
     gettingStarted: async () => {
       await page.goto(route("getting-started"));
       const hrefs = await treeHrefs(side);
@@ -303,17 +506,58 @@ test("section trees stay correct across Architecture, Build, Wind and back", asy
       for (const group of [...ARCHITECTURE_GROUPS, ...BUILD_GROUPS])
         expect(hrefs).not.toContain(route(group.slug));
       expect(hrefs.some((href) => href.includes("/zudo-wind/learn"))).toBe(false);
+      expect(hrefs).not.toContain(route("deploy-embed"));
     },
   };
   for (const order of [
-    ["architecture", "build", "wind", "gettingStarted"],
-    ["wind", "build", "architecture", "gettingStarted"],
+    ["architecture", "build", "wind", "deploy", "gettingStarted"],
+    ["deploy", "wind", "build", "architecture", "gettingStarted"],
   ])
     for (const view of order) await views[view]();
   expect(failures).toEqual([]);
 });
 
-test("breadcrumbs, pagers and links stay valid on Architecture and Build pages", async ({
+// Client transitions between sections: each soft link lands on the
+// destination's own tree, never the previous section's.
+test("soft links between Deploy and other sections swap the sidebar tree", async ({ page }) => {
+  const failures = watchErrors(page);
+  const side = page.locator("#desktop-sidebar");
+  const deployTree = [route("deploy-embed"), ...DEPLOY_SLUGS.map((slug) => route(slug))];
+  const headerLink = (slug) => page.locator(`header :is(${linkTo(slug)}):visible`).first();
+  await page.goto(route("getting-started"));
+  const marker = await page.evaluate(() => (window.__softNavMarker = Math.random()));
+  await headerLink("deploy-embed").click();
+  await expect(page).toHaveURL(/deploy-embed\/?$/);
+  await expectTree(side, deployTree);
+  await treeOf(side).locator(linkTo("guides/ssr-and-cloudflare-bindings")).click();
+  await expect(page).toHaveURL(/guides\/ssr-and-cloudflare-bindings\/?$/);
+  await expectTree(side, deployTree);
+  await headerLink("build-with-zfb").click();
+  await expect(page).toHaveURL(/build-with-zfb\/?$/);
+  await expect.poll(async () => (await treeHrefs(side))[0]).toBe(route("build-with-zfb"));
+  await expect(rowOf(side, "deploy-embed")).toHaveCount(0);
+  await headerLink("deploy-embed").click();
+  await expect(page).toHaveURL(/deploy-embed\/?$/);
+  await expectTree(side, deployTree);
+  await headerLink("zudo-wind").click();
+  await expect(page).toHaveURL(/zudo-wind\/?$/);
+  await expect.poll(async () => (await treeHrefs(side))[0]).toBe(route("zudo-wind"));
+  await expect(rowOf(side, "deploy-embed")).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/deploy-embed\/?$/);
+  await expectTree(side, deployTree);
+  await treeOf(side).locator(linkTo("architecture/three-ways-to-run-zfb")).click();
+  await expect(rowOf(side, "architecture/fundamentals")).toHaveCount(1);
+  await expect(rowOf(side, "deploy-embed")).toHaveCount(0);
+  await headerLink("getting-started").click();
+  await expect(page).toHaveURL(/getting-started\/?$/);
+  await expect.poll(() => treeHrefs(side)).not.toContain(route("deploy-embed"));
+  // Every hop above was a client transition, not a full document load.
+  expect(await page.evaluate(() => window.__softNavMarker)).toBe(marker);
+  expect(failures).toEqual([]);
+});
+
+test("breadcrumbs, pagers and links stay valid on Architecture, Build and Deploy pages", async ({
   page,
   request,
 }) => {
@@ -326,6 +570,8 @@ test("breadcrumbs, pagers and links stay valid on Architecture and Build pages",
       "architecture/client-side-routing",
       "build-with-zfb/pages-routes",
       "guides/troubleshooting",
+      "deploy-embed",
+      ...DEPLOY_GUIDES,
     ]) {
       await page.goto(route(slug, ja));
       await expect(page.getByRole("navigation", { name: "Breadcrumb", exact: true })).toBeVisible();
@@ -379,6 +625,56 @@ for (const width of [1440, 390])
         }
       });
 
+for (const width of [1440, 390])
+  for (const ja of [false, true])
+    for (const scheme of ["light", "dark"])
+      test(`Deploy rows keep clear of row controls ${ja ? "JA" : "EN"} ${width} ${scheme}`, async ({
+        page,
+      }) => {
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.setViewportSize({ width, height: 950 });
+        await page.goto(route("guides/ssr-and-cloudflare-bindings", ja));
+        const side = await sidebarOf(page, width);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+          true,
+        );
+        await expect(
+          treeOf(side).locator(linkTo("guides/ssr-and-cloudflare-bindings", ja)),
+        ).toHaveAttribute("aria-current", "page");
+        // Measure in one frame: the mobile drawer may still be sliding in.
+        const hrefs = [route("deploy-embed", ja), ...DEPLOY_SLUGS.map((slug) => route(slug, ja))];
+        const layout = await side.evaluate((surface, wanted) => {
+          const tree = surface.querySelector("[data-sidebar-tree-root]");
+          const bounds = surface.getBoundingClientRect();
+          const links = wanted.map((href) =>
+            [...tree.querySelectorAll("a[href]")].find(
+              (a) => a.getAttribute("href").replace(/\/$/, "") === href,
+            ),
+          );
+          const [rootLink] = links;
+          const controls = [...rootLink.parentElement.children].filter((el) =>
+            el.matches("[data-sidebar-focus], button[aria-expanded]"),
+          );
+          return {
+            rootRight: rootLink.getBoundingClientRect().right,
+            controlLefts: controls.map((el) => el.getBoundingClientRect().left),
+            overflow: links.map((a) => a.getBoundingClientRect().right - bounds.right),
+          };
+        }, hrefs);
+        expect(layout.controlLefts).toHaveLength(2);
+        for (const left of layout.controlLefts)
+          expect(layout.rootRight).toBeLessThanOrEqual(left + 0.5);
+        for (const [index, overflow] of layout.overflow.entries())
+          expect(overflow, hrefs[index]).toBeLessThanOrEqual(0.5);
+        const screenshotDir = process.env.WIND_DOCS_SCREENSHOT_DIR;
+        if (screenshotDir) {
+          mkdirSync(screenshotDir, { recursive: true });
+          await page.screenshot({
+            path: join(screenshotDir, `deploy-${ja ? "ja" : "en"}-${width}-${scheme}.png`),
+          });
+        }
+      });
+
 // The Header/Sidebar pairs are cached while the site is built, so check the
 // emitted contexts: each editorial forest has one context, shared by every
 // navigation surface on a page and never reused by another section.
@@ -392,9 +688,15 @@ test("built pages carry one sidebar context per editorial forest", async ({ requ
   };
   for (const ja of [false, true]) {
     const sections = {
-      architecture: ["architecture", "architecture/fundamentals", "architecture/routing"],
+      architecture: [
+        "architecture",
+        "architecture/fundamentals",
+        "architecture/routing",
+        "architecture/three-ways-to-run-zfb",
+      ],
       build: ["build-with-zfb", "build-with-zfb/pages-routes", "guides/troubleshooting"],
       wind: ["zudo-wind/learn", "zudo-wind/overview"],
+      deploy: ["deploy-embed", ...DEPLOY_GUIDES],
       gettingStarted: ["getting-started"],
     };
     const ids = {};

@@ -132,13 +132,15 @@ rows (`initialPathMode: "children"`) and Broaden reaches the real Architecture p
 node-mode root view of its own; `sidebar_initial_expansion: collapsed` on both Architecture indexes
 reveals only the current group. Build with zfb keeps its landing row above its six groups (node
 mode); Troubleshooting intentionally appears in two groups, and cross-links such as Markdown
-Features and zudo-wind stay leaves. Deploy & Embed keeps explicit native membership. Section
+Features and zudo-wind stay leaves. Deploy & Embed uses the same machinery with no groups: its
+real landing row (node mode, `initialPath: [0]`) above `DEPLOY_SLUGS` as four leaves; that root is
+the highest scope, so the native toolbar stays hidden there. Section
 ownership is `canonicalNavSection`: Architecture owns every `architecture/*` route even when Build
 or Deploy lists it; practical guides are classified by membership without moving their URLs.
 URL-based breadcrumbs and pagination remain native. The chrome factory caches each Header/Sidebar
 pair by locale and scope id, and each scope id maps to exactly one forest and baseline.
 `tests/docs-navigation-structure/verify.mjs` asserts the Wind contract on the served host;
-`scripts/__tests__/docs-navigation-structure.test.mjs` checks all three against the installed
+`scripts/__tests__/docs-navigation-structure.test.mjs` checks all four against the installed
 zudo-doc resolver, and `tests/docs-wind-preview/page-backed-navigation.chromium.spec.mjs` checks it on the
 built site.
 
