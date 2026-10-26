@@ -1526,16 +1526,16 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v5.1.4 release bump cites the v5.1.3 release contract, read at the
-    // release probe head (refs/pull/4560/head), whose bytes equal main's c248f272c.
+    // The Linux v5.1.4 runtime-identity re-pin cites the v5.1.4 release contract
+    // on main (c8a44a5d5, byte-identical to the 1e0cda646 release bump).
     file: "decision-linux-x64.json",
-    commit: "4c50217422354f4ee187233e12203cbf60c557c2",
-    sha256: "3e91a8a688375325b70cc21f768cea929a646c2f29aad45c85733817c3e2a623",
-    fixture: "fixtures/island-size-linux-x64-v5.1.3-release.json",
+    commit: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+    sha256: "96284cc873de3924091b677ebbbd8b49c07c0143b30e12bb4f5044a4e759a1a2",
+    fixture: "fixtures/island-size-linux-x64-v5.1.4-release.json",
     outcome: "release-version-stamp",
-    packageVersion: "5.1.3",
-    baselineSourceSha: "b4cd6c6d58e5f6bac0baadda7fbe6ebc6cbf1745",
-    baselineRunId: 40205487926,
+    packageVersion: "5.1.4",
+    baselineSourceSha: "4c50217422354f4ee187233e12203cbf60c557c2",
+    baselineRunId: 40242005703,
   },
   {
     // The #4429 oxc edge (cargo-internal-rewire) cites the Darwin v4.7.0 release
@@ -2905,9 +2905,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expectReleaseBumpOnly(predecessor, live);
   });
 
-  it("moves the live Linux contract from the frozen v5.1.3 bytes only by the v5.1.4 release bump", () => {
+  // Verbatim bytes of decision-linux-x64.json at c8a44a5d5 (main after the
+  // v5.1.4 release bump), the state the runtime-identity re-pin moved.
+  const linuxV514 = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.1.4-release.json",
+      "96284cc873de3924091b677ebbbd8b49c07c0143b30e12bb4f5044a4e759a1a2",
+    );
+
+  it("moves the frozen v5.1.4 Linux contract from the frozen v5.1.3 bytes only by the v5.1.4 release bump", () => {
     const predecessor = linuxV513();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV514();
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.1.4");
     expect(live.baselineSourceSha).toBe("4c50217422354f4ee187233e12203cbf60c557c2");
@@ -2925,6 +2933,38 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "8ffa0f0bbfb13e379b0afa44e8f88c3ee8e1d82b3a50e706c171ebcb974a80ca",
     );
     expectReleaseBumpOnly(predecessor, live);
+  });
+
+  it("moves the live Linux contract from the frozen v5.1.4 bytes only by the runtime-identity pnpm-lock re-pin", () => {
+    const predecessor = linuxV514();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("runtime-identity-repin");
+    expect(live.toolchain.packageVersion).toBe("5.1.4");
+    expect(live.baselineSourceSha).toBe("c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 40294886927,
+      jobId: 121478490915,
+      sourceSha: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The pnpm-lock.yaml at c8a44a5d5, after 230f4926c and f4218bb45 moved it.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "fa2cbec1b79e90cd7ba6f9a7304ad7ed77a18b4a19e924b83c2924eca1ad44d2",
+    );
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+    // This re-pin moves only the pnpm-lock.yaml provenance and the evidence.
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"]) {
+        delete copy[key];
+      }
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(predecessor));
   });
 
   it("moves the live Darwin contract from the frozen v4.7.0 bytes only by the #4429 oxc edge", () => {
