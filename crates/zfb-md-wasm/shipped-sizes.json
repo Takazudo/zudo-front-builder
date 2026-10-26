@@ -1,9 +1,9 @@
 {
-  "measuredOnVersion": "5.1.4",
+  "measuredOnVersion": "5.1.5",
   "measured": {
     "root": {
       "finalWasm": 3423580,
-      "gzip9": 1536139,
+      "gzip9": 1536137,
       "glue": 14998,
       "glueGzip9": 4199
     },
@@ -15,7 +15,7 @@
     },
     "render": {
       "finalWasm": 2241653,
-      "gzip9": 1114882,
+      "gzip9": 1114879,
       "glue": 8772,
       "glueGzip9": 2661
     },
