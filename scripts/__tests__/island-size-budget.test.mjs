@@ -1526,16 +1526,16 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The Linux tokio-security-4569 producer-lock transition cites the v5.1.4
-    // runtime-identity contract at 0cfe0d6f0 on the #4569 branch.
+    // The v5.1.5 release bump cites the tokio-security-4569 Linux contract, read
+    // at the release probe head (refs/pull/4573/head), whose bytes equal main's df3275d1.
     file: "decision-linux-x64.json",
-    commit: "0cfe0d6f0afb728890d275bee6839a93e809de65",
-    sha256: "0aeadcf44ec603fa9068dd5cf626ee66044e763c7393c0c62219f8cca142bbf9",
-    fixture: "fixtures/island-size-linux-x64-v5.1.4-pnpm.json",
-    outcome: "runtime-identity-repin",
+    commit: "f17f3bf389084dac0451bb46396fa762d37a1157",
+    sha256: "2d851406cf47738f4d88c6c9808884c843739a9fbff602fb8c9e933d190356ce",
+    fixture: "fixtures/island-size-linux-x64-v5.1.4-tokio.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "5.1.4",
-    baselineSourceSha: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
-    baselineRunId: 40294886927,
+    baselineSourceSha: "665413028815504af7c53a0b11ef58d43e2237e4",
+    baselineRunId: 40306538134,
   },
   {
     // The Darwin tokio-security-4569 producer-lock transition cites the v5.1.4
@@ -2977,9 +2977,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The tokio-security-4569 transition (#4569): Linux from health run
   // 40306538134 at merge source 3bfa2e02 (probe head 66541302).
-  it("moves the live Linux contract from the frozen pnpm bytes only by the tokio-security-4569 transition", () => {
+  // Verbatim bytes of decision-linux-x64.json at df3275d1 (main), the
+  // tokio-security-4569 state the v5.1.5 release bump moved.
+  const linuxV514Tokio = () =>
+    frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.1.4-tokio.json",
+      "2d851406cf47738f4d88c6c9808884c843739a9fbff602fb8c9e933d190356ce",
+    );
+
+  it("moves the frozen tokio Linux contract from the frozen pnpm bytes only by the tokio-security-4569 transition", () => {
     const predecessor = linuxV514Pnpm();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = linuxV514Tokio();
     expect(live.outcome).toBe("cargo-producer-lock-transition");
     expect(predecessor.toolchain.cargoLockSha256).toBe(
       "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
@@ -3016,6 +3024,28 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
     expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
     expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+  });
+
+  it("moves the live Linux contract from the frozen tokio bytes only by the v5.1.5 release bump", () => {
+    const predecessor = linuxV514Tokio();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.1.5");
+    expect(live.baselineSourceSha).toBe("f17f3bf389084dac0451bb46396fa762d37a1157");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 40331009580,
+      jobId: 121600192067,
+      sourceSha: "6a27e48fe89dd7dcb9ee759273fdad7afedf24b0",
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    // The v5.1.5 pnpm-lock.yaml the release probe measured.
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "6af8185361431ccbbdebc3f990b993616f6c550e4b55bbdac6e364ee7ea36024",
+    );
+    expectReleaseBumpOnly(predecessor, live);
   });
 
   // Verbatim bytes of decision.json at c8a44a5d (main), the #4429 oxc-edge state
