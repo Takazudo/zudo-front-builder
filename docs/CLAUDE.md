@@ -2,12 +2,12 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 4.7.0,
-`@takazudo/zudo-doc` / `zudo-doc-history-server` 7.1.0 and `@takazudo/zdtp` 0.8.6 (#3329). Verify
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.1.4 and
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 8.1.1 (#3329). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
-The docs member requires Node 24 (`engines.node` is `>=24 <25`, matching zudo-doc 7), and the repo develops on Node 24.
+The docs member requires Node 24 (`engines.node` is `>=24 <25`; zudo-doc 8 requires `>=24`), and the repo develops on Node 24.
 
 ## Tech Stack
 
@@ -21,8 +21,9 @@ The docs member requires Node 24 (`engines.node` is `>=24 <25`, matching zudo-do
 
 Keep these direct docs declarations when auditing dependencies:
 
-- **zudo-doc peer feature packages:** `diff`, `katex`, `zod`, `@takazudo/zdtp`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
-- **No direct `preact` / `preact-render-to-string`.** zudo-doc 6 core rendering does not need Preact. The only Preact left in the docs graph is zdtp 0.8.6's own private dependency (its isolated panel subtree); `designTokenPanel` stays at the package default `false`, so no page mounts it. Never re-add Preact to host code or tests (component tests render with `@takazudo/zfb/zudo-react/server`).
+- **zudo-doc peer feature packages:** `diff`, `katex`, `zod`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
+- **No `@takazudo/zdtp`.** It is an optional zudo-doc peer used only by the design token panel. `designTokenPanel` stays at the package default `false`, so since zudo-doc 8.1.1 the preset shadows `@takazudo/zudo-doc/zdtp-loader` with a stub and nothing imports zdtp. Add it back only together with `designTokenPanel: true`.
+- **No direct `preact` / `preact-render-to-string`.** zudo-doc core rendering does not need Preact. Never re-add Preact to host code or tests (component tests render with `@takazudo/zfb/zudo-react/server`).
 - **No separate script supervisor:** `dev` and `dev:network` use `run-parallel`, a bin shipped by `@takazudo/zudo-doc` (already a direct dependency, since 5.14.0), so no separate process-supervisor package belongs here. Any future replacement must forward signals to the whole descendant tree, propagate the real exit status, and reap both children on Ctrl-C — `run-parallel` was verified for all three in the PR for issue #2826. JSON cannot carry this rationale as a comment.
 
 This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing these declarations.

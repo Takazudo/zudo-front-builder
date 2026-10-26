@@ -29,7 +29,6 @@
     "@takazudo/zfb-adapter-cloudflare": "5.1.4",
     "@takazudo/zudo-doc": "8.1.1",
     "@takazudo/zudo-doc-history-server": "8.1.1",
-    "@takazudo/zdtp": "0.8.7",
     "zod": "^4.6.6",
     "katex": "^0.19.0",
     "diff": "^8.0.3"
