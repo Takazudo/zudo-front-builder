@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "tokio-security-4569",
+  "sourceSha": "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+  "oldSha": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+  "newSha": "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
+  "added": ["tokio@1.54.1"],
+  "changed": [],
+  "removed": ["tokio@1.52.3"],
+  "decision": "Exact tokio 1.52.3 -> 1.54.1 security replacement for RUSTSEC-2026-0386 (#4569), approved under POLICY-02 on the 4336 coordination issue; version and checksum only, no incidental Windows edge changes or other dependency updates. Structural authorization only; no live contract application.",
+  "advisories": ["RUSTSEC-2026-0386"],
+  "nativeMeasurement": "required-separately-for-each-platform"
+}

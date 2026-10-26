@@ -128,3 +128,7 @@ The commands above now use the immutable `--old-cargo-ref` input from #4219. The
 ## Rolldown oxc edge (#4429)
 
 [ROLLDOWN-OXC-4429.md](ROLLDOWN-OXC-4429.md) records the owner-approved edge-only move in which `zfb-rolldown-prototype` gains an edge to the already-locked `oxc@0.153.0`. It is a schema 2 `cargo-internal-rewire` declaration, not a reviewed producer-lock transition, and does not broaden this historical #318 authorization.
+
+## Exact tokio security replacement (#4569)
+
+[TOKIO-4569.md](TOKIO-4569.md) records the tokio 1.52.3 → 1.54.1 lock pair for RUSTSEC-2026-0386, approved under POLICY-02. It uses the same exact-byte checker and reviewed-transition entry point as the #4314 replacements, and does not broaden this historical #318 authorization or apply either live platform contract.

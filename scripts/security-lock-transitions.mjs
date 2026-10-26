@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 // Each entry is one exact owner-approved replacement (the #4314 security fixes,
-// the #4268 noyalib adoption): the decision bytes and both complete lock hashes
+// the #4268 noyalib adoption, the #4569 tokio security fix): the decision bytes and both complete lock hashes
 // are pinned here, so caller-supplied JSON is not authority. Adding an entry is
 // a reviewed provenance decision, not a refactor.
 function securityLockTransition({
@@ -66,10 +66,19 @@ export const NOYALIB_LOCK_TRANSITION = securityLockTransition({
   newLockSha256: "c0d708895c54e312b0f5f9d90ee67b5d1037b9a667ece59d475791a5619e5b64",
 });
 
+export const TOKIO_SECURITY_TRANSITION = securityLockTransition({
+  id: "tokio-security-4569",
+  label: "tokio",
+  decisionSha256: "c399eadde02b884221fbecea61ea6ee51263451be0dcc968d3cdba0a21a20a87",
+  oldLockSha256: "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
+  newLockSha256: "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
+});
+
 export const SECURITY_LOCK_TRANSITIONS = Object.freeze([
   RUSTLS_SECURITY_TRANSITION,
   WEBPKI_SECURITY_TRANSITION,
   NOYALIB_LOCK_TRANSITION,
+  TOKIO_SECURITY_TRANSITION,
 ]);
 
 export function securityLockTransitionById(id) {

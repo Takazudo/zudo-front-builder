@@ -497,9 +497,10 @@ describe("committed #4429 oxc edge declaration (rolldown-oxc-4429.json)", () => 
   const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
   const dir = join(root, "research/v3-island-size/cargo-transitions");
 
-  it("proves the declaration against the frozen old lock and the live Cargo.lock for both targets", () => {
+  it("proves the declaration against its frozen old and new locks for both targets", () => {
     const oldText = readFileSync(join(dir, "rolldown-oxc-4429.old.lock"), "utf8");
-    const newText = readFileSync(join(root, "Cargo.lock"), "utf8");
+    // The #4429 new lock is the #4569 tokio transition's frozen old lock.
+    const newText = readFileSync(join(dir, "tokio-security-4569.old.lock"), "utf8");
     const declarationBytes = readFileSync(join(dir, "rolldown-oxc-4429.json"));
     for (const target of [LINUX_TARGET, DARWIN_TARGET]) {
       const receipt = (side) => {
