@@ -360,6 +360,8 @@ for (const width of [1440, 390]) {
       const url = page.url();
       await page.evaluate(() => scrollTo(0, 200));
       const scrollY = await page.evaluate(() => scrollY);
+      // The open mobile drawer locks page scroll; on desktop the article must move.
+      if (width >= 1024) expect(scrollY).toBeGreaterThan(0);
       await toggleOf(side, "deploy-embed", ja).click();
       await expanded("false");
       expect(await treeHrefs(side)).toEqual([route("deploy-embed", ja)]);
@@ -424,7 +426,9 @@ for (const width of [1440, 390]) {
         expect(await treeHrefs(page.locator("#desktop-sidebar"))).toEqual(await treeHrefs(side));
         await treeOf(side).locator(linkTo("guides/desktop-deployment", ja)).click();
         await expect(page).toHaveURL(/guides\/desktop-deployment\/?$/);
-        side = await sidebarOf(page, width);
+        // Reopen the drawer only if the transition closed it.
+        const drawer = page.locator("[data-zd-mobile-sidebar]");
+        side = (await treeOf(drawer).isVisible()) ? drawer : await sidebarOf(page, width);
         await expectTree(side, [route("deploy-embed", ja), ...deployTree]);
         await expect(treeOf(side).locator(linkTo("guides/desktop-deployment", ja))).toHaveAttribute(
           "aria-current",

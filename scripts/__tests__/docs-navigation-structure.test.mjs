@@ -327,12 +327,7 @@ describe("documentation navigation contracts", () => {
   function sectionNavigation(slug, navSection, locale = "ja", tree = nativeSectionTree(locale)) {
     const scope = resolveNavigationScope(slug, navSection);
     return buildSidebarNavigation(
-      [
-        {
-          slug: "architecture/index",
-          data: { sidebar_initial_expansion: "collapsed" },
-        },
-      ],
+      [{ slug: "architecture/index", data: { sidebar_initial_expansion: "collapsed" } }],
       locale,
       navSection,
       undefined,
@@ -398,9 +393,7 @@ describe("documentation navigation contracts", () => {
       expect(sidebarScopeNodes(navigation, nodes, broader)).toEqual(navigation.roots);
       expect(broaderSidebarScope(navigation, nodes, broader)).toBeNull();
       expect(navigation.localParentId).toBe(broader);
-      expect(navigation.initialExpansion).toEqual({
-        architecture: "collapsed",
-      });
+      expect(navigation.initialExpansion).toEqual({ architecture: "collapsed" });
       // Fresh state reveals only the group holding the current page.
       const mode = sidebarInitialExpansion(navigation, slug);
       expect(mode).toBe("collapsed");
@@ -479,7 +472,10 @@ describe("documentation navigation contracts", () => {
           initialPath: [0],
           initialPathMode: "node",
         });
-        const { nodes, navigation } = sectionNavigation(slug, "deploy-embed", locale, tree);
+        // The chrome canonicalizes first: a guide reached from Guides still uses Deploy.
+        const navSection = canonicalNavSection(slug, slug === "deploy-embed" ? slug : "guides");
+        expect(navSection).toBe("deploy-embed");
+        const { nodes, navigation } = sectionNavigation(slug, navSection, locale, tree);
         expect(JSON.stringify(tree)).toBe(before);
         ids.add(navigation.id);
         // One page-backed root, then the four members as leaves; the landing

@@ -140,7 +140,7 @@ or Deploy lists it; practical guides are classified by membership without moving
 URL-based breadcrumbs and pagination remain native. The chrome factory caches each Header/Sidebar
 pair by locale and scope id, and each scope id maps to exactly one forest and baseline.
 `tests/docs-navigation-structure/verify.mjs` asserts the Wind contract on the served host;
-`scripts/__tests__/docs-navigation-structure.test.mjs` checks all four against the installed
+`scripts/__tests__/docs-navigation-structure.test.mjs` checks all four sections (Wind, Architecture, Build, Deploy) against the installed
 zudo-doc resolver, and `tests/docs-wind-preview/page-backed-navigation.chromium.spec.mjs` checks it on the
 built site.
 
