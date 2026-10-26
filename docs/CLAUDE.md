@@ -7,6 +7,11 @@ The host runs on the released owned-engine stack: exact published `@takazudo/zfb
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
+The host deliberately sets no `themePack`, so it inherits zudo-doc 9's default **Graphite** pack
+(#4576); a reader's saved Light/Dark/System choice is untouched. Do not add `themePack: "default"`
+(Classic) or host CSS to recreate the older look, and re-check the site when a later zudo-doc
+changes its default pack.
+
 The docs member requires Node 24 (`engines.node` is `>=24 <25`; zudo-doc 9 requires `>=24`), and the repo develops on Node 24.
 
 ## Tech Stack

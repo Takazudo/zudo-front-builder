@@ -416,8 +416,10 @@ impl ProcessTreeGuard {
 
     /// Kill the reachable tree now (the process group on Unix, the
     /// `taskkill /T` tree on Windows) and reap the spawned process. Idempotent:
-    /// once reaped it signals nothing and returns the recorded status. Drop
-    /// calls it too.
+    /// once reaped it signals nothing and returns the recorded status. That
+    /// includes an exit a wait path already observed, so on Windows a call
+    /// after [`try_wait`](Self::try_wait) returned `Some` kills no descendant.
+    /// Drop calls it too.
     pub fn kill_tree(&mut self) -> io::Result<ExitStatus> {
         self.reap()
     }
