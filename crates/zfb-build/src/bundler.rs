@@ -1823,6 +1823,10 @@ pub struct ShadowSession {
     /// wipes this cache and rescans. A stamp covering the whole directory
     /// would reintroduce the very I/O this cache removes.
     physical_scan_cache: HashMap<PathBuf, PhysicalScanCacheEntry>,
+    /// Dependency-root decisions reused while a pnpm install is unchanged
+    /// (#4565); see [`DependencyRootCache`] for the contract. Cleared on the
+    /// dirty/copy_mode wipe, so a failed call always revalidates the install.
+    dependency_roots: DependencyRootCache,
     /// The pipeline `config_fingerprint` of the LAST successful call —
     /// the wipe trigger for a config/route-map change (zfb#1148, Defect
     /// A). Both skip caches reuse a file's previous compiled output, but
@@ -1894,6 +1898,7 @@ impl ShadowSession {
             source_skip: HashMap::new(),
             mirror_skip: HashMap::new(),
             physical_scan_cache: HashMap::new(),
+            dependency_roots: DependencyRootCache::default(),
             config_fingerprint: None,
         })
     }
@@ -2004,6 +2009,10 @@ fn ensure_dependency_link(target: &Path, link: &Path) -> std::io::Result<bool> {
 /// Marks a dependency root built by [`ensure_dependency_entry_view_from`].
 const DEPENDENCY_ENTRY_VIEW_MARKER: &str = ".zfb-dependency-entry-view";
 
+/// First line of [`DEPENDENCY_ENTRY_VIEW_MARKER`]. Informational only: no
+/// reader checks it, and [`dependency_entry_view_matches`] verifies the layout.
+const DEPENDENCY_ENTRY_VIEW_FORMAT: &str = "zfb-dependency-entry-view v1";
+
 /// Reconcile `link` as the dependency root over `node_modules`: one
 /// whole-directory link, or on Windows an entry view when a relative link in
 /// pnpm's layout climbs out of `node_modules` (#4545, #4553). Windows resolves
@@ -2016,6 +2025,20 @@ fn ensure_dependency_root(node_modules: &Path, link: &Path) -> std::io::Result<b
     match dependency_root_entry_view_scan(node_modules) {
         Some(scan) => ensure_dependency_entry_view_from(node_modules, &scan, link),
         None => ensure_dependency_link(node_modules, link),
+    }
+}
+
+/// [`ensure_dependency_root`], reusing `cache` while the install is unchanged
+/// (#4565). The cache engages only where the scan runs at all (Windows);
+/// elsewhere, and without a cache, this is exactly [`ensure_dependency_root`].
+fn ensure_dependency_root_cached(
+    node_modules: &Path,
+    link: &Path,
+    cache: Option<&mut DependencyRootCache>,
+) -> std::io::Result<bool> {
+    match cache {
+        Some(cache) if cfg!(windows) => cache.ensure(node_modules, link),
+        _ => ensure_dependency_root(node_modules, link),
     }
 }
 
@@ -2108,35 +2131,61 @@ struct DependencyRootScan {
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 impl DependencyRootScan {
     fn read(root: &Path) -> Self {
-        let mut scan = Self::default();
-        scan.read_dir(root, PathBuf::new(), DependencyLayoutLevel::Root);
-        scan
+        Self::read_checked(root).0
     }
 
-    fn read_dir(&mut self, root: &Path, rel: PathBuf, level: DependencyLayoutLevel) {
+    /// [`Self::read`], plus whether every listing, entry, file type and link
+    /// target read succeeded. Unreadable parts are skipped either way; only a
+    /// complete scan may be cached ([`DependencyRootCache`]).
+    fn read_checked(root: &Path) -> (Self, bool) {
+        let mut scan = Self::default();
+        let mut complete = true;
+        scan.read_dir(
+            root,
+            PathBuf::new(),
+            DependencyLayoutLevel::Root,
+            &mut complete,
+        );
+        (scan, complete)
+    }
+
+    fn read_dir(
+        &mut self,
+        root: &Path,
+        rel: PathBuf,
+        level: DependencyLayoutLevel,
+        complete: &mut bool,
+    ) {
         let Ok(children) = fs::read_dir(root.join(&rel)) else {
+            *complete = false;
             return;
         };
         let depth = rel.components().count();
         let mut names = Vec::new();
-        for child in children.flatten() {
+        for child in children {
+            let Ok(child) = child else {
+                *complete = false;
+                continue;
+            };
             let name = child.file_name();
             let child_rel = rel.join(&name);
             match child.file_type() {
                 Ok(file_type) if file_type.is_dir() => {
                     if let Some(next) = level.descend(&name) {
-                        self.read_dir(root, child_rel, next);
+                        self.read_dir(root, child_rel, next, complete);
                     }
                 }
-                Ok(file_type)
-                    if file_type.is_symlink()
-                        && fs::read_link(child.path()).is_ok_and(|target| {
-                            target.is_relative() && relative_link_climbs_out(depth, &target)
-                        }) =>
-                {
-                    self.escaping.push(child_rel);
-                }
-                _ => {}
+                Ok(file_type) if file_type.is_symlink() => match fs::read_link(child.path()) {
+                    Ok(target)
+                        if target.is_relative() && relative_link_climbs_out(depth, &target) =>
+                    {
+                        self.escaping.push(child_rel);
+                    }
+                    Ok(_) => {}
+                    Err(_) => *complete = false,
+                },
+                Ok(_) => {}
+                Err(_) => *complete = false,
             }
             names.push(name);
         }
@@ -2286,20 +2335,41 @@ fn ensure_dependency_entry_view_from(
     scan: &DependencyRootScan,
     link: &Path,
 ) -> std::io::Result<bool> {
+    let nodes = checked_dependency_entry_view_nodes(node_modules, scan)?;
+    ensure_dependency_entry_view_nodes(link, &nodes, None)
+}
+
+fn checked_dependency_entry_view_nodes(
+    node_modules: &Path,
+    scan: &DependencyRootScan,
+) -> std::io::Result<BTreeMap<PathBuf, DependencyEntryViewNode>> {
     if !fs::canonicalize(node_modules)?.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
             "dependency root is not a directory",
         ));
     }
-    let nodes = dependency_entry_view_nodes(node_modules, scan);
-    if dependency_entry_view_matches(link, &nodes) {
+    Ok(dependency_entry_view_nodes(node_modules, scan))
+}
+
+/// Verify `link` against `nodes` and rebuild it on any mismatch. The marker
+/// is written last, so a view interrupted mid-build carries none; `stamp`
+/// (a [`DependencyRootCache`] identity) also re-stamps a view that already
+/// matches.
+fn ensure_dependency_entry_view_nodes(
+    link: &Path,
+    nodes: &BTreeMap<PathBuf, DependencyEntryViewNode>,
+    stamp: Option<&str>,
+) -> std::io::Result<bool> {
+    if dependency_entry_view_matches(link, nodes) {
+        if let Some(stamp) = stamp {
+            fs::write(link.join(DEPENDENCY_ENTRY_VIEW_MARKER), stamp)?;
+        }
         return Ok(false);
     }
     remove_shadow_entry(link)?;
     fs::create_dir(link)?;
-    fs::write(link.join(DEPENDENCY_ENTRY_VIEW_MARKER), "")?;
-    for (relative, node) in &nodes {
+    for (relative, node) in nodes {
         let entry = link.join(relative);
         match node {
             DependencyEntryViewNode::Dir => fs::create_dir(&entry)?,
@@ -2308,7 +2378,241 @@ fn ensure_dependency_entry_view_from(
             }
         }
     }
+    let marker = stamp.map_or_else(|| dependency_entry_view_marker(None), str::to_owned);
+    fs::write(link.join(DEPENDENCY_ENTRY_VIEW_MARKER), marker)?;
     Ok(true)
+}
+
+/// Marker contents: the view format, then an optional cache identity.
+fn dependency_entry_view_marker(identity: Option<&str>) -> String {
+    match identity {
+        Some(identity) => format!("{DEPENDENCY_ENTRY_VIEW_FORMAT}\n{identity}\n"),
+        None => format!("{DEPENDENCY_ENTRY_VIEW_FORMAT}\n"),
+    }
+}
+
+/// Whether `link` is still the real directory a cache stamped with `stamp`.
+fn dependency_entry_view_stamped(link: &Path, stamp: &str) -> bool {
+    fs::symlink_metadata(link).is_ok_and(|m| m.is_dir())
+        && fs::read_to_string(link.join(DEPENDENCY_ENTRY_VIEW_MARKER)).is_ok_and(|c| c == stamp)
+}
+
+/// What a pnpm install command rewrites, read once per reconcile (#4565).
+/// The pnpm 12.8.2 probe for #4565 saw every command that changes a
+/// root's links (install, add/remove, link/unlink, filtered, frozen/forced
+/// repair, prod/dev, prune, update, dedupe, rebuild) rewrite both
+/// `.modules.yaml` and `.pnpm/lock.yaml`. The root and `.pnpm` directory
+/// mtimes add manual top-level and store-package additions or removals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallFingerprint {
+    /// The canonical root; the cache key.
+    root: PathBuf,
+    modules_yaml: (u64, std::time::SystemTime),
+    lock_yaml: Option<(u64, std::time::SystemTime)>,
+    root_mtime: std::time::SystemTime,
+    store_mtime: Option<std::time::SystemTime>,
+}
+
+impl InstallFingerprint {
+    /// `None` (nothing cacheable) without the root's OWN `.modules.yaml`: a
+    /// pnpm workspace member's `node_modules` carries none, and its links
+    /// change while only the workspace root's markers move. Also `None` when
+    /// any part is unreadable.
+    fn read(node_modules: &Path) -> Option<Self> {
+        let root = fs::canonicalize(node_modules).ok()?;
+        let optional = |path: &Path| match fs::metadata(path) {
+            Ok(metadata) => Some(Some(metadata)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        };
+        let file_stamp = |metadata: fs::Metadata| {
+            metadata
+                .is_file()
+                .then(|| Some((metadata.len(), metadata.modified().ok()?)))
+                .flatten()
+        };
+        let modules_yaml = file_stamp(fs::metadata(root.join(".modules.yaml")).ok()?)?;
+        let lock_yaml = match optional(&root.join(".pnpm").join("lock.yaml"))? {
+            Some(metadata) => Some(file_stamp(metadata)?),
+            None => None,
+        };
+        let store_mtime = match optional(&root.join(".pnpm"))? {
+            Some(metadata) => Some(metadata.modified().ok()?),
+            None => None,
+        };
+        let root_mtime = fs::metadata(&root).ok()?.modified().ok()?;
+        Some(Self {
+            root,
+            modules_yaml,
+            lock_yaml,
+            root_mtime,
+            store_mtime,
+        })
+    }
+}
+
+/// Counts of the O(store) passes a [`DependencyRootCache`] ran.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DependencyRootCacheStats {
+    /// [`DependencyRootScan`] reads.
+    scans: usize,
+    /// Entry-view plans resolved to canonical targets.
+    plans: usize,
+    /// Full [`dependency_entry_view_matches`] passes over a destination.
+    verifies: usize,
+}
+
+/// The decision a cache entry reuses.
+#[derive(Debug)]
+enum CachedDependencyLayout {
+    Link,
+    EntryView {
+        nodes: BTreeMap<PathBuf, DependencyEntryViewNode>,
+        /// Destination -> marker this cache wrote there after building or
+        /// fully verifying the view.
+        built: BTreeMap<PathBuf, String>,
+    },
+}
+
+#[derive(Debug)]
+struct DependencyRootCacheEntry {
+    fingerprint: InstallFingerprint,
+    layout: CachedDependencyLayout,
+}
+
+/// Distinct roots one cache keeps; a dev session reconciles at most two.
+const DEPENDENCY_ROOT_CACHE_LIMIT: usize = 8;
+
+/// Session-scoped reuse of [`ensure_dependency_root`]'s scan and entry-view
+/// plan (#4565), so an unchanged install does not pay O(store) per reconcile.
+///
+/// Contract:
+/// - An entry is keyed by the canonical source root and holds the
+///   [`InstallFingerprint`] taken before its scan. It is stored only when the
+///   scan was complete and the fingerprint read after the scan is equal.
+/// - Any fingerprint change (a pnpm command, a top-level or `.pnpm/<pkg>`
+///   addition or removal) rescans and re-plans exactly as the uncached path.
+/// - NOT invalidating: manual edits deeper inside `.pnpm` without a pnpm
+///   command (a retargeted store link, a deleted package directory's
+///   contents). Such an install is reused as planned until the fingerprint
+///   moves, the session is dropped, or a failed call wipes the session.
+/// - A root without its own `.modules.yaml` is never cached.
+/// - A warm entry-view destination is trusted only while it is a real
+///   directory carrying this cache's own marker stamp; otherwise it is fully
+///   verified and rebuilt. The marker is never trusted across caches, so a
+///   new process or session always re-validates every view.
+#[derive(Debug)]
+struct DependencyRootCache {
+    entries: BTreeMap<PathBuf, DependencyRootCacheEntry>,
+    /// Distinguishes this cache's marker stamps from another cache's.
+    id: u64,
+    issued: u64,
+    stats: DependencyRootCacheStats,
+}
+
+impl Default for DependencyRootCache {
+    fn default() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self {
+            entries: BTreeMap::new(),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            issued: 0,
+            stats: DependencyRootCacheStats::default(),
+        }
+    }
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+impl DependencyRootCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn ensure(&mut self, node_modules: &Path, link: &Path) -> std::io::Result<bool> {
+        self.ensure_with(node_modules, link, DependencyRootScan::read_checked)
+    }
+
+    fn ensure_with(
+        &mut self,
+        node_modules: &Path,
+        link: &Path,
+        scan: impl FnOnce(&Path) -> (DependencyRootScan, bool),
+    ) -> std::io::Result<bool> {
+        let Some(before) = InstallFingerprint::read(node_modules) else {
+            self.stats.scans += 1;
+            let (scan, _) = scan(node_modules);
+            return Ok(self.reconcile_scanned(node_modules, &scan, link, None)?.0);
+        };
+        if let Some(entry) = self
+            .entries
+            .get_mut(&before.root)
+            .filter(|entry| entry.fingerprint == before)
+        {
+            return match &mut entry.layout {
+                CachedDependencyLayout::Link => ensure_dependency_link(node_modules, link),
+                CachedDependencyLayout::EntryView { nodes, built } => {
+                    if built
+                        .get(link)
+                        .is_some_and(|stamp| dependency_entry_view_stamped(link, stamp))
+                    {
+                        return Ok(false);
+                    }
+                    built.remove(link);
+                    self.stats.verifies += 1;
+                    let stamp = Self::issue_stamp(self.id, &mut self.issued);
+                    let changed = ensure_dependency_entry_view_nodes(link, nodes, Some(&stamp))?;
+                    built.insert(link.to_path_buf(), stamp);
+                    Ok(changed)
+                }
+            };
+        }
+        self.entries.remove(&before.root);
+        self.stats.scans += 1;
+        let (scan, complete) = scan(node_modules);
+        let stable = complete && InstallFingerprint::read(node_modules).as_ref() == Some(&before);
+        let stamp = stable.then(|| Self::issue_stamp(self.id, &mut self.issued));
+        let (changed, layout) = self.reconcile_scanned(node_modules, &scan, link, stamp)?;
+        if stable {
+            if self.entries.len() >= DEPENDENCY_ROOT_CACHE_LIMIT {
+                self.entries.clear();
+            }
+            self.entries.insert(
+                before.root.clone(),
+                DependencyRootCacheEntry {
+                    fingerprint: before,
+                    layout,
+                },
+            );
+        }
+        Ok(changed)
+    }
+
+    fn issue_stamp(id: u64, issued: &mut u64) -> String {
+        *issued += 1;
+        dependency_entry_view_marker(Some(&format!("{}.{id}.{issued}", std::process::id())))
+    }
+
+    /// Today's uncached decision over `scan`, also returning what to cache.
+    fn reconcile_scanned(
+        &mut self,
+        node_modules: &Path,
+        scan: &DependencyRootScan,
+        link: &Path,
+        stamp: Option<String>,
+    ) -> std::io::Result<(bool, CachedDependencyLayout)> {
+        if scan.escaping.is_empty() {
+            let changed = ensure_dependency_link(node_modules, link)?;
+            return Ok((changed, CachedDependencyLayout::Link));
+        }
+        self.stats.plans += 1;
+        let nodes = checked_dependency_entry_view_nodes(node_modules, scan)?;
+        self.stats.verifies += 1;
+        let changed = ensure_dependency_entry_view_nodes(link, &nodes, stamp.as_deref())?;
+        let built = stamp
+            .map(|stamp| BTreeMap::from([(link.to_path_buf(), stamp)]))
+            .unwrap_or_default();
+        Ok((changed, CachedDependencyLayout::EntryView { nodes, built }))
+    }
 }
 
 /// Build or reuse an entry view regardless of platform (tests only; the
@@ -2648,6 +2952,7 @@ impl<'s> ShadowWriter<'s> {
                     s.source_skip.clear();
                     s.mirror_skip.clear();
                     s.physical_scan_cache.clear();
+                    s.dependency_roots.clear();
                 }
                 // Config/route-map change wipe (zfb#1148, Defect A): a
                 // change to any compile-affecting knob — in particular the
@@ -2782,6 +3087,19 @@ impl<'s> ShadowWriter<'s> {
             .collect();
         for dir in stale {
             verified.remove(&dir);
+        }
+    }
+
+    /// [`ensure_dependency_root`] through the session's
+    /// [`DependencyRootCache`]; a sessionless writer never caches.
+    fn ensure_dependency_root(&self, node_modules: &Path, link: &Path) -> std::io::Result<bool> {
+        match &self.session {
+            Some(cell) => ensure_dependency_root_cached(
+                node_modules,
+                link,
+                Some(&mut cell.borrow_mut().dependency_roots),
+            ),
+            None => ensure_dependency_root_cached(node_modules, link, None),
         }
     }
 
@@ -5494,7 +5812,7 @@ pub fn bundle_with_session(
             // Same link-vs-entry-view decision as `<shadow>/node_modules`
             // below (#4553), but none of its removal policy: this root stays
             // under an active `bundle.exclude` (see above).
-            if ensure_dependency_root(&workspace_node_modules, &work_nm)? {
+            if writer.ensure_dependency_root(&workspace_node_modules, &work_nm)? {
                 writer.forget_dependency_root(&work_nm);
             }
         }
@@ -5531,7 +5849,7 @@ pub fn bundle_with_session(
         .as_ref()
         .filter(|_| bundle_exclude.is_empty() && !isolated_dependency_view_active)
     {
-        if ensure_dependency_root(nm_dir, &shadow_nm)? {
+        if writer.ensure_dependency_root(nm_dir, &shadow_nm)? {
             writer.forget_dependency_root(&shadow_nm);
         }
     } else {
@@ -29549,6 +29867,452 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    /// Set `path`'s mtime explicitly (#4565 tests): coarse filesystem clocks
+    /// can leave a quick edit with an unchanged mtime, and tests never sleep.
+    #[cfg(any(unix, windows))]
+    fn set_mtime(path: &Path, secs: u64) {
+        let mut options = fs::OpenOptions::new();
+        #[cfg(unix)]
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_WRITE_ATTRIBUTES; FILE_FLAG_BACKUP_SEMANTICS opens directories.
+            options.access_mode(0x100).custom_flags(0x0200_0000);
+        }
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        options.open(path).unwrap().set_modified(time).unwrap();
+    }
+
+    /// Give `nm` pnpm's install markers with fixed timestamps, so the
+    /// fingerprint moves only when a test moves it.
+    #[cfg(any(unix, windows))]
+    fn seal_pnpm_install(nm: &Path) {
+        fs::create_dir_all(nm.join(".pnpm")).unwrap();
+        fs::write(nm.join(".modules.yaml"), "layoutVersion: 5\n").unwrap();
+        fs::write(
+            nm.join(slash_path(".pnpm/lock.yaml")),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        for path in [
+            nm.join(".modules.yaml"),
+            nm.join(slash_path(".pnpm/lock.yaml")),
+            nm.join(".pnpm"),
+            nm.to_path_buf(),
+        ] {
+            set_mtime(&path, 1_000_000);
+        }
+    }
+
+    /// A sealed pnpm install with no escaping link: the plain-link outcome.
+    #[cfg(any(unix, windows))]
+    fn plain_pnpm_install(root: &Path) -> PathBuf {
+        let nm = root.join(slash_path("site/node_modules"));
+        let dep = nm.join(slash_path(".pnpm/dep@1/node_modules/dep"));
+        fs::create_dir_all(&dep).unwrap();
+        fs::write(dep.join("sentinel"), "dep").unwrap();
+        relative_dir_link(".pnpm/dep@1/node_modules/dep", &nm.join("dep"));
+        seal_pnpm_install(&nm);
+        nm
+    }
+
+    /// A sealed [`deep_escaping_pnpm_install`]: the entry-view outcome.
+    #[cfg(any(unix, windows))]
+    fn sealed_escaping_pnpm_install(root: &Path) -> (PathBuf, PathBuf) {
+        let (nm, linked) = deep_escaping_pnpm_install(root);
+        seal_pnpm_install(&nm);
+        (nm, linked)
+    }
+
+    #[cfg(any(unix, windows))]
+    fn cache_stats(scans: usize, plans: usize, verifies: usize) -> DependencyRootCacheStats {
+        DependencyRootCacheStats {
+            scans,
+            plans,
+            verifies,
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn read_through(view: &Path, entry: &str) -> Vec<u8> {
+        fs::read(view.join(slash_path(entry)).join("sentinel")).unwrap()
+    }
+
+    /// #4565: an unchanged install is reconciled with no scan and no plan or
+    /// verification pass, for both outcomes.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_reuses_an_unchanged_install_without_rescanning() {
+        let temp = tempfile::tempdir().unwrap();
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let mut cache = DependencyRootCache::default();
+
+        let plain = plain_pnpm_install(&temp.path().join("plain"));
+        let plain_view = shadow.join("plain");
+        assert!(cache.ensure(&plain, &plain_view).unwrap());
+        assert!(fs::symlink_metadata(&plain_view)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(cache.stats, cache_stats(1, 0, 0));
+        assert!(!cache.ensure(&plain, &plain_view).unwrap());
+        assert_eq!(cache.stats, cache_stats(1, 0, 0));
+
+        let (nm, _) = sealed_escaping_pnpm_install(&temp.path().join("view"));
+        let view = shadow.join("node_modules");
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert!(is_dependency_entry_view(&view));
+        assert_eq!(
+            read_through(&view, ".pnpm/host@1/node_modules/bar"),
+            b"linked"
+        );
+        assert_eq!(cache.stats, cache_stats(2, 1, 1));
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats, cache_stats(2, 1, 1));
+    }
+
+    /// #4565: a moved marker or a top-level change rescans and reaches the
+    /// same outcome the uncached path would.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_rescans_when_the_install_fingerprint_moves() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let mut cache = DependencyRootCache::default();
+        assert!(cache.ensure(&nm, &view).unwrap());
+
+        set_mtime(&nm.join(".modules.yaml"), 1_000_010);
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats, cache_stats(2, 2, 2));
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 2);
+
+        let lock = nm.join(slash_path(".pnpm/lock.yaml"));
+        fs::write(&lock, "lockfileVersion: '9.0'\nimporters: {}\n").unwrap();
+        set_mtime(&lock, 1_000_020);
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 3);
+
+        relative_dir_link(".pnpm/dep@1/node_modules/dep", &nm.join("added"));
+        set_mtime(&nm, 1_000_030);
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 4);
+        assert_eq!(read_through(&view, "added"), b"dep");
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 4);
+
+        // Dropping every escaping link turns the outcome into the plain link.
+        for link in [
+            "top",
+            "@acme/linked",
+            ".pnpm/host@1/node_modules/bar",
+            ".pnpm/host@1/node_modules/@ws/scoped",
+        ] {
+            zfb_types::directory_link::remove(&nm.join(slash_path(link))).unwrap();
+        }
+        set_mtime(&nm, 1_000_040);
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 5);
+        assert!(fs::symlink_metadata(&view)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 5);
+    }
+
+    /// #4565: deep store-link changes are seen once a marker moves: a
+    /// retargeted link and a dangling link that became valid.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_rebuilds_deep_link_changes_after_a_marker_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let mut cache = DependencyRootCache::default();
+        assert!(cache.ensure(&nm, &view).unwrap());
+
+        let other = temp.path().join(slash_path("packages-ws/other"));
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("sentinel"), "other").unwrap();
+        let deep = nm.join(slash_path(".pnpm/host@1/node_modules/bar"));
+        zfb_types::directory_link::remove(&deep).unwrap();
+        relative_dir_link("../../../../../packages-ws/other", &deep);
+        set_mtime(&nm.join(".modules.yaml"), 1_000_010);
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert_eq!(
+            read_through(&view, ".pnpm/host@1/node_modules/bar"),
+            b"other"
+        );
+
+        let later = nm.join(slash_path(".pnpm/host@1/node_modules/later"));
+        relative_dir_link("../../../../../packages-ws/later", &later);
+        set_mtime(&nm.join(".modules.yaml"), 1_000_020);
+        assert!(
+            !cache.ensure(&nm, &view).unwrap(),
+            "a dangling link is left out"
+        );
+        assert!(
+            fs::symlink_metadata(view.join(slash_path(".pnpm/host@1/node_modules/later"))).is_err()
+        );
+
+        let target = temp.path().join(slash_path("packages-ws/later"));
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("sentinel"), "later").unwrap();
+        set_mtime(&nm.join(".modules.yaml"), 1_000_030);
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert_eq!(
+            read_through(&view, ".pnpm/host@1/node_modules/later"),
+            b"later"
+        );
+        assert!(!cache.ensure(&nm, &view).unwrap());
+    }
+
+    /// #4565: a damaged view is repaired on the next invalidated or cold
+    /// pass, and a replaced destination fails the warm identity check.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_repairs_a_damaged_view() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let mut cache = DependencyRootCache::default();
+        assert!(cache.ensure(&nm, &view).unwrap());
+        let dep = view.join(slash_path(".pnpm/dep@1"));
+
+        // Within an unchanged install the warm path trusts its own stamp.
+        zfb_types::directory_link::remove(&dep).unwrap();
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        set_mtime(&nm.join(".modules.yaml"), 1_000_010);
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert!(fs::symlink_metadata(&dep).unwrap().file_type().is_symlink());
+
+        // A new cache (process or session) never trusts the marker.
+        zfb_types::directory_link::remove(&dep).unwrap();
+        let mut fresh = DependencyRootCache::default();
+        assert!(fresh.ensure(&nm, &view).unwrap());
+        assert!(fs::symlink_metadata(&dep).unwrap().file_type().is_symlink());
+
+        // A replaced destination is rebuilt from the cached plan, unscanned.
+        let stats = cache.stats;
+        remove_shadow_entry(&view).unwrap();
+        fs::create_dir(&view).unwrap();
+        fs::write(view.join(DEPENDENCY_ENTRY_VIEW_MARKER), "").unwrap();
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert_eq!(
+            cache.stats,
+            cache_stats(stats.scans, stats.plans, stats.verifies + 1)
+        );
+        assert_eq!(
+            read_through(&view, ".pnpm/host@1/node_modules/bar"),
+            b"linked"
+        );
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.verifies, stats.verifies + 1);
+    }
+
+    /// #4565: a fingerprint that moved during the scan, or an incomplete
+    /// scan, is never cached.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_skips_unstable_or_incomplete_scans() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let mut cache = DependencyRootCache::default();
+
+        let modules = nm.join(".modules.yaml");
+        assert!(cache
+            .ensure_with(&nm, &view, |root| {
+                let scan = DependencyRootScan::read_checked(root);
+                set_mtime(&modules, 1_000_010);
+                scan
+            })
+            .unwrap());
+        assert!(cache.entries.is_empty());
+        assert!(cache
+            .ensure_with(&nm, &view, |root| (DependencyRootScan::read(root), false))
+            .is_ok_and(|changed| !changed));
+        assert!(cache.entries.is_empty());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 3);
+    }
+
+    /// #4565: an unreadable store directory makes the scan incomplete.
+    #[cfg(unix)]
+    #[test]
+    fn dependency_root_cache_skips_a_scan_with_an_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let locked = nm.join(slash_path(".pnpm/other@1"));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        // Restores access before the assertions can unwind into tempdir cleanup.
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = Restore(locked.clone());
+        set_mtime(&nm.join(".pnpm"), 1_000_000);
+        if fs::read_dir(&locked).is_ok() {
+            return; // Privileged runner: permissions are not enforced.
+        }
+        assert!(!DependencyRootScan::read_checked(&nm).1);
+
+        let mut cache = DependencyRootCache::default();
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats.scans, 2);
+        assert!(cache.entries.is_empty());
+    }
+
+    /// #4565: destinations over one canonical source root share its scan and
+    /// are each validated; a different root scans on its own.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_shares_one_scan_per_source_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(&temp.path().join("a"));
+        let (other_nm, _) = sealed_escaping_pnpm_install(&temp.path().join("b"));
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let [work, project, elsewhere] = ["work", "project", "elsewhere"].map(|n| shadow.join(n));
+        let mut cache = DependencyRootCache::default();
+
+        assert!(cache.ensure(&nm, &work).unwrap());
+        assert!(cache.ensure(&nm, &project).unwrap());
+        assert_eq!(cache.stats, cache_stats(1, 1, 2));
+        for view in [&work, &project] {
+            assert_eq!(
+                read_through(view, ".pnpm/host@1/node_modules/bar"),
+                b"linked"
+            );
+            assert!(!cache.ensure(&nm, view).unwrap());
+        }
+        assert_eq!(cache.stats, cache_stats(1, 1, 2));
+
+        assert!(cache.ensure(&other_nm, &elsewhere).unwrap());
+        assert_eq!(cache.stats, cache_stats(2, 2, 3));
+        assert_eq!(cache.entries.len(), 2);
+
+        let plain = plain_pnpm_install(&temp.path().join("c"));
+        let [first, second] = ["first", "second"].map(|n| shadow.join(n));
+        assert!(cache.ensure(&plain, &first).unwrap());
+        assert!(cache.ensure(&plain, &second).unwrap());
+        assert_eq!(cache.stats, cache_stats(3, 2, 3));
+    }
+
+    /// #4565: without the root's own `.modules.yaml` nothing is cached.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dependency_root_cache_rescans_every_call_without_modules_yaml() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = deep_escaping_pnpm_install(temp.path());
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let mut cache = DependencyRootCache::default();
+        assert!(cache.ensure(&nm, &view).unwrap());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        assert_eq!(cache.stats, cache_stats(3, 3, 3));
+        assert!(cache.entries.is_empty());
+    }
+
+    /// #4565: off Windows the reconcile never scans, cache or not.
+    #[cfg(unix)]
+    #[test]
+    fn dependency_root_cache_is_unused_off_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let (nm, _) = sealed_escaping_pnpm_install(temp.path());
+        let view = temp.path().join("view");
+        let mut cache = DependencyRootCache::default();
+        assert!(ensure_dependency_root_cached(&nm, &view, Some(&mut cache)).unwrap());
+        assert!(fs::symlink_metadata(&view)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(cache.stats, DependencyRootCacheStats::default());
+        assert!(cache.entries.is_empty());
+    }
+
+    /// #4565: cold vs warm reconcile over a synthetic ~1500-package store with
+    /// one deep escaping link. Prints both durations; asserts on counters.
+    #[cfg(windows)]
+    #[test]
+    fn dependency_root_cache_times_cold_and_warm_reconcile_on_windows() {
+        use std::io::Write as _;
+        const PACKAGES: usize = 1500;
+        let temp = tempfile::tempdir().unwrap();
+        let nm = temp.path().join(slash_path("site/node_modules"));
+        let linked = temp.path().join(slash_path("packages-ws/bar"));
+        fs::create_dir_all(&linked).unwrap();
+        fs::write(linked.join("sentinel"), "linked").unwrap();
+        for i in 0..PACKAGES {
+            let package = nm.join(slash_path(&format!(".pnpm/pkg{i}@1/node_modules/pkg{i}")));
+            fs::create_dir_all(&package).unwrap();
+            fs::write(package.join("package.json"), "{}").unwrap();
+            relative_dir_link(
+                &format!(".pnpm/pkg{i}@1/node_modules/pkg{i}"),
+                &nm.join(format!("pkg{i}")),
+            );
+            if i > 0 {
+                let prev = i - 1;
+                relative_dir_link(
+                    &format!("../../pkg{prev}@1/node_modules/pkg{prev}"),
+                    &nm.join(slash_path(&format!(
+                        ".pnpm/pkg{i}@1/node_modules/pkg{prev}"
+                    ))),
+                );
+            }
+        }
+        relative_dir_link(
+            "../../../../../packages-ws/bar",
+            &nm.join(slash_path(".pnpm/pkg0@1/node_modules/bar")),
+        );
+        seal_pnpm_install(&nm);
+        let shadow = temp.path().join("shadow");
+        fs::create_dir(&shadow).unwrap();
+        let view = shadow.join("node_modules");
+        let mut cache = DependencyRootCache::default();
+
+        let started = std::time::Instant::now();
+        assert!(cache.ensure(&nm, &view).unwrap());
+        let cold = started.elapsed();
+        let started = std::time::Instant::now();
+        assert!(!cache.ensure(&nm, &view).unwrap());
+        let warm = started.elapsed();
+        // Direct stderr: libtest captures only the print macros, so the line
+        // shows in the CI log of a passing run.
+        let _ = writeln!(
+            std::io::stderr(),
+            "[#4565 timing] {PACKAGES} packages: cold reconcile {cold:?}, warm reconcile {warm:?}"
+        );
+        assert_eq!(cache.stats, cache_stats(1, 1, 1));
+        assert_eq!(
+            read_through(&view, ".pnpm/pkg0@1/node_modules/bar"),
+            b"linked"
+        );
     }
 
     #[cfg(any(unix, windows))]
