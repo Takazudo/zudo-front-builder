@@ -2009,7 +2009,8 @@ fn ensure_dependency_link(target: &Path, link: &Path) -> std::io::Result<bool> {
 /// Marks a dependency root built by [`ensure_dependency_entry_view_from`].
 const DEPENDENCY_ENTRY_VIEW_MARKER: &str = ".zfb-dependency-entry-view";
 
-/// First line of [`DEPENDENCY_ENTRY_VIEW_MARKER`]; bump on any view layout change.
+/// First line of [`DEPENDENCY_ENTRY_VIEW_MARKER`]. Informational only: no
+/// reader checks it, and [`dependency_entry_view_matches`] verifies the layout.
 const DEPENDENCY_ENTRY_VIEW_FORMAT: &str = "zfb-dependency-entry-view v1";
 
 /// Reconcile `link` as the dependency root over `node_modules`: one
