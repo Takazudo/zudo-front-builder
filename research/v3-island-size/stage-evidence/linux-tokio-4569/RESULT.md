@@ -33,4 +33,4 @@ The stage exited 0 ([stage.log](stage.log)) and reported no actual gzip change. 
 - **Unchanged:** ceilings, allowance, the dependency fingerprint, `packageVersion` (`5.1.4`), `pnpmLockSha256` and every actual gzip total.
 - **Moved:** `toolchain.cargoLockSha256` (`e79303ad…` → `216d99d5…`), and `outcome`, which becomes `cargo-producer-lock-transition`.
 
-The runtime-identity predecessor is frozen as `scripts/__tests__/fixtures/island-size-linux-x64-v5.1.4-pnpm.json`. The Darwin arm64 contract is not changed here; it needs its own native measurement.
+The repository formatter rewraps `decision-linux-x64.json` on commit (committed SHA-256 `2d851406cf47738f4d88c6c9808884c843739a9fbff602fb8c9e933d190356ce`). The committed file differs from the applied bytes in whitespace only, and its parsed JSON is identical. The runtime-identity predecessor is frozen as `scripts/__tests__/fixtures/island-size-linux-x64-v5.1.4-pnpm.json`. The Darwin arm64 contract is not changed here; it needs its own native measurement.
