@@ -9,8 +9,7 @@ import {
   createSidebarWithDefaults,
   type SidebarWithDefaultsProps,
 } from "@takazudo/zudo-doc/sidebar-with-defaults";
-import { DEPLOY_SLUGS } from "./config/navigation-groups.mjs";
-import type { SidebarsConfig } from "@takazudo/zudo-doc/sidebar-utils";
+import type { SidebarDefinition, SidebarsConfig } from "@takazudo/zudo-doc/sidebar-utils";
 import {
   canonicalNavSection,
   editorialForestFor,
@@ -34,13 +33,13 @@ export function createNavigationChrome(baseBindings: ChromeHostBindings) {
     const existing = pairs.get(key);
     if (existing) return existing;
     const sidebarsConfig: SidebarsConfig = {
-      ...baseBindings.sidebarsConfig,
-      "deploy-embed": ["deploy-embed", ...DEPLOY_SLUGS],
+      // The host binding and the .mjs scope helper are loosely typed.
+      ...(baseBindings.sidebarsConfig as SidebarsConfig | undefined),
       // A scope's dedicated forest has one real landing-page root; the native
       // builder keeps all of it as navigation roots and starts at the scope's
       // configured view, so group rows link to their pages and Broaden reaches
       // real editorial ancestors.
-      ...(scope ? { [scope.navSection]: sidebarDefinitionFor(scope) } : {}),
+      ...(scope ? { [scope.navSection]: sidebarDefinitionFor(scope) as SidebarDefinition } : {}),
     };
     // Only this pair's Header/Sidebar (and version availability, unused while
     // zfb.config.ts sets no versions) read the overridden tree; breadcrumbs,
