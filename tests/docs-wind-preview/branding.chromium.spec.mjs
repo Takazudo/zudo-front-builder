@@ -8,14 +8,20 @@ const FONT = "ZFB Brand Jost";
 const FONT_PATH = `${prefix}fonts/jost-600.woff2`;
 const FONT_BYTES = 19900;
 const LOCALES = {
-  en: { home: prefix, inner: `${prefix}docs/architecture/client-side-routing/`, dark: "Dark" },
+  en: {
+    home: prefix,
+    inner: `${prefix}docs/architecture/client-side-routing/`,
+    light: "Light",
+    dark: "Dark",
+  },
   ja: {
     home: `${prefix}ja/`,
     inner: `${prefix}ja/docs/architecture/client-side-routing/`,
+    light: "ライト",
     dark: "ダーク",
   },
 };
-const MASK_SVGS = [
+const SYMBOL_SVGS = [
   "img/logo.svg",
   "img/brand/zfb-symbol.svg",
   "img/brand/zfb-symbol-small.svg",
@@ -26,20 +32,47 @@ const MASK_SVGS = [
 
 const brandLink = (page) => page.locator("header[data-header] a[data-header-logo]");
 
+// Each page navigates before its font body is read, so read every finished
+// response's body as it arrives and await them all before asserting.
 function watchFontRequests(page) {
-  const seen = [];
-  page.on("response", async (response) => {
+  const pending = [];
+  page.on("response", (response) => {
     const url = new URL(response.url());
     if (!/jost/i.test(url.pathname)) return;
-    const body = await response.body().catch(() => Buffer.alloc(0));
-    seen.push({
-      path: url.pathname,
-      status: response.status(),
-      type: response.headers()["content-type"],
-      bytes: body.length,
-    });
+    pending.push(
+      response.body().then((body) => ({
+        path: url.pathname,
+        status: response.status(),
+        type: response.headers()["content-type"],
+        bytes: body.length,
+      })),
+    );
   });
-  return seen;
+  return () => Promise.all(pending);
+}
+
+// Measure only after the swap-displayed brand face and any resize-driven
+// header work (the nav overflow menu) have settled.
+async function settle(page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+}
+
+// The theme menu island stays aria-disabled until it hydrates.
+async function themeButton(scope) {
+  const button = scope.locator("[data-zd-theme-menu] > button:visible").first();
+  await expect(button).not.toHaveAttribute("data-zd-pending");
+  return button;
+}
+
+async function openDrawer(page) {
+  const toggle = page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ });
+  await expect(async () => {
+    await toggle.click();
+    await expect(page.locator("[data-zd-mobile-sidebar]")).toBeInViewport({ timeout: 1000 });
+  }).toPass();
 }
 
 function watchErrors(page) {
@@ -107,11 +140,13 @@ function expectBrand(brand, home) {
 
 for (const [locale, labels] of Object.entries(LOCALES)) {
   test(`header and hero carry the C01 mark and local Jost ${locale}`, async ({ page }) => {
-    const fonts = watchFontRequests(page);
+    const fontResponses = watchFontRequests(page);
     const failures = watchErrors(page);
     await page.goto(labels.home);
     await expect(brandLink(page)).toHaveCount(1);
-    await expect(page.getByRole("link", { name: "zfb", exact: true })).toHaveCount(1);
+    await expect(
+      page.locator("header[data-header]").getByRole("link", { name: "zfb", exact: true }),
+    ).toHaveCount(1);
     await expect(brandLink(page)).toHaveAccessibleName("zfb");
 
     const loaded = await page.evaluate(async (family) => {
@@ -144,6 +179,7 @@ for (const [locale, labels] of Object.entries(LOCALES)) {
     expect(hero.nameWeight).toBe("600");
 
     await page.goto(labels.inner);
+    await settle(page);
     expectBrand(await readBrand(page), labels.home);
     const prose = await page
       .locator(".zd-content p")
@@ -151,6 +187,7 @@ for (const [locale, labels] of Object.entries(LOCALES)) {
       .evaluate((p) => getComputedStyle(p).fontFamily);
     expect(prose).not.toContain(FONT);
 
+    const fonts = await fontResponses();
     expect(fonts.length).toBeGreaterThan(0);
     for (const request of fonts) {
       expect(request.path).toBe(FONT_PATH);
@@ -175,7 +212,8 @@ for (const [locale, labels] of Object.entries(LOCALES)) {
     expect(light.iconPaint).toBe(light.color);
     await capture(page, `header-${locale}-system-light`, page.locator("header[data-header]"));
 
-    const toggle = page.locator("[data-zd-theme-menu]:visible > button").first();
+    // Explicit choices override the emulated system scheme in both directions.
+    const toggle = await themeButton(page.locator("header[data-header]"));
     await toggle.click();
     await page.getByRole("menuitemradio", { name: labels.dark, exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -183,6 +221,14 @@ for (const [locale, labels] of Object.entries(LOCALES)) {
     expect(dark.color).toBe(system.color);
     expect(dark.iconPaint).toBe(dark.color);
     await capture(page, `home-${locale}-dark`);
+
+    await page.emulateMedia({ colorScheme: "dark" });
+    await toggle.click();
+    await page.getByRole("menuitemradio", { name: labels.light, exact: true }).click();
+    await expect(page.locator("html")).not.toHaveAttribute("data-theme", "dark");
+    const chosenLight = await readBrand(page);
+    expect(chosenLight.color).toBe(light.color);
+    expect(chosenLight.iconPaint).toBe(chosenLight.color);
   });
 }
 
@@ -233,56 +279,61 @@ for (const { name, width, scale = 1, enlarged = false } of LAYOUTS)
         deviceScaleFactor: scale,
       });
       const page = await context.newPage();
-      for (const route of [labels.home, labels.inner]) {
-        await page.goto(route);
-        if (enlarged) await enlargeText(page, width);
-        const layout = await readHeaderLayout(page);
-        // Text-only enlargement also widens package content (tables, the rem-sized
-        // drawer); this spec owns the header, so page overflow is asserted at zoom only.
-        if (!enlarged) expect(layout.overflow, route).toBeLessThanOrEqual(0);
-        expect(layout.header.right).toBeLessThanOrEqual(width + 0.5);
-        expect(layout.icon.width).toBeGreaterThan(12);
-        expect(layout.icon.left).toBeGreaterThanOrEqual(layout.anchor.left - 0.5);
-        expect(layout.icon.right).toBeLessThanOrEqual(layout.anchor.right + 0.5);
-        expect(layout.icon.top).toBeGreaterThanOrEqual(layout.header.top);
-        expect(layout.icon.bottom).toBeLessThanOrEqual(layout.header.bottom);
-        const shown = layout.controls.map((control) => control.label);
-        expect(
-          shown.some((label) => /^Search$|^検索$/.test(label)),
-          route,
-        ).toBe(true);
-        for (const control of layout.controls) {
-          expect(control.left, control.label).toBeGreaterThanOrEqual(-0.5);
-          expect(control.right, control.label).toBeLessThanOrEqual(width + 0.5);
-          const overlaps =
-            control.left < layout.anchor.right - 0.5 && control.right > layout.anchor.left + 0.5;
-          expect(overlaps, control.label).toBe(false);
-        }
+      try {
+        for (const route of [labels.home, labels.inner]) {
+          await page.goto(route);
+          if (enlarged) await enlargeText(page, width);
+          await settle(page);
+          const layout = await readHeaderLayout(page);
+          // Text-only enlargement also widens package content (tables, the rem-sized
+          // drawer); this spec owns the header, so page overflow is asserted at zoom only.
+          if (!enlarged) expect(layout.overflow, route).toBeLessThanOrEqual(0);
+          expect(layout.header.right).toBeLessThanOrEqual(width + 0.5);
+          expect(layout.icon.width).toBeGreaterThan(12);
+          expect(layout.icon.left).toBeGreaterThanOrEqual(layout.anchor.left - 0.5);
+          expect(layout.icon.right).toBeLessThanOrEqual(layout.anchor.right + 0.5);
+          expect(layout.icon.top).toBeGreaterThanOrEqual(layout.header.top);
+          expect(layout.icon.bottom).toBeLessThanOrEqual(layout.header.bottom);
+          const shown = layout.controls.map((control) => control.label);
+          expect(
+            shown.some((label) => /^Search$|^検索$/.test(label)),
+            route,
+          ).toBe(true);
+          for (const control of layout.controls) {
+            expect(control.left, control.label).toBeGreaterThanOrEqual(-0.5);
+            expect(control.right, control.label).toBeLessThanOrEqual(width + 0.5);
+            const overlaps =
+              control.left < layout.anchor.right - 0.5 && control.right > layout.anchor.left + 0.5;
+            expect(overlaps, control.label).toBe(false);
+          }
 
-        // Theme and language controls: header bar on desktop, the drawer below lg.
-        const mobile = width < 1024;
-        if (mobile)
-          await page.getByRole("button", { name: /Open sidebar|サイドバーを開く/ }).click();
-        const scope = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "header[data-header]");
-        for (const control of [
-          scope.locator("[data-zd-theme-menu] > button:visible").first(),
-          scope.locator(mobile ? "a[lang]:visible" : "[data-language-toggle]:visible").first(),
-        ]) {
-          await expect(control).toBeVisible();
-          await control.scrollIntoViewIfNeeded();
-          await expect(control).toBeInViewport();
+          // Theme and language controls: header bar on desktop, the drawer below lg.
+          const mobile = width < 1024;
+          if (mobile) await openDrawer(page);
+          const scope = page.locator(mobile ? "[data-zd-mobile-sidebar]" : "header[data-header]");
+          for (const control of [
+            await themeButton(scope),
+            scope.locator(mobile ? "a[lang]:visible" : "[data-language-toggle]:visible").first(),
+          ]) {
+            await expect(control).toBeVisible();
+            await control.scrollIntoViewIfNeeded();
+            await expect(control).toBeInViewport({ ratio: 1 });
+          }
         }
+        if (name !== "390") {
+          await page.goto(labels.home);
+          if (enlarged) await enlargeText(page, width);
+          await settle(page);
+          await capture(page, `home-${locale}-${name.replaceAll(/[^0-9a-z]+/gi, "-")}`);
+        }
+      } finally {
+        await context.close();
       }
-      if (name !== "390") {
-        await page.goto(labels.home);
-        if (enlarged) await enlargeText(page, width);
-        await capture(page, `home-${locale}-${name.replaceAll(/[^0-9a-z]+/gi, "-")}`);
-      }
-      await context.close();
     });
 
 test("the brand link is keyboard-focusable", async ({ page }) => {
   await page.goto(prefix);
+  await themeButton(page.locator("header[data-header]"));
   for (let step = 0; step < 8; step++) {
     await page.keyboard.press("Tab");
     if (await brandLink(page).evaluate((el) => el === document.activeElement)) break;
@@ -326,12 +377,16 @@ test("favicons, social card and brand SVGs are served under the base", async ({
   expect(ico.status()).toBe(200);
   expect((await ico.body()).readUInt16LE(4)).toBe(3);
 
-  for (const file of [...MASK_SVGS, "img/brand/zfb-lockup.svg", "img/brand/zfb-lockup-white.svg"]) {
+  for (const file of [
+    ...SYMBOL_SVGS,
+    "img/brand/zfb-lockup.svg",
+    "img/brand/zfb-lockup-white.svg",
+  ]) {
     const response = await request.get(`${prefix}${file}`);
     expect(response.status(), file).toBe(200);
     const svg = await response.text();
     expect(svg, file).not.toMatch(/<(image|script|text|foreignObject|rect|mask|filter)\b|href=/);
-    if (MASK_SVGS.includes(file)) expect(svg.match(/<path\b/g), file).toHaveLength(2);
+    if (SYMBOL_SVGS.includes(file)) expect(svg.match(/<path\b/g), file).toHaveLength(2);
   }
 });
 

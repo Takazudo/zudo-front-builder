@@ -1,7 +1,7 @@
 <p>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/public/img/brand/zfb-lockup-white.svg">
-    <img src="docs/public/img/brand/zfb-lockup.svg" alt="zfb logo" width="223" height="80">
+    <img src="docs/public/img/brand/zfb-lockup.svg" alt="zfb" width="223" height="80">
   </picture>
 </p>
 
