@@ -1,16 +1,16 @@
 # Owner-attested local Darwin evidence
 
 This adapter extends `cargo-internal-rewire`, `cargo-removal`, the exact #4314 `cargo-producer-lock`
-transition and the provenance-only `release-bump` and `runtime-identity` re-pins
-(see the profile table below). It accepts retained native Darwin
+transition, the provenance-only `release-bump` and `runtime-identity` re-pins and the
+paired `dependency-graph` re-pin (see the profile table below). It accepts retained native Darwin
 arm64 bundles through the same measurement, normalization, fingerprint, Cargo
 closure/declaration and paired-stage validators as Actions artifacts. It changes no
 ceiling, allowance, budget pin, default feature, producer or collection command.
 Every other reason still requires its existing provenance route.
 
-## One module, five reviewed profiles
+## One module, six reviewed profiles
 
-`scripts/island-size-local-evidence.mjs` holds exactly five local-evidence
+`scripts/island-size-local-evidence.mjs` holds exactly six local-evidence
 profiles in `LOCAL_EVIDENCE_PROFILES`, each for its own purpose:
 
 | Reason | Purpose | Transition binding | Lock binding |
@@ -20,6 +20,7 @@ profiles in `LOCAL_EVIDENCE_PROFILES`, each for its own purpose:
 | `cargo-producer-lock` | #4314 rustls security transition ([recipe](LOCAL-SECURITY-4314.md)) | `baselineEvidence.cargoTransition` equal to the exact `rustls-security-4314` decision | Exact old/new `Cargo.lock` SHA-256 of that decision |
 | `release-bump` | Darwin package-version re-pin after a release (owner decision 2026-10-21) | None; `outcome` must be `release-version-stamp` | `Cargo.lock` must not move (the re-pin's own refusal) |
 | `runtime-identity` | Darwin runtime-identity re-pin (same decision) | None; `outcome` must be `runtime-identity-repin` | `Cargo.lock` must not move (the re-pin's own refusal) |
+| `dependency-graph` | Darwin half of the paired #4218 dependency-graph re-pin (owner decision 2026-10-28, #4580) | `baselineEvidence.fingerprintTransition` from the shared fingerprint refusals; `outcome` must be `dependency-graph-repin` | `Cargo.lock` must not move (the re-pin's own refusal) |
 
 On 2026-10-21 the owner decided that Darwin re-pins must not require a hosted
 Mac runner, so the two provenance-only re-pins joined the table. They keep every
@@ -27,6 +28,15 @@ Actions-route check: equal raw and `gzipNormalized` totals, zero allowance, no
 `Cargo.lock` or dependency-fingerprint movement, and the checkout identity match.
 Only the evidence source changes. They are not paired: each stages Darwin alone
 and is applied from a clean checkout at the measured source.
+
+On 2026-10-28 the owner approved the zudo-doc 9.1.0 docs bump (#4580), which
+moves only the dependency fingerprint, through local Darwin evidence, so
+`dependency-graph` joined the table. It keeps every check of the Actions route:
+only `dependencyFingerprint.sha256` and the recorded `pnpm-lock.yaml` hash may
+move, every raw and `gzipNormalized` total stays equal, and the package version,
+`Cargo.lock`, fixtures, runners and normalizer must match the contract. It stays
+paired: the Linux half still comes from the `health` artifact of the same
+candidate, both stage into one directory, and `--apply` lands them together.
 
 A stage whose evidence carries another profile's transition key is rejected,
 and so is any reason not in the table. Adding a reason is a provenance-policy
@@ -114,6 +124,11 @@ the current directory. Relative input file paths (`--old-cargo-lock`,
 `--reviewed-cargo-transition`) are read from the measured checkout. For the
 security profile, use [LOCAL-SECURITY-4314.md](LOCAL-SECURITY-4314.md) instead;
 only that profile requires `--reviewed-cargo-transition`.
+
+For `dependency-graph`, pass the same receipt, tooling and source flags with
+`--reason dependency-graph` and the `--stage` directory the Linux run stages
+into (either order). `--source-sha` must be the Linux run's PR merge source or
+its probe head, as on the Actions route. No Cargo flag is accepted.
 
 For `release-bump` or `runtime-identity`, pass the same receipt, tooling and
 source flags with `--reason release-bump` (or `runtime-identity`), an

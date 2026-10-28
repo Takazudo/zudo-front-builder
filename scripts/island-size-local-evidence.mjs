@@ -31,11 +31,12 @@ export function assertLocalSecurityTransition(transition) {
 // own reviewed purpose: #4311 internal Cargo rewires (evidence.cargoRewire),
 // #4388 declared removal-only Cargo transitions (evidence.cargoRemoval),
 // the exact #4314 security, #4268 noyalib and #4569 tokio lock transitions
-// (evidence.cargoTransition), and the
+// (evidence.cargoTransition), the
 // provenance-only release-bump / runtime-identity re-pins, which carry no Cargo
 // transition (owner decision 2026-10-21: Darwin re-pins must not require a
-// hosted Mac runner). Adding a reason here is a provenance-policy decision, not
-// a refactor.
+// hosted Mac runner), and the paired #4218 dependency-graph re-pin
+// (evidence.fingerprintTransition; owner decision 2026-10-28, #4580). Adding a
+// reason here is a provenance-policy decision, not a refactor.
 const provenanceRepin = (reason, outcome) =>
   Object.freeze({
     transitionKey: null,
@@ -80,8 +81,21 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
   }),
   "release-bump": provenanceRepin("release-bump", "release-version-stamp"),
   "runtime-identity": provenanceRepin("runtime-identity", "runtime-identity-repin"),
+  "dependency-graph": Object.freeze({
+    transitionKey: "fingerprintTransition",
+    requiresReviewedTransition: false,
+    assertContract(contract) {
+      if (
+        !contract.baselineEvidence?.fingerprintTransition ||
+        typeof contract.baselineEvidence.fingerprintTransition !== "object"
+      )
+        fail("dependency-graph evidence lacks its fingerprint transition");
+      if (contract.outcome !== "dependency-graph-repin")
+        fail("dependency-graph evidence must record outcome dependency-graph-repin");
+    },
+  }),
 });
-const TRANSITION_KEYS = ["cargoRewire", "cargoRemoval", "cargoTransition"];
+const TRANSITION_KEYS = ["cargoRewire", "cargoRemoval", "cargoTransition", "fingerprintTransition"];
 
 export function localEvidenceProfile(reason) {
   if (typeof reason !== "string" || !Object.hasOwn(LOCAL_EVIDENCE_PROFILES, reason))

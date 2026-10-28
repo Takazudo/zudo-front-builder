@@ -1330,8 +1330,9 @@ export function repinDarwinDependencyGraph(contract, totals, evidence, checkout)
     evidence.packageVersion +
     " ceilings on metric " +
     metric +
-    ", re-pinned from the native artifact of workflow_dispatch run " +
-    evidence.runId +
+    (evidence.localReceipt
+      ? ", re-pinned from owner-attested local native evidence " + evidence.localReceipt.sha256
+      : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
     " after a reviewed dependency-graph change (" +
@@ -1344,26 +1345,40 @@ export function repinDarwinDependencyGraph(contract, totals, evidence, checkout)
     ". Workspace and packed eight-fixture matrices each have two byte-identical full-dist " +
     "inventories. Other platforms and toolchains are not covered.";
   next.baselineEvidence = {
-    event: "ci-artifact",
-    runId: evidence.runId,
-    jobId: evidence.jobId,
+    ...(evidence.localReceipt
+      ? {
+          event: "local-native",
+          localReceipt: evidence.localReceipt,
+          stagingTool: evidence.stagingTool,
+        }
+      : {
+          event: "ci-artifact",
+          runId: evidence.runId,
+          jobId: evidence.jobId,
+        }),
     sourceSha: evidence.sourceSha,
-    artifact: {
-      id: evidence.artifactId,
-      name: "island-size-darwin-arm64-" + evidence.sourceSha,
-      expiresAt: evidence.artifactExpiresAt,
-    },
+    ...(evidence.localReceipt
+      ? {}
+      : {
+          artifact: {
+            id: evidence.artifactId,
+            name: "island-size-darwin-arm64-" + evidence.sourceSha,
+            expiresAt: evidence.artifactExpiresAt,
+          },
+        }),
     nativeRunner: evidence.nativeRunner,
     repinnedFrom,
     fingerprintTransition: transition,
     originalCheckerResult: evidence.originalCheckerResult,
     actualGzip: actualGzipRows(totals),
     note:
-      "Dependency-graph re-pin from the native Darwin arm64 artifact of run " +
-      evidence.runId +
-      " (job " +
-      evidence.jobId +
-      ") at source " +
+      (evidence.localReceipt
+        ? "Dependency-graph re-pin from owner-attested local native Darwin arm64 evidence at source "
+        : "Dependency-graph re-pin from the native Darwin arm64 artifact of run " +
+          evidence.runId +
+          " (job " +
+          evidence.jobId +
+          ") at source ") +
       evidence.sourceSha +
       ". Complete workspace and packed eight-fixture matrices, each with two identical full-dist " +
       "inventories. The new fingerprint was computed by lock-fingerprint.mjs on the checkout and " +
@@ -1389,15 +1404,19 @@ export function darwinDependencyGraphReadmeSection(contract, gzipMoves) {
     "\n\n" +
     "The Darwin arm64 contract re-pinned `dependencyFingerprint.sha256` at v" +
     contract.toolchain.packageVersion +
-    " from the native artifact " +
-    e.artifact.id +
-    " of [workflow_dispatch run " +
-    e.runId +
-    "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
-    e.runId +
-    ") (job " +
-    e.jobId +
-    ") at source `" +
+    (e.event === "local-native"
+      ? " from owner-attested local native evidence (receipt SHA-256 `" +
+        e.localReceipt.sha256 +
+        "`) at source `"
+      : " from the native artifact " +
+        e.artifact.id +
+        " of [workflow_dispatch run " +
+        e.runId +
+        "](https://github.com/Takazudo/zudo-front-builder/actions/runs/" +
+        e.runId +
+        ") (job " +
+        e.jobId +
+        ") at source `") +
     e.sourceSha +
     "` after a reviewed dependency-graph change: " +
     fingerprintTransitionMarkdown(e.fingerprintTransition) +
