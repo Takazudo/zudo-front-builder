@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="6" fill="#7c3aed"/>
-  <text x="16" y="23" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="white" text-anchor="middle">Z</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+<title>ZFB C01 Twin Joint</title>
+<style>:root{color:#111111}@media(prefers-color-scheme:dark){:root{color:#ffffff}}</style>
+<path fill="currentColor" d="M216 0 L216 124.492621 L360 74.492621 L360 200.054143 L216 168.054143 L216 353.945857 L360 321.945857 L360 447.507379 L216 397.507379 L216 512 H48 A48 48 0 0 1 0 464 V48 A48 48 0 0 1 48 0 Z"/>
+<path fill="currentColor" d="M248 0 L248 79.507379 L392 29.507379 L392 239.945857 L248 207.945857 L248 314.054143 L392 282.054143 L392 492.492621 L248 442.492621 L248 512 H464 A48 48 0 0 0 512 464 V48 A48 48 0 0 0 464 0 Z"/>
 </svg>

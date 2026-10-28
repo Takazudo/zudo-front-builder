@@ -1,0 +1,21 @@
+{
+  "productName": "zfb",
+  "projectName": "zudo-front-builder",
+  "font": "../../public/fonts/jost-600.woff2",
+  "lockup": {
+    "symbolSize": 128,
+    "symbolTextGap": 36,
+    "wordmarkInkHeight": 112
+  },
+  "social": {
+    "width": 1200,
+    "height": 630,
+    "symbolSize": 192,
+    "lockupTop": 178,
+    "projectNameSize": 32,
+    "projectNameTop": 416,
+    "background": "#ffffff",
+    "ink": "#000000",
+    "secondaryInk": "#404040"
+  }
+}

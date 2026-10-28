@@ -1,3 +1,10 @@
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/public/img/brand/zfb-lockup-white.svg">
+    <img src="docs/public/img/brand/zfb-lockup.svg" alt="zfb" width="223" height="80">
+  </picture>
+</p>
+
 # zudo-front-builder (zfb)
 
 Almost all everyday frontend development in one CLI: create, develop, check, build and preview. Write TSX, MDX, Markdown or HTML pages; compose content APIs, zudo-react interactivity and zudo-wind CSS. The standalone binary and npm distribution provide the same CLI. Full TypeScript checking and Cloudflare tooling still require Node.js.

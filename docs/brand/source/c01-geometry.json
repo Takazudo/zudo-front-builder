@@ -1,0 +1,40 @@
+{
+  "name": "ZFB C01 Twin Joint",
+  "viewBox": [0, 0, 512, 512],
+  "outerRadius": 48,
+  "seamCenterline": [
+    [232, 0],
+    [232, 102],
+    [376, 52],
+    [376, 238],
+    [232, 188],
+    [232, 334],
+    [376, 284],
+    [376, 470],
+    [232, 420],
+    [232, 512]
+  ],
+  "smallSeamCenterline": [
+    [232, 0],
+    [232, 102],
+    [376, 52],
+    [376, 220],
+    [232, 188],
+    [232, 334],
+    [376, 302],
+    [376, 470],
+    [232, 420],
+    [232, 512]
+  ],
+  "standardSeamWidth": 8,
+  "smallSeamWidth": 32,
+  "tailCount": 2,
+  "tailDirection": "left-to-right",
+  "reference": "approved-C01-selection-board.png; left candidate only",
+  "colors": {
+    "black": "#000000",
+    "white": "#ffffff",
+    "referenceLeft": "#303030",
+    "referenceRight": "#909090"
+  }
+}
