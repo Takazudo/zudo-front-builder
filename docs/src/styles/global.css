@@ -29,6 +29,43 @@
   contain: paint;
 }
 
+/* ── Brand: C01 Twin Joint product name (docs/brand/README.md) ─────────
+   Self-hosted Jost SemiBold (OFL: public/fonts/OFL.txt). zfb leaves
+   project-authored CSS URLs untouched and emits this file as
+   assets/styles[-<hash>].css, so the URL is relative to that OUTPUT file:
+   it resolves to <base>fonts/jost-600.woff2 at "/" and under a subpath base.
+   A source-relative font under src/ would not be copied. */
+@font-face {
+  font-family: "ZFB Brand Jost";
+  src: url("../fonts/jost-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Gated on the headerBrand opt-in so the header name changes only together
+   with the brand mark. */
+:root:has([data-header-logo][data-header-brand]) {
+  --zdc-header-logo-font: "ZFB Brand Jost", var(--font-sans);
+  --zdc-header-logo-weight: 600;
+}
+
+/* (0,3,1) beats a theme pack's tracked/uppercase/italic logo rules (0,2,1). */
+html [data-header-logo][data-header-brand],
+html[data-theme-pack] [data-header-logo][data-header-brand] {
+  letter-spacing: normal;
+  text-transform: none;
+  font-style: normal;
+}
+
+html [data-zd-home-hero] [data-zd-site-name] {
+  font-family: "ZFB Brand Jost", var(--font-sans);
+  font-weight: 600;
+  font-style: normal;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 /* ── Your token overrides ──────────────────────────────────────────────
    Override design-token custom properties from the package theme here. */
 :root {

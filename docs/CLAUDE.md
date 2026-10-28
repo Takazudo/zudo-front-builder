@@ -76,7 +76,8 @@ docs/
 │   ├── [locale].tsx                  # "/{locale}" — locale home: EN-only compact links + JA tags
 │   ├── docs/[[...slug]].tsx          # "/docs/**" — self-contained stub, see file header
 │   └── [locale]/docs/[[...slug]].tsx # "/{locale}/docs/**" — locale counterpart (JA fallback dirs)
-├── public/               # Static assets copied flat to dist/ (favicons, img/, _redirects)
+├── brand/                # C01 brand geometry + optional generators (README.md); never built
+├── public/               # Static assets copied flat to dist/ (favicons, img/, fonts/, _redirects)
 └── src/
     ├── chrome-bindings.tsx   # chromeBindingsModule: MDX playground islands, home extras, nav chrome
     ├── navigation-chrome.tsx # Header/Sidebar factories fed with the editorial navigation data

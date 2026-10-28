@@ -27,6 +27,9 @@ export default defineConfig(
     // home hero mask by convention; naming the asset explicitly reproduces
     // today's rendering. Neither v4 default is neutral.
     logo: "/img/logo.svg",
+    // C01 Twin Joint compact mark beside the live "zfb" header name; the
+    // standard master is logo.svg above. Sources: docs/brand/README.md.
+    headerBrand: { icon: "/img/brand/zfb-symbol-small.svg" },
     home: {
       wide: true,
       introMarkdown: `Almost all everyday frontend development in one CLI. Create a site, develop pages, check content and types, build, and preview with zfb. Write TSX, MDX, Markdown or HTML; add zudo-react interactivity and zudo-wind styles as needed.
