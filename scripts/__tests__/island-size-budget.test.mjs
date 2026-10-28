@@ -856,23 +856,23 @@ describe("island shipped-size budget", () => {
   it("records the reviewed Darwin arm64 ceilings with zero allowance", () => {
     const darwinContract = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
     expect(darwinContract.platform).toEqual({ os: "darwin", arch: "arm64" });
-    expect(darwinContract.toolchain.packageVersion).toBe("5.1.4");
+    expect(darwinContract.toolchain.packageVersion).toBe("5.1.5");
     expect(darwinContract.schemaVersion).toBe(3);
     expect(darwinContract.metric).toBe(IDENTITY_NORMALIZED_METRIC);
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("4ecf8db40745124bf072c37a5fa9f25aa078421e");
+    expect(darwinContract.baselineSourceSha).toBe("8dbc59834efc2eb86a6a93ee2620473408415712");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "29c704ca40f2932d5545d20aae142526fb9c812f9f49ce027d0dd2b4e6693ae6" },
+      localReceipt: { sha256: "e46bff1e40095270eb3d725749df6f198791407bc67c49fa216275e5664b36f7" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
     // owner-attested local evidence); the ceilings below follow the Rolldown
     // default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "fa2cbec1b79e90cd7ba6f9a7304ad7ed77a18b4a19e924b83c2924eca1ad44d2",
+      "adc1bda0b9114ad5a85faad1a537a82db2bf819bcd67ffbf03c09454f7b10e59",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
@@ -1538,15 +1538,15 @@ const repinnedFromContracts = [
     baselineRunId: 40306538134,
   },
   {
-    // The Darwin tokio-security-4569 producer-lock transition cites the v5.1.4
-    // release contract at 4ecf8db4 on the #4569 branch.
+    // The Darwin v5.1.5 release bump (#4580) cites the tokio-security-4569
+    // Darwin contract on main at 8dbc5983.
     file: "decision.json",
-    commit: "4ecf8db40745124bf072c37a5fa9f25aa078421e",
-    sha256: "f23b4969946b6af23349066ece38bb6e951ba76014d75e8f101ffe88acd94113",
-    fixture: "fixtures/island-size-darwin-v5.1.4-release.json",
-    outcome: "release-version-stamp",
+    commit: "8dbc59834efc2eb86a6a93ee2620473408415712",
+    sha256: "661c48dc190763d7c3071a9658853f395b2a79ef314a78e33c3a938845d6a95a",
+    fixture: "fixtures/island-size-darwin-v5.1.4-tokio.json",
+    outcome: "cargo-producer-lock-transition",
     packageVersion: "5.1.4",
-    baselineSourceSha: "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+    baselineSourceSha: "4ecf8db40745124bf072c37a5fa9f25aa078421e",
     baselineRunId: undefined,
   },
 ];
@@ -3100,9 +3100,17 @@ describe("live contracts preserve released evidence and authentic predecessors",
 
   // The tokio-security-4569 transition (#4569): Darwin from owner-attested local
   // native evidence at 4ecf8db4, after the v5.1.4 release bump.
-  it("moves the live Darwin contract from the frozen v5.1.4 bytes only by the tokio-security-4569 transition", () => {
+  // Verbatim bytes of decision.json at 8dbc5983 (main), the tokio-security-4569
+  // state the v5.1.5 release bump (#4580) moved.
+  const darwinTokio = () =>
+    frozenDenoExit(
+      "fixtures/island-size-darwin-v5.1.4-tokio.json",
+      "661c48dc190763d7c3071a9658853f395b2a79ef314a78e33c3a938845d6a95a",
+    );
+
+  it("moves the frozen tokio Darwin contract from the frozen v5.1.4 bytes only by the tokio-security-4569 transition", () => {
     const predecessor = darwinV514();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    const live = darwinTokio();
     expect(live.outcome).toBe("cargo-producer-lock-transition");
     expect(predecessor.toolchain.cargoLockSha256).toBe(
       "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
@@ -3140,6 +3148,30 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
     expect(outsideLockTransitionKeys(live)).toEqual(outsideLockTransitionKeys(predecessor));
     expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+  });
+
+  // The v5.1.5 release bump (#4580): Darwin from owner-attested local native
+  // evidence collected on wrath-of-god at 8dbc5983.
+  it("moves the live Darwin contract from the frozen tokio bytes only by the v5.1.5 release bump", () => {
+    const predecessor = darwinTokio();
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.1.5");
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "adc1bda0b9114ad5a85faad1a537a82db2bf819bcd67ffbf03c09454f7b10e59",
+    );
+    expect(live.baselineSourceSha).toBe("8dbc59834efc2eb86a6a93ee2620473408415712");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "8dbc59834efc2eb86a6a93ee2620473408415712",
+      stagingTool: { commit: "8dbc59834efc2eb86a6a93ee2620473408415712" },
+      localReceipt: { sha256: "e46bff1e40095270eb3d725749df6f198791407bc67c49fa216275e5664b36f7" },
+      originalCheckerResult: { exitCode: 0 },
+    });
+    for (const key of ["cargoRewire", "cargoTransition", "cargoRemoval"]) {
+      expect(live.baselineEvidence).not.toHaveProperty(key);
+    }
+    expectReleaseBumpOnly(predecessor, live);
   });
 
   it("keeps the dated README corrections", () => {

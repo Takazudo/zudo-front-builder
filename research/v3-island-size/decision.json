@@ -10,9 +10,9 @@
     "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
   },
   "decisionIssue": 3469,
-  "outcome": "cargo-producer-lock-transition",
+  "outcome": "release-version-stamp",
   "selectedOptimizations": [],
-  "baselineSourceSha": "4ecf8db40745124bf072c37a5fa9f25aa078421e",
+  "baselineSourceSha": "8dbc59834efc2eb86a6a93ee2620473408415712",
   "platform": {
     "os": "darwin",
     "arch": "arm64"
@@ -32,12 +32,12 @@
     "measure.mjs": "e7571c3e781e2c10cddecc135e2ea411232f766e8f043f1fd8b95582c468b47c"
   },
   "toolchain": {
-    "packageVersion": "5.1.4",
+    "packageVersion": "5.1.5",
     "honoVersion": "4.12.25",
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "fa2cbec1b79e90cd7ba6f9a7304ad7ed77a18b4a19e924b83c2924eca1ad44d2",
+    "pnpmLockSha256": "adc1bda0b9114ad5a85faad1a537a82db2bf819bcd67ffbf03c09454f7b10e59",
     "cargoLockSha256": "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -116,18 +116,18 @@
     }
   },
   "proposedCiLane": "Permanent Darwin arm64 size measurement and optional budget enforcement are available through workflow_dispatch in .github/workflows/island-size-darwin.yml (dispatch-only; the temporary pull_request bootstrap was removed under #4170). Linux x64 budget enforcement remains in .github/workflows/health.yml jobs.health.",
-  "platformStatus": "Darwin arm64 has exact zero-allowance v5.1.4 ceilings on metric gzip-identity-normalized v2, re-pinned from owner-attested local native evidence 29c704ca40f2932d5545d20aae142526fb9c812f9f49ce027d0dd2b4e6693ae6 at source 4ecf8db40745124bf072c37a5fa9f25aa078421e after a reviewed non-additive Cargo.lock transition (Cargo.lock e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d to 216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810 under reviewed non-additive transition tokio-security-4569 (manifest SHA-256 c399eadde02b884221fbecea61ea6ee51263451be0dcc968d3cdba0a21a20a87): 1 new identities, 0 changed records and 1 removed identities, proved against c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283:Cargo.lock). The package version, fixtures, runners, pnpm-lock.yaml and its dependency fingerprint, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the Cargo.lock hash moved. Equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Darwin arm64 has exact zero-allowance v5.1.5 ceilings on metric gzip-identity-normalized v2, re-pinned (release-bump) from owner-attested local native evidence e46bff1e40095270eb3d725749df6f198791407bc67c49fa216275e5664b36f7 at source 8dbc59834efc2eb86a6a93ee2620473408415712. Every raw and gzipNormalized total is unchanged from the v5.1.4 contract; equal totals alone do not prove byte-identical product code. 10 actual gzip totals moved (workspace model +4, scalar-signal +3, blog-theme, json-api and show-for +1, multi-island -1; packed blog-theme +5, json-api +1, model -1, show-for -3; evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "local-native",
     "localReceipt": {
-      "sha256": "29c704ca40f2932d5545d20aae142526fb9c812f9f49ce027d0dd2b4e6693ae6",
+      "sha256": "e46bff1e40095270eb3d725749df6f198791407bc67c49fa216275e5664b36f7",
       "receipt": {
         "schemaVersion": 1,
         "kind": "local-native-darwin",
         "operator": "zfb owner, local Darwin arm64 collection",
-        "collectedAt": "2026-10-26T11:20:59.000Z",
+        "collectedAt": "2026-10-28T08:20:47.000Z",
         "source": {
-          "commit": "4ecf8db40745124bf072c37a5fa9f25aa078421e",
+          "commit": "8dbc59834efc2eb86a6a93ee2620473408415712",
           "clean": true
         },
         "platform": {
@@ -228,21 +228,21 @@
           [
             "tar",
             "-xzf",
-            "<PACKED_ZFB_TARBALL_STEM>-slugify-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-slugify-5.1.5.tgz",
             "-C",
             "<SOURCE>/target/island-size/packed-slugify"
           ],
           [
             "tar",
             "-xzf",
-            "<PACKED_ZFB_TARBALL_STEM>-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-5.1.5.tgz",
             "-C",
             "<SOURCE>/target/island-size/packed-package"
           ],
           [
             "tar",
             "-xzf",
-            "<PACKED_ZFB_TARBALL_STEM>-runtime-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-runtime-5.1.5.tgz",
             "-C",
             "<SOURCE>/target/island-size/packed-runtime"
           ],
@@ -293,15 +293,15 @@
             "--hono-package",
             "packages/zfb-runtime/node_modules/hono",
             "--zfb-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-5.1.5.tgz",
             "--runtime-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-runtime-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-runtime-5.1.5.tgz",
             "--zfb",
             "target/debug/zfb",
             "--esbuild",
             "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "4ecf8db40745124bf072c37a5fa9f25aa078421e",
+            "8dbc59834efc2eb86a6a93ee2620473408415712",
             "--out",
             "<SOURCE>/target/island-size/real-workspace"
           ],
@@ -336,15 +336,15 @@
             "--hono-package",
             "packages/zfb-runtime/node_modules/hono",
             "--zfb-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-5.1.5.tgz",
             "--runtime-tarball",
-            "<PACKED_ZFB_TARBALL_STEM>-runtime-5.1.4.tgz",
+            "<PACKED_ZFB_TARBALL_STEM>-runtime-5.1.5.tgz",
             "--zfb",
             "target/debug/zfb",
             "--esbuild",
             "crates/zfb/binaries/esbuild/esbuild",
             "--source-sha",
-            "4ecf8db40745124bf072c37a5fa9f25aa078421e",
+            "8dbc59834efc2eb86a6a93ee2620473408415712",
             "--out",
             "<SOURCE>/target/island-size/real-packed"
           ],
@@ -399,15 +399,15 @@
           ["cat", "<SOURCE>/target/island-size/check-budget.log"]
         ],
         "bundle": {
-          "location": "<BUNDLE>/island-size (in frozen bundle <BUNDLE>, SHA256SUMS sha256 09a6d7554052c297fda4269b460529718fff82e493de166dd72988c372ce5d1d)",
-          "sha256": "b495bb45c361489b73536293ff7f5dc8aff9d7a997761689c0ee44bca15b1106"
+          "location": "<BUNDLE>/island-size (in frozen bundle <BUNDLE>, SHA256SUMS sha256 ba4ec398e10eca89ac9186d77c1f00240bb509c62705702b0f423f06deb3175e)",
+          "sha256": "bdc25b3ef12a89481875eb9f0775958390c3c0a724801413c660348aeecb48a1"
         }
       }
     },
     "stagingTool": {
-      "commit": "4ecf8db40745124bf072c37a5fa9f25aa078421e"
+      "commit": "8dbc59834efc2eb86a6a93ee2620473408415712"
     },
-    "sourceSha": "4ecf8db40745124bf072c37a5fa9f25aa078421e",
+    "sourceSha": "8dbc59834efc2eb86a6a93ee2620473408415712",
     "nativeRunner": {
       "platform": "darwin-arm64",
       "macOS": "27.0.1 (26A434)",
@@ -418,66 +418,49 @@
       "pnpm": "12.8.2",
       "esbuild": "0.25.12",
       "hono": "4.12.25",
-      "zfbBinarySha256": "24e386ffc4855aa502d364b7d01dbb5079aa39b19042c25e0747f425832c4c90",
+      "zfbBinarySha256": "84f530f9e692c9f443ef54a97a88a4252c029efe02e5549b95bb44c2b2dcba19",
       "esbuildBinarySha256": "3e030ee2aa86ad3c33e5e95ae0e53bb03de40e0da35c9b1180a67de4a497cae5",
-      "zfbTarballSha256": "b14df7b6a81cbc43e3f103ca7052abf6e3dfad7287d190ba80bb8925beecfbf2",
-      "runtimeTarballSha256": "8a4c0ae27f77cb697e2e4558ad91690101410d0e68a1fa1b9985fbf33fd9c479",
-      "slugifyTarballSha256": "e0190603a0b4f19829492adcc73e2963a7530da865ec46496e0bac319bc129c2"
+      "zfbTarballSha256": "aa0930860a37c9371a0fd1fe857c38b88c63180765c26a7df8643c7df893ec40",
+      "runtimeTarballSha256": "eccf5503f6f6d287ef5353bb106e4da884ab938b81a949deb31bf07c4ff65f51",
+      "slugifyTarballSha256": "11945ef998bcd450c56525c10506218b4959842f8782809642c7289624174ed3"
     },
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "release-version-stamp",
+      "outcome": "cargo-producer-lock-transition",
       "packageVersion": "5.1.4",
-      "baselineSourceSha": "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
+      "baselineSourceSha": "4ecf8db40745124bf072c37a5fa9f25aa078421e",
       "contract": {
-        "sha256": "f23b4969946b6af23349066ece38bb6e951ba76014d75e8f101ffe88acd94113",
-        "commit": "4ecf8db40745124bf072c37a5fa9f25aa078421e",
+        "sha256": "661c48dc190763d7c3071a9658853f395b2a79ef314a78e33c3a938845d6a95a",
+        "commit": "8dbc59834efc2eb86a6a93ee2620473408415712",
         "path": "research/v3-island-size/decision.json"
       }
     },
-    "cargoTransition": {
-      "oldSha": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d",
-      "newSha": "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
-      "added": ["tokio@1.54.1"],
-      "changed": [],
-      "removed": ["tokio@1.52.3"],
-      "oldLockSource": {
-        "commit": "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283",
-        "path": "Cargo.lock",
-        "sha256": "e79303ad33f123966d23efb32e309f4263afc00e587ea14bab3a2c872273893d"
-      },
-      "review": {
-        "id": "tokio-security-4569",
-        "manifestSha256": "c399eadde02b884221fbecea61ea6ee51263451be0dcc968d3cdba0a21a20a87",
-        "sourceSha": "c8a44a5d5a42b08bad67cf24ea8f04b5dbae4283"
-      }
-    },
     "originalCheckerResult": {
-      "exitCode": 1,
-      "logSha256": "1baf392543d207586494ad559b34791638ef5291c705b70a725b9912c8346ab8"
+      "exitCode": 0,
+      "logSha256": "8ad91a5b009d22f1aa2413744d69a736e52882d1d558fab896e85be215088459"
     },
     "actualGzip": {
       "workspace": {
-        "blog-theme": 21407,
-        "event-only": 21267,
-        "json-api": 21365,
-        "model": 21271,
-        "multi-island": 21366,
-        "no-island": 0,
-        "scalar-signal": 21272,
-        "show-for": 21356
-      },
-      "packed": {
-        "blog-theme": 21404,
+        "blog-theme": 21408,
         "event-only": 21267,
         "json-api": 21366,
         "model": 21275,
+        "multi-island": 21365,
+        "no-island": 0,
+        "scalar-signal": 21275,
+        "show-for": 21357
+      },
+      "packed": {
+        "blog-theme": 21409,
+        "event-only": 21267,
+        "json-api": 21367,
+        "model": 21274,
         "multi-island": 21367,
         "no-island": 0,
         "scalar-signal": 21272,
-        "show-for": 21359
+        "show-for": 21356
       }
     },
-    "note": "Cargo producer-lock transition from owner-attested local native Darwin arm64 evidence at source 4ecf8db40745124bf072c37a5fa9f25aa078421e. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v5.1.4 contract; no actual gzip total moved. The artifact's own check-budget run compared it with the previous Cargo.lock pin and is preserved as evidence. Only the Cargo.lock hash was re-pinned. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Re-pin (release-bump) from owner-attested local native Darwin arm64 evidence at source 8dbc59834efc2eb86a6a93ee2620473408415712. Complete workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v5.1.4 contract; 10 actual gzip totals moved (workspace model +4, scalar-signal +3, blog-theme, json-api and show-for +1, multi-island -1; packed blog-theme +5, json-api +1, model -1, show-for -3; evidence only, not a ceiling). Only package version, the pnpm-lock.yaml hash and the normalizer digest were re-pinned; Cargo.lock is unchanged. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }
