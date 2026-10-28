@@ -11,7 +11,7 @@ Decided under [#4210](https://github.com/Takazudo/zudo-front-builder/issues/4210
 | Reason | May move in `dependencyFingerprint` | Native evidence | Status |
 | --- | --- | --- | --- |
 | `fingerprint-helper` | `helperSha256` only | none (T1-only; proves old blob at `--base-ref` = pinned value, and old vs new helper give identical `sha256` + `--explain` inventory on the real lock) | implemented (S4 [#4213](https://github.com/Takazudo/zudo-front-builder/issues/4213)) |
-| `dependency-graph` | `sha256` only | fresh, both platforms, totals unchanged | implemented ([#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218), item 9a); live policy unchanged at 1; activation requires fresh native evidence (see [Future real activation](#11-future-real-activation)) |
+| `dependency-graph` | `sha256` only | fresh, both platforms, totals unchanged (Darwin may be owner-attested local evidence, #4580) | implemented ([#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218), item 9a); live policy unchanged at 1; activation requires fresh native evidence (see [Future real activation](#11-future-real-activation)) |
 | `fingerprint-policy` | `policyVersion` + `parser` + `sha256` + `helperSha256`, only together with a `policyVersion` increment of exactly one that equals the checkout helper's exported `FINGERPRINT_POLICY_VERSION` | fresh, both platforms, totals unchanged | implemented ([#4218](https://github.com/Takazudo/zudo-front-builder/issues/4218), item 9c); live policy unchanged at 1; activation requires fresh native evidence (see [Future real activation](#11-future-real-activation)) |
 | `release-bump`, `runtime-identity`, `lockfile-provenance`, `fingerprint-migration`, `cargo-producer-lock`, `cargo-internal-rewire` | none (all four keys refused) | as today | unchanged |
 
@@ -233,7 +233,7 @@ Owner review: adopted under [#4210](https://github.com/Takazudo/zudo-front-build
 
 The `dependency-graph` and `fingerprint-policy` reasons exist as capabilities. Implementing them moved no live identity: the policy is the one on the identity line at the top of this document, and the live contracts pin its fingerprint. A real activation of either reason requires:
 
-- Fresh enforced artifacts for the actual changed source on **both** platforms: Linux x64 from the `health` job's island-size step and Darwin arm64 from `island-size-darwin.yml`, each with both the workspace and packed matrices.
+- Fresh enforced artifacts for the actual changed source on **both** platforms: Linux x64 from the `health` job's island-size step and Darwin arm64 from `island-size-darwin.yml`, each with both the workspace and packed matrices. For `dependency-graph`, the Darwin arm64 artifact may instead be a fresh owner-attested local native collection (not a CI artifact) that the same validators admit through the `dependency-graph` profile of [LOCAL-NATIVE-EVIDENCE.md](LOCAL-NATIVE-EVIDENCE.md) (owner decision 2026-10-28, #4580); the Linux half stays the `health` artifact. `fingerprint-policy` has no local profile.
 - Every raw and `gzipNormalized` total unchanged, and an unchanged-input audit: package version, `Cargo.lock`, fixtures, runners, normalizer and toolchain all equal the contracts.
 
 The initial enforced collection may legitimately **fail** against the old fingerprint pin, because the contracts still pin the previous fingerprint. Then:

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Collection eligibility only, not re-pin admission. Keep the budget check's
-// nonzero exit and output intact; a complete old-Cargo-pin-only rejection is
-// retained for the separately reviewed, paired platform activation procedure.
+// nonzero exit and output intact; a complete old-Cargo-pin-only or
+// old-fingerprint-sha256-only rejection is retained for the separately
+// reviewed, paired platform activation procedure (LOCK-FINGERPRINT-POLICY.md
+// section 11 for the dependency-graph re-pin, #4580).
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -12,10 +14,13 @@ import { realpathSync as realpathSyncForMain } from "node:fs";
 import { normalizeMeasurementDirectory } from "../research/v3-island-size/normalize-identity.mjs";
 
 const modes = ["workspace", "packed"];
-const oldPinErrors = [
-  "local Cargo.lock: SHA-256 differs from the reviewed contract",
-  "workspace provenance: Cargo lockfile differs from the contract",
-  "packed provenance: Cargo lockfile differs from the contract",
+const oldPinDiagnostics = [
+  [
+    "local Cargo.lock: SHA-256 differs from the reviewed contract",
+    "workspace provenance: Cargo lockfile differs from the contract",
+    "packed provenance: Cargo lockfile differs from the contract",
+  ],
+  ["local dependency fingerprint: sha256 differs from the reviewed contract"],
 ];
 
 export function budgetAllowsRetention(result) {
@@ -24,8 +29,10 @@ export function budgetAllowsRetention(result) {
   if (result.status !== 1) return false;
   // Exact complete diagnostic, not a substring allowlist that can hide an
   // additional exception or an unexpected checker failure.
-  const expected = ["Island size budget rejected:", ...oldPinErrors.map((s) => "- " + s)];
-  return isDeepStrictEqual(result.stderr.trim().split(/\r?\n/), expected);
+  const lines = result.stderr.trim().split(/\r?\n/);
+  return oldPinDiagnostics.some((errors) =>
+    isDeepStrictEqual(lines, ["Island size budget rejected:", ...errors.map((s) => "- " + s)]),
+  );
 }
 
 export function assertCompletePair(directory, contract, sourceSha) {

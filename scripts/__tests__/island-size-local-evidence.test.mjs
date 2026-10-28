@@ -140,7 +140,6 @@ describe("local CLI scope", () => {
     "metric-migration",
     "fingerprint-migration",
     "fingerprint-helper",
-    "dependency-graph",
     "fingerprint-policy",
   ])("rejects %s scope escape", (reason) => {
     expect(() =>
@@ -153,6 +152,7 @@ describe("local CLI scope", () => {
     "cargo-removal",
     "release-bump",
     "runtime-identity",
+    "dependency-graph",
   ])("requires --stage and an exact --tool-sha for %s", (reason) => {
     expect(() => parseArgs(["--reason", reason, "--tool-sha", source, ...flags])).toThrow(
       "requires staged",
@@ -281,6 +281,8 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     review: { id: "rustls-security-4314", manifestSha256: DECISION_SHA256 },
   };
   const tool = { root: "/tool", commit: "c".repeat(40) };
+  const graph = { policyVersion: 1, oldSha256: "d".repeat(64), newSha256: "e".repeat(64) };
+  const graphPin = { policyVersion: 1, sha256: graph.newSha256 };
   function staged(reason, evidence = {}, toolchain = { cargoLockSha256: NEW_LOCK_SHA256 }) {
     return {
       run: {
@@ -322,6 +324,21 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       s.contract.outcome = outcome;
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
     }
+    s = staged("dependency-graph", { fingerprintTransition: graph });
+    s.contract.outcome = "dependency-graph-repin";
+    s.contract.dependencyFingerprint = graphPin;
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+  });
+  it.each([
+    ["sha256", { ...graph, newSha256: "f".repeat(64) }],
+    ["policyVersion", { ...graph, policyVersion: 2 }],
+  ])("rejects a dependency-graph transition whose %s disagrees with the staged pin", (_k, t) => {
+    const s = staged("dependency-graph", { fingerprintTransition: t });
+    s.contract.outcome = "dependency-graph-repin";
+    s.contract.dependencyFingerprint = graphPin;
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
+      "dependency-graph transition disagrees with the staged fingerprint",
+    );
   });
   it.each(
     PROVENANCE_REPINS.flatMap(([reason, outcome]) => [
@@ -333,6 +350,12 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       ],
       [reason + " carrying a rewire proof", reason, outcome, { cargoRewire: { oldSha: "x" } }],
       [reason + " carrying a removal proof", reason, outcome, { cargoRemoval: { oldSha: "x" } }],
+      [
+        reason + " carrying a fingerprint transition",
+        reason,
+        outcome,
+        { fingerprintTransition: graph },
+      ],
       [reason + " with another reason's outcome", reason, "cargo-producer-lock-transition", {}],
       [reason + " without an outcome", reason, undefined, {}],
     ]),
@@ -366,12 +389,43 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     ],
     ["removal stage without its proof", "cargo-removal", {}],
     ["security stage without its transition", "cargo-producer-lock", {}],
-    ["reason without a profile", "dependency-graph", { cargoTransition: security }],
-  ])("rejects a swapped profile: %s", (_label, reason, evidence) => {
-    const s = staged(reason, evidence);
-    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(/local Darwin evidence/);
-    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).not.toThrow(missing);
-  });
+    ["reason without a profile", "fingerprint-policy", { cargoTransition: security }],
+    ["dependency-graph stage without its transition", "dependency-graph", {}],
+    [
+      "dependency-graph stage carrying the security transition",
+      "dependency-graph",
+      { fingerprintTransition: graph, cargoTransition: security },
+    ],
+    [
+      "dependency-graph stage carrying a removal proof",
+      "dependency-graph",
+      { fingerprintTransition: graph, cargoRemoval: { oldSha: "x" } },
+    ],
+    [
+      "dependency-graph stage with another reason's outcome",
+      "dependency-graph",
+      { fingerprintTransition: graph },
+      "release-version-stamp",
+    ],
+    [
+      "security stage carrying a fingerprint transition",
+      "cargo-producer-lock",
+      { cargoTransition: security, fingerprintTransition: graph },
+    ],
+  ])(
+    "rejects a swapped profile: %s",
+    (_label, reason, evidence, outcome = "dependency-graph-repin") => {
+      const s = staged(reason, evidence);
+      if (reason === "dependency-graph") {
+        s.contract.outcome = outcome;
+        s.contract.dependencyFingerprint = graphPin;
+      }
+      expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
+        /local Darwin evidence/,
+      );
+      expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).not.toThrow(missing);
+    },
+  );
   it.each([
     ["old lock", { ...security, oldSha: flip(OLD_LOCK_SHA256) }],
     ["new lock", { ...security, newSha: flip(NEW_LOCK_SHA256) }],
@@ -519,12 +573,17 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
             ? { cargoRewire: { oldSha: "x" } }
             : reason === "cargo-removal"
               ? { cargoRemoval: { oldSha: "x" } }
-              : {},
+              : reason === "dependency-graph"
+                ? { fingerprintTransition: graph }
+                : {},
       );
       s.contract.outcome =
         reason === "cargo-removal"
           ? "cargo-removal-transition"
-          : Object.fromEntries(PROVENANCE_REPINS)[reason];
+          : reason === "dependency-graph"
+            ? "dependency-graph-repin"
+            : Object.fromEntries(PROVENANCE_REPINS)[reason];
+      if (reason === "dependency-graph") s.contract.dependencyFingerprint = graphPin;
       mutate(s);
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
         /local Darwin evidence/,
@@ -539,16 +598,18 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
       "cargo-removal evidence must record outcome cargo-removal-transition",
     );
   });
-  it("keeps exactly the five reviewed profiles", () => {
+  it("keeps exactly the six reviewed profiles", () => {
     expect(Object.keys(LOCAL_EVIDENCE_PROFILES).sort()).toEqual([
       "cargo-internal-rewire",
       "cargo-producer-lock",
       "cargo-removal",
+      "dependency-graph",
       "release-bump",
       "runtime-identity",
     ]);
     for (const [reason, outcome] of PROVENANCE_REPINS)
       expect(REASONS[reason].outcome).toBe(outcome);
+    expect(REASONS["dependency-graph"].outcome).toBe("dependency-graph-repin");
     expect(Object.isFrozen(LOCAL_EVIDENCE_PROFILES)).toBe(true);
     expect(() => localEvidenceProfile("toString")).toThrow("no local evidence profile");
     expect(() => localEvidenceProfile("__proto__")).toThrow("no local evidence profile");

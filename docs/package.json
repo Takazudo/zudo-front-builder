@@ -27,8 +27,8 @@
     "@takazudo/zfb-runtime": "5.1.5",
     "@takazudo/zfb-md-wasm": "5.1.5",
     "@takazudo/zfb-adapter-cloudflare": "5.1.5",
-    "@takazudo/zudo-doc": "9.0.0",
-    "@takazudo/zudo-doc-history-server": "9.0.0",
+    "@takazudo/zudo-doc": "9.1.0",
+    "@takazudo/zudo-doc-history-server": "9.1.0",
     "zod": "^4.6.6",
     "katex": "^0.19.0",
     "diff": "^8.0.3"

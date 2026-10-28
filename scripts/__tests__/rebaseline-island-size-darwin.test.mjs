@@ -4665,3 +4665,233 @@ describe("cargo-removal paired staging (#4388)", () => {
     expect(contractOf(DARWIN).outcome).toBe("cargo-removal-transition");
   });
 });
+
+describe("dependency-graph local Darwin evidence (#4580)", () => {
+  const localRoots = [];
+  const DARWIN = "research/v3-island-size/decision.json";
+  const LINUX = "research/v3-island-size/decision-linux-x64.json";
+  const TEST = "scripts/__tests__/island-size-budget.test.mjs";
+  const README = "research/v3-island-size/README.md";
+  const INVENTORY = "research/v3-island-size/lock-fingerprint-inventory.json";
+  const OUTPUTS = [DARWIN, LINUX, TEST, README, INVENTORY];
+  const LINUX_SOURCE = "b".repeat(40);
+  let repo;
+  let source;
+  let linuxArtifact;
+  let saved;
+  const at = (relative) => join(repo.root, relative);
+  const read = (relative) => readFileSync(at(relative));
+  const contractOf = (file) => JSON.parse(read(file).toString("utf8"));
+  const contractText = (value) => JSON.stringify(value, null, 2) + "\n";
+  const tempDir = (prefix) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    localRoots.push(dir);
+    return dir;
+  };
+
+  beforeAll(() => {
+    const version = JSON.parse(
+      readFileSync(join(testDir, "../../packages/zfb/package.json"), "utf8"),
+    ).version;
+    const moved = moveReachableSnapshot(
+      readFileSync(join(testDir, "../../pnpm-lock.yaml"), "utf8"),
+      version,
+    );
+    repo = makeGraphCheckout(localRoots, { pnpmLock: moved.lockText });
+    linuxArtifact = tempDir("zfb-graph-local-linux-artifact-");
+    const liveOf = (file) => JSON.parse(readFileSync(join(testDir, "../..", file), "utf8"));
+    writeRuns(linuxArtifact, Object.keys(liveOf(LINUX).ceilings.workspace), (mode) => ({
+      sourceSha: LINUX_SOURCE,
+      mode,
+      platform: { os: "linux", arch: "x64" },
+      fixtureVersion: liveOf(LINUX).fixtureVersion,
+      fixtureSha256: repo.fixtureSha256,
+      runnerSha256: repo.runnerSha256,
+      packageVersion: repo.version,
+      runtimePackageVersion: repo.version,
+      honoPackageVersion: liveOf(LINUX).toolchain.honoVersion,
+      esbuildVersion: liveOf(LINUX).toolchain.esbuildVersion,
+      nodeVersion: liveOf(LINUX).toolchain.nodeVersion,
+      zlibVersion: liveOf(LINUX).toolchain.zlibVersion,
+      compression: liveOf(LINUX).compression,
+      repeats: 2,
+      pnpmLockSha256: repo.pnpmLockSha256,
+      dependencyFingerprint: {
+        policyVersion: 1,
+        sha256: repo.dependencyFingerprint.sha256,
+      },
+      cargoLockSha256: repo.cargoLockSha256,
+    }));
+    const pin = (contract, artifactDir) => {
+      contract.ceilings = ceilingsOf(artifactDir);
+      contract.fixtureSha256 = { ...repo.fixtureSha256 };
+      contract.runnerSha256 = { ...repo.runnerSha256 };
+      contract.toolchain.packageVersion = repo.version;
+      contract.toolchain.pnpmLockSha256 = repo.priorPnpmLockSha256;
+      contract.toolchain.cargoLockSha256 = repo.cargoLockSha256;
+      contract.dependencyFingerprint = { ...repo.priorFingerprint };
+      return contract;
+    };
+    // The retained Darwin bundles are made after the commit so their provenance
+    // names the measured source; only provenance differs, so a bundle made now
+    // gives the same ceilings.
+    const darwinPinned = pin(preLocalDarwinContract(), makeArtifact({ version: repo.version }));
+    darwinPinned.fixtureVersion = legacy.fixtureVersion;
+    darwinPinned.compression = legacy.compression;
+    withCurrentNormalizer(darwinPinned);
+    for (const key of ["nodeVersion", "zlibVersion", "esbuildVersion", "honoVersion"]) {
+      darwinPinned.toolchain[key] = legacy.toolchain[key];
+    }
+    writeFileSync(at(DARWIN), contractText(darwinPinned));
+    writeFileSync(at(LINUX), contractText(pin(liveOf(LINUX), linuxArtifact)));
+    writeFileSync(at(TEST), PRE_LOCAL_DARWIN_PINS);
+    const git = gitIn(repo.root);
+    git("init", "-q");
+    git("add", "-A");
+    git("commit", "-qm", "test fixture: moved graph, pinned contracts");
+    source = git("rev-parse", "HEAD").trim();
+    saved = Object.fromEntries(OUTPUTS.map((file) => [file, read(file)]));
+  });
+  afterEach(() => {
+    for (const [file, bytes] of Object.entries(saved)) writeFileSync(at(file), bytes);
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    for (const dir of localRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const quiet = () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const unchanged = () =>
+    OUTPUTS.forEach((file) => expect(read(file).equals(saved[file])).toBe(true));
+  const editRuns = (stage, edit) => {
+    const path = join(stage, "stage-manifest.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    edit(manifest.runs);
+    writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+  };
+
+  // A retained local bundle at the measured source plus its receipt.
+  function localEvidence() {
+    const artifact = makeArtifact({
+      version: repo.version,
+      tweak: (p) => {
+        p.sourceSha = source;
+        p.fixtureSha256 = repo.fixtureSha256;
+        p.runnerSha256 = repo.runnerSha256;
+        p.pnpmLockSha256 = repo.pnpmLockSha256;
+        p.cargoLockSha256 = repo.cargoLockSha256;
+        p.dependencyFingerprint = {
+          policyVersion: 1,
+          sha256: repo.dependencyFingerprint.sha256,
+        };
+      },
+    });
+    localRoots.push(roots.splice(roots.indexOf(artifact), 1)[0]);
+    const runner = join(artifact, "runner-provenance.txt");
+    writeFileSync(runner, readFileSync(runner, "utf8").replace(SOURCE_SHA, source));
+    const receipt = {
+      schemaVersion: 1,
+      kind: "local-native-darwin",
+      operator: "fixture owner",
+      collectedAt: "2026-01-01T00:00:00.000Z",
+      source: { commit: source, clean: true },
+      platform: { os: "darwin", arch: "arm64" },
+      commands: [["fixture-collector", "--two-passes"]],
+      bundle: {
+        location: "retained fixture bundle",
+        sha256: localBundleDigest(artifact),
+      },
+    };
+    const receiptPath = join(realpathSync(tempDir("zfb-graph-local-receipt-")), "receipt.json");
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    return { artifact: realpathSync(artifact), receipt, receiptPath };
+  }
+  function darwinLocalArgv(evidence, toolSha, stage) {
+    return Object.entries({
+      artifact: evidence.artifact,
+      "source-sha": source,
+      reason: "dependency-graph",
+      stage,
+      "tool-sha": toolSha,
+      "local-receipt": evidence.receiptPath,
+      "local-receipt-sha": sha(readFileSync(evidence.receiptPath)),
+    }).flatMap(([key, value]) => ["--" + key, value]);
+  }
+  const linuxArgv = (stage) =>
+    Object.entries({
+      artifact: linuxArtifact,
+      "run-id": "71",
+      "job-id": "72",
+      "head-sha": source,
+      "source-sha": LINUX_SOURCE,
+      reason: "dependency-graph",
+      stage,
+    }).flatMap(([key, value]) => ["--" + key, value]);
+
+  it("stages and applies owner-attested local Darwin evidence paired with Linux", async () => {
+    quiet();
+    const evidence = localEvidence();
+    const tools = makeGitCheckout(localRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const stage = join(tempDir("zfb-graph-local-stage-"), "stage");
+    await linuxMain(linuxArgv(stage), repo.root);
+    await main(darwinLocalArgv(evidence, toolSha, stage), repo.root, undefined, tools.root);
+    unchanged();
+    const staged = JSON.parse(readFileSync(join(stage, DARWIN), "utf8"));
+    expect(staged.outcome).toBe("dependency-graph-repin");
+    expect(staged.dependencyFingerprint.sha256).toBe(repo.dependencyFingerprint.sha256);
+    expect(staged.baselineEvidence).toMatchObject({
+      event: "local-native",
+      localReceipt: { receipt: evidence.receipt },
+      stagingTool: { commit: toolSha },
+      sourceSha: source,
+      fingerprintTransition: {
+        oldSha256: repo.priorFingerprint.sha256,
+        newSha256: repo.dependencyFingerprint.sha256,
+      },
+    });
+    for (const key of ["runId", "jobId", "artifact", "cargoTransition", "cargoRewire"])
+      expect(staged.baselineEvidence).not.toHaveProperty(key);
+    expect(staged.platformStatus).toContain("owner-attested local native evidence");
+    expect(staged.baselineEvidence.note).toContain("owner-attested local native Darwin arm64");
+    const readme = readFileSync(join(stage, README), "utf8");
+    expect(readme).toContain("## Darwin v" + repo.version + " dependency-graph re-pin");
+    expect(readme).toContain("from owner-attested local native evidence (receipt SHA-256 `");
+    expect(readFileSync(join(stage, TEST), "utf8")).toContain('event: "local-native"');
+
+    // A dependency-graph stage relabelled as a provenance re-pin must not borrow its profile.
+    const relabelled = join(tempDir("zfb-graph-local-relabel-"), "stage");
+    cpSync(stage, relabelled, { recursive: true });
+    editRuns(relabelled, (runs) => {
+      for (const run of runs) run.reason = "release-bump";
+    });
+    expect(() => applyStage(relabelled, repo.root)).toThrow(/local Darwin evidence/);
+    unchanged();
+
+    applyStage(stage, repo.root);
+    expect(contractOf(DARWIN).baselineEvidence.event).toBe("local-native");
+    expect(contractOf(DARWIN).outcome).toBe("dependency-graph-repin");
+    expect(read(INVENTORY).equals(helperExplainBytes(repo.root))).toBe(true);
+  });
+
+  it("refuses local Darwin evidence without --stage and with Actions metadata", async () => {
+    quiet();
+    const evidence = localEvidence();
+    const tools = makeGitCheckout(localRoots);
+    const toolSha = tools.git("rev-parse", "HEAD").trim();
+    const argv = darwinLocalArgv(evidence, toolSha, "/unused-stage");
+    const withoutStage = argv.filter(
+      (_, i, all) => all[i] !== "--stage" && all[i - 1] !== "--stage",
+    );
+    await expect(main(withoutStage, repo.root, undefined, tools.root)).rejects.toThrow(
+      "requires staged",
+    );
+    await expect(
+      main([...argv, "--run-id", "7"], repo.root, undefined, tools.root),
+    ).rejects.toThrow("forbids Actions");
+    unchanged();
+  });
+});

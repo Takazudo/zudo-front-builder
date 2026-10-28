@@ -108,6 +108,14 @@ const preRewireContract = JSON.parse(
     "utf8",
   ),
 );
+// Verbatim v5.1.5 release Linux contract (665e32ac): a genuine contract that
+// predates any dependency-graph re-pin, now that the live one carries one (#4580).
+const preGraphContract = JSON.parse(
+  readFileSync(
+    join(root, "scripts/__tests__/fixtures/island-size-linux-x64-v5.1.5-release.json"),
+    "utf8",
+  ),
+);
 // The cases below build their own actual-gzip evidence; start from a contract that
 // has none, whatever the live contract recorded at its last re-pin.
 delete contract.baselineEvidence.actualGzip;
@@ -2388,7 +2396,7 @@ describe("dependency-graph (#4218)", () => {
     );
     repo = makeGraphCheckout(roots, { pnpmLock: moved.lockText });
     artifact = linuxArtifact();
-    pinned = structuredClone(liveContract);
+    pinned = structuredClone(preGraphContract);
     pinned.ceilings = ceilingsOf(artifact);
     pinned.fixtureSha256 = { ...repo.fixtureSha256 };
     pinned.runnerSha256 = { ...repo.runnerSha256 };
@@ -2968,9 +2976,9 @@ describe("fingerprint-policy (#4218)", () => {
     return dir;
   }
 
-  // The live Linux contract re-pinned to `checkout` at the live (policy 1) fingerprint.
+  // The pre-dependency-graph Linux contract re-pinned to `checkout` at the live (policy 1) fingerprint.
   function pinnedAt(checkout, artifactDir) {
-    const contract = structuredClone(liveContract);
+    const contract = structuredClone(preGraphContract);
     contract.ceilings = ceilingsOf(artifactDir);
     contract.fixtureSha256 = { ...checkout.fixtureSha256 };
     contract.runnerSha256 = { ...checkout.runnerSha256 };
