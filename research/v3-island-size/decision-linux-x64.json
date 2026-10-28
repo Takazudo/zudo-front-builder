@@ -7,12 +7,12 @@
     "policyVersion": 1,
     "parser": "yaml@2.9.0",
     "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
-    "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95"
+    "sha256": "346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f"
   },
   "decisionIssue": 3469,
-  "outcome": "release-version-stamp",
+  "outcome": "dependency-graph-repin",
   "selectedOptimizations": [],
-  "baselineSourceSha": "f17f3bf389084dac0451bb46396fa762d37a1157",
+  "baselineSourceSha": "665e32ac53ab3b54ad415923ffae2bd131cbfd3b",
   "platform": {
     "os": "linux",
     "arch": "x64"
@@ -37,7 +37,7 @@
     "esbuildVersion": "0.25.12",
     "nodeVersion": "v24.14.0",
     "zlibVersion": "1.3.1-e00f703",
-    "pnpmLockSha256": "6af8185361431ccbbdebc3f990b993616f6c550e4b55bbdac6e364ee7ea36024",
+    "pnpmLockSha256": "9e27e5e3c05477c60b312daaec014d87a01f5f0fca15b16b90f36b0dcb37e213",
     "cargoLockSha256": "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810"
   },
   "compression": "node:zlib gzipSync level=9 mtime=0 per emitted JS file; sum every unique entry/shared/lazy file",
@@ -116,23 +116,28 @@
     }
   },
   "proposedCiLane": ".github/workflows/health.yml jobs.health, after existing native-binary upload; fresh-context review required",
-  "platformStatus": "Linux x64 has exact zero-allowance v5.1.5 ceilings on metric gzip-identity-normalized v2, re-pinned from health run 40331009580 at PR merge source 6a27e48fe89dd7dcb9ee759273fdad7afedf24b0 (probe head f17f3bf389084dac0451bb46396fa762d37a1157). Every raw and gzipNormalized total is unchanged from the v5.1.4 contract. This records a release-bump re-pin; equal totals alone do not prove byte-identical product code. 10 actual gzip totals moved by -3 to +5 bytes (evidence only, not a ceiling). Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
+  "platformStatus": "Linux x64 has exact zero-allowance v5.1.5 ceilings on metric gzip-identity-normalized v2, re-pinned from workflow run 40659132094 at PR merge source fa3e0f284657d63fdd52e700d66f1f092182f5fa (probe head 665e32ac53ab3b54ad415923ffae2bd131cbfd3b) after a reviewed dependency-graph change (dependency fingerprint e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95 to 346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f under policy v1), measured on a checkout already carrying the new graph. The producer version, fixtures, runners, Cargo.lock, toolchain and normalizer are unchanged, and every raw and gzipNormalized total is unchanged; only the dependency fingerprint sha256 and the recorded pnpm-lock.yaml hash moved; equal totals alone do not prove byte-identical product code. no actual gzip total moved. Workspace and packed eight-fixture matrices each have two byte-identical full-dist inventories. Other platforms and toolchains are not covered.",
   "baselineEvidence": {
     "event": "ci",
-    "runId": 40331009580,
-    "jobId": 121600192067,
-    "sourceSha": "6a27e48fe89dd7dcb9ee759273fdad7afedf24b0",
+    "runId": 40659132094,
+    "jobId": 122717498346,
+    "sourceSha": "fa3e0f284657d63fdd52e700d66f1f092182f5fa",
     "repinnedFrom": {
       "schemaVersion": 3,
-      "outcome": "cargo-producer-lock-transition",
-      "packageVersion": "5.1.4",
-      "baselineSourceSha": "665413028815504af7c53a0b11ef58d43e2237e4",
-      "baselineRunId": 40306538134,
+      "outcome": "release-version-stamp",
+      "packageVersion": "5.1.5",
+      "baselineSourceSha": "f17f3bf389084dac0451bb46396fa762d37a1157",
+      "baselineRunId": 40331009580,
       "contract": {
-        "sha256": "2d851406cf47738f4d88c6c9808884c843739a9fbff602fb8c9e933d190356ce",
-        "commit": "f17f3bf389084dac0451bb46396fa762d37a1157",
+        "sha256": "802195d94abca8fad08719f0f9ab3889db842be68330dcc7a97179cf5a8946fa",
+        "commit": "665e32ac53ab3b54ad415923ffae2bd131cbfd3b",
         "path": "research/v3-island-size/decision-linux-x64.json"
       }
+    },
+    "fingerprintTransition": {
+      "policyVersion": 1,
+      "oldSha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95",
+      "newSha256": "346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f"
     },
     "actualGzip": {
       "workspace": {
@@ -156,6 +161,6 @@
         "show-for": 21356
       }
     },
-    "note": "Release probe PR #4573 run for v5.1.5 at PR merge source 6a27e48fe89dd7dcb9ee759273fdad7afedf24b0 (probe head f17f3bf389084dac0451bb46396fa762d37a1157). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Raw and gzipNormalized totals did not change from the v5.1.4 contract; 10 actual gzip totals moved by -3 to +5 bytes (evidence only, not a ceiling). Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
+    "note": "Dependency-graph re-pin run at v5.1.5 at PR merge source fa3e0f284657d63fdd52e700d66f1f092182f5fa (probe head 665e32ac53ab3b54ad415923ffae2bd131cbfd3b). Complete Linux x64 workspace and packed eight-fixture matrices, each with two identical full-dist inventories. Reviewed dependency-graph re-pin at unchanged v5.1.5 (dependency fingerprint e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95 to 346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f under policy v1): the new fingerprint was computed by lock-fingerprint.mjs on the checkout and equals the artifact's; every other reviewed identity input, Cargo.lock included, is unchanged; raw and gzipNormalized totals did not change; no actual gzip total moved. Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history."
   }
 }

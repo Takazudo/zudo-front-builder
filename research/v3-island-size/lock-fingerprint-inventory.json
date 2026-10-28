@@ -2,7 +2,7 @@
   "policyVersion": 1,
   "parser": "yaml@2.9.0",
   "helperSha256": "c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787",
-  "sha256": "e0c6472838fa1f0f7028393c3717a2fa4942fb51ae7cf691146bc535d95f8e95",
+  "sha256": "346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f",
   "inventory": {
     "importers": [
       "packages/zfb",
@@ -497,11 +497,11 @@
       },
       "snapshots": {
         "reached": 230,
-        "total": 555
+        "total": 584
       },
       "packages": {
         "reached": 225,
-        "total": 538
+        "total": 567
       }
     }
   }
