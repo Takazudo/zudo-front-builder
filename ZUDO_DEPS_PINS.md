@@ -34,7 +34,7 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: tests/published-preset-identity/site/src/styleguide/sg-registry.ts, tests/published-preset-identity/site/src/styleguide/token-manifest.ts
 - source: packages/styleguide (the `gen-registry` / `gen-token-manifest` CLI)
 - track: releases
-- pinned: c2a61ecdfe1e6e64f5774999bfbaac8c04bc9a79 (v0.6.0)
-- updated: 2026-10-26
+- pinned: 767b16d834dc9c361dbf818f631a3f11bb2cce52 (v0.8.0)
+- updated: 2026-10-28
 - sync: in an isolated copy of `tests/published-preset-identity/site/` (see its README), `npx zudo-sg gen-registry && npx zudo-sg gen-token-manifest`, then copy changed `src/styleguide/*.ts` back
-- notes: regenerated with 0.6.0 on 2026-10-26 in an isolated registry-installed copy (Node 24.22.1, zudo-doc 8.1.1) with no output change (1 story, 102 token entries); both `--check` runs pass. `v0.6.0` is a lightweight tag, so the pin is its tag commit (resolved with `git ls-remote`). `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
+- notes: regenerated with 0.8.0 on 2026-10-28 in an isolated registry-installed copy (Node 24.22.1, zudo-doc 9.1.0, zdtp 0.9.0, zfb 5.1.5) with no output change (1 story, 102 token entries); the 0.6.0 → 0.8.0 tarball diff touches only the token-dashboard adapter, not the generators. `v0.8.0` is a lightweight tag, so the pin is its tag commit (resolved with `git ls-remote`). `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
