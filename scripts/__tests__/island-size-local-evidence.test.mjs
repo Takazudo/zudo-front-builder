@@ -282,6 +282,7 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
   };
   const tool = { root: "/tool", commit: "c".repeat(40) };
   const graph = { policyVersion: 1, oldSha256: "d".repeat(64), newSha256: "e".repeat(64) };
+  const graphPin = { policyVersion: 1, sha256: graph.newSha256 };
   function staged(reason, evidence = {}, toolchain = { cargoLockSha256: NEW_LOCK_SHA256 }) {
     return {
       run: {
@@ -325,7 +326,19 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     }
     s = staged("dependency-graph", { fingerprintTransition: graph });
     s.contract.outcome = "dependency-graph-repin";
+    s.contract.dependencyFingerprint = graphPin;
     expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(missing);
+  });
+  it.each([
+    ["sha256", { ...graph, newSha256: "f".repeat(64) }],
+    ["policyVersion", { ...graph, policyVersion: 2 }],
+  ])("rejects a dependency-graph transition whose %s disagrees with the staged pin", (_k, t) => {
+    const s = staged("dependency-graph", { fingerprintTransition: t });
+    s.contract.outcome = "dependency-graph-repin";
+    s.contract.dependencyFingerprint = graphPin;
+    expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
+      "dependency-graph transition disagrees with the staged fingerprint",
+    );
   });
   it.each(
     PROVENANCE_REPINS.flatMap(([reason, outcome]) => [
@@ -403,7 +416,10 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
     "rejects a swapped profile: %s",
     (_label, reason, evidence, outcome = "dependency-graph-repin") => {
       const s = staged(reason, evidence);
-      if (reason === "dependency-graph") s.contract.outcome = outcome;
+      if (reason === "dependency-graph") {
+        s.contract.outcome = outcome;
+        s.contract.dependencyFingerprint = graphPin;
+      }
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
         /local Darwin evidence/,
       );
@@ -567,6 +583,7 @@ describe("negative controls: corrupt, swapped, wrong-SHA and wrong-platform evid
           : reason === "dependency-graph"
             ? "dependency-graph-repin"
             : Object.fromEntries(PROVENANCE_REPINS)[reason];
+      if (reason === "dependency-graph") s.contract.dependencyFingerprint = graphPin;
       mutate(s);
       expect(() => verifyLocalStageEvidence(s.run, s.contract, ".")).toThrow(
         /local Darwin evidence/,

@@ -274,6 +274,24 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
     expect(diagnostic).toBe(rejection);
     expect(readFileSync(pair.output, "utf8")).toBe("complete=true\n");
   });
+  it("retains a complete pair end to end for the fingerprint-sha256-only rejection", () => {
+    const pair = savedPair();
+    let diagnostic = "";
+    const status = runBudgetEvidence({
+      ...pair,
+      sourceSha,
+      check: () => ({ status: 1, stdout: "", stderr: fingerprintRejection }),
+      log: { write() {} },
+      errors: {
+        write(s) {
+          diagnostic += s;
+        },
+      },
+    });
+    expect(status).toBe(1);
+    expect(diagnostic).toBe(fingerprintRejection);
+    expect(readFileSync(pair.output, "utf8")).toBe("complete=true\n");
+  });
   it("retains the exact old-fingerprint-sha256-only rejection of a dependency-graph move", () => {
     expect(budgetAllowsRetention({ status: 1, stderr: fingerprintRejection })).toBe(true);
     expect(

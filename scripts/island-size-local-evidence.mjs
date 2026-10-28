@@ -92,6 +92,12 @@ export const LOCAL_EVIDENCE_PROFILES = Object.freeze({
         fail("dependency-graph evidence lacks its fingerprint transition");
       if (contract.outcome !== "dependency-graph-repin")
         fail("dependency-graph evidence must record outcome dependency-graph-repin");
+      const transition = contract.baselineEvidence.fingerprintTransition;
+      if (
+        transition.newSha256 !== contract.dependencyFingerprint?.sha256 ||
+        transition.policyVersion !== contract.dependencyFingerprint?.policyVersion
+      )
+        fail("dependency-graph transition disagrees with the staged fingerprint");
     },
   }),
 });

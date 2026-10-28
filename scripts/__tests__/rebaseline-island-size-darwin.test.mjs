@@ -4868,7 +4868,7 @@ describe("dependency-graph local Darwin evidence (#4580)", () => {
     editRuns(relabelled, (runs) => {
       for (const run of runs) run.reason = "release-bump";
     });
-    expect(() => applyStage(relabelled, repo.root)).toThrow();
+    expect(() => applyStage(relabelled, repo.root)).toThrow(/local Darwin evidence/);
     unchanged();
 
     applyStage(stage, repo.root);
