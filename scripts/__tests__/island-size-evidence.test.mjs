@@ -35,6 +35,9 @@ const rejection =
   ]
     .map((e) => "- " + e + "\n")
     .join("");
+const fingerprintRejection =
+  "Island size budget rejected:\n" +
+  "- local dependency fingerprint: sha256 differs from the reviewed contract\n";
 function savedPair(platform = { os: "linux", arch: "x64" }, platformFor = () => platform) {
   const { root } = makeCheckout(roots);
   const directory = resolve(root, "target/island-size");
@@ -271,9 +274,21 @@ describe("saved-byte eligibility (synthetic fixtures)", () => {
     expect(diagnostic).toBe(rejection);
     expect(readFileSync(pair.output, "utf8")).toBe("complete=true\n");
   });
+  it("retains the exact old-fingerprint-sha256-only rejection of a dependency-graph move", () => {
+    expect(budgetAllowsRetention({ status: 1, stderr: fingerprintRejection })).toBe(true);
+    expect(
+      budgetAllowsRetention({ status: 1, stderr: fingerprintRejection.replace(/\n/g, "\r\n") }),
+    ).toBe(true);
+  });
   it("refuses extra diagnostics and abnormal exits", () => {
+    const helperRejection = fingerprintRejection.replace("sha256 differs", "helperSha256 differs");
     for (const result of [
       { status: 1, stderr: rejection + "- unrelated identity mismatch\n" },
+      { status: 1, stderr: fingerprintRejection + "- unrelated identity mismatch\n" },
+      { status: 1, stderr: rejection + fingerprintRejection.split("\n").slice(1).join("\n") },
+      { status: 1, stderr: helperRejection },
+      { status: 1, stderr: "Island size budget rejected:\n" },
+      { status: 2, stderr: fingerprintRejection },
       { status: 2, stderr: rejection },
       { status: null, signal: "SIGTERM", stderr: rejection },
       { status: 0, error: new Error("spawn failure"), stderr: "" },
