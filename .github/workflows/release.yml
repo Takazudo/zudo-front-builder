@@ -531,6 +531,13 @@ jobs:
           ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: cargo build -p zfb --release --target ${{ matrix.settings.target }}
 
+      # Pull the digest-pinned cross image first so a transient registry error
+      # is retried without retrying the build (scripts/pull-cross-image.sh).
+      - name: Pre-pull pinned cross image (Linux only)
+        if: ${{ matrix.settings.use_cross == true }}
+        shell: bash
+        run: bash scripts/pull-cross-image.sh ${{ matrix.settings.target }}
+
       - name: Build zfb binary (cross — Linux)
         if: ${{ matrix.settings.use_cross == true }}
         shell: bash

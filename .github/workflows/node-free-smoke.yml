@@ -355,6 +355,12 @@ jobs:
         with:
           tool: cross@0.2.5
 
+      # Pull the digest-pinned cross image first so a transient registry error
+      # is retried without retrying the build (scripts/pull-cross-image.sh).
+      - name: Pre-pull pinned cross image
+        if: ${{ env.BUILD_BINARY == 'true' }}
+        run: bash scripts/pull-cross-image.sh ${{ matrix.platform.target }}
+
       - name: Build zfb binary (cross)
         if: ${{ env.BUILD_BINARY == 'true' }}
         run: cross build -p zfb --release --target ${{ matrix.platform.target }}
