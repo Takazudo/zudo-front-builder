@@ -35,6 +35,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter docs build
+        env:
+          # zudo-doc's doc-history plugin would regenerate history inside zfb's
+          # 120s postBuild budget and time out; build-history below already
+          # produces the copy the deploy job ships (#4584).
+          DOC_HISTORY_SKIP_POSTBUILD: "1"
       # Deploy must not ship HTML that fails validation (issue #1336) — gate
       # the artifact upload (and therefore the deploy job that consumes it)
       # behind the same two checks required on the PR-side docs build.
