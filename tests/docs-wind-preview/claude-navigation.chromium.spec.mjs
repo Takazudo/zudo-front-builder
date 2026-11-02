@@ -114,7 +114,7 @@ for (const width of [1440, 390]) {
   test(`Claude resources retain native navigation through direct entry and history ${width}`, async ({
     page,
     request,
-  }) => {
+  }, testInfo) => {
     const resources = emittedClaudeSlugs();
     const wisdom = "claude-skills/zfb-wisdom";
     const design = "claude-skills/zudo-doc-design-system";
@@ -137,9 +137,28 @@ for (const width of [1440, 390]) {
     page.on("console", (message) => {
       if (message.type() === "error") failures.push(message.text());
     });
+    // History API requests may target the separate history service; this
+    // static-host check covers only routes/assets on the actual preview origin.
+    const origin = new URL(testInfo.project.use.baseURL).origin;
+    page.on("response", (response) => {
+      if (new URL(response.url()).origin === origin && response.status() >= 400)
+        failures.push(`${response.status()} ${response.url()}`);
+    });
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).origin === origin)
+        failures.push(`${request.failure()?.errorText} ${request.url()}`);
+    });
     for (const slug of [wisdom, design, instructions]) {
       await page.goto(route(slug));
       await expectClaude(page, width, slug, resources);
+      if (slug === wisdom) {
+        const screenshot = testInfo.outputPath(`claude-wisdom-${width}.png`);
+        await page.screenshot({ path: screenshot });
+        await testInfo.attach(`Claude wisdom navigation ${width}`, {
+          path: screenshot,
+          contentType: "image/png",
+        });
+      }
     }
 
     await page.goto(route("claude"));
