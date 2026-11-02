@@ -14,7 +14,7 @@ the original receipts, failures, decisions and dated holds remain preserved ther
 
 | Lane | Identity | State and evidence |
 | --- | --- | --- |
-| Production `main` | `5de7215afc89fae8d5881983b8e8ade9a14ca093` (#4586) | Docs host uses zudo-doc/history-server **9.1.0**. Latest ZFB release is [v5.1.5](https://github.com/Takazudo/zudo-front-builder/releases/tag/v5.1.5), published 2026-10-26. GitHub reports **0 open PRs**. |
+| Production `main` | `5de7215afc89fae8d5881983b8e8ade9a14ca093` (#4586) | Docs host uses zudo-doc/history-server **9.1.0**. Latest ZFB release is [v5.1.5](https://github.com/Takazudo/zudo-front-builder/releases/tag/v5.1.5), published 2026-10-26. Initial refresh found **0 open PRs** before this candidate. |
 | Development candidate | `base/docs-9-1-1-followthrough`, starting at the same `5de7215af` | zudo-doc/history-server **9.1.1** adoption is candidate work. It is not production, a released ZFB version, or new owner-browser acceptance. The manager owns integration and candidate verification. |
 | Published-preset fixture | ZFB/runtime/md-wasm **5.1.5**, doc **9.1.0**, SG **0.8.0**, ZDTP **0.9.0** | Keep this coherent committed tuple unchanged in the 9.1.1 docs-host work. [Native installed-carrier acceptance](https://github.com/Takazudo/zudo-front-builder/issues/4276#issuecomment-6522863052) passed first attempt on arm64 at `5de7215af`: positive passed and both negative controls failed as expected. That receipt does not qualify a changed tuple. |
 | Frozen native runtime probes | `a3b1143a878db827dec02e53f076f2b593ecb5b6` | [#4123 arm64 receipt](https://github.com/Takazudo/zudo-front-builder/issues/4123#issuecomment-6431409232): direct-V8/Rolldown `verify.mjs` and `production.mjs` PASS. Preserve the three initial build stops and fourth successful build; the probes passed on their first execution. This is historical source-bound execution, not a rerun on current main or the candidate. |
@@ -55,12 +55,47 @@ Their original failures below remain evidence, not current unresolved alerts.
 
 Evidence scope: issue bodies/comments and run/job metadata were refreshed directly. Detailed
 exam counts and watch identities above come from the parent planning-inspected receipts;
-this child could not independently download their logs/artifacts because the Actions blob
+this refresh could not independently download their logs/artifacts because the Actions blob
 redirect returned Forbidden. Available artifact identities are `nextest-junit-exam-macos`
 **13030810211** and `supervisor-watch` **13072061388** (API reports neither expired).
-No build, browser run, issue write, merge, push, release or live admission was performed.
-The commit formatter hook restored 338 packages from the existing pnpm cache (zero downloads);
-no dependency source or lockfile was edited.
+The issue-status refresh did not rerun these historical jobs or change their completion criteria.
+
+### Docs 9.1.1 candidate verification and admission hold
+
+The docs host uses exact published zudo-doc/history-server 9.1.1; the released ZFB
+5.1.5 toolchain and committed published-preset tuple are unchanged. Both upstream
+release tags resolve to `81e0e97f6a11185202e63a647a55df3e0cffc50a`.
+Registry SHA-512 integrity and every installed package file matched the 9.1.1 tarballs.
+The base tsconfig and both generator route templates are byte-identical to 9.1.0;
+the original route-adaptation provenance remains unknown.
+
+Early preflight on unchanged main and immediately after the bounded pnpm 12.8.2 lock update:
+
+- Existing contract/main fingerprint: `346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f`.
+- Candidate fingerprint: `47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2`.
+- Policy 1, parser `yaml@2.9.0` and helper `c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787` are unchanged.
+- The only changed included record is `snapshots.esbuild@0.28.1.optional: true`.
+  The excluded `tsx@4.23.15` snapshot now resolves esbuild 0.28.2 instead of 0.28.1.
+  Bounded normal install/update (including depth 0) retained this change.
+  `pnpm install --lockfile-only --no-auto-dedupe --prefer-frozen-lockfile`
+  avoided unrelated snapshot removal. No lock metadata or contract hash was hand-edited.
+
+**Admission remains pending:** keep both live island-size contracts unchanged until
+fresh Linux x64 health evidence and owner-attested native Darwin arm64 workspace/packed
+evidence qualify the exact frozen candidate. Preserve the original old-contract rejection,
+prove unchanged totals, stage both platforms with `--reason dependency-graph`, review
+the paired stage, then obtain the separate owner authorization for `--apply` required by
+[LOCAL-NATIVE-EVIDENCE.md](v3-island-size/LOCAL-NATIVE-EVIDENCE.md).
+General safe-merge permission does not waive this boundary. This arm64 size evidence is
+independent of the existing native Intel obligations.
+
+The focused installed-package baseline on 9.1.0 had 18 passing tests and two new
+regression failures; candidate 9.1.1 passes all 20. Node 24.19.0 / pnpm 12.8.2
+Cloud checks passed docs type/schema validation, navigation-index synchronization,
+the 778-page strict root build and island markers. Browser/CI results, frozen source SHA,
+first failures and native handoff belong to the candidate PR's exact-head evidence record;
+older-main CI success above does not qualify this candidate. No broad Rust workspace
+build is run in Cloud; existing PR-triggered Actions own that verification.
 
 ## Historical snapshots — preserved evidence
 

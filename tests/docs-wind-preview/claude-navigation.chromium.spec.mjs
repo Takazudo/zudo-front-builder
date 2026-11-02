@@ -34,10 +34,16 @@ async function sidebarOf(page, width) {
   const side = page.locator("[data-zd-mobile-sidebar]");
   await expect(side).not.toHaveAttribute("inert", "");
   await expect(treeOf(side)).toBeVisible();
+  await expect(side).toBeInViewport();
   return side;
 }
 async function closeMobile(page, width) {
-  if (width < 1024) await page.getByRole("button", { name: "Close sidebar", exact: true }).click();
+  if (width < 1024) {
+    // A completed client navigation can already have closed the drawer.
+    const close = page.getByRole("button", { name: "Close sidebar", exact: true });
+    if (await close.isVisible()) await close.click();
+    await expect(page.getByRole("button", { name: "Open sidebar", exact: true })).toBeVisible();
+  }
 }
 async function expandTree(side) {
   // Use the package's real disclosure controls so links in another resource
@@ -50,7 +56,7 @@ async function expectClaude(page, width, slug, resources) {
   await expect(page).toHaveURL(
     (url) => url.pathname.replace(/\/$/, "") === route(slug).replace(/\/$/, ""),
   );
-  await expect(page.locator("main h1")).toBeVisible();
+  await expect(page.locator("main h1").first()).toBeVisible();
   await expect(page.locator("[data-zd-nav-section]")).toHaveAttribute(
     "data-zd-nav-section",
     "claude",
@@ -66,7 +72,9 @@ async function expectClaude(page, width, slug, resources) {
     const toggle = page.locator("[data-nav-more-toggle]");
     await expect(toggle).toBeVisible();
     await toggle.click();
-    const active = page.locator("[data-nav-more-menu]").locator(linkTo("claude"));
+    const active = page
+      .locator("[data-nav-more-menu]")
+      .getByRole("link", { name: "Claude", exact: true });
     await expect(active).toBeVisible();
     await expect(active).toHaveAttribute("aria-current", "page");
     await toggle.click();
@@ -107,7 +115,11 @@ async function mainMenuLink(page, width, slug) {
   await expect(toggle).toBeVisible();
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  return page.locator("[data-nav-more-menu]").locator(linkTo(slug));
+  return page
+    .locator("[data-nav-more-menu]")
+    .locator(
+      `a[href="${new URL(route(slug), page.url()).href}"], a[href="${new URL(route(slug).slice(0, -1), page.url()).href}"]`,
+    );
 }
 
 for (const width of [1440, 390]) {
@@ -194,6 +206,10 @@ for (const width of [1440, 390]) {
     }
     await expect(page).toHaveURL(
       (url) => url.pathname.replace(/\/$/, "") === route("getting-started").replace(/\/$/, ""),
+    );
+    await expect(page.locator("[data-zd-nav-section]")).toHaveAttribute(
+      "data-zd-nav-section",
+      "getting-started",
     );
     const otherSide = await sidebarOf(page, width);
     await expect(treeOf(otherSide).locator(linkTo(wisdom))).toHaveCount(0);
