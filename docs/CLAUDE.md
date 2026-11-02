@@ -3,7 +3,7 @@
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
 The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.1.5 and
-`@takazudo/zudo-doc` / `zudo-doc-history-server` 9.1.0 (#3329, #4576, #4580). Verify
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 9.1.1 (#3329, #4576, #4580). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
@@ -40,12 +40,19 @@ This register is a keep-list, not a request to add dependencies. Re-check the in
 The copy was introduced because 6.1.1 set
 `baseUrl: "."`, which TypeScript 7 rejects (TS5102) even when inherited through `extends`.
 Upstream 6.2.0 removed `baseUrl`; the compiler options now match except for the host
-`types: ["node"]` addition (TypeScript 6+ no longer auto-loads `@types/*`). The 7.1.0, 8.1.1, 9.0.0 and 9.1.0 bases are byte-identical to 6.2.0, so no option changed in those bumps.
+`types: ["node"]` addition (TypeScript 6+ no longer auto-loads `@types/*`). The 7.1.0, 8.1.1, 9.0.0, 9.1.0 and 9.1.1 bases are byte-identical to 6.2.0, so no option changed in those bumps.
 It keeps the base's `jsxImportSource: "@takazudo/zfb/zudo-react"` and has no
 `paths`: the old `react` → `preact/compat` aliases are gone, and nothing imports `@/`. When zudo-doc
 is bumped, diff its new `tsconfig.base.json` against this file and carry over any change, then
 update its entry in the root `ZUDO_DEPS_PINS.md` (provenance for this copy, the adapted route stubs
 and the identity fixture's generated styleguide files).
+
+The 2026-11-02 comparison used the published 9.1.1 tarballs: the base config and both
+create-zudo-doc route templates are byte-identical to 9.1.0. The host adaptations above
+and the original unknown route-adaptation pin remain unchanged. Both zudo-doc release
+tags resolve to `81e0e97f6a11185202e63a647a55df3e0cffc50a`. The 9.1.1 package owns
+Claude satellite categories (`claude-skills`, `claude-md`, `claude-commands`) through
+the existing `categoryMatch: "claude"`; do not duplicate that matcher in host code.
 
 ## Setup
 

@@ -862,17 +862,17 @@ describe("island shipped-size budget", () => {
     expect(darwinContract.normalizationVersion).toBe(IDENTITY_NORMALIZATION_VERSION);
     expect(darwinContract.normalizerSha256).toBe(currentLocalInputs().normalizerSha256);
     expect(darwinContract.allowance).toEqual({ raw: 0, gzipNormalized: 0 });
-    expect(darwinContract.baselineSourceSha).toBe("665e32ac53ab3b54ad415923ffae2bd131cbfd3b");
+    expect(darwinContract.baselineSourceSha).toBe("d04ef461b3e9c54cedd1be8ef46bee219c716690");
     expect(darwinContract.baselineEvidence).toMatchObject({
       event: "local-native",
-      localReceipt: { sha256: "e24848ed05bebce22f92dd37ae1b8dfbf593e46ae000e2c9490e6435ede8a317" },
+      localReceipt: { sha256: "9a7e8edf0aeca85c470611e979fc3c5f7e34cb6477b6f91dd93e1c48f433bd54" },
     });
     // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
     // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
     // owner-attested local evidence); the ceilings below follow the Rolldown
     // default islands bundler under identity normalizer v2 (#4408, #4417).
     expect(darwinContract.toolchain.pnpmLockSha256).toBe(
-      "9e27e5e3c05477c60b312daaec014d87a01f5f0fca15b16b90f36b0dcb37e213",
+      "51cee362f840b49a42c5dd9b1b2a49b9a3680a60f0c23d2210de85831439f418",
     );
     expect(darwinContract.toolchain.cargoLockSha256).toBe(
       "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
@@ -881,7 +881,7 @@ describe("island shipped-size budget", () => {
     // is schemaVersion 3 (#4187); a v2 contract carries no fingerprint.
     if (darwinContract.schemaVersion === 3) {
       expect(darwinContract.dependencyFingerprint.sha256).toBe(
-        "346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f",
+        "47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2",
       );
     }
     expect(darwinContract.ceilings.workspace).toEqual({
@@ -1526,27 +1526,25 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The zudo-doc 9.1.0 dependency-graph re-pin (#4580) cites the v5.1.5
-    // release Linux contract at the PR #4582 probe head 665e32ac.
+    // Immediate predecessor: admitted zudo-doc 9.1.0 graph at the 9.1.1 probe head.
     file: "decision-linux-x64.json",
-    commit: "665e32ac53ab3b54ad415923ffae2bd131cbfd3b",
-    sha256: "802195d94abca8fad08719f0f9ab3889db842be68330dcc7a97179cf5a8946fa",
-    fixture: "fixtures/island-size-linux-x64-v5.1.5-release.json",
-    outcome: "release-version-stamp",
+    commit: "d04ef461b3e9c54cedd1be8ef46bee219c716690",
+    sha256: "2ceeed07860b77ce209855fda016354a1e709cd64d10757758a9eb99cd70a193",
+    fixture: "fixtures/island-size-linux-x64-v5.1.5-doc910.json",
+    outcome: "dependency-graph-repin",
     packageVersion: "5.1.5",
-    baselineSourceSha: "f17f3bf389084dac0451bb46396fa762d37a1157",
-    baselineRunId: 40331009580,
+    baselineSourceSha: "665e32ac53ab3b54ad415923ffae2bd131cbfd3b",
+    baselineRunId: 40659132094,
   },
   {
-    // The Darwin dependency-graph re-pin (#4580) cites the Darwin v5.1.5
-    // release contract at the PR #4582 probe head 665e32ac.
+    // Immediate predecessor: admitted zudo-doc 9.1.0 graph at the 9.1.1 probe head.
     file: "decision.json",
-    commit: "665e32ac53ab3b54ad415923ffae2bd131cbfd3b",
-    sha256: "68d923425ef23c4ce3fcddb6945988c964d7377f445a1445565a6886c67dbae8",
-    fixture: "fixtures/island-size-darwin-v5.1.5-release.json",
-    outcome: "release-version-stamp",
+    commit: "d04ef461b3e9c54cedd1be8ef46bee219c716690",
+    sha256: "ec64a93fb104346b885feceb7b5542a40fe221d99c5c5fe594d6d8f26bcfedcf",
+    fixture: "fixtures/island-size-darwin-v5.1.5-doc910.json",
+    outcome: "dependency-graph-repin",
     packageVersion: "5.1.5",
-    baselineSourceSha: "8dbc59834efc2eb86a6a93ee2620473408415712",
+    baselineSourceSha: "665e32ac53ab3b54ad415923ffae2bd131cbfd3b",
     baselineRunId: undefined,
   },
 ];
@@ -3220,8 +3218,11 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(fixed(live)).toEqual(fixed(predecessor));
   };
 
-  it("moves the live Linux contract from the frozen v5.1.5 bytes only by the dependency-graph re-pin", () => {
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+  it("moves the frozen doc 9.1.0 Linux contract from the frozen v5.1.5 bytes only by the dependency-graph re-pin", () => {
+    const live = frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.1.5-doc910.json",
+      "2ceeed07860b77ce209855fda016354a1e709cd64d10757758a9eb99cd70a193",
+    );
     expectDependencyGraphOnly(linuxV515(), live);
     expect(live.baselineEvidence).toMatchObject({
       runId: 40659132094,
@@ -3230,8 +3231,11 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
   });
 
-  it("moves the live Darwin contract from the frozen v5.1.5 bytes only by the dependency-graph re-pin", () => {
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+  it("moves the frozen doc 9.1.0 Darwin contract from the frozen v5.1.5 bytes only by the dependency-graph re-pin", () => {
+    const live = frozenDenoExit(
+      "fixtures/island-size-darwin-v5.1.5-doc910.json",
+      "ec64a93fb104346b885feceb7b5542a40fe221d99c5c5fe594d6d8f26bcfedcf",
+    );
     expectDependencyGraphOnly(darwinV515(), live);
     expect(live.baselineEvidence).toMatchObject({
       event: "local-native",
@@ -3242,6 +3246,82 @@ describe("live contracts preserve released evidence and authentic predecessors",
     for (const key of ["runId", "jobId", "artifact"]) {
       expect(live.baselineEvidence).not.toHaveProperty(key);
     }
+  });
+
+  // The doc 9.1.1 transition preserves the immediately preceding admitted graph.
+  it("moves the live linux-x64 contract only by the doc 9.1.1 dependency graph", () => {
+    const predecessor = frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.1.5-doc910.json",
+      "2ceeed07860b77ce209855fda016354a1e709cd64d10757758a9eb99cd70a193",
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("dependency-graph-repin");
+    expect(live.baselineSourceSha).toBe("d04ef461b3e9c54cedd1be8ef46bee219c716690");
+    expect(live.baselineEvidence.fingerprintTransition).toEqual({
+      policyVersion: 1,
+      oldSha256: predecessor.dependencyFingerprint.sha256,
+      newSha256: "47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2",
+    });
+    expect(live.dependencyFingerprint.sha256).toBe(
+      live.baselineEvidence.fingerprintTransition.newSha256,
+    );
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "51cee362f840b49a42c5dd9b1b2a49b9a3680a60f0c23d2210de85831439f418",
+    );
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"])
+        delete copy[key];
+      copy.dependencyFingerprint.sha256 = null;
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(predecessor));
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+    expect(live.baselineEvidence).toMatchObject({
+      runId: 41460157485,
+      jobId: 125327048902,
+      sourceSha: "9a7a1c08f269a0f62d8c3b422e4fb901315a20e3",
+    });
+  });
+
+  it("moves the live darwin contract only by the doc 9.1.1 dependency graph", () => {
+    const predecessor = frozenDenoExit(
+      "fixtures/island-size-darwin-v5.1.5-doc910.json",
+      "ec64a93fb104346b885feceb7b5542a40fe221d99c5c5fe594d6d8f26bcfedcf",
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision.json"), "utf8"));
+    expect(live.outcome).toBe("dependency-graph-repin");
+    expect(live.baselineSourceSha).toBe("d04ef461b3e9c54cedd1be8ef46bee219c716690");
+    expect(live.baselineEvidence.fingerprintTransition).toEqual({
+      policyVersion: 1,
+      oldSha256: predecessor.dependencyFingerprint.sha256,
+      newSha256: "47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2",
+    });
+    expect(live.dependencyFingerprint.sha256).toBe(
+      live.baselineEvidence.fingerprintTransition.newSha256,
+    );
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "51cee362f840b49a42c5dd9b1b2a49b9a3680a60f0c23d2210de85831439f418",
+    );
+    const fixed = (contract) => {
+      const copy = structuredClone(contract);
+      for (const key of ["outcome", "baselineSourceSha", "platformStatus", "baselineEvidence"])
+        delete copy[key];
+      copy.dependencyFingerprint.sha256 = null;
+      copy.toolchain.pnpmLockSha256 = null;
+      return copy;
+    };
+    expect(fixed(live)).toEqual(fixed(predecessor));
+    expect(live.baselineEvidence.actualGzip).toEqual(predecessor.baselineEvidence.actualGzip);
+    expect(live.baselineEvidence).toMatchObject({
+      event: "local-native",
+      sourceSha: "d04ef461b3e9c54cedd1be8ef46bee219c716690",
+      stagingTool: { commit: "d04ef461b3e9c54cedd1be8ef46bee219c716690" },
+      localReceipt: { sha256: "9a7e8edf0aeca85c470611e979fc3c5f7e34cb6477b6f91dd93e1c48f433bd54" },
+    });
+    for (const key of ["runId", "jobId", "artifact"])
+      expect(live.baselineEvidence).not.toHaveProperty(key);
   });
 
   it("keeps the dated README corrections", () => {

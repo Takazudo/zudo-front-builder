@@ -2,6 +2,137 @@
 
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
+
+## Native admission follow-through — 2026-11-03 JST
+
+PR #4587 now carries the owner-approved paired dependency-graph re-pin for frozen
+candidate `d04ef461b3e9c54cedd1be8ef46bee219c716690`. This section supersedes the
+admission hold and #4458 disposition in the November 2 checkpoint below.
+
+- Native Darwin arm64: Rust/Cargo 1.99.0, Node 24.14.0, zlib 1.3.1-e00f703,
+  pnpm 12.8.2, esbuild 0.25.12. Both eight-case modes retain all raw and
+  gzipNormalized totals with zero allowances. Source remained clean.
+- Original collection passed build/measurements but its receipt was refused because
+  the handoff recorded a multiline shell argument. The validator was unchanged;
+  a corrected external driver invokes a retained provenance script and records real
+  argv. Recollection passed build/workspace/packed under the heavy guard in
+  33/30/23 seconds. Both collections and the original rejection remain retained.
+- Corrected receipt SHA-256:
+  `9a7e8edf0aeca85c470611e979fc3c5f7e34cb6477b6f91dd93e1c48f433bd54`.
+  Bundle digest: `8762ed5c9e6ed585bfc98eddfbc9e2f695f27b03c3fbdf551e85891249b4d4eb`.
+  Linux evidence: health run 41460157485, job 125327048902, artifact 13150621471,
+  measured merge source `9a7a1c08f269a0f62d8c3b422e4fb901315a20e3`.
+- Independent review recomputed normalization, checked command and binary identity,
+  and verified the paired stage. The owner approved applying manifest SHA-256
+  `51d9ebf0e4c1c87d26524f14322ba4d3f86beaf143dc39ae93788dfbe498ba60`.
+  Application succeeded; the enforced Darwin checker now passes all eight cases
+  in both modes. The original fingerprint-only exit 1 remains historical evidence.
+  Final-head CI is tracked on the PR; pre-application CI does not qualify this update.
+- #4458 is closed after direct inspection of scheduled exam 41168210490's JUnit:
+  both scanner cases passed without retries. #4304 remains red from mixed doc
+  identities in watch 41277672402, with no unexpected failures or timing breach.
+  Intel and owner-browser obligations remain open. Main merge/release is not performed.
+
+## Current checkpoint — 2026-11-02 UTC
+
+Integration/CI triage owner: the project integration manager. Read-only refresh of GitHub
+issues (including comments), releases, open PRs and Actions metadata on 2026-11-02.
+This checkpoint supersedes the operational status in every historical snapshot below;
+the original receipts, failures, decisions and dated holds remain preserved there.
+
+### Production, candidate and qualification identities
+
+| Lane | Identity | State and evidence |
+| --- | --- | --- |
+| Production `main` | `5de7215afc89fae8d5881983b8e8ade9a14ca093` (#4586) | Docs host uses zudo-doc/history-server **9.1.0**. Latest ZFB release is [v5.1.5](https://github.com/Takazudo/zudo-front-builder/releases/tag/v5.1.5), published 2026-10-26. Initial refresh found **0 open PRs** before this candidate. |
+| Development candidate | `base/docs-9-1-1-followthrough`, starting at the same `5de7215af` | zudo-doc/history-server **9.1.1** adoption is candidate work. It is not production, a released ZFB version, or new owner-browser acceptance. The manager owns integration and candidate verification. |
+| Published-preset fixture | ZFB/runtime/md-wasm **5.1.5**, doc **9.1.0**, SG **0.8.0**, ZDTP **0.9.0** | Keep this coherent committed tuple unchanged in the 9.1.1 docs-host work. [Native installed-carrier acceptance](https://github.com/Takazudo/zudo-front-builder/issues/4276#issuecomment-6522863052) passed first attempt on arm64 at `5de7215af`: positive passed and both negative controls failed as expected. That receipt does not qualify a changed tuple. |
+| Frozen native runtime probes | `a3b1143a878db827dec02e53f076f2b593ecb5b6` | [#4123 arm64 receipt](https://github.com/Takazudo/zudo-front-builder/issues/4123#issuecomment-6431409232): direct-V8/Rolldown `verify.mjs` and `production.mjs` PASS. Preserve the three initial build stops and fourth successful build; the probes passed on their first execution. This is historical source-bound execution, not a rerun on current main or the candidate. |
+
+Observed CI for **main `5de7215af`**, not for the 9.1.1 candidate: [health
+40929639882](https://github.com/Takazudo/zudo-front-builder/actions/runs/40929639882),
+[binary smoke/scaffold 40929640016](https://github.com/Takazudo/zudo-front-builder/actions/runs/40929640016),
+[actionlint 40929640186](https://github.com/Takazudo/zudo-front-builder/actions/runs/40929640186)
+and [Security Audit 41405889749](https://github.com/Takazudo/zudo-front-builder/actions/runs/41405889749)
+completed with success. The scheduled exam and Supervisor watch need the more precise
+interpretations below. No workflow was dispatched or rerun for this refresh.
+
+### Current obligations and next evidence
+
+The complete open inventory is **9 issues**, including dashboard #1492. Existing trackers
+remain the owners of their evidence; this ledger creates no replacement issue or scheduler.
+
+| Tracker | Current disposition | Next evidence / boundary |
+| --- | --- | --- |
+| [#4458 scanner recovery flake](https://github.com/Takazudo/zudo-front-builder/issues/4458) | **Closure-ready, still open.** #4468's tick-scoped assertions and #4491's atomic fixture write are integrated. The scheduled [2026-10-31 exam 41168210490](https://github.com/Takazudo/zudo-front-builder/actions/runs/41168210490), source `5de7215af`, reports 7,055 passed / 87 skipped; both scanner recovery cases pass without retry and the flaky scanner reports no flaky tests. | Manager disposition can use that clean scheduled checkpoint. Skips stay skips; workflow success alone is not the receipt. Original failure and focused Mac evidence remain in the issue. No closure is performed by this ledger refresh. |
+| [#4304 Supervisor watch](https://github.com/Takazudo/zudo-front-builder/issues/4304) | **Open; actual verdict red.** Scheduled [2026-11-01 run 41277672402](https://github.com/Takazudo/zudo-front-builder/actions/runs/41277672402), source `5de7215af`, has GitHub conclusion success but `verdict=red rc=2 all=ok:0/0 main=red:25/2`; its green-close step was skipped. Main's identity population spans doc **7.1.0 / 8.1.1 / 9.0.0 / 9.1.0**. | Keep the strict rolling **eight-day** window. Next normal schedule: **2026-11-08 14:37 JST (05:37 UTC)**. A new 9.1.1 transition can prolong drift; green is not promised. No narrowed window, drift allowance, forced dispatch or monitoring-contract change. |
+| [#4276 docs/preset acceptance](https://github.com/Takazudo/zudo-front-builder/issues/4276) and [#4576 Neo coordinator](https://github.com/Takazudo/zudo-front-builder/issues/4576) | **Open for the owner's own docs browser confirmation or explicit waiver; neither is recorded.** Current-tuple native preset acceptance, local focused 58/58 specs and agent-driven headed checks locally/deployed are recorded in the [2026-10-30 receipt](https://github.com/Takazudo/zudo-front-builder/issues/4276#issuecomment-6522863052). Deployed docs are `53318efcc`; local source is `5de7215af`. | Owner confirms EN/JA desktop/mobile navigation, long sidebar and Back/Forward, Graphite default and theme persistence, MDX tables/links and console, or explicitly waives. Agent browser checks do not substitute for that owner result. Intel is outside #4576's close condition. |
+| [#4123 runtime probes](https://github.com/Takazudo/zudo-front-builder/issues/4123) and [#4366 graph token](https://github.com/Takazudo/zudo-front-builder/issues/4366) | **Native Intel Darwin x64 remains NOT RUN.** Arm64 runtime probes and Windows Stage 7 completion retain their own identities. Arm64 size/admission evidence is a separate obligation and cannot satisfy native Intel execution. | One native Intel session on one recorded source for runtime/browser/production probes and graph_identity/product E2E/Stage 7, or explicit owner narrowing. Rosetta, cross-compilation and arm64 reruns do not satisfy it. No hardware or Mac CI is scheduled here. |
+| [#4490 Rolldown external provenance](https://github.com/Takazudo/zudo-front-builder/issues/4490) | Only external-ID/emitted-JS-chunk spelling collision remains; completed cases and shape decisions are historical. No new triggering evidence was found in the issue. | Resume when upstream exposes per-edge external provenance, or a supported ZFB use case demonstrates the collision. No speculative resolver rewrite. |
+| [#3357 Cloudflare cf](https://github.com/Takazudo/zudo-front-builder/issues/3357) | Existing upstream-triggered deferral remains. The issue records beta exit or an earlier explicit owner decision as the trigger; CI/migration guidance already exists and is not the blocker. | Revalidate upstream beta status when evaluating that trigger. This refresh does not independently claim a new upstream release check or begin migration/deployment. |
+| [#1492 dashboard](https://github.com/Takazudo/zudo-front-builder/issues/1492) | Existing central dashboard, not a new implementation task. Its 2026-10-30 body retains the nine-issue / zero-PR inventory. | Keep evidence in existing issues. Its earlier “scheduled checkpoint” wording for #4458 and #4304 is superseded by the observed runs above. |
+
+**Completed historical lanes:** Deno exit epic [#4386](https://github.com/Takazudo/zudo-front-builder/issues/4386)
+and S9/S10/S11 **#4398 / #4399 / #4400 are closed and delivered**. The
+[S9 source-bound ledger](https://github.com/Takazudo/zudo-front-builder/issues/4303#issuecomment-6338445544)
+retains its NOT RUN items; S11's five-lane notes merged in #4418 (`7a8cff8`).
+Direct V8 is the only/default JS host; the old roadmap's default-switch and Deno-removal holds
+are historical. This does not erase the CPU-bound interruption/watchdog limitation.
+Security alert **#4314 is closed**, recovered in [39624334773](https://github.com/Takazudo/zudo-front-builder/actions/runs/39624334773);
+**#4364 is closed**, fixed by #4365 with first-attempt green health on `1531eaef`
+([39549166781](https://github.com/Takazudo/zudo-front-builder/actions/runs/39549166781)).
+Their original failures below remain evidence, not current unresolved alerts.
+
+Evidence scope: issue bodies/comments and run/job metadata were refreshed directly. Detailed
+exam counts and watch identities above come from the parent planning-inspected receipts;
+this refresh could not independently download their logs/artifacts because the Actions blob
+redirect returned Forbidden. Available artifact identities are `nextest-junit-exam-macos`
+**13030810211** and `supervisor-watch` **13072061388** (API reports neither expired).
+The issue-status refresh did not rerun these historical jobs or change their completion criteria.
+
+### Docs 9.1.1 candidate verification and admission hold
+
+The docs host uses exact published zudo-doc/history-server 9.1.1; the released ZFB
+5.1.5 toolchain and committed published-preset tuple are unchanged. Both upstream
+release tags resolve to `81e0e97f6a11185202e63a647a55df3e0cffc50a`.
+Registry SHA-512 integrity and every installed package file matched the 9.1.1 tarballs.
+The base tsconfig and both generator route templates are byte-identical to 9.1.0;
+the original route-adaptation provenance remains unknown.
+
+Early preflight on unchanged main and immediately after the bounded pnpm 12.8.2 lock update:
+
+- Existing contract/main fingerprint: `346c6ad14b7dcde05778dfc1198ba8ac6e1db85235f176e101ec56944a5aed0f`.
+- Candidate fingerprint: `47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2`.
+- Policy 1, parser `yaml@2.9.0` and helper `c1cec11ab7e7d0ea5d5a9548a871dfb886bc05ebbb2ff513d13332429632d787` are unchanged.
+- The only changed included record is `snapshots.esbuild@0.28.1.optional: true`.
+  The excluded `tsx@4.23.15` snapshot now resolves esbuild 0.28.2 instead of 0.28.1.
+  Bounded normal install/update (including depth 0) retained this change.
+  `pnpm install --lockfile-only --no-auto-dedupe --prefer-frozen-lockfile`
+  avoided unrelated snapshot removal. No lock metadata or contract hash was hand-edited.
+
+**Admission remains pending:** keep both live island-size contracts unchanged until
+fresh Linux x64 health evidence and owner-attested native Darwin arm64 workspace/packed
+evidence qualify the exact frozen candidate. Preserve the original old-contract rejection,
+prove unchanged totals, stage both platforms with `--reason dependency-graph`, review
+the paired stage, then obtain the separate owner authorization for `--apply` required by
+[LOCAL-NATIVE-EVIDENCE.md](v3-island-size/LOCAL-NATIVE-EVIDENCE.md).
+General safe-merge permission does not waive this boundary. This arm64 size evidence is
+independent of the existing native Intel obligations.
+
+The focused installed-package baseline on 9.1.0 had 18 passing tests and two new
+regression failures; candidate 9.1.1 passes all 20. Node 24.19.0 / pnpm 12.8.2
+Cloud checks passed docs type/schema validation, navigation-index synchronization,
+the 778-page strict root build and island markers. Browser/CI results, frozen source SHA,
+first failures and native handoff belong to the candidate PR's exact-head evidence record;
+older-main CI success above does not qualify this candidate. No broad Rust workspace
+build is run in Cloud; existing PR-triggered Actions own that verification.
+
+## Historical snapshots — preserved evidence
+
+Everything below is dated history. “Current”, “open”, “held”, “pending”, approval tables and
+thread ownership in those records describe their original checkpoint, not today's instructions.
+Use the 2026-11-02 checkpoint above for present status; retain older failures and receipts.
+
 Current snapshot: 2026-10-21 03:00 UTC, `main` `cd09e6c` after the v4.5.4 release, PR 4352 and PR 4358;
 integration/CI triage owner: the project integration manager (one fixed owner). The "Round record
 at main `013b0ab`", "Round record at main `21ef7c4`" and everything from "Historical checkpoint 4294"
@@ -9,7 +140,7 @@ onward are earlier records, kept as evidence; where they say "draft", "candidate
 the current roadmap below wins. For the JS runtime, the "Deno exit" section below supersedes
 the direct-V8 and Deno entries in every older section, including the 2026-10-21 roadmap.
 
-## Deno exit (epic 4386, updated 2026-10-22)
+## Historical Deno exit checkpoint (epic 4386, updated 2026-10-22)
 
 Source: `git log --first-parent main` and the
 [4386 epic](https://github.com/Takazudo/zudo-front-builder/issues/4386). The owner approved
@@ -36,7 +167,7 @@ regular merge commit.
   qualification harness's watchdog drain is best-effort (4289, see
   `prototypes/direct-v8/WATCHDOG-4289.md`).
 
-## Current roadmap (main `cd09e6c`, updated 2026-10-21 03:00 UTC)
+## Historical roadmap (main `cd09e6c`, updated 2026-10-21 03:00 UTC)
 
 Source: `git ls-remote`, the GitHub API and the [4336 coordination issue](https://github.com/Takazudo/zudo-front-builder/issues/4336).
 Where this section and the older sections below disagree, this section wins.
