@@ -3,6 +3,36 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Native admission follow-through — 2026-11-03 JST
+
+PR #4587 now carries the owner-approved paired dependency-graph re-pin for frozen
+candidate `d04ef461b3e9c54cedd1be8ef46bee219c716690`. This section supersedes the
+admission hold and #4458 disposition in the November 2 checkpoint below.
+
+- Native Darwin arm64: Rust/Cargo 1.99.0, Node 24.14.0, zlib 1.3.1-e00f703,
+  pnpm 12.8.2, esbuild 0.25.12. Both eight-case modes retain all raw and
+  gzipNormalized totals with zero allowances. Source remained clean.
+- Original collection passed build/measurements but its receipt was refused because
+  the handoff recorded a multiline shell argument. The validator was unchanged;
+  a corrected external driver invokes a retained provenance script and records real
+  argv. Recollection passed build/workspace/packed under the heavy guard in
+  33/30/23 seconds. Both collections and the original rejection remain retained.
+- Corrected receipt SHA-256:
+  `9a7e8edf0aeca85c470611e979fc3c5f7e34cb6477b6f91dd93e1c48f433bd54`.
+  Bundle digest: `8762ed5c9e6ed585bfc98eddfbc9e2f695f27b03c3fbdf551e85891249b4d4eb`.
+  Linux evidence: health run 41460157485, job 125327048902, artifact 13150621471,
+  measured merge source `9a7a1c08f269a0f62d8c3b422e4fb901315a20e3`.
+- Independent review recomputed normalization, checked command and binary identity,
+  and verified the paired stage. The owner approved applying manifest SHA-256
+  `51d9ebf0e4c1c87d26524f14322ba4d3f86beaf143dc39ae93788dfbe498ba60`.
+  Application succeeded; the enforced Darwin checker now passes all eight cases
+  in both modes. The original fingerprint-only exit 1 remains historical evidence.
+  Final-head CI is tracked on the PR; pre-application CI does not qualify this update.
+- #4458 is closed after direct inspection of scheduled exam 41168210490's JUnit:
+  both scanner cases passed without retries. #4304 remains red from mixed doc
+  identities in watch 41277672402, with no unexpected failures or timing breach.
+  Intel and owner-browser obligations remain open. Main merge/release is not performed.
+
 ## Current checkpoint — 2026-11-02 UTC
 
 Integration/CI triage owner: the project integration manager. Read-only refresh of GitHub
