@@ -35,6 +35,7 @@ async function sidebarOf(page, width) {
   await expect(side).not.toHaveAttribute("inert", "");
   await expect(treeOf(side)).toBeVisible();
   await expect(side).toBeInViewport();
+  await expect.poll(async () => (await side.boundingBox())?.x).toBe(0);
   return side;
 }
 async function closeMobile(page, width) {
@@ -165,7 +166,7 @@ for (const width of [1440, 390]) {
       await expectClaude(page, width, slug, resources);
       if (slug === wisdom) {
         const screenshot = testInfo.outputPath(`claude-wisdom-${width}.png`);
-        await page.screenshot({ path: screenshot });
+        await page.screenshot({ path: screenshot, animations: "disabled" });
         await testInfo.attach(`Claude wisdom navigation ${width}`, {
           path: screenshot,
           contentType: "image/png",
