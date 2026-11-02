@@ -58,7 +58,9 @@ exam counts and watch identities above come from the parent planning-inspected r
 this child could not independently download their logs/artifacts because the Actions blob
 redirect returned Forbidden. Available artifact identities are `nextest-junit-exam-macos`
 **13030810211** and `supervisor-watch` **13072061388** (API reports neither expired).
-No install, build, browser run, issue write, merge, push, release or live admission was performed.
+No build, browser run, issue write, merge, push, release or live admission was performed.
+The commit formatter hook restored 338 packages from the existing pnpm cache (zero downloads);
+no dependency source or lockfile was edited.
 
 ## Historical snapshots — preserved evidence
 
