@@ -28,14 +28,12 @@ import { pathToFileURL } from "node:url";
 const docsRequire = createRequire(new URL("../../docs/package.json", import.meta.url));
 // A dynamic import is unavoidable here (resolution goes through docs/); a missing
 // docs install must fail loudly with the fix, not as an opaque resolver error.
-async function importSidebarUtils() {
+async function importDocsExport(subpath) {
   try {
-    return await import(
-      pathToFileURL(docsRequire.resolve("@takazudo/zudo-doc/sidebar-utils")).href
-    );
+    return await import(pathToFileURL(docsRequire.resolve(`@takazudo/zudo-doc/${subpath}`)).href);
   } catch (error) {
     throw new Error(
-      "@takazudo/zudo-doc/sidebar-utils is not resolvable from docs/package.json; the docs " +
+      `@takazudo/zudo-doc/${subpath} is not resolvable from docs/package.json; the docs ` +
         "workspace must be installed (run `pnpm install` at the repo root): " +
         (error?.message ?? error),
       { cause: error },
@@ -49,7 +47,8 @@ const {
   sidebarBaselineOpen,
   sidebarInitialExpansion,
   sidebarScopeNodes,
-} = await importSidebarUtils();
+} = await importDocsExport("sidebar-utils");
+const { getNavSectionForSlug, getNavSubtree } = await importDocsExport("nav-scope");
 
 function node(slug, children = []) {
   return {
@@ -62,6 +61,91 @@ function node(slug, children = []) {
   };
 }
 describe("documentation navigation contracts", () => {
+  it("keeps generated Claude satellite pages in the installed package's Claude section", () => {
+    const config = readFileSync("docs/zfb.config.ts", "utf8");
+    const headerNav = [...config.matchAll(/categoryMatch: "([^"]+)"/g)].map((match) => ({
+      categoryMatch: match[1],
+    }));
+    expect(headerNav).toContainEqual({ categoryMatch: "claude" });
+    const satellites = [
+      ["claude-skills", "claude-skills/zfb-wisdom"],
+      ["claude-md", "claude-md/root"],
+      // Commands are a package contract even when this host has no commands.
+      ["claude-commands", "claude-commands/example"],
+    ];
+    const tree = [
+      node("claude"),
+      ...satellites.map(([category, article]) => node(category, [node(article)])),
+      node("getting-started"),
+      node("claude2"),
+    ];
+    const expected = tree.slice(0, 1 + satellites.length).map((current) => current.slug);
+    for (const slug of ["claude", "claude/overview", ...satellites.flat()]) {
+      const section = getNavSectionForSlug(slug, headerNav);
+      expect(section, slug).toBe("claude");
+      expect(getNavSubtree(tree, section, headerNav).map((current) => current.slug)).toEqual(
+        expected,
+      );
+      const { nodes } = buildSidebarNavigation(
+        [],
+        "en",
+        section,
+        undefined,
+        {},
+        () => tree,
+        headerNav.map((item) => item.categoryMatch),
+      );
+      expect(
+        nodes.map((current) => current.slug),
+        slug,
+      ).toEqual(expected);
+      for (const [, article] of satellites)
+        expect(nodes.flatMap((current) => current.children.map((child) => child.slug))).toContain(
+          article,
+        );
+      // Claude remains native; a host editorial scope must not hide the package regression.
+      expect(resolveNavigationScope(slug, canonicalNavSection(slug, section))).toBeUndefined();
+    }
+    expect(getNavSectionForSlug("claude2/page", headerNav)).toBeUndefined();
+  });
+  it("separates foo from foo2 and gives the longest explicit satellite matcher ownership", () => {
+    const tree = [
+      node("foo", [node("foo/page")]),
+      node("foo-skills", [node("foo-skills/example")]),
+      node("foo-bar", [node("foo-bar/page")]),
+      node("foo-bar-skills", [node("foo-bar-skills/example")]),
+      node("foo2", [node("foo2/page")]),
+      node("unclaimed"),
+    ];
+    for (const matches of [
+      ["foo", "foo-bar"],
+      ["foo-bar", "foo"],
+    ]) {
+      const headerNav = [...matches, "!"].map((categoryMatch) => ({ categoryMatch }));
+      for (const [section, expected] of [
+        ["foo", ["foo", "foo-skills"]],
+        ["foo-bar", ["foo-bar", "foo-bar-skills"]],
+        ["!", ["foo2", "unclaimed"]],
+      ]) {
+        for (const slug of expected)
+          for (const candidate of [slug, `${slug}/page`])
+            expect(getNavSectionForSlug(candidate, headerNav), candidate).toBe(section);
+        expect(getNavSubtree(tree, section, headerNav).map((current) => current.slug)).toEqual(
+          expected,
+        );
+        const { nodes } = buildSidebarNavigation(
+          [],
+          "en",
+          section,
+          undefined,
+          {},
+          () => tree,
+          matches,
+        );
+        expect(nodes.map((current) => current.slug)).toEqual(expected);
+      }
+    }
+  });
   it("keeps the header order and materialized native indexes synchronized", async () => {
     const config = readFileSync("docs/zfb.config.ts", "utf8");
     expect([...config.matchAll(/categoryMatch: "([^"]+)"/g)].map((match) => match[1])).toEqual(
