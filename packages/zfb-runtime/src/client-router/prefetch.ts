@@ -155,7 +155,10 @@ function executePrefetch(href: string, opts: PrefetchOptions): Promise<void> {
           document.head.appendChild(link);
         });
       } else {
-        await fetch(href, { priority: "low" } as RequestInit & { priority?: string });
+        const response = await fetch(href, { priority: "low" } as RequestInit & {
+          priority?: string;
+        });
+        if (!response.ok) return;
       }
       prefetched.add(href);
     } finally {

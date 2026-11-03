@@ -1548,17 +1548,28 @@ function handleSubmit(ev: SubmitEvent): void {
   }
 
   const form = el as HTMLFormElement;
-  const formData = new FormData(form, submitter ?? undefined);
 
   // form.action / form.method can be shadowed by <input name="action"> / <input name="method">,
   // so fall back to getAttribute() when the property is not a string. (Astro's comment.)
   const formAction = typeof form.action === "string" ? form.action : form.getAttribute("action");
-  const formMethod = typeof form.method === "string" ? form.method : form.getAttribute("method");
+  const target =
+    (submitter?.getAttribute("formtarget") ?? form.getAttribute("target")) ||
+    document.querySelector("base[target]")?.getAttribute("target") ||
+    "";
+  // Browsers fall back to base target for empty targets, including an empty submitter override.
+  // Only _self/default belong to this router; other browsing contexts stay native.
+  if (target !== "" && target.toLowerCase() !== "_self") return;
 
   // Resolve action: submitter formaction attr overrides form action, fallback to current path.
   let action = submitter?.getAttribute("formaction") ?? formAction ?? location.pathname;
   // Resolve method: submitter formmethod attr overrides form method, fallback to "get".
-  const method = submitter?.getAttribute("formmethod") ?? formMethod ?? "get";
+  const rawMethod = (
+    submitter?.getAttribute("formmethod") ??
+    form.getAttribute("method") ??
+    ""
+  ).toLowerCase();
+  // HTML enumerated methods default to GET for empty/invalid values, without trimming.
+  const method = rawMethod === "post" || rawMethod === "dialog" ? rawMethod : "get";
 
   // The "dialog" method is a special keyword used within <dialog> elements —
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
@@ -1567,6 +1578,7 @@ function handleSubmit(ev: SubmitEvent): void {
     return;
   }
 
+  const formData = new FormData(form, submitter ?? undefined);
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
   if (method === "get") {
     const params = new URLSearchParams(formData as any);
