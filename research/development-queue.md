@@ -3,6 +3,61 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Published consumer adoption checkpoint — 2026-11-03 UTC
+
+This checkpoint supersedes the operational status of the dated entries below;
+their original results, failures and holds remain historical evidence.
+
+- Integrated router delivery: #4589 source
+  `6d4bb6625d8f0c4ca024104326a8789df79729d9`, main merge
+  `1ff3adb4ade5ad70545feccf4e0a2bd2576c4e64`. The owner subsequently released
+  ZFB **5.2.0** from `0f17c8e947548b4c4a82ebce112bd5f026e1b21b` on Mac.
+- The downstream adoption lap is integrated: zudo-doc #4694 adopted ZFB 5.2.0;
+  release #4695 merged at `4b5b54e3e0f383cfbf1e7b6038c6b65ee7c5f9d2` and
+  published doc/history/create **9.1.2** through the normal package lanes.
+  zudo-sg #1041 adopted ZFB 5.2.0 and #1042 adopted doc/history 9.1.2, merged at
+  `d8b9e2ac3ca3664f0c2c39fa0df68073e538d20d`. Current-head CI and automatic
+  production deployments passed for those deliveries. They do not supply native
+  ZFB acceptance or close independent trackers.
+- Development branch: `base/dogfood-zfb-5-2-doc-9-1-2`, from main
+  `0f17c8e947548b4c4a82ebce112bd5f026e1b21b`. Independently reviewed dependency
+  source: `90ce206fb06c76478ff233ed1532c74001cd36a1`. Ledger commits, PR test refs
+  and any later main merge are separate identities. This candidate is not yet
+  integrated and does not change or publish a ZFB package version.
+- Docs host: ZFB/adapter/runtime/md-wasm **5.2.0**, doc/history **9.1.2**.
+  The published-preset fixture is a separate changed tuple: ZFB/runtime/md-wasm
+  **5.2.0**, doc **9.1.2**, SG **0.8.1**, ZDTP **0.9.0**. Its lock was rebuilt
+  outside the workspace; registry integrity checks and both generator checks
+  pass, with unchanged generated output (one story, 102 tokens).
+- Published template/tsconfig comparisons preserve the host adaptations and
+  original unknown route provenance. Local docs type/collection checks and
+  63 carrier/gate/fingerprint unit tests pass. The dependency fingerprint remains
+  `47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2`;
+  live size contracts, build configuration and fingerprint policy are unchanged.
+- Local docs root/subpath build, browser and installed-carrier fixture evidence
+  are in progress. Workspace-compiler fixture evidence and broad Linux checks
+  belong to current-head CI; none is recorded as passed in advance.
+- New-tuple native acceptance is **NOT RUN**. The old arm64 installed-carrier
+  receipt at `5de7215af` belongs only to its ZFB 5.1.5 / doc 9.1.0 / SG 0.8.0
+  tuple. Cloud Chromium is not a replacement for that native receipt or the
+  owner's browser acceptance. Any future ZFB release is owned by the user's Mac
+  workflow; this session performs no release, tag, publication or manual deploy.
+
+Open-issue refresh found no new decision-free implementation in the existing
+owner/native/watch/upstream trackers. Keep #1492, #4276, #4576, #4123 and #4366
+under their original criteria. #4490 still retains the per-edge external-ID
+ambiguity trigger; no dependency upgrade or speculative compatibility policy is
+introduced. #3357 remains deferred: the official [cf migration documentation](https://developers.cloudflare.com/cf/wrangler/migrate/)
+still identifies the CLI as beta on this refresh. zudo-doc's remaining trackers
+require actual account acceptance; zudo-sg #963 retains the supported
+module-identity remedy criterion, which clean-install tests do not satisfy.
+
+#4304 remains open. The latest scheduled watch is still **41277672402**; its
+workflow success does not mean the watch is green. No dispatch, narrowing,
+drift allowance or closure was performed. The next genuine rolling-window
+result owns recovery, and this docs update adds another intentional identity
+transition that must remain visible.
+
 ## Client-router native intent and history checkpoint — 2026-11-03 UTC
 
 PRs #4587 and #4588 are already integrated. The refreshed starting main is
