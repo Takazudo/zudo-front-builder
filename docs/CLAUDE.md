@@ -2,8 +2,8 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.1.5 and
-`@takazudo/zudo-doc` / `zudo-doc-history-server` 9.1.1 (#3329, #4576, #4580). Verify
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.2.0 and
+`@takazudo/zudo-doc` / `zudo-doc-history-server` 9.1.2 (#3329, #4576, #4580). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
 
@@ -53,6 +53,13 @@ and the original unknown route-adaptation pin remain unchanged. Both zudo-doc re
 tags resolve to `81e0e97f6a11185202e63a647a55df3e0cffc50a`. The 9.1.1 package owns
 Claude satellite categories (`claude-skills`, `claude-md`, `claude-commands`) through
 the existing `categoryMatch: "claude"`; do not duplicate that matcher in host code.
+
+The 2026-11-03 comparison used the published 9.1.2 tarballs: the base config and
+both create-zudo-doc route templates remain byte-identical to 9.1.1. The release
+tags resolve to `4b5b54e3e0f383cfbf1e7b6038c6b65ee7c5f9d2`. zudo-doc 9.1.2 raises
+its ZFB peer floor to 5.2.0, adopting the native link/form intent and history-race
+fixes without changing host configuration. Existing native acceptance receipts
+for older tuples remain historical; they do not qualify this new tuple.
 
 ## Setup
 

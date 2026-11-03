@@ -10,10 +10,10 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: docs/tsconfig.json
 - source: packages/zudo-doc/tsconfig.base.json
 - track: releases
-- pinned: 81e0e97f6a11185202e63a647a55df3e0cffc50a (release tag `zudo-doc-v9.1.1`; `zudo-doc-history-server-9.1.1` resolves to the same commit)
-- updated: 2026-11-02
+- pinned: 4b5b54e3e0f383cfbf1e7b6038c6b65ee7c5f9d2 (release tag `zudo-doc-v9.1.2`; `zudo-doc-history-server-9.1.2` resolves to the same commit)
+- updated: 2026-11-03
 - sync: diff `docs/node_modules/@takazudo/zudo-doc/tsconfig.base.json` against `docs/tsconfig.json` after a bump
-- notes: reconciled against the integrity-verified 9.1.1 tarball and installed bytes on 2026-11-02 (tsconfig SHA-256 `2f71d96614fd68f9b16caf307b4b1267ebf1988880e4fd0a08f1cd8a93ddeea6`, byte-identical to 9.1.0, 9.0.0, 8.1.1, 7.1.0 and 6.2.0); the registry package publishes no `gitHead`; the release tag was resolved separately through GitHub. Upstream removed `baseUrl` in 6.2.0, leaving the adapted file unchanged. Local customizations: add `types: ["node"]`, add host `include` (`src`, `pages`, `zfb.config.ts`) and relocate `files` under `./node_modules/@takazudo/zudo-doc/`, keep `jsxImportSource: "@takazudo/zfb/zudo-react"`, and add no React→Preact `paths`
+- notes: reconciled against the integrity-verified 9.1.2 tarball and installed bytes on 2026-11-03; byte-identical to 9.1.1 and the host adaptations remain unchanged; `pnpm docs:check` passed. Previously reconciled against the integrity-verified 9.1.1 tarball and installed bytes on 2026-11-02 (tsconfig SHA-256 `2f71d96614fd68f9b16caf307b4b1267ebf1988880e4fd0a08f1cd8a93ddeea6`, byte-identical to 9.1.0, 9.0.0, 8.1.1, 7.1.0 and 6.2.0); the registry package publishes no `gitHead`; the release tag was resolved separately through GitHub. Upstream removed `baseUrl` in 6.2.0, leaving the adapted file unchanged. Local customizations: add `types: ["node"]`, add host `include` (`src`, `pages`, `zfb.config.ts`) and relocate `files` under `./node_modules/@takazudo/zudo-doc/`, keep `jsxImportSource: "@takazudo/zfb/zudo-react"`, and add no React→Preact `paths`
 
 ## zudo-doc route stubs
 
@@ -23,9 +23,9 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - source: packages/create-zudo-doc/templates/base/pages/docs/[[...slug]].tsx
 - track: releases
 - pinned: unknown
-- observed-head: 81e0e97f6a11185202e63a647a55df3e0cffc50a (`zudo-doc-v9.1.1`, observed 2026-11-02; non-authoritative for the original adaptation)
-- updated: 2026-11-02
-- notes: the template is byte-identical between v6.1.1, v6.2.0, v7.1.0, v8.1.1, v9.0.0, v9.1.0 and v9.1.1 (compared in the published `create-zudo-doc` tarballs; template SHA-256 `34ddfd89f8e6b915b432f586509c47bb321bd9987ac6b2fe675e1339c2b141e1`); the original adaptation pin remains unknown. The generator's i18n feature ships `templates/features/i18n/files/pages/[locale]/docs/[[...slug]].tsx` (byte-identical between v8.1.1, v9.0.0, v9.1.0 and v9.1.1, SHA-256 `432e5ddc82af477a189a2facee9fc94bebc6c2efbd18444fd447ba0ad226e2bd`); whether the host locale stub was adapted from it is unrecorded. Local customizations: the static `../src/chrome-bindings` island-scanner seed import, the `DocHistoryBoundary` merge over `chromeBindings`, and in the locale stub the per-locale content dir, EN fallback `isFallback` and EN `docsDir` for doc history. `docs/pages/index.tsx` and `docs/pages/[locale].tsx` are host-authored, not copies
+- observed-head: 4b5b54e3e0f383cfbf1e7b6038c6b65ee7c5f9d2 (`zudo-doc-v9.1.2`, observed 2026-11-03; non-authoritative for the original adaptation)
+- updated: 2026-11-03
+- notes: both published create-zudo-doc 9.1.2 route templates are byte-identical to 9.1.1 (2026-11-03 comparison); original unknown adaptation provenance and host customizations remain unchanged. Previously, the template is byte-identical between v6.1.1, v6.2.0, v7.1.0, v8.1.1, v9.0.0, v9.1.0 and v9.1.1 (compared in the published `create-zudo-doc` tarballs; template SHA-256 `34ddfd89f8e6b915b432f586509c47bb321bd9987ac6b2fe675e1339c2b141e1`); the original adaptation pin remains unknown. The generator's i18n feature ships `templates/features/i18n/files/pages/[locale]/docs/[[...slug]].tsx` (byte-identical between v8.1.1, v9.0.0, v9.1.0 and v9.1.1, SHA-256 `432e5ddc82af477a189a2facee9fc94bebc6c2efbd18444fd447ba0ad226e2bd`); whether the host locale stub was adapted from it is unrecorded. Local customizations: the static `../src/chrome-bindings` island-scanner seed import, the `DocHistoryBoundary` merge over `chromeBindings`, and in the locale stub the per-locale content dir, EN fallback `isFallback` and EN `docsDir` for doc history. `docs/pages/index.tsx` and `docs/pages/[locale].tsx` are host-authored, not copies
 
 ## zudo-sg generated styleguide outputs
 
@@ -34,7 +34,7 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - files: tests/published-preset-identity/site/src/styleguide/sg-registry.ts, tests/published-preset-identity/site/src/styleguide/token-manifest.ts
 - source: packages/styleguide (the `gen-registry` / `gen-token-manifest` CLI)
 - track: releases
-- pinned: 767b16d834dc9c361dbf818f631a3f11bb2cce52 (v0.8.0)
-- updated: 2026-10-28
+- pinned: 6e14088dbdc6138bcfe38fcc2a17c9cd7a580f71 (v0.8.1)
+- updated: 2026-11-03
 - sync: in an isolated copy of `tests/published-preset-identity/site/` (see its README), `npx zudo-sg gen-registry && npx zudo-sg gen-token-manifest`, then copy changed `src/styleguide/*.ts` back
-- notes: regenerated with 0.8.0 on 2026-10-28 in an isolated registry-installed copy (Node 24.22.1, zudo-doc 9.1.0, zdtp 0.9.0, zfb 5.1.5) with no output change (1 story, 102 token entries); the 0.6.0 → 0.8.0 tarball diff touches only the token-dashboard adapter, not the generators. `v0.8.0` is a lightweight tag, so the pin is its tag commit (resolved with `git ls-remote`). `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
+- notes: regenerated and checked with 0.8.1 on 2026-11-03 in an isolated registry-installed copy (Node 24.19.0, zudo-doc 9.1.2, zdtp 0.9.0, zfb 5.2.0); no output change (1 story, 102 token entries). The 0.8.0 → 0.8.1 tarball diff changes token-dashboard failure handling and the zudo-doc peer floor, not generators. `v0.8.1` resolves directly to its tag commit. This new tuple still requires its own native owner receipt; historical receipts do not qualify it. Previously regenerated with 0.8.0 on 2026-10-28 in an isolated registry-installed copy (Node 24.22.1, zudo-doc 9.1.0, zdtp 0.9.0, zfb 5.1.5) with no output change (1 story, 102 token entries); the 0.6.0 → 0.8.0 tarball diff touches only the token-dashboard adapter, not the generators. `v0.8.0` is a lightweight tag, so the pin is its tag commit (resolved with `git ls-remote`). `run.mjs` reruns both generators with `--check`. The version must equal the exact `@takazudo/zudo-sg` pin in the fixture's `package.json`
