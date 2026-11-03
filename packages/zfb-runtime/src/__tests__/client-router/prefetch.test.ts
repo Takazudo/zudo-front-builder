@@ -661,3 +661,37 @@ describe("viewport observer reset on SPA swap", () => {
     expect(secondIo.hasObserved(newLink)).toBe(true);
   });
 });
+
+describe("fetch HTTP recovery", () => {
+  beforeEach(() => fetchMock.mockReset().mockResolvedValue(new Response()));
+  it.each([404, 500, 503])(
+    "retries HTTP %s, coalesces in flight, then deduplicates success",
+    async (status) => {
+      const url = sameOriginUrl(`/retry-${status}`);
+      fetchMock.mockResolvedValueOnce(new Response(null, { status }));
+      prefetch(url, { with: "fetch" });
+      prefetch(url, { with: "fetch" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await drainHappyDom();
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+      prefetch(url, { with: "fetch" });
+      prefetch(url, { with: "fetch" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await drainHappyDom();
+      prefetch(url, { with: "fetch" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("keeps network rejections retryable through the void API", async () => {
+    const url = sameOriginUrl("/retry-network");
+    fetchMock.mockRejectedValueOnce(new TypeError("network failed"));
+    expect(prefetch(url, { with: "fetch" })).toBeUndefined();
+    await drainHappyDom();
+    fetchMock.mockResolvedValueOnce(new Response());
+    prefetch(url, { with: "fetch" });
+    await drainHappyDom();
+    prefetch(url, { with: "fetch" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

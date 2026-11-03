@@ -2055,6 +2055,102 @@ describe("handleSubmit — form intercept (#1400)", () => {
     return form;
   }
 
+  it.each([
+    [undefined, undefined, undefined, true],
+    ["_self", undefined, undefined, true],
+    ["_SeLf", undefined, undefined, true],
+    ["_blank", undefined, undefined, false],
+    ["_BLANK", undefined, undefined, false],
+    ["results", undefined, undefined, false],
+    ["_parent", undefined, undefined, false],
+    ["_top", undefined, undefined, false],
+    ["_blank", "_self", undefined, true],
+    ["_self", "_blank", undefined, false],
+    ["_blank", "", "_blank", false],
+    [undefined, undefined, "_blank", false],
+    ["", undefined, "_blank", false],
+    [undefined, "", "_blank", false],
+    ["_blank", "", undefined, true],
+    [undefined, undefined, "_SELF", true],
+    [undefined, undefined, "", true],
+    [undefined, undefined, "results", false],
+  ])(
+    "target=%s submitter=%s base=%s intercept=%s",
+    async (target, override, baseTarget, intercept) => {
+      const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Results", "done")));
+      vi.stubGlobal("fetch", fetchMock);
+      const form = createForm({ action: "/target-intent", fields: { q: "value" } });
+      if (target !== undefined) form.setAttribute("target", target);
+      const button = document.createElement("button");
+      if (override !== undefined) button.setAttribute("formtarget", override);
+      form.append(button);
+      if (baseTarget !== undefined) {
+        const base = document.createElement("base");
+        base.setAttribute("target", baseTarget);
+        document.head.append(base);
+      }
+      const formDataSpy = vi.spyOn(globalThis, "FormData");
+      const event = new SubmitEvent("submit", {
+        bubbles: true,
+        cancelable: true,
+        submitter: button,
+      });
+      form.dispatchEvent(event);
+      const formDataCalls = formDataSpy.mock.calls.length;
+      formDataSpy.mockRestore();
+      expect(event.defaultPrevented).toBe(intercept);
+      if (!intercept) expect(formDataCalls).toBe(0);
+      await drain();
+      expect(fetchMock).toHaveBeenCalledTimes(intercept ? 1 : 0);
+    },
+  );
+
+  it.each([
+    ["post", "GET", "get"],
+    ["post", "gEt", "get"],
+    ["get", "POST", "post"],
+    ["get", "pOsT", "post"],
+    ["post", "DIALOG", "dialog"],
+    ["post", "dIaLoG", "dialog"],
+    ["post", "invalid", "get"],
+    ["post", "", "get"],
+    ["post", " post ", "get"],
+    ["POST", undefined, "post"],
+    ["invalid", undefined, "get"],
+    ["", undefined, "get"],
+  ])("method=%s override=%s resolves to %s", async (method, override, expected) => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Results", "done")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/method-intent", method, fields: { q: "value" } });
+    // Named controls can shadow these properties in browsers.
+    Object.defineProperty(form, "method", {
+      value: document.createElement("input"),
+      configurable: true,
+    });
+    Object.defineProperty(form, "action", {
+      value: document.createElement("input"),
+      configurable: true,
+    });
+    const button = document.createElement("button");
+    if (override !== undefined) button.setAttribute("formmethod", override);
+    form.append(button);
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: button });
+    form.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(expected !== "dialog");
+    await drain();
+    if (expected === "dialog") {
+      expect(fetchMock).not.toHaveBeenCalled();
+    } else {
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(init?.method).toBe(expected === "post" ? "POST" : undefined);
+      if (expected === "get") expect(new URL(String(url)).searchParams.get("q")).toBe("value");
+      else expect((init?.body as FormData).get("q")).toBe("value");
+    }
+  });
+
   it("GET: serializes form fields into the URL's query string via URLSearchParams", async () => {
     const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
       htmlResponse(pageHtml("Results", "results content")),

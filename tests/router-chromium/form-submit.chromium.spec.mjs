@@ -174,3 +174,198 @@ test("submitting a GET search form performs a SPA navigation with the serialized
     expect(positions[i]).toBeGreaterThan(positions[i - 1]);
   }
 });
+
+// Absent and empty submitter targets differ; Chromium applies base fallback to empty targets.
+const TARGET_CASES = [
+  { name: "form blank", target: "_blank", context: "popup" },
+  { name: "submitter blank", target: "_self", override: "_BLANK", context: "popup" },
+  { name: "base blank", base: "_blank", context: "popup" },
+  { name: "named frame", target: "results", context: "frame" },
+  { name: "submitter named frame", override: "results", context: "frame" },
+  { name: "self override", target: "_blank", override: "_SeLf", context: "self" },
+  { name: "empty form target", target: "", base: "_blank", context: "popup" },
+  {
+    name: "empty submitter target",
+    target: "_blank",
+    override: "",
+    base: "_blank",
+    context: "popup",
+  },
+  { name: "empty override without base", target: "_blank", override: "", context: "self" },
+  { name: "base self", base: "_SELF", context: "self" },
+  { name: "first base target wins", base: "", secondBase: "_blank", context: "self" },
+];
+
+for (const config of TARGET_CASES) {
+  for (const native of [false, true]) {
+    test(`${config.name}: ${native ? "native oracle" : "router"}`, async ({ page }) => {
+      await page.goto("/search.html");
+      await waitForInitialLoad(page);
+      await page.evaluate(
+        ({ config, native }) => {
+          const form = document.querySelector("form");
+          const button = form.querySelector("button");
+          if (native) form.setAttribute("data-zfb-reload", "");
+          if (config.target !== undefined) form.setAttribute("target", config.target);
+          if (config.override !== undefined) button.setAttribute("formtarget", config.override);
+          const shadow = document.createElement("input");
+          shadow.name = "ownerDocument";
+          shadow.value = "shadow";
+          form.append(shadow);
+          button.name = "submitter";
+          button.value = "search";
+          for (const target of [config.base, config.secondBase]) {
+            if (target === undefined) continue;
+            const base = document.createElement("base");
+            base.target = target;
+            document.head.append(base);
+          }
+          if (config.context === "frame") {
+            const frame = document.createElement("iframe");
+            frame.name = "results";
+            document.body.append(frame);
+          }
+          window.__formDataEvents = 0;
+          form.addEventListener("formdata", () => window.__formDataEvents++);
+        },
+        { config, native },
+      );
+      await page.fill("#q", "context query");
+      const before = await page.evaluate(() => ({
+        id: window.__docId,
+        state: history.state,
+        seq: window.__zfb.seq,
+        url: location.href,
+      }));
+      const requestPromise = page.context().waitForEvent("request", {
+        predicate: (r) => new URL(r.url()).pathname === "/search-results.html",
+      });
+      const popupPromise = config.context === "popup" ? page.waitForEvent("popup") : null;
+      await page.click("#search-submit");
+      const request = await requestPromise;
+      expect(request.method()).toBe("GET");
+      const submitted = new URL(request.url());
+      expect(submitted.searchParams.get("q")).toBe("context query");
+      expect(submitted.searchParams.get("submitter")).toBe("search");
+      if (config.context === "self") {
+        if (native) await page.waitForURL(/search-results/);
+        else await waitForNavDone(page, before.seq);
+        await expect(page.locator("h1")).toHaveText("Search Results");
+        const id = await page.evaluate(() => window.__docId);
+        if (native) expect(id).not.toBe(before.id);
+        else expect(id).toBe(before.id);
+      } else {
+        if (popupPromise) {
+          const popup = await popupPromise;
+          await expect(popup.locator("h1")).toHaveText("Search Results");
+          await popup.close();
+        } else {
+          await expect(page.frameLocator('iframe[name="results"]').locator("h1")).toHaveText(
+            "Search Results",
+          );
+        }
+        expect(
+          await page.evaluate(() => ({
+            id: window.__docId,
+            state: history.state,
+            seq: window.__zfb.seq,
+            url: location.href,
+          })),
+        ).toEqual(before);
+        await expect(page.locator("h1")).toHaveText("Search");
+        expect(await page.evaluate(() => window.__formDataEvents)).toBe(1);
+      }
+    });
+  }
+}
+
+for (const method of ["GET", "gEt", "", "invalid", "POST", "pOsT"]) {
+  test(`submitter formmethod=${JSON.stringify(method)} uses the native method`, async ({
+    page,
+  }) => {
+    await page.goto("/search.html");
+    await waitForInitialLoad(page);
+    await page.evaluate((method) => {
+      document.querySelector("form").method = "post";
+      document.querySelector("button").setAttribute("formmethod", method);
+    }, method);
+    await page.fill("#q", "method query");
+    const before = await page.evaluate(() => window.__docId);
+    const seq = await seqNow(page);
+    const requestPromise = page.waitForRequest(
+      (r) => new URL(r.url()).pathname === "/search-results.html",
+    );
+    await page.click("#search-submit");
+    const request = await requestPromise;
+    const post = method.toLowerCase() === "post";
+    expect(request.method()).toBe(post ? "POST" : "GET");
+    if (!post) expect(new URL(request.url()).searchParams.get("q")).toBe("method query");
+    else expect(request.postData()).toContain("method query");
+    await waitForNavDone(page, seq);
+    expect(await page.evaluate(() => window.__docId)).toBe(before);
+  });
+}
+
+for (const method of ["DIALOG", "dIaLoG"]) {
+  test(`${method} closes a dialog without navigation or duplicate formdata`, async ({ page }) => {
+    await page.goto("/search.html");
+    await waitForInitialLoad(page);
+    await page.evaluate((method) => {
+      const dialog = document.createElement("dialog");
+      const form = document.querySelector("form");
+      document.body.append(dialog);
+      dialog.append(form);
+      form.querySelector("button").setAttribute("formmethod", method);
+      window.__formDataEvents = 0;
+      form.addEventListener("formdata", () => window.__formDataEvents++);
+      dialog.showModal();
+    }, method);
+    const requests = [];
+    page.on("request", (r) => requests.push(r.url()));
+    const before = await page.evaluate(() => ({
+      id: window.__docId,
+      seq: window.__zfb.seq,
+      url: location.href,
+    }));
+    await page.click("#search-submit");
+    await expect(page.locator("dialog")).not.toHaveAttribute("open", "");
+    expect(
+      await page.evaluate(() => ({
+        id: window.__docId,
+        seq: window.__zfb.seq,
+        url: location.href,
+      })),
+    ).toEqual(before);
+    expect(await page.evaluate(() => window.__formDataEvents)).toBe(0);
+    expect(requests).toEqual([]);
+  });
+}
+
+for (const target of ["_PaReNt", "_TOP"]) {
+  test(`${target} submits from a frame into its ancestor natively`, async ({ page }) => {
+    await page.goto("/search.html");
+    await waitForInitialLoad(page);
+    const before = await page.evaluate(() => window.__docId);
+    await page.evaluate(() => {
+      const frame = document.createElement("iframe");
+      frame.name = "child";
+      frame.src = "/search.html";
+      document.body.append(frame);
+    });
+    const frame = page.frameLocator('iframe[name="child"]');
+    await frame.locator("#q").fill("ancestor query");
+    await waitForInitialLoad(page.frame({ name: "child" }));
+    await frame
+      .locator("#search-form")
+      .evaluate((form, target) => form.setAttribute("target", target), target);
+    const request = page.waitForRequest(
+      (r) => new URL(r.url()).pathname === "/search-results.html",
+    );
+    await frame.locator("#search-submit").click();
+    expect((await request).isNavigationRequest()).toBe(true);
+    await page.waitForURL(/search-results/);
+    await expect(page.locator("h1")).toHaveText("Search Results");
+    expect(new URL(page.url()).searchParams.get("q")).toBe("ancestor query");
+    expect(await page.evaluate(() => window.__docId)).not.toBe(before);
+  });
+}
