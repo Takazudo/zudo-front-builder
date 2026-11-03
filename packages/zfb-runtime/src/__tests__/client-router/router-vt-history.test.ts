@@ -880,6 +880,21 @@ describe("null-state traversal supersedes pending navigation", () => {
     expectNoStaleEffects();
   });
 
+  it("does not abort a committed same-document navigation during its synchronous native hash popstate", async () => {
+    const hrefDescriptor = Object.getOwnPropertyDescriptor(location, "href")!;
+    Object.defineProperty(location, "href", {
+      ...hrefDescriptor,
+      set: (url: string) => popNull(url),
+    });
+    const push = vi.spyOn(history, "pushState");
+    await navigate("/null-race-a#first");
+    expect(location.hash).toBe("#first");
+    expect(history.state).toMatchObject({ index: expect.any(Number) });
+    expect(push).toHaveBeenCalledOnce();
+    expect(events).toEqual([]);
+    expect(document.querySelector("main")?.textContent).toBe("page a");
+  });
+
   it("does not announce an abort for already committed DOM", async () => {
     const onSwap = () => popNull("/null-race-b#first");
     document.addEventListener("zfb:after-swap", onSwap, { once: true });

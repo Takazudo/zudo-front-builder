@@ -885,8 +885,10 @@ async function transition(
         abandonNavigation(currentNavigation, to, write, false);
         return;
       }
-      settleLocation(to, from, historyState);
+      // This same-document navigation is committed. Native hash scrolling can
+      // synchronously emit popstate; it must not abort the completed owner.
       if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
+      settleLocation(to, from, historyState);
       return;
     }
   }
