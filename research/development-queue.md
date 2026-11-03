@@ -34,9 +34,29 @@ their original results, failures and holds remain historical evidence.
   63 carrier/gate/fingerprint unit tests pass. The dependency fingerprint remains
   `47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2`;
   live size contracts, build configuration and fingerprint policy are unchanged.
-- Local docs root/subpath build, browser and installed-carrier fixture evidence
-  are in progress. Workspace-compiler fixture evidence and broad Linux checks
-  belong to current-head CI; none is recorded as passed in advance.
+- Local Node 24.19.0 / pnpm 12.8.2 / Chromium 149.0.7827.55 verification passed
+  first attempt under the heavy guard (836 seconds): root and genuine subpath
+  builds each emit 783 pages; root HTML and 106 island-marker pairs pass; both
+  route/anchor and Markdown-link audits pass; Chromium **178/178** at each base
+  (**356 total**, zero retries). Doc history generation is explicitly skipped
+  via the existing `DOC_HISTORY_SKIP_POSTBUILD=1` option, not claimed tested.
+- Linux x64 installed-carrier fixture on checkout
+  `e7f0299002e1d7cd3ac95bc0d326ef783707d67c` passed: positive hydration, signals,
+  theme, SPA cleanup and history remount; both negative controls failed for the
+  required identity/hydration reasons. Carrier 5.2.0 SHA-256:
+  `6b0d182ed98d302f2e9aaacdcf8b2f759ca93b4599c10d8ef6eacd65addedde1`;
+  fixture lock SHA-256:
+  `334a2ff9f2db73f397f92efa048f78a111c20f30fb32659574bc49acc47a8f92`.
+- Push CI on that exact ledger head passed first attempt: router **154/154**
+  plus packed **10/10** (41697463987), Wind **28/28** (41697463991), React browser
+  **22/22** (41697463985). Later ledger-only commits are distinct from that tested
+  checkout. Workspace-compiler fixture and broad required Linux/Docs checks
+  remain pending on a PR; these push workflows do not replace them.
+- Delivery hold: automatic approval review rejected creation of the public draft
+  PR from this branch to main, citing missing explicit authorization for this
+  specific public PR. A read-only check confirmed no PR was created. No retry
+  or alternate publication route was used. The reviewed branch is pushed;
+  required PR CI and the separate docs/showcase production boundary remain.
 - New-tuple native acceptance is **NOT RUN**. The old arm64 installed-carrier
   receipt at `5de7215af` belongs only to its ZFB 5.1.5 / doc 9.1.0 / SG 0.8.0
   tuple. Cloud Chromium is not a replacement for that native receipt or the
@@ -53,7 +73,13 @@ require actual account acceptance; zudo-sg #963 retains the supported
 module-identity remedy criterion, which clean-install tests do not satisfy.
 
 #4304 remains open. The latest scheduled watch is still **41277672402**; its
-workflow success does not mean the watch is green. No dispatch, narrowing,
+workflow success does not mean the watch is green. Artifact **13072061388**
+(SHA-256 `bce83d3f5e7e58ef24dfb564faa06923eb376d466c66f902295d0a7bbcd23fde`)
+was independently downloaded: strict-main **25 runs / 75 records**, 50 ok,
+25 expected failures, **zero unexpected failures**; doc generations 7.1.0 ×13,
+8.1.1 ×6, 9.0.0 ×2 and 9.1.0 ×4 explain the red identity verdict. Maximum pre-UP
+is 118 ms against 12,000 ms. An initial signed-URL download returned HTTP 403;
+the connector download succeeded with matching digest. No dispatch, narrowing,
 drift allowance or closure was performed. The next genuine rolling-window
 result owns recovery, and this docs update adds another intentional identity
 transition that must remain visible.
