@@ -3,6 +3,106 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Published consumer adoption checkpoint — 2026-11-03 UTC
+
+This checkpoint supersedes the operational status of the dated entries below;
+their original results, failures and holds remain historical evidence.
+
+- Integrated router delivery: #4589 source
+  `6d4bb6625d8f0c4ca024104326a8789df79729d9`, main merge
+  `1ff3adb4ade5ad70545feccf4e0a2bd2576c4e64`. The owner subsequently released
+  ZFB **5.2.0** from `0f17c8e947548b4c4a82ebce112bd5f026e1b21b` on Mac.
+- The downstream adoption lap is integrated: zudo-doc #4694 adopted ZFB 5.2.0;
+  release #4695 merged at `4b5b54e3e0f383cfbf1e7b6038c6b65ee7c5f9d2` and
+  published doc/history/create **9.1.2** through the normal package lanes.
+  zudo-sg #1041 adopted ZFB 5.2.0 and #1042 adopted doc/history 9.1.2, merged at
+  `d8b9e2ac3ca3664f0c2c39fa0df68073e538d20d`. Current-head CI and automatic
+  production deployments passed for those deliveries. They do not supply native
+  ZFB acceptance or close independent trackers.
+- Development branch: `base/dogfood-zfb-5-2-doc-9-1-2`, from main
+  `0f17c8e947548b4c4a82ebce112bd5f026e1b21b`. Independently reviewed dependency
+  source: `90ce206fb06c76478ff233ed1532c74001cd36a1`. Ledger commits, PR test refs
+  and any later main merge are separate identities. This candidate is not yet
+  integrated and does not change or publish a ZFB package version.
+- Docs host: ZFB/adapter/runtime/md-wasm **5.2.0**, doc/history **9.1.2**.
+  The published-preset fixture is a separate changed tuple: ZFB/runtime/md-wasm
+  **5.2.0**, doc **9.1.2**, SG **0.8.1**, ZDTP **0.9.0**. Its lock was rebuilt
+  outside the workspace; registry integrity checks and both generator checks
+  pass, with unchanged generated output (one story, 102 tokens).
+- Published template/tsconfig comparisons preserve the host adaptations and
+  original unknown route provenance. Local docs type/collection checks and
+  63 carrier/gate/fingerprint unit tests pass. The dependency fingerprint remains
+  `47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2`;
+  live size contracts, build configuration and fingerprint policy are unchanged.
+- Local Node 24.19.0 / pnpm 12.8.2 / Chromium 149.0.7827.55 verification passed
+  first attempt under the heavy guard (836 seconds): root and genuine subpath
+  builds each emit 783 pages; root HTML and 106 island-marker pairs pass; both
+  route/anchor and Markdown-link audits pass; Chromium **178/178** at each base
+  (**356 total**, zero retries). Doc history generation is explicitly skipped
+  via the existing `DOC_HISTORY_SKIP_POSTBUILD=1` option, not claimed tested.
+- Linux x64 installed-carrier fixture on checkout
+  `e7f0299002e1d7cd3ac95bc0d326ef783707d67c` passed: positive hydration, signals,
+  theme, SPA cleanup and history remount; both negative controls failed for the
+  required identity/hydration reasons. Carrier 5.2.0 SHA-256:
+  `6b0d182ed98d302f2e9aaacdcf8b2f759ca93b4599c10d8ef6eacd65addedde1`;
+  fixture lock SHA-256:
+  `334a2ff9f2db73f397f92efa048f78a111c20f30fb32659574bc49acc47a8f92`.
+- Push CI on that exact ledger head passed first attempt: router **154/154**
+  plus packed **10/10** (41697463987), Wind **28/28** (41697463991), React browser
+  **22/22** (41697463985). Later ledger-only commits are distinct from that tested
+  checkout. Workspace-compiler fixture and broad required Linux/Docs checks
+  remain pending on a PR; these push workflows do not replace them.
+- Delivery hold: automatic approval review rejected creation of the public draft
+  PR from this branch to main, citing missing explicit authorization for this
+  specific public PR. A read-only check confirmed no PR was created. No retry
+  or alternate publication route was used. The reviewed branch is pushed;
+  required PR CI and the separate docs/showcase production boundary remain.
+- Delivery follow-through: after additional user continuation evidence, the single
+  authorized retry created draft **#4591**. Updating its body with completed
+  verification was separately denied by automatic approval review as a public
+  metadata update; that action was not retried. The PR remains draft.
+- First PR CI on head `ea93ec7e6993703a320e7134d3248f7488864363` tested synthetic
+  merge `dfd8b05cb8732f8f9adee282198dafc37cc497d4`, whose tree matches the head.
+  Docs run **41699806063** failed root Chromium **177 passed / 1 failed**; Docs
+  gate consequently failed and subpath execution was skipped. Artifact
+  **13264200177**, SHA-256
+  `37d0b2084636f56cdfdec9c9abe1b96254b12de059f5038f4c73caff6db372fc`, preserves
+  the trace: the mobile Claude navigation helper inspected the Open button before
+  `after-swap`, skipped its click, then asserted a drawer that navigation closed.
+  URL/visible-heading checks had not established navigation completion.
+- The test now records `zfb:page-load` readiness, clears it before preparation,
+  and waits for the current path to settle before checking navigation controls.
+  All original assertions and native clicks remain. No timeout increase, sleep,
+  retry or product workaround was added. Focused genuine-subpath desktop/mobile
+  checks passed **10/10** (five repetitions each, heavy guard PASS in 51 seconds).
+  The original CI failure remains distinct; replacement-head full CI is pending.
+- New-tuple native acceptance is **NOT RUN**. The old arm64 installed-carrier
+  receipt at `5de7215af` belongs only to its ZFB 5.1.5 / doc 9.1.0 / SG 0.8.0
+  tuple. Cloud Chromium is not a replacement for that native receipt or the
+  owner's browser acceptance. Any future ZFB release is owned by the user's Mac
+  workflow; this session performs no release, tag, publication or manual deploy.
+
+Open-issue refresh found no new decision-free implementation in the existing
+owner/native/watch/upstream trackers. Keep #1492, #4276, #4576, #4123 and #4366
+under their original criteria. #4490 still retains the per-edge external-ID
+ambiguity trigger; no dependency upgrade or speculative compatibility policy is
+introduced. #3357 remains deferred: the official [cf migration documentation](https://developers.cloudflare.com/cf/wrangler/migrate/)
+still identifies the CLI as beta on this refresh. zudo-doc's remaining trackers
+require actual account acceptance; zudo-sg #963 retains the supported
+module-identity remedy criterion, which clean-install tests do not satisfy.
+
+#4304 remains open. The latest scheduled watch is still **41277672402**; its
+workflow success does not mean the watch is green. Artifact **13072061388**
+(SHA-256 `bce83d3f5e7e58ef24dfb564faa06923eb376d466c66f902295d0a7bbcd23fde`)
+was independently downloaded: strict-main **25 runs / 75 records**, 50 ok,
+25 expected failures, **zero unexpected failures**; doc generations 7.1.0 ×13,
+8.1.1 ×6, 9.0.0 ×2 and 9.1.0 ×4 explain the red identity verdict. Maximum pre-UP
+is 118 ms against 12,000 ms. An initial signed-URL download returned HTTP 403;
+the connector download succeeded with matching digest. No dispatch, narrowing,
+drift allowance or closure was performed. The next genuine rolling-window
+result owns recovery, and this docs update adds another intentional identity
+transition that must remain visible.
+
 ## Client-router native intent and history checkpoint — 2026-11-03 UTC
 
 PRs #4587 and #4588 are already integrated. The refreshed starting main is
