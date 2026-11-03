@@ -10,7 +10,7 @@ for (const status of [404, 500, 503]) {
     });
     await page.goto("/search.html");
     await page.evaluate(async () => {
-      const { prefetch } = await import("/dist/client-router/index.js");
+      const { prefetch } = await import("/dist/client-router/prefetch.js");
       window.__prefetch = prefetch;
       window.__fetchCalls = 0;
       window.__fetchSettled = 0;

@@ -1549,14 +1549,13 @@ function handleSubmit(ev: SubmitEvent): void {
 
   const form = el as HTMLFormElement;
 
-  // form.action / form.method can be shadowed by <input name="action"> / <input name="method">,
-  // so fall back to getAttribute() when the property is not a string. (Astro's comment.)
+  // A named control can shadow form.action; method and target use attributes directly.
   const formAction = typeof form.action === "string" ? form.action : form.getAttribute("action");
   const target =
     (submitter?.getAttribute("formtarget") ?? form.getAttribute("target")) ||
     document.querySelector("base[target]")?.getAttribute("target") ||
     "";
-  // Browsers fall back to base target for empty targets, including an empty submitter override.
+  // Chromium falls back to base target for empty targets, including an empty submitter override.
   // Only _self/default belong to this router; other browsing contexts stay native.
   if (target !== "" && target.toLowerCase() !== "_self") return;
 

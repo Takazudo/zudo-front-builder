@@ -175,7 +175,7 @@ test("submitting a GET search form performs a SPA navigation with the serialized
   }
 });
 
-// null means absent; empty attributes deliberately override form/base defaults.
+// Absent and empty submitter targets differ; Chromium applies base fallback to empty targets.
 const TARGET_CASES = [
   { name: "form blank", target: "_blank", context: "popup" },
   { name: "submitter blank", target: "_self", override: "_BLANK", context: "popup" },
@@ -338,5 +338,34 @@ for (const method of ["DIALOG", "dIaLoG"]) {
     ).toEqual(before);
     expect(await page.evaluate(() => window.__formDataEvents)).toBe(0);
     expect(requests).toEqual([]);
+  });
+}
+
+for (const target of ["_PaReNt", "_TOP"]) {
+  test(`${target} submits from a frame into its ancestor natively`, async ({ page }) => {
+    await page.goto("/search.html");
+    await waitForInitialLoad(page);
+    const before = await page.evaluate(() => window.__docId);
+    await page.evaluate(() => {
+      const frame = document.createElement("iframe");
+      frame.name = "child";
+      frame.src = "/search.html";
+      document.body.append(frame);
+    });
+    const frame = page.frameLocator('iframe[name="child"]');
+    await frame.locator("#q").fill("ancestor query");
+    await waitForInitialLoad(page.frame({ name: "child" }));
+    await frame
+      .locator("#search-form")
+      .evaluate((form, target) => form.setAttribute("target", target), target);
+    const request = page.waitForRequest(
+      (r) => new URL(r.url()).pathname === "/search-results.html",
+    );
+    await frame.locator("#search-submit").click();
+    expect((await request).isNavigationRequest()).toBe(true);
+    await page.waitForURL(/search-results/);
+    await expect(page.locator("h1")).toHaveText("Search Results");
+    expect(new URL(page.url()).searchParams.get("q")).toBe("ancestor query");
+    expect(await page.evaluate(() => window.__docId)).not.toBe(before);
   });
 }
