@@ -1232,6 +1232,14 @@ function onPopState(ev: PopStateEvent) {
       // entry is not re-pointed: Back to the router's own entry of this
       // document must stay a same-page traverse.)
       if (documentKey(to) === documentKey(renderedLocation)) originalLocation = to;
+      // Detach before dispatch: an abort listener can synchronously navigate,
+      // and that newer owner must survive this traversal's cleanup.
+      const supersededNavigation = mostRecentNavigation;
+      mostRecentNavigation = undefined;
+      if (supersededNavigation) {
+        supersededNavigation.controller.abort();
+        notifyNavigationAborted(supersededNavigation);
+      }
       return;
     }
     // The entry belongs to a page the live DOM no longer shows (A#frag after a
