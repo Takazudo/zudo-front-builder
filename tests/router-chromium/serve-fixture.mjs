@@ -104,6 +104,9 @@ const server = createServer((req, res) => {
     }
   }
 
+  // Relative form-action oracle under a document base.
+  if (pathname === "/base/search-results.html") pathname = "/search-results.html";
+
   // / or /foo.html -> fixture/*  (normalise bare / to /index.html)
   if (pathname === "/") pathname = "/index.html";
   const fxTarget = safeJoin(FIXTURE_DIR, pathname.slice(1));

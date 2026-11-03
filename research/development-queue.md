@@ -3,6 +3,66 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Client-router native intent and history checkpoint — 2026-11-03 UTC
+
+PRs #4587 and #4588 are already integrated. The refreshed starting main is
+`41e7840febd802d52a99f0db1a1223a7b6ee725b` (#4588); neither implementation is
+reopened. The dated receipts below remain historical evidence.
+
+- Development branch: `base/client-router-native-intent-history`. Reviewed runtime
+  source: `7684db31dbdd6e09cf855947ba69b53178770405`; subsequent ledger commits
+  are separate from that source identity. Draft delivery PR: #4589. No new main
+  integration has occurred; PR merge refs are CI inputs, not production commits.
+- Implemented: effective anchor/area base targets and case-insensitive self;
+  single document-base form action resolution with empty-action/current-URL and
+  shadowed-control behavior preserved; null-state same-document traversal cancels
+  obsolete fetch/preparation/queued swaps while preserving reentrant navigation.
+  Completed fragment navigation relinquishes ownership before synchronous native
+  hash events. Independent source reviews completed, including the follow-up fix.
+- Local Node 24.19.0 / pnpm 12.8.2: frozen install, runtime tests **423/423**,
+  runtime typecheck, changed-file formatting and diff checks pass. Final real
+  Chromium **154/154** and isolated packed-consumer **10/10** pass under the
+  heavy guard on the reviewed source. Push CI on ledger head `dda5dda40` passed
+  router **154/154** plus packed **10/10** in run **41605405641** (artifact
+  **13217080449**) and Wind **28/28** in run **41605405633**, without test retries.
+  Required PR CI remains pending; no main integration is claimed.
+- Original-source regression evidence: task-a L2 **14 failed / 104 passed**;
+  real Chromium relative/cross-origin GET/POST action cases **4 failed**. History
+  Chromium JSON fallback, HTML cancellation and queued VT cases **3 failed**;
+  managed traversal control passed. Task-b focused L2 reproduced five failures.
+- Preserve first failures: the native empty-link oracle initially expected self
+  (**12 passed / 2 failed**); actual popup observation established base fallback
+  for both anchors and areas (**2/2**). Six initial L2 expectations incorrectly
+  stripped fetch-input fragments; corrected separately from network assertions.
+  The happy-dom null-popstate seam needed the existing explicit-state idiom.
+  Review found and fixed premature dialog action parsing. First integrated
+  Chromium run was **153 passed / 1 failed**: completed managed-fragment navigation
+  emitted a spurious abort. A new L2 regression reproduced it before the fix;
+  focused history tests then passed **25/25**, with existing browser assertions
+  unchanged. The first commit hook used host pnpm 11; process-local pnpm 12.8.2
+  corrected that toolchain failure without bypassing hooks.
+- Dependency fingerprint remains
+  `47de8f7592f1fb1c463ad9294ea65bbc1f315d50a74e87ab86a129d86eda89b2`.
+  Existing island-size enforcement tests pass **127/127**; dependency graphs,
+  versions, locks, build configuration and live size contracts are unchanged.
+  Current-source native measurements and broad Rust verification still belong to
+  the existing Health CI lane; those are not inferred from the fingerprint.
+- Initial delivery hold: automatic approval review denied draft PR creation, including a
+  second attempt after read-only confirmation that the repository is public.
+  Its stated remaining reason was insufficient explicit user authorization for
+  the external PR commitment. No alternate publication route was attempted.
+  After the user explicitly approved that exact draft PR action, the single
+  authorized retry created #4589. Main's eleven required contexts plus task-specific router Chromium, packed
+  consumer and island enforcement remain merge gates. Main merge also triggers
+  automatic production showcase deployment; no manual deployment, release, tag
+  or package publication is performed.
+
+The implementation manager owns remaining CI diagnosis and final integration.
+Keep #1492, #4276, #4304, #4576, #4123, #4366, #3357 and #4490 under their
+existing independent owner/native/watch/upstream criteria. This work supplies no
+owner-browser confirmation, native Intel execution, upstream trigger or genuine
+scheduled-watch recovery; the strict rolling watch and historical receipts remain.
+
 ## Native admission follow-through — 2026-11-03 JST
 
 PR #4587 now carries the owner-approved paired dependency-graph re-pin for frozen

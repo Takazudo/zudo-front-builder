@@ -307,38 +307,51 @@ for (const method of ["GET", "gEt", "", "invalid", "POST", "pOsT"]) {
 }
 
 for (const method of ["DIALOG", "dIaLoG"]) {
-  test(`${method} closes a dialog without navigation or duplicate formdata`, async ({ page }) => {
-    await page.goto("/search.html");
-    await waitForInitialLoad(page);
-    await page.evaluate((method) => {
-      const dialog = document.createElement("dialog");
-      const form = document.querySelector("form");
-      document.body.append(dialog);
-      dialog.append(form);
-      form.querySelector("button").setAttribute("formmethod", method);
-      window.__formDataEvents = 0;
-      form.addEventListener("formdata", () => window.__formDataEvents++);
-      dialog.showModal();
-    }, method);
-    const requests = [];
-    page.on("request", (r) => requests.push(r.url()));
-    const before = await page.evaluate(() => ({
-      id: window.__docId,
-      seq: window.__zfb.seq,
-      url: location.href,
-    }));
-    await page.click("#search-submit");
-    await expect(page.locator("dialog")).not.toHaveAttribute("open", "");
-    expect(
-      await page.evaluate(() => ({
+  for (const native of [true, false]) {
+    test(`${method} malformed action closes a dialog: ${native ? "native oracle" : "router"}`, async ({
+      page,
+    }) => {
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto("/search.html");
+      await waitForInitialLoad(page);
+      await page.evaluate(
+        ({ method, native }) => {
+          const dialog = document.createElement("dialog");
+          const form = document.querySelector("form");
+          form.setAttribute("action", "http://[");
+          form.querySelector("button").setAttribute("formaction", "http://[");
+          if (native) form.setAttribute("data-zfb-reload", "");
+          document.body.append(dialog);
+          dialog.append(form);
+          form.querySelector("button").setAttribute("formmethod", method);
+          window.__formDataEvents = 0;
+          form.addEventListener("formdata", () => window.__formDataEvents++);
+          dialog.showModal();
+        },
+        { method, native },
+      );
+      const requests = [];
+      page.on("request", (r) => requests.push(r.url()));
+      const before = await page.evaluate(() => ({
         id: window.__docId,
         seq: window.__zfb.seq,
         url: location.href,
-      })),
-    ).toEqual(before);
-    expect(await page.evaluate(() => window.__formDataEvents)).toBe(0);
-    expect(requests).toEqual([]);
-  });
+      }));
+      await page.click("#search-submit");
+      await expect(page.locator("dialog")).not.toHaveAttribute("open", "");
+      expect(
+        await page.evaluate(() => ({
+          id: window.__docId,
+          seq: window.__zfb.seq,
+          url: location.href,
+        })),
+      ).toEqual(before);
+      expect(await page.evaluate(() => window.__formDataEvents)).toBe(0);
+      expect(requests).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
 }
 
 for (const target of ["_PaReNt", "_TOP"]) {
@@ -368,4 +381,131 @@ for (const target of ["_PaReNt", "_TOP"]) {
     expect(new URL(page.url()).searchParams.get("q")).toBe("ancestor query");
     expect(await page.evaluate(() => window.__docId)).not.toBe(before);
   });
+}
+
+const ACTION_CASES = [
+  {
+    name: "relative submitter",
+    action: "/fallback",
+    override: "search-results.html?old=1#result",
+    path: "/base/search-results.html",
+    query: "?old=1",
+    hash: "#result",
+  },
+  {
+    name: "cross-origin base",
+    action: "/fallback",
+    override: "search-results.html",
+    path: "/base/search-results.html",
+    cross: true,
+  },
+  {
+    name: "shadowed relative form action",
+    action: "search-results.html",
+    path: "/base/search-results.html",
+  },
+  { name: "missing action", path: "/search.html", query: "?existing=1", hash: "#initial" },
+  {
+    name: "empty action",
+    action: "",
+    path: "/search.html",
+    query: "?existing=1",
+    hash: "#initial",
+  },
+  {
+    name: "empty submitter override",
+    action: "/search-results.html",
+    override: "",
+    path: "/search.html",
+    query: "?existing=1",
+    hash: "#initial",
+  },
+  {
+    name: "absolute action",
+    action: "http://localhost:4322/search-results.html?old=1#result",
+    path: "/search-results.html",
+    query: "?old=1",
+    hash: "#result",
+  },
+];
+
+for (const config of ACTION_CASES) {
+  for (const method of ["get", "post"]) {
+    for (const native of [true, false]) {
+      test(`action ${config.name} ${method}: ${native ? "native oracle" : "router"}`, async ({
+        page,
+      }) => {
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await page.goto("/search.html?existing=1#initial");
+        await waitForInitialLoad(page);
+        await page.evaluate(
+          ({ config, method, native }) => {
+            const form = document.querySelector("form");
+            form.removeAttribute("action");
+            if (config.action !== undefined) form.setAttribute("action", config.action);
+            form.setAttribute("method", method);
+            // Keep the oracle's encoding identical to the router's existing default serializer.
+            form.setAttribute("enctype", "multipart/form-data");
+            if (native) form.setAttribute("data-zfb-reload", "");
+            const button = form.querySelector("button");
+            if (config.override !== undefined) button.setAttribute("formaction", config.override);
+            for (const name of ["action", "ownerDocument", "baseURI"]) {
+              const input = document.createElement("input");
+              input.name = name;
+              input.value = "shadow";
+              form.append(input);
+            }
+            const base = document.createElement("base");
+            base.href = config.cross ? "http://127.0.0.1:4322/base/" : "/base/";
+            document.head.append(base);
+          },
+          { config, method, native },
+        );
+        await page.fill("#q", "action query");
+        const before = await page.evaluate(() => ({ id: window.__docId, seq: window.__zfb.seq }));
+        const requests = [];
+        page.on("request", (request) => {
+          if (["document", "fetch"].includes(request.resourceType())) requests.push(request);
+        });
+        const requestPromise = page.waitForRequest((r) =>
+          ["document", "fetch"].includes(r.resourceType()),
+        );
+        await page.click("#search-submit");
+        const request = await requestPromise;
+        const destination = new URL(request.url());
+        expect(destination.origin).toBe(
+          config.cross ? "http://127.0.0.1:4322" : "http://localhost:4322",
+        );
+        expect(destination.pathname).toBe(config.path);
+        expect(request.method()).toBe(method.toUpperCase());
+        expect(request.isNavigationRequest()).toBe(native || !!config.cross);
+        if (method === "get") {
+          expect(destination.searchParams.get("q")).toBe("action query");
+          expect(destination.searchParams.has("old")).toBe(false);
+          expect(destination.searchParams.has("existing")).toBe(false);
+        } else {
+          expect(destination.search).toBe(config.query ?? "");
+          expect(request.postData()).toContain("action query");
+          expect(request.postData()).toContain('name="action"');
+        }
+        if (native || config.cross) {
+          await page.waitForURL(
+            (url) =>
+              url.pathname === config.path &&
+              url.origin === destination.origin &&
+              (method !== "get" || url.searchParams.get("q") === "action query"),
+            { waitUntil: "load" },
+          );
+          await page.waitForFunction((id) => window.__docId !== id, before.id);
+        } else {
+          await waitForNavDone(page, before.seq);
+          expect(await page.evaluate(() => window.__docId)).toBe(before.id);
+        }
+        expect(new URL(page.url()).hash).toBe(config.hash ?? "");
+        expect(requests).toHaveLength(1);
+        expect(errors).toEqual([]);
+      });
+    }
+  }
 }

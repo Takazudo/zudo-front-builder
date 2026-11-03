@@ -745,3 +745,211 @@ describe("rejected History writes on the native View Transition path (#4127)", (
     expect(events.filter((type) => type === "zfb:after-swap")).toHaveLength(1);
   });
 });
+
+describe("null-state traversal supersedes pending navigation", () => {
+  const events: string[] = [];
+  const names = ["zfb:navigation-aborted", "zfb:after-swap", "zfb:page-load"];
+  const record = (event: Event) => events.push(event.type);
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => (resolve = done));
+    return { promise, resolve };
+  };
+
+  beforeEach(async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("A", "page a"))),
+    );
+    await navigate("/null-race-a");
+    init();
+    history.replaceState(null, "", "/null-race-a#second");
+    loads = captureDocumentLoads();
+    events.length = 0;
+    names.forEach((name) => document.addEventListener(name, record));
+    vi.mocked(cancelPendingIslands).mockClear();
+    vi.mocked(unmountIslands).mockClear();
+    vi.mocked(mountNewIslands).mockClear();
+  });
+
+  afterEach(() => names.forEach((name) => document.removeEventListener(name, record)));
+
+  function popNull(url = "/null-race-a#first") {
+    history.replaceState(null, "", url);
+    const event = new PopStateEvent("popstate");
+    Object.defineProperty(event, "state", { value: null });
+    window.dispatchEvent(event);
+  }
+
+  function expectNoStaleEffects() {
+    expect(document.querySelector("main")?.textContent).toBe("page a");
+    expect(events).toEqual(["zfb:navigation-aborted"]);
+    expect(loads?.assigned).toEqual([]);
+    expect(loads?.replaced).toEqual([]);
+    expect(cancelPendingIslands).not.toHaveBeenCalled();
+    expect(unmountIslands).not.toHaveBeenCalled();
+    expect(mountNewIslands).not.toHaveBeenCalled();
+  }
+
+  it.each(["json", "html"])(
+    "ignores a late %s response without fetching the traversed fragment",
+    async (kind) => {
+      const response = deferred<Response>();
+      const arrived = deferred<AbortSignal>();
+      const fetch = vi.fn((_url: RequestInfo, options: RequestInit) => {
+        arrived.resolve(options.signal!);
+        return response.promise;
+      });
+      vi.stubGlobal("fetch", fetch);
+      const navigation = navigate("/null-race-b");
+      const signal = await arrived.promise;
+      popNull();
+      const push = vi.spyOn(history, "pushState");
+      const replace = vi.spyOn(history, "replaceState");
+      const scroll = vi.spyOn(window, "scrollTo");
+      response.resolve(
+        kind === "json"
+          ? new Response("{}", { headers: { "content-type": "application/json" } })
+          : htmlResponse(pageHtml("B", "page b")),
+      );
+      await navigation;
+      expect(signal.aborted).toBe(true);
+      expect(location.hash).toBe("#first");
+      expect(history.state).toBeNull();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(push).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(scroll).not.toHaveBeenCalled();
+      expectNoStaleEffects();
+    },
+  );
+
+  it("cancels a queued native View Transition callback before teardown", async () => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    (document as unknown as { startViewTransition: unknown }).startViewTransition = (
+      callback: VTCallback,
+    ): FakeViewTransition => {
+      const done = release.promise.then(callback) as Promise<void>;
+      entered.resolve();
+      return {
+        updateCallbackDone: done,
+        ready: done,
+        finished: done,
+        skipTransition() {},
+        types: new Set(),
+      };
+    };
+    const fetch = vi.fn(async () => htmlResponse(pageHtml("B", "page b")));
+    vi.stubGlobal("fetch", fetch);
+    const navigation = navigate("/null-race-b");
+    await entered.promise;
+    popNull();
+    release.resolve();
+    await navigation;
+    expect(location.pathname + location.hash).toBe("/null-race-a#first");
+    expect(history.state).toBeNull();
+    expect(fetch).toHaveBeenCalledOnce();
+    expectNoStaleEffects();
+  });
+
+  it("cancels a submitted-form fallback update before the DOM commit", async () => {
+    const onSwap = () => popNull();
+    document.addEventListener("zfb:before-swap", onSwap, { once: true });
+    await navigate("/null-race-b", { formData: new FormData() });
+    expect(location.pathname + location.hash).toBe("/null-race-a#first");
+    expectNoStaleEffects();
+  });
+
+  it("supersedes pending navigation on an app-owned raw-query entry without fetching it", async () => {
+    const response = deferred<Response>();
+    const arrived = deferred<AbortSignal>();
+    const fetch = vi.fn((_url: RequestInfo, options: RequestInit) => {
+      arrived.resolve(options.signal!);
+      return response.promise;
+    });
+    vi.stubGlobal("fetch", fetch);
+    const navigation = navigate("/null-race-b");
+    const signal = await arrived.promise;
+    popNull("/null-race-a?q=filter");
+    response.resolve(htmlResponse(pageHtml("B", "page b")));
+    await navigation;
+    expect(signal.aborted).toBe(true);
+    expect(location.search).toBe("?q=filter");
+    expect(fetch).toHaveBeenCalledOnce();
+    expectNoStaleEffects();
+  });
+
+  it("does not abort a committed same-document navigation during its synchronous native hash popstate", async () => {
+    const hrefDescriptor = Object.getOwnPropertyDescriptor(location, "href")!;
+    Object.defineProperty(location, "href", {
+      ...hrefDescriptor,
+      set: (url: string) => popNull(url),
+    });
+    const push = vi.spyOn(history, "pushState");
+    await navigate("/null-race-a#first");
+    expect(location.hash).toBe("#first");
+    expect(history.state).toMatchObject({ index: expect.any(Number) });
+    expect(push).toHaveBeenCalledOnce();
+    expect(events).toEqual([]);
+    expect(document.querySelector("main")?.textContent).toBe("page a");
+  });
+
+  it("does not announce an abort for already committed DOM", async () => {
+    const onSwap = () => popNull("/null-race-b#first");
+    document.addEventListener("zfb:after-swap", onSwap, { once: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("B", "page b"))),
+    );
+    await navigate("/null-race-b");
+    expect(location.pathname + location.hash).toBe("/null-race-b#first");
+    expect(document.querySelector("main")?.textContent).toBe("page b");
+    expect(events).toEqual(["zfb:after-swap", "zfb:page-load"]);
+  });
+
+  it.each(["signal", "event"])(
+    "keeps navigation C started synchronously by an abort %s listener",
+    async (source) => {
+      const response = deferred<Response>();
+      const arrived = deferred<AbortSignal>();
+      const cResponse = deferred<Response>();
+      let cNavigation: Promise<void> | undefined;
+      let cFrom: string | undefined;
+      const onPreparation = (event: Event) => {
+        const prep = event as Event & { from: URL; to: URL };
+        if (prep.to.pathname === "/null-race-c") cFrom = prep.from.href;
+      };
+      const startC = () => {
+        cNavigation = navigate("/null-race-c");
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: RequestInfo, options: RequestInit) => {
+          if (String(url).includes("null-race-c")) return cResponse.promise;
+          arrived.resolve(options.signal!);
+          return response.promise;
+        }),
+      );
+      const bNavigation = navigate("/null-race-b");
+      const signal = await arrived.promise;
+      document.addEventListener("zfb:before-preparation", onPreparation);
+      if (source === "signal") signal.addEventListener("abort", startC, { once: true });
+      else document.addEventListener("zfb:navigation-aborted", startC, { once: true });
+      popNull();
+      response.resolve(new Response("{}", { headers: { "content-type": "application/json" } }));
+      await bNavigation;
+      cResponse.resolve(htmlResponse(pageHtml("C", "page c")));
+      await cNavigation;
+      document.removeEventListener("zfb:before-preparation", onPreparation);
+      document.removeEventListener("zfb:navigation-aborted", startC);
+      expect(cNavigation).toBeDefined();
+      expect(cFrom).toBe(new URL("/null-race-a#first", location.href).href);
+      expect(location.pathname).toBe("/null-race-c");
+      expect(document.querySelector("main")?.textContent).toBe("page c");
+      expect(events.filter((name) => name === "zfb:navigation-aborted")).toHaveLength(1);
+      expect(events.filter((name) => name === "zfb:after-swap")).toHaveLength(1);
+      expect(loads?.assigned).toEqual([]);
+    },
+  );
+});

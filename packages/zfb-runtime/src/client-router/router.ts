@@ -885,8 +885,10 @@ async function transition(
         abandonNavigation(currentNavigation, to, write, false);
         return;
       }
-      settleLocation(to, from, historyState);
+      // This same-document navigation is committed. Native hash scrolling can
+      // synchronously emit popstate; it must not abort the completed owner.
       if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
+      settleLocation(to, from, historyState);
       return;
     }
   }
@@ -1232,6 +1234,14 @@ function onPopState(ev: PopStateEvent) {
       // entry is not re-pointed: Back to the router's own entry of this
       // document must stay a same-page traverse.)
       if (documentKey(to) === documentKey(renderedLocation)) originalLocation = to;
+      // Detach before dispatch: an abort listener can synchronously navigate,
+      // and that newer owner must survive this traversal's cleanup.
+      const supersededNavigation = mostRecentNavigation;
+      mostRecentNavigation = undefined;
+      if (supersededNavigation) {
+        supersededNavigation.controller.abort();
+        notifyNavigationAborted(supersededNavigation);
+      }
       return;
     }
     // The entry belongs to a page the live DOM no longer shows (A#frag after a
@@ -1497,8 +1507,13 @@ function handleClick(ev: MouseEvent): void {
   }
 
   const linkEl = link as HTMLAnchorElement | SVGAElement | HTMLAreaElement;
+  // Chromium applies the first base target to both missing and explicitly empty HTML targets.
   const linkTarget =
-    linkEl instanceof HTMLElement ? linkEl.target : (linkEl as SVGAElement).target.baseVal;
+    linkEl instanceof HTMLElement
+      ? linkEl.getAttribute("target") ||
+        document.querySelector("base[target]")?.getAttribute("target") ||
+        ""
+      : (linkEl as SVGAElement).target.baseVal;
   const href = linkEl instanceof HTMLElement ? linkEl.href : (linkEl as SVGAElement).href.baseVal;
 
   if (!href) return;
@@ -1511,7 +1526,7 @@ function handleClick(ev: MouseEvent): void {
     // download attribute: let browser handle download.
     linkEl.hasAttribute("download") ||
     // Non-self target opens in a new context — skip.
-    (linkTarget && linkTarget !== "_self") ||
+    (linkTarget && linkTarget.toLowerCase() !== "_self") ||
     // Cross-origin: not ours to handle.
     origin !== location.origin ||
     // Modifier key / non-left-click combo: user wants new tab / window / download.
@@ -1549,8 +1564,8 @@ function handleSubmit(ev: SubmitEvent): void {
 
   const form = el as HTMLFormElement;
 
-  // A named control can shadow form.action; method and target use attributes directly.
-  const formAction = typeof form.action === "string" ? form.action : form.getAttribute("action");
+  // Read the document directly: named controls can shadow form.action/ownerDocument/baseURI.
+  const formAction = form.getAttribute("action");
   const target =
     (submitter?.getAttribute("formtarget") ?? form.getAttribute("target")) ||
     document.querySelector("base[target]")?.getAttribute("target") ||
@@ -1559,8 +1574,6 @@ function handleSubmit(ev: SubmitEvent): void {
   // Only _self/default belong to this router; other browsing contexts stay native.
   if (target !== "" && target.toLowerCase() !== "_self") return;
 
-  // Resolve action: submitter formaction attr overrides form action, fallback to current path.
-  let action = submitter?.getAttribute("formaction") ?? formAction ?? location.pathname;
   // Resolve method: submitter formmethod attr overrides form method, fallback to "get".
   const rawMethod = (
     submitter?.getAttribute("formmethod") ??
@@ -1572,7 +1585,12 @@ function handleSubmit(ev: SubmitEvent): void {
 
   // The "dialog" method is a special keyword used within <dialog> elements —
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
-  if (method === "dialog" || location.origin !== new URL(action, location.href).origin) {
+  if (method === "dialog") return;
+
+  const rawAction = submitter?.getAttribute("formaction") ?? formAction;
+  // Empty actions use the document URL, not its base URL (including for an empty override).
+  const action = new URL(rawAction || document.URL, document.baseURI);
+  if (location.origin !== action.origin) {
     // No SPA transition in these cases — let browser handle it.
     return;
   }
@@ -1581,15 +1599,13 @@ function handleSubmit(ev: SubmitEvent): void {
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
   if (method === "get") {
     const params = new URLSearchParams(formData as any);
-    const url = new URL(action, location.href);
-    url.search = params.toString();
-    action = url.toString();
+    action.search = params.toString();
   } else {
     options.formData = formData;
   }
 
   ev.preventDefault();
-  navigate(action, options);
+  navigate(action.href, options);
 }
 
 export interface InitOptions {
