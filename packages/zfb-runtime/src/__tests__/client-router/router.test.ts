@@ -2056,6 +2056,64 @@ describe("handleSubmit — form intercept (#1400)", () => {
   }
 
   it.each([
+    { action: "/fallback", override: "save?old=1#result", expected: "/base/save?old=1#result" },
+    { action: "save?old=1#result", expected: "/base/save?old=1#result" },
+    { expected: "/current?existing=1#initial" },
+    { action: "", expected: "/current?existing=1#initial" },
+    { action: "/fallback", override: "", expected: "/current?existing=1#initial" },
+    { action: "http://localhost:3000/absolute?old=1#result", expected: "/absolute?old=1#result" },
+  ])(
+    "resolves action $action override $override once against the document base",
+    async (config) => {
+      history.replaceState({}, "", "/current?existing=1#initial");
+      const base = document.createElement("base");
+      base.href = "/base/";
+      document.head.append(base);
+      const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+        htmlResponse(pageHtml("Results", "done")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const form = createForm({ action: config.action, method: "post", fields: { q: "value" } });
+      for (const name of ["action", "ownerDocument", "baseURI"]) {
+        Object.defineProperty(form, name, {
+          value: document.createElement("input"),
+          configurable: true,
+        });
+      }
+      const button = document.createElement("button");
+      if (config.override !== undefined) button.setAttribute("formaction", config.override);
+      form.append(button);
+      form.dispatchEvent(
+        new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: button }),
+      );
+      await drain();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0]!;
+      const expected = new URL(config.expected, location.origin);
+      expect(String(url)).toBe(expected.href);
+      expect(init?.method).toBe("POST");
+      expect((init?.body as FormData).get("q")).toBe("value");
+    },
+  );
+
+  it("leaves a relative override under a cross-origin base to the browser", async () => {
+    const base = document.createElement("base");
+    base.href = "https://other.example/base/";
+    document.head.append(base);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/fallback" });
+    const button = document.createElement("button");
+    button.setAttribute("formaction", "save");
+    form.append(button);
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: button });
+    form.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    await drain();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
     [undefined, undefined, undefined, true],
     ["_self", undefined, undefined, true],
     ["_SeLf", undefined, undefined, true],
@@ -2227,6 +2285,20 @@ describe("handleSubmit — form intercept (#1400)", () => {
     expect(url.searchParams.get("q")).toBe("x");
     expect(calledInit?.method).toBeUndefined();
     expect(calledInit?.body).toBeUndefined();
+  });
+
+  it("does not parse a malformed action for a dialog submission", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "http://[", method: "dialog" });
+    const button = document.createElement("button");
+    button.setAttribute("formaction", "http://[");
+    form.append(button);
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: button });
+    expect(() => form.dispatchEvent(event)).not.toThrow();
+    expect(event.defaultPrevented).toBe(false);
+    await drain();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('method="dialog" is not intercepted — the SPA transition is skipped', async () => {
@@ -2406,4 +2478,35 @@ describe("transition() defaultLoader — form body consumption (#1400)", () => {
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init?.body).toBeInstanceOf(URLSearchParams);
   });
+});
+
+describe("effective HTML hyperlink targets", () => {
+  for (const tag of ["a", "area"] as const) {
+    it.each([
+      [undefined, "_blank", false],
+      [undefined, "results", false],
+      ["_self", "_blank", true],
+      ["_SeLf", "_blank", true],
+      ["", "_blank", false],
+      [undefined, "", true],
+    ])(`${tag} target=%s base=%s intercept=%s`, async (target, baseTarget, intercept) => {
+      const base = document.createElement("base");
+      base.setAttribute("target", baseTarget!);
+      document.head.append(base);
+      const second = document.createElement("base");
+      second.target = "_blank";
+      document.head.append(second);
+      const link = document.createElement(tag);
+      link.href = "/link-intent";
+      if (target !== undefined) link.setAttribute("target", target);
+      document.body.append(link);
+      const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Results", "done")));
+      vi.stubGlobal("fetch", fetchMock);
+      const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(intercept);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(fetchMock).toHaveBeenCalledTimes(intercept ? 1 : 0);
+    });
+  }
 });
