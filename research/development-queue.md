@@ -57,6 +57,25 @@ their original results, failures and holds remain historical evidence.
   specific public PR. A read-only check confirmed no PR was created. No retry
   or alternate publication route was used. The reviewed branch is pushed;
   required PR CI and the separate docs/showcase production boundary remain.
+- Delivery follow-through: after additional user continuation evidence, the single
+  authorized retry created draft **#4591**. Updating its body with completed
+  verification was separately denied by automatic approval review as a public
+  metadata update; that action was not retried. The PR remains draft.
+- First PR CI on head `ea93ec7e6993703a320e7134d3248f7488864363` tested synthetic
+  merge `dfd8b05cb8732f8f9adee282198dafc37cc497d4`, whose tree matches the head.
+  Docs run **41699806063** failed root Chromium **177 passed / 1 failed**; Docs
+  gate consequently failed and subpath execution was skipped. Artifact
+  **13264200177**, SHA-256
+  `37d0b2084636f56cdfdec9c9abe1b96254b12de059f5038f4c73caff6db372fc`, preserves
+  the trace: the mobile Claude navigation helper inspected the Open button before
+  `after-swap`, skipped its click, then asserted a drawer that navigation closed.
+  URL/visible-heading checks had not established navigation completion.
+- The test now records `zfb:page-load` readiness, clears it before preparation,
+  and waits for the current path to settle before checking navigation controls.
+  All original assertions and native clicks remain. No timeout increase, sleep,
+  retry or product workaround was added. Focused genuine-subpath desktop/mobile
+  checks passed **10/10** (five repetitions each, heavy guard PASS in 51 seconds).
+  The original CI failure remains distinct; replacement-head full CI is pending.
 - New-tuple native acceptance is **NOT RUN**. The old arm64 installed-carrier
   receipt at `5de7215af` belongs only to its ZFB 5.1.5 / doc 9.1.0 / SG 0.8.0
   tuple. Cloud Chromium is not a replacement for that native receipt or the

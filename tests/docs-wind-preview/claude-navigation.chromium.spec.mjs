@@ -27,7 +27,12 @@ function emittedClaudeSlugs() {
     .sort();
 }
 
+async function waitForNavigationSettled(page) {
+  await page.waitForFunction(() => window.__claudeNavigationSettledPathname === location.pathname);
+}
+
 async function sidebarOf(page, width) {
+  await waitForNavigationSettled(page);
   if (width >= 1024) return page.locator("#desktop-sidebar");
   const open = page.getByRole("button", { name: "Open sidebar", exact: true });
   if (await open.isVisible()) await open.click();
@@ -57,6 +62,7 @@ async function expectClaude(page, width, slug, resources) {
   await expect(page).toHaveURL(
     (url) => url.pathname.replace(/\/$/, "") === route(slug).replace(/\/$/, ""),
   );
+  await waitForNavigationSettled(page);
   await expect(page.locator("main h1").first()).toBeVisible();
   await expect(page.locator("[data-zd-nav-section]")).toHaveAttribute(
     "data-zd-nav-section",
@@ -128,6 +134,16 @@ for (const width of [1440, 390]) {
     page,
     request,
   }, testInfo) => {
+    await page.addInitScript(() => {
+      window.__claudeNavigationSettledPathname = null;
+      document.addEventListener("zfb:before-preparation", () => {
+        window.__claudeNavigationSettledPathname = null;
+      });
+      // URL and DOM can change before after-swap closes the mobile drawer.
+      document.addEventListener("zfb:page-load", () => {
+        window.__claudeNavigationSettledPathname = location.pathname;
+      });
+    });
     const resources = emittedClaudeSlugs();
     const wisdom = "claude-skills/zfb-wisdom";
     const design = "claude-skills/zudo-doc-design-system";
