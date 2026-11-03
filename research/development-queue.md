@@ -11,7 +11,8 @@ reopened. The dated receipts below remain historical evidence.
 
 - Development branch: `base/client-router-native-intent-history`. Reviewed runtime
   source: `7684db31dbdd6e09cf855947ba69b53178770405`; subsequent ledger commits
-  are separate from that source identity. No new main merge or PR merge ref exists.
+  are separate from that source identity. Draft delivery PR: #4589. No new main
+  integration has occurred; PR merge refs are CI inputs, not production commits.
 - Implemented: effective anchor/area base targets and case-insensitive self;
   single document-base form action resolution with empty-action/current-URL and
   shadowed-control behavior preserved; null-state same-document traversal cancels
@@ -21,8 +22,10 @@ reopened. The dated receipts below remain historical evidence.
 - Local Node 24.19.0 / pnpm 12.8.2: frozen install, runtime tests **423/423**,
   runtime typecheck, changed-file formatting and diff checks pass. Final real
   Chromium **154/154** and isolated packed-consumer **10/10** pass under the
-  heavy guard on the reviewed source. No current-head CI or main integration
-  is claimed by this checkpoint.
+  heavy guard on the reviewed source. Push CI on ledger head `dda5dda40` passed
+  router **154/154** plus packed **10/10** in run **41605405641** (artifact
+  **13217080449**) and Wind **28/28** in run **41605405633**, without test retries.
+  Required PR CI remains pending; no main integration is claimed.
 - Original-source regression evidence: task-a L2 **14 failed / 104 passed**;
   real Chromium relative/cross-origin GET/POST action cases **4 failed**. History
   Chromium JSON fallback, HTML cancellation and queued VT cases **3 failed**;
@@ -44,11 +47,12 @@ reopened. The dated receipts below remain historical evidence.
   versions, locks, build configuration and live size contracts are unchanged.
   Current-source native measurements and broad Rust verification still belong to
   the existing Health CI lane; those are not inferred from the fingerprint.
-- Delivery hold: automatic approval review denied draft PR creation, including a
+- Initial delivery hold: automatic approval review denied draft PR creation, including a
   second attempt after read-only confirmation that the repository is public.
   Its stated remaining reason was insufficient explicit user authorization for
   the external PR commitment. No alternate publication route was attempted.
-  Main's eleven required contexts plus task-specific router Chromium, packed
+  After the user explicitly approved that exact draft PR action, the single
+  authorized retry created #4589. Main's eleven required contexts plus task-specific router Chromium, packed
   consumer and island enforcement remain merge gates. Main merge also triggers
   automatic production showcase deployment; no manual deployment, release, tag
   or package publication is performed.
