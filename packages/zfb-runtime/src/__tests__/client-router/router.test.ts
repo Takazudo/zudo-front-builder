@@ -2408,10 +2408,9 @@ describe("transition() defaultLoader — form body consumption (#1400)", () => {
     // IDL getter (it doesn't implement the real-browser [OverrideBuiltins]
     // quirk that lets a same-named `<input name="enctype">` control shadow
     // the property) — so we monkeypatch an own property directly to simulate
-    // that shadow. defaultLoader reads enctype via
-    // `Reflect.get(HTMLFormElement.prototype, "attributes", form)` rather
-    // than `form.enctype`, precisely so a shadowed property like this cannot
-    // fool it; this proves that.
+    // that shadow. defaultLoader reads the enctype content attribute through
+    // the prototype NamedNodeMap rather than `form.enctype`, so a shadowed
+    // property like this cannot fool it; this proves that.
     Object.defineProperty(form, "enctype", {
       configurable: true,
       value: "multipart/form-data",
@@ -2509,4 +2508,198 @@ describe("effective HTML hyperlink targets", () => {
       expect(fetchMock).toHaveBeenCalledTimes(intercept ? 1 : 0);
     });
   }
+});
+
+describe("form encoding selection", () => {
+  const drain = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  function dispatchEncoding(opts: {
+    enctype?: string;
+    formenctype?: string;
+    method?: string;
+    submitter?: "button" | "input" | "external" | "none";
+  }): { event: SubmitEvent; fetchMock: ReturnType<typeof vi.fn> } {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Posted", "posted")));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = document.createElement("form");
+    form.setAttribute("method", opts.method ?? "post");
+    form.setAttribute("action", "/encoding-target");
+    if (opts.enctype !== undefined) form.setAttribute("enctype", opts.enctype);
+    const field = document.createElement("input");
+    field.setAttribute("name", "q");
+    field.setAttribute("value", "value");
+    form.append(field);
+    document.body.append(form);
+
+    let submitter: HTMLElement | null = null;
+    if (opts.submitter !== "none") {
+      if (opts.submitter === "input") {
+        const control = document.createElement("input");
+        control.type = "submit";
+        control.name = "go";
+        control.value = "send";
+        submitter = control;
+      } else {
+        const control = document.createElement("button");
+        control.type = "submit";
+        control.name = "go";
+        control.value = "send";
+        submitter = control;
+      }
+      if (opts.formenctype !== undefined) submitter.setAttribute("formenctype", opts.formenctype);
+      if (opts.submitter === "external") {
+        form.id = "encoding-form";
+        submitter.setAttribute("form", form.id);
+        document.body.append(submitter);
+      } else {
+        form.append(submitter);
+      }
+    }
+
+    const event = new SubmitEvent("submit", {
+      bubbles: true,
+      cancelable: true,
+      ...(submitter ? { submitter } : {}),
+    });
+    form.dispatchEvent(event);
+    return { event, fetchMock };
+  }
+
+  async function bodyOf(
+    opts: Parameters<typeof dispatchEncoding>[0],
+  ): Promise<BodyInit | null | undefined> {
+    const { event, fetchMock } = dispatchEncoding(opts);
+    expect(event.defaultPrevented).toBe(true);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    return fetchMock.mock.calls[0]?.[1]?.body;
+  }
+
+  it("lets an explicit submitter formenctype override the form in both directions", async () => {
+    await expect(
+      bodyOf({ enctype: "multipart/form-data", formenctype: "application/x-www-form-urlencoded" }),
+    ).resolves.toBeInstanceOf(URLSearchParams);
+    document.body.replaceChildren();
+    await expect(
+      bodyOf({ enctype: "application/x-www-form-urlencoded", formenctype: "multipart/form-data" }),
+    ).resolves.toBeInstanceOf(FormData);
+  });
+
+  it.each([
+    ["", undefined, URLSearchParams],
+    ["bogus", undefined, URLSearchParams],
+    ["Multipart/Form-Data", undefined, FormData],
+    ["APPLICATION/X-WWW-FORM-URLENCODED", undefined, URLSearchParams],
+    [" multipart/form-data", undefined, URLSearchParams],
+    ["multipart/form-data ", undefined, URLSearchParams],
+    ["multipart/form-data", "", URLSearchParams],
+    ["multipart/form-data", "nope", URLSearchParams],
+    ["application/x-www-form-urlencoded", " multipart/form-data", URLSearchParams],
+    ["text/plain", "application/x-www-form-urlencoded", URLSearchParams],
+  ] as const)(
+    "form enctype %j submitter formenctype %j selects %s",
+    async (enctype, formenctype, bodyType) => {
+      const body = await bodyOf({
+        enctype,
+        ...(formenctype !== undefined ? { formenctype } : {}),
+      });
+      expect(body).toBeInstanceOf(bodyType);
+    },
+  );
+
+  it("reads formenctype from input[type=submit]", async () => {
+    const body = await bodyOf({
+      enctype: "multipart/form-data",
+      formenctype: "application/x-www-form-urlencoded",
+      submitter: "input",
+    });
+    expect(body).toBeInstanceOf(URLSearchParams);
+  });
+
+  it("reads formenctype from an external associated submitter", async () => {
+    const body = await bodyOf({
+      enctype: "multipart/form-data",
+      formenctype: "application/x-www-form-urlencoded",
+      submitter: "external",
+    });
+    expect(body).toBeInstanceOf(URLSearchParams);
+  });
+
+  it("uses the form enctype when the submit event has no submitter", async () => {
+    const body = await bodyOf({
+      enctype: "application/x-www-form-urlencoded",
+      submitter: "none",
+    });
+    expect(body).toBeInstanceOf(URLSearchParams);
+  });
+
+  it("keeps multipart when neither encoding attribute exists on a real submit", async () => {
+    const body = await bodyOf({ submitter: "none" });
+    expect(body).toBeInstanceOf(FormData);
+  });
+
+  it.each(["text/plain", "Text/Plain"])(
+    "POST %s does not preventDefault, build FormData, or fetch",
+    async (enctype) => {
+      const spy = vi.spyOn(globalThis, "FormData");
+      const { event, fetchMock } = dispatchEncoding({ enctype });
+      expect(event.defaultPrevented).toBe(false);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+      await drain();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("POST text/plain selected only by the submitter stays native", async () => {
+    const spy = vi.spyOn(globalThis, "FormData");
+    const { event, fetchMock } = dispatchEncoding({
+      enctype: "multipart/form-data",
+      formenctype: "Text/Plain",
+    });
+    expect(event.defaultPrevented).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    await drain();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("GET ignores a text/plain encoding and keeps the query-string navigation", async () => {
+    const { event, fetchMock } = dispatchEncoding({ method: "get", enctype: "text/plain" });
+    expect(event.defaultPrevented).toBe(true);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(init?.method).toBeUndefined();
+    expect(init?.body).toBeUndefined();
+    expect(new URL(String(url)).searchParams.get("q")).toBe("value");
+  });
+
+  it("imperative navigate() keeps FormData for text/plain and for a formless source", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Posted", "posted")));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = document.createElement("form");
+    form.setAttribute("method", "post");
+    form.setAttribute("enctype", "text/plain");
+    document.body.append(form);
+    const formData = new FormData();
+    formData.append("k", "v");
+    await navigate("/submit-target", { formData, sourceElement: form });
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(formData);
+
+    fetchMock.mockClear();
+    const button = document.createElement("button");
+    button.setAttribute("formenctype", "application/x-www-form-urlencoded");
+    document.body.append(button);
+    const loose = new FormData();
+    loose.append("k", "v");
+    await navigate("/submit-target", { formData: loose, sourceElement: button });
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(loose);
+
+    fetchMock.mockClear();
+    const absent = new FormData();
+    absent.append("k", "v");
+    await navigate("/submit-target", { formData: absent });
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(absent);
+  });
 });

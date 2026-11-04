@@ -75,9 +75,40 @@ function tryServe(res, filepath) {
   }
 }
 
-const server = createServer((req, res) => {
+// Playwright's request postData is empty for a multipart body that contains a
+// file. The bytes that actually arrived are the payload oracle for that case.
+const formPosts = [];
+
+function readRequestBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", () => resolve(Buffer.alloc(0)));
+  });
+}
+
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   let pathname = decodeURIComponent(url.pathname);
+  if (pathname === "/__form-posts") {
+    const payload = formPosts.splice(0).map((entry) => ({
+      pathname: entry.pathname,
+      contentType: entry.contentType,
+      body: entry.body.toString("latin1"),
+    }));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+    return;
+  }
+  const body = await readRequestBody(req);
+  if (req.method === "POST") {
+    formPosts.push({
+      pathname,
+      contentType: req.headers["content-type"] ?? "",
+      body,
+    });
+  }
 
   // /dist/* -> packages/zfb-runtime/dist/*
   if (pathname.startsWith("/dist/")) {
