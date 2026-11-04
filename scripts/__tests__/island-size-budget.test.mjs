@@ -867,7 +867,7 @@ describe("island shipped-size budget", () => {
       event: "local-native",
       localReceipt: { sha256: "a0dd8e36ce96713614da90d84367f1224c90d2f5cc208d750c02bc50c0fca934" },
     });
-    // pnpmLockSha256 follows the v4.5.3 release-bump (#4295); cargoLockSha256 the
+    // pnpmLockSha256 follows the v5.2.0 release bump at 54054042; cargoLockSha256 the
     // reviewed noyalib-4268 producer-lock transition at f65dd70d (#4268,
     // owner-attested local evidence); the ceilings below follow the Rolldown
     // default islands bundler under identity normalizer v2 (#4408, #4417).
