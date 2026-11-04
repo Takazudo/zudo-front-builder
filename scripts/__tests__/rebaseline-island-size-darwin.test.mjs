@@ -4802,7 +4802,8 @@ describe("dependency-graph local Darwin evidence (#4580)", () => {
       commands: [["fixture-collector", "--two-passes"]],
       bundle: {
         location: "retained fixture bundle",
-        sha256: localBundleDigest(artifact),
+        // macOS tmpdir() sits under the /var -> /private/var symlink, which the digest rejects.
+        sha256: localBundleDigest(realpathSync(artifact)),
       },
     };
     const receiptPath = join(realpathSync(tempDir("zfb-graph-local-receipt-")), "receipt.json");
