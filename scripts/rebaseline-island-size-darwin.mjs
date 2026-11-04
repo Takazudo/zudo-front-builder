@@ -690,6 +690,92 @@ function gzipSummary(moves) {
   );
 }
 
+// The receipt's `operator` is metadata the collector reported. Generated text
+// names it and never infers owner attestation or approval from a receipt (#4593).
+function receiptOperatorText(localReceipt) {
+  return "(receipt operator: " + localReceipt.receipt.operator + ")";
+}
+
+function localStatusText(localReceipt) {
+  return "local native evidence " + localReceipt.sha256 + " " + receiptOperatorText(localReceipt);
+}
+
+function localNoteText(localReceipt) {
+  return "local native Darwin arm64 evidence " + receiptOperatorText(localReceipt);
+}
+
+function localReadmeMarkdown(localReceipt) {
+  return (
+    "local native evidence (receipt SHA-256 `" +
+    localReceipt.sha256 +
+    "`; receipt operator: " +
+    markdownCodeSpan(localReceipt.receipt.operator) +
+    ")"
+  );
+}
+
+// A CommonMark code span that displays `value` literally: the fence is longer
+// than any backtick run inside it, and when an edge is a backtick or a space
+// one padding space is added to each side, which CommonMark strips back off.
+export function markdownCodeSpan(value) {
+  const longest = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = /^[` ]|[` ]$/.test(value) ? " " : "";
+  return fence + pad + value + pad + fence;
+}
+
+// The provenance values a release-bump or runtime-identity re-pin compares.
+const REPIN_FIELDS = [
+  {
+    text: "package version",
+    markdown: "package version",
+    value: (contract) => contract.toolchain.packageVersion,
+  },
+  {
+    text: "pnpm-lock.yaml hash",
+    markdown: "`pnpm-lock.yaml` hash",
+    value: (contract) => contract.toolchain.pnpmLockSha256,
+  },
+  {
+    text: "normalizer digest",
+    markdown: "normalizer digest",
+    value: (contract) => contract.normalizerSha256,
+  },
+  {
+    text: "Cargo.lock hash",
+    markdown: "`Cargo.lock` hash",
+    value: (contract) => contract.toolchain.cargoLockSha256,
+  },
+];
+
+function listPhrase(items) {
+  return items.length < 2 ? items.join("") : items.slice(0, -1).join(", ") + " and " + items.at(-1);
+}
+
+// Names the REPIN_FIELDS that differ between the predecessor contract and the
+// re-pinned one, and those that do not; `style` is "text" or "markdown".
+export function repinFieldChanges(previous, next, style) {
+  const moved = [];
+  const kept = [];
+  for (const field of REPIN_FIELDS)
+    (field.value(previous) === field.value(next) ? kept : moved).push(field[style]);
+  const since = "the v" + previous.toolchain.packageVersion + " contract";
+  if (moved.length === 0) return "The " + listPhrase(kept) + " are unchanged from " + since + ".";
+  return (
+    "The " +
+    listPhrase(moved) +
+    (moved.length === 1 ? " differs" : " differ") +
+    " from " +
+    since +
+    " and " +
+    (moved.length === 1 ? "was" : "were") +
+    " re-pinned" +
+    (kept.length === 0
+      ? "."
+      : "; the " + listPhrase(kept) + (kept.length === 1 ? " is" : " are") + " unchanged.")
+  );
+}
+
 // `checkout` carries the checkout's {dependencyFingerprint, dependencyFingerprintError}.
 function fingerprintMoves(contract, checkout) {
   return Object.keys(contractFingerprint({})).filter(
@@ -740,7 +826,7 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
     ", re-pinned (" +
     reason +
     (evidence.localReceipt
-      ? ") from owner-attested local native evidence " + evidence.localReceipt.sha256
+      ? ") from " + localStatusText(evidence.localReceipt)
       : ") from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
@@ -780,7 +866,7 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
       "Re-pin (" +
       reason +
       (evidence.localReceipt
-        ? ") from owner-attested local native Darwin arm64 evidence"
+        ? ") from " + localNoteText(evidence.localReceipt)
         : ") from the native Darwin arm64 artifact of run " +
           evidence.runId +
           " (job " +
@@ -793,8 +879,9 @@ export function repinDarwinContract(contract, totals, evidence, reason, checkout
       previousVersion +
       " contract; " +
       gzipSummary(moves) +
-      ". Only package version, the pnpm-lock.yaml hash and the normalizer digest were re-pinned; Cargo.lock is unchanged. " +
-      "Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
+      ". " +
+      repinFieldChanges(contract, next, "text") +
+      " Ceilings equal the artifact measurements with zero allowance; earlier ceilings remain in git history.",
   };
   return { contract: next, gzipMoves: moves ?? [], previousVersion };
 }
@@ -961,7 +1048,7 @@ export function transitionDarwinCargoLock(contract, totals, evidence, checkout, 
     " ceilings on metric " +
     metric +
     (evidence.localReceipt
-      ? ", re-pinned from owner-attested local native evidence " + evidence.localReceipt.sha256
+      ? ", re-pinned from " + localStatusText(evidence.localReceipt)
       : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
@@ -1000,7 +1087,9 @@ export function transitionDarwinCargoLock(contract, totals, evidence, checkout, 
     actualGzip: actualGzipRows(totals),
     note:
       (evidence.localReceipt
-        ? "Cargo producer-lock transition from owner-attested local native Darwin arm64 evidence at source "
+        ? "Cargo producer-lock transition from " +
+          localNoteText(evidence.localReceipt) +
+          " at source "
         : "Cargo producer-lock transition from the native Darwin arm64 artifact of run " +
           evidence.runId +
           " (job " +
@@ -1033,9 +1122,7 @@ export function darwinCargoProducerLockReadmeSection(contract, gzipMoves) {
     " `Cargo.lock` transition at v" +
     contract.toolchain.packageVersion +
     (e.event === "local-native"
-      ? " from owner-attested local native evidence (receipt SHA-256 `" +
-        e.localReceipt.sha256 +
-        "`) at source `"
+      ? " from " + localReadmeMarkdown(e.localReceipt) + " at source `"
       : " from the native artifact " +
         e.artifact.id +
         " of [workflow_dispatch run " +
@@ -1143,7 +1230,7 @@ function transitionDarwinDeclaredCargo(reason, contract, totals, evidence, check
     " ceilings on metric " +
     metric +
     (evidence.localReceipt
-      ? ", re-pinned from owner-attested local native evidence " + evidence.localReceipt.sha256
+      ? ", re-pinned from " + localStatusText(evidence.localReceipt)
       : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
@@ -1182,7 +1269,7 @@ function transitionDarwinDeclaredCargo(reason, contract, totals, evidence, check
     actualGzip: actualGzipRows(totals),
     note:
       (evidence.localReceipt
-        ? kind.noteLabel + " from owner-attested local native Darwin arm64 evidence at source "
+        ? kind.noteLabel + " from " + localNoteText(evidence.localReceipt) + " at source "
         : kind.noteLabel +
           " from the native Darwin arm64 artifact of run " +
           evidence.runId +
@@ -1217,9 +1304,7 @@ function darwinDeclaredCargoReadmeSection(reason, contract, gzipMoves) {
     " at v" +
     contract.toolchain.packageVersion +
     (e.event === "local-native"
-      ? " from owner-attested local native evidence (receipt SHA-256 `" +
-        e.localReceipt.sha256 +
-        "`) at source `"
+      ? " from " + localReadmeMarkdown(e.localReceipt) + " at source `"
       : " from the native artifact " +
         e.artifact.id +
         " of [workflow_dispatch run " +
@@ -1331,7 +1416,7 @@ export function repinDarwinDependencyGraph(contract, totals, evidence, checkout)
     " ceilings on metric " +
     metric +
     (evidence.localReceipt
-      ? ", re-pinned from owner-attested local native evidence " + evidence.localReceipt.sha256
+      ? ", re-pinned from " + localStatusText(evidence.localReceipt)
       : ", re-pinned from the native artifact of workflow_dispatch run " + evidence.runId) +
     " at source " +
     evidence.sourceSha +
@@ -1373,7 +1458,7 @@ export function repinDarwinDependencyGraph(contract, totals, evidence, checkout)
     actualGzip: actualGzipRows(totals),
     note:
       (evidence.localReceipt
-        ? "Dependency-graph re-pin from owner-attested local native Darwin arm64 evidence at source "
+        ? "Dependency-graph re-pin from " + localNoteText(evidence.localReceipt) + " at source "
         : "Dependency-graph re-pin from the native Darwin arm64 artifact of run " +
           evidence.runId +
           " (job " +
@@ -1405,9 +1490,7 @@ export function darwinDependencyGraphReadmeSection(contract, gzipMoves) {
     "The Darwin arm64 contract re-pinned `dependencyFingerprint.sha256` at v" +
     contract.toolchain.packageVersion +
     (e.event === "local-native"
-      ? " from owner-attested local native evidence (receipt SHA-256 `" +
-        e.localReceipt.sha256 +
-        "`) at source `"
+      ? " from " + localReadmeMarkdown(e.localReceipt) + " at source `"
       : " from the native artifact " +
         e.artifact.id +
         " of [workflow_dispatch run " +
@@ -1641,8 +1724,11 @@ export function rewriteDarwinTestPins(source, contract) {
   );
 }
 
-export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, reason) {
+// `previousContract` is the validated contract the re-pin replaced; the README
+// names exactly the provenance fields that moved from it.
+export function darwinRepinReadmeSection(contract, gzipMoves, previousContract, reason) {
   const e = contract.baselineEvidence;
+  const previousVersion = previousContract.toolchain.packageVersion;
   const version = contract.toolchain.packageVersion;
   return (
     "\n## Darwin v" +
@@ -1655,9 +1741,7 @@ export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, r
     "`) for v" +
     version +
     (e.event === "local-native"
-      ? " from owner-attested local native evidence (receipt SHA-256 `" +
-        e.localReceipt.sha256 +
-        "`)"
+      ? " from " + localReadmeMarkdown(e.localReceipt)
       : " from the native artifact " +
         e.artifact.id +
         " of [workflow_dispatch run " +
@@ -1671,7 +1755,9 @@ export function darwinRepinReadmeSection(contract, gzipMoves, previousVersion, r
     e.sourceSha +
     "`. Every raw and `gzipNormalized` total is unchanged from the v" +
     previousVersion +
-    " contract, so the package version, `pnpm-lock.yaml` hash and normalizer digest were re-pinned (the normalizer digest changes only when the normalizer itself changed; `Cargo.lock` is unchanged); these totals alone do not prove byte-identical product code. " +
+    " contract; these totals alone do not prove byte-identical product code. " +
+    repinFieldChanges(previousContract, contract, "markdown") +
+    " " +
     (gzipMoves.length === 0
       ? "No actual gzip total moved."
       : "Actual gzip moved on " +
@@ -1986,13 +2072,8 @@ const DARWIN_HANDLERS = {
         checkout: true,
         run: ({ contract, totals, evidence, checkout }) =>
           repinDarwinContract(contract, totals, evidence, reason, checkout),
-        readme: (result) =>
-          darwinRepinReadmeSection(
-            result.contract,
-            result.gzipMoves,
-            result.previousVersion,
-            reason,
-          ),
+        readme: (result, { contract }) =>
+          darwinRepinReadmeSection(result.contract, result.gzipMoves, contract, reason),
         verb: "re-pinned",
       },
     ]),
