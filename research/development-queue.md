@@ -3,6 +3,64 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Packed-consumer realpath containment — 2026-11-05 UTC
+
+This checkpoint records the packed-consumer temp-path repair. The form-metadata
+section below stays historical, including its pre-merge wording and the macOS
+`/var` versus `/private/var` failure. #4597's M4 WebKit qualification stays
+completed. No Neo rerun.
+
+- Starting main: `99ca3cf7d24a3e314f92c24d1317546915863485` (#4597). Health
+  41880690630, router-chromium 41880690637, Wind 41880690633, and
+  binary/scaffold/showcase 41880690646 succeeded. Zero open PRs. The eight
+  open issues are unchanged.
+- Branch: `base/packed-consumer-realpaths`. Implementation
+  `16339c5c396a1b31628dff8263a28a630abc6cd3`. An independent reviewer traced
+  alias acceptance against package, entry, and `node_modules` escapes and
+  reported no issues. This ledger commit is later than that implementation
+  SHA. The packed evidence `source` field is the implementation SHA.
+- Repair: the trust anchor is the physical path of the fresh isolated
+  directory. The real `node_modules` directory must remain inside it, and the
+  real SDK and runtime entries must remain inside that installation. An
+  escaped `node_modules` realpath is rejected rather than adopted as a new
+  root. Containment is component-aware. The dist-entry shape checks stay
+  `/dist/runtime.js` and `/dist/client-router/index.js`.
+- Root unit file `scripts/__tests__/native-regions-packed-paths.test.mjs`,
+  `pnpm exec vp test run` on that file, first post-fix attempt: **8/8**
+  (334 ms). `node --check` and `vp fmt --check` passed on the helper, the
+  checker, and the test. Physical temp root: accepted, and the old lexical
+  prefix also held. Symlinked ancestor: accepted, while the old lexical
+  prefix failed and the canonical prefix held. In-tree `.store` package
+  symlink: accepted. `node_modules-other`: rejected, where the old prefix
+  matched. Package symlink to an outside directory: rejected. Entry symlink
+  to `tests/router-chromium/fixture/island-real.js`: rejected. Entire
+  `node_modules` symlink to an outside directory: rejected. Missing SDK
+  entry, unexpected SDK shape, unexpected runtime shape, and a relative
+  isolated root: failed closed. The physical, alias, in-tree, package-escape,
+  and `node_modules`-escape cases used a real Node `import.meta.resolve`.
+- M4 packed consumer, normal macOS temp, heavy-guard **PASS** exit 0, 17 s,
+  min memory 8397 MB, first attempt, retries 0. Playwright project chromium,
+  **10/10** in 8.2 s. `ZFB_BROWSER_ENGINE` and `ZFB_REGION_PLAYWRIGHT_CONFIG`
+  were unset. `TMPDIR` was `/var/folders/rh/yslrhq516hx43rh8ln83vmfh0000gn/T`,
+  canonical `/private/var/folders/rh/yslrhq516hx43rh8ln83vmfh0000gn/T`
+  (`alias: true`). No non-symlink `TMPDIR` workaround.
+- Host: Mac16,12, Apple M4, arm64, `sysctl.proc_translated=0`, macOS 27.0.1
+  (26A434), Node v24.13.0, pnpm 12.8.2, Playwright 1.61.0. Raw isolated path
+  `/var/folders/rh/yslrhq516hx43rh8ln83vmfh0000gn/T/zfb-native-regions-packed-ZY4F1I`.
+  Canonical root
+  `/private/var/folders/rh/yslrhq516hx43rh8ln83vmfh0000gn/T/zfb-native-regions-packed-ZY4F1I`.
+  SDK and runtime entries resolved under that root's `node_modules`. Tarball
+  SHA-256: `takazudo-zfb-5.2.0.tgz`
+  `96cabbedc2fab9d42e4cb9dedf7690b420effa2f55ebe307ddf5f832120b3b6f`,
+  `takazudo-zfb-runtime-5.2.0.tgz`
+  `e2e41414afc042a8af3631c8ef2f00c24b950acf3147f9d20c17093bd18a9def`,
+  `takazudo-zfb-slugify-5.2.0.tgz`
+  `618690f20631aeeb73021b4888f6c7990e2b1254ddc84cc7a3cf87b70bb102e5`.
+- Outstanding at this commit: required PR CI on the branch head, then main
+  integration. No package version, lock, runtime API, form behavior, native
+  size contract, or release procedure changes. This does not close #1492,
+  #4276, #4576, #4123, #4366, #4304, #3357, or #4490.
+
 ## Client-router form metadata shadowing — 2026-11-05 UTC
 
 This checkpoint supersedes the operational status of the dated entries below.
