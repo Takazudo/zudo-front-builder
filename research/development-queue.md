@@ -37,8 +37,9 @@ Their receipts stay historical evidence. It does not record a main merge.
   harness issue, not a product failure). With `TMPDIR` set to a non-symlinked
   directory it passed **10/10**, at both `619b814a` and `58931def`.
 - WebKit on that M4 (`form-entry-encoding` + `form-metadata`, workers 1): **25/25**.
-  This is native macOS WebKit, but it is **not** the MacBook Neo receipt. Neo
-  delta qualification remains **NOT RUN** on a frozen SHA.
+  Owner decision (2026-11-05): this native macOS arm64 WebKit run on the M4
+  completes the macOS delta qualification for this form fix. No Neo-specific rerun is
+  required. The identity above stays M4, not Neo, and earlier Neo receipts are unchanged.
 - Not shipped: published ZFB 5.2.0 predates #4592, #4596 and this fix.
 
 ## MacBook Neo native qualification at main `54054042` — 2026-11-04 UTC

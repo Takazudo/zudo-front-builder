@@ -121,6 +121,8 @@ async function submitOnce(browser, config, { routerless }) {
     expect(await page.evaluate(() => document.getElementById("fm")?.localName)).toBe("form");
 
     const logBefore = log.length;
+    // Captured before submitting so a fast navigation cannot be mistaken for the start URL.
+    const startHref = page.url();
     const requests = [];
     const onRequest = (req) => {
       if (new URL(req.url()).pathname === config.destination) requests.push(req);
@@ -139,7 +141,6 @@ async function submitOnce(browser, config, { routerless }) {
       await page.keyboard.press("Enter");
     }
 
-    const startHref = page.url();
     await page.waitForURL((url) => url.href !== startHref && url.pathname === config.destination);
     await expect(page.locator("h1")).toHaveText(TITLES[config.destination]);
     const sameDocument = (await page.evaluate(() => /** @type {any} */ (window).__docId)) === docId;
