@@ -2382,6 +2382,64 @@ describe("handleSubmit — form intercept (#1400)", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  // Real named-property shadowing (including getAttribute, which happy-dom's own
+  // submit path calls) is covered in Chromium by
+  // tests/router-chromium/form-metadata.chromium.spec.mjs; these pin the branch logic.
+  function shadow(form: HTMLFormElement, names: string[]): void {
+    for (const name of names) {
+      Object.defineProperty(form, name, {
+        value: document.createElement("input"),
+        configurable: true,
+      });
+    }
+  }
+
+  it("routes a form whose tagName, dataset and attributes are shadowed", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Results", "done")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/shadowed", method: "post", fields: { q: "value" } });
+    form.setAttribute("target", "_self");
+    shadow(form, ["tagName", "dataset", "attributes"]);
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(new URL(String(url)).pathname).toBe("/shadowed");
+    expect(init?.method).toBe("POST");
+    expect((init?.body as FormData).get("q")).toBe("value");
+  });
+
+  it("honors data-zfb-reload when dataset is shadowed", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/reload-target", method: "get", fields: { x: "1" } });
+    form.setAttribute("data-zfb-reload", "");
+    shadow(form, ["dataset"]);
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+    form.dispatchEvent(event);
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("ignores a submit event whose target is not a form", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const div = document.createElement("div");
+    Object.defineProperty(div, "tagName", { value: "FORM", configurable: true });
+    document.body.append(div);
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+    div.dispatchEvent(event);
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
