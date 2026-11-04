@@ -58,6 +58,7 @@ import {
   repinDarwinDependencyGraph,
   repinDarwinFingerprintPolicy,
   darwinRepinReadmeSection,
+  markdownCodeSpan,
   rewriteDarwinTestPins,
   transitionDarwinCargoLock,
   transitionDarwinCargoRemoval,
@@ -321,6 +322,55 @@ function totalsOf(artifact) {
     workspace: artifact.modes.workspace.recomputed.results,
     packed: artifact.modes.packed.recomputed.results,
   });
+}
+
+// The text a CommonMark code span displays: the content between the first
+// backtick run and the next run of the same length, with line endings as
+// spaces and one space stripped from each side when both sides have one.
+function displayedCodeSpan(markdown) {
+  const open = /`+/.exec(markdown);
+  const fence = open[0];
+  const start = open.index + fence.length;
+  const close = new RegExp("(?<!`)" + fence + "(?!`)", "g");
+  close.lastIndex = start;
+  const end = close.exec(markdown).index;
+  let content = markdown.slice(start, end).replace(/\r?\n/g, " ");
+  if (/^ .* $/s.test(content) && content.trim() !== "") content = content.slice(1, -1);
+  return content;
+}
+
+// The Darwin README section among the sections a stage appended.
+function darwinSectionOf(readme) {
+  const start = readme.indexOf("\n## Darwin v");
+  const end = readme.indexOf("\n## ", start + 1);
+  return readme.slice(start, end === -1 ? undefined : end);
+}
+
+// #4593: local-native prose reports the receipt operator verbatim as data and
+// adds no attestation or approval claim of its own.
+function expectReceiptOperatorProse(staged, darwinSection) {
+  const { sha256, receipt } = staged.baselineEvidence.localReceipt;
+  const operator = receipt.operator;
+  expect(staged.platformStatus).toContain(
+    "from local native evidence " + sha256 + " (receipt operator: " + operator + ") at source ",
+  );
+  expect(staged.baselineEvidence.note).toContain(
+    "from local native Darwin arm64 evidence (receipt operator: " + operator + ") at source ",
+  );
+  const markdown =
+    "from local native evidence (receipt SHA-256 `" +
+    sha256 +
+    "`; receipt operator: " +
+    markdownCodeSpan(operator) +
+    ")";
+  expect(darwinSection).toContain(markdown);
+  const span =
+    darwinSection.indexOf(markdown) + markdown.length - markdownCodeSpan(operator).length - 1;
+  expect(displayedCodeSpan(darwinSection.slice(span))).toBe(operator);
+  for (const text of [staged.platformStatus, staged.baselineEvidence.note, darwinSection]) {
+    expect(text.split(operator).join("")).not.toMatch(/attest|approv/i);
+    expect(text).not.toContain("undefined");
+  }
 }
 
 afterEach(() => {
@@ -716,9 +766,7 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
         pnpmLockSha256: 0,
         cargoLockSha256: 0,
       });
-      expect(darwinRepinReadmeSection(next, [], previousVersion, reason)).toContain(
-        "Darwin v" + VERSION,
-      );
+      expect(darwinRepinReadmeSection(next, [], contract, reason)).toContain("Darwin v" + VERSION);
       // The artifact's Cargo.lock is no longer copied over the pin unchecked.
       const stale = structuredClone(contract);
       stale.toolchain.cargoLockSha256 = sha("old-cargo-lock");
@@ -758,15 +806,18 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
     );
     expect(release.platformStatus).toContain("unchanged from the v9.9.8 contract");
     expect(release.baselineEvidence.note).toContain("Re-pin (release-bump) from the native");
-    const releaseSection = darwinRepinReadmeSection(
-      release,
-      [],
-      first.previousVersion,
-      "release-bump",
-    );
+    const releaseSection = darwinRepinReadmeSection(release, [], previous, "release-bump");
     expect(releaseSection).toContain("## Darwin v" + VERSION + " release baseline");
     expect(releaseSection).toContain("re-pinned (`release-bump`) for v" + VERSION);
     expect(releaseSection).toContain("unchanged from the v9.9.8 contract");
+    // CI-artifact provenance keeps its run, job and artifact and invents no receipt.
+    expect(release.platformStatus).toContain("from the native artifact of workflow_dispatch run 7");
+    expect(release.baselineEvidence.note).toContain("artifact of run 7 (job 8) at source");
+    expect(releaseSection).toContain(
+      "from the native artifact 9 of [workflow_dispatch run 7](https://github.com/Takazudo/zudo-front-builder/actions/runs/7) (job 8) at source `",
+    );
+    for (const text of [release.platformStatus, release.baselineEvidence.note, releaseSection])
+      expect(text).not.toMatch(/receipt|operator|attest|local native/i);
 
     // Test fixture: the first result's bytes, cited by digest only.
     const firstBytes = { sha256: sha(JSON.stringify(release, null, 2) + "\n") };
@@ -792,15 +843,68 @@ describe("rebaseline-island-size-darwin schema-2 re-pin", () => {
     expect(identity.platformStatus).toContain("unchanged from the v" + VERSION + " contract");
     expect(identity.platformStatus).not.toMatch(/release/i);
     expect(identity.baselineEvidence.note).not.toMatch(/release/i);
-    const identitySection = darwinRepinReadmeSection(
-      identity,
-      [],
-      second.previousVersion,
-      "runtime-identity",
-    );
+    const identitySection = darwinRepinReadmeSection(identity, [], release, "runtime-identity");
     expect(identitySection).toContain("## Darwin v" + VERSION + " runtime-identity re-pin");
     expect(identitySection).not.toMatch(/release/i);
   });
+
+  // #4593: the note and README name exactly the provenance values that moved
+  // from the predecessor contract, never a fixed list.
+  it.each([
+    [
+      "release-bump",
+      "an unchanged",
+      (c) => c,
+      "The package version and pnpm-lock.yaml hash differ from the v9.9.8 contract and were re-pinned; the normalizer digest and Cargo.lock hash are unchanged.",
+    ],
+    [
+      "release-bump",
+      "a changed",
+      (c) => (c.normalizerSha256 = sha("old-normalizer")),
+      "The package version, pnpm-lock.yaml hash and normalizer digest differ from the v9.9.8 contract and were re-pinned; the Cargo.lock hash is unchanged.",
+    ],
+    [
+      "runtime-identity",
+      "an unchanged",
+      (c) =>
+        Object.assign(c.toolchain, { packageVersion: VERSION, pnpmLockSha256: sha("pnpm-lock") }),
+      "The package version, pnpm-lock.yaml hash, normalizer digest and Cargo.lock hash are unchanged from the v9.9.9 contract.",
+    ],
+    [
+      "runtime-identity",
+      "a changed",
+      (c) => {
+        Object.assign(c.toolchain, { packageVersion: VERSION, pnpmLockSha256: sha("pnpm-lock") });
+        c.normalizerSha256 = sha("old-normalizer");
+      },
+      "The normalizer digest differs from the v9.9.9 contract and was re-pinned; the package version, pnpm-lock.yaml hash and Cargo.lock hash are unchanged.",
+    ],
+  ])(
+    "%s with %s normalizer digest names only the moved fields",
+    (reason, _kind, edit, sentence) => {
+      const root = makeArtifact();
+      const artifact = loadDarwinArtifact(root);
+      const contract = previousSchema2(root);
+      edit(contract);
+      const evidence = evidenceFor({ ...args, reason }, artifact);
+      const result = repinDarwinContract(contract, totalsOf(artifact), evidence, reason);
+      expect(result.contract.normalizerSha256).toBe(evidence.normalizerSha256);
+      const note = result.contract.baselineEvidence.note;
+      expect(note).toContain(". " + sentence + " Ceilings equal");
+      const section = darwinRepinReadmeSection(result.contract, [], contract, reason);
+      const markdown = sentence
+        .replace("pnpm-lock.yaml", "`pnpm-lock.yaml`")
+        .replace("Cargo.lock", "`Cargo.lock`");
+      expect(section).toContain("product code. " + markdown + " No actual gzip total moved.");
+      // The README and the note make the same claim.
+      expect(markdown.replaceAll("`", "")).toBe(sentence);
+      for (const text of [note, section]) {
+        expect(text).not.toMatch(/were re-pinned \(the normalizer|Only package version/);
+        if (contract.normalizerSha256 === evidence.normalizerSha256)
+          expect(text).not.toMatch(/normalizer digest[^;.]*differ/);
+      }
+    },
+  );
 
   it("rewrites the Darwin test pins on a re-pin, idempotently, touching nothing else", () => {
     const repoRoot = join(testDir, "..", "..");
@@ -3280,7 +3384,7 @@ describe.each([1, 2])("cargo-internal-rewire paired staging, declaration schema 
     expect(JSON.parse(read(DARWIN)).baselineEvidence.event).toBe("local-native");
     const appended = read(README).toString().slice(saved[README].length);
     const darwinSection = appended.split("\n## v")[0];
-    expect(darwinSection).toContain("owner-attested local native evidence");
+    expectReceiptOperatorProse(staged, darwinSection);
     expect(darwinSection).not.toContain("actions/runs");
     expect(appended).toContain("actions/runs/71");
   });
@@ -3928,7 +4032,7 @@ describe("local rustls security evidence with separate tooling", () => {
     expect(rewriteDarwinTestPins(pins, staged)).toBe(pins);
     expect(rewriteDarwinTestPins(pins, f.pinned)).toContain('event: "ci-artifact"');
     const text = readFileSync(join(f.values.stage, README), "utf8");
-    expect(text).toContain("owner-attested local native evidence");
+    expectReceiptOperatorProse(staged, darwinSectionOf(text));
     expect(text).not.toContain("run undefined");
     // Opening a stage is read-only and revalidates retained source/tool/evidence.
     openOutputSession(f.repo.root, f.values.stage);
@@ -4062,7 +4166,12 @@ describe("local provenance re-pin evidence with separate tooling", () => {
     for (const root of localRoots.splice(0)) rmSync(root, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
-  function setup(reason, tweak = () => {}, changeContract = () => {}) {
+  function setup(
+    reason,
+    tweak = () => {},
+    changeContract = () => {},
+    operator = "synthetic owner",
+  ) {
     let pinned;
     const repo = makeGitCheckout(localRoots, {
       prepare(checkout) {
@@ -4112,7 +4221,7 @@ describe("local provenance re-pin evidence with separate tooling", () => {
       JSON.stringify({
         schemaVersion: 1,
         kind: "local-native-darwin",
-        operator: "synthetic owner",
+        operator,
         collectedAt: "2026-01-01T00:00:00.000Z",
         source: { commit: source, clean: true },
         platform: { os: "darwin", arch: "arm64" },
@@ -4147,7 +4256,7 @@ describe("local provenance re-pin evidence with separate tooling", () => {
     ["release-bump", "release-version-stamp"],
     ["runtime-identity", "runtime-identity-repin"],
   ]) {
-    it(reason + " stages and applies owner-attested local evidence", async () => {
+    it(reason + " stages and applies local evidence with neutral receipt provenance", async () => {
       const f = setup(reason);
       await f.run();
       f.unchanged();
@@ -4167,27 +4276,56 @@ describe("local provenance re-pin evidence with separate tooling", () => {
       for (const key of ["artifact", "runId", "jobId", "cargoTransition", "cargoRewire"])
         expect(staged.baselineEvidence).not.toHaveProperty(key);
       expect(staged.platformStatus).toContain(
-        "re-pinned (" + reason + ") from owner-attested local native evidence",
+        "re-pinned (" + reason + ") from local native evidence ",
       );
       expect(staged.baselineEvidence.note).toContain(
-        "Re-pin (" + reason + ") from owner-attested local native Darwin arm64 evidence at source",
+        "Re-pin (" + reason + ") from local native Darwin arm64 evidence (receipt operator: ",
       );
-      for (const text of [staged.platformStatus, staged.baselineEvidence.note])
-        expect(text).not.toContain("undefined");
+      // The predecessor pins this checkout's pnpm lock, so only the version moved.
+      const moved =
+        "The package version differs from the v9.9.8 contract and was re-pinned; the " +
+        "pnpm-lock.yaml hash, normalizer digest and Cargo.lock hash are unchanged.";
+      expect(staged.baselineEvidence.note).toContain(moved);
       const pins = readFileSync(join(f.values.stage, TEST), "utf8");
       expect(pins).toContain('event: "local-native"');
       expect(rewriteDarwinTestPins(pins, staged)).toBe(pins);
       const section = readFileSync(join(f.values.stage, README), "utf8");
       expect(section).toContain(
-        "re-pinned (`" + reason + "`) for v" + f.repo.version + " from owner-attested local",
+        "re-pinned (`" + reason + "`) for v" + f.repo.version + " from local native evidence",
       );
-      expect(section).not.toContain("undefined");
+      expect(section).toContain(
+        moved.replace("pnpm-lock.yaml", "`pnpm-lock.yaml`").replace("Cargo.lock", "`Cargo.lock`"),
+      );
+      expectReceiptOperatorProse(staged, darwinSectionOf(section));
       const manifest = JSON.parse(readFileSync(join(f.values.stage, "stage-manifest.json")));
       expect(manifest.runs).toHaveLength(1);
       applyStage(f.values.stage, f.repo.root);
       expect(JSON.parse(readFileSync(join(f.repo.root, CONTRACT), "utf8"))).toEqual(staged);
     });
   }
+
+  // #4593: the operator is reported data. Its words are kept verbatim, and the
+  // renderer adds no attestation or approval claim, whatever the operator says.
+  it.each([
+    ["an attestation-pending agent", "Codex agent on wrath-of-god; owner attestation pending"],
+    ["a named human", "Ada Lovelace"],
+    ["Markdown-significant and non-ASCII", "`ops` [lead] <arm64> & *café* — 高津戸 ``x``|"],
+  ])("renders %s receipt operator literally and neutrally", async (_kind, operator) => {
+    const f = setup("release-bump", undefined, undefined, operator);
+    await f.run();
+    f.unchanged();
+    const staged = JSON.parse(readFileSync(join(f.values.stage, CONTRACT), "utf8"));
+    const receipt = JSON.parse(readFileSync(f.receiptPath, "utf8"));
+    expect(staged.baselineEvidence.localReceipt).toEqual({
+      sha256: f.values["local-receipt-sha"],
+      receipt,
+    });
+    expect(staged.baselineEvidence.localReceipt.receipt.operator).toBe(operator);
+    const section = readFileSync(join(f.values.stage, README), "utf8");
+    expectReceiptOperatorProse(staged, darwinSectionOf(section));
+    applyStage(f.values.stage, f.repo.root);
+    expect(JSON.parse(readFileSync(join(f.repo.root, CONTRACT), "utf8"))).toEqual(staged);
+  });
 
   it.each(["receipt", "bundle", "source-head", "tool"])(
     "refuses post-stage %s tampering at apply",
@@ -4653,6 +4791,7 @@ describe("cargo-removal paired staging (#4388)", () => {
     });
     for (const key of ["runId", "jobId", "artifact", "cargoRewire", "cargoTransition"])
       expect(staged.baselineEvidence).not.toHaveProperty(key);
+    expectReceiptOperatorProse(staged, darwinSectionOf(readFileSync(join(stage, README), "utf8")));
     // A removal stage relabelled as the rewire reason must not borrow its profile.
     const relabelled = join(tempDir("zfb-local-relabel-"), "stage");
     cpSync(stage, relabelled, { recursive: true });
@@ -4856,11 +4995,9 @@ describe("dependency-graph local Darwin evidence (#4580)", () => {
     });
     for (const key of ["runId", "jobId", "artifact", "cargoTransition", "cargoRewire"])
       expect(staged.baselineEvidence).not.toHaveProperty(key);
-    expect(staged.platformStatus).toContain("owner-attested local native evidence");
-    expect(staged.baselineEvidence.note).toContain("owner-attested local native Darwin arm64");
     const readme = readFileSync(join(stage, README), "utf8");
     expect(readme).toContain("## Darwin v" + repo.version + " dependency-graph re-pin");
-    expect(readme).toContain("from owner-attested local native evidence (receipt SHA-256 `");
+    expectReceiptOperatorProse(staged, darwinSectionOf(readme));
     expect(readFileSync(join(stage, TEST), "utf8")).toContain('event: "local-native"');
 
     // A dependency-graph stage relabelled as a provenance re-pin must not borrow its profile.
