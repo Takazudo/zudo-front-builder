@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildNativeRegions } from "./build-native-regions-fixture.mjs";
+import { assertPackedInstallContainment } from "./packed-install-containment.mjs";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const isolated = mkdtempSync(join(tmpdir(), "zfb-native-regions-packed-"));
@@ -61,12 +62,12 @@ export const runtime = import.meta.resolve('@takazudo/zfb-runtime/client-router'
 `,
 );
 const api = await import(pathToFileURL(consumer).href);
-const sdkDist = dirname(fileURLToPath(api.sdk));
-const runtimeDist = dirname(dirname(fileURLToPath(api.runtime)));
-assert.ok(sdkDist.startsWith(join(isolated, "node_modules")));
-assert.ok(runtimeDist.startsWith(join(isolated, "node_modules")));
-assert.ok(api.sdk.endsWith("/dist/runtime.js"));
-assert.ok(api.runtime.endsWith("/dist/client-router/index.js"));
+const contained = assertPackedInstallContainment({
+  isolated,
+  sdkEntry: api.sdk,
+  runtimeEntry: api.runtime,
+});
+const { sdkDist, runtimeDist } = contained;
 buildNativeRegions({ ...api, fixture });
 for (const name of ["native-regions.css", "real-islands-components.mjs"])
   cpSync(join(repo, "tests/router-chromium/fixture", name), join(fixture, name));
@@ -95,10 +96,14 @@ cpSync(join(fixture, "real-islands-region-a.html"), join(fixture, "index.html"))
 const output = join(repo, "test-results", "native-regions-packed");
 const evidence = {
   isolated,
+  isolatedRoot: contained.isolatedRoot,
+  nodeModulesRoot: contained.nodeModulesRoot,
   source: execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim(),
   node: process.version,
   sdkEntry: api.sdk,
   runtimeEntry: api.runtime,
+  sdkDist,
+  runtimeDist,
   archives: archives.map((name) => ({
     name,
     sha256: createHash("sha256")
