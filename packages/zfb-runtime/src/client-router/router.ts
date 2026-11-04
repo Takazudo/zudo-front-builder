@@ -920,28 +920,21 @@ async function transition(
     const init: RequestInit = { signal: preparationEvent.signal };
     if (preparationEvent.formData) {
       init.method = "POST";
+      const source = preparationEvent.sourceElement;
       const form =
-        preparationEvent.sourceElement instanceof HTMLFormElement
-          ? preparationEvent.sourceElement
-          : preparationEvent.sourceElement instanceof HTMLElement &&
-              "form" in preparationEvent.sourceElement
-            ? (preparationEvent.sourceElement.form as HTMLFormElement)
-            : preparationEvent.sourceElement?.closest("form");
-      // Form elements without enctype explicitly set default to application/x-www-form-urlencoded.
-      // In order to maintain compatibility with Astro 4.x, we need to check the value of enctype
-      // on the attributes property rather than accessing .enctype directly. Astro 5.x may
-      // introduce defaulting to application/x-www-form-urlencoded as a breaking change, and then
-      // we can access .enctype directly.
-      //
-      // Note: getNamedItem can return null in real life, even if TypeScript doesn't think so, hence
-      // the ?.
+        source instanceof HTMLFormElement
+          ? source
+          : source instanceof HTMLElement && "form" in source
+            ? (source.form as HTMLFormElement | null)
+            : (source?.closest("form") ?? null);
       // `form` can be null (closest() miss, or a form-less form-associated
-      // element) — `!= null` covers both null and undefined so Reflect.get
-      // is never invoked on a non-element receiver ("Illegal invocation").
+      // element). An absent encoding stays multipart FormData. text/plain is
+      // not serialized here: handleSubmit leaves those POSTs to the browser
+      // before navigate(), and an imperative navigate() call keeps FormData.
+      const submitter = source != null && source !== form ? source : null;
+      const encoding = form != null ? selectedFormEncoding(form, submitter) : "multipart";
       init.body =
-        form != null &&
-        Reflect.get(HTMLFormElement.prototype, "attributes", form).getNamedItem("enctype")
-          ?.value === "application/x-www-form-urlencoded"
+        encoding === "urlencoded"
           ? new URLSearchParams(preparationEvent.formData as any)
           : preparationEvent.formData;
     }
@@ -1482,6 +1475,45 @@ const leavesWindow = (ev: MouseEvent): boolean =>
 // Track the last clicked element that will leave the window so form submit can check it.
 let lastClickedElementLeavingWindow: EventTarget | null = null;
 
+// WHATWG encoding keywords, matched ASCII-case-insensitively and not trimmed.
+const FORM_URLENCODED = "application/x-www-form-urlencoded";
+const FORM_MULTIPART = "multipart/form-data";
+const FORM_TEXT_PLAIN = "text/plain";
+
+type FormBodyEncoding = "urlencoded" | "multipart" | "text/plain";
+
+function asciiLower(value: string): string {
+  let out = "";
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    out += code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : value.charAt(i);
+  }
+  return out;
+}
+
+// Content attributes, not IDL properties. A control named "enctype" can shadow
+// the property; the prototype NamedNodeMap still sees the attribute.
+function contentAttribute(element: Element, name: string): string | null {
+  const attributes = Reflect.get(Element.prototype, "attributes", element) as NamedNodeMap | null;
+  return attributes?.getNamedItem(name)?.value ?? null;
+}
+
+// Submitter formenctype wins when the attribute is present, including when it is
+// empty. Otherwise the form enctype. When neither attribute exists, keep the
+// multipart FormData default (Astro 4 compatibility, not the HTML initial value).
+// An explicit empty or unrecognized keyword selects URL-encoded.
+function selectedFormEncoding(form: HTMLFormElement, submitter: Element | null): FormBodyEncoding {
+  const submitterValue =
+    submitter != null && submitter !== form ? contentAttribute(submitter, "formenctype") : null;
+  const raw = submitterValue !== null ? submitterValue : contentAttribute(form, "enctype");
+  if (raw === null) return "multipart";
+  const keyword = asciiLower(raw);
+  if (keyword === FORM_URLENCODED) return "urlencoded";
+  if (keyword === FORM_MULTIPART) return "multipart";
+  if (keyword === FORM_TEXT_PLAIN) return "text/plain";
+  return "urlencoded";
+}
+
 function handleClick(ev: MouseEvent): void {
   let link: EventTarget | null = ev.target;
 
@@ -1514,11 +1546,15 @@ function handleClick(ev: MouseEvent): void {
         document.querySelector("base[target]")?.getAttribute("target") ||
         ""
       : (linkEl as SVGAElement).target.baseVal;
-  const href = linkEl instanceof HTMLElement ? linkEl.href : (linkEl as SVGAElement).href.baseVal;
-
-  if (!href) return;
-
-  const origin = new URL(href, location.href).origin;
+  // HTML .href is already absolute. SVG href.baseVal is the raw href, or
+  // xlink:href when href is absent. Resolve that once against the element's
+  // base URI and pass the same absolute URL to the origin check and navigate().
+  // https://www.w3.org/TR/SVG2/linking.html#processingURL-absolute
+  const rawHref =
+    linkEl instanceof HTMLElement ? linkEl.href : (linkEl as SVGAElement).href.baseVal;
+  if (!rawHref) return;
+  const href = linkEl instanceof HTMLElement ? rawHref : new URL(rawHref, linkEl.baseURI).href;
+  const origin = new URL(href).origin;
 
   if (
     // data-zfb-reload: caller wants a full browser reload, not a SPA transition.
@@ -1594,6 +1630,11 @@ function handleSubmit(ev: SubmitEvent): void {
     // No SPA transition in these cases — let browser handle it.
     return;
   }
+
+  // POST text/plain stays a single native submission. Decide before FormData
+  // and preventDefault so the router never owns the request.
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-enctype
+  if (method === "post" && selectedFormEncoding(form, submitter) === "text/plain") return;
 
   const formData = new FormData(form, submitter ?? undefined);
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };

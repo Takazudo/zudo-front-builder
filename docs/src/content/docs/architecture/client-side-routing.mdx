@@ -126,13 +126,26 @@ Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload fo
 <a href="/admin" data-zfb-reload>Admin (full reload)</a>
 ```
 
+### SVG links
+
+An inline SVG `<a>` is not an HTML anchor. Its `href` — or `xlink:href` when `href` is absent — is resolved once against that element's base URL, including a document `<base href>`. That same absolute URL is used for the same-origin check and for `navigate()`. A relative link on `/source/page.html` under `<base href="/docs/">` goes to `/docs/...`. A fragment-only href follows that base too, so a base on another path is a different document, not a hash change on the current page. `href` wins when both are present. A programmatic `navigate("/relative")` still resolves against the current document URL.
+
 ## Form submissions
 
-`<ClientRouter />` also intercepts same-origin `<form>` submits and turns them into a soft navigation through the same `navigate()` path as link clicks — no full-page round trip.
+`<ClientRouter />` intercepts the same-origin form submits it owns and turns them into a soft navigation through `navigate()`.
 
-- **GET forms** — the form's fields are serialized into the destination URL's query string, and the result is a plain GET soft navigation; no request body is sent.
-- **POST (or any other non-GET method) forms** — the submitted `FormData` is carried through to `navigate()`'s `formData` option and sent as the body of a real POST request, encoded as `application/x-www-form-urlencoded` when the form's `enctype` requests it, or as multipart `FormData` otherwise.
-- **The submitter's `formaction` / `formmethod` win** — a `<button formaction="...">` / `formmethod="..."` on the element that triggered the submit overrides the `<form>`'s own `action` / `method`, matching standard HTML form semantics.
+- **GET** — the fields are serialized into the destination query string and no request body is sent. Encoding does not change this, including an explicit `text/plain`.
+- **POST `application/x-www-form-urlencoded`** — the body is `URLSearchParams`.
+- **POST `multipart/form-data`** — the body stays `FormData`. A file keeps its filename and bytes, and the browser generates the multipart boundary.
+- **POST `text/plain`** — the router steps aside before it builds an entry list or calls `preventDefault()`. The browser performs one native POST. There is no second router request, no plain-text serializer, and no public option that selects one.
+- **Explicit empty or unrecognized keywords** — URL-encoded. Keywords match ASCII case-insensitively and are not trimmed, so a space-padded value stays unrecognized.
+
+The submitter's `formenctype` wins when that attribute is present, even if its value is empty. Otherwise the form's `enctype` is used. When neither attribute is present, the body stays multipart `FormData`. That is the retained compatibility default, not HTML's missing-attribute value of `application/x-www-form-urlencoded`. It is not a claim that every native serialization detail matches the browser.
+
+`formmethod` wins over the form `method` by the same attribute-presence rule. Only `post` and `dialog` are special. An empty or unrecognized method is GET, and a method that is not `post` is not rewritten into POST. `dialog` stays with the browser. `formaction`, `formmethod`, `formenctype`, and `formtarget` on the submitter override the form, including a control outside the form associated with `form="id"`.
+
+`navigate(url, { formData })` does not fall back to a native submission. With no source form, or with no encoding attribute, that call still sends `FormData`.
+
 - **A submitted request is never sent twice** — a `formData` navigation writes its history entry once, after `zfb:before-swap` has settled the final URL and before the old page is torn down, so it always runs through the simulated transition (the page's `zfb-view-transitions-fallback` setting) rather than a native View Transition. If the browser rejects that history write, the navigation ends with `zfb:navigation-aborted` and the current page left as it was; the router does not resubmit the form or reload its response URL.
 
 ### Opting out of a soft form submission
@@ -140,6 +153,7 @@ Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload fo
 A submit falls through to a normal, full browser form submission when any of the following are true:
 
 - the `<form>` carries `data-zfb-reload` (same opt-out attribute as links — see [Opting a link out of the router](#programmatic-navigation-with-navigate-opting-a-link-out-of-the-router) above)
+- the effective POST encoding is `text/plain`
 - `method="dialog"` — the special HTML keyword used inside `<dialog>` elements
 - the resolved action URL is cross-origin
 - the submit was triggered by a modifier-key click (Cmd/Ctrl/Shift/Alt) or a non-primary mouse button on the submitter
