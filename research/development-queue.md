@@ -3,6 +3,73 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Client-router SVG base resolution and form encoding — 2026-11-04 UTC
+
+This checkpoint supersedes the operational status of the dated entries below.
+Their original results, failures, retries, and qualification tuples stay historical
+evidence. Nothing here verifies a later head, and it does not record a main merge.
+
+- Refreshed starting main: `9a7b91bc72ffc806010e5a17375ecf8b8c8e71e5` (#4591).
+  Zero open PRs. The eight open issues are unchanged: #1492, #4276, #4304,
+  #4576, #4123, #4366, #3357, #4490. No package version, lock, size contract,
+  fingerprint policy, CI schedule, or release procedure changed.
+- Development branch: `base/router-svg-form-encoding`. Status at this writing:
+  **implemented** and **reviewed** locally. The full local router suite and the
+  packed consumer check below ran on this working tree. Required CI and main
+  integration are not done. This entry does not name a commit SHA, because it
+  is written before that commit. A later note that only repeats CI numbers is
+  a different checkout.
+- SVG `<a>`: one absolute URL is resolved from `href.baseVal` (the browser
+  reflects `xlink:href` when `href` is absent, and `href` wins when both are
+  present) against the element base URI, then used for both the origin check
+  and `navigate()`. `navigate(relative)` still resolves against `location.href`.
+- Form encoding: a present submitter `formenctype` wins, including when empty.
+  Otherwise the form `enctype` content attribute. Neither attribute keeps
+  multipart `FormData`. Explicit empty or unrecognized keywords select
+  URL-encoded. Keywords are ASCII case-insensitive and are not trimmed. POST
+  `text/plain` returns before `FormData` and `preventDefault()`. GET ignores
+  encoding. Imperative `navigate(url, { formData })` has no new native fallback and
+  no new public option.
+- Unmodified Chromium reproduction, runtime built from that main SHA before the
+  router edit, Node 24.13.1 / pnpm 12.8.2 / Playwright 1.61 / Chromium
+  149.0.7827.55, heavy-guard **FAIL** exit 1, 233s, retries 0: **9 failed / 5
+  passed**. Failures: base-relative SVG navigated to `/source/next.html`;
+  cross-origin base did the same; fragment-only under another base did not
+  leave the source document; relative `xlink:href` navigated to
+  `/source/from-xlink.html`; multipart form plus URL-encoded submitter sent
+  multipart; URL-encoded form plus multipart submitter sent URL-encoded; both
+  `text/plain` POST paths stayed SPA; `text/plain` overridden to URL-encoded
+  stayed multipart. The five passes on that same run were no-base SVG,
+  path-absolute SVG, `href` over `xlink:href`, absent-encoding multipart, and
+  GET `text/plain`.
+- Repaired focused Chromium of those same 14 tests: heavy-guard **PASS** exit
+  0, 141s, **14/14**, retries 0. `pnpm -C packages/zfb-runtime test` passed
+  **443/443** before the final formatter pass. After `vp fmt`, the same router
+  unit file passed **139/139** and `pnpm -C packages/zfb-runtime typecheck`
+  passed. Later edits did not change that unit file.
+- Full `pnpm test:router-chromium` on the formatted runtime, before two
+  stronger request assertions: heavy-guard **PASS** exit 0, 215s, min memory
+  9264 MB, **168/168**, retries 0. The same Chromium build.
+- Independent Codex review of the uncommitted diff found two defects: the
+  multipart-file browser test did not prove router ownership, and the docs
+  called `navigate({ formData })` instead of `navigate(url, { formData })`.
+  Both were fixed. A second pass reported no findings. The reviewer did not
+  execute tests. Empty SVG `href` remains an untested early return.
+- After those assertion fixes, the multipart-file and absent-encoding tests
+  were re-run: heavy-guard **PASS** exit 0, 138s, **2/2**, retries 0. Each now
+  requires `resourceType === "fetch"` and a retained document sentinel. The
+  other 166 tests were not repeated after that assertion-only edit.
+- Packed consumer `tests/router-chromium/check-native-regions-packed.mjs`:
+  heavy-guard **PASS** exit 0, 14s, **10/10**. Disk had 320 GB free. The
+  evidence JSON's `source` field is still
+  `9a7b91bc72ffc806010e5a17375ecf8b8c8e71e5` because the tree was dirty. The
+  packed runtime tarball `takazudo-zfb-runtime-5.2.0.tgz` sha256
+  `ff5e46b066d165899674c79aa658b44ffc1e09336ee9d8646e37795ac30c5763` contains
+  `selectedFormEncoding` and `new URL(rawHref, linkEl.baseURI)`. That tarball
+  is the checked artifact. It is not identified by the parent SHA alone.
+- `pnpm docs:check` passed: 2 collections and `tsc --noEmit`, no errors. That
+  command does not build the site. The docs-site build remains the CI Docs gate.
+
 ## Published consumer adoption checkpoint — 2026-11-03 UTC
 
 This checkpoint supersedes the operational status of the dated entries below;
