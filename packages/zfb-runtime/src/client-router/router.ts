@@ -921,12 +921,13 @@ async function transition(
     if (preparationEvent.formData) {
       init.method = "POST";
       const source = preparationEvent.sourceElement;
-      const form =
-        source instanceof HTMLFormElement
-          ? source
-          : source instanceof HTMLElement && "form" in source
-            ? (source.form as HTMLFormElement | null)
-            : (source?.closest("form") ?? null);
+      // Brand check, not instanceof: an adopted foreign-realm form would otherwise
+      // reach closest(), which a control named "closest" shadows.
+      const form = isHtmlFormElement(source)
+        ? source
+        : source instanceof HTMLElement && "form" in source
+          ? (source.form as HTMLFormElement | null)
+          : (source?.closest("form") ?? null);
       // `form` can be null (closest() miss, or a form-less form-associated
       // element). An absent encoding stays multipart FormData. text/plain is
       // not serialized here: handleSubmit leaves those POSTs to the browser
@@ -1498,6 +1499,21 @@ function contentAttribute(element: Element, name: string): string | null {
   return attributes?.getNamedItem(name)?.value ?? null;
 }
 
+// Brand check through Element.prototype getters: unlike tagName it cannot be
+// shadowed by a named control, and unlike instanceof it accepts a form adopted
+// from another realm (e.g. created in an iframe document).
+function isHtmlFormElement(target: EventTarget | null | undefined): target is HTMLFormElement {
+  try {
+    return (
+      Reflect.get(Element.prototype, "localName", target) === "form" &&
+      Reflect.get(Element.prototype, "namespaceURI", target) === "http://www.w3.org/1999/xhtml"
+    );
+  } catch {
+    // Not an Element: the getter rejects the receiver.
+    return false;
+  }
+}
+
 // Submitter formenctype wins when the attribute is present, including when it is
 // empty. Otherwise the form enctype. When neither attribute exists, keep the
 // multipart FormData default (Astro 4 compatibility, not the HTML initial value).
@@ -1601,28 +1617,28 @@ function handleClick(ev: MouseEvent): void {
 }
 
 function handleSubmit(ev: SubmitEvent): void {
-  const el = ev.target as HTMLElement;
+  const form = ev.target;
   const submitter = ev.submitter as HTMLElement | null;
 
   // If the submit was triggered by a modifier-key click, treat as normal browser submit.
   const clickedWithKeys = submitter !== null && submitter === lastClickedElementLeavingWindow;
   lastClickedElementLeavingWindow = null;
 
+  // Named or id'd controls shadow form instance properties (tagName, dataset,
+  // getAttribute, action, ...), so classify by brand and read content attributes.
+  // https://html.spec.whatwg.org/multipage/forms.html#the-form-element
   if (
-    el.tagName !== "FORM" ||
+    !isHtmlFormElement(form) ||
     ev.defaultPrevented ||
-    el.dataset["zfbReload"] !== undefined ||
+    contentAttribute(form, "data-zfb-reload") !== null ||
     clickedWithKeys
   ) {
     return;
   }
 
-  const form = el as HTMLFormElement;
-
-  // Read the document directly: named controls can shadow form.action/ownerDocument/baseURI.
-  const formAction = form.getAttribute("action");
+  const formAction = contentAttribute(form, "action");
   const target =
-    (submitter?.getAttribute("formtarget") ?? form.getAttribute("target")) ||
+    (submitter?.getAttribute("formtarget") ?? contentAttribute(form, "target")) ||
     document.querySelector("base[target]")?.getAttribute("target") ||
     "";
   // Chromium falls back to base target for empty targets, including an empty submitter override.
@@ -1632,7 +1648,7 @@ function handleSubmit(ev: SubmitEvent): void {
   // Resolve method: submitter formmethod attr overrides form method, fallback to "get".
   const rawMethod = (
     submitter?.getAttribute("formmethod") ??
-    form.getAttribute("method") ??
+    contentAttribute(form, "method") ??
     ""
   ).toLowerCase();
   // HTML enumerated methods default to GET for empty/invalid values, without trimming.

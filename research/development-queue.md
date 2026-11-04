@@ -3,6 +3,45 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Client-router form metadata shadowing — 2026-11-05 UTC
+
+This checkpoint supersedes the operational status of the dated entries below.
+Their receipts stay historical evidence. It does not record a main merge.
+
+- Starting main: `3048d35cdcb02b184d602d85a66efd2b03663dc7` (#4596). The health,
+  router-chromium, Wind and binary-smoke push runs on it all succeeded
+  (41848528224, 41848528209, 41848527916, 41848528084). Zero open PRs. The eight
+  open issues are unchanged: #1492, #4276, #4576, #4123, #4366, #4304, #3357, #4490.
+- Branch: `base/router-form-metadata`, draft PR to main. Implemented, reviewed by
+  an independent reviewer (two low findings fixed), not integrated into main.
+- Defect: controls named or id'd `getAttribute`, `tagName` or `dataset` shadow those
+  form properties. `handleSubmit` now classifies the target with a brand check through
+  `Element.prototype` getters. That check is realm-independent, so adopted
+  foreign-realm forms still route. It reads `data-zfb-reload`, `action`, `target` and
+  `method` through `contentAttribute()`. `defaultLoader` uses the same brand check, so
+  a foreign-realm form with a `closest` control no longer throws after `preventDefault()`.
+- Unmodified-runtime Chromium (`form-metadata`, 12 cases at the time, retries 0):
+  **10 failed / 2 passed**. `getAttribute` threw (`form.getAttribute is not a
+  function`) and fell back to a native load. `tagName` and the RadioNodeList variant
+  went native. `data-zfb-reload` with a `dataset` collision was routed. The two
+  controls passed. The later `closest` case failed at `619b814a` with
+  `source?.closest is not a function`.
+- Local, clean head `58931def9d48f14146917479ac8f00ec337c82e0`, Apple M4 `Mac16,12`
+  arm64 (not translated), macOS 27.0.1 (26A434), Node 24.13.0, pnpm 12.8.2,
+  Playwright 1.61.0 (Chromium rev 1228, WebKit 26.5 rev 2311). Every result below is
+  first attempt with retries 0. `pnpm -C packages/zfb-runtime test` **450/450**
+  (the three new branch tests fail on unmodified source). Typecheck and
+  `format:check:ts` passed. `pnpm test:router-chromium` **193/193** (179 + 14 new).
+- Packed consumer: the first run at `619b814a` failed before testing. Its assertion
+  compared the `/var` tmpdir with the `/private/var` realpath (a macOS symlink
+  harness issue, not a product failure). With `TMPDIR` set to a non-symlinked
+  directory it passed **10/10**, at both `619b814a` and `58931def`.
+- WebKit on that M4 (`form-entry-encoding` + `form-metadata`, workers 1): **25/25**.
+  Owner decision (2026-11-05): this native macOS arm64 WebKit run on the M4
+  completes the macOS delta qualification for this form fix. No Neo-specific rerun is
+  required. The identity above stays M4, not Neo, and earlier Neo receipts are unchanged.
+- Not shipped: published ZFB 5.2.0 predates #4592, #4596 and this fix.
+
 ## MacBook Neo native qualification at main `54054042` — 2026-11-04 UTC
 
 This checkpoint supersedes the operational status of the dated entries below.
