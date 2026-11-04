@@ -3,6 +3,46 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## MacBook Neo native qualification at main `54054042` — 2026-11-04 UTC
+
+This checkpoint supersedes the operational status of the dated entries below.
+Their original results, failures, retries and tuples remain historical evidence.
+
+- Qualification SHA: main `54054042e5706cfa0d8c365913a8372fb7e864a1` (#4592),
+  clean, with no repair needed. Machine: MacBook Neo `Mac17,5`, Apple A18 Pro, 8 GB,
+  macOS 27.2 (26B123), native arm64 (not translated). Node v24.14.0 arm64,
+  pnpm 12.8.2, frozen install, `pnpm-lock.yaml` `5cce7d76…277d`, Playwright
+  1.61.0 with WebKit 26.5 and Chromium 149.0.7827.55. Every run used the heavy
+  guard, ran first attempt, and had zero retries and zero skips.
+- Current-source WebKit, **20/20**:
+  - `pnpm test:webkit-back` **4/4**: three back-navigation cases and the native
+    History-quota rejection/recovery. The runtime was rebuilt in the same chained
+    command. Case 3 dispatches a synthetic `hasUAVisualTransition` popstate; it is
+    not a physical iPhone swipe.
+  - `pnpm test:webkit-token` (canonical builds, registry off): `sdk-persist`
+    **1/1** and `r-a08-mismatch` **1/1**.
+  - #4592 `svg-link` + `form-encoding` in WebKit: **14/14** (7 + 7).
+- Published Darwin arm64 consumer, tuple ZFB/runtime/md-wasm 5.2.0, doc 9.1.2,
+  SG 0.8.1, ZDTP 0.9.0, fixture lock `334a2ff9…8f92`: **PASS** (188 s). The
+  installed carrier is `@takazudo/zfb-darwin-arm64@5.2.0`, Mach-O arm64, SHA-256
+  `be76d1f10dbbca442947d9a9331ae38c889a298215685f3d7a6220788ded67ef`. The positive
+  case passed all identity and seven browser steps; both negative controls failed
+  for their documented reasons. Published 5.2.0 predates #4592
+  ([receipt](https://github.com/Takazudo/zudo-front-builder/issues/4276#issuecomment-6627369064)).
+- Darwin size: a fresh native collection at the qualification SHA (one guarded
+  1.99.0 `cargo build --locked -p zfb`, debug info off by the 20 GiB rule). Both
+  eight-fixture matrices were measured twice, and `check-budget.mjs` exited 0 on
+  the first attempt. The release-bump stage (receipt `a0dd8e36…a934`) was
+  independently reviewed and applied with owner authorization; see
+  [RESULT.md](v3-island-size/stage-evidence/darwin-release-5.2.0/RESULT.md).
+  All 16 totals are unchanged; only provenance moved.
+- Deployed docs at `54054042` (Production Deploy 41788226142): the agent-driven
+  headed Chromium walkthrough passed **13/13** with 0 console errors. Mobile was
+  viewport emulation. The owner's own browser result is **NOT RUN**, so #4276 and
+  #4576 stay open for it.
+- Unchanged holds: #4123 and #4366 (native Intel), #4304 (genuine
+  scheduled-watch recovery), #3357 and #4490 (upstream/owner triggers).
+
 ## Client-router SVG base resolution and form encoding — 2026-11-04 UTC
 
 This checkpoint supersedes the operational status of the dated entries below.
