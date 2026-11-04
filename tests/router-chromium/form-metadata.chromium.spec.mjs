@@ -348,6 +348,21 @@ const CASES = [
     owner: "router",
     expectInOracle: "tagName=realm",
   },
+  {
+    name: "form adopted from another realm with a closest control, URL-encoded POST, requestSubmit()",
+    foreignRealm: true,
+    form: {
+      action: "/search-results.html",
+      method: "post",
+      enctype: "application/x-www-form-urlencoded",
+    },
+    fields: [{ name: "closest", value: "c" }],
+    submitter: null,
+    collisions: [{ prop: "closest", kind: "element", id: "" }],
+    destination: "/search-results.html",
+    owner: "router",
+    expectInOracle: "closest=c",
+  },
 ];
 
 for (const config of CASES) {

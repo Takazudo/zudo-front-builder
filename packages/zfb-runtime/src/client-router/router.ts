@@ -921,12 +921,13 @@ async function transition(
     if (preparationEvent.formData) {
       init.method = "POST";
       const source = preparationEvent.sourceElement;
-      const form =
-        source instanceof HTMLFormElement
-          ? source
-          : source instanceof HTMLElement && "form" in source
-            ? (source.form as HTMLFormElement | null)
-            : (source?.closest("form") ?? null);
+      // Brand check, not instanceof: an adopted foreign-realm form would otherwise
+      // reach closest(), which a control named "closest" shadows.
+      const form = isHtmlFormElement(source)
+        ? source
+        : source instanceof HTMLElement && "form" in source
+          ? (source.form as HTMLFormElement | null)
+          : (source?.closest("form") ?? null);
       // `form` can be null (closest() miss, or a form-less form-associated
       // element). An absent encoding stays multipart FormData. text/plain is
       // not serialized here: handleSubmit leaves those POSTs to the browser
@@ -1501,7 +1502,7 @@ function contentAttribute(element: Element, name: string): string | null {
 // Brand check through Element.prototype getters: unlike tagName it cannot be
 // shadowed by a named control, and unlike instanceof it accepts a form adopted
 // from another realm (e.g. created in an iframe document).
-function isHtmlFormElement(target: EventTarget | null): target is HTMLFormElement {
+function isHtmlFormElement(target: EventTarget | null | undefined): target is HTMLFormElement {
   try {
     return (
       Reflect.get(Element.prototype, "localName", target) === "form" &&

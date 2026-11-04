@@ -2430,6 +2430,9 @@ describe("handleSubmit — form intercept (#1400)", () => {
   it("ignores a submit event whose target is not a form", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    // happy-dom swallows listener errors, so prove the early return directly.
+    const formDataMock = vi.fn();
+    vi.stubGlobal("FormData", formDataMock);
     const div = document.createElement("div");
     Object.defineProperty(div, "tagName", { value: "FORM", configurable: true });
     document.body.append(div);
@@ -2437,6 +2440,7 @@ describe("handleSubmit — form intercept (#1400)", () => {
     div.dispatchEvent(event);
     await drain();
 
+    expect(formDataMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
