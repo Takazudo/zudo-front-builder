@@ -935,7 +935,7 @@ async function transition(
       const encoding = form != null ? selectedFormEncoding(form, submitter) : "multipart";
       init.body =
         encoding === "urlencoded"
-          ? new URLSearchParams(preparationEvent.formData as any)
+          ? urlEncodedFormEntries(preparationEvent.formData)
           : preparationEvent.formData;
     }
     const response = await fetchHTML(href, init);
@@ -1514,6 +1514,25 @@ function selectedFormEncoding(form: HTMLFormElement, submitter: Element | null):
   return "urlencoded";
 }
 
+// Standalone CR or LF becomes CRLF; existing CRLF pairs are kept.
+function normalizeFormNewlines(value: string): string {
+  return value.replace(/\r\n|\r|\n/g, "\r\n");
+}
+
+// UTF-8 URL-encoded entry conversion: File values become their names, then names
+// and values get CRLF newlines. FormData(form) leaves both to serialization.
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#converting-an-entry-list-to-a-list-of-name-value-pairs
+function urlEncodedFormEntries(formData: FormData): URLSearchParams {
+  const params = new URLSearchParams();
+  formData.forEach((value, name) => {
+    params.append(
+      normalizeFormNewlines(name),
+      normalizeFormNewlines(typeof value === "string" ? value : value.name),
+    );
+  });
+  return params;
+}
+
 function handleClick(ev: MouseEvent): void {
   let link: EventTarget | null = ev.target;
 
@@ -1639,8 +1658,7 @@ function handleSubmit(ev: SubmitEvent): void {
   const formData = new FormData(form, submitter ?? undefined);
   const options: import("./types.js").Options = { sourceElement: submitter ?? form };
   if (method === "get") {
-    const params = new URLSearchParams(formData as any);
-    action.search = params.toString();
+    action.search = urlEncodedFormEntries(formData).toString();
   } else {
     options.formData = formData;
   }

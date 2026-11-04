@@ -2703,3 +2703,132 @@ describe("form encoding selection", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(absent);
   });
 });
+
+describe("URL-encoded form entry conversion", () => {
+  const drain = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  function urlEncodedForm(): HTMLFormElement {
+    const form = document.createElement("form");
+    form.setAttribute("method", "post");
+    form.setAttribute("enctype", "application/x-www-form-urlencoded");
+    document.body.append(form);
+    return form;
+  }
+
+  function entryFormData(): FormData {
+    const formData = new FormData();
+    formData.append("upload", new File(["hello"], "hello.txt", { type: "text/plain" }));
+    formData.append("empty", new File([], ""));
+    formData.append("tag", "a");
+    formData.append("blank", "");
+    formData.append("tag", "b");
+    formData.append("n\rame", "line1\nline2\rline3\r\nline4\n\r\r\n");
+    formData.append("file\nname", new File(["x"], "two\nlines.txt"));
+    formData.append("text", "café + a&b=c");
+    return formData;
+  }
+
+  const EXPECTED =
+    "upload=hello.txt&empty=&tag=a&blank=&tag=b" +
+    "&n%0D%0Aame=line1%0D%0Aline2%0D%0Aline3%0D%0Aline4%0D%0A%0D%0A%0D%0A" +
+    "&file%0D%0Aname=two%0D%0Alines.txt&text=caf%C3%A9+%2B+a%26b%3Dc";
+
+  it("converts files to names and normalizes newlines in the POST body", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const formData = entryFormData();
+    const before = [...formData];
+
+    await navigate("/submit-target", {
+      formData,
+      sourceElement: urlEncodedForm(),
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = fetchMock.mock.calls[0]?.[1]?.body;
+    expect(body).toBeInstanceOf(URLSearchParams);
+    expect(String(body)).toBe(EXPECTED);
+    // The source FormData and its File objects are left untouched.
+    const after = [...formData];
+    expect(after).toHaveLength(before.length);
+    after.forEach(([name, value], i) => {
+      expect(name).toBe(before[i]![0]);
+      expect(value).toBe(before[i]![1]);
+    });
+    expect((formData.get("upload") as File).name).toBe("hello.txt");
+    expect(formData.get("n\rame")).toBe("line1\nline2\rline3\r\nline4\n\r\r\n");
+  });
+
+  it("uses the same conversion for a GET query and replaces the old query", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Results", "results")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const form = document.createElement("form");
+    form.setAttribute("method", "get");
+    form.setAttribute("action", "/search-target?old=1");
+    document.body.append(form);
+    const entries = entryFormData();
+    const spy = vi.spyOn(globalThis, "FormData").mockImplementationOnce(function () {
+      return entries;
+    });
+
+    const event = new SubmitEvent("submit", {
+      bubbles: true,
+      cancelable: true,
+    });
+    form.dispatchEvent(event);
+    spy.mockRestore();
+
+    expect(event.defaultPrevented).toBe(true);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(new URL(String(url)).search).toBe(`?${EXPECTED}`);
+    expect(init?.method).toBeUndefined();
+    expect(init?.body).toBeUndefined();
+  });
+
+  it("serializes the formData left by zfb:before-preparation listeners", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const listener = (ev: Event) => {
+      const prep = ev as Event & { formData: FormData | undefined };
+      prep.formData!.append("added", "x\ny");
+      const replacement = new FormData();
+      for (const [name, value] of prep.formData!) replacement.append(name, value);
+      replacement.append("swapped", new File(["r"], "late.txt"));
+      prep.formData = replacement;
+    };
+    document.addEventListener("zfb:before-preparation", listener);
+    const formData = new FormData();
+    formData.append("orig", new File(["o"], "orig.txt"));
+
+    try {
+      await navigate("/submit-target", {
+        formData,
+        sourceElement: urlEncodedForm(),
+      });
+    } finally {
+      document.removeEventListener("zfb:before-preparation", listener);
+    }
+
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toBe(
+      "orig=orig.txt&added=x%0D%0Ay&swapped=late.txt",
+    );
+  });
+
+  it("keeps a formless imperative navigate() body as the original FormData", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const formData = entryFormData();
+    await navigate("/submit-target", { formData });
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(formData);
+  });
+});
