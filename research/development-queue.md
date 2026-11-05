@@ -5,6 +5,24 @@ It is not release approval, a scheduler, or a replacement for source-bound recei
 
 ## Submit-button descendant modifiers — 2026-11-05 UTC
 
+### Continuation receipt — 2026-11-05 UTC
+
+- Frozen source `745008ccb215fec2f7b56922ac43b7e2261166d7`, clean at start.
+  Native host Mac16,12, Apple M4, arm64, translation status 0, macOS 27.0.1
+  (26A434), Node v24.13.0, pnpm 12.8.2, Playwright 1.61.0, pinned WebKit
+  26.5 revision 2311. Started 2026-11-05 18:03 UTC via the three-spec
+  guarded command in the continuation request, workers 1, retries 0. First run
+  in progress: all 15 modifier cases passed; empty form target router and native
+  oracle timed out, as did empty submitter target router. These are not a pass.
+  The target suite hard-codes Chromium popup behavior; diagnosis is incomplete.
+- Implementation CI job 127258777637 logs were inspected: 221 Chromium and
+  10 packed-consumer tests passed. The earlier unknown counts reflect the
+  prior session's access limitation, not this later inspection.
+- PR #4599's misleading sentence was replaced with neutral related-tracker
+  wording, and #1492 was reopened; both results were read back. Draft PR #4600
+  was created for this branch. Final-head checks and production merge remain
+  pending.
+
 - Starting main: `9b68b8f772ad30b0d28b3e3924c8ed4739ba85ce`. Refreshed
   public PR list: zero open. Main health 41978920099, router 41978920267,
   Wind 41978920264, and binary/scaffold/showcase 41978920344 succeeded.
