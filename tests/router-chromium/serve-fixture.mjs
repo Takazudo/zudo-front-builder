@@ -78,6 +78,7 @@ function tryServe(res, filepath) {
 // Playwright's request postData is empty for a multipart body that contains a
 // file. The bytes that actually arrived are the payload oracle for that case.
 const formPosts = [];
+const formRequests = [];
 
 function readRequestBody(req) {
   return new Promise((resolve) => {
@@ -91,6 +92,11 @@ function readRequestBody(req) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   let pathname = decodeURIComponent(url.pathname);
+  if (pathname === "/__form-requests") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(formRequests.splice(0)));
+    return;
+  }
   if (pathname === "/__form-posts") {
     const payload = formPosts.splice(0).map((entry) => ({
       pathname: entry.pathname,
@@ -102,6 +108,15 @@ const server = createServer(async (req, res) => {
     return;
   }
   const body = await readRequestBody(req);
+  if (pathname === "/search-results.html") {
+    formRequests.push({
+      method: req.method,
+      destination: req.headers["sec-fetch-dest"] ?? "",
+      search: url.search,
+      body: body.toString("utf8"),
+      contentType: (req.headers["content-type"] ?? "").split(";")[0],
+    });
+  }
   if (req.method === "POST") {
     formPosts.push({
       pathname,

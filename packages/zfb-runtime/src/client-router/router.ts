@@ -1468,8 +1468,14 @@ const leavesWindow = (ev: MouseEvent): boolean =>
   ev.altKey || // download
   ev.shiftKey; // new window
 
-// Track the last clicked element that will leave the window so form submit can check it.
-let lastClickedElementLeavingWindow: EventTarget | null = null;
+let modifiedFormActivation: { click: MouseEvent; path: EventTarget[] } | undefined;
+let modifiedFormActivationTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearModifiedFormActivation(): void {
+  clearTimeout(modifiedFormActivationTimer);
+  modifiedFormActivationTimer = undefined;
+  modifiedFormActivation = undefined;
+}
 
 // WHATWG encoding keywords, matched ASCII-case-insensitively and not trimmed.
 const FORM_URLENCODED = "application/x-www-form-urlencoded";
@@ -1593,8 +1599,13 @@ function urlEncodedFormEntries(formData: FormData): URLSearchParams {
 function handleClick(ev: MouseEvent): void {
   let link: EventTarget | null = ev.target;
 
-  // Record whether this click will leave the window (used by form submit handler).
-  lastClickedElementLeavingWindow = leavesWindow(ev) ? link : null;
+  clearModifiedFormActivation();
+  if (leavesWindow(ev)) {
+    // Dispatch clears composedPath before button activation; capture it now.
+    modifiedFormActivation = { click: ev, path: ev.composedPath() };
+    // A task preserves trusted click activation; a microtask can precede submit.
+    modifiedFormActivationTimer = setTimeout(clearModifiedFormActivation, 0);
+  }
 
   // Shadow DOM: prefer composedPath target over ev.target.
   if (ev.composed) {
@@ -1642,7 +1653,7 @@ function handleClick(ev: MouseEvent): void {
     // Cross-origin: not ours to handle.
     origin !== location.origin ||
     // Modifier key / non-left-click combo: user wants new tab / window / download.
-    lastClickedElementLeavingWindow !== null ||
+    leavesWindow(ev) ||
     // Another handler already handled this event.
     ev.defaultPrevented
   ) {
@@ -1662,8 +1673,11 @@ function handleSubmit(ev: SubmitEvent): void {
   const submitter = ev.submitter as HTMLElement | null;
 
   // If the submit was triggered by a modifier-key click, treat as normal browser submit.
-  const clickedWithKeys = submitter !== null && submitter === lastClickedElementLeavingWindow;
-  lastClickedElementLeavingWindow = null;
+  const clickedWithKeys =
+    submitter !== null &&
+    modifiedFormActivation?.click.defaultPrevented === false &&
+    modifiedFormActivation.path.includes(submitter);
+  clearModifiedFormActivation();
 
   // Named or id'd controls shadow form instance properties (tagName, dataset,
   // getAttribute, action, ...), so classify by brand and read content attributes.
