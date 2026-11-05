@@ -198,7 +198,60 @@ const TARGET_CASES = [
 
 for (const config of TARGET_CASES) {
   for (const native of [false, true]) {
-    test(`${config.name}: ${native ? "native oracle" : "router"}`, async ({ page }) => {
+    test(`${config.name}: ${native ? "native oracle" : "router"}`, async ({ page, context }) => {
+      const ambiguous =
+        config.name === "empty form target" || config.name === "empty submitter target";
+      let destination = config.context;
+      const pageErrors = [];
+      const trackErrors = (candidate) =>
+        candidate.on("pageerror", (error) => pageErrors.push(String(error)));
+      trackErrors(page);
+      context.on("page", trackErrors);
+      if (ambiguous) {
+        const oracle = await context.newPage();
+        await oracle.goto("/search.html");
+        await oracle.waitForFunction(() => history.state?.index !== undefined);
+        await oracle.evaluate((config) => {
+          const form = document.querySelector("form");
+          form.setAttribute("data-zfb-reload", "");
+          const shadow = document.createElement("input");
+          shadow.name = "ownerDocument";
+          shadow.value = "shadow";
+          form.append(shadow);
+          const button = form.querySelector("button");
+          button.name = "submitter";
+          button.value = "search";
+          if (config.target !== undefined) form.setAttribute("target", config.target);
+          if (config.override !== undefined)
+            form.querySelector("button").setAttribute("formtarget", config.override);
+          const base = document.createElement("base");
+          base.target = config.base;
+          document.head.append(base);
+        }, config);
+        await oracle.fill("#q", "context query");
+        await oracle.evaluate(() => fetch("/__form-requests"));
+        const observed = Promise.race([
+          oracle.waitForURL(/search-results/).then(() => "self"),
+          oracle.waitForEvent("popup").then(async (popup) => {
+            await expect(popup.locator("h1")).toHaveText("Search Results");
+            return "popup";
+          }),
+        ]);
+        await oracle.click("#search-submit");
+        destination = await observed;
+        const oracleRequests = await oracle.evaluate(() =>
+          fetch("/__form-requests").then((r) => r.json()),
+        );
+        expect(oracleRequests).toHaveLength(1);
+        expect(oracleRequests[0].method).toBe("GET");
+        expect(oracleRequests[0].destination).toBe("document");
+        const oracleQuery = new URLSearchParams(oracleRequests[0].search);
+        expect(oracleQuery.get("q")).toBe("context query");
+        expect(oracleQuery.get("submitter")).toBe("search");
+        for (const candidate of context.pages())
+          if (candidate !== page && candidate !== oracle) await candidate.close();
+        await oracle.close();
+      }
       await page.goto("/search.html");
       await waitForInitialLoad(page);
       await page.evaluate(
@@ -237,22 +290,31 @@ for (const config of TARGET_CASES) {
         seq: window.__zfb.seq,
         url: location.href,
       }));
+      if (ambiguous) {
+        await page.evaluate(() => fetch("/__form-requests"));
+        await page.evaluate(() => {
+          sessionStorage.removeItem("target-preparation");
+          document.addEventListener("zfb:before-preparation", () =>
+            sessionStorage.setItem("target-preparation", "yes"),
+          );
+        });
+      }
       const requestPromise = page.context().waitForEvent("request", {
         predicate: (r) => new URL(r.url()).pathname === "/search-results.html",
       });
-      const popupPromise = config.context === "popup" ? page.waitForEvent("popup") : null;
+      const popupPromise = destination === "popup" ? page.waitForEvent("popup") : null;
       await page.click("#search-submit");
       const request = await requestPromise;
       expect(request.method()).toBe("GET");
       const submitted = new URL(request.url());
       expect(submitted.searchParams.get("q")).toBe("context query");
       expect(submitted.searchParams.get("submitter")).toBe("search");
-      if (config.context === "self") {
-        if (native) await page.waitForURL(/search-results/);
+      if (destination === "self") {
+        if (native || ambiguous) await page.waitForURL(/search-results/);
         else await waitForNavDone(page, before.seq);
         await expect(page.locator("h1")).toHaveText("Search Results");
         const id = await page.evaluate(() => window.__docId);
-        if (native) expect(id).not.toBe(before.id);
+        if (native || ambiguous) expect(id).not.toBe(before.id);
         else expect(id).toBe(before.id);
       } else {
         if (popupPromise) {
@@ -274,6 +336,17 @@ for (const config of TARGET_CASES) {
         ).toEqual(before);
         await expect(page.locator("h1")).toHaveText("Search");
         expect(await page.evaluate(() => window.__formDataEvents)).toBe(1);
+      }
+      if (ambiguous) {
+        expect(await page.evaluate(() => sessionStorage.getItem("target-preparation"))).toBeNull();
+        const requests = await page.evaluate(() => fetch("/__form-requests").then((r) => r.json()));
+        expect(requests).toHaveLength(1);
+        expect(requests[0].method).toBe("GET");
+        expect(requests[0].destination).toBe("document");
+        expect(pageErrors).toEqual([]);
+        const query = new URLSearchParams(requests[0].search);
+        expect(query.get("q")).toBe("context query");
+        expect(query.get("submitter")).toBe("search");
       }
     });
   }

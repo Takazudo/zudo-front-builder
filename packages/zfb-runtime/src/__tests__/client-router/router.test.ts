@@ -2340,6 +2340,81 @@ describe("handleSubmit — form intercept (#1400)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(["span", "svg", "external"])(
+    "a modified %s descendant activation stays native and is consumed once",
+    async (kind) => {
+      const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Later", "ordinary")));
+      vi.stubGlobal("fetch", fetchMock);
+      const form = createForm({ action: "/later", method: "get", fields: { x: "1" } });
+      const button = document.createElement("button");
+      button.type = "button";
+      if (kind === "external") {
+        form.id = "modifier-owner";
+        button.setAttribute("form", form.id);
+        document.body.append(button);
+      } else form.append(button);
+      const child =
+        kind === "svg"
+          ? document.createElementNS("http://www.w3.org/2000/svg", "svg")
+          : document.createElement("span");
+      button.append(child);
+      child.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+          ctrlKey: true,
+        }),
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      // This supplementary DOM test isolates matching after click dispatch;
+      // trusted submit-button activation is covered by the browser oracle.
+      button.type = "submit";
+      const first = new SubmitEvent("submit", {
+        bubbles: true,
+        cancelable: true,
+        submitter: button,
+      });
+      form.dispatchEvent(first);
+      expect(first.defaultPrevented).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+      form.requestSubmit(button);
+      await drain();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("a modified click canceled after the document listener cannot suppress requestSubmit", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Later", "ordinary")));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/later", method: "get" });
+    const button = document.createElement("button");
+    form.append(button);
+    window.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    button.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
+    );
+    form.requestSubmit(button);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a blocked modified activation expires before a later requestSubmit without a click", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Later", "ordinary")));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/later", method: "get" });
+    const button = document.createElement("button");
+    form.append(button);
+    button.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    button.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    form.requestSubmit(button);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   // --- Bonus: the remaining branches of handleSubmit's single early-return
   // guard (not explicitly listed in #1400, but free to cover from the same
   // harness since they sit in the identical `if` as the dialog-method skip).

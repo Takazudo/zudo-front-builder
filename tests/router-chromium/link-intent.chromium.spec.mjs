@@ -14,7 +14,45 @@ const cases = [
 for (const tag of ["a", "area"]) {
   for (const config of cases) {
     for (const native of [true, false]) {
-      test(`${tag} ${config.name}: ${native ? "native oracle" : "router"}`, async ({ page }) => {
+      test(`${tag} ${config.name}: ${native ? "native oracle" : "router"}`, async ({
+        page,
+        context,
+      }) => {
+        let nativeFrameHistoryDelta = 0;
+        if (config.context === "frame") {
+          const oracle = await context.newPage();
+          await oracle.goto("/search.html");
+          await oracle.waitForFunction(() => history.state?.index !== undefined);
+          await oracle.evaluate(
+            ({ tag, config }) => {
+              document.head.append(document.createElement("base"));
+              const base = document.createElement("base");
+              base.target = config.base;
+              document.head.append(base);
+              if (config.second !== undefined) {
+                const second = document.createElement("base");
+                second.target = config.second;
+                document.head.append(second);
+              }
+              const frame = document.createElement("iframe");
+              frame.name = "results";
+              document.body.append(frame);
+              const link = document.createElement(tag);
+              link.id = "oracle-link";
+              link.href = "/search-results.html";
+              link.setAttribute("data-zfb-reload", "");
+              document.body.append(link);
+            },
+            { tag, config },
+          );
+          const initial = await oracle.evaluate(() => history.length);
+          await oracle.locator("#oracle-link").evaluate((link) => link.click());
+          await expect(oracle.frameLocator('iframe[name="results"]').locator("h1")).toHaveText(
+            "Search Results",
+          );
+          nativeFrameHistoryDelta = (await oracle.evaluate(() => history.length)) - initial;
+          await oracle.close();
+        }
         await page.goto("/search.html");
         await page.waitForFunction(() => history.state?.index !== undefined);
         await page.evaluate(
@@ -78,7 +116,7 @@ for (const tag of ["a", "area"]) {
               state: history.state,
               length: history.length,
             })),
-          ).toEqual(before);
+          ).toEqual({ ...before, length: before.length + nativeFrameHistoryDelta });
           expect(await page.evaluate(() => window.__intentSentinel)).toBe("retained");
           expect(await page.evaluate(() => window.__intentDone)).toBe(false);
         }

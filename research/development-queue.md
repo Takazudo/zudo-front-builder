@@ -3,6 +3,158 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Submit-button descendant modifiers — 2026-11-05 UTC
+
+### Continuation receipt — 2026-11-05 UTC
+
+- Completed first run at `745008ccb215fec2f7b56922ac43b7e2261166d7`: guard
+  **FAIL**, exit 1, 186 seconds, minimum memory 6065 MB; **94 passed, 12 failed,
+  0 skipped, 0 interrupted, 0 unexecuted**, retries 0. Four failures were
+  empty form target and empty submitter target, router and native oracle, each
+  waiting for a popup at form-submit line 243. Eight were anchor/area named base
+  and first target base, router and native oracle, comparing history length 2
+  against observed 3 at link-intent line 81. Original error contexts and last-run
+  report preserved in `~/zfb-native-evidence/submit-modifier-first-745008c/`;
+  original console and guard result recovered in the session. No retry traces
+  were configured. All 15 modifier cases passed in that first run.
+- Diagnostic on the same M4 established that WebKit's empty-target form in
+  both modes navigates the original document with one GET and correct payload,
+  no popup and no router preparation. The test incorrectly expected Chromium's
+  popup behavior. WebKit's named-frame navigation increased joint history length
+  in both modes. The harness now independently observes native destination and
+  named-frame history, keeps native navigation distinct from SPA ownership, and
+  checks document request, payload, one submission and page errors. Existing
+  `data-zfb-reload` oracles initialize the router; modifier oracles stub it.
+  No runtime change. Independent read-only review found no remaining actionable
+  defect after its assertion findings were addressed.
+- Corrected frozen executable source `80c0fdd8ca63df3511fd5446c10f27b30865128a`:
+  native M4 WebKit **106 passed, 0 failed, 0 skipped**, retries 0, guard PASS,
+  exit 0, 58 seconds, minimum memory 6734 MB. Host Mac16,12 Apple M4, arm64,
+  translation 0, macOS 27.0.1 (26A434), Node 24.13.0, pnpm 12.8.2,
+  Playwright 1.61.0, WebKit 26.5 revision 2311. Clean committed source at run
+  start. Three-spec command used `bash "$HOME/.codex/scripts/heavy-guard.sh" --
+  env ZFB_BROWSER_ENGINE=webkit pnpm exec playwright test --config
+  tests/router-chromium/playwright.config.mjs form-modifier.chromium.spec.mjs
+  form-submit.chromium.spec.mjs link-intent.chromium.spec.mjs --project=webkit
+  --workers=1 --retries=0`. Affected selection also passed 12/12 on each of
+  WebKit and pinned Chromium, workers 1, retries 0; focused formatting and diff
+  checks passed. This ledger commit is later than the tested source.
+
+- Frozen source `745008ccb215fec2f7b56922ac43b7e2261166d7`, clean at start.
+  Native host Mac16,12, Apple M4, arm64, translation status 0, macOS 27.0.1
+  (26A434), Node v24.13.0, pnpm 12.8.2, Playwright 1.61.0, pinned WebKit
+  26.5 revision 2311. Started 2026-11-05 18:03 UTC via the three-spec
+  guarded command in the continuation request, workers 1, retries 0. First run
+  in progress: all 15 modifier cases passed; empty form target router and native
+  oracle timed out, as did empty submitter target router. These are not a pass.
+  The target suite hard-codes Chromium popup behavior; diagnosis is incomplete.
+- Implementation CI job 127258777637 logs were inspected: 221 Chromium and
+  10 packed-consumer tests passed. The earlier unknown counts reflect the
+  prior session's access limitation, not this later inspection.
+- PR #4599's misleading sentence was replaced with neutral related-tracker
+  wording, and #1492 was reopened; both results were read back. Draft PR #4600
+  was created for this branch. Final-head checks and production merge remain
+  pending.
+
+- Starting main: `9b68b8f772ad30b0d28b3e3924c8ed4739ba85ce`. Refreshed
+  public PR list: zero open. Main health 41978920099, router 41978920267,
+  Wind 41978920264, and binary/scaffold/showcase 41978920344 succeeded.
+  The adopted-owner receipts below and PR #4599 identities remain historical.
+- Branch: `base/router-submit-modifiers`. Clean frozen implementation:
+  `f36dd2ffca6925fe0c351bfe6cb891c65525a763`. This evidence commit is later.
+  Manager owns integration, verification, and CI triage. One focused PR was
+  requested; no planning issue/epic or publication work.
+- L4 trusted-input native oracle: identical fixtures, router module stubbed.
+  Control-click on Debian Chromium targets the actual span/SVG child; a
+  button-only coordinate supplies the direct control. Context pages, trusted
+  click/submit details, document identity, lifecycle, errors, wire requests and
+  payloads are observed before activation. The native modified forms open one
+  new tab and leave the original document/URL intact. GET query and explicit
+  URL-encoded POST body are `q=hello+world&go=search`, exactly one request.
+- Unchanged runtime: first complete matrix **4 failed / 11 passed**. Four
+  descendant rows (span, SVG, external form-associated button, POST) incorrectly
+  fetched in the original document, with normal SPA lifecycle, instead of the
+  native new-tab document navigation. Strengthening canceled/invalid controls
+  to direct-button clicks exposed both stale latches: final unchanged-source
+  matrix **6 failed / 9 passed**, retries 0. Later genuine
+  `requestSubmit(button)`, without another click, navigated natively instead
+  of using the SPA. Blocked actions themselves made zero requests.
+- Repair captures `composedPath()` during click dispatch, matches the actual
+  submitter, checks late cancellation, and consumes state once. A task timer
+  expires unused state after trusted activation; no microtask cleanup or
+  timestamp heuristic. Links check their own event modifiers independently.
+  No realm-sensitive restriction, form-owner, encoding, sourceElement,
+  FormData/hook, target or history refactor.
+- Host: Linux Debian 13, x86_64, Node 24.19.0, pnpm 12.8.2,
+  Playwright 1.61.0, system Chromium 154.0.8037.57. The pinned Chromium
+  149.0.7827.55 download was denied by network policy. A temporary local config
+  selected system Chromium; no browser override was committed. This browser
+  omits native popup initial requests from Playwright context request events.
+  The small fixture-server recorder verifies wire method/body/query and
+  `Sec-Fetch-Dest` (document versus empty/fetch), cross-checking emitted browser
+  requests. The original page and every new page remain observed.
+- First harness construction failed on popup request observation and a popup
+  init-script `crypto.randomUUID` absence; a diagnostic selector also selected
+  zero tests. Those are harness failures, not runtime verdicts. They were
+  corrected before the decisive unchanged-source matrix; original logs remain
+  in session-local work storage. All behavioral runs used retries 0.
+- Post-fix matrix: **15/15**, first attempt. Clean frozen-source related L4
+  verification: **140/140**, no skips, retries 0, heavy-guard PASS, 76 seconds.
+  Suites: form-modifier 15, form-submit 63, link-intent 28, form-encoding 7,
+  form-metadata 14, form-owner 13. Includes canceled/invalid then genuine
+  requestSubmit and trusted keyboard activation, HTML/SVG/area links, direct
+  submit button/input and ordinary child SPA controls.
+- Affected router units **155/155**, runtime typecheck, focused formatter,
+  syntax and diff checks passed. The commit hook initially failed because the
+  host default pnpm is 11.25.0; command-local Corepack pnpm 12.8.2 satisfied
+  the existing hook without bypassing it.
+- Independent read-only reviewer (inherited model/effort; exact settings
+  unknown) found no actionable issues. A proposed invalid-listener microtask
+  requestSubmit case made no native submission: the native reentrancy guard
+  suppresses it while validation is firing. Its failed native-oracle probe
+  was preserved and the finding withdrawn; no speculative repair was added.
+- Native M4 WebKit: **pending, zero executed**; no Mac available. The exact
+  required three-spec command selects **106 cases** (15 modifier, 63 submit,
+  28 link). Selection is not execution. Qualify the frozen implementation
+  above, record native host/architecture/OS/tool/browser versions, command,
+  first results/skips/retries, and use the existing heavy guard. No Neo rerun.
+
+  After rebuilding the browser prerequisites once on the frozen source, run:
+
+  ```sh
+  bash "$HOME/.codex/scripts/heavy-guard.sh" -- env ZFB_BROWSER_ENGINE=webkit \
+    pnpm exec playwright test --config tests/router-chromium/playwright.config.mjs \
+    form-modifier.chromium.spec.mjs form-submit.chromium.spec.mjs \
+    link-intent.chromium.spec.mjs --project=webkit --workers=1 --retries=0
+  ```
+
+- Implementation router CI [42031487327](https://github.com/Takazudo/zudo-front-builder/actions/runs/42031487327)
+  succeeded on `f36dd2ffca6925fe0c351bfe6cb891c65525a763` (2m47s), including
+  the existing full browser/packed-consumer job. Artifact digest:
+  `sha256:41b339b1162c8987f3f6b1b294680c437274e237c7c27ae42f415f48086875e5`.
+  Public status/artifact identity were visible; signed-in logs were unavailable,
+  so CI's exact counts and retry history are unknown. Wind
+  [42031487330](https://github.com/Takazudo/zudo-front-builder/actions/runs/42031487330)
+  also succeeded at that implementation SHA. No broad local Rust or duplicate
+  full browser run.
+  Required PR checks and approvals are unverified; source CI is not final
+  evidence-ledger-head verification.
+- GitHub metadata: rendered #1492 timeline event **35210077709** explicitly
+  identifies PR #4599 as its closer (event created 2026-11-05T06:12:54Z).
+  No superseding owner retirement decision appeared in the inspected timeline;
+  the latest owner-facing comment still lists outstanding human acceptance.
+  The misleading sentence-only replacement was prepared. Both PR-body edit
+  and issue reopen failed at `https://api.github.com/graphql`: Forbidden.
+  Both metadata objects remain unchanged; no replacement tracker was created.
+- Draft PR creation failed at that same GraphQL restriction. The branch is
+  pushed, but no task PR exists. Conditional merge is held for PR/check access,
+  final-head policy/approval verification, and actual native M4 qualification.
+  Inspected triggers: main deploys the production showcase; docs deployment
+  requires docs/workflow paths; drafts suppress existing preview uploads.
+  This diff contains no docs, dependency/version/lockfile, workflow, public API,
+  native size-contract or release changes. Related trackers outside runtime
+  delivery remain #1492, #4276, #4576, #4123, #4366, #4304, #3357 and #4490.
+
 ## Adopted submitter form owner — 2026-11-05 UTC
 
 This checkpoint records the client-router form-owner repair. The sections below
