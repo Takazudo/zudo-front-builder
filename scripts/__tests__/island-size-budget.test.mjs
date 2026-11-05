@@ -931,7 +931,7 @@ describe("island shipped-size budget", () => {
       readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"),
     );
     expect(linuxContract.platform).toEqual({ os: "linux", arch: "x64" });
-    expect(linuxContract.toolchain.packageVersion).toBe("5.2.0");
+    expect(linuxContract.toolchain.packageVersion).toBe("5.2.1");
     // A schemaVersion-3 contract tracks the dependency fingerprint, the same
     // drift guard as the Darwin contract above; its whole-file pnpmLockSha256
     // is baseline provenance, pinned by the live release-bump test below.
@@ -1526,16 +1526,15 @@ const cargoTransitionCommit = "5ea14d57ddda6536a3e661ff07e6547146d7836a";
 // flat record carries no baselineRunId.
 const repinnedFromContracts = [
   {
-    // The v5.2.0 release bump cites the zudo-doc 9.1.1 Linux contract, read at the
-    // release probe head (refs/pull/4590/head), whose bytes equal main's 1ff3adb4.
+    // The v5.2.1 release bump cites the unchanged v5.2.0 Linux contract.
     file: "decision-linux-x64.json",
-    commit: "c688cf3022ca6c65339c2d85230cce72cc5bb6e9",
-    sha256: "27e6e6adfe8053fbc6a02ada20593393acf41d6b7f34253c3abdb0f6911174e9",
-    fixture: "fixtures/island-size-linux-x64-v5.1.5-doc911.json",
-    outcome: "dependency-graph-repin",
-    packageVersion: "5.1.5",
-    baselineSourceSha: "d04ef461b3e9c54cedd1be8ef46bee219c716690",
-    baselineRunId: 41460157485,
+    commit: "cf09f8d15abc4cf91b753b0e55d5d559fd594fe1",
+    sha256: "1e28c67cd2ceff84f215bdadc299960aeaccac4e48306be46cdee369ff605496",
+    fixture: "fixtures/island-size-linux-x64-v5.2.0-release.json",
+    outcome: "release-version-stamp",
+    packageVersion: "5.2.0",
+    baselineSourceSha: "c688cf3022ca6c65339c2d85230cce72cc5bb6e9",
+    baselineRunId: 41651580486,
   },
   {
     // The Darwin v5.2.0 release bump cites the zudo-doc 9.1.1 Darwin contract on
@@ -3295,9 +3294,12 @@ describe("live contracts preserve released evidence and authentic predecessors",
     });
   });
 
-  it("moves the live Linux contract from the frozen doc 9.1.1 bytes only by the v5.2.0 release bump", () => {
+  it("moves the frozen Linux doc 9.1.1 contract only by the v5.2.0 release bump", () => {
     const predecessor = linuxV515Doc911();
-    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    const live = frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.2.0-release.json",
+      "1e28c67cd2ceff84f215bdadc299960aeaccac4e48306be46cdee369ff605496",
+    );
     expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.2.0");
     expect(live.baselineSourceSha).toBe("c688cf3022ca6c65339c2d85230cce72cc5bb6e9");
@@ -3312,6 +3314,27 @@ describe("live contracts preserve released evidence and authentic predecessors",
     expect(live.toolchain.pnpmLockSha256).toBe(
       "5391b71187d6cf117ace390c7cd3885089ba20546af96c626d2f47d097badfd2",
     );
+    expectReleaseBumpOnly(predecessor, live);
+  });
+
+  it("moves the frozen v5.2.0 Linux contract only by the v5.2.1 release bump", () => {
+    const predecessor = frozenDenoExit(
+      "fixtures/island-size-linux-x64-v5.2.0-release.json",
+      "1e28c67cd2ceff84f215bdadc299960aeaccac4e48306be46cdee369ff605496",
+    );
+    const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
+    expect(live.toolchain.packageVersion).toBe("5.2.1");
+    expect(live.toolchain.pnpmLockSha256).toBe(
+      "4e5070dbd0012dc4210168265c53f4a9d1b50fb7e80954be0d783593e6248232",
+    );
+    expect(live.baselineSourceSha).toBe("878db516dba71068dcda910a9293c65e0f5286e5");
+    expect(live.baselineEvidence).toMatchObject({
+      event: "ci",
+      runId: 42103764413,
+      jobId: 127513191322,
+      sourceSha: "f7bb7648f73e82c2df4c1bc7ed0081264df0ed5f",
+    });
     expectReleaseBumpOnly(predecessor, live);
   });
 
