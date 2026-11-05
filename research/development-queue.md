@@ -7,6 +7,39 @@ It is not release approval, a scheduler, or a replacement for source-bound recei
 
 ### Continuation receipt — 2026-11-05 UTC
 
+- Completed first run at `745008ccb215fec2f7b56922ac43b7e2261166d7`: guard
+  **FAIL**, exit 1, 186 seconds, minimum memory 6065 MB; **94 passed, 12 failed,
+  0 skipped, 0 interrupted, 0 unexecuted**, retries 0. Four failures were
+  empty form target and empty submitter target, router and native oracle, each
+  waiting for a popup at form-submit line 243. Eight were anchor/area named base
+  and first target base, router and native oracle, comparing history length 2
+  against observed 3 at link-intent line 81. Original error contexts and last-run
+  report preserved in `~/zfb-native-evidence/submit-modifier-first-745008c/`;
+  original console and guard result recovered in the session. No retry traces
+  were configured. All 15 modifier cases passed in that first run.
+- Diagnostic on the same M4 established that WebKit's empty-target form in
+  both modes navigates the original document with one GET and correct payload,
+  no popup and no router preparation. The test incorrectly expected Chromium's
+  popup behavior. WebKit's named-frame navigation increased joint history length
+  in both modes. The harness now independently observes native destination and
+  named-frame history, keeps native navigation distinct from SPA ownership, and
+  checks document request, payload, one submission and page errors. Existing
+  `data-zfb-reload` oracles initialize the router; modifier oracles stub it.
+  No runtime change. Independent read-only review found no remaining actionable
+  defect after its assertion findings were addressed.
+- Corrected frozen executable source `80c0fdd8ca63df3511fd5446c10f27b30865128a`:
+  native M4 WebKit **106 passed, 0 failed, 0 skipped**, retries 0, guard PASS,
+  exit 0, 58 seconds, minimum memory 6734 MB. Host Mac16,12 Apple M4, arm64,
+  translation 0, macOS 27.0.1 (26A434), Node 24.13.0, pnpm 12.8.2,
+  Playwright 1.61.0, WebKit 26.5 revision 2311. Clean committed source at run
+  start. Three-spec command used `bash "$HOME/.codex/scripts/heavy-guard.sh" --
+  env ZFB_BROWSER_ENGINE=webkit pnpm exec playwright test --config
+  tests/router-chromium/playwright.config.mjs form-modifier.chromium.spec.mjs
+  form-submit.chromium.spec.mjs link-intent.chromium.spec.mjs --project=webkit
+  --workers=1 --retries=0`. Affected selection also passed 12/12 on each of
+  WebKit and pinned Chromium, workers 1, retries 0; focused formatting and diff
+  checks passed. This ledger commit is later than the tested source.
+
 - Frozen source `745008ccb215fec2f7b56922ac43b7e2261166d7`, clean at start.
   Native host Mac16,12, Apple M4, arm64, translation status 0, macOS 27.0.1
   (26A434), Node v24.13.0, pnpm 12.8.2, Playwright 1.61.0, pinned WebKit
