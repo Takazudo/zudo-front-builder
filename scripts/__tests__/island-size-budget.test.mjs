@@ -3323,6 +3323,7 @@ describe("live contracts preserve released evidence and authentic predecessors",
       "1e28c67cd2ceff84f215bdadc299960aeaccac4e48306be46cdee369ff605496",
     );
     const live = JSON.parse(readFileSync(join(sizeDir, "decision-linux-x64.json"), "utf8"));
+    expect(live.outcome).toBe("release-version-stamp");
     expect(live.toolchain.packageVersion).toBe("5.2.1");
     expect(live.toolchain.pnpmLockSha256).toBe(
       "4e5070dbd0012dc4210168265c53f4a9d1b50fb7e80954be0d783593e6248232",
