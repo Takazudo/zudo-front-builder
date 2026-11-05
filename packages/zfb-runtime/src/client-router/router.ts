@@ -921,17 +921,12 @@ async function transition(
     if (preparationEvent.formData) {
       init.method = "POST";
       const source = preparationEvent.sourceElement;
-      // Brand check, not instanceof: an adopted foreign-realm form would otherwise
-      // reach closest(), which a control named "closest" shadows.
-      const form = isHtmlFormElement(source)
-        ? source
-        : source instanceof HTMLElement && "form" in source
-          ? (source.form as HTMLFormElement | null)
-          : (source?.closest("form") ?? null);
-      // `form` can be null (closest() miss, or a form-less form-associated
-      // element). An absent encoding stays multipart FormData. text/plain is
-      // not serialized here: handleSubmit leaves those POSTs to the browser
-      // before navigate(), and an imperative navigate() call keeps FormData.
+      const form = formOwnerOf(source);
+      // `form` is null when the source has no form-owner API and no ancestor
+      // form, or when the native `.form` value is null. An absent encoding
+      // stays multipart FormData. text/plain is not serialized here:
+      // handleSubmit leaves those POSTs to the browser before navigate(), and
+      // an imperative navigate() call keeps FormData.
       const submitter = source != null && source !== form ? source : null;
       const encoding = form != null ? selectedFormEncoding(form, submitter) : "multipart";
       init.body =
@@ -1512,6 +1507,52 @@ function isHtmlFormElement(target: EventTarget | null | undefined): target is HT
     // Not an Element: the getter rejects the receiver.
     return false;
   }
+}
+
+// The native form-owner getter lives on the control's own prototype. Adoption
+// updates ownerDocument without switching that prototype, so `instanceof
+// HTMLElement` rejects a real submitter while this getter still returns its
+// owner. Null is authoritative: do not replace it with an ancestor form.
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner
+function nativeFormOwner(source: object): HTMLFormElement | null | undefined {
+  try {
+    let proto: object | null = Object.getPrototypeOf(source);
+    while (proto) {
+      const desc = Object.getOwnPropertyDescriptor(proto, "form");
+      if (desc) {
+        if (typeof desc.get !== "function") return undefined;
+        try {
+          const owner = desc.get.call(source);
+          return isHtmlFormElement(owner) ? owner : null;
+        } catch {
+          return null;
+        }
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function ancestorForm(source: object): HTMLFormElement | null {
+  try {
+    const closest = (source as { closest?: unknown }).closest;
+    if (typeof closest !== "function") return null;
+    const found = closest.call(source, "form");
+    return isHtmlFormElement(found) ? found : null;
+  } catch {
+    return null;
+  }
+}
+
+function formOwnerOf(source: EventTarget | null | undefined): HTMLFormElement | null {
+  if (isHtmlFormElement(source)) return source;
+  if (source == null || typeof source !== "object") return null;
+  const native = nativeFormOwner(source);
+  if (native !== undefined) return native;
+  return ancestorForm(source);
 }
 
 // Submitter formenctype wins when the attribute is present, including when it is
