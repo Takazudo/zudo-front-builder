@@ -1,0 +1,16 @@
+---
+title: v5.2.1
+sidebar_position: 53
+---
+
+# v5.2.1
+
+Released: 2026-11-06
+
+## Bug Fixes
+
+- Resolve SVG/xlink URLs against the document base and honor submitter form encoding and native text/plain POST behavior (aa4958909).
+- Convert URL-encoded form entries like native submissions, including filenames and newline normalization, while preserving order and duplicates (d05132da3).
+- Identify forms and read submission metadata despite controls shadowing built-in properties, including adopted forms (619b814a8, 58931def9).
+- Honor native form ownership for adopted and external submitters, including authoritative null ownership (0dfd6784c).
+- Preserve modified descendant submit activations and expire cancelled or blocked activation state (f36dd2ffc).
