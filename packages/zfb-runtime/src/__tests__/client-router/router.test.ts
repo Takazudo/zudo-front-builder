@@ -2530,14 +2530,69 @@ describe("transition() defaultLoader — form body consumption (#1400)", () => {
     const formData = new FormData();
     formData.append("k", "v");
 
-    // handleSubmit passes `submitter ?? form` as sourceElement — mirror that
-    // directly to prove defaultLoader's `"form" in sourceElement` branch
-    // resolves the owning form rather than treating the button as formless.
+    // handleSubmit passes `submitter ?? form` as sourceElement. This drives
+    // defaultLoader's form-owner resolution rather than a direct form source.
     await navigate("/submit-target", { formData, sourceElement: submitter });
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init?.body).toBeInstanceOf(URLSearchParams);
+  });
+
+  it.each(["select", "textarea"] as const)(
+    "reads the owner enctype from a %s source",
+    async (tag) => {
+      const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+        htmlResponse(pageHtml("Posted", "posted content")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const form = document.createElement("form");
+      form.setAttribute("method", "post");
+      form.setAttribute("enctype", "application/x-www-form-urlencoded");
+      const control = document.createElement(tag);
+      form.append(control);
+      document.body.append(form);
+      const formData = new FormData();
+      formData.append("k", "v");
+
+      await navigate("/submit-target", { formData, sourceElement: control });
+
+      expect(fetchMock.mock.calls[0]?.[1]?.body).toBeInstanceOf(URLSearchParams);
+    },
+  );
+
+  it("uses the ancestor form when the source has no form-owner API", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const form = document.createElement("form");
+    form.setAttribute("method", "post");
+    form.setAttribute("enctype", "application/x-www-form-urlencoded");
+    const source = document.createElement("div");
+    form.append(source);
+    document.body.append(form);
+    const formData = new FormData();
+    formData.append("k", "v");
+
+    await navigate("/submit-target", { formData, sourceElement: source });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBeInstanceOf(URLSearchParams);
+  });
+
+  it("keeps FormData when a non-associated source has no ancestor form", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const source = document.createElement("div");
+    document.body.append(source);
+    const formData = new FormData();
+    formData.append("k", "v");
+
+    await navigate("/submit-target", { formData, sourceElement: source });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(formData);
   });
 });
 

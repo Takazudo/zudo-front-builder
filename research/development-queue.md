@@ -3,6 +3,56 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Adopted submitter form owner — 2026-11-05 UTC
+
+This checkpoint records the client-router form-owner repair. The sections below
+stay historical. No Neo rerun. This does not close #1492, #4276, #4576, #4123,
+#4366, #4304, #3357, or #4490.
+
+- Starting main: `07230175e17d096e2cf4794e54970d89ae266e5c` (#4598). Health
+  41906139729, router-chromium 41906139731, and binary/scaffold/showcase
+  41906139804 succeeded. Zero open PRs.
+- Branch: `base/router-form-owner`. Implementation
+  `0dfd6784cc643ba678459b1b2a4ad4ca3f44e21f`. This ledger commit is later.
+  Browser evidence below is that implementation SHA, clean tree, retries 0.
+- Host for every local run: Mac16,12, Apple M4, arm64,
+  `sysctl.proc_translated=0`, macOS 27.0.1 (26A434), Node v24.13.0, pnpm 12.8.2,
+  Playwright 1.61.0, Chromium 149.0.7827.55 rev 1228, WebKit 26.5 rev 2311.
+- Defect, unchanged runtime at the starting main SHA, new
+  `form-owner.chromium.spec.mjs`, heavy-guard **FAIL** exit 1, 7s, min memory
+  7421 MB, first attempt: **6 failed / 7 passed** of 13. Adopted external
+  button: native `application/x-www-form-urlencoded`
+  `owned=caf%C3%A9%26%3D%E9%9B%AA&go=send`, router `multipart/form-data` with
+  those same fields. Adopted external `input[type=submit]`: native
+  `owned=yes&go=send`, router multipart. Adopted submitter in a multipart
+  decoy: native `go=send&owned=yes`, router multipart. Adopted submitter in a
+  URL-encoded decoy with a file: native multipart including `hello-file`,
+  router `application/x-www-form-urlencoded;charset=UTF-8`
+  `go=send&owned=yes&note=note.txt`. Foreign `form="missing"` inside a
+  URL-encoded form, via `navigate()`: router `application/x-www-form-urlencoded`
+  instead of multipart. The preparation-hook case failed on that same
+  multipart fallback; its source-identity assertion had already passed.
+  Passing controls: four `formenctype` rows (the attribute is read from the
+  submitter, so the wrong owner did not change the result), same-realm
+  external, adopted in-owner, and same-realm null owner.
+- Repair: `defaultLoader` still brand-checks a direct form first. A
+  form-associated element uses the `.form` getter on its own prototype,
+  including null. Elements with no form-owner API still use the ancestor
+  form. `sourceElement` is unchanged. Encoding stays after preparation hooks.
+- happy-dom shares prototypes across its iframe window and prefers its
+  internal form node over the `form` attribute, so it cannot represent this
+  adoption bug. New unit coverage is select, textarea, and the ancestor
+  fallback. `router.test.ts` on the implementation SHA: **150/150**.
+  `pnpm -C packages/zfb-runtime typecheck` passed on that same TypeScript.
+- Post-fix Chromium, heavy-guard **PASS** exit 0, 5s, min memory 7134 MB,
+  first attempt: **13/13**.
+- M4 WebKit, heavy-guard **PASS** exit 0, 15s, min memory 6866 MB, first
+  attempt: **20/20** (`form-encoding` 7, `form-owner` 13). No skipped tests.
+  Owner decision for this form work: the M4 run is the macOS qualification.
+  No Neo-specific rerun.
+- Not shipped: no package version, lock, runtime API, native size contract,
+  or release procedure change. Published 5.2.0 predates this fix.
+
 ## Packed-consumer realpath containment — 2026-11-05 UTC
 
 This checkpoint records the packed-consumer temp-path repair. The form-metadata
