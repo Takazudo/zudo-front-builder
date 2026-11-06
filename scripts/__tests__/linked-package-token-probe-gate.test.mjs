@@ -301,11 +301,14 @@ describe("linked-package probe current-run prerequisite gate (#4200)", () => {
         `cargo test -p zfb --test dev_sibling_watch_1678_e2e ${name} -- --include-ignored`,
       );
     }
+    // Two separate helper invocations: the early Chromium stage and the
+    // later Wind stage keep independent outcomes and receipts.
     expect(stepBlock("name: Install profile browser engines")).toContain(
-      "playwright install --with-deps chromium firefox webkit",
+      "node scripts/install-playwright-linux.mjs --label health-wind-full --engines chromium,firefox,webkit",
     );
-    expect(stepBlock("name: Install Chromium")).toContain(
-      "playwright install --with-deps chromium",
+    expect(chromium).toMatch(
+      /^ {8}run: node scripts\/install-playwright-linux\.mjs --label health-chromium --engines chromium /m,
     );
+    expect(stepBlock("name: Install profile browser engines")).not.toMatch(/^ {8}id: chromium$/m);
   });
 });

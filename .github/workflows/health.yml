@@ -709,10 +709,14 @@ jobs:
       # all need this run's native build. Wind has its own browser install below;
       # wasm-md-browser installs in its own job. Keep valid consumers available
       # after unrelated failures, without installing after an unbuilt binary.
+      # The helper bounds APT acquisition by elapsed time (one official-archive
+      # retry) and fails unless Chromium's packages, browser and launch are
+      # ready. Healthy main runs took 20-26 s here; 9m34s was observed when
+      # azure.archive.ubuntu.com served 21 MB at 38 kB/s (run 42214732419).
       - name: Install Chromium for scanner boundary acceptance
         id: chromium
         if: ${{ !cancelled() && steps.build_binary.outcome == 'success' }}
-        run: pnpm exec playwright install --with-deps chromium
+        run: node scripts/install-playwright-linux.mjs --label health-chromium --engines chromium --acquire-timeout 180 --install-timeout 180 --browser-timeout 180 --total-timeout 600
 
       - name: Scanner boundary acceptance (Chromium)
         run: pnpm exec playwright test --config tests/scanner-boundary-acceptance/playwright.config.mjs
@@ -990,14 +994,28 @@ jobs:
           sudo apt-get clean || true
           report "after full Wind cleanup"
 
+      # Independent of the Chromium step above: a Firefox/WebKit failure here
+      # never changes `steps.chromium.outcome`. Healthy full-mode main runs took
+      # 26 s-2m31s; 48m39s was observed when the same mirror served 87 MB at
+      # 30 kB/s (run 42214732419). The 10 + 20 minute totals plus the ~31-36
+      # minutes healthy runs spend elsewhere stay inside the 90-minute job.
       - name: Install profile browser engines
         if: ${{ steps.wind_route.outputs.relevant == 'true' }}
+        env:
+          WIND_MODE: ${{ steps.wind_route.outputs.mode }}
         run: |
-          if [[ '${{ steps.wind_route.outputs.mode }}' == full ]]; then
-            node_modules/.bin/playwright install --with-deps chromium firefox webkit
-          else
-            node_modules/.bin/playwright install --with-deps chromium
-          fi
+          case "$WIND_MODE" in
+            full)
+              node scripts/install-playwright-linux.mjs --label health-wind-full --engines chromium,firefox,webkit --acquire-timeout 300 --install-timeout 240 --browser-timeout 300 --total-timeout 1200
+              ;;
+            chromium)
+              node scripts/install-playwright-linux.mjs --label health-wind-chromium --engines chromium --acquire-timeout 180 --install-timeout 180 --browser-timeout 180 --total-timeout 600
+              ;;
+            *)
+              echo "::error::unknown Wind route mode: '$WIND_MODE'" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Required Wind comparison and shipping evidence
         if: ${{ steps.wind_route.outputs.relevant == 'true' }}
@@ -1123,6 +1141,18 @@ jobs:
             target/island-size/real-workspace/
             target/island-size/real-packed/
           if-no-files-found: error
+          retention-days: 7
+
+      # Setup receipts from both browser stages, including failed or
+      # recovered acquisition attempts. Absent receipts are unavailable
+      # evidence, never a pass.
+      - name: Upload Playwright provisioning receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-provisioning-health
+          path: ${{ runner.temp }}/playwright-provisioning/
+          if-no-files-found: warn
           retention-days: 7
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
@@ -1453,7 +1483,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: node scripts/install-playwright-linux.mjs --label wasm-md-browser --engines chromium --acquire-timeout 180 --install-timeout 180 --browser-timeout 180 --total-timeout 600
 
       - name: Download native zfb binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1512,3 +1542,12 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Upload Playwright provisioning receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-provisioning-wasm-md-browser
+          path: ${{ runner.temp }}/playwright-provisioning/
+          if-no-files-found: warn
+          retention-days: 7
