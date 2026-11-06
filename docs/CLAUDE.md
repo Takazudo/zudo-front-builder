@@ -2,7 +2,7 @@
 
 Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) — a zfb-based documentation framework with MDX, zudo-wind utility CSS, and zudo-react islands.
 
-The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.2.0 and
+The host runs on the released owned-engine stack: exact published `@takazudo/zfb*` 5.2.2 and
 `@takazudo/zudo-doc` / `zudo-doc-history-server` 9.1.2 (#3329, #4576, #4580). Verify
 versions from the docs command context (`pnpm --dir docs exec zfb --version`,
 `pnpm --dir docs why <pkg>`), not from hoisted root copies.
