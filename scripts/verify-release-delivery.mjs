@@ -17,7 +17,7 @@
  *   --expect-homebrew          Require the stable Homebrew formula to carry this version and its archive hashes
  *   --timeout-ms N             Per-request timeout (default 60000)
  *   --retries N                Retries for network/5xx/rate-limit answers (default 3)
- *   --concurrency N            Parallel downloads (default 3)
+ *   --concurrency N            Parallel downloads (default 2, max 4)
  *
  * What it proves, per section of the report:
  *   identity     the tag's commit (annotated tags peeled), the GitHub Release
@@ -169,9 +169,13 @@ const INSTALLER_STEPS = [
 export const FULCIO_OIDS = Object.freeze({
   issuer: "1.3.6.1.4.1.57264.1.8",
   buildSignerUri: "1.3.6.1.4.1.57264.1.9",
+  buildSignerDigest: "1.3.6.1.4.1.57264.1.10",
+  runnerEnvironment: "1.3.6.1.4.1.57264.1.11",
   sourceRepositoryUri: "1.3.6.1.4.1.57264.1.12",
   sourceRepositoryDigest: "1.3.6.1.4.1.57264.1.13",
   sourceRepositoryRef: "1.3.6.1.4.1.57264.1.14",
+  sourceRepositoryIdentifier: "1.3.6.1.4.1.57264.1.15",
+  sourceRepositoryOwnerIdentifier: "1.3.6.1.4.1.57264.1.17",
   buildTrigger: "1.3.6.1.4.1.57264.1.20",
   runInvocationUri: "1.3.6.1.4.1.57264.1.21",
 });
@@ -180,9 +184,9 @@ const LIMITS = Object.freeze({
   json: 32 * 1024 * 1024,
   log: 64 * 1024 * 1024,
   text: 1024 * 1024,
-  archive: 512 * 1024 * 1024,
-  tarball: 512 * 1024 * 1024,
-  unpacked: 1024 * 1024 * 1024,
+  archive: 256 * 1024 * 1024,
+  tarball: 256 * 1024 * 1024,
+  unpacked: 512 * 1024 * 1024,
   jobPages: 20,
   attempts: 20,
 });
@@ -597,44 +601,58 @@ export function decodeExtensionValue(value) {
   return bytes.toString("utf8");
 }
 
-/**
- * Cryptographically verify one sigstore bundle with sigstore-js: Fulcio
- * certificate chain, SCT, Rekor inclusion, timestamp and DSSE signature, plus
- * the anchored identity and exact issuer policy. Throws on any failure.
- */
-export async function sigstoreVerifyBundle(
-  bundle,
-  { identityRegex, issuer, tufCachePath, timeoutMs },
-) {
-  const { verify } = await import("sigstore");
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new FetchError("timeout", `sigstore verification exceeded ${timeoutMs} ms`)),
-      timeoutMs,
-    );
-  });
-  try {
-    const signer = await Promise.race([
-      verify(bundle, {
-        certificateIssuer: issuer,
-        certificateIdentityURI: identityRegex,
-        tufCachePath,
-      }),
-      timeout,
-    ]);
-    const oids = {};
-    for (const { oid, value } of signer?.identity?.oids ?? []) {
-      oids[oid.id.join(".")] = decodeExtensionValue(value);
-    }
-    return {
-      subjectAlternativeName: signer?.identity?.subjectAlternativeName,
-      issuer: signer?.identity?.extensions?.issuer,
-      oids,
-    };
-  } finally {
-    clearTimeout(timer);
+/** Map a sigstore-js Signer to plain identity fields with decoded extensions. */
+export function signerIdentity(signer) {
+  const oids = {};
+  for (const { oid, value } of signer?.identity?.oids ?? []) {
+    oids[oid.id.join(".")] = decodeExtensionValue(value);
   }
+  return {
+    subjectAlternativeName: signer?.identity?.subjectAlternativeName,
+    issuer: signer?.identity?.extensions?.issuer,
+    oids,
+  };
+}
+
+/**
+ * Create a bundle verifier backed by one sigstore-js Verifier: Fulcio
+ * certificate chain, SCT, Rekor inclusion, timestamp and DSSE signature, plus
+ * the anchored identity and exact issuer policy. The trusted root is loaded
+ * once through TUF and reused for every bundle. Each call throws on failure.
+ */
+export function createSigstoreBundleVerifier() {
+  const verifiers = new Map();
+  return async function verifyBundle(bundle, { identityRegex, issuer, tufCachePath, timeoutMs }) {
+    const key = JSON.stringify([identityRegex, issuer, tufCachePath]);
+    if (!verifiers.has(key)) {
+      verifiers.set(
+        key,
+        import("sigstore").then(({ createVerifier }) =>
+          createVerifier({
+            certificateIssuer: issuer,
+            certificateIdentityURI: identityRegex,
+            tufCachePath,
+          }),
+        ),
+      );
+    }
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new FetchError("timeout", `sigstore verification exceeded ${timeoutMs} ms`)),
+        timeoutMs,
+      );
+    });
+    try {
+      const verifier = await Promise.race([verifiers.get(key), timeout]);
+      return signerIdentity(verifier.verify(bundle));
+    } catch (error) {
+      if (error instanceof FetchError) verifiers.delete(key);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 }
 
 // ── GitHub helpers ──────────────────────────────────────────────────────────
@@ -700,7 +718,11 @@ export function effectiveJobs(jobs) {
   const result = new Map();
   for (const [name, list] of byName) {
     list.sort((a, b) => (a.run_attempt ?? 1) - (b.run_attempt ?? 1) || a.id - b.id);
-    result.set(name, { effective: list.at(-1), history: list });
+    const effective = list.at(-1);
+    const sameAttempt = list.filter(
+      (job) => (job.run_attempt ?? 1) === (effective.run_attempt ?? 1),
+    );
+    result.set(name, { effective, history: list, duplicates: sameAttempt.length });
   }
   return result;
 }
@@ -722,14 +744,25 @@ function findStep(job, name) {
 
 /** Validate one required job's effective execution and its delivery steps. */
 function checkRequiredJob(section, grouped, spec, prefix) {
-  const entry = spec.namePrefix
-    ? [...grouped.entries()].find(([name]) => name.startsWith(spec.namePrefix))?.[1]
-    : grouped.get(spec.name);
   const id = `${prefix}:${spec.id}`;
-  if (!entry) {
+  const matches = spec.namePrefix
+    ? [...grouped.entries()].filter(([name]) => name.startsWith(spec.namePrefix)).map(([, e]) => e)
+    : [grouped.get(spec.name)].filter(Boolean);
+  if (matches.length === 0) {
     section.failed(id, `required job "${spec.name ?? spec.namePrefix}" is absent from the run`);
     return undefined;
   }
+  if (matches.length > 1 || matches[0].duplicates > 1) {
+    section.failed(
+      id,
+      `required job "${spec.name ?? spec.namePrefix}" is ambiguous: several jobs match in one attempt`,
+      {
+        jobs: matches.flatMap((e) => e.history.map(jobSummary)),
+      },
+    );
+    return undefined;
+  }
+  const [entry] = matches;
   const job = entry.effective;
   const evidence = {
     effective: jobSummary(job),
@@ -893,7 +926,11 @@ async function verifyReleaseWorkflow(ctx) {
     return section;
   }
   ctx.releaseRun = run;
-  if (run.repository?.full_name) ctx.canonicalRepo = run.repository.full_name;
+  if (run.repository?.full_name?.toLowerCase() === repo.toLowerCase()) {
+    ctx.canonicalRepo = run.repository.full_name;
+    ctx.repositoryId = run.repository.id;
+    ctx.ownerId = run.repository.owner?.id;
+  }
   const runEvidence = {
     id: run.id,
     path: run.path,
@@ -1157,12 +1194,19 @@ export function checkProvenanceClaims({ statement, signer, expected }) {
   const wantOids = {
     [FULCIO_OIDS.issuer]: GITHUB_ACTIONS_ISSUER,
     [FULCIO_OIDS.buildSignerUri]: expected.identity,
+    [FULCIO_OIDS.buildSignerDigest]: expected.commit,
+    [FULCIO_OIDS.runnerEnvironment]: "github-hosted",
     [FULCIO_OIDS.sourceRepositoryUri]: expected.repositoryUri,
     [FULCIO_OIDS.sourceRepositoryDigest]: expected.commit,
     [FULCIO_OIDS.sourceRepositoryRef]: expected.ref,
     [FULCIO_OIDS.buildTrigger]: "release",
     [FULCIO_OIDS.runInvocationUri]: invocationId,
   };
+  // Numeric ids pin the repository and owner against a rename-and-recreate.
+  if (expected.repositoryId != null)
+    wantOids[FULCIO_OIDS.sourceRepositoryIdentifier] = String(expected.repositoryId);
+  if (expected.ownerId != null)
+    wantOids[FULCIO_OIDS.sourceRepositoryOwnerIdentifier] = String(expected.ownerId);
   for (const [oid, value] of Object.entries(wantOids)) {
     if (oids[oid] !== value)
       problems.push(`certificate extension ${oid} is ${oids[oid]}, expected ${value}`);
@@ -1287,6 +1331,8 @@ async function verifyProvenance(ctx, name, record, tarballSha512) {
     commit: ctx.commit,
     runId: ctx.releaseRunId,
     eligibleAttempts: ctx.eligibleAttempts ?? [],
+    repositoryId: ctx.repositoryId,
+    ownerId: ctx.ownerId,
     identity,
   };
   const claims = checkProvenanceClaims({ statement, signer, expected });
@@ -1542,34 +1588,40 @@ async function verifyConsumption(ctx) {
       },
     );
   } else {
-    try {
-      const lines = await readJobLog(ctx, repo, smoke);
-      const { found, missing } = logEvidence(lines, {
-        reusableWorkflowAtTag: `reusable-smoke-clean-room.yml@refs/tags/${tag} (${ctx.commit})`,
-        expectedVersionInput: `expected_version: ${version}`,
-        registryResolved: new RegExp(
-          `Registry resolved create-zfb@\\S+ -> ${escapeRegExp(version)}$`,
-        ),
-        installedZfb: `+ @takazudo/zfb ${version}`,
-        installedRuntime: `+ @takazudo/zfb-runtime ${version}`,
-        builtSite: "[PASS] dist/index.html exists",
-      });
-      const evidence = { job: jobSummary(smoke), found };
-      if (missing.length)
-        section.failed(
-          "release-clean-room",
-          `log lacks exact-version evidence: ${missing.join(", ")}`,
-          evidence,
-        );
-      else section.verified("release-clean-room", evidence);
-    } catch (error) {
-      section.error(
+    if (!ctx.commit) {
+      section.incomplete(
         "release-clean-room",
-        error,
-        { job: jobSummary(smoke) },
-        { missingIsFailure: false },
+        "the tag commit is unresolved, so the log cannot be bound to it",
       );
-    }
+    } else
+      try {
+        const lines = await readJobLog(ctx, repo, smoke);
+        const { found, missing } = logEvidence(lines, {
+          reusableWorkflowAtTag: `reusable-smoke-clean-room.yml@refs/tags/${tag} (${ctx.commit})`,
+          expectedVersionInput: new RegExp(`^\\s*expected_version: ${escapeRegExp(version)}$`),
+          registryResolved: new RegExp(
+            `Registry resolved create-zfb@\\S+ -> ${escapeRegExp(version)}$`,
+          ),
+          installedZfb: new RegExp(`^\\+ @takazudo/zfb ${escapeRegExp(version)}$`),
+          installedRuntime: new RegExp(`^\\+ @takazudo/zfb-runtime ${escapeRegExp(version)}$`),
+          builtSite: "[PASS] dist/index.html exists",
+        });
+        const evidence = { job: jobSummary(smoke), found };
+        if (missing.length)
+          section.failed(
+            "release-clean-room",
+            `log lacks exact-version evidence: ${missing.join(", ")}`,
+            evidence,
+          );
+        else section.verified("release-clean-room", evidence);
+      } catch (error) {
+        section.error(
+          "release-clean-room",
+          error,
+          { job: jobSummary(smoke) },
+          { missingIsFailure: false },
+        );
+      }
   }
 
   let run;
@@ -1596,6 +1648,13 @@ async function verifyConsumption(ctx) {
   const problems = [];
   if (run.path !== INSTALLER_WORKFLOW_PATH) problems.push(`workflow path is ${run.path}`);
   if (run.event !== "workflow_run") problems.push(`event is ${run.event}, not workflow_run`);
+  // A workflow_run installer is created by a Release run's completion, so one
+  // created before that run existed cannot have installed this release. The
+  // run's first creation is the bound: reruns move updated_at past it.
+  const releaseCreated = Date.parse(ctx.releaseRun?.created_at ?? "");
+  if (!Number.isNaN(releaseCreated) && !(Date.parse(run.created_at ?? "") >= releaseCreated)) {
+    problems.push(`run was created at ${run.created_at}, before the Release run existed`);
+  }
   if (run.repository?.full_name && run.repository.full_name.toLowerCase() !== repo.toLowerCase()) {
     problems.push(`run belongs to ${run.repository.full_name}`);
   }
@@ -1620,17 +1679,25 @@ async function verifyConsumption(ctx) {
     "job",
   );
   if (!job || job.status !== "completed" || job.conclusion !== "success") return section;
+  if (!ctx.commit) {
+    section.incomplete(
+      "installer-evidence",
+      "the tag commit is unresolved, so the installer checkout cannot be matched to it",
+      { job: jobSummary(job) },
+    );
+    return section;
+  }
   try {
     const lines = await readJobLog(ctx, repo, job);
     const linuxArchive = `zfb-${version}-x86_64-unknown-linux-gnu.tar.gz`;
     const { found, missing } = logEvidence(lines, {
-      checkoutReleaseSource: new RegExp(`fetch .*origin \\+?${ctx.commit ?? "(?!)"}`),
+      checkoutReleaseSource: new RegExp(`fetch .*origin \\+?${ctx.commit}\\b`),
       releaseTagInput: `RELEASE_TAG: ${tag}`,
       installerTag: new RegExp(`tag:\\s+${escapeRegExp(tag)}$`),
       installerSemver: new RegExp(`semver:\\s+${escapeRegExp(version)}$`),
       archiveDownload: `Downloading ${linuxArchive}...`,
       checksumDownload: `Downloading ${linuxArchive}.sha256...`,
-      checksumVerified: "checksum OK",
+      checksumVerified: /(?:^|\s)checksum OK$/,
       installedVersion: `Installed zfb ${version} to`,
       smokeAssertions: "All smoke assertions passed.",
     });
@@ -1686,7 +1753,12 @@ async function observeChannels(ctx) {
       pointsAtThisRelease: latest.tag_name === tag,
     });
   } catch (error) {
-    record("github-latest", expect.githubLatest, undefined, false, {}, error);
+    // No Latest release at all is a definite answer, not missing evidence.
+    if (error.kind === "not-found" && expect.githubLatest) {
+      section.failed("github-latest", `no release is marked Latest, expected ${tag}`, {
+        error: errorRecord(error),
+      });
+    } else record("github-latest", expect.githubLatest, undefined, false, {}, error);
   }
   const tags = await mapLimit(PUBLISHED_PACKAGES, ctx.concurrency, async (name) => {
     try {
@@ -1698,21 +1770,33 @@ async function observeChannels(ctx) {
       return { name, error };
     }
   });
+  const tagEvidence = {
+    packages: tags.map((entry) => ({
+      name: entry.name,
+      distTags: entry.distTags ?? null,
+      error: entry.error && errorRecord(entry.error),
+    })),
+  };
+  const wrongTags = tags.filter((entry) => !entry.error && entry.distTags?.latest !== version);
   const failedTag = tags.find((entry) => entry.error);
-  record(
-    "npm-dist-tags",
-    expect.npmLatest,
-    tags.map((entry) => `${entry.name}=${entry.distTags?.latest}`).join(","),
-    tags.every((entry) => entry.distTags?.latest === version),
-    {
-      packages: tags.map((entry) => ({
-        name: entry.name,
-        distTags: entry.distTags ?? null,
-        error: entry.error && errorRecord(entry.error),
-      })),
-    },
-    failedTag?.error,
-  );
+  if (expect.npmLatest && wrongTags.length) {
+    // A package read back with the wrong latest is a failure even when another
+    // package's read failed; the failure must not be downgraded to incomplete.
+    section.failed(
+      "npm-dist-tags",
+      `latest is not ${version} for ${wrongTags.map((e) => `${e.name}=${e.distTags?.latest}`).join(", ")}`,
+      tagEvidence,
+    );
+  } else {
+    record(
+      "npm-dist-tags",
+      expect.npmLatest,
+      tags.map((entry) => `${entry.name}=${entry.distTags?.latest}`).join(","),
+      wrongTags.length === 0,
+      tagEvidence,
+      failedTag?.error,
+    );
+  }
   try {
     const formula = await http.getText(HOMEBREW_FORMULA_URL);
     const formulaVersion = /^\s*version "([^"]+)"/m.exec(formula)?.[1];
@@ -1769,9 +1853,9 @@ export async function verifyReleaseDelivery(options, deps = {}) {
       npmLatest: Boolean(options.expectNpmLatest),
       homebrew: Boolean(options.expectHomebrew),
     },
-    concurrency: options.concurrency ?? 3,
+    concurrency: options.concurrency ?? 2,
     timeoutMs: options.timeoutMs ?? 60_000,
-    verifyBundle: "verifyBundle" in deps ? deps.verifyBundle : sigstoreVerifyBundle,
+    verifyBundle: "verifyBundle" in deps ? deps.verifyBundle : createSigstoreBundleVerifier(),
     tufCachePath: deps.tufCachePath ?? ownTuf,
     control: deps.control ?? controlIdentity({ runGit: deps.runGit }),
   };
@@ -1915,7 +1999,7 @@ export function parseArgs(argv) {
   for (const [key, min, max] of [
     ["timeoutMs", 1000, 600_000],
     ["retries", 0, 10],
-    ["concurrency", 1, 8],
+    ["concurrency", 1, 4],
   ]) {
     if (options[key] === undefined) continue;
     const number = Number(options[key]);
@@ -1945,8 +2029,15 @@ async function main(argv) {
   return report.exitCode;
 }
 
-const invokedPath = process.argv[1] && realpathSync(process.argv[1]);
-if (invokedPath === realpathSync(fileURLToPath(import.meta.url))) {
+function resolvedPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+const invokedPath = process.argv[1] && resolvedPath(process.argv[1]);
+if (invokedPath && invokedPath === resolvedPath(fileURLToPath(import.meta.url))) {
   main(process.argv.slice(2)).then(
     (code) => {
       process.exitCode = code;

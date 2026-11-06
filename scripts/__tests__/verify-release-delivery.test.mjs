@@ -246,7 +246,8 @@ function makeWorld(tweak = () => {}) {
       run_attempt: 1,
       status: "completed",
       conclusion: "success",
-      repository: { full_name: REPO },
+      repository: { full_name: REPO, id: 1001, owner: { id: 2002 } },
+      created_at: "2026-11-06T06:40:00Z",
       updated_at: "2026-11-06T07:28:10Z",
     },
     releaseJobs: releaseJobs(),
@@ -261,6 +262,7 @@ function makeWorld(tweak = () => {}) {
       status: "completed",
       conclusion: "success",
       repository: { full_name: REPO },
+      created_at: "2026-11-06T07:28:20Z",
     },
     installerJobs: installerJobs(),
     logs: { [jobIdOf(releaseJobs(), "smoke-clean-room")]: CLEAN_ROOM_LOG, 5000: INSTALLER_LOG },
@@ -463,9 +465,13 @@ function fakeVerifier(world) {
       oids: {
         [FULCIO_OIDS.issuer]: "https://token.actions.githubusercontent.com",
         [FULCIO_OIDS.buildSignerUri]: IDENTITY,
+        [FULCIO_OIDS.buildSignerDigest]: COMMIT,
+        [FULCIO_OIDS.runnerEnvironment]: "github-hosted",
         [FULCIO_OIDS.sourceRepositoryUri]: `https://github.com/${REPO}`,
         [FULCIO_OIDS.sourceRepositoryDigest]: COMMIT,
         [FULCIO_OIDS.sourceRepositoryRef]: `refs/tags/${TAG}`,
+        [FULCIO_OIDS.sourceRepositoryIdentifier]: "1001",
+        [FULCIO_OIDS.sourceRepositoryOwnerIdentifier]: "2002",
         [FULCIO_OIDS.buildTrigger]: "release",
         [FULCIO_OIDS.runInvocationUri]: bundle.zfbInvocation,
       },
@@ -1249,5 +1255,112 @@ describe("helpers and CLI", () => {
       { id: 1, name: "a", run_attempt: 1, conclusion: "success" },
     ]);
     expect(grouped.get("a").effective.id).toBe(2);
+  });
+});
+
+describe("review hardening", () => {
+  it("fails an expected Latest when no release is marked Latest at all", async () => {
+    const notFound = (w) => w.overrides.set(`${API}/releases/latest`, () => json({}, 404));
+    const expected = await run(undefined, { expectGithubLatest: true }, { afterBuild: notFound });
+    expect(check(expected.report, "channels", "github-latest").status).toBe(STATUS.FAILED);
+    const observed = await run(undefined, {}, { afterBuild: notFound });
+    expect(check(observed.report, "channels", "github-latest").status).toBe(STATUS.OBSERVED);
+    expect(observed.report.verdict).toBe(STATUS.VERIFIED);
+  });
+
+  it("keeps a wrong npm latest failed when another package's read fails", async () => {
+    const { report } = await run(
+      (w) => {
+        w.distTags = (name) => ({ latest: name === "create-zfb" ? "5.3.0" : VERSION });
+      },
+      { expectNpmLatest: true },
+      {
+        afterBuild: (w) =>
+          w.overrides.set(
+            `${REG}/-/package/@takazudo%2fzfb/dist-tags`,
+            () => new Response("boom", { status: 503 }),
+          ),
+      },
+    );
+    const tags = check(report, "channels", "npm-dist-tags");
+    expect(tags.status).toBe(STATUS.FAILED);
+    expect(tags.reason).toContain("create-zfb=5.3.0");
+  });
+
+  it.each([
+    [FULCIO_OIDS.runnerEnvironment, "self-hosted"],
+    [FULCIO_OIDS.buildSignerDigest, "e".repeat(40)],
+    [FULCIO_OIDS.sourceRepositoryIdentifier, "9999"],
+    [FULCIO_OIDS.sourceRepositoryOwnerIdentifier, "9999"],
+  ])("fails a certificate whose extension %s is %s", async (oid, value) => {
+    const { report } = await run((w) => {
+      w.signerTweak = (name, signer) => {
+        if (name === "@takazudo/zfb") signer.oids[oid] = value;
+      };
+    });
+    const pkg = check(report, "npm", "package:@takazudo/zfb");
+    expect(pkg.status).toBe(STATUS.FAILED);
+    expect(pkg.reason).toContain(oid);
+  });
+
+  it("does not pin repository ids taken from a run in another repository", async () => {
+    const { report } = await run((w) => {
+      w.releaseRun.repository = { full_name: "someone/else", id: 1, owner: { id: 2 } };
+    });
+    expect(check(report, "workflow", "release-run").status).toBe(STATUS.FAILED);
+    // The certificate ids (1001/2002) are not compared against the foreign run's ids.
+    expect(check(report, "npm", "package:@takazudo/zfb").reason ?? "").not.toContain(
+      FULCIO_OIDS.sourceRepositoryIdentifier,
+    );
+  });
+
+  it("fails an installer run created before the Release run existed", async () => {
+    const { report } = await run((w) => {
+      w.installerRun.created_at = "2026-11-05T00:00:00Z";
+    });
+    expect(check(report, "consumption", "installer-run").reason).toContain(
+      "before the Release run existed",
+    );
+  });
+
+  it("requires a whole 'checksum OK' line in the installer log", async () => {
+    const { report } = await run((w) => {
+      w.logs[5000] = INSTALLER_LOG.replace("checksum OK", "checksum OK? no: mismatch");
+    });
+    const evidence = check(report, "consumption", "installer-evidence");
+    expect(evidence.status).toBe(STATUS.FAILED);
+    expect(evidence.reason).toContain("checksumVerified");
+  });
+
+  it("reports installer evidence as incomplete when the tag commit is unresolved", async () => {
+    const { report } = await run(
+      undefined,
+      {},
+      {
+        afterBuild: (w) =>
+          w.overrides.set(
+            `${API}/git/ref/tags/${TAG}`,
+            () => new Response("boom", { status: 503 }),
+          ),
+      },
+    );
+    expect(check(report, "consumption", "installer-evidence").status).toBe(STATUS.INCOMPLETE);
+    expect(report.verdict).not.toBe(STATUS.VERIFIED);
+  });
+
+  it("fails a required job that appears twice in one attempt", async () => {
+    const { report } = await run((w) => {
+      const build = w.releaseJobs.find((job) => job.name === "Build aarch64-apple-darwin");
+      w.releaseJobs.push({ ...structuredClone(build), id: 9200 });
+    });
+    const job = check(report, "workflow", "job:build:aarch64-apple-darwin");
+    expect(job.status).toBe(STATUS.FAILED);
+    expect(job.reason).toContain("ambiguous");
+  });
+
+  it("bounds --concurrency at 4", () => {
+    const base = ["--version", "5.2.2", "--release-run-id", "1", "--installer-run-id", "2"];
+    expect(parseArgs([...base, "--concurrency", "4"]).concurrency).toBe(4);
+    expect(() => parseArgs([...base, "--concurrency", "5"])).toThrow(/concurrency/);
   });
 });

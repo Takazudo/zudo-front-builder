@@ -170,8 +170,15 @@ function main() {
   }
 }
 
-const invokedPath = process.argv[1] && realpathSync(process.argv[1]);
-if (invokedPath === realpathSync(fileURLToPath(import.meta.url))) {
+function resolvedPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+const invokedPath = process.argv[1] && resolvedPath(process.argv[1]);
+if (invokedPath && invokedPath === resolvedPath(fileURLToPath(import.meta.url))) {
   try {
     main();
   } catch (error) {
