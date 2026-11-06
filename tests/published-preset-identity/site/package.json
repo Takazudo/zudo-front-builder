@@ -5,9 +5,9 @@
   "type": "module",
   "dependencies": {
     "@takazudo/zdtp": "0.9.0",
-    "@takazudo/zfb": "5.2.0",
-    "@takazudo/zfb-md-wasm": "5.2.0",
-    "@takazudo/zfb-runtime": "5.2.0",
+    "@takazudo/zfb": "5.2.2",
+    "@takazudo/zfb-md-wasm": "5.2.2",
+    "@takazudo/zfb-runtime": "5.2.2",
     "@takazudo/zudo-doc": "9.1.2",
     "@takazudo/zudo-sg": "0.8.1",
     "diff": "8.0.4",
