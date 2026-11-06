@@ -3,6 +3,45 @@
 This ledger applies the [canonical policy](../CLAUDE.md#moving-development-and-frozen-qualification).
 It is not release approval, a scheduler, or a replacement for source-bound receipts.
 
+## Linux CI browser provisioning — 2026-11-07 UTC
+
+- Checkpoint: main `6e93de58c89c204a6643024f159a61430d022901` (PR #4605 merged;
+  v5.2.2 published from `282551e6e59e535698bb2bcbbf15b967d672743d`). Zero open
+  PRs at start.
+- Original outcomes, preserved as **cancelled**, not failed tests and not
+  passes: health run 42214732419 job 127881880511 (ubuntu-24.04 image
+  20261101.360.1) hit its 90-minute limit in "Collect Linux x64 island-size
+  measurements"; budget enforcement, its artifact and `wasm-md browser` did
+  not run. Chromium preparation took 9m34s (APT 21.1 MB in 9m08s) and full-Wind
+  preparation 48m39s (APT 87.4 MB in 48m11s at 30.2 kB/s), all package
+  archives from azure.archive.ubuntu.com; index metadata and browser archives
+  were fast. Smoke run 42214732314 job 127884360375 (ubuntu-latest, observed
+  26.04 image 20261101.186.1) hit its 10-minute limit downloading fonts; the
+  fixture build and browser suite never started. In that same run Scaffold E2E
+  installed the same Chromium dependencies in 23 s, and the showcase and docs
+  deployments succeeded. Healthy main controls: run 42172565682 (Chromium 20 s,
+  full 26 s), 42112172001 (20 s / 35 s), 42093017236 (26 s / 2m31s).
+- Repair (branch `base/ci-browser-provisioning-20261107`):
+  `scripts/install-playwright-linux.mjs` replaces `playwright install
+  --with-deps` in health's Chromium and Wind stages, `wasm-md browser` and the
+  Built-site L4 job. Packages come from Playwright 1.61.0's own dry-run;
+  acquisition (`apt-get update`, resolve, `--download-only`) is bounded by
+  elapsed time with at most one retry, only after all apt processes exit,
+  through an invocation-owned APT_CONFIG that carries only the runner's enabled
+  Ubuntu stanzas, pointed at archive/security.ubuntu.com (fields and signing
+  unchanged; other sources left out), and is confirmed with `apt-config dump`.
+  Only a timeout or apt's own fetch/connection wording is retried.
+  Installation (`--no-download`) is never retried. Readiness requires a clean
+  dry-run, the registry executables and a headless launch per engine. Each
+  invocation has a total cap and writes a JSON receipt uploaded with
+  `if: always()`. Built-site L4 and `wasm-md browser` are pinned to
+  ubuntu-24.04. No runtime,
+  package, lockfile, browser revision, Wind profile, size budget or required
+  check changed.
+- Verification owner: this repair's manager. Source-bound receipts (PR checks,
+  the `wind_full=true` health dispatch on the frozen head, Built-site L4,
+  `wasm-md browser`, post-merge main runs) are recorded on the PR, not here.
+
 ## Submit-button descendant modifiers — 2026-11-05 UTC
 
 ### Continuation receipt — 2026-11-05 UTC

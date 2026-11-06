@@ -51,7 +51,7 @@
 #     │                                   artifact uploaded as a pr-<N> preview
 #     │                                   alias + a sticky PR comment. Tolerant
 #     │                                   until the worker exists. NOT required.
-#     └─► built-site-browser-smoke (ubuntu-latest) — issue #1401: builds
+#     └─► built-site-browser-smoke (ubuntu-24.04) — issue #1401: builds
 #                                         tests/built-site-smoke/fixture-site/
 #                                         (a real interactive island using zudo-react)
 #                                         with this leg's binary, serves the
@@ -1016,7 +1016,9 @@ jobs:
     # Skipped (read as success by required checks) only for a docs-only PR
     # (#4372); a failed detector leaves docs_only empty, so it runs.
     if: ${{ !cancelled() && needs.build-binary.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    # Pinned for a reproducible browser environment (Playwright 1.61.0 supports
+    # both 24.04 and 26.04); the provisioning helper below is the mirror remedy.
+    runs-on: ubuntu-24.04
     # Budgeted the same as router-chromium.yml: the suite itself is a single
     # short assertion; the timeout mostly covers the pnpm install + Chromium
     # download. Whole job targets a few minutes.
@@ -1037,10 +1039,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Chromium only — no WebKit/Firefox. `--with-deps` pulls the system
-      # libraries the browser needs on a bare ubuntu runner.
+      # Chromium only — no WebKit/Firefox. The helper installs Chromium's
+      # system libraries with bounded APT acquisition (one official-archive
+      # retry) before the browser. Healthy runs took about 15 s; main run
+      # 42214732314 spent the whole 10 minutes downloading fonts. The 7-minute
+      # total cap leaves the build, suite and receipt upload inside the job.
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: node scripts/install-playwright-linux.mjs --label built-site-smoke --engines chromium --acquire-timeout 120 --install-timeout 90 --browser-timeout 90 --total-timeout 420
 
       - name: Download built binary (amd64)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1090,6 +1095,16 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+      # Preparation diagnostics, kept even when no browser trace exists.
+      - name: Upload Playwright provisioning receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-provisioning-built-site-smoke
+          path: ${{ runner.temp }}/playwright-provisioning/
+          if-no-files-found: warn
+          retention-days: 7
 
   # ── arm64 smoke: runs on ubuntu-24.04-arm (native arm64 runner) ────────────
   smoke-arm64:

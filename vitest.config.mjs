@@ -26,6 +26,7 @@ import { defaultExclude, defineConfig } from "vite-plus";
 const SUBPROCESS_SUITES = [
   "scripts/__tests__/docs-dev-supervisor.test.mjs",
   "scripts/__tests__/harvest-supervisor-timelines.test.mjs",
+  "scripts/__tests__/install-playwright-linux.test.mjs",
   "scripts/__tests__/plugin-logger-diagnostics.test.mjs",
   "scripts/__tests__/supervisor-watch-handoff.test.mjs",
   "scripts/__tests__/supervisor-watch.test.mjs",
