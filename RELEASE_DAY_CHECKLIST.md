@@ -104,9 +104,21 @@ is proposed cold-build margin, not a measured guarantee; other targets retain
 A successful Intel verification must include the CLI and separate CSS addon
 compilations, addon load/compile smoke, CLI version assertion, archive and
 checksum generation, and both Actions artifact uploads. A CLI build alone does
-not establish delivery. **Workflow-repair rehearsal outcome: pending.** Record
-its source, run/job/attempt, image/toolchain, timings, artifact identities and
-actual outcome here when observed; retain the first failure and any retry.
+not establish delivery. The [workflow-repair rehearsal](https://github.com/Takazudo/zudo-front-builder/actions/runs/42150967296)
+passed on attempt 1 at source `dcd2e077106b6ee43b4775e93ead134032945064`.
+The [Intel job](https://github.com/Takazudo/zudo-front-builder/actions/runs/42150967296/job/127673979858)
+used `macos-15-intel`, image `macos-15` version `20260824.0482.1` (macOS
+15.7.9), and rustc 1.99.1. CLI compilation took 13m43s, addon compilation
+5m36s, and the full job 21m18s. Addon smoke, version assertion, archive,
+checksum and both uploads passed. The binary artifact is `13473242761`
+(SHA-256 `29cdd2ee776593be468b9c007d7fb6cb5a21da2918c9f10acb9f60ce7e5e123f`);
+the archive artifact is `13472833661` (SHA-256
+`899ca159a878427d82edb5d7604a9eb48ace46e79399dff40d5ddc4ec23d5250`).
+All platform and WASM jobs passed. The dry-run asset and publish jobs passed
+without uploading or publishing; clean-room smoke was correctly skipped. This
+one successful run validates the workflow on its named source, not a guarantee
+of future cold-build duration. Subsequent changes touched only the offline test
+and this evidence, not the rehearsed workflow or build inputs.
 
 A branch dispatch with `dry_run=true`, `skip_macos_x64=false`, an empty
 `release_tag`, and `allow_provenance_downgrade=false` exercises the workflow
