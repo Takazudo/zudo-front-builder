@@ -62,23 +62,33 @@ Use the evidence in this order:
 3. Commit the contract update at the PR head. For PR runs, the workflow derives `enforce: true` only when `research/v3-island-size/decision.json` changed in `HEAD~1`; other measurement PRs report the checker result without making the budget mismatch fail the run.
 4. Review the enforced remeasurement artifact and summary. A passing strict check on the rebaselined source confirms the exact Darwin contract.
 
-The CI commands derive output paths from `GITHUB_WORKSPACE` and run natively on GitHub's macOS runner, so they do not use the local procedure's machine-specific absolute paths or heavy-guard wrapper. CI pins Rust 1.99.0 explicitly because `rust-toolchain.toml` follows stable. Before compiling, it records free disk space, refuses to build below 8 GiB, and disables Rust dev debug info when free space is below 20 GiB; the selected profile and native binary digest are retained in runner provenance. These are execution adaptations; the measured inputs, two real matrix modes, full fixture set, saved passes, and budget checker match the procedure below.
+The CI commands derive output paths from `GITHUB_WORKSPACE` and run natively on GitHub's macOS runner, so they do not use the local procedure's checkout-derived paths or heavy-guard wrapper. CI pins Rust 1.99.0 explicitly because `rust-toolchain.toml` follows stable. Before compiling, it records free disk space, refuses to build below 8 GiB, and disables Rust dev debug info when free space is below 20 GiB; the selected profile and native binary digest are retained in runner provenance. These are execution adaptations; the measured inputs, two real matrix modes, full fixture set, saved passes, and budget checker match the procedure below.
 
 ## Pinned run after the topic merges
 
 Run on the merged source SHA, with one guarded heavyweight command at a time. The pinned esbuild binary comes from the repo's toolchain; the runner verifies version `0.25.12` and records its digest. Use `CARGO_TARGET_DIR` shared with the manager's existing build. `zfb` must be freshly built from the SHA being measured. Install from `pnpm-lock.yaml` with `--frozen-lockfile` if dependencies are absent; avoid changing the lockfile.
 
 ```sh
-export CARGO_TARGET_DIR=/Users/takazudo/repos/myoss/zfb/target
+cd "$(git rev-parse --show-toplevel)"
+export ZFB_REPO="$PWD"
+# Same lookup as `pnpm b4push`: an explicit HEAVY_GUARD, else the Claude, then the Codex install.
+ZFB_GUARD="${HEAVY_GUARD:-}"
+if [ -z "$ZFB_GUARD" ]; then
+  for candidate in "$HOME/.claude/scripts/heavy-guard.sh" "$HOME/.codex/scripts/heavy-guard.sh"; do
+    if [ -f "$candidate" ]; then ZFB_GUARD="$candidate"; break; fi
+  done
+fi
+[ -f "$ZFB_GUARD" ] || echo "heavy-guard not found: set HEAVY_GUARD before running the commands below" >&2
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ZFB_REPO/target}"
 export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1
 export ZFB_SIZE_SHA="$(git rev-parse HEAD)"
 export ZFB_SIZE_VERSION="$(node -p "require('./packages/zfb/package.json').version")"
-export ZFB_SIZE_ESBUILD=/Users/takazudo/repos/myoss/zfb/crates/zfb/binaries/esbuild/esbuild
+export ZFB_SIZE_ESBUILD="$ZFB_REPO/crates/zfb/binaries/esbuild/esbuild"
 export ZFB_SIZE_BIN="$CARGO_TARGET_DIR/debug/zfb"
-export ZFB_SIZE_HONO="$PWD/packages/zfb-runtime/node_modules/hono"
-export ZFB_SIZE_OUT="$PWD/research/v3-island-size/results"
+export ZFB_SIZE_HONO="$ZFB_REPO/packages/zfb-runtime/node_modules/hono"
+export ZFB_SIZE_OUT="$ZFB_REPO/research/v3-island-size/results"
 mkdir -p "$ZFB_SIZE_OUT/pack" "$ZFB_SIZE_OUT/packed-package" "$ZFB_SIZE_OUT/packed-runtime" "$ZFB_SIZE_OUT/packed-slugify"
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- cargo build -p zfb
+bash "$ZFB_GUARD" -- cargo build -p zfb
 pnpm -C packages/zfb-slugify build
 pnpm -C packages/zfb build
 pnpm -C packages/zfb-runtime build
@@ -87,19 +97,21 @@ pnpm -C packages/zfb pack --pack-destination "$ZFB_SIZE_OUT/pack"
 pnpm -C packages/zfb-runtime pack --pack-destination "$ZFB_SIZE_OUT/pack"
 tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-slugify-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-slugify"
 tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-package"
-tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-runtime" "$ZFB_SIZE_OUT/packed-slugify"
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- node research/v3-island-size/measure-real.mjs --case event-only --mode workspace --package "$PWD/packages/zfb" --runtime-package "$PWD/packages/zfb-runtime" --slugify-package "$PWD/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/smoke-event"
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- node research/v3-island-size/measure-real.mjs --mode workspace --package "$PWD/packages/zfb" --runtime-package "$PWD/packages/zfb-runtime" --slugify-package "$PWD/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-workspace"
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- node research/v3-island-size/measure.mjs --mode workspace --package "$PWD/packages/zfb" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/modeled-workspace"
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- node research/v3-island-size/measure-real.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" --slugify-package "$ZFB_SIZE_OUT/packed-slugify/package" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-packed"
-bash "$HOME/.codex/scripts/heavy-guard.sh" -- node research/v3-island-size/measure.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/modeled-packed"
+tar -xzf "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" -C "$ZFB_SIZE_OUT/packed-runtime"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --case event-only --mode workspace --package "$ZFB_REPO/packages/zfb" --runtime-package "$ZFB_REPO/packages/zfb-runtime" --slugify-package "$ZFB_REPO/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/smoke-event"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --mode workspace --package "$ZFB_REPO/packages/zfb" --runtime-package "$ZFB_REPO/packages/zfb-runtime" --slugify-package "$ZFB_REPO/packages/zfb-slugify" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-workspace"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure.mjs --mode workspace --package "$ZFB_REPO/packages/zfb" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/modeled-workspace"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure-real.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --runtime-package "$ZFB_SIZE_OUT/packed-runtime/package" --slugify-package "$ZFB_SIZE_OUT/packed-slugify/package" --hono-package "$ZFB_SIZE_HONO" --zfb-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-$ZFB_SIZE_VERSION.tgz" --runtime-tarball "$ZFB_SIZE_OUT/pack/takazudo-zfb-runtime-$ZFB_SIZE_VERSION.tgz" --zfb "$ZFB_SIZE_BIN" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/real-packed"
+bash "$ZFB_GUARD" -- node research/v3-island-size/measure.mjs --mode packed --package "$ZFB_SIZE_OUT/packed-package/package" --esbuild "$ZFB_SIZE_ESBUILD" --source-sha "$ZFB_SIZE_SHA" --out "$ZFB_SIZE_OUT/modeled-packed"
 ```
 
 Check the tarball basenames produced by `pnpm pack` before extraction. Record all three package tarball SHA-256 digests and the installed Hono package version/digest in the final report. The packs must contain `dist/zudo-react/client.js` and `dist/server.js`, proving the packed path uses built output. The real run saves `report.md`, `measurement.json`, and the complete `dist` tree for both passes under `real-{workspace,packed}/`. The modeled run saves the same report formats plus raw `metafile.json` under each nonempty case and pass. Both runners fail if any repeated result differs. The real result compares the **entire dist inventory**, not just JS. All outputs live in ignored `results/`; commit the final measured `REPORT.md` with the source SHA, tarball digest, four report paths, actual totals, sidecar attribution, any differences, and limitations.
 
-After both complete real runs, enforce the contract selected for the current host. The default accepts only Darwin arm64 (`decision.json`) and Linux x64 (`decision-linux-x64.json`); it rejects unsupported platforms, a contract for another platform, or measurements whose recorded platform differs from the running host. You can pass `--contract` explicitly, but the platform checks still apply:
+After both complete real runs, write each mode's identity-normalized sidecar (`measurement.normalized.json`, recomputed from the saved pass bytes), exactly as `health.yml` and `island-size-darwin.yml` do. The checker compares the contract with those sidecars and fails without them. Then enforce the contract selected for the current host. The default accepts only Darwin arm64 (`decision.json`) and Linux x64 (`decision-linux-x64.json`); it rejects unsupported platforms, a contract for another platform, or measurements whose recorded platform differs from the running host. You can pass `--contract` explicitly, but the platform checks still apply:
 
 ```sh
+node research/v3-island-size/normalize-identity.mjs --measurement "$ZFB_SIZE_OUT/real-workspace/measurement.json"
+node research/v3-island-size/normalize-identity.mjs --measurement "$ZFB_SIZE_OUT/real-packed/measurement.json"
 node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
 ```
 
