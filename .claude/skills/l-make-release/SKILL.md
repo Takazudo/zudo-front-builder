@@ -1,20 +1,20 @@
 ---
-description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, let release.yml build the macOS x86_64 binary with provenance by default (or use --fast-mac for the explicit local escape hatch), publish the Release, watch release.yml to completion, and push the updated Homebrew formula to the tap on a stable release. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, let release.yml build the macOS x86_64 binary with provenance by default (or use --fast-mac for the explicit local escape hatch), publish the Release (a stable one without GitHub Latest), watch release.yml and the released-installer smoke to completion, verify delivery with scripts/verify-release-delivery.mjs, and on a stable release promote it to GitHub Latest and push the updated Homebrew formula to the tap. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
 argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. --fast-mac — opt into the local Mac build + pre-upload; `zfb-darwin-x64` publishes unattested, which is consumer-breaking for `trust-policy=no-downgrade` whenever an earlier version is attested (true since 2.13.0) — a `check-provenance-preflight.mjs --mode mac-local` run aborts the release on such a downgrade unless `--accept-provenance-downgrade` is also passed. --accept-provenance-downgrade — acknowledge a fast-Mac (or recovery) provenance downgrade the preflight detected; writes the `<!-- zfb-release: allow-provenance-downgrade -->` marker into the draft Release body. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes five package-specific changelog docs, commits + pushes, waits for CI, pre-creates a draft GitHub Release, lets the `macos-15-intel` CI leg build the macOS x86_64 binary with provenance by default (or uses the explicit `--fast-mac` escape hatch to build + upload locally), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes five package-specific changelog docs, commits + pushes, waits for CI, pre-creates a draft GitHub Release, lets the `macos-15-intel` CI leg build the macOS x86_64 binary with provenance by default (or uses the explicit `--fast-mac` escape hatch to build + upload locally), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run and the downstream `Smoke released (install.sh)` job to completion, and on a **stable** release verifies delivery with `scripts/verify-release-delivery.mjs` before promoting the Release to GitHub Latest and pushing the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
 
 ## Invocation & autonomy
 
 This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it.
 
-**End-to-end means end-to-end.** On the default path a stable release needs no manual follow-up: the skill publishes, watches `release.yml`, and pushes the Homebrew formula itself (Step 11). Do not end a stable run by telling the user to go run the tap script — run it.
+**End-to-end means end-to-end.** On the default path a stable release needs no manual follow-up: the skill publishes, watches `release.yml` and the installer smoke, runs the delivery verifier, promotes GitHub Latest on exit 0, and pushes the Homebrew formula itself (Step 11). Do not end a stable run by telling the user to go run the tap script — run it.
 
-**Default: fully autonomous end-to-end — NEVER ask for confirmation, NEVER stop and wait.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). There is no stopping point: Step 11 **publishes the Release itself** and watches the triggered `release.yml` run to completion. Do not pause to ask "publish?", "go?", or any equivalent — the invocation itself is the authorization.
+**Default: fully autonomous end-to-end — NEVER ask for confirmation, NEVER stop and wait.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). There is no stopping point: Step 11 **publishes the Release itself** and watches the triggered `release.yml` run to completion. Do not pause to ask "publish?", "go?", or any equivalent — the invocation itself is the authorization. That authorization covers promoting a stable Release to GitHub Latest only after the delivery verifier exits 0; any other verifier result (including the unaccepted `--fast-mac` path) ends the run with Latest withheld and a report, not a prompt.
 
 **The single exception: a no-argument MAJOR.** When Step 2's no-argument judgment lands on **major** (the commit range contains a breaking change), stop and ask whether to land it stable or soak it on `next` first — see [Step 2's no-argument rule](#no-argument--judge-the-level-land-stable-unless-it-is-a-major). This is a *version-strategy* question, not a "go?" confirmation, and it is the only one. Once the user answers, the rest of the run is autonomous again as normal. A no-argument **patch** or **minor** never pauses: it lands stable on `latest` without asking.
 
@@ -44,7 +44,7 @@ The Rust CLI binary is built by `.github/workflows/release.yml`, not by this ski
 
 ## Boundaries
 
-- **Default**: this skill leaves the Mac archive for the `macos-15-intel` CI leg (so the default publish carries provenance for all eleven packages), publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`), then watches the triggered `release.yml` run to completion. With `--fast-mac`, it pre-uploads the local Mac archive and the workflow uses the fast, unattested Mac lane. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
+- **Default**: this skill leaves the Mac archive for the `macos-15-intel` CI leg (so the default publish carries provenance for all eleven packages), publishes the Release itself at Step 11 (a stable one with `make_latest="false"` in the same update), then watches the triggered `release.yml` run and the installer smoke to completion. With `--fast-mac`, it pre-uploads the local Mac archive and the workflow uses the fast, unattested Mac lane. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
 - This skill **never** pushes a tag separately. The draft Release creation (`gh release create --draft`) creates the tag remotely.
 - This skill **never** publishes to npm directly. `release.yml` does that when the Release is published.
 - **Homebrew is automatic on the default path, for stable releases only.** Once `release.yml`
@@ -52,6 +52,15 @@ The Rust CLI binary is built by `.github/workflows/release.yml`, not by this ski
   skip it (brew tracks the stable channel). On the `--confirm` path it stays manual — that path stops
   before publishing, so the skill never observes `release.yml` finishing and cannot know the assets
   are up.
+- **GitHub Latest is withheld until delivery is verified (stable only).** A stable draft is published
+  with `draft=false`, `prerelease=false` and `make_latest="false"` in one REST update, so the previous
+  completed stable stays GitHub Latest (which `install.sh` resolves without fallback) while
+  `release.yml` delivers. Only a `scripts/verify-release-delivery.mjs` exit 0 for the exact version and
+  runs permits promoting it (Step 11). `make_latest` controls GitHub Latest only: it does not make the
+  eleven-package npm publication transactional, and npm's `latest` dist-tag still moves at publish
+  (with `next` retirement per `release.yml`). The verifier accepts only the normal provenance-enabled
+  `release: published` path, so after a `--fast-mac` or recovery run, promotion is an explicit owner
+  decision, never automatic.
 
 ## Step 1: Preconditions
 
@@ -790,18 +799,32 @@ The Homebrew gating and the prerelease dual-tag note below apply to BOTH paths.
 
 ### Default path (autonomous): publish the Release and watch release.yml
 
-Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
+Do NOT ask "publish?", "go?", or wait for any signal — publish immediately. For a **stable** release
+the order is fixed: publish without GitHub Latest → watch the Release run → watch the installer smoke →
+verify → promote Latest → Homebrew → read back the channels. Never publish a stable Release as Latest
+and clear the flag afterward.
 
-1. **Publish**:
+1. **Publish.** For a **stable** release, set `draft`, `prerelease` and `make_latest` in **one**
+   structured REST update (`make_latest` is a string). Do not use a bare `gh release edit
+   --draft=false` here: GitHub would make the Release Latest at publish.
 
    ```bash
-   gh release edit v<version> --draft=false
+   RELEASE_ID=$(gh release view v<version> --json databaseId --jq .databaseId)
+   printf '%s' '{"draft": false, "prerelease": false, "make_latest": "false"}' \
+     | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
+   gh api "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --jq '{tag_name, draft, prerelease}'
+   gh api repos/Takazudo/zudo-front-builder/releases/latest --jq .tag_name   # still the previous stable
    ```
 
-2. **Find the triggered `release.yml` run** (it fires on `release: published`; allow a few seconds for it to appear):
+   For a **prerelease**, keep the existing publish: `gh release edit v<version> --draft=false`
+   (GitHub never makes a prerelease Latest).
+
+2. **Find the triggered `release.yml` run** (it fires on `release: published`; allow a few seconds for it to appear) and record its run id:
 
    ```bash
-   gh run list --workflow release.yml --limit 3 --json databaseId,displayTitle,status
+   gh run list --workflow release.yml --event release --limit 5 \
+     --json databaseId,headBranch,headSha,status,conclusion \
+     --jq '.[] | select(.headBranch == "v<version>")'
    ```
 
 3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows, plus macos-15-intel on the default path; that leg is skipped only when `--fast-mac` pre-uploaded both Mac assets) and publishes all 11 npm packages.
@@ -810,19 +833,71 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    them with both its `dist/shipped-artifacts.json` and the Release asset
    `zfb-md-wasm-<version>-shipped-artifacts.json`. These are release-specific
    values; never substitute unit-test fixture digests or a handwritten table.
-4. **On success — update Homebrew (stable only), then report.**
 
-   **a. Homebrew.** If `<version>` is **stable** (no `-next.` / `-beta.` / `-rc.`), run it now — do
-   not ask, and do not defer it to the user:
+4. **Watch the installer smoke (stable).** A successful Release run triggers the
+   `Binary smoke, scaffold E2E & showcase` workflow (`node-free-smoke.yml`) by `workflow_run`;
+   its `Smoke released (install.sh)` job installs the exact tag. Record that run id and poll it
+   to completion the same way:
+
+   ```bash
+   gh run list --workflow node-free-smoke.yml --event workflow_run --limit 10 \
+     --json databaseId,headBranch,headSha,status,conclusion \
+     --jq '.[] | select(.headBranch == "v<version>")'
+   gh run view <installer-run-id> --json jobs \
+     --jq '.jobs[] | select(.name == "Smoke released (install.sh)") | {status, conclusion}'
+   ```
+
+   The job runs only after a successful Release run, so a failed Release run leaves no installer
+   evidence — go to step 8. After a rerun, select the installer run its final attempt triggered.
+
+5. **Verify delivery (stable).** Run the read-only verifier for the exact version and both runs from
+   this release session — never from inside `release.yml`, whose completion it audits. Keep the
+   JSON report outside the checkout and name its path in the final report:
+
+   ```bash
+   node scripts/verify-release-delivery.mjs --version <version> \
+     --release-run-id <release-run-id> --installer-run-id <installer-run-id> \
+     --expected-source <bump-sha> \
+     --json "<evidence-dir>/release-delivery-<version>.json"
+   ```
+
+   It only sends GET requests (identity, workflow jobs/steps, archives and checksums, all eleven
+   npm packages with integrity and provenance, WASM digests, clean-room and installer logs). It
+   sends `GH_TOKEN`/`GITHUB_TOKEN` to `api.github.com` when set; behind an `HTTPS_PROXY`, prefix
+   `NODE_USE_ENV_PROXY=1`, since Node's `fetch` otherwise ignores the proxy. The mutable channels
+   are only observed in this pass.
+
+   - **Exit 0** — every required check verified. Continue to step 6.
+   - **Exit 1** — a definite failure. Do not promote Latest or update Homebrew; report the failed
+     checks from the JSON. The Release stays published but not Latest, and the previous stable
+     stays Latest. npm is already published and immutable (`latest` has already moved), so do NOT
+     unpublish anything.
+   - **Exit 2** — evidence incomplete or unavailable, never a pass. Re-run once when the cause is
+     transient (rate limit, outage, missing token); still 2 → stop and report as for exit 1.
+   - **Exit 3** — usage or internal error; fix the invocation and re-run.
+
+   A `--fast-mac` (mixed-provenance) run is classified, not accepted, so it cannot reach exit 0:
+   report the verifier result and stop before promotion. Promoting it, and its Homebrew update,
+   is an explicit owner decision.
+
+6. **Promote GitHub Latest, then update Homebrew (stable only, after exit 0).** This invocation
+   authorizes the promotion on the default path; nothing else does.
+
+   ```bash
+   printf '%s' '{"make_latest": "true"}' \
+     | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
+   gh api repos/Takazudo/zudo-front-builder/releases/latest --jq .tag_name   # must print v<version>
+   ```
+
+   Then run Homebrew now — do not ask, and do not defer it to the user:
 
    ```bash
    ./scripts/update-homebrew-formula.sh v<version> --push
    ```
 
-   Run it only **after** the `release.yml` watch reports success: the script fetches every
-   platform's `.sha256` from the Release and 404s if the upload job has not finished. It is
-   idempotent — re-running for the same version rewrites `Formula/zfb.rb` to the same content and
-   commits nothing new — so a retry after a transient network failure is safe.
+   The script fetches every platform's `.sha256` from the Release by tag. It is idempotent —
+   re-running for the same version rewrites `Formula/zfb.rb` to the same content and commits
+   nothing new — so a retry after a transient network failure is safe.
 
    Confirm the tap actually moved, rather than trusting the exit code alone:
 
@@ -837,12 +912,27 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    anything, and do NOT retry more than once. The usual causes are a push credential problem on the
    tap remote or a `.sha256` not yet uploaded.
 
-   For **prereleases**, skip this entirely — brew tracks the stable channel. Testers use
+   For **prereleases**, skip steps 4–6 entirely — brew tracks the stable channel. Testers use
    `npm i -g @takazudo/zfb@next` or the curl installer with `ZFB_VERSION=latest-prerelease`.
 
-   **b. Report.** Release URL, and confirm npm landed with `npm view @takazudo/zfb dist-tags`. For a
-   stable release, state the tap commit so the Homebrew half is verifiable at a glance.
-5. **On failure**: fetch the failed logs (`gh run view <id> --log-failed`) and report. If the failure is clearly transient (network flake, runner eviction), retry once with `gh run rerun <id> --failed`. Otherwise surface to the user with the failure summary — do NOT unpublish or delete the Release, and do NOT retry more than once.
+7. **Read back the channels, then report.** For a stable release, re-run the verifier with the
+   channel expectations (`--expect-npm-latest` only for a stable that should hold npm `latest`,
+   which is every normal stable):
+
+   ```bash
+   node scripts/verify-release-delivery.mjs --version <version> \
+     --release-run-id <release-run-id> --installer-run-id <installer-run-id> \
+     --expected-source <bump-sha> \
+     --expect-github-latest --expect-npm-latest --expect-homebrew \
+     --json "<evidence-dir>/release-delivery-<version>-channels.json"
+   ```
+
+   Report the immutable delivery result (step 5) and the channel read-back (GitHub Latest, npm
+   dist-tags, tap commit) **separately**: a channel miss after promotion does not undo verified
+   delivery, and verified delivery does not prove a channel moved. Include the Release URL, both run
+   ids and both JSON paths. For a prerelease, report the Release URL and `npm view @takazudo/zfb
+   dist-tags`.
+8. **On failure**: fetch the failed logs (`gh run view <id> --log-failed`) and report. If the failure is clearly transient (network flake, runner eviction), retry once with `gh run rerun <id> --failed`. Otherwise surface to the user with the failure summary — do NOT unpublish or delete the Release, do NOT promote it to Latest, and do NOT retry more than once.
 
 ### `--confirm` path: notify + STOP
 
@@ -870,10 +960,16 @@ Provenance consequence: zfb-darwin-x64 publishes unattested. This is consumer-br
 trust-policy=no-downgrade installs, because `2.13.0` established its attestation (Step 1's
 preflight required --accept-provenance-downgrade to reach this point).
 
-NEXT STEP — publish the draft to trigger release.yml (from any host):
+NEXT STEP — publish the draft to trigger release.yml (from any host). For a STABLE release,
+publish WITHOUT GitHub Latest, in the same update (make_latest is a string):
 
-  gh release edit v<version> --draft=false
-  # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
+  RELEASE_ID=$(gh release view v<version> --json databaseId --jq .databaseId)
+  printf '%s' '{"draft": false, "prerelease": false, "make_latest": "false"}' \
+    | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
+  # web UI: https://github.com/Takazudo/zudo-front-builder/releases
+  #   (clear "Set as the latest release" before publishing)
+
+For a PRERELEASE: gh release edit v<version> --draft=false
 
 release.yml's detect-mac-local job will see the pre-uploaded archive,
 skip the macos-15-intel leg, and publish all 11 packages (with the Mac package on the explicit
@@ -881,13 +977,16 @@ unattested fast lane).
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
 remaining platform archives (linux + windows) and their .sha256 files, then publishes the
-npm packages:
+npm packages — and then for the "Smoke released (install.sh)" job of the workflow_run-triggered
+"Binary smoke, scaffold E2E & showcase" run. Record both run ids:
 
   gh run watch
 
-If this is a STABLE release, update Homebrew once the Release run above succeeds (the script
-fetches every platform's .sha256 from the Release and 404s if it has not finished). SKIP this
-for prereleases — brew tracks the stable channel; testers use `npm i -g @takazudo/zfb@next` or the curl
+GitHub Latest stays on the previous stable. scripts/verify-release-delivery.mjs accepts only the
+normal provenance-enabled path, so it classifies this mixed-provenance run and cannot exit 0.
+Promoting v<version> to Latest ('{"make_latest": "true"}' with the same gh api PATCH) and the
+stable Homebrew update below are your explicit decision on this path. SKIP Homebrew for
+prereleases — brew tracks the stable channel; testers use `npm i -g @takazudo/zfb@next` or the curl
 installer with ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
@@ -906,30 +1005,49 @@ CI on the bump commit: PASSED.
 Draft GH Release created: v<version> (tag exists remotely as a draft).
 macOS x86_64 binary: NOT pre-built on this run (the provenance-first default; --fast-mac was not passed).
 
-NEXT STEP — publish the draft to trigger release.yml (from any host):
+NEXT STEP — publish the draft to trigger release.yml (from any host). For a STABLE release,
+publish WITHOUT GitHub Latest, in the same update (make_latest is a string):
 
-  gh release edit v<version> --draft=false
-  # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
+  RELEASE_ID=$(gh release view v<version> --json databaseId --jq .databaseId)
+  printf '%s' '{"draft": false, "prerelease": false, "make_latest": "false"}' \
+    | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
+  # web UI: https://github.com/Takazudo/zudo-front-builder/releases
+  #   (clear "Set as the latest release" before publishing)
+
+For a PRERELEASE: gh release edit v<version> --draft=false
 
 release.yml will build the Mac binary on macos-15-intel and publish all 11 packages with
 --provenance. The archive is intentionally absent here so detect-mac-local keeps that CI leg.
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
 remaining platform archives (linux + windows, and the macos-15-intel leg) and their .sha256 files,
-then publishes the npm packages:
+then publishes the npm packages — and then for the "Smoke released (install.sh)" job of the
+workflow_run-triggered "Binary smoke, scaffold E2E & showcase" run. Record both run ids:
 
   gh run watch
 
-If this is a STABLE release, update Homebrew once the Release run above succeeds (the script
-fetches every platform's .sha256 from the Release and 404s if it has not finished). SKIP this
-for prereleases — brew tracks the stable channel; testers use `npm i -g @takazudo/zfb@next` or the curl
-installer with ZFB_VERSION=latest-prerelease:
+If this is a STABLE release, verify delivery before promoting it (read-only; prefix
+NODE_USE_ENV_PROXY=1 behind an HTTPS_PROXY):
 
+  node scripts/verify-release-delivery.mjs --version <version> \
+    --release-run-id <release-run-id> --installer-run-id <installer-run-id> \
+    --json <evidence-dir>/release-delivery-<version>.json
+
+Only exit 0 permits promotion (1 = definite failure, 2 = incomplete evidence, 3 = usage error).
+After exit 0, promote GitHub Latest, then update Homebrew. SKIP both for prereleases — brew tracks
+the stable channel; testers use `npm i -g @takazudo/zfb@next` or the curl installer with
+ZFB_VERSION=latest-prerelease:
+
+  printf '%s' '{"make_latest": "true"}' \
+    | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
   ./scripts/update-homebrew-formula.sh v<version> --push
+
+Then read the channels back, reported separately from delivery: re-run the verifier with
+--expect-github-latest --expect-npm-latest --expect-homebrew.
 ============================================================
 ````
 
-Then **STOP**. On the `--confirm` path the skill does NOT publish the draft — the user does. (On the default path, publishing already happened above and the skill ends after the release.yml watch + final report.)
+Then **STOP**. On the `--confirm` path the skill does NOT publish the draft — the user does. (On the default path, publishing already happened above and the skill ends after the watches, delivery verification, Latest promotion, Homebrew and final report.)
 
 ## Cancelling a release / cleaning up an orphaned draft
 
@@ -1018,7 +1136,7 @@ Keep `skip_macos_x64=false` so the recovery uses the `macos-15-intel` CI build r
 pre-uploaded local archive; this preserves the intended recovery behavior and makes the Mac lane
 explicitly observable. Do not use `--fast-mac` as a recovery shortcut.
 
-Do not select `v<version>` as `--ref`: GitHub would load the old workflow definition from that tag. The workflow's `release-context` job verifies the published Release, tag commit, and package version, then pins every source checkout to that exact commit. Because GitHub OIDC still identifies the `main` workflow commit, this recovery path publishes all packages without npm provenance rather than attaching a misleading source attestation. Watch this recovery run to completion using the same Step 11 procedure. Once it succeeds, perform the normal stable Homebrew update exactly once.
+Do not select `v<version>` as `--ref`: GitHub would load the old workflow definition from that tag. The workflow's `release-context` job verifies the published Release, tag commit, and package version, then pins every source checkout to that exact commit. Because GitHub OIDC still identifies the `main` workflow commit, this recovery path publishes all packages without npm provenance rather than attaching a misleading source attestation. Watch this recovery run to completion using the same Step 11 procedure. Once it succeeds, perform the normal stable Homebrew update exactly once. A stable Release published without Latest stays that way: `scripts/verify-release-delivery.mjs` classifies a recovery run rather than accepting it, so it cannot exit 0, and promoting the recovered Release to GitHub Latest is an explicit owner decision, never part of the recovery itself.
 
 **A recovery run leaves a trust downgrade behind — schedule the follow-up (issue #2623).** Publishing without provenance after earlier versions carried it is permanent (npm versions are immutable), and a consumer with pnpm's opt-in `trustPolicy: no-downgrade` then cannot install that version at all (`ERR_PNPM_TRUST_DOWNGRADE`). It blocks a fresh resolve on every pnpm major, and on pnpm 11+ it also blocks `--frozen-lockfile` (pnpm 11 verifies lockfile entries against the active policies; pnpm 10 skips them) — that split is how v2.12.0 shipped unnoticed. The publish job now emits a `::warning` and job-summary block saying so; do not dismiss it. After the recovery succeeds, ship the next patch through the normal tag/release path so provenance is restored, and point affected consumers at the `ERR_PNPM_TRUST_DOWNGRADE` entry in `docs/src/content/docs/guides/troubleshooting.mdx` in the meantime. See `RELEASE_DAY_CHECKLIST.md` for the full rationale.
 

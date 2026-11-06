@@ -4,12 +4,16 @@
 // shipped. --upload is the only path to the GitHub Release asset.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const NAME = "@takazudo/zfb-md-wasm";
-const PATHS = [
+export const MD_WASM_PACKAGE = NAME;
+// scripts/verify-release-delivery.mjs reuses the manifest and byte checks below
+// read-only; it never reaches main() or the --upload path.
+export const MD_WASM_PATHS = [
   [".", "dist/wasm/zfb_md_wasm_bg.wasm"],
   ["./highlight", "dist/wasm-highlight/zfb_md_wasm_highlight_bg.wasm"],
   ["./render", "dist/wasm-render/zfb_md_wasm_render_bg.wasm"],
@@ -58,6 +62,49 @@ function packWhenVisible(spec, destination) {
   }
 }
 
+const PATHS = MD_WASM_PATHS;
+
+/** Throws unless `expected` is a schemaVersion 1 manifest for NAME@version. */
+export function assertMdWasmManifest(expected, version) {
+  if (
+    expected?.schemaVersion !== 1 ||
+    expected.name !== NAME ||
+    expected.version !== version ||
+    !Array.isArray(expected.artifacts) ||
+    expected.artifacts.length !== PATHS.length
+  ) {
+    fail("local manifest has wrong schema, package, version, or artifact count");
+  }
+}
+
+/**
+ * Compare the four packed WASM files against the manifest. `readBytes(path)`
+ * returns the Buffer at a package-relative path. Throws on the first mismatch.
+ */
+export function verifyMdWasmArtifacts(expected, readBytes) {
+  const results = [];
+  for (const [index, [entry, path]] of PATHS.entries()) {
+    const artifact = expected.artifacts[index];
+    if (
+      artifact?.entry !== entry ||
+      artifact.path !== path ||
+      !Number.isSafeInteger(artifact.bytes) ||
+      artifact.bytes < 0 ||
+      typeof artifact.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(artifact.sha256)
+    ) {
+      fail(`invalid local manifest artifact ${index}`);
+    }
+    const bytes = readBytes(path);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length !== artifact.bytes || sha256 !== artifact.sha256) {
+      fail(`${entry} (${path}) published bytes differ from the manifest`);
+    }
+    results.push({ entry, path, bytes: bytes.length, sha256 });
+  }
+  return results;
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -89,15 +136,7 @@ function main() {
   }
 
   const expected = readJson(manifestPath);
-  if (
-    expected.schemaVersion !== 1 ||
-    expected.name !== NAME ||
-    expected.version !== version ||
-    !Array.isArray(expected.artifacts) ||
-    expected.artifacts.length !== PATHS.length
-  ) {
-    fail("local manifest has wrong schema, package, version, or artifact count");
-  }
+  assertMdWasmManifest(expected, version);
 
   const temporary = mkdtempSync(join(tmpdir(), "zfb-md-wasm-published-"));
   try {
@@ -115,24 +154,10 @@ function main() {
     if (!packedManifestBytes.equals(readFileSync(manifestPath)))
       fail("published manifest differs from the local manifest");
 
-    for (const [index, [entry, path]] of PATHS.entries()) {
-      const artifact = expected.artifacts[index];
-      if (
-        artifact?.entry !== entry ||
-        artifact.path !== path ||
-        !Number.isSafeInteger(artifact.bytes) ||
-        artifact.bytes < 0 ||
-        typeof artifact.sha256 !== "string" ||
-        !/^[0-9a-f]{64}$/.test(artifact.sha256)
-      ) {
-        fail(`invalid local manifest artifact ${index}`);
-      }
-      const bytes = readFileSync(join(packedRoot, path));
-      const sha256 = createHash("sha256").update(bytes).digest("hex");
-      if (bytes.length !== artifact.bytes || sha256 !== artifact.sha256) {
-        fail(`${entry} (${path}) published bytes differ from the manifest`);
-      }
-      console.log(`${entry}: ${sha256} (${bytes.length} bytes)`);
+    for (const { entry, sha256, bytes } of verifyMdWasmArtifacts(expected, (path) =>
+      readFileSync(join(packedRoot, path)),
+    )) {
+      console.log(`${entry}: ${sha256} (${bytes} bytes)`);
     }
     console.log(`Verified all four published ${NAME}@${version} WASM digests.`);
     if (upload) {
@@ -145,9 +170,19 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(`::error::${error.message}`);
-  process.exitCode = 1;
+function resolvedPath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+const invokedPath = process.argv[1] && resolvedPath(process.argv[1]);
+if (invokedPath && invokedPath === resolvedPath(fileURLToPath(import.meta.url))) {
+  try {
+    main();
+  } catch (error) {
+    console.error(`::error::${error.message}`);
+    process.exitCode = 1;
+  }
 }
