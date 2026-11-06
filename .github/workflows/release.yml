@@ -470,7 +470,10 @@ jobs:
         # mac_local_present=true (detect-mac-local job). See the prepare-matrix job above.
         settings: ${{ fromJSON(needs.prepare-matrix.outputs.settings) }}
     runs-on: ${{ matrix.settings.host }}
-    timeout-minutes: 45
+    # The native Intel leg has two independent cold Rust builds. The 5.2.1
+    # run exhausted 45 minutes during the addon build; 90 is an operating
+    # allowance to validate, not a guarantee of host throughput.
+    timeout-minutes: ${{ matrix.settings.target == 'x86_64-apple-darwin' && 90 || 45 }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -1448,8 +1451,13 @@ jobs:
     env:
       IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
     steps:
-      - name: Notify via IFTTT on failure
-        if: env.IFTTT_PROD_NOTIFY != ''
+      # Use the workflow's own immutable source, even if release-context failed.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Report incomplete delivery
+        shell: bash
         env:
           RELEASE_CONTEXT_RESULT: ${{ needs.release-context.result }}
           DETECT_MAC_LOCAL_RESULT: ${{ needs.detect-mac-local.result }}
@@ -1459,44 +1467,10 @@ jobs:
           RELEASE_ASSETS_RESULT: ${{ needs.release-assets.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           SMOKE_CLEAN_ROOM_RESULT: ${{ needs.smoke-clean-room.result }}
+          DRY_RUN: ${{ inputs.dry_run }}
           RAW_TAG: ${{ needs.release-context.outputs.release_tag || github.event.release.tag_name || inputs.release_tag }}
           GITHUB_SHA_VAL: ${{ needs.release-context.outputs.checkout_sha || github.sha }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-        run: |
-          FAILED_JOB=""
-          if [ "$RELEASE_CONTEXT_RESULT" = "failure" ]; then
-            FAILED_JOB="release-context"
-          elif [ "$DETECT_MAC_LOCAL_RESULT" = "failure" ]; then
-            FAILED_JOB="detect-mac-local"
-          elif [ "$PREPARE_MATRIX_RESULT" = "failure" ]; then
-            FAILED_JOB="prepare-matrix"
-          elif [ "$BUILD_RESULT" = "failure" ]; then
-            FAILED_JOB="build"
-          elif [ "$BUILD_WASM_MD_RESULT" = "failure" ]; then
-            FAILED_JOB="build-wasm-md"
-          elif [ "$RELEASE_ASSETS_RESULT" = "failure" ]; then
-            FAILED_JOB="release-assets"
-          elif [ "$PUBLISH_RESULT" = "failure" ]; then
-            FAILED_JOB="publish"
-          elif [ "$SMOKE_CLEAN_ROOM_RESULT" = "failure" ]; then
-            FAILED_JOB="smoke-clean-room"
-          fi
-
-          if [ -z "$FAILED_JOB" ]; then
-            echo "No failed job among release-context/detect-mac-local/prepare-matrix/build/build-wasm-md/release-assets/publish/smoke-clean-room — skipping notification."
-            exit 0
-          fi
-
-          SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
-          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
-          TAG_LABEL="${RAW_TAG:-$SHORT_SHA}"
-
-          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"value1\": \"Release failed (${FAILED_JOB})\",
-              \"value2\": \"${TAG_LABEL}\",
-              \"value3\": \"${RUN_URL}\"
-            }" || echo "::warning::IFTTT notification failed"
+        run: bash scripts/notify-release-result.sh

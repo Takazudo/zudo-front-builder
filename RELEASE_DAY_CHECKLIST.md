@@ -89,6 +89,100 @@ Run `workflow_dispatch` with `dry_run: true` to exercise all build, tarball,
 and sha256 steps without uploading to a GH Release or publishing to npm.
 The `release-assets` job will list the collected files instead of uploading.
 
+## v5.2.1 incomplete delivery and successor release handoff
+
+The [v5.2.1 release run](https://github.com/Takazudo/zudo-front-builder/actions/runs/42117295889)
+left a public Release with no assets. Its native Intel job built the CLI in 37m26s;
+the separate CSS addon build was cancelled after 5m14s when the whole job reached
+its 45-minute deadline. Compilation was still progressing, and no compiler or
+network failure was established. The comparable v5.2.0 Intel job completed in
+38m07s (25m43s CLI, 8m52s addon). Workflow, scripts, runner image and Rust
+inputs were unchanged in that comparison. The new 90-minute Intel job allowance
+is proposed cold-build margin, not a measured guarantee; other targets retain
+45 minutes. The reason for the throughput difference is unknown.
+
+A successful Intel verification must include the CLI and separate CSS addon
+compilations, addon load/compile smoke, CLI version assertion, archive and
+checksum generation, and both Actions artifact uploads. A CLI build alone does
+not establish delivery. The [workflow-repair rehearsal](https://github.com/Takazudo/zudo-front-builder/actions/runs/42150967296)
+passed on attempt 1 at source `dcd2e077106b6ee43b4775e93ead134032945064`.
+The [Intel job](https://github.com/Takazudo/zudo-front-builder/actions/runs/42150967296/job/127673979858)
+used `macos-15-intel`, image `macos-15` version `20260824.0482.1` (macOS
+15.7.9), and rustc 1.99.1. CLI compilation took 13m43s, addon compilation
+5m36s, and the full job 21m18s. Addon smoke, version assertion, archive,
+checksum and both uploads passed. The binary artifact is `13473242761`
+(SHA-256 `29cdd2ee776593be468b9c007d7fb6cb5a21da2918c9f10acb9f60ce7e5e123f`);
+the archive artifact is `13472833661` (SHA-256
+`899ca159a878427d82edb5d7604a9eb48ace46e79399dff40d5ddc4ec23d5250`).
+All platform and WASM jobs passed. The dry-run asset and publish jobs passed
+without uploading or publishing; clean-room smoke was correctly skipped. This
+one successful run validates the workflow on its named source, not a guarantee
+of future cold-build duration. Subsequent changes touched only the offline test
+and this evidence, not the rehearsed workflow or build inputs.
+
+A branch dispatch with `dry_run=true`, `skip_macos_x64=false`, an empty
+`release_tag`, and `allow_provenance_downgrade=false` exercises the workflow
+without publishing packages or Release assets. It uploads Actions artifacts and
+may send the existing CI failure alert. It validates the workflow at its named
+source, not the version-stamped measurements or final release gates for a later
+version. Never omit `dry_run`: its default is false. Use a `base/` or `feature/`
+ref, not a ref beginning with `v`.
+
+### Later authorized release operations
+
+These are a handoff, not authorization to mutate production during development.
+Refresh main, releases, tag, assets, registry versions and concurrent release
+state before acting. Preserve the public v5.2.1 Release and tag, failed run,
+and [measurement probe #4601](https://github.com/Takazudo/zudo-front-builder/pull/4601)
+unmerged until its own accepted delivery closeout. Keep unrelated trackers open.
+
+1. **Restore the standalone default only after authorization.** If GitHub
+   `/releases/latest` still selects asset-free v5.2.1, first verify v5.2.0 is
+   the last completed stable release. The proposed metadata-only operation is
+   `PATCH /repos/Takazudo/zudo-front-builder/releases/432899648` with
+   `{"make_latest":"true"}`. Re-read Latest after the change. The installers
+   construct archive URLs from Latest without fallback. Refresh npm state rather
+   than inventing a registry rollback; the observed npm latest was 5.2.0.
+2. **Land the repair after separate production authorization.** Refresh main,
+   reconcile intervening changes, and use the normal review and checks. A main
+   push deploys the showcase; do not use an administrator bypass as routine
+   repair. The corrected workflow must be in the successor's release commit.
+3. **Prepare the proposed stable v5.2.2 from a newly frozen base.** Recheck
+   version availability and use a new disposable exact-version probe, not #4601.
+   Obtain fresh Linux measurements for all four version-stamped MD/WASM variants
+   (`finalWasm`, `gzip9`, `glue`, `glueGzip9`), exports, packing and existing
+   budgets; fresh Linux island-size evidence with actual run/job/SHA/lock
+   identities and the `--reason release-bump` helper; and the updated Wind
+   compiler-source digest, Wind assets and Docs gate. Preserve all raw and
+   normalized gzip ceilings. Carry the complete measured bump atomically and
+   satisfy the release procedure's final-commit gates. Reuse prior product
+   validation only where its source, platform and fingerprints justify it; use
+   the owner's established Mac for required native owner verification and
+   release orchestration. CI Intel packaging is not native Intel acceptance.
+   Successor release notes must describe the intended v5.2.1 fixes: npm users
+   are effectively upgrading from 5.2.0. Never relabel 5.2.1 measurements as
+   5.2.2 evidence.
+4. **Publish through the normal provenance-enabled release event.** A retry of
+   the old v5.2.1 tag selects its old 45-minute workflow; a main-based recovery
+   for that tag omits provenance. Do not retag or delete v5.2.1, substitute
+   unattested local Intel assets, override GitHub identity, publish npm manually,
+   or invent an attestation. For the authorized successor, publish the draft
+   with `draft=false`, `prerelease=false`, and `make_latest="false"` in the
+   **same update**, firing the normal release event while the last completed
+   release remains the default. After delivery verification, promote the new
+   Release to Latest. Do not publish it as Latest and clear it afterward.
+5. **Verify delivery before closeout.** Require all five CLI archives and five
+   checksum companions with correct bytes and layout, native CSS addons in
+   relevant platform npm packages, all eleven exact npm versions with integrity,
+   truthful provenance identity and correct dist-tags, all four published WASM
+   digests matching both the package manifest and verified Release asset, and
+   exact-version clean-room scaffold/build smoke. Verify both npm publication and
+   Release assets: they are sibling jobs. An existing-version skip in the
+   publish helper proves existence, not complete integrity or provenance. Check
+   Latest and installer URLs, then perform and verify one stable Homebrew update
+   with formula and tap commit evidence. Close disposable probes unmerged only
+   after their own accepted delivery closeout and preserve reachable receipts.
+
 ## macOS-x64 local-build escape hatch (added by issue #437, updated by issue #455)
 
 This escape hatch was built because the former Intel macOS runner
