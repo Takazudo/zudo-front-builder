@@ -34,18 +34,25 @@ for pair in \
   for result in failure cancelled; do
     export "$variable=$result"
     run_case
-    [[ -e "$SINK" ]] && grep -Fq "$job $result" "$SINK" && grep -Fq 'https://github.com/owner/repo/actions/runs/123' "$SINK"
+    [[ -e "$SINK" ]]
+    grep -Fq "$job $result" "$SINK"
+    grep -Fq 'https://github.com/owner/repo/actions/runs/123' "$SINK"
     export "$variable=success"
   done
 done
 BUILD_RESULT=cancelled RELEASE_ASSETS_RESULT=skipped PUBLISH_RESULT=skipped SMOKE_CLEAN_ROOM_RESULT=skipped run_case
-[[ -e "$SINK" ]] && grep -Fq 'build cancelled' "$SINK" && grep -Fq 'release-assets, publish, smoke-clean-room' "$SINK"
+[[ -e "$SINK" ]]
+grep -Fq 'build cancelled' "$SINK"
+grep -Fq 'release-assets, publish, smoke-clean-room' "$SINK"
 DRY_RUN=true SMOKE_CLEAN_ROOM_RESULT=skipped run_case
 [[ ! -e "$SINK" ]] || { echo 'successful dry run notified' >&2; exit 1; }
 DRY_RUN=true BUILD_WASM_MD_RESULT=failure SMOKE_CLEAN_ROOM_RESULT=skipped run_case
-[[ -e "$SINK" ]] && grep -Fq 'build-wasm-md failure' "$SINK"
+[[ -e "$SINK" ]]
+grep -Fq 'build-wasm-md failure' "$SINK"
 DRY_RUN=true BUILD_RESULT=cancelled RELEASE_ASSETS_RESULT=skipped PUBLISH_RESULT=skipped SMOKE_CLEAN_ROOM_RESULT=skipped run_case
-[[ -e "$SINK" ]] && grep -Fq 'build cancelled' "$SINK"
+[[ -e "$SINK" ]]
+grep -Fq 'build cancelled' "$SINK"
 RELEASE_ASSETS_RESULT=skipped run_case
-[[ -e "$SINK" ]] && grep -Fq 'required stage skipped' "$SINK"
+[[ -e "$SINK" ]]
+grep -Fq 'required stage skipped' "$SINK"
 echo 'release notification cases passed'
