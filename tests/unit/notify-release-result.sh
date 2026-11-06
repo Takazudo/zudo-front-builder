@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# The offline CI suite invokes every test with sh. Re-exec for Bash syntax.
+if [ "${ZFB_NOTIFY_TEST_BASH:-}" != 1 ]; then
+  export ZFB_NOTIFY_TEST_BASH=1
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d)
