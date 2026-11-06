@@ -20,8 +20,9 @@ on a tag push. Choose one complete flow:
    path. Do not upload or publish a second time afterward.
 3. **Manual/confirmed:** run `/l-make-release --confirm`. It stops at the
    unpublished draft. Optionally run `/l-make-mac-release-binary vX.Y.Z` on a
-   Mac for the explicit fast path, then publish with
-   `gh release edit vX.Y.Z --draft=false` (or the web UI).
+   Mac for the explicit fast path, then publish per
+   [stable publish order](#stable-publish-order-withhold-latest-verify-then-promote)
+   (a prerelease still uses `gh release edit vX.Y.Z --draft=false`).
 
 ### Tagging and channel policy
 
@@ -29,9 +30,83 @@ on a tag push. Choose one complete flow:
   with `prerelease: true` and npm dist-tag `next`.
 - All other `v*` tags → GitHub Release `prerelease: false` and npm dist-tag `latest`.
 - The GitHub "latest release" API automatically skips prereleases, so stable
-  installers (install.sh, Homebrew, winget) always get the last non-prerelease.
+  installers (install.sh, Homebrew, winget) always get the last non-prerelease
+  that was promoted to Latest. A new stable is published without Latest and
+  promoted only after delivery verification (below).
 - Installer opt-in to a specific prerelease: set `ZFB_VERSION=v0.X.Y-next.N`
   or `ZFB_VERSION=latest-prerelease` before running the installer.
+
+### Stable publish order: withhold Latest, verify, then promote
+
+`install.sh` builds archive URLs from GitHub `/releases/latest` with no
+fallback, so a stable Release must not become Latest before its assets, npm
+packages and installer path are proven. After the existing preparation and
+qualification gates (unchanged):
+
+1. **Publish without Latest in one update.** `make_latest` is a string, and it
+   must be set in the same request that clears `draft`. Do not publish as
+   Latest and clear it afterward, and do not use a bare
+   `gh release edit vX.Y.Z --draft=false` (or the web UI with
+   "Set as the latest release" checked) on this path:
+
+   ```sh
+   RELEASE_ID=$(gh release view vX.Y.Z --json databaseId --jq .databaseId)
+   printf '%s' '{"draft": false, "prerelease": false, "make_latest": "false"}' \
+     | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
+   ```
+
+   This fires the normal `release: published` event while the previous
+   completed stable remains Latest.
+2. **Observe both runs to completion and record their ids:** the `Release` run
+   (event `release`, head branch `vX.Y.Z`), then the
+   `Binary smoke, scaffold E2E & showcase` run that it triggers by
+   `workflow_run`, whose `Smoke released (install.sh)` job installs the exact
+   tag. That job runs only after a successful Release run; after a rerun,
+   select the installer run triggered by the final attempt.
+3. **Run the read-only verifier** from the release session, after both runs
+   complete — never as a `release.yml` step, since it audits that run's
+   completion:
+
+   ```sh
+   node scripts/verify-release-delivery.mjs --version X.Y.Z \
+     --release-run-id <Release run id> \
+     --installer-run-id <node-free-smoke workflow_run id> \
+     --json <evidence-dir>/release-delivery-X.Y.Z.json
+   ```
+
+   Add `--expected-source <40-hex sha>` when the release commit is known. Keep
+   the JSON report. The verifier only issues GET requests; it sends
+   `GH_TOKEN`/`GITHUB_TOKEN` to `api.github.com` when set. Behind an
+   `HTTPS_PROXY`, set `NODE_USE_ENV_PROXY=1`, since Node's `fetch` ignores the
+   proxy otherwise. Exit **0** means every required check verified and is the
+   only result that permits promotion; **1** is a definite failure, **2** is
+   incomplete or unavailable evidence (never a pass) and **3** is a usage or
+   internal error. It accepts only the normal provenance-enabled path: fast-Mac
+   (mixed provenance), recovery and dry-run runs are classified, never
+   accepted, so promoting after them is a separate owner decision.
+4. **Promote, then update Homebrew** — only after exit 0 and with the release
+   session's authorization (a default `/l-make-release` run carries it):
+
+   ```sh
+   printf '%s' '{"make_latest": "true"}' \
+     | gh api -X PATCH "repos/Takazudo/zudo-front-builder/releases/${RELEASE_ID}" --input -
+   ./scripts/update-homebrew-formula.sh vX.Y.Z --push
+   ```
+
+5. **Read back the channels** and report them separately from immutable
+   delivery: re-run the verifier with `--expect-github-latest
+   --expect-homebrew`, plus `--expect-npm-latest` for a stable that should hold
+   npm `latest` (every normal stable).
+
+On exit 1 or a persistent 2, leave the Release published but not Latest, skip
+Homebrew, and report the failing checks. Do not unpublish or retag.
+
+`make_latest="false"` controls GitHub Latest only. It does not make the
+eleven-package npm publication transactional and does not defer npm's dist-tag
+behavior: a stable publish moves `latest` immediately, and `next` is retired
+per `release.yml` (see the CLAUDE.md dist-tag rule). Prereleases are unchanged:
+they never become GitHub Latest and still publish with
+`gh release edit vX.Y.Z --draft=false`.
 
 ### Prerelease dual-tag policy (issue #481)
 
@@ -170,7 +245,9 @@ unmerged until its own accepted delivery closeout. Keep unrelated trackers open.
    with `draft=false`, `prerelease=false`, and `make_latest="false"` in the
    **same update**, firing the normal release event while the last completed
    release remains the default. After delivery verification, promote the new
-   Release to Latest. Do not publish it as Latest and clear it afterward.
+   Release to Latest. Do not publish it as Latest and clear it afterward. This
+   is now the normal
+   [stable publish order](#stable-publish-order-withhold-latest-verify-then-promote).
 5. **Verify delivery before closeout.** Require all five CLI archives and five
    checksum companions with correct bytes and layout, native CSS addons in
    relevant platform npm packages, all eleven exact npm versions with integrity,
@@ -180,7 +257,10 @@ unmerged until its own accepted delivery closeout. Keep unrelated trackers open.
    Release assets: they are sibling jobs. An existing-version skip in the
    publish helper proves existence, not complete integrity or provenance. Check
    Latest and installer URLs, then perform and verify one stable Homebrew update
-   with formula and tap commit evidence. Close disposable probes unmerged only
+   with formula and tap commit evidence. `scripts/verify-release-delivery.mjs`
+   checks these items for the exact version, Release run and installer run;
+   only its exit 0 permits the Latest promotion, and its channel read-back is
+   reported separately. Close disposable probes unmerged only
    after their own accepted delivery closeout and preserve reachable receipts.
 
 ## macOS-x64 local-build escape hatch (added by issue #437, updated by issue #455)
@@ -217,10 +297,11 @@ A static CLI version scan does not replace this addon execution gate.
 ### Default path (CI-built, fully attested; no pre-upload)
 
 1. Run `/l-make-release` to create the draft Release.
-2. Publish the draft (`gh release edit vX.Y.Z --draft=false` or web UI) with
-   NO Mac archive attached.
+2. Publish the draft with NO Mac archive attached — a stable one without Latest,
+   per [stable publish order](#stable-publish-order-withhold-latest-verify-then-promote).
 3. The workflow builds all 5 platforms on CI and publishes all 11 packages with
-   full npm `--provenance` (option C).
+   full npm `--provenance` (option C). Verify delivery, then promote Latest and
+   update Homebrew.
 
 ### Fast-Mac path (`--fast-mac` opt-in; mixed provenance)
 
@@ -271,8 +352,11 @@ For a manual/confirmed flow where the upload happens separately:
    allow-provenance-downgrade -->` on its own line, and write it back with `gh
    release edit vX.Y.Z --notes-file -`. `/l-make-mac-release-binary` does this
    check for you; a manual upload must do it by hand.
-3. **Publish the draft Release** (`gh release edit vX.Y.Z --draft=false` or web UI)
-   to trigger `release.yml`. Without the acknowledgement line present when a
+3. **Publish the draft Release** (a stable one without Latest, per
+   [stable publish order](#stable-publish-order-withhold-latest-verify-then-promote);
+   a prerelease with `gh release edit vX.Y.Z --draft=false`) to trigger
+   `release.yml`. The verifier does not accept this mixed-provenance path, so
+   promoting the Release to Latest afterward is an explicit owner decision. Without the acknowledgement line present when a
    downgrade applies, the publish job refuses to run the `mac-local` lane. The
    workflow's `detect-mac-local` job will see both
    files on the Release and output `mac_local_present=true`, causing it to:
@@ -336,6 +420,10 @@ would misidentify the source. The publish job loads its recovery helper from a
 separate checkout of the exact `main` workflow commit while keeping all package
 source and binaries pinned to the verified tag commit. Normal
 `release: published` runs retain the full or mixed-provenance behavior below.
+Recovery uploads assets only and never changes Latest; because
+`verify-release-delivery.mjs` classifies a recovery run rather than accepting
+it, promoting a recovered stable that was published without Latest is a
+separate owner decision.
 
 #### Recovery creates a trust downgrade — plan the follow-up release (issue #2623)
 
@@ -420,7 +508,8 @@ below itself for **stable** releases. The manual flow here still applies when yo
 publish by hand — a `--confirm` run, a Release published from the web UI, or a
 recovery — since nothing is then watching `release.yml` to trigger it.
 
-After the GitHub Release assets are published, regenerate and push the Homebrew
+After the GitHub Release assets are published (for the normal stable path:
+after the verifier's exit 0 and the Latest promotion), regenerate and push the Homebrew
 tap formula. Requires a local checkout of `Takazudo/homebrew-tap` at the default
 path (`~/repos/zp/homebrew-tap`, overridable with `ZFB_TAP_PATH`):
 
