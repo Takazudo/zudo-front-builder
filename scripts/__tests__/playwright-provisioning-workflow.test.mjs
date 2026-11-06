@@ -176,6 +176,9 @@ describe("provisioning budgets and receipts", () => {
     const smokeJob = jobBlock(smoke, "built-site-browser-smoke");
     expect(smokeJob).toMatch(/^ {4}runs-on: ubuntu-24\.04$/m);
     expect(smokeJob).toMatch(/^ {4}timeout-minutes: 10$/m);
+    const wasmJob = jobBlock(health, "wasm-md-browser");
+    expect(wasmJob).toMatch(/^ {4}runs-on: ubuntu-24\.04$/m);
+    expect(wasmJob).toMatch(/^ {4}timeout-minutes: 20$/m);
   });
 
   it("fits every helper's worst case inside its job deadline", () => {

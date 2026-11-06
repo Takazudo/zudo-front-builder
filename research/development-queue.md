@@ -27,12 +27,15 @@ It is not release approval, a scheduler, or a replacement for source-bound recei
   Built-site L4 job. Packages come from Playwright 1.61.0's own dry-run;
   acquisition (`apt-get update`, resolve, `--download-only`) is bounded by
   elapsed time with at most one retry, only after all apt processes exit,
-  through an invocation-owned APT_CONFIG that points the runner's own Ubuntu
-  stanzas at archive/security.ubuntu.com (fields and signing unchanged).
+  through an invocation-owned APT_CONFIG that carries only the runner's enabled
+  Ubuntu stanzas, pointed at archive/security.ubuntu.com (fields and signing
+  unchanged; other sources left out), and is confirmed with `apt-config dump`.
+  Only a timeout or apt's own fetch/connection wording is retried.
   Installation (`--no-download`) is never retried. Readiness requires a clean
   dry-run, the registry executables and a headless launch per engine. Each
   invocation has a total cap and writes a JSON receipt uploaded with
-  `if: always()`. Built-site L4 is pinned to ubuntu-24.04. No runtime,
+  `if: always()`. Built-site L4 and `wasm-md browser` are pinned to
+  ubuntu-24.04. No runtime,
   package, lockfile, browser revision, Wind profile, size budget or required
   check changed.
 - Verification owner: this repair's manager. Source-bound receipts (PR checks,

@@ -41,6 +41,15 @@ const missing = (...names) => ({
   stdout: `Missing system dependencies (${names.length}):\n${names.map((name) => `  ${name}`).join("\n")}\n`,
 });
 const success = { exitCode: 0 };
+const ROUTE_DIR = "/tmp/zfb-apt-route-test";
+const effectiveRoute = {
+  exitCode: 0,
+  stdout: `Dir::State::lists "${ROUTE_DIR}/lists/";\nDir::Etc::sourcelist "${ROUTE_DIR}/sources.list";\nDir::Etc::sourceparts "${ROUTE_DIR}/sources.list.d";\n`,
+};
+const fetchFailure = (exitCode = 100) => ({
+  exitCode,
+  tail: "E: Failed to fetch http://azure.archive.ubuntu.com/ubuntu/pool/main/n/nss/libnss3.deb  Connection timed out\n",
+});
 
 function aptVerb(args) {
   const index = args.indexOf("apt-get");
@@ -65,7 +74,7 @@ function fakeDeps({ script = {}, files = {}, processes = [[]], playwright = {}, 
   const take = (kind) => {
     const queue = queues[kind];
     if (!queue || queue.length === 0) throw new Error(`unexpected ${kind} call`);
-    return queue.length === 1 ? queue[0] : queue.shift();
+    return queue.shift();
   };
   const executables =
     playwright.executables ?? ((engine) => [{ name: engine, path: `/browsers/${engine}` }]);
@@ -113,6 +122,7 @@ function fakeDeps({ script = {}, files = {}, processes = [[]], playwright = {}, 
         if (spec.command === NODE && spec.args.includes("--dry-run")) kind = "dryRun";
         else if (spec.command === NODE && spec.args[1] === "install") kind = "browsers";
         else if (spec.command === NODE && spec.args[0] === "-e") kind = "launch";
+        else if (spec.command === "apt-config") kind = "aptConfig";
         else kind = aptVerb(spec.args) ?? "unknown";
         const outcome = take(kind);
         calls.push({ kind, spec, at: clock });
@@ -266,7 +276,7 @@ describe("Playwright dependency report", () => {
 });
 
 describe("official-archive route", () => {
-  it("reroutes the runner mirror stanzas and keeps every other field and source", () => {
+  it("reroutes the runner mirror stanzas, keeps their fields and drops other sources", () => {
     const route = buildOfficialRoute({
       sourcesList: "# Ubuntu sources have moved to /etc/apt/sources.list.d/ubuntu.sources\n",
       parts: [
@@ -284,8 +294,9 @@ describe("official-archive route", () => {
     expect(ubuntu).toContain("URIs: https://security.ubuntu.com/ubuntu/\nSuites: noble-security\n");
     expect(ubuntu).not.toContain("mirror+file");
     expect(ubuntu.match(/Signed-By:/g)).toHaveLength(2);
-    expect(route.parts.find((part) => part.name === "azure-cli.list").content).toBe(THIRD_PARTY);
-    expect(route.parts.map((part) => part.name)).not.toContain("ignored.save");
+    // The retry contacts only Ubuntu's own hosts.
+    expect(route.parts.map((part) => part.name)).toEqual(["ubuntu.sources"]);
+    expect(route.sourcesList).toBe("");
   });
 
   it("splits a combined stanza so security suites stay on the security host", () => {
@@ -317,7 +328,25 @@ describe("official-archive route", () => {
       mirrorList: RUNNER_MIRRORS,
     });
     expect(route.sourcesList).toBe(
-      "deb [arch=amd64] https://archive.ubuntu.com/ubuntu/ jammy main restricted\ndeb https://security.ubuntu.com/ubuntu/ jammy-security main\n# deb-src http://archive.ubuntu.com/ubuntu jammy main\n",
+      "deb [arch=amd64] https://archive.ubuntu.com/ubuntu/ jammy main restricted\ndeb https://security.ubuntu.com/ubuntu/ jammy-security main\n",
+    );
+  });
+
+  it("accepts the triple-slash mirror spelling and skips disabled stanzas", () => {
+    const route = buildOfficialRoute({
+      sourcesList: null,
+      parts: [
+        {
+          name: "ubuntu.sources",
+          content:
+            "Types: deb\nURIs: mirror+file:///etc/apt/apt-mirrors.txt\nSuites: noble\nComponents: main\n\nTypes: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble-proposed\nComponents: main\nEnabled: false\n",
+        },
+      ],
+      mirrorList: RUNNER_MIRRORS,
+    });
+    expect(route.rewritten).toBe(1);
+    expect(route.parts[0].content).toBe(
+      "Types: deb\nURIs: https://archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\n",
     );
   });
 
@@ -341,6 +370,13 @@ describe("official-archive route", () => {
   it("refuses sources that disable authentication or have nothing to reroute", () => {
     expect(() =>
       buildOfficialRoute({
+        sourcesList: "deb [arch=amd64 trusted=true] http://archive.ubuntu.com/ubuntu/ noble main\n",
+        parts: [],
+        mirrorList: null,
+      }),
+    ).toThrow(/disables authentication/);
+    expect(() =>
+      buildOfficialRoute({
         sourcesList: "deb [trusted=yes] http://archive.ubuntu.com/ubuntu/ noble main\n",
         parts: [],
         mirrorList: null,
@@ -353,7 +389,7 @@ describe("official-archive route", () => {
           {
             name: "u.sources",
             content:
-              "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\nTrusted: yes\n",
+              "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble\nComponents: main\nTrusted: on\n",
           },
         ],
         mirrorList: null,
@@ -379,7 +415,7 @@ describe("official-archive route", () => {
 describe("provisioning flow", () => {
   it("reuses already-satisfied dependencies and installs exactly the selected browsers", async () => {
     const fake = fakeDeps({
-      script: { dryRun: [satisfied], browsers: [success], launch: [success] },
+      script: { dryRun: [satisfied], browsers: [success], launch: [success, success, success] },
     });
     const { receipt, exitCode, receiptPath } = await provision(
       options({ label: "health-wind-full", engines: ["chromium", "firefox", "webkit"] }),
@@ -498,7 +534,7 @@ describe("provisioning flow", () => {
     const fake = fakeDeps({
       files: runnerFiles,
       script: {
-        dryRun: [missing("libnss3")],
+        dryRun: [missing("libnss3"), missing("libnss3")],
         update: [success],
         download: [{ exitCode: 124, durationMs: 240_000 }],
       },
@@ -520,8 +556,9 @@ describe("provisioning flow", () => {
       processes: [[{ pid: 41, args: "/usr/lib/apt/methods/http" }], []],
       script: {
         dryRun: [missing("libnss3"), missing("libnss3"), missing("libnss3"), satisfied],
-        update: [success],
+        update: [success, success],
         download: [{ exitCode: 124, durationMs: 230_000, tail: "Get:15 ... [8998 kB]" }, success],
+        aptConfig: [effectiveRoute],
         install: [success],
         browsers: [success],
         launch: [success],
@@ -534,6 +571,7 @@ describe("provisioning flow", () => {
       "update",
       "dryRun",
       "download",
+      "aptConfig",
       "update",
       "dryRun",
       "download",
@@ -544,8 +582,9 @@ describe("provisioning flow", () => {
     ]);
     const firstDownloadEnd = fake.calls[3].at + 230_000;
     expect(fake.calls[4].at).toBeGreaterThan(firstDownloadEnd);
+    expect(fake.calls[4].spec.env.APT_CONFIG).toBe("/tmp/zfb-apt-route-test/apt.conf");
     const aptConfig = "APT_CONFIG=/tmp/zfb-apt-route-test/apt.conf";
-    for (const call of fake.calls.slice(4, 9)) {
+    for (const call of fake.calls.slice(5, 10)) {
       if (call.kind === "dryRun")
         expect(call.spec.env.APT_CONFIG).toBe("/tmp/zfb-apt-route-test/apt.conf");
       else expect(call.spec.args).toContain(aptConfig);
@@ -554,9 +593,7 @@ describe("provisioning flow", () => {
     expect(fake.written.get("/tmp/zfb-apt-route-test/sources.list.d/ubuntu.sources")).toContain(
       "URIs: https://archive.ubuntu.com/ubuntu/",
     );
-    expect(fake.written.get("/tmp/zfb-apt-route-test/sources.list.d/azure-cli.list")).toBe(
-      THIRD_PARTY,
-    );
+    expect(fake.written.has("/tmp/zfb-apt-route-test/sources.list.d/azure-cli.list")).toBe(false);
     expect(fake.written.get("/tmp/zfb-apt-route-test/apt.conf")).toContain(
       'Dir::State::Lists "/tmp/zfb-apt-route-test/lists";',
     );
@@ -571,20 +608,94 @@ describe("provisioning flow", () => {
       { attempt: 2, route: "official-archive", exitCode: 0 },
     ]);
     expect(receipt.dependencies.route).toBe("official-archive");
+    expect(receipt.phases.find((phase) => phase.stage === "acquire:route-config")).toMatchObject({
+      exitCode: 0,
+      note: "effective",
+    });
+  });
+
+  it("does not retry when local APT configuration overrides the official route", async () => {
+    const fake = fakeDeps({
+      files: runnerFiles,
+      script: {
+        dryRun: [missing("libnss3"), missing("libnss3")],
+        update: [success],
+        download: [fetchFailure()],
+        aptConfig: [
+          {
+            exitCode: 0,
+            stdout: effectiveRoute.stdout.replace(
+              `${ROUTE_DIR}/sources.list.d`,
+              "/etc/apt/sources.list.d",
+            ),
+          },
+        ],
+      },
+    });
+    const { receipt, exitCode } = await provision(options(), fake.deps);
+    expect(exitCode).toBe(1);
+    expect(kinds(fake)).toEqual(["dryRun", "update", "dryRun", "download", "aptConfig"]);
+    expect(receipt.failedStage).toBe("acquire");
+    expect(receipt.error).toMatch(/official route unavailable: .*not in effect/);
+    expect(receipt.phases.at(-1)).toMatchObject({
+      stage: "acquire:route-config",
+      note: "overridden: Dir::Etc::sourceparts",
+    });
+  });
+
+  it("does not retry a download failure that is not a transport failure", async () => {
+    const fake = fakeDeps({
+      files: runnerFiles,
+      script: {
+        dryRun: [missing("libnss3"), missing("libnss3")],
+        update: [success],
+        download: [
+          {
+            exitCode: 100,
+            tail: "E: Unable to correct problems, you have held broken packages.\n",
+          },
+        ],
+      },
+    });
+    const { receipt, exitCode } = await provision(options(), fake.deps);
+    expect(exitCode).toBe(1);
+    expect(kinds(fake)).toEqual(["dryRun", "update", "dryRun", "download"]);
+    expect(receipt.failedStage).toBe("acquire");
+    expect(receipt.firstTransportFailure).toBeNull();
+  });
+
+  it("treats a resolution timeout as a transport failure", async () => {
+    const fake = fakeDeps({
+      files: runnerFiles,
+      script: {
+        dryRun: [missing("libnss3"), { exitCode: null, timedOut: true }, satisfied, satisfied],
+        update: [success, success],
+        aptConfig: [effectiveRoute],
+        browsers: [success],
+        launch: [success],
+      },
+    });
+    const { receipt, exitCode } = await provision(options(), fake.deps);
+    expect(exitCode).toBe(0);
+    expect(receipt.firstTransportFailure.error).toBe(
+      "dependency resolution reached the acquisition deadline",
+    );
+    expect(receipt.dependencies).toMatchObject({ route: "official-archive", packages: [] });
   });
 
   it("fails after the single fallback is exhausted, without installing", async () => {
     const fake = fakeDeps({
       files: runnerFiles,
       script: {
-        dryRun: [missing("libnss3")],
+        dryRun: [missing("libnss3"), missing("libnss3")],
         update: [success, { exitCode: 124, durationMs: 240_000 }],
-        download: [{ exitCode: 100 }],
+        download: [fetchFailure()],
+        aptConfig: [effectiveRoute],
       },
     });
     const { receipt, exitCode } = await provision(options(), fake.deps);
     expect(exitCode).toBe(1);
-    expect(kinds(fake)).toEqual(["dryRun", "update", "dryRun", "download", "update"]);
+    expect(kinds(fake)).toEqual(["dryRun", "update", "dryRun", "download", "aptConfig", "update"]);
     expect(receipt.failedStage).toBe("acquire");
     expect(receipt.error).toBe(
       "apt-get install --download-only exited 100; retry: apt-get update reached the acquisition deadline",
@@ -597,7 +708,7 @@ describe("provisioning flow", () => {
       files: runnerFiles,
       processes: [[{ pid: 77, args: "apt-get install -y --download-only libnss3" }]],
       script: {
-        dryRun: [missing("libnss3")],
+        dryRun: [missing("libnss3"), missing("libnss3")],
         update: [success],
         download: [{ exitCode: 124, durationMs: 240_000 }],
       },
@@ -613,7 +724,7 @@ describe("provisioning flow", () => {
     const fake = fakeDeps({
       files: runnerFiles,
       script: {
-        dryRun: [missing("libnss3")],
+        dryRun: [missing("libnss3"), missing("libnss3")],
         update: [success],
         download: [success],
         install: [{ exitCode: 100, tail: "dpkg: error processing" }],

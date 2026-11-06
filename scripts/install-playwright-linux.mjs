@@ -43,6 +43,16 @@ export const RUNNER_MIRROR_LIST = "/etc/apt/apt-mirrors.txt";
 const OFFICIAL_URI = /^https?:\/\/(?:azure\.archive|archive|security)\.ubuntu\.com\/ubuntu\/?$/;
 const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]+(?::[a-z0-9]+)?$/;
 const INSECURE_OPTIONS = ["trusted", "allow-insecure", "allow-weak", "allow-downgrade-to-insecure"];
+// apt's boolean spellings (apt-pkg/contrib/strutl.cc StringToBool).
+const APT_TRUE = /^(?:yes|true|with|on|enable)$/i;
+const APT_FALSE = /^(?:no|false|without|off|disable)$/i;
+const RUNNER_MIRROR_URIS = new Set([
+  "mirror+file:/etc/apt/apt-mirrors.txt",
+  "mirror+file:///etc/apt/apt-mirrors.txt",
+]);
+// apt's own wording for failures a different endpoint can plausibly fix.
+const TRANSPORT_OUTPUT =
+  /Failed to fetch|Could not (?:resolve|connect)|Connection (?:timed out|failed|reset)|Unable to fetch some archives|Temporary failure resolving|Unable to connect|Network is unreachable|No route to host|Error reading from server|Hash Sum mismatch|File has unexpected size|Some index files failed to download/i;
 const DRY_RUN_SATISFIED = "All system dependencies are installed.";
 const DRY_RUN_MISSING = /^Missing system dependencies \((\d+)\):$/;
 const APT_PROCESS = /(?:^|\/)apt-get(?:\s|$)|\/usr\/lib\/apt\/methods\//;
@@ -169,7 +179,7 @@ function makeUriClassifier(mirrorList) {
   const mirrorUris = mirrorList == null ? null : parseMirrorList(mirrorList);
   return (uri) => {
     if (OFFICIAL_URI.test(uri)) return true;
-    if (uri === `mirror+file:${RUNNER_MIRROR_LIST}`) {
+    if (RUNNER_MIRROR_URIS.has(uri)) {
       if (
         !mirrorUris ||
         mirrorUris.length === 0 ||
@@ -188,23 +198,23 @@ function rewriteOneLine(text, isOfficial, file) {
   const out = [];
   for (const line of String(text).split("\n")) {
     const match = line.match(/^(\s*)(deb|deb-src)(\s+\[[^\]]*\])?\s+(\S+)\s+(\S+)(.*)$/);
-    if (!match || line.trim().startsWith("#")) {
-      out.push(line);
-      continue;
-    }
+    if (!match || line.trim().startsWith("#")) continue;
     const [, indent, type, options = "", uri, suite, rest] = match;
-    if (!isOfficial(uri)) {
-      out.push(line);
-      continue;
-    }
+    if (!isOfficial(uri)) continue;
     const lowered = options.toLowerCase();
-    if (INSECURE_OPTIONS.some((option) => new RegExp(`${option}=yes`).test(lowered))) {
+    if (
+      INSECURE_OPTIONS.some((option) =>
+        new RegExp(`(?:^|[\\s\\[])${option}=(?:yes|true|with|on|enable)(?:[\\s\\]]|$)`).test(
+          lowered,
+        ),
+      )
+    ) {
       throw new Error(`${file}: refusing to reroute a source that disables authentication`);
     }
     out.push(`${indent}${type}${options} ${officialFor(suite)} ${suite}${rest}`);
     rewritten += 1;
   }
-  return { content: out.join("\n"), rewritten };
+  return { content: out.length ? `${out.join("\n")}\n` : "", rewritten };
 }
 
 function stanzaFields(lines) {
@@ -238,15 +248,15 @@ function rewriteDeb822(text, isOfficial, file) {
     const fields = stanzaFields(lines);
     const get = (key) => fields.find((field) => field.key?.toLowerCase() === key.toLowerCase());
     const uris = get("URIs");
-    if (!uris) return block;
-    if (/^no$/i.test(get("Enabled") ? fieldValue(get("Enabled")) : "yes")) return block;
+    if (!uris) return null;
+    if (get("Enabled") && APT_FALSE.test(fieldValue(get("Enabled")))) return null;
     const values = fieldValue(uris).split(/\s+/);
     const official = values.map((uri) => isOfficial(uri));
-    if (!official.some(Boolean)) return block;
+    if (!official.some(Boolean)) return null;
     if (!official.every(Boolean)) throw new Error(`${file}: stanza mixes official and other URIs`);
     for (const option of INSECURE_OPTIONS) {
       const field = get(option);
-      if (field && /^yes$/i.test(fieldValue(field))) {
+      if (field && APT_TRUE.test(fieldValue(field))) {
         throw new Error(`${file}: refusing to reroute a source that disables authentication`);
       }
     }
@@ -271,12 +281,15 @@ function rewriteDeb822(text, isOfficial, file) {
       )
       .join("\n\n");
   });
-  return { content: `${out.join("\n\n").replace(/\n+$/, "")}\n`, rewritten };
+  const kept = out.filter(Boolean);
+  return { content: kept.length ? `${kept.join("\n\n")}\n` : "", rewritten };
 }
 
-// Returns the runner's own sources with only the URIs of allowlisted Ubuntu
-// stanzas replaced. Suites, components, architectures, Signed-By and every
-// other field (and every non-Ubuntu source) are kept verbatim.
+// Returns only the runner's own enabled Ubuntu stanzas, with their URIs
+// replaced by the official archive/security hosts. Suites, components,
+// architectures, Signed-By and every other field are kept verbatim. Other
+// sources are left out of the retry so it contacts no other endpoint;
+// Playwright's packages all come from Ubuntu's own components.
 export function buildOfficialRoute({ sourcesList, parts, mirrorList }) {
   const isOfficial = makeUriClassifier(mirrorList);
   let rewritten = 0;
@@ -290,7 +303,7 @@ export function buildOfficialRoute({ sourcesList, parts, mirrorList }) {
       result = rewriteOneLine(part.content, isOfficial, part.name);
     else continue;
     rewritten += result.rewritten;
-    outParts.push({ name: part.name, content: result.content });
+    if (result.content) outParts.push({ name: part.name, content: result.content });
   }
   if (rewritten === 0) throw new Error("no allowlisted Ubuntu source stanza to reroute");
   return { sourcesList: main.content ?? "", parts: outParts, rewritten };
@@ -385,12 +398,6 @@ export function listProcesses() {
 
 function nodeDeps() {
   const require = createRequire(path.join(process.cwd(), "package.json"));
-  const testManifestPath = require.resolve("@playwright/test/package.json");
-  const fromTest = createRequire(testManifestPath);
-  const playwrightManifestPath = fromTest.resolve("playwright/package.json");
-  const fromPlaywright = createRequire(playwrightManifestPath);
-  const coreManifestPath = fromPlaywright.resolve("playwright-core/package.json");
-  const coreDir = path.dirname(coreManifestPath);
   const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
   const lockPath = path.join(process.cwd(), "pnpm-lock.yaml");
   return {
@@ -404,7 +411,9 @@ function nodeDeps() {
     listDir: (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : []),
     exists: (file) => fs.existsSync(file),
     makeTempDir: () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zfb-apt-route-"));
+      const dir = fs.mkdtempSync(
+        path.join(process.env.RUNNER_TEMP || os.tmpdir(), "zfb-apt-route-"),
+      );
       fs.chmodSync(dir, 0o755);
       return dir;
     },
@@ -417,6 +426,15 @@ function nodeDeps() {
     mkdir: (dir) => fs.mkdirSync(dir, { recursive: true, mode: 0o755 }),
     nodePath: process.execPath,
     playwright: () => {
+      // Resolved here, inside provision()'s try, so a broken install still
+      // produces an identity-stage receipt.
+      const testManifestPath = require.resolve("@playwright/test/package.json");
+      const playwrightManifestPath =
+        createRequire(testManifestPath).resolve("playwright/package.json");
+      const coreManifestPath = createRequire(playwrightManifestPath).resolve(
+        "playwright-core/package.json",
+      );
+      const coreDir = path.dirname(coreManifestPath);
       const core = require(coreManifestPath);
       const bundle = createRequire(coreManifestPath)("playwright-core/lib/coreBundle");
       const lockVersions = [
@@ -591,7 +609,7 @@ export async function provision(options, deps = nodeDeps()) {
     }
     // The dry-run's own exit 1 means "missing packages", not a failed command.
     record(stage, attempt, route, { ...outcome, exitCode: parsed ? 0 : outcome.exitCode, note });
-    return { parsed, note };
+    return { parsed, note, timedOut: outcome.timedOut };
   };
 
   const waitForAptExit = async () => {
@@ -638,11 +656,40 @@ export async function provision(options, deps = nodeDeps()) {
       ].join("\n"),
     );
     receipt.dependencies.officialRoute = {
+      aptConfig,
       rewrittenStanzas: route.rewritten,
       sources: Object.fromEntries(route.parts.map((part) => [part.name, part.content])),
       sourcesList: route.sourcesList,
     };
-    return aptConfig;
+    return { aptConfig, dir };
+  };
+
+  // apt.conf.d is read after APT_CONFIG, so prove the effective directories.
+  const verifyRouteConfig = async ({ aptConfig, dir }) => {
+    const dumped = await deps.run({
+      command: "apt-config",
+      args: ["dump"],
+      env: { ...env, APT_CONFIG: aptConfig },
+      timeoutMs: within("acquire", 30_000),
+      killGraceMs,
+      echo: false,
+    });
+    const value = (key) =>
+      dumped.stdout?.match(new RegExp(`^${key} "([^"]*)";$`, "mi"))?.[1]?.replace(/\/$/, "");
+    const expected = {
+      "Dir::Etc::sourcelist": path.join(dir, "sources.list"),
+      "Dir::Etc::sourceparts": path.join(dir, "sources.list.d"),
+      "Dir::State::lists": path.join(dir, "lists"),
+    };
+    const wrong = Object.entries(expected).filter(([key, want]) => value(key) !== want);
+    record("acquire:route-config", 2, "official-archive", {
+      ...dumped,
+      exitCode: ok(dumped) && wrong.length === 0 ? 0 : (dumped.exitCode ?? 1) || 1,
+      note: wrong.length ? `overridden: ${wrong.map(([key]) => key).join(", ")}` : "effective",
+    });
+    if (!ok(dumped) || wrong.length > 0) {
+      throw new StageError("acquire", "the official-route APT configuration is not in effect");
+    }
   };
 
   // One bounded acquisition attempt. Throws StageError({transport:true}) for
@@ -654,12 +701,13 @@ export async function provision(options, deps = nodeDeps()) {
     const updated = await deps.run(update);
     record("acquire:metadata", attempt, route, updated);
     if (!ok(updated)) {
+      const timedOut = aptTimedOut(updated, update.timeoutMs - killGraceMs - 5_000);
       throw new StageError(
         "acquire",
-        aptTimedOut(updated, update.timeoutMs - killGraceMs - 5_000)
+        timedOut
           ? "apt-get update reached the acquisition deadline"
           : `apt-get update exited ${updated.exitCode}`,
-        { transport: true },
+        { transport: timedOut || TRANSPORT_OUTPUT.test(updated.tail ?? "") },
       );
     }
     if (remaining() <= 0)
@@ -671,8 +719,14 @@ export async function provision(options, deps = nodeDeps()) {
       aptConfig,
       Math.max(remaining(), 1000),
     );
-    if (!resolved.parsed)
+    if (!resolved.parsed) {
+      if (resolved.timedOut) {
+        throw new StageError("acquire", "dependency resolution reached the acquisition deadline", {
+          transport: true,
+        });
+      }
       throw new StageError("acquire:resolve", `dependency resolution failed: ${resolved.note}`);
+    }
     if (resolved.parsed.satisfied) return [];
     const packages = resolved.parsed.packages;
     if (remaining() <= 0)
@@ -686,12 +740,13 @@ export async function provision(options, deps = nodeDeps()) {
     const downloaded = await deps.run(download);
     record("acquire:download", attempt, route, downloaded);
     if (!ok(downloaded)) {
+      const timedOut = aptTimedOut(downloaded, downloadBudget);
       throw new StageError(
         "acquire",
-        aptTimedOut(downloaded, downloadBudget)
+        timedOut
           ? "package download reached the acquisition deadline"
           : `apt-get install --download-only exited ${downloaded.exitCode}`,
-        { transport: true },
+        { transport: timedOut || TRANSPORT_OUTPUT.test(downloaded.tail ?? "") },
       );
     }
     return packages;
@@ -745,7 +800,8 @@ export async function provision(options, deps = nodeDeps()) {
     }
     if (
       !playwright.officiallySupported ||
-      !/^ubuntu\d+\.\d+-(x64|arm64)$/.test(playwright.hostPlatform)
+      // x64 only: the official retry route has no ports.ubuntu.com entry.
+      !/^ubuntu\d+\.\d+-x64$/.test(playwright.hostPlatform)
     ) {
       throw new StageError(
         "identity",
@@ -769,7 +825,9 @@ export async function provision(options, deps = nodeDeps()) {
         await waitForAptExit();
         route = "official-archive";
         try {
-          aptConfig = prepareOfficialRoute();
+          const officialRoute = prepareOfficialRoute();
+          await verifyRouteConfig(officialRoute);
+          aptConfig = officialRoute.aptConfig;
         } catch (routeError) {
           throw new StageError(
             "acquire",

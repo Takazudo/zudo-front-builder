@@ -1464,7 +1464,7 @@ jobs:
     # zfb-md-wasm tarball.
     needs: [health, wasm-md, changed-files]
     if: ${{ needs.changed-files.outputs.wasm_md == 'true' && needs.changed-files.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
