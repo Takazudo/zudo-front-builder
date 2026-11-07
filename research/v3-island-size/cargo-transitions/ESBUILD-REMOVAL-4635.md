@@ -1,10 +1,9 @@
 # Exact esbuild-removal lock move (#4635)
 
-This is the proposed reviewed `Cargo.lock` move of the esbuild-removal milestone
-([#4628](https://github.com/Takazudo/zudo-front-builder/issues/4628), tasks #4635/#4636). **It is pending
-owner approval.** Registering it in `scripts/security-lock-transitions.mjs` makes the shared
-reviewed-transition entry point recognize exactly this lock pair; that registration is the provenance
-decision under review, not an approval recorded elsewhere. It authorizes only the pair in
+This is the reviewed `Cargo.lock` move of the esbuild-removal milestone
+([#4628](https://github.com/Takazudo/zudo-front-builder/issues/4628), tasks #4635/#4636). The owner approved it on
+2026-11-07. Registering it in `scripts/security-lock-transitions.mjs` makes the shared
+reviewed-transition entry point recognize exactly this lock pair. It authorizes only the pair in
 `esbuild-removal-4635.json`. Caller-written manifests cannot authorize other moves.
 
 | Lock | SHA-256 |

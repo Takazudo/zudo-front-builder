@@ -91,6 +91,6 @@
       }
     ]
   },
-  "decision": "Proposed exact Cargo.lock move of the esbuild-removal milestone (#4628, tasks #4635/#4636), pending owner approval: zfb-rolldown-prototype is renamed zfb-bundler (gaining a serde edge), the new internal zfb-compiler-worker joins, the esbuild fetcher zfb-binfetch and its tar/xattr extraction closure leave, and zfb, zfb-build, zfb-config-loader, zfb-islands and zfb-server rewire internal edges accordingly (zfb also drops flate2 and hex). Every other record, the header and every remaining external record are byte-identical. Structural authorization only; no live contract application.",
+  "decision": "Proposed exact Cargo.lock move of the esbuild-removal milestone (#4628, tasks #4635/#4636), approved by the owner on 2026-11-07: zfb-rolldown-prototype is renamed zfb-bundler (gaining a serde edge), the new internal zfb-compiler-worker joins, the esbuild fetcher zfb-binfetch and its tar/xattr extraction closure leave, and zfb, zfb-build, zfb-config-loader, zfb-islands and zfb-server rewire internal edges accordingly (zfb also drops flate2 and hex). Every other record, the header and every remaining external record are byte-identical. Structural authorization only; no live contract application.",
   "nativeMeasurement": "required-separately-for-each-platform"
 }

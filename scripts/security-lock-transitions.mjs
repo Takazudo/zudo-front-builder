@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 // Each entry is one exact owner-approved replacement (the #4314 security fixes,
-// the #4268 noyalib adoption, the #4569 tokio security fix, the proposed #4635
+// the #4268 noyalib adoption, the #4569 tokio security fix, the owner-approved #4635
 // esbuild-removal lock move): the decision bytes and both complete lock hashes
 // are pinned here, so caller-supplied JSON is not authority. Adding an entry is
 // a reviewed provenance decision, not a refactor.
@@ -81,7 +81,7 @@ export const ESBUILD_REMOVAL_LOCK_TRANSITION = securityLockTransition({
   id: "esbuild-removal-4635",
   label: "esbuild-removal",
   kind: "milestone",
-  decisionSha256: "de115b67c0fc14501be11b668f5a6e54a83637cb1cb3a911b98561dede98c0cf",
+  decisionSha256: "124afe58a656e64709496b04276821ab78b8f7dd0371d1d17ed4d6a96d149958",
   oldLockSha256: "216d99d595688e68db223517fe52048f3618d73d36abbb71ea652c25fec97810",
   newLockSha256: "b4e8f2413e0c8df9df8cd47fb8e555189560ad01bae65d3e9d637d6a51810634",
 });
