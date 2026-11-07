@@ -204,9 +204,10 @@ for (const config of CASES) {
     expect(actual.submitFinal).toEqual([true]);
     expect(actual.sameDocument).toBe(true);
     expect(actual.lifecycle).toEqual(LIFECYCLE);
-    // Native builds a POST entry list more than once on some engines; the
-    // routed submission builds it exactly once.
-    expect(oracle.formdata).toBeGreaterThanOrEqual(1);
+    // Native Chromium 149 and WebKit 26.5 both fire formdata twice for a POST
+    // submission (#4616 evidence: Linux Chromium and the native Mac run); the
+    // routed submission builds the entry list exactly once.
+    expect(oracle.formdata).toBe(2);
     expect(actual.formdata).toBe(1);
   });
 }

@@ -6,14 +6,16 @@
 //
 // Oracle: identical markup with the router module stubbed. A host page without
 // the router embeds an iframe that runs it; a form listener moves the form into
-// the host document. Engines disagree natively when the move happens in a
-// `formdata` listener (WebKit navigates the child frame, Chromium the top
-// level), so every case compares against the running engine's own oracle.
+// the host document. Every case compares against the running engine's own
+// oracle, except one: when the move happens in a `formdata` listener, native
+// WebKit navigates the child frame while Chromium and the spec navigate the top
+// level. The router cannot reproduce WebKit there (see the WebKit branch below).
 //
 // Not covered: removing the iframe from a `formdata` listener. Native Chromium
 // crashes the renderer there, so there is no oracle to assert against.
 // @ts-check
 import { test, expect } from "@playwright/test";
+import { ENGINE } from "../webkit-token/engine.mjs";
 
 const HOST_HTML = `<!doctype html><html><head><meta charset="UTF-8" /><title>Host</title></head>
 <body><h1>Host</h1><iframe name="child" src="/search.html" style="width:600px;height:400px"></iframe></body></html>`;
@@ -262,6 +264,31 @@ for (const config of CASES) {
       expect(actual.formdata).toBe(1);
       expect(actual.child).toEqual({ path: oracle.child?.path, sameDocument: true });
       expect(actual.top).toEqual(oracle.top);
+      return;
+    }
+
+    if (ENGINE === "webkit" && config.on === "formdata") {
+      // #4617: the spec chooses the target navigable after constructing the
+      // entry list, from the form's node document at that point (step order in
+      // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm).
+      // Native WebKit fixes it earlier, so its oracle navigates the child frame
+      // after a move in a formdata listener. The router's own FormData runs in
+      // the submit event, before WebKit's sampling point, so after the decline
+      // WebKit navigates the top level: the spec target, not WebKit's oracle.
+      // If the oracle stops navigating the iframe, remove this branch.
+      expect(
+        oracle.requests.map((r) => r.destination),
+        "WebKit oracle still targets the iframe",
+      ).toEqual(["iframe"]);
+      expect(oracle.top).toEqual({ path: "/foreign-host.html", sameDocument: true, iframe: true });
+      expect(actual.submitFinal).toEqual(oracle.submitFinal);
+      expect(actual.submitFinal.every((prevented) => prevented === false)).toBe(true);
+      expect(actual.lifecycle).toEqual([]);
+      expect(actual.requests.map((r) => r.destination)).toEqual(["document"]);
+      const destination = `/search-results.html${method === "GET" ? `?${payload}` : ""}`;
+      expect(actual.top.path).toBe(destination);
+      expect(actual.top.sameDocument).toBe(false);
+      expect(actual.formdata).toBe(oracle.formdata + 1);
       return;
     }
 
