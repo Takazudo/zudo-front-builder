@@ -47,10 +47,16 @@
 #     │     │                             detects a bad deploy, cannot prevent
 #     │     │                             one). showcase-notify IFTTTs on
 #     │     │                             failure.
-#     │     └─► showcase-preview (PRs from this repo) — issue #2285: same
-#     │                                   artifact uploaded as a pr-<N> preview
-#     │                                   alias + a sticky PR comment. Tolerant
-#     │                                   until the worker exists. NOT required.
+#     │     ├─► showcase-preview (PRs from this repo) — issue #2285: same
+#     │     │                             artifact uploaded as a pr-<N> preview
+#     │     │                             alias + a sticky PR comment. Tolerant
+#     │     │                             until the worker exists. NOT required.
+#     │     └─► esbuild-free-artifact — issue #4636: consumes the exported
+#     │                                   zfb-packed-tarballs artifact, audits
+#     │                                   package contents + the installed
+#     │                                   dependency closure for esbuild, and
+#     │                                   strace-runs an esbuild-free build.
+#     │                                   NOT required.
 #     └─► built-site-browser-smoke (ubuntu-24.04) — issue #1401: builds
 #                                         tests/built-site-smoke/fixture-site/
 #                                         (a real interactive island using zudo-react)
@@ -548,6 +554,7 @@ jobs:
           ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
           ZFB_LINUX_X64_CSS_ADDON: ${{ github.workspace }}/smoke-ctx/zfb-css.node
           ZFB_SMOKE_DIST_OUT: ${{ github.workspace }}/showcase-dist
+          ZFB_SMOKE_TARBALL_OUT: ${{ github.workspace }}/packed-tarballs
           ZFB_CSS_API_BROWSER: "1"
         run: |
           bash scripts/smoke-packed-clean-room.sh
@@ -606,6 +613,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           include-hidden-files: true
+
+      # Hands the packed tarballs to the non-required esbuild-free artifact
+      # job (#4636). continue-on-error for the same reason as the showcase
+      # dist upload above: it can never redden the required Scaffold E2E
+      # check; the consumer fails on its own download-artifact instead.
+      - name: Upload packed tarballs
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zfb-packed-tarballs
+          path: packed-tarballs/
+          if-no-files-found: error
+          retention-days: 1
 
   # ── create-zfb showcase: production deploy (issue #2284) ───────────────────
   #
@@ -1170,6 +1190,58 @@ jobs:
 
       - name: Run smoke container (TS config)
         run: docker run --rm zfb-smoke:arm64-ts
+
+  # ── esbuild-free installed artifact (issue #4636) ──────────────────────────
+  # Consumes scaffold-e2e's packed tarballs: proves no zfb package ships or
+  # depends on esbuild (third-party esbuild in the install is reported, not
+  # hidden), then runs the installed `zfb build` with esbuild unavailable
+  # under `strace -f -e trace=execve,connect`, failing on any esbuild or
+  # curl/wget exec and any non-loopback or DNS connect, and checks the output.
+  # See scripts/smoke-esbuild-free-artifact.sh. NOT a required status check
+  # and not in ruleset 18452968: it depends on a continue-on-error upload,
+  # and a red run is triaged by the manager rather than blocking unrelated PRs.
+  # Linux x64 only; no Windows leg, since this workflow packs no Windows
+  # carrier (windows-lib-tests.yml covers Windows library behavior).
+  esbuild-free-artifact:
+    name: esbuild-free installed artifact (strace)
+    needs: scaffold-e2e
+    if: ${{ !cancelled() && needs.scaffold-e2e.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24.14.0
+
+      - name: Download packed tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: zfb-packed-tarballs
+          path: packed-tarballs
+
+      - name: Install strace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace
+
+      - name: Prove the installed artifact builds without esbuild
+        env:
+          ZFB_ESBUILD_FREE_REQUIRE_STRACE: "1"
+          ZFB_ESBUILD_FREE_EVIDENCE_DIR: ${{ runner.temp }}/esbuild-free-evidence
+        run: bash scripts/smoke-esbuild-free-artifact.sh packed-tarballs
+
+      - name: Upload esbuild-free evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zfb-esbuild-free-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/esbuild-free-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ── Post-release smoke: validates the public install.sh path ───────────────
   smoke-released:
