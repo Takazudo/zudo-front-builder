@@ -72,7 +72,7 @@ For a project with three islands (`Counter`, `ThemeToggle`, `SearchBox`), the is
 dist/assets/islands.js
 ```
 
-All islands are statically imported into a single bundler entry point (the current bundler backend is described in [JS runtime](./js-runtime.mdx)), so the shared bundle contains every island component. `ProductionAssetPipeline` then renames it to a content-hashed filename before writing the final output:
+All islands are statically imported into a single bundler entry point (the current bundler backend is described in [JS runtime](./js-runtime.mdx)), so the shared bundle contains every island component. The build's production asset step then renames it to a content-hashed filename before writing the final output:
 
 ```
 dist/assets/islands-<hash>.js
@@ -86,7 +86,7 @@ dist/assets/islands-chunk-<hash>.js
 
 The bundle registers each island by its static marker name and calls `mountIslands()` at the end of the module. The runtime checks each wrapper's identity and schedules the corresponding client entry to adopt its child DOM.
 
-**The `ProductionAssetPipeline` is the single source of truth for hashing** — the bundler writes a stable `islands.js` first, and the pipeline performs the hash-rename and rewrites the injected script URL in the emitted HTML. Nothing downstream has to guess the filename.
+**One build step owns the hashing.** The bundler writes a stable `islands.js` first; the production asset step then performs the hash-rename and rewrites the injected script URL in the emitted HTML. Nothing downstream has to guess the filename.
 
 ## How islands are loaded
 
@@ -171,11 +171,15 @@ it has not mounted before, then writes its own marker after mounting.
 
 Because all islands are bundled together into a single file:
 
-- **Every page with any island loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
-- **Pages with no islands get no islands script.** If a page contains no island markers, the build pipeline skips the shared islands `<script>` injection for that page. Other client-script mechanisms, if used, can still add JavaScript.
+- **Every page loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
+- **On a build with islands, pages without islands load the bundle too.** The islands `<script>` is injected into the `<head>` of every prerendered page, including a page with no island markers. The bundle then finds no wrapper to mount on that page. A build with no islands at all emits no islands bundle and no tag. This applies to the HTML that `zfb build` writes; request-time SSR responses are not post-processed this way (see [SSR on a Worker](./ssr-on-a-worker.mdx)). Other client-script mechanisms, if used, can still add JavaScript.
 - **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
 
 ### Measured shared-bundle baseline
+
+The shared bundle's size is measured and guarded against regressions in CI. In the recorded study (zfb 3.0.0), a page with one event-only island shipped about 50 KB of island JavaScript (about 17 KB gzip); the current contracts cap the same page at 64,535 raw / 22,195 gzip bytes. The full measurement, its toolchain pins, and the procedure for changing a contract are kept below for maintainers.
+
+<Details title="Measurement details and the size contract">
 
 The controlled v3 fixture study found **no JavaScript reduction**; it preserves the current bundle as a regression baseline. It exercised eight real consumer pages in workspace and packed-package resolution on Darwin arm64 and Linux x64: no island, event-only, scalar signal, Show/For, modelValue, blog menu plus theme toggle, JSON API, and a two-island page. Each platform's contract has zero raw and gzip allowance.
 
@@ -203,6 +207,8 @@ Use the repository's [measurement and replay commands](https://github.com/Takazu
 ```sh
 node research/v3-island-size/check-budget.mjs --workspace "$ZFB_SIZE_OUT/real-workspace/measurement.json" --packed "$ZFB_SIZE_OUT/real-packed/measurement.json"
 ```
+
+</Details>
 
 ## One runtime
 
@@ -840,12 +846,12 @@ Requirements for the supported form:
 | Location | Supported |
 |---|---|
 | A server-only page, layout, or component (never reachable from a `"use client"` island) | Yes — always has been, via the general SSR shadow-copy bundler |
-| A `"use client"` island's own file | Yes, since issue #1404 |
-| A module transitively imported from a `"use client"` island | Yes, since #1404, same restrictions as above, when the module is part of the island import graph and is written as a real expanded shadow-copy file |
+| A `"use client"` island's own file | Yes |
+| A module transitively imported from a `"use client"` island | Yes, same restrictions as above, when the module is part of the island import graph and is written as a real expanded shadow-copy file |
 | A file reachable only because it is matched by another island-reachable glob (a raw-mirrored glob target or subtree companion) | **No** — see "Unsupported forms" below |
 | A `*.client.{ts,tsx,js,jsx}` [client script](../guides/client-scripts.mdx) (or anything it imports) | **No** — see "Client scripts" below |
 
-Before #1404, *any* `import.meta.glob` reachable from an island — even the supported eager + string-literal form — was a hard build error (a stopgap from issue #1387). The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same trick the SSR bundler has used for server-only modules since issues #665/#670.
+Island-side support is newer than server-side support: earlier releases rejected *any* `import.meta.glob` reachable from an island, even the supported eager + string-literal form, as a hard build error. The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same technique the SSR bundler uses for server-only modules. (History: the stopgap error came from issue #1387 and island support from #1404; the SSR technique dates from #665/#670.)
 
 There is one important boundary: the shadow also raw-mirrors files under each island-reachable glob module's directory so matched target files exist for the bundler, but those raw-mirrored target/subtree files are not recursively expanded. If one of those files contains its own `import.meta.glob(...)`, zfb rejects it instead of shipping an unexpanded Vite-only macro to the browser. If the same file is also imported from the island graph in the normal way, it is a real expanded shadow copy and its supported glob keeps working.
 
