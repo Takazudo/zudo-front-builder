@@ -1,6 +1,8 @@
-//! Private decoder for ZFB's existing prepared esbuild command contract.
-//! Fail closed on unknown options; this remains explicit argv ownership debt.
+//! Plans a typed [`BundleRequest`] into private engine options (#4629).
+//! The legacy prepared-argv decoder feeds the same planner until its last
+//! caller is gone; it fails closed on unknown options.
 use super::windows_path;
+use crate::request::{self, BundleRequest, Format, Loader, OutputLayout, SourceMap};
 use anyhow::{anyhow, bail, Context, Result};
 use rolldown::BundlerOptions;
 use rolldown_common::ModuleType;
@@ -30,15 +32,26 @@ pub(super) struct Request {
 }
 
 impl Request {
+    /// Legacy esbuild-argv entry (#4629): decodes the argv into a typed
+    /// [`BundleRequest`] and plans it. Removed with the last argv caller.
     pub(super) fn decode(cmd: &Command) -> Result<Self> {
         Self::decode_for_host(cmd, cfg!(windows))
     }
 
     fn decode_for_host(cmd: &Command, windows: bool) -> Result<Self> {
-        let cwd = cmd
-            .get_current_dir()
-            .map(Path::to_path_buf)
-            .unwrap_or(std::env::current_dir()?);
+        Self::plan_for_host(&decode_argv(cmd)?, windows)
+    }
+
+    pub(super) fn plan(request: &BundleRequest) -> Result<Self> {
+        Self::plan_for_host(request, cfg!(windows))
+    }
+
+    fn plan_for_host(request: &BundleRequest, windows: bool) -> Result<Self> {
+        let cwd = if request.cwd.as_os_str().is_empty() {
+            std::env::current_dir()?
+        } else {
+            request.cwd.clone()
+        };
         let cwd = if windows {
             let cwd = cwd.into_os_string().into_string().map_err(|cwd| {
                 anyhow!(
@@ -57,11 +70,11 @@ impl Request {
         };
         let engine_spelling = |value: String| engine_spelling(value, windows);
         let logical_join =
-            |value: &str| engine_spelling(cwd.join(value).to_string_lossy().into_owned());
+            |value: &Path| engine_spelling(cwd.join(value).to_string_lossy().into_owned());
         // Only the cwd prefix moves to its physical spelling: a symlinked
         // directory inside the project (a shadow-staged subtree) stays as
         // spelled, so relative imports still resolve beside the staged files.
-        let engine_join = |value: &str| {
+        let engine_join = |value: &Path| {
             let logical = cwd.join(value);
             let joined = if windows {
                 physical_cwd.join(value)
@@ -72,7 +85,7 @@ impl Request {
             };
             engine_spelling(joined.to_string_lossy().into_owned())
         };
-        let mut outdir = None;
+        let outdir;
         let mut options = BundlerOptions {
             cwd: Some(physical_cwd.clone()),
             code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
@@ -81,12 +94,12 @@ impl Request {
             // contain that delimiter; use the pinned alphanumeric alphabet
             // without changing the existing resource admission contract.
             hash_characters: Some(rolldown_common::HashCharacters::Base36),
-            // Esbuild runs no dead-code pass without --minify. Rolldown's default
-            // DCE-only pass also drops bindings after an unconditional top-level
+            // No dead-code pass without minify. Rolldown's default DCE-only
+            // pass also drops bindings after an unconditional top-level
             // throw while keeping their export entries (#4336 ZFB-RD-003).
             minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
-            // Esbuild drops module-level directives such as an island's
-            // "use client" marker without a warning (#4404).
+            // Module-level directives such as an island's "use client"
+            // marker are dropped without a warning (#4404).
             checks: Some(rolldown_common::ChecksOptions {
                 module_level_directive: Some(false),
                 ..Default::default()
@@ -94,151 +107,152 @@ impl Request {
             ..Default::default()
         };
         let mut resolve = rolldown::ResolveOptions::default();
-        let mut definitions = Vec::new();
-        let mut loaders = BTreeMap::new();
-        let mut external = Vec::<String>::new();
-        let mut metafile = None;
-        let mut entry = None;
         let mut transform = rolldown_common::BundlerTransformOptions::default();
         let mut jsx = rolldown_common::JsxOptions::default();
         let mut has_jsx = false;
-        let mut tsconfig = None;
-        for arg in cmd.get_args() {
-            let arg = arg
-                .to_str()
-                .context("prototype requires UTF-8 prepared arguments")?;
-            if let Some(value) = arg.strip_prefix("--define:") {
-                let (k, v) = value.split_once('=').context("define")?;
-                definitions.push((k.to_string(), v.to_string()));
-            } else if let Some(value) = arg.strip_prefix("--loader:") {
-                let (k, v) = value.split_once('=').context("loader")?;
-                loaders.insert(k.to_string(), v.to_string());
-            } else if let Some(value) = arg.strip_prefix("--alias:") {
-                let (k, v) = value.split_once('=').context("alias")?;
-                let aliases = resolve.alias.get_or_insert_default();
-                for (key, target) in alias_entries(k, engine_spelling(v.to_string())?, windows) {
-                    aliases.push((key, vec![Some(target)]));
-                }
-            } else if let Some(value) = arg.strip_prefix("--external:") {
-                if value.strip_suffix('*').unwrap_or(value).contains('*') {
-                    bail!("Rolldown prototype only supports suffix external wildcards: {value}");
-                }
-                external.push(value.to_string());
-            } else if let Some(value) = arg.strip_prefix("--outfile=") {
-                options.file = Some(engine_join(value)?);
-                outdir = PathBuf::from(logical_join(value)?)
+
+        for (key, target) in &request.resolve.aliases {
+            let aliases = resolve.alias.get_or_insert_default();
+            for (key, target) in alias_entries(key, engine_spelling(target.clone())?, windows) {
+                aliases.push((key, vec![Some(target)]));
+            }
+        }
+        let mut external = Vec::<request::External>::new();
+        for item in &request.externals {
+            let value = match item {
+                request::External::Package(value) | request::External::Prefix(value) => value,
+            };
+            if value.contains('*') {
+                bail!("bundler externals take no wildcard characters: {value}");
+            }
+            external.push(item.clone());
+        }
+        match &request.output {
+            OutputLayout::File(file) => {
+                options.file = Some(engine_join(file)?);
+                outdir = PathBuf::from(logical_join(file)?)
                     .parent()
                     .map(Path::to_path_buf);
-            } else if let Some(value) = arg.strip_prefix("--outdir=") {
-                options.dir = Some(engine_join(value)?);
-                outdir = Some(PathBuf::from(logical_join(value)?));
-            } else if let Some(value) = arg.strip_prefix("--entry-names=") {
-                options.entry_filenames = Some(format!("{value}.js").into());
-            } else if let Some(value) = arg.strip_prefix("--chunk-names=") {
-                options.chunk_filenames = Some(format!("{value}.js").into());
-            } else if let Some(value) = arg.strip_prefix("--asset-names=") {
-                options.asset_filenames = Some(format!("{value}[extname]").into());
-            } else if let Some(value) = arg.strip_prefix("--metafile=") {
-                metafile = Some(cwd.join(value));
-            } else if let Some(value) = arg.strip_prefix("--tsconfig=") {
-                let path = PathBuf::from(engine_join(value)?);
-                options.tsconfig = Some(rolldown_common::TsConfig::Manual(path.clone()));
-                tsconfig = Some(path);
-            } else if let Some(value) = arg.strip_prefix("--target=") {
-                transform.target = Some(rolldown_common::Either::Left(value.to_string()));
-            } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
-                jsx.import_source = Some(value.to_string());
-                has_jsx = true;
-            } else if let Some(value) = arg.strip_prefix("--conditions=") {
-                // Esbuild adds custom conditions to its defaults; Rolldown's
-                // resolver extends its own defaults the same way.
-                resolve.condition_names = Some(value.split(',').map(str::to_string).collect());
-            } else if let Some(value) = arg.strip_prefix("--main-fields=") {
-                resolve.main_fields = Some(value.split(',').map(str::to_string).collect());
-            } else {
-                match arg {
-                    "--bundle"
-                    | "--tree-shaking=true"
-                    | "--log-level=warning"
-                    | "--log-limit=0" => {}
-                    "--format=esm" => options.format = Some(rolldown_common::OutputFormat::Esm),
-                    "--platform=browser" => {
-                        options.platform = Some(rolldown_common::Platform::Browser)
-                    }
-                    "--platform=neutral" => {
-                        options.platform = Some(rolldown_common::Platform::Neutral);
-                        resolve.main_fields.get_or_insert_default();
-                    }
-                    "--splitting" | "--splitting=true" => {
-                        options.code_splitting =
-                            Some(rolldown_common::CodeSplittingMode::Bool(true));
-                        // Esbuild never makes a chunk import an entry, and zfb renames
-                        // only the entry after bundling (islands.js -> islands-<hash>.js,
-                        // chunks verbatim). Merging common chunks folds code shared by
-                        // the entry and a dynamic import into the entry chunk, so the
-                        // lazy chunk imports "./islands.js" and 404s (#4444/#4448);
-                        // redundant-load avoidance does the same for already-loaded code.
-                        options
-                            .experimental
-                            .get_or_insert_default()
-                            .chunk_optimization =
-                            Some(rolldown_common::ChunkOptimizationOption::Options(
-                                rolldown_common::ChunkOptimizationOptions {
-                                    merge_common_chunks: false,
-                                    avoid_redundant_chunk_loads: false,
-                                },
-                            ));
-                    }
-                    "--splitting=false" => {
-                        options.code_splitting =
-                            Some(rolldown_common::CodeSplittingMode::Bool(false))
-                    }
-                    "--keep-names" => options.keep_names = Some(true),
-                    "--minify" => {
-                        options.minify = Some(rolldown_common::RawMinifyOptions::Bool(true));
-                        // Rolldown's compressor drops statements after an unconditional
-                        // top-level throw, re-hoisting only var bindings while keeping the
-                        // export entries, so an exported const loses its declaration
-                        // (#4336 ZFB-RD-015). Esbuild bundles top-level let/const/class as
-                        // var in every mode; only this mode runs the compressor.
-                        options.top_level_var = Some(true);
-                    }
-                    "--sourcemap=linked" => {
-                        options.sourcemap = Some(rolldown_common::SourceMapType::File)
-                    }
-                    "--preserve-symlinks" => resolve.symlinks = Some(false),
-                    "--jsx=automatic" => {
-                        jsx.runtime = Some("automatic".into());
-                        has_jsx = true;
-                    }
-                    _ if !arg.starts_with('-') && entry.is_none() => {
-                        entry = Some(engine_join(arg)?)
-                    }
-                    _ => bail!("Rolldown prototype does not implement prepared option {arg:?}"),
+            }
+            OutputLayout::Dir {
+                dir,
+                entry_names,
+                chunk_names,
+                asset_names,
+            } => {
+                options.dir = Some(engine_join(dir)?);
+                outdir = Some(PathBuf::from(logical_join(dir)?));
+                if let Some(value) = entry_names {
+                    options.entry_filenames = Some(format!("{value}.js").into());
+                }
+                if let Some(value) = chunk_names {
+                    options.chunk_filenames = Some(format!("{value}.js").into());
+                }
+                if let Some(value) = asset_names {
+                    options.asset_filenames = Some(format!("{value}[extname]").into());
                 }
             }
         }
-        // Esbuild's NODE_PATH fallback is an ordered additional module search path.
-        if let Some(value) = subprocess_node_path(cmd, std::env::var_os("NODE_PATH")) {
+        if request.splitting && matches!(request.output, OutputLayout::File(_)) {
+            bail!("bundler code splitting requires a directory output");
+        }
+        let metafile = request.graph.as_ref().map(|path| cwd.join(path));
+        let tsconfig = match &request.tsconfig {
+            Some(value) => {
+                let path = PathBuf::from(engine_join(value)?);
+                options.tsconfig = Some(rolldown_common::TsConfig::Manual(path.clone()));
+                Some(path)
+            }
+            None => None,
+        };
+        if let Some(value) = &request.target {
+            transform.target = Some(rolldown_common::Either::Left(value.clone()));
+        }
+        if let Some(value) = &request.jsx.import_source {
+            jsx.import_source = Some(value.clone());
+            has_jsx = true;
+        }
+        if let Some(request::JsxRuntime::Automatic) = request.jsx.runtime {
+            jsx.runtime = Some("automatic".into());
+            has_jsx = true;
+        }
+        if let Some(value) = &request.resolve.conditions {
+            // Custom conditions extend the resolver's own defaults.
+            resolve.condition_names = Some(value.clone());
+        }
+        let Format::Esm = request.format;
+        options.format = Some(rolldown_common::OutputFormat::Esm);
+        match request.platform {
+            request::Platform::Browser => {
+                options.platform = Some(rolldown_common::Platform::Browser)
+            }
+            request::Platform::Neutral => {
+                options.platform = Some(rolldown_common::Platform::Neutral);
+                resolve.main_fields.get_or_insert_default();
+            }
+            request::Platform::Node => options.platform = Some(rolldown_common::Platform::Node),
+        }
+        if let Some(value) = &request.resolve.main_fields {
+            resolve.main_fields = Some(value.clone());
+        }
+        if request.splitting {
+            options.code_splitting = Some(rolldown_common::CodeSplittingMode::Bool(true));
+            // A chunk never imports an entry, and zfb renames only the entry
+            // after bundling (islands.js -> islands-<hash>.js, chunks verbatim).
+            // Merging common chunks folds code shared by the entry and a
+            // dynamic import into the entry chunk, so the lazy chunk imports
+            // "./islands.js" and 404s (#4444/#4448); redundant-load avoidance
+            // does the same for already-loaded code.
+            options
+                .experimental
+                .get_or_insert_default()
+                .chunk_optimization = Some(rolldown_common::ChunkOptimizationOption::Options(
+                rolldown_common::ChunkOptimizationOptions {
+                    merge_common_chunks: false,
+                    avoid_redundant_chunk_loads: false,
+                },
+            ));
+        }
+        if request.keep_names {
+            options.keep_names = Some(true);
+        }
+        if request.minify {
+            options.minify = Some(rolldown_common::RawMinifyOptions::Bool(true));
+            // Rolldown's compressor drops statements after an unconditional
+            // top-level throw, re-hoisting only var bindings while keeping the
+            // export entries, so an exported const loses its declaration
+            // (#4336 ZFB-RD-015). Bundle top-level let/const/class as var in
+            // every mode; only this mode runs the compressor.
+            options.top_level_var = Some(true);
+        }
+        match request.source_map {
+            SourceMap::None => {}
+            SourceMap::Linked => options.sourcemap = Some(rolldown_common::SourceMapType::File),
+            SourceMap::Inline => options.sourcemap = Some(rolldown_common::SourceMapType::Inline),
+        }
+        if request.resolve.preserve_symlinks {
+            resolve.symlinks = Some(false);
+        }
+        // Ordered additional module search paths, after node_modules.
+        if !request.resolve.extra_module_dirs.is_empty() {
             let modules = resolve
                 .modules
                 .get_or_insert_with(|| vec!["node_modules".into()]);
-            for path in std::env::split_paths(&value) {
+            for path in &request.resolve.extra_module_dirs {
                 modules.push(engine_spelling(path.to_string_lossy().into_owned())?);
             }
         }
-        options.input = Some(vec![entry.context("prepared entry")?.into()]);
+        options.input = Some(vec![engine_join(&request.entry)?.into()]);
         options.resolve = Some(resolve);
-        options.define = Some(definitions.into_iter().collect());
+        options.define = Some(request.defines.iter().cloned().collect());
         options.external = Some(rolldown_common::IsExternal::Fn(Some(Arc::new(
             move |specifier, _, _| {
-                let found = external.iter().any(|p| {
-                    if let Some(prefix) = p.strip_suffix('*') {
-                        specifier.starts_with(prefix)
-                    } else {
-                        specifier == p
+                let found = external.iter().any(|item| match item {
+                    request::External::Prefix(prefix) => specifier.starts_with(prefix.as_str()),
+                    request::External::Package(name) => {
+                        specifier == name
                             || specifier
-                                .strip_prefix(p)
+                                .strip_prefix(name.as_str())
                                 .is_some_and(|rest| rest.starts_with('/'))
                     }
                 });
@@ -246,14 +260,17 @@ impl Request {
             },
         ))));
         let mut file_extensions = Vec::new();
-        let mut types = Vec::new();
-        for (ext, loader) in loaders {
-            if loader == "file" {
-                file_extensions.push(ext);
+        let mut types = BTreeMap::new();
+        for (ext, loader) in &request.loaders {
+            if let Loader::File = loader {
+                file_extensions.push(ext.clone());
+                types.remove(ext);
             } else {
-                types.push((ext, ModuleType::from_known_str(&loader)?));
+                file_extensions.retain(|known| known != ext);
+                types.insert(ext.clone(), ModuleType::from_known_str(loader.name())?);
             }
         }
+        file_extensions.sort();
         options.module_types = Some(types.into_iter().collect());
         if let Some(path) = &tsconfig {
             if jsx.runtime.is_none() || jsx.import_source.is_none() {
@@ -273,6 +290,113 @@ impl Request {
             file_extensions,
         })
     }
+}
+
+#[cfg(test)]
+pub(super) fn decode_argv_for_tests(cmd: &Command) -> Result<BundleRequest> {
+    decode_argv(cmd)
+}
+
+/// Decodes zfb's legacy prepared esbuild argv into a typed request. Fails
+/// closed on any option outside the contract the callers used.
+fn decode_argv(cmd: &Command) -> Result<BundleRequest> {
+    let cwd = cmd
+        .get_current_dir()
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::current_dir()?);
+    let mut request = BundleRequest::new(
+        cwd,
+        PathBuf::new(),
+        OutputLayout::File(PathBuf::new()),
+        request::Platform::Browser,
+    );
+    let mut platform = None;
+    let mut entry = None;
+    let mut file = None;
+    let mut dir = None;
+    let (mut entry_names, mut chunk_names, mut asset_names) = (None, None, None);
+    let mut loaders = BTreeMap::new();
+    for arg in cmd.get_args() {
+        let arg = arg
+            .to_str()
+            .context("prototype requires UTF-8 prepared arguments")?;
+        if let Some(value) = arg.strip_prefix("--define:") {
+            let (k, v) = value.split_once('=').context("define")?;
+            request.defines.push((k.to_string(), v.to_string()));
+        } else if let Some(value) = arg.strip_prefix("--loader:") {
+            let (k, v) = value.split_once('=').context("loader")?;
+            let loader = Loader::parse(v).with_context(|| format!("Unknown module type: {v}"))?;
+            loaders.insert(k.to_string(), loader);
+        } else if let Some(value) = arg.strip_prefix("--alias:") {
+            let (k, v) = value.split_once('=').context("alias")?;
+            request.resolve.aliases.push((k.to_string(), v.to_string()));
+        } else if let Some(value) = arg.strip_prefix("--external:") {
+            request.externals.push(match value.strip_suffix('*') {
+                Some(prefix) if !prefix.contains('*') => request::External::Prefix(prefix.into()),
+                _ if value.contains('*') => {
+                    bail!("Rolldown prototype only supports suffix external wildcards: {value}")
+                }
+                _ => request::External::Package(value.into()),
+            });
+        } else if let Some(value) = arg.strip_prefix("--outfile=") {
+            file = Some(PathBuf::from(value));
+        } else if let Some(value) = arg.strip_prefix("--outdir=") {
+            dir = Some(PathBuf::from(value));
+        } else if let Some(value) = arg.strip_prefix("--entry-names=") {
+            entry_names = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--chunk-names=") {
+            chunk_names = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--asset-names=") {
+            asset_names = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--metafile=") {
+            request.graph = Some(PathBuf::from(value));
+        } else if let Some(value) = arg.strip_prefix("--tsconfig=") {
+            request.tsconfig = Some(PathBuf::from(value));
+        } else if let Some(value) = arg.strip_prefix("--target=") {
+            request.target = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--jsx-import-source=") {
+            request.jsx.import_source = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--conditions=") {
+            request.resolve.conditions = Some(value.split(',').map(str::to_string).collect());
+        } else if let Some(value) = arg.strip_prefix("--main-fields=") {
+            request.resolve.main_fields = Some(value.split(',').map(str::to_string).collect());
+        } else {
+            match arg {
+                "--bundle" | "--tree-shaking=true" | "--log-level=warning" | "--log-limit=0" => {}
+                "--format=esm" => request.format = Format::Esm,
+                "--platform=browser" => platform = Some(request::Platform::Browser),
+                "--platform=neutral" => platform = Some(request::Platform::Neutral),
+                "--splitting" | "--splitting=true" => request.splitting = true,
+                "--splitting=false" => request.splitting = false,
+                "--keep-names" => request.keep_names = true,
+                "--minify" => request.minify = true,
+                "--sourcemap=linked" => request.source_map = SourceMap::Linked,
+                "--preserve-symlinks" => request.resolve.preserve_symlinks = true,
+                "--jsx=automatic" => request.jsx.runtime = Some(request::JsxRuntime::Automatic),
+                _ if !arg.starts_with('-') && entry.is_none() => entry = Some(PathBuf::from(arg)),
+                _ => bail!("Rolldown prototype does not implement prepared option {arg:?}"),
+            }
+        }
+    }
+    request.entry = entry.context("prepared entry")?;
+    // Without --platform the engine's own default applied; browser matches it.
+    request.platform = platform.unwrap_or(request::Platform::Browser);
+    request.output = match (file, dir) {
+        // A file wins over a directory, as the engine applied both before.
+        (Some(file), _) => OutputLayout::File(file),
+        (None, Some(dir)) => OutputLayout::Dir {
+            dir,
+            entry_names,
+            chunk_names,
+            asset_names,
+        },
+        (None, None) => bail!("output location"),
+    };
+    request.loaders = loaders.into_iter().collect();
+    if let Some(value) = subprocess_node_path(cmd, std::env::var_os("NODE_PATH")) {
+        request.resolve.extra_module_dirs = std::env::split_paths(&value).collect();
+    }
+    Ok(request)
 }
 
 /// The `NODE_PATH` the esbuild subprocess would see: the command's own setting
@@ -488,10 +612,8 @@ mod tests {
             &Path::new(r"C:\shadow").join("entry.mjs").to_string_lossy()
         );
         let joined = |rel: &str| Path::new(r"C:\shadow").join(rel);
-        assert_eq!(
-            options.dir.as_deref(),
-            Some(&*joined("out").to_string_lossy())
-        );
+        // A file output wins over a directory output; the typed request holds one.
+        assert_eq!(options.dir, None);
         assert_eq!(
             options.file.as_deref(),
             Some(&*joined("out/route.js").to_string_lossy())
@@ -623,6 +745,7 @@ mod tests {
             let mut cmd = Command::new("esbuild");
             cmd.current_dir(&self.0)
                 .args(["entry.mjs", "--bundle", "--tsconfig=tsconfig.json"])
+                .arg("--outfile=out.js")
                 .args(flags);
             Request::decode_for_host(&cmd, false)
         }

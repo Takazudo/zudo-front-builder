@@ -1,9 +1,11 @@
-//! Internal #318 Rolldown adapter, the default bundler when `native` is compiled in.
-//! No Rolldown types escape.
+//! zfb's owned native bundler boundary (#4628): typed requests in, validated
+//! bundles and a normalized module graph out. No Rolldown types escape.
 #[cfg(feature = "native")]
 mod native;
+pub mod request;
 #[cfg(feature = "native")]
 #[doc(hidden)]
 pub use native::module_specifiers::module_specifiers;
 #[cfg(feature = "native")]
-pub use native::{enabled, run_prepared};
+pub use native::{bundle, enabled, generate, run_prepared};
+pub use request::*;
