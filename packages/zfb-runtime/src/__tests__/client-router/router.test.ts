@@ -2141,6 +2141,32 @@ describe("handleSubmit — form intercept (#1400)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(config.routed ? 1 : 0);
   });
 
+  it("routes a plain Event('submit') that carries no submitter property", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Results", "done")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/results", fields: { q: "value" } });
+    const event = new Event("submit", { bubbles: true, cancelable: true });
+    form.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await drain();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).search).toBe("?q=value");
+  });
+
+  it("declines a SubmitEvent whose submitter is a different form, without throwing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const form = createForm({ action: "/results", fields: { q: "value" } });
+    const other = createForm({ action: "/other" });
+    const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: other });
+    expect(() => form.dispatchEvent(event)).not.toThrow();
+    expect(event.defaultPrevented).toBe(false);
+    await drain();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("leaves a relative override under a cross-origin base to the browser", async () => {
     const base = document.createElement("base");
     base.href = "https://other.example/base/";
