@@ -1247,6 +1247,11 @@ jobs:
       - name: cargo test (zfb-render --no-default-features)
         run: cargo test --no-default-features -p zfb-render --features syntect-onig
 
+      # TS-config unit tests host the compiler worker in the debug `zfb`
+      # binary beside the test executable (#4632); `--lib` alone never builds it.
+      - name: cargo build (zfb --no-default-features debug binary for the compiler worker)
+        run: cargo build --no-default-features -p zfb --bin zfb
+
       - name: cargo test (zfb --no-default-features --lib)
         run: cargo test --no-default-features -p zfb --lib
 
