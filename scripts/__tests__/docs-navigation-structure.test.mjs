@@ -17,6 +17,7 @@ import {
   canonicalNavSection,
   editorialForestFor,
   resolveNavigationScope,
+  sectionForest,
   sidebarDefinitionFor,
 } from "../../docs/src/config/navigation-scope.mjs";
 import { DOCS_ROUTE_MIGRATIONS } from "../../docs/src/config/route-migrations.mjs";
@@ -48,7 +49,8 @@ const {
   sidebarInitialExpansion,
   sidebarScopeNodes,
 } = await importDocsExport("sidebar-utils");
-const { getNavSectionForSlug, getNavSubtree } = await importDocsExport("nav-scope");
+const { getNavSectionForSlug, getNavSubtree, resolveCategoryOwner } =
+  await importDocsExport("nav-scope");
 
 function node(slug, children = []) {
   return {
@@ -121,7 +123,9 @@ describe("documentation navigation contracts", () => {
       ["foo", "foo-bar"],
       ["foo-bar", "foo"],
     ]) {
-      const headerNav = [...matches, "!"].map((categoryMatch) => ({ categoryMatch }));
+      const headerNav = [...matches, "!"].map((categoryMatch) => ({
+        categoryMatch,
+      }));
       for (const [section, expected] of [
         ["foo", ["foo", "foo-skills"]],
         ["foo-bar", ["foo-bar", "foo-bar-skills"]],
@@ -213,8 +217,12 @@ describe("documentation navigation contracts", () => {
   it("configures the paired Header/Sidebar from the shared scope definition", () => {
     const chrome = readFileSync("docs/src/navigation-chrome.tsx", "utf8");
     expect(chrome).toContain("[scope.navSection]: sidebarDefinitionFor(scope)");
-    expect(chrome).toContain("editorialForestFor(scope, routeCtx.buildNavTree(...args))");
-    expect(chrome).toContain('const key = `${locale}:${scope?.id ?? "native"}`;');
+    expect(chrome).toContain("if (scope) return editorialForestFor(scope, tree);");
+    // Unscoped sections keep only their own category forest, one cache pair each.
+    expect(chrome).toContain("return sectionForest(tree, navSection, (slug: string) =>");
+    expect(chrome).toContain(
+      'const key = `${locale}:${scope?.id ?? `native:${props.navSection ?? ""}`}`;',
+    );
     // Deploy gets its tree from its scope like every other section, not a flat override.
     expect(chrome).not.toContain("DEPLOY_SLUGS");
     expect(sidebarDefinitionFor(resolveNavigationScope("zudo-wind/learn", "zudo-wind"))).toEqual({
@@ -411,7 +419,12 @@ describe("documentation navigation contracts", () => {
   function sectionNavigation(slug, navSection, locale = "ja", tree = nativeSectionTree(locale)) {
     const scope = resolveNavigationScope(slug, navSection);
     return buildSidebarNavigation(
-      [{ slug: "architecture/index", data: { sidebar_initial_expansion: "collapsed" } }],
+      [
+        {
+          slug: "architecture/index",
+          data: { sidebar_initial_expansion: "collapsed" },
+        },
+      ],
       locale,
       navSection,
       undefined,
@@ -477,7 +490,9 @@ describe("documentation navigation contracts", () => {
       expect(sidebarScopeNodes(navigation, nodes, broader)).toEqual(navigation.roots);
       expect(broaderSidebarScope(navigation, nodes, broader)).toBeNull();
       expect(navigation.localParentId).toBe(broader);
-      expect(navigation.initialExpansion).toEqual({ architecture: "collapsed" });
+      expect(navigation.initialExpansion).toEqual({
+        architecture: "collapsed",
+      });
       // Fresh state reveals only the group holding the current page.
       const mode = sidebarInitialExpansion(navigation, slug);
       expect(mode).toBe("collapsed");
@@ -599,6 +614,51 @@ describe("documentation navigation contracts", () => {
     expect(() => buildEditorialForest(withoutGuide, "deploy-embed")).toThrow(
       "requires routed node guides/embed-as-library",
     );
+  });
+  it("keeps native category sections to their own forest with no Broaden to the full site", () => {
+    const owners = ["getting-started", "guides", "markdown-features", "claude"];
+    const ownerOf = (slug) => resolveCategoryOwner(slug, owners);
+    const tree = [
+      ...nativeSectionTree(),
+      node("claude", [node("claude/overview")]),
+      node("claude-skills", [node("claude-skills/zfb-wisdom")]),
+    ];
+    const before = JSON.stringify(tree);
+    for (const [navSection, slugs] of [
+      ["markdown-features", ["markdown-features", "markdown-features/directives"]],
+      ["guides", ["guides", "guides/troubleshooting"]],
+      ["claude", ["claude", "claude-skills/zfb-wisdom"]],
+    ]) {
+      const forest = sectionForest(tree, navSection, ownerOf);
+      expect(forest.map((root) => ownerOf(root.slug))).toEqual(forest.map(() => navSection));
+      for (const slug of slugs) {
+        const { nodes, navigation } = buildSidebarNavigation(
+          [],
+          "ja",
+          navSection,
+          undefined,
+          {},
+          () => forest,
+          owners,
+        );
+        // The category's own nodes are the whole forest, so Broaden has nowhere to go.
+        expect(navigation.roots.map((root) => root.slug)).toEqual(forest.map((root) => root.slug));
+        expect(nodes.map((root) => root.slug)).toEqual(forest.map((root) => root.slug));
+        expect(
+          walk(nodes).some((current) => current.slug === slug),
+          slug,
+        ).toBe(true);
+        expect(broaderSidebarScope(navigation, nodes, null)).toBeNull();
+      }
+    }
+    expect(sectionForest(tree, "claude", ownerOf).map((root) => root.slug)).toEqual([
+      "claude",
+      "claude-skills",
+    ]);
+    // Home (no section) and a section owning nothing keep the full tree.
+    expect(sectionForest(tree, undefined, ownerOf)).toBe(tree);
+    expect(sectionForest(tree, "unknown", ownerOf)).toBe(tree);
+    expect(JSON.stringify(tree)).toBe(before);
   });
   it("keeps Three ways to run zfb listed in Deploy but owned by Architecture", () => {
     expect(DEPLOY_SLUGS[0]).toBe("architecture/three-ways-to-run-zfb");

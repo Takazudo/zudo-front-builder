@@ -3,6 +3,7 @@ import { Island } from "@takazudo/zfb";
 import { defineChromeBindings } from "@takazudo/zudo-doc/chrome-bindings";
 import DesignSystemPlayground from "./components/playground/design-system-playground";
 import CompilePlayground from "./components/playground/compile-playground";
+import DesignDiscovery from "./components/playground/design-discovery";
 import HighlightPlayground from "./components/playground/highlight-playground";
 import ParsePlayground from "./components/playground/parse-playground";
 import RenderPlayground from "./components/playground/render-playground";
@@ -87,6 +88,7 @@ const baseBindings = defineChromeBindings({
     ParsePlayground: ParsePlaygroundIsland,
     HighlightPlayground: HighlightPlaygroundIsland,
     WindPreviewEnhancer,
+    DesignDiscovery,
   },
   homeExtras: HomeExtras,
 });

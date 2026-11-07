@@ -199,3 +199,17 @@ export function buildWindEditorialForest(tree) {
 export function editorialForestFor(scope, tree) {
   return buildEditorialForest(tree, scope.editorialRootSlug);
 }
+
+/**
+ * Native (unscoped) sections keep only the top-level nodes their header
+ * category owns (`ownerOf` mirrors zudo-doc's category matching, satellites
+ * such as `claude-skills` included) as the sidebar forest. The baseline then
+ * is the whole forest, so a category landing page such as Markdown Features
+ * or Migration & guides has no "Broaden tree" step up to the full-site nav.
+ * A section that owns no top-level node keeps the full tree.
+ */
+export function sectionForest(tree, navSection, ownerOf) {
+  if (!navSection || navSection === "!") return tree;
+  const owned = tree.filter((node) => ownerOf(node.slug) === navSection);
+  return owned.length ? owned : tree;
+}
