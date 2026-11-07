@@ -75,8 +75,13 @@ impl BundleRequest {
 /// Output layout. A single file never splits; a directory may.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputLayout {
-    /// One output file, relative to `cwd` or absolute.
-    File(PathBuf),
+    File {
+        /// The output file, relative to `cwd` or absolute.
+        file: PathBuf,
+        /// Asset file pattern without extension, relative to the output
+        /// file's directory, e.g. `assets/[name]-[hash]`.
+        asset_names: Option<String>,
+    },
     Dir {
         /// Output directory, relative to `cwd` or absolute.
         dir: PathBuf,
@@ -90,6 +95,13 @@ pub enum OutputLayout {
 }
 
 impl OutputLayout {
+    pub fn file(file: impl Into<PathBuf>) -> Self {
+        Self::File {
+            file: file.into(),
+            asset_names: None,
+        }
+    }
+
     pub fn dir(dir: impl Into<PathBuf>) -> Self {
         Self::Dir {
             dir: dir.into(),

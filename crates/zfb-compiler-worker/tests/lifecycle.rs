@@ -54,7 +54,7 @@ impl Fixture {
         let mut request = BundleRequest::new(
             &self.site,
             "entry.ts",
-            OutputLayout::File(format!("{out}/entry.mjs").into()),
+            OutputLayout::file(format!("{out}/entry.mjs")),
             Platform::Node,
         );
         request.graph = Some(format!("{out}/meta.json").into());

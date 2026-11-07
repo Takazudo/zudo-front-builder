@@ -128,11 +128,14 @@ impl Request {
             external.push(item.clone());
         }
         match &request.output {
-            OutputLayout::File(file) => {
+            OutputLayout::File { file, asset_names } => {
                 options.file = Some(engine_join(file)?);
                 outdir = PathBuf::from(logical_join(file)?)
                     .parent()
                     .map(Path::to_path_buf);
+                if let Some(value) = asset_names {
+                    options.asset_filenames = Some(format!("{value}[extname]").into());
+                }
             }
             OutputLayout::Dir {
                 dir,
@@ -153,7 +156,7 @@ impl Request {
                 }
             }
         }
-        if request.splitting && matches!(request.output, OutputLayout::File(_)) {
+        if request.splitting && matches!(request.output, OutputLayout::File { .. }) {
             bail!("bundler code splitting requires a directory output");
         }
         let metafile = request.graph.as_ref().map(|path| cwd.join(path));
@@ -307,7 +310,7 @@ fn decode_argv(cmd: &Command) -> Result<BundleRequest> {
     let mut request = BundleRequest::new(
         cwd,
         PathBuf::new(),
-        OutputLayout::File(PathBuf::new()),
+        OutputLayout::file(PathBuf::new()),
         request::Platform::Browser,
     );
     let mut platform = None;
@@ -383,7 +386,7 @@ fn decode_argv(cmd: &Command) -> Result<BundleRequest> {
     request.platform = platform.unwrap_or(request::Platform::Browser);
     request.output = match (file, dir) {
         // A file wins over a directory, as the engine applied both before.
-        (Some(file), _) => OutputLayout::File(file),
+        (Some(file), _) => OutputLayout::File { file, asset_names },
         (None, Some(dir)) => OutputLayout::Dir {
             dir,
             entry_names,

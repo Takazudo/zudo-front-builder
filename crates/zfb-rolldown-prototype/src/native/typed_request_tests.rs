@@ -104,7 +104,7 @@ fn generate_publishes_nothing_until_asked_and_reports_the_graph() {
     let mut request = BundleRequest::new(
         &dir,
         "entry.mjs",
-        OutputLayout::File("out/bundle.mjs".into()),
+        OutputLayout::file("out/bundle.mjs"),
         Platform::Neutral,
     );
     request
@@ -145,7 +145,7 @@ fn raw_css_is_rejected_with_the_supported_path() {
     let mut request = BundleRequest::new(
         &dir,
         "entry.mjs",
-        OutputLayout::File("out/bundle.mjs".into()),
+        OutputLayout::file("out/bundle.mjs"),
         Platform::Browser,
     );
     request.loaders.push((".css".into(), Loader::Css));
@@ -163,7 +163,7 @@ fn splitting_requires_a_directory_output() {
     let mut request = BundleRequest::new(
         "/srv",
         "e.mjs",
-        OutputLayout::File("o.mjs".into()),
+        OutputLayout::file("o.mjs"),
         Platform::Browser,
     );
     request.splitting = true;
@@ -180,4 +180,57 @@ fn every_loader_name_round_trips() {
         assert_eq!(Loader::parse(name).map(Loader::name), Some(name));
     }
     assert_eq!(Loader::parse("asset"), None);
+}
+
+#[test]
+fn single_file_output_keeps_the_asset_name_pattern() {
+    let mut cmd = Command::new("unused");
+    cmd.current_dir("/srv/site").args([
+        "entry.ts",
+        "--bundle",
+        "--format=esm",
+        "--outfile=dist/server/entry.mjs",
+        "--asset-names=../assets/[name]-[hash]",
+        "--loader:.wasm=file",
+    ]);
+    let decoded = super::prepared::decode_argv_for_tests(&cmd).unwrap();
+    assert_eq!(
+        decoded.output,
+        OutputLayout::File {
+            file: "dist/server/entry.mjs".into(),
+            asset_names: Some("../assets/[name]-[hash]".into()),
+        }
+    );
+
+    let dir = temp_dir("file-assets");
+    fs::write(dir.join("data.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    fs::write(
+        dir.join("entry.mjs"),
+        "import url from './data.wasm';\nconsole.log(url);\n",
+    )
+    .unwrap();
+    let mut request = BundleRequest::new(
+        &dir,
+        "entry.mjs",
+        OutputLayout::File {
+            file: "out/server/bundle.mjs".into(),
+            asset_names: Some("assets/[name]-[hash]".into()),
+        },
+        Platform::Neutral,
+    );
+    request.loaders.push((".wasm".into(), Loader::File));
+    let generated = crate::generate(&request).unwrap();
+    let asset = generated
+        .files
+        .iter()
+        .map(|(path, _)| path)
+        .find(|path| path.extension().is_some_and(|ext| ext == "wasm"))
+        .expect("asset generated");
+    let name = asset.file_name().unwrap().to_string_lossy();
+    assert_eq!(asset.parent().unwrap(), dir.join("out/server/assets"));
+    assert!(
+        name.starts_with("data-") && name.ends_with(".wasm"),
+        "{name}"
+    );
+    fs::remove_dir_all(&dir).unwrap();
 }

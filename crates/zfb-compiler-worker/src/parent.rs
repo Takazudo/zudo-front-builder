@@ -829,7 +829,7 @@ impl Destinations {
         }
         let resolve = |path: &Path| normalize(&request.cwd.join(path));
         let output_root = match &request.output {
-            OutputLayout::File(file) => resolve(file)
+            OutputLayout::File { file, .. } => resolve(file)
                 .parent()
                 .map(Path::to_path_buf)
                 .ok_or_else(|| WorkerError::Setup("output file has no parent".into()))?,
