@@ -44,6 +44,8 @@ zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # re-exports / wraps it in `config.rs`. `default-features = false` for the V8
 # gate (issue #371) — the `direct-v8` feature above propagates the toggle.
 zfb-config-loader = { path = "../zfb-config-loader", default-features = false }
+# Private `__zfb-compiler-worker` mode dispatched first in `main` (#4630).
+zfb-compiler-worker = { path = "../zfb-compiler-worker" }
 anyhow = { workspace = true }
 # Sub 3 / #108: dyn-compat async trait used by the plugin-host →
 # zfb-server dispatcher adapter in `commands::plugins`.

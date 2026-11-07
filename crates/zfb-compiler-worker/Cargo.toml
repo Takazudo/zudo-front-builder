@@ -1,0 +1,28 @@
+[package]
+name = "zfb-compiler-worker"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Supervised native compiler worker process for zfb (#4630)"
+
+# Test-only embedding host: a worker host whose executable is not the zfb CLI.
+# Binaries of a dependency crate are never built or installed with zfb.
+[[bin]]
+name = "compiler-worker-test-host"
+path = "src/bin/compiler-worker-test-host.rs"
+test = false
+doc = false
+
+[dependencies]
+zfb-rolldown-prototype = { path = "../zfb-rolldown-prototype", features = ["native"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
+tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
