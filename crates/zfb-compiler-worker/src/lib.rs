@@ -27,4 +27,5 @@ pub use parent::{
 #[doc(hidden)]
 pub use protocol::{TestHook, TEST_HOOKS_ENV};
 pub use worker::{run_if_requested, serve_stdio};
+pub use zfb_rolldown_prototype::request;
 pub use zfb_rolldown_prototype::BundleRequest;

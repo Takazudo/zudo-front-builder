@@ -41,7 +41,7 @@ use zfb_build::{
 use zfb_content::{build_snapshot, CollectionConfig};
 #[cfg(feature = "direct-v8")]
 use zfb_content::{build_snapshot_with_config, PipelineSpec};
-#[cfg(feature = "direct-v8")]
+
 // ---------------------------------------------------------------------------
 // Shared fixture helpers
 // ---------------------------------------------------------------------------

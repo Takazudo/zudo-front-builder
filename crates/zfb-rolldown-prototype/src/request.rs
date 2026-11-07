@@ -36,6 +36,8 @@ pub struct BundleRequest {
     pub minify: bool,
     pub keep_names: bool,
     pub source_map: SourceMap,
+    /// Code prepended verbatim to every output chunk.
+    pub banner: Option<String>,
     /// Where to write the normalized module graph (metafile-shaped JSON),
     /// relative to `cwd` or absolute. `None` still validates the graph.
     pub graph: Option<PathBuf>,
@@ -67,6 +69,7 @@ impl BundleRequest {
             minify: false,
             keep_names: false,
             source_map: SourceMap::None,
+            banner: None,
             graph: None,
         }
     }
@@ -153,6 +156,21 @@ pub struct Resolve {
     /// Additional module directories searched after `node_modules`, in order
     /// (the role `NODE_PATH` plays for Node).
     pub extra_module_dirs: Vec<PathBuf>,
+    pub packages: Packages,
+}
+
+/// What happens to bare package specifiers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Packages {
+    /// Packages are looked up in module directories and bundled.
+    #[default]
+    Bundle,
+    /// Package directories are never searched: a bare specifier that no
+    /// alias, tsconfig `paths`/`baseUrl` mapping or package import resolves
+    /// stays an external import, resolved by the runtime from the output's
+    /// location. Mappings resolve first, so an alias may still target a file
+    /// inside `node_modules`. Incompatible with `extra_module_dirs`.
+    External,
 }
 
 /// How files with an extension are loaded.

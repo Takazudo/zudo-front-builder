@@ -72,6 +72,7 @@ fn typed_and_argv_requests_plan_identically() {
             main_fields: Some(vec!["module".into(), "main".into()]),
             preserve_symlinks: true,
             extra_module_dirs: vec!["/srv/hoist".into()],
+            packages: Packages::Bundle,
         },
         defines: vec![("X".into(), "\"1\"".into())],
         loaders: vec![
@@ -87,6 +88,7 @@ fn typed_and_argv_requests_plan_identically() {
         minify: true,
         keep_names: true,
         source_map: SourceMap::Linked,
+        banner: None,
         graph: Some("out/meta.json".into()),
     };
     assert_eq!(decoded, typed);

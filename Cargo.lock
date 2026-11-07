@@ -7062,6 +7062,7 @@ dependencies = [
  "url",
  "wait-timeout",
  "walkdir",
+ "zfb-compiler-worker",
  "zfb-content",
  "zfb-css",
  "zfb-graph",

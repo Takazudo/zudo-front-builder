@@ -12,6 +12,9 @@ mod jsx_tsconfig_tests;
 #[cfg(test)]
 mod metafile_order_tests;
 pub(crate) mod module_specifiers;
+mod package_externals;
+#[cfg(test)]
+mod packages_tests;
 mod prepared;
 #[cfg(test)]
 mod splitting_tests;
@@ -322,17 +325,21 @@ async fn run(request: Request) -> Result<Generated> {
     };
     let outdir = request.outdir.clone().context("output location")?;
     let trailing_paths = trailing_paths::TrailingPaths::new(&request.options);
-    let mut bundler = Bundler::with_plugins(
-        request.options,
-        vec![
-            verbatim_specifiers::VerbatimSpecifiers::new_shared(
-                verbatim_specifiers::VerbatimSpecifiers,
-            ),
-            trailing_paths::TrailingPaths::new_shared(trailing_paths),
-            GraphPlugin::new_shared(plugin),
-        ],
-    )
-    .map_err(|e| anyhow::anyhow!("Rolldown options: {e:?}"))?;
+    let mut plugins = Vec::new();
+    if request.external_packages {
+        plugins.push(package_externals::PackageExternals::new_shared(
+            package_externals::PackageExternals,
+        ));
+    }
+    plugins.extend([
+        verbatim_specifiers::VerbatimSpecifiers::new_shared(
+            verbatim_specifiers::VerbatimSpecifiers,
+        ),
+        trailing_paths::TrailingPaths::new_shared(trailing_paths),
+        GraphPlugin::new_shared(plugin),
+    ]);
+    let mut bundler = Bundler::with_plugins(request.options, plugins)
+        .map_err(|e| anyhow::anyhow!("Rolldown options: {e:?}"))?;
     let generated = bundler.generate().await;
     // This adapter's private plugins have no close hooks. Sequential
     // close also clears the pinned driver's retained state on returned errors;
