@@ -42,6 +42,7 @@ fn typed_and_argv_requests_plan_identically() {
         "--define:X=\"1\"",
         "--loader:.svg=file",
         "--loader:.txt=text",
+        "--loader:.wasm=copy",
         "--external:node:*",
         "--external:pkg",
         "--metafile=out/meta.json",
@@ -73,7 +74,11 @@ fn typed_and_argv_requests_plan_identically() {
             extra_module_dirs: vec!["/srv/hoist".into()],
         },
         defines: vec![("X".into(), "\"1\"".into())],
-        loaders: vec![(".svg".into(), Loader::File), (".txt".into(), Loader::Text)],
+        loaders: vec![
+            (".svg".into(), Loader::File),
+            (".txt".into(), Loader::Text),
+            (".wasm".into(), Loader::Copy),
+        ],
         externals: vec![
             External::Prefix("node:".into()),
             External::Package("pkg".into()),
@@ -164,4 +169,15 @@ fn splitting_requires_a_directory_output() {
     request.splitting = true;
     let error = format!("{:#}", crate::generate(&request).unwrap_err());
     assert!(error.contains("requires a directory output"), "{error}");
+}
+
+#[test]
+fn every_loader_name_round_trips() {
+    for name in [
+        "js", "jsx", "ts", "tsx", "json", "text", "base64", "dataurl", "binary", "empty", "file",
+        "copy", "css",
+    ] {
+        assert_eq!(Loader::parse(name).map(Loader::name), Some(name));
+    }
+    assert_eq!(Loader::parse("asset"), None);
 }

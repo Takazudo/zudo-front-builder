@@ -158,6 +158,9 @@ pub enum Loader {
     Empty,
     /// Copy the file into the output and import its relative URL string.
     File,
+    /// Copy the file into the output and keep the import, rewritten to the
+    /// copied file's relative path.
+    Copy,
     /// Raw CSS. Rejected at build time: zfb's CSS is owned by Wind/Lightning CSS.
     Css,
 }
@@ -177,6 +180,7 @@ impl Loader {
             "binary" => Self::Binary,
             "empty" => Self::Empty,
             "file" => Self::File,
+            "copy" => Self::Copy,
             "css" => Self::Css,
             _ => return None,
         })
@@ -195,6 +199,7 @@ impl Loader {
             Self::Binary => "binary",
             Self::Empty => "empty",
             Self::File => "file",
+            Self::Copy => "copy",
             Self::Css => "css",
         }
     }
